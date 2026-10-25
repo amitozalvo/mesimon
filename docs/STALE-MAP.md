@@ -36748,3 +36748,43 @@ here (`a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`), is T-997'
   clips the row's tail: `coder             Claude Code ∙ claude-sonnet-4-6 ∙ high ∙ ~`, which
   cuts the `default` mark. Padding to the longest name in the list is a visual change for its
   own ticket.
+
+## Three e2es red on CI's macOS 14 and Ubuntu runners were the tests' stubs, not tmux (T-1019, 2026-10-25)
+
+The ticket's hypothesis, that the composer read sees tmux 3.4 or 3.7c's screen differently, was
+refuted first: all three tests passed here on tmux 3.4 and 3.7c built from source, and the
+failing panes' captures on the runners were well-formed composers. Three causes, each in a
+test's own stub. Nothing in the daemon changed.
+
+- **`ask_queue_e2e::a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude` (macos-14).**
+  The pane showed the pasted words, and the stub's xtrace showed bash's `read` returning
+  `waiter ` and then only empty lines. On Darwin 23.6, `lseek` on a tty returns 0 (macOS 27 and
+  Linux: `Illegal seek`), so bash 3.2 (`/bin/sh` there) reads the tty in chunks and throws away
+  every line after the first that one `read()` brought. Probe on the runner, three of three: a
+  pasted `one\ntwo\nthree` reached a `while read` stub as `one`, and the same stub reading
+  through `cat |` got all three. `ask_queue_e2e`'s seven stubs now read through `cat |`. The
+  other `/bin/sh` `while read` stubs (73 in about 30 files) share the trap and passed on the
+  runner by timing; CLAUDE.md lists it under the measured traps.
+- **`crown_e2e::a_crown_wake_after_a_restart_waits_for_an_empty_box` (ubuntu-24.04).**
+  `BLANKABLE_STUB` used `read -t`, and Ubuntu's `/bin/sh` is dash: the pane read `read: Illegal
+  option -t` once a second and never drew a box. It is a bash script now.
+- **`crown_e2e::a_crown_wake_refused_at_end_turn_is_owed_until_it_goes` (ubuntu-24.04), and the
+  same function's `…_while_unknown_…`.** The crown is a plain start, so the board typed its
+  title into the box (T-961). `crown_e2e`'s `BOX_STUB` box is the tty's echo. On the runner's
+  fast exec the stub painted first and the title echoed into the box (`❯ coordinate`, cursor at
+  13), so the wake was held behind it, as T-936's empty-box rule says. Here, a slow first exec
+  echoed the title before the paint, the paint's clear hid it, and the wake went in onto a title
+  nobody saw (`got.txt`: `coordinate T-2 … raised its hand`). The test now sends the title out of
+  the box first, as `an_idle_client_and_a_draft_hold_…` already did, and its wait for the
+  typed wake prints the pending rows when it times out.
+- **The harness.** A failing e2e now echoes every pane of the fixture's tmux servers: the screen,
+  cursor, modes, the pane's processes and tty modes, and the `.txt` files its stubs write
+  (`Fixture::echo_panes` in `ci/test_support.rs`). That dump is what found all three.
+- **Seen in passing:** tmux 3.7's `paste-buffer` vis-encodes unsafe control characters unless
+  `-S` is given (`cmd_paste_buffer_paste`). It changes nothing for plain text.
+- **Runs:** the local matrix (`ask_queue_e2e`, `crown_e2e`, `prompt_e2e`, `spawn_ready_e2e` on
+  the bundled 3.6a and a source-built 3.7c) passed with no reruns. On the runners, the
+  diagnostic branch's filtered crown runs also failed once each, before the fix, in
+  `a_crown_wake_refused_while_unknown_is_owed_until_it_goes` (ubuntu, the cause above) and in
+  `a_crown_wake_nobody_answers_is_retired_and_goes_again` (macos-14, "a new attempt", in one of
+  five runs).

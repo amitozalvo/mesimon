@@ -197,7 +197,7 @@ impl Fixture {
         for sock in socks.iter().filter(|s| s.exists()) {
             let format = "#{pane_id} #{session_name} dead=#{pane_dead} \
                           cmd=#{pane_current_command} cursor=#{cursor_flag}:#{cursor_x},#{cursor_y} \
-                          mode=#{pane_in_mode} size=#{pane_width}x#{pane_height}";
+                          mode=#{pane_in_mode} size=#{pane_width}x#{pane_height} tty=#{pane_tty}";
             let panes = tmux(sock, &["list-panes", "-a", "-F", format]);
             eprintln!("--- {} panes ({}) ---", sock.display(), tmux(sock, &["-V"]).trim());
             for row in panes.lines() {
@@ -206,7 +206,38 @@ impl Fixture {
                 for line in tmux(sock, &["capture-pane", "-p", "-t", pane]).lines() {
                     eprintln!("  |{line}");
                 }
+                let Some(tty) = row.rsplit_once("tty=").map(|(_, t)| t.trim()) else { continue };
+                let tty_name = tty.trim_start_matches("/dev/");
+                let ps = Command::new("ps")
+                    .args(["-o", "pid,ppid,pgid,stat,wchan,command", "-t", tty_name])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default();
+                for line in ps.lines() {
+                    eprintln!("  ps {}", line.chars().take(120).collect::<String>());
+                }
+                let flag = if cfg!(target_os = "macos") { "-f" } else { "-F" };
+                let stty = Command::new("stty")
+                    .args(["-a", flag, tty])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default();
+                for line in stty.lines() {
+                    eprintln!("  stty {line}");
+                }
             }
+        }
+        // The files a stub writes beside itself (`got.txt` and its kin).
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let mut notes: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+            .collect();
+        notes.sort();
+        for note in notes {
+            let body = std::fs::read_to_string(&note).unwrap_or_default();
+            eprintln!("--- {} ---\n{body:?}", note.display());
         }
     }
 }

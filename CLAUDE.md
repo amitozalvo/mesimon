@@ -735,6 +735,11 @@ will not show up in our tests until they break something.
   a fast-exiting pane can read `pane_dead=1` with no status, stay a zombie and fire no
   `pane-died`. `nudge_unreaped` raises SIGCHLD at the server; a GitHub runner also has `gh` in
   `/usr/bin`, ahead of a test stub that only the daemon's PATH carries.
+- **macOS 14 answers `lseek` on a tty with 0, so bash 3.2's `read` (its `/bin/sh`) loses
+  lines** (T-1019): it reads the tty in chunks and drops every line after the first that one
+  `read()` brought, so a stub's `while read` loses words that arrive in one burst. A stub reads
+  through `cat |` (bash reads a pipe a byte at a time); macOS 27 and Linux say `Illegal seek`.
+  Ubuntu's `/bin/sh` is dash, which has no `read -t`.
 - **tmux keeps one XTVERSION reply per client and types the next one.** Its own attach-time
   query takes iTerm2's `ESC P >|iTerm2 …`; a pane that asks again through a passthrough gets
   the reply back as M-P plus text (T-488). `extended-keys` stays `on`, never `always`: snacks.nvim

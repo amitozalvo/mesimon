@@ -24,7 +24,7 @@ use mesimon_core::command::{Command, PendingAction, Response};
 
 #[test]
 fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // The quiet probe must not free the checkout under the test, and the
     // sleep floor must not refuse the sleep case.
@@ -322,7 +322,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
 /// spawns one on the ticket's own title with the words under it.
 #[test]
 fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) =
         Harness::boot_with_env("askstart", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
@@ -419,7 +419,7 @@ fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
 /// holder and then the asks ahead, so the row's `+N` falls as a card rises.
 #[test]
 fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot_with_env(
         "askq-order",
@@ -561,7 +561,7 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
 /// Explicit send-now bypasses the idle wait, never a dialog.
 #[test]
 fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) =
         Harness::boot_with_env("idleq", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
     else {
@@ -694,7 +694,7 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
 /// checkout behind the questioned agent says whose answer it waits on.
 #[test]
 fn an_ask_queued_onto_an_open_question_is_held_at_once() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) =
         Harness::boot_with_env("askedq", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
@@ -827,7 +827,7 @@ fn an_ask_queued_onto_an_open_question_is_held_at_once() {
 /// re-derives at Low confidence — is still dropped, as before.
 #[test]
 fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) =
         Harness::boot_with_env("askrestart", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
@@ -1090,7 +1090,7 @@ fn a_brief_owed_across_a_restart_is_not_resent_to_a_seat_that_took_a_prompt() {
 /// still holds them (T-808: pasted, they would meet the limit again).
 #[test]
 fn a_queued_ask_lands_after_an_api_error_and_waits_out_a_limit() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) =
         Harness::boot_with_env("apierr", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])

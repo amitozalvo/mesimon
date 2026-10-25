@@ -13184,6 +13184,22 @@ fn refused_crown_wake(name: &str, restart: bool) {
     let kw1 = key_of(&mut c, w1);
     let sa = c.spawn_claude(a);
     up(sa);
+    // The plain start typed the title into the crown's box (T-961). This
+    // stub's box is its tty's echo, so the title shows there only when the
+    // stub painted before the keys came: a fast exec (Linux) shows it, and
+    // the wake is rightly held behind it; a slow one (macOS) paints over
+    // the echo, and the wake went onto a title nobody saw (T-1019). The
+    // title is sent first, so the box is empty for the wake on either.
+    wait_composer(&h, sa);
+    let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
+    assert!(tmux(&h.paths.tmux_sock())
+        .args(["send-keys", "-t", &crown, "Enter"])
+        .status()
+        .unwrap()
+        .success());
+    wait_until(std::time::Duration::from_secs(10), "the title out of the box", || {
+        read_file(&got).lines().any(|l| l.trim() == "coordinate")
+    });
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
@@ -13242,7 +13258,12 @@ fn refused_crown_wake(name: &str, restart: bool) {
         wait_until(std::time::Duration::from_secs(10), "the refusal", || {
             at("crown_wake_refused").is_some()
         });
-        wait_until(std::time::Duration::from_secs(10), "the wake typed", || pasted() == 1);
+        wait_until_says(
+            std::time::Duration::from_secs(10),
+            "the wake typed",
+            || (pasted(), pending_of(&mut c, Some(a))),
+            |(n, _)| *n == 1,
+        );
         wait_until(std::time::Duration::from_secs(5), "the telling in the feed", || {
             at("crown_wake_sent").is_some()
         });
@@ -14807,8 +14828,9 @@ fn an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back() {
 
 /// A Claude stub whose screen the test sets: `BOX_STUB`'s empty composer,
 /// or, while a `blank` file stands beside it, a screen with no composer on
-/// it at all. Every line it is given goes to `got.txt`.
-const BLANKABLE_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ndir=$(dirname \"$0\")\nshown=\n\
+/// it at all. Every line it is given goes to `got.txt`. Bash, for `read
+/// -t`: Ubuntu's `/bin/sh` is dash, which refuses the flag (T-1019).
+const BLANKABLE_STUB: &str = "#!/bin/bash\nstty -icanon 2>/dev/null\ndir=$(dirname \"$0\")\nshown=\n\
     paint() { if [ -f \"$dir/blank\" ]; then s=blank; else s=box; fi; \
     [ \"$s\" = \"$shown\" ] && return; shown=$s; \
     if [ $s = blank ]; then printf '\\033[2J\\033[H  loading the session\\n'; \
