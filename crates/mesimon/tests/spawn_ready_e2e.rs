@@ -203,28 +203,31 @@ fn a_composer_that_never_paints_is_a_failed_start() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
-/// The T-566 pane: the Enters run out on a box holding stray text, and the
-/// seat keeps what it never took. Its Shift+Enter (`resend`) clears the box
-/// with exactly one Ctrl+C — a second exits Claude, so a box that still
-/// reads as holding is pasted into as it is — and pastes the title and the
-/// brief whole; the agent's ack clears the mark.
+/// The T-566 pane: a box holding text the start did not type is no composer
+/// for the brief (T-987: it reads as a person's draft, and words pasted
+/// under it would join it), so the brief waits out the composer's wait with
+/// no key, and the seat keeps what it never took. Its Shift+Enter (`resend`)
+/// clears the box with exactly one Ctrl+C — a second exits Claude, so a box
+/// that still reads as holding is pasted into as it is — and pastes the
+/// title and the brief whole; the agent's ack clears the mark.
 #[test]
 fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
-    let Some(h) = Harness::boot_bare("resend", Some(STRAY), &[HOOKS]) else { return };
+    let env = [("MESIMON_COMPOSER_WAIT_MS", "3000"), HOOKS];
+    let Some(h) = Harness::boot_bare("resend", Some(STRAY), &env) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("resend");
     let (ticket, sid) = composed(&mut c, &h, "resend me");
     std::thread::sleep(Duration::from_millis(500));
     session_start(&hook_sock, sid);
 
-    wait_until(Duration::from_secs(15), "prompt_submit_gave_up", || {
-        feed_count(&h, "prompt_submit_gave_up", ticket) == 1
+    wait_until(Duration::from_secs(15), "prompt_submit_not_ready", || {
+        feed_count(&h, "prompt_submit_not_ready", ticket) == 1
     });
+    assert_eq!(feed_count(&h, "composer_held", ticket), 1, "the hold is said once");
     assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
     assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
-    assert!(!got(&h).contains('\x03'), "the first paste clears nothing");
-    let before = pastes(&got(&h)).len();
-    assert_eq!(before, 1, "the first paste went under the typed title: {:?}", got(&h));
+    assert!(!got(&h).contains('\x03'), "the wait clears nothing");
+    assert!(pastes(&got(&h)).is_empty(), "nothing went under the text: {:?}", got(&h));
 
     let resend = |c: &mut TestClient| {
         c.request(Command::PromptSession {
@@ -243,13 +246,13 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
     assert!(record(&mut c, sid).pending_submit, "the Enter is owed again");
     err_containing(resend(&mut c), "already waiting");
 
-    wait_until(Duration::from_secs(10), "the resend's paste", || pastes(&got(&h)).len() == 2);
+    wait_until(Duration::from_secs(10), "the resend's paste", || pastes(&got(&h)).len() == 1);
     let text = got(&h);
     assert_eq!(text.matches('\x03').count(), 1, "exactly one Ctrl+C: {text:?}");
     let ctrl_c = text.find('\x03').unwrap();
-    let second = text.match_indices(OPEN).nth(1).map(|(at, _)| at).unwrap();
-    assert!(ctrl_c < second, "the box is cleared before the paste: {text:?}");
-    assert_eq!(pastes(&text)[1], format!("resend me\n\n{BRIEF}"), "title and brief: {text:?}");
+    let first = text.find(OPEN).unwrap();
+    assert!(ctrl_c < first, "the box is cleared before the paste: {text:?}");
+    assert_eq!(pastes(&text)[0], format!("resend me\n\n{BRIEF}"), "title and brief: {text:?}");
     assert!(record(&mut c, sid).unsent.is_some(), "the mark stays until the agent takes the words");
 
     hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);

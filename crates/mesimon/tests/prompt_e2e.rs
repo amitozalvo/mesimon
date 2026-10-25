@@ -423,3 +423,162 @@ fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
+
+/// T-987. A launch's parked words never join a person's draft. The stub's
+/// cursor sits in its composer's `❯ ` row, so keys typed into the pane echo
+/// there as a draft in Claude's box, and its tty is canonical, so a draft's
+/// backspaces erase it from both the screen and the line the stub reads.
+/// Measured before the change (and on Claude Code 2.1.310 with Sonnet): the
+/// words were pasted under the draft and one Enter sent both as one prompt.
+/// Now a box holding anything but the board's own text holds the words, with
+/// no key: they go alone once the draft is deleted, and are dropped, never
+/// acked, when the person sends the draft first. (A draft that outlasts the
+/// composer's wait leaves them unsent: `spawn_ready_e2e`'s T-566 pane.)
+#[test]
+fn a_launch_s_words_wait_for_a_person_s_draft() {
+    const STUB: &str = "#!/bin/sh\nprintf '\\033[999;3H\\033[2A'\n\
+                        while IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    // The paste road's own mechanics: on the mod road the words go down its
+    // `submit` and no box is read (T-575), so this runs on the hook set
+    // under both passes.
+    let hooks = [("MESIMON_CLAUDE_ROAD", "hooks")];
+    let Some(h) = Harness::boot_with_env("prompt-held", Some(STUB), &hooks) else { return };
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("prompt-held");
+    let _ = c.request(Command::CreateTicketWithNote {
+        column: "TODO".into(),
+        title: "held seat".into(),
+        workspace: None,
+        text: "mesimon-probe-987b the brief".into(),
+        uploads: Vec::new(),
+        tags: Vec::new(),
+        tier: None,
+    });
+    let ticket = c.board().tickets.first().expect("ticket").id;
+    let read = || std::fs::read_to_string(&got).unwrap_or_default();
+    let keys = |sid: uuid::Uuid, args: &[&str]| {
+        let sid16: String = sid.simple().to_string().chars().take(16).collect();
+        tmux(&tmux_sock).args(["send-keys", "-t", &sid16]).args(args).output().unwrap();
+    };
+    let pane = |sid: uuid::Uuid| -> String {
+        let sid16: String = sid.simple().to_string().chars().take(16).collect();
+        tmux(&tmux_sock)
+            .args(["capture-pane", "-p", "-t", &sid16])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    // A draft in the box once its composer is up, before the pane's
+    // `SessionStart` lets the words go.
+    let draft = |sid: uuid::Uuid, text: &str| {
+        wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
+        keys(sid, &["-l", text]);
+        wait_until(Duration::from_secs(5), "the draft in the box", || pane(sid).contains(text));
+    };
+    let held = |c: &mut TestClient, n: usize| {
+        wait_until(Duration::from_secs(10), "the words held for the draft", || {
+            feed_count(&h, "composer_held", ticket) == n
+        });
+        std::thread::sleep(Duration::from_secs(2));
+        assert_eq!(feed_count(&h, "composer_held", ticket), n, "said once per hold");
+        let rec = c.board().sessions.into_iter().find(|s| s.state.is_live()).expect("seat");
+        assert!(rec.pending_submit, "the words are still owed");
+        assert!(rec.unsent.is_none(), "and not given up");
+    };
+    let sleep_seat = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+        assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
+    };
+
+    // The composed spawn: its typed title is the board's own, the person's
+    // draft after it is not.
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    draft(sid, "person-draft-B");
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), "{}");
+    held(&mut c, 1);
+    assert!(!read().contains("mesimon-probe-987b"), "no paste under the draft: {:?}", read());
+    // The person deletes the draft: the brief goes, under the title alone.
+    for _ in 0.."person-draft-B".len() {
+        keys(sid, &["BSpace"]);
+    }
+    wait_until(Duration::from_secs(15), "the brief once the box is empty", || {
+        read().contains("mesimon-probe-987b")
+    });
+    let text = read();
+    assert!(!text.contains("person-draft"), "the draft never rode along: {text:?}");
+    assert_eq!(text.lines().next(), Some("held seat "), "the title leads the brief: {text:?}");
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(5), "the brief's ack", || {
+        feed_count(&h, "prompt_submitted", ticket) == 1
+    });
+    sleep_seat(&mut c, sid);
+
+    // A person's ask at the sleeping seat: the wake types nothing, so any
+    // text in its box is a draft.
+    let ask = |c: &mut TestClient, text: &str| match c.request(Command::PromptSession {
+        ticket,
+        text: text.into(),
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: Vec::new(),
+    }) {
+        Response::Spawned { id, .. } => assert_eq!(id, sid),
+        other => panic!("an ask at a sleeping claude wakes it: {other:?}"),
+    };
+    let _ = std::fs::remove_file(&got);
+    ask(&mut c, "mesimon-probe-987a the board's words");
+    draft(sid, "person-draft-A");
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    held(&mut c, 2);
+    assert!(read().is_empty(), "nothing typed under the draft: {:?}", read());
+    for _ in 0.."person-draft-A".len() {
+        keys(sid, &["BSpace"]);
+    }
+    wait_until(Duration::from_secs(15), "the words once the box is empty", || {
+        read().contains("mesimon-probe-987a")
+    });
+    assert_eq!(read(), "mesimon-probe-987a the board's words\n", "alone, once");
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(5), "the ask's ack", || {
+        feed_count(&h, "prompt_submitted", ticket) == 2
+    });
+    sleep_seat(&mut c, sid);
+
+    // The person sends the draft instead: their prompt goes alone and makes
+    // the board's words moot, as it makes unsent words moot (T-570), with
+    // no ack said for words that never went.
+    let _ = std::fs::remove_file(&got);
+    ask(&mut c, "mesimon-probe-987c the board's words");
+    draft(sid, "person-draft-C");
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    held(&mut c, 3);
+    keys(sid, &["Enter"]);
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"person-draft-C"}"#);
+    wait_until(Duration::from_secs(5), "the words dropped by the person's prompt", || {
+        feed_count(&h, "prompt_dropped_by_hand", ticket) == 1
+    });
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat");
+    assert!(!rec.pending_submit && rec.unsent.is_none(), "nothing owed: {:?}", rec.unsent);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(read(), "person-draft-C\n", "the person's prompt went alone");
+    assert_eq!(feed_count(&h, "prompt_submitted", ticket), 2, "no ack for words never sent");
+
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+}

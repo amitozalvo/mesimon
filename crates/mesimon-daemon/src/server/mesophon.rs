@@ -4447,6 +4447,16 @@ impl Daemon {
             self.control.remember(p.grant, p.command, Reply::delivery("submitted"));
         }
     }
+    /// The words a phone's delivery waited on never went in (T-987): a
+    /// person's own prompt went first from the box they waited on.
+    pub(super) fn control_unsent(&mut self, id: uuid::Uuid) {
+        if let Some(p) = self.control.pending.remove(&id) {
+            if let Some((grant, _, command)) = p.send_now_receipt {
+                self.control.remember(grant, command, Reply::delivery("rejected"));
+            }
+            self.control.remember(p.grant, p.command, Reply::delivery("rejected"));
+        }
+    }
     pub(super) fn control_cancel(&mut self, id: uuid::Uuid) {
         self.control_cancel_kept(id);
     }

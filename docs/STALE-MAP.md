@@ -35443,3 +35443,89 @@ pane's ask, and a wake's parked words. On main's daemon the test fails at `sent`
 - At 100x24 with three sessions, the description band and the prompt field open, the window is
   2 rows: one note and its cue. That is the page's geometry.
 - A wheel burst still re-points the zone once per notch, now each with its text.
+
+## A launch's words wait for a person's draft to leave the box (T-987, 2026-10-25, named by T-984's worker: "a launch's parked words are pasted into a composer that holds a person's typed draft, and one Enter sends both")
+
+**Measured first.** Two roads, each with a draft typed into the box after the composer painted and
+before the pane's `SessionStart` let the words go.
+- **Stub on the hook set.** The stub's cursor sat in its `❯ ` row, so keys typed into the pane
+  echoed there. A wake carrying a person's ask: the agent read one line, `person-draft-A
+  mesimon-probe-987a the board's words`. A composed spawn: the title, then the draft, then the
+  brief, in one prompt. In both, `pending_submit` was set, nothing was `unsent`, and the feed read
+  `prompt_submitted` with no other word.
+- **Claude Code 2.1.310 (Sonnet), one private tmux, the daemon's shape by hand** (`paste-buffer
+  -p`, then a separate Enter):
+  - A draft typed 1 s after the composer painted: the transcript's first prompt was
+    `person-draft-after reply with the single word ok, mesimon-probe-987-after board words`.
+  - A draft typed 0.5 s into startup: Claude Code dropped it, and only the board's words arrived.
+  - A title typed at the spawn, as the composed spawn types it: kept, and the box read `❯ held
+    seat`. On 60 columns a 120-character title wraps under a two-space indent.
+  - The empty box read `Empty` both fresh (the placeholder, cursor at the input's start) and on
+    `--continue`.
+
+**What shipped.**
+- **A box holding anything but the board's own text is no composer for launch words**
+  (`settle_owed`). The board's own text is the composed spawn's typed title (`Owed::typed`,
+  compared by `composer::holds_only` with whitespace ignored, since a wrap's join cannot say where
+  a space was).
+  - The words wait with no key, inside the composer's existing wait (`COMPOSER_WAIT_MS`, 30 s from
+    `SessionStart`), as they wait for a composer still painting. The feed says `composer_held` once
+    per hold.
+  - A box read empty after a hold releases the words only on the next sample that reads it so, a
+    cadence on (`Owed::released`). A person's Enter empties the box about 100 ms before its
+    `UserPromptSubmit`, so the words never go into the turn that Enter started.
+  - A draft that outlasts the wait leaves the words `unsent`, with `prompt_submit_not_ready`, as a
+    composer that never painted does. The card lights and the seat's resend has them.
+- **A person's prompt while the words are held is not their ack** (`ack_owed`). The prompt makes
+  them moot, as it makes unsent words moot (T-570) and drops a queued ask (2026-09-04). The feed
+  says `prompt_dropped_by_hand` ("a person's draft went first"), never `prompt_submitted`, and a
+  phone's pending delivery reads `rejected` (`control_unsent`).
+- **How this meets T-984 in `ack_owed`.** T-984 (rebased under this) drops any crown ask whose words
+  are still parked on a Claude seat when a person's prompt arrives, held or not: the ask reads
+  dropped by `person` ("a person's prompt arrived before these words were pasted") and the feed
+  says `crown_ask_dropped_by_hand`. The two are one `if / else if / else` chain, T-984's first:
+  - parked words carrying a crown ask take T-984's branch, whether or not a draft held them;
+  - held words with no crown ask (a brief, a person's ask on a wake, a phone's words) take this one;
+  - everything else takes the ordinary ack.
+
+  So one entry fires one of the two feed words, never both. A held crown ask is said by
+  `composer_held` while it waits and by `crown_ask_dropped_by_hand` when the person's prompt goes
+  first.
+- **Unchanged.**
+  - The crown's wake parked on a launch is still handed back on any painted box (T-936).
+  - A resend (`clear_first`: the seat's Shift+Enter, the brief of a seat that never took a prompt,
+    the restart's resend) is never held. Its one Ctrl+C owns the box, and a box still holding after
+    it is pasted into as before (`Owed::cleared` marks the press spent).
+  - The mod road's `submit` touches no box.
+  - Nothing an agent or the crown is told changed, and no Ctrl+C was added.
+
+**Tests.**
+- `prompt_e2e::a_launch_s_words_wait_for_a_person_s_draft`, on the hook set under both passes, with
+  a stub in canonical mode, so backspaces erase the draft from both the screen and the line it
+  reads:
+  - A composed spawn with a draft holds the brief (`composer_held` once, still owed, nothing
+    pasted). Once the draft is deleted, the brief goes under the title alone.
+  - A wake carrying an ask does the same, and the words arrive alone and once.
+  - A wake whose draft is sent first: the person's line alone, `prompt_dropped_by_hand` once,
+    nothing owed or unsent, and no second `prompt_submitted`.
+  - With the hold arm stubbed off it fails at the first hold, and with the ack branch stubbed off
+    it fails at the drop.
+- `spawn_ready_e2e::a_give_up_is_marked_and_the_resend_clears_the_box_once` (the T-566 pane, a box
+  holding stray text that never repaints). Its first half asserted the paste going under that
+  text, which is this ticket's defect. Now:
+  - the brief is held, then `unsent` at a 3 s composer wait, with no paste and no key;
+  - the resend's half is unchanged: one Ctrl+C, then the title and brief whole.
+- `composer::the_box_holds_only_the_typed_title` covers the 2.1.310 captures (the short title, the
+  wrapped one) and a title with a draft after it. The other composer tests are unchanged.
+- The rig's R7 (real Claude Code on the hook set, the crown's `start_agent`, the typed title and the
+  pasted brief) passed with no `composer_held`. That is the false-hold check on the real binary.
+  No rig case types a person's draft, since the rig drives a crown and cannot type into a worker's
+  pane mid-launch; the 2.1.310 measurement above stands in for it.
+
+**Not done (seen, not changed).**
+- A resend's one Ctrl+C clears whatever the box holds, a person's draft included. The resend is a
+  person's own Shift+Enter or a restart's resend of a brief.
+- A Codex pane's parked words (`drive_codex_inputs`) read no draft (T-958's Not done).
+- A person's prompt before an unheld launch's paste (a draft sent inside the composer's first
+  cadence) still acks the parked words as `prompt_submitted`, as before. Only a hold makes the board
+  know the box was the person's.

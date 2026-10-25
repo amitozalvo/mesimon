@@ -174,6 +174,29 @@ pub fn read(screen: &InputScreen) -> Composer {
     Composer::Absent
 }
 
+/// Whether the composer holds `words` and nothing else (T-987): the title
+/// the composed spawn typed, which the box shows trimmed and may wrap.
+/// Whitespace is ignored on both sides, as a wrap's join cannot say where
+/// a space was.
+pub fn holds_only(screen: &InputScreen, words: &str) -> bool {
+    if read(screen) != Composer::Holding {
+        return false;
+    }
+    let Some(top) = composer_top(&screen.lines) else { return false };
+    let row = top + 1;
+    let lines = &screen.lines;
+    let body = lines[row].trim_start();
+    let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
+        return false;
+    };
+    let Some(bottom) = lines[row + 1..].iter().position(|l| is_rule(l)) else { return false };
+    let held =
+        std::iter::once(rest).chain(lines[row + 1..row + 1 + bottom].iter().map(String::as_str));
+    let held: String = held.flat_map(str::chars).filter(|c| !c.is_whitespace()).collect();
+    let want: String = words.chars().filter(|c| !c.is_whitespace()).collect();
+    !want.is_empty() && held == want
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +336,32 @@ mod tests {
         // Hidden cursor, and a composer with no footer at all.
         let bare = format!("{RULE_ROW}\n❯ \n{RULE_ROW}");
         assert_eq!(read(&screen(&bare, None)), Composer::Empty);
+    }
+
+    /// T-987: the composed spawn's title is the board's own; the title with
+    /// a person's draft after it, a draft alone, or no text is not. Measured
+    /// on 2.1.310: the box shows the typed `held seat ` trimmed, cursor after.
+    #[test]
+    fn the_box_holds_only_the_typed_title() {
+        let title = screen(&composer("held seat", &[]), Some((11, 5)));
+        assert!(holds_only(&title, "held seat "));
+        // A long title typed at spawn, wrapped by 2.1.310 on 60 columns.
+        let long = "Measure: a launch's parked words are pasted into a composer that holds a \
+                    person's typed draft, and one Enter sends both";
+        let rule = "─".repeat(60);
+        let wrapped = format!(
+            "                                        ◐ medium · /effort\n{rule}\n\
+             ❯ Measure: a launch's parked words are pasted into a\n\
+             \x20 composer that holds a person's typed draft, and one\n\
+             \x20 Enter sends both\n{rule}\n  ⏵⏵ auto mode on (shift+tab to cycle)"
+        );
+        assert!(holds_only(&screen(&wrapped, Some((18, 3))), long));
+        assert!(!holds_only(&screen(&wrapped, Some((18, 3))), "Measure: a launch's"));
+        let draft = screen(&composer("held seat and a person's words", &[]), Some((32, 5)));
+        assert!(!holds_only(&draft, "held seat"));
+        assert!(!holds_only(&screen(&composer("person", &[]), Some((8, 5))), "held seat"));
+        assert!(!holds_only(&screen(&composer("", &[]), Some((2, 5))), "held seat"));
+        assert!(!holds_only(&screen("no composer here", None), "no composer here"));
     }
 
     #[test]

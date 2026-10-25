@@ -2374,6 +2374,20 @@ struct Owed {
     /// one is never kept unsent: nothing says whether the box took it, and
     /// the person's own screen does.
     screen_acked: bool,
+    /// What the board typed into the box ahead of these words: the composed
+    /// spawn's title (T-987). A box holding exactly that is the board's own;
+    /// a box holding anything else is a person's draft.
+    typed: Option<String>,
+    /// The words wait for a person's draft to leave the box (T-987), and
+    /// the feed has said so once (`composer_held`).
+    held: bool,
+    /// A held box read empty once: the words go on the next sample that
+    /// reads it so, a cadence on, which leaves the person's Enter time for
+    /// its `UserPromptSubmit` (`ack_owed` drops the words then).
+    released: bool,
+    /// The resend's one Ctrl+C is spent (`clear_first`). A resend's box is
+    /// its own to clear and is never held for a draft.
+    cleared: bool,
 }
 
 /// Claude Code's refusal of a plugin's input after a person's Esc (T-894,
@@ -2427,6 +2441,10 @@ impl Owed {
             screen_after: now_ms(),
             sent_at: None,
             screen_acked: false,
+            typed: None,
+            held: false,
+            released: false,
+            cleared: false,
         }
     }
 
@@ -2453,6 +2471,10 @@ impl Owed {
             screen_after: now,
             sent_at: Some(now),
             screen_acked: false,
+            typed: None,
+            held: false,
+            released: false,
+            cleared: false,
         }
     }
 
@@ -6455,6 +6477,12 @@ impl Daemon {
         // Words a launch could not deliver (T-570) are moot once the agent
         // takes a prompt, whoever typed it.
         let mut changed = !command && rec.unsent.take().is_some();
+        // A launch's words held for a person's draft (T-987) that are not a
+        // crown ask's (those took the branch above): the person's own prompt
+        // went first from the box they waited on, so it is not their ack. It
+        // makes them moot, as it makes unsent ones moot above, and nothing
+        // says they went. One entry takes one of these branches, never two.
+        let held = self.owed.get(&id).is_some_and(|o| o.held && o.parked.is_some());
         if let Some(ask) = ahead {
             self.drop_owed(id);
             self.crown_ask_dropped(ticket, Some(ask), "person", PROMPT_AHEAD_OF_ASK);
@@ -6466,6 +6494,16 @@ impl Daemon {
                 Some(ask),
                 &[],
             );
+            changed = true;
+        } else if held {
+            self.drop_owed(id);
+            self.feed.board_outcome(
+                "local",
+                "prompt_dropped_by_hand",
+                Some(ticket),
+                "a person's draft went first",
+            );
+            self.control_unsent(id);
             changed = true;
         } else if let Some(owed) = self.drop_owed(id) {
             // A Codex crown's turn began while its wake was owed (T-918).
@@ -6869,8 +6907,12 @@ impl Daemon {
                 // clear — is not this box yet, and reads as no composer.
                 self.pane_due.screen(&sid16);
                 let Some(after) = self.owed.get(&id).map(|o| o.screen_after) else { continue };
-                let composer =
-                    self.screen_since(&sid16, after).map_or(Composer::Absent, composer::read);
+                let screen = self.screen_since(&sid16, after);
+                let composer = screen.map_or(Composer::Absent, composer::read);
+                // The composed spawn's box holds the title it typed; a box
+                // holding anything else holds a person's draft (T-987).
+                let typed = self.owed.get(&id).and_then(|o| o.typed.as_deref());
+                let ours = typed.zip(screen).is_some_and(|(t, s)| composer::holds_only(s, t));
                 // A crown wake parked on this launch (T-936) is never pasted
                 // from here: this screen may be older than a person's draft.
                 // Once the pane draws a box, the wake goes back to owed, and
@@ -6888,8 +6930,13 @@ impl Daemon {
                 }
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
                 let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
+                // A box holding anything but the board's own text holds a
+                // person's draft (T-987), and is no composer for the words:
+                // pasted under it, they are one prompt with it at the next
+                // Enter. A person at the pane owns the box (T-958).
+                let draft = composer == Composer::Holding && !ours && !owed.clear_first;
                 match composer {
-                    Composer::Absent if ready_by <= now => {
+                    _ if ready_by <= now && (draft || composer == Composer::Absent) => {
                         let words = owed.parked.take();
                         let wake = owed.ack.word == Ack::CROWN_WAKE.word;
                         self.drop_owed(id);
@@ -6911,10 +6958,38 @@ impl Daemon {
                     // for the cleared box, and a box that still reads as
                     // holding then is pasted into as it is — never a second
                     // press, which exits Claude.
-                    Composer::Holding if owed.clear_first => {
-                        owed.clear_first = false;
+                    Composer::Holding if owed.clear_first && !owed.cleared => {
+                        owed.cleared = true;
                         let _ = self.backend.clear_input(&sid16);
                         owed.screen_after = now;
+                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                        continue;
+                    }
+                    // The words wait, with no key, for the box to read
+                    // empty inside the composer's wait, as for a composer
+                    // not yet painted: the draft deleted, or sent first
+                    // (`ack_owed` drops them then). The feed says so once.
+                    Composer::Holding if draft => {
+                        owed.released = false;
+                        if !owed.held {
+                            owed.held = true;
+                            self.feed.board_outcome(
+                                "daemon",
+                                "composer_held",
+                                Some(ticket),
+                                "a person's draft",
+                            );
+                        }
+                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                        continue;
+                    }
+                    // Emptied: the words go on the next sample that reads it
+                    // so, a cadence on, past a person's Enter and its
+                    // `UserPromptSubmit`; the box is up, so its wait renews.
+                    Composer::Empty if owed.held && !owed.released => {
+                        owed.released = true;
+                        owed.screen_after = now;
+                        owed.ready_by = Some(now + composer_wait_ms());
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
@@ -17210,6 +17285,10 @@ impl Daemon {
                             Ack::PROMPT,
                         );
                         owed.mod_road = by_mod;
+                        // The title in the box is the board's own (T-987).
+                        if kind == SessionKind::Claude && !by_mod {
+                            owed.typed = Some(title.to_string());
+                        }
                         self.owed.insert(id, owed);
                     }
                 }
