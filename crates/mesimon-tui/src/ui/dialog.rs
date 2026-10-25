@@ -106,11 +106,11 @@ pub(super) fn title(ink: &Ramp, text: impl Into<String>) -> Vec<Span<'static>> {
 
 /// The dialog's own keys for its bottom edge — the left cluster of its
 /// scope's footer (the app-level keys stay in the footer under it, which is
-/// where `? keys` lives).
+/// where `? keys` lives), its own before the inherited ones where not all
+/// fit (`keymap::frame_keys`, T-1012).
 pub(super) fn keys(app: &App, scope: Scope, ink: &Ramp, budget: usize) -> Vec<Span<'static>> {
     let ctx = app.frame_ctx();
-    let (own, _) = keymap::footer_split(scope, &ctx);
-    chrome::hint_spans(&own, &ctx, ink, budget)
+    chrome::hint_spans(&keymap::frame_keys(scope, &ctx, budget), &ctx, ink, budget)
 }
 
 /// Clears `area`, paints it `surface` (the page ground when `None`), draws

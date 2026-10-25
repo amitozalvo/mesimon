@@ -8503,6 +8503,32 @@ pub fn footer_split(scope: Scope, ctx: &Ctx) -> (Vec<&'static Binding>, Vec<&'st
     footer_items(scope, ctx).into_iter().partition(|b| b.group != Group::App)
 }
 
+/// A dialog frame's keys, fitted to `budget` cells: the left cluster, the
+/// scope's own keys kept first and the ones it inherits from a parent in the
+/// room left, and what is kept in priority order (T-1012: an inherited
+/// `u undo archive` once pushed the tier page's `i type a name` off its
+/// edge). When all fit, this is the left cluster as it is.
+pub fn frame_keys(scope: Scope, ctx: &Ctx, budget: usize) -> Vec<&'static Binding> {
+    let (all, _) = footer_split(scope, ctx);
+    let mine = |b: &Binding| bindings(scope).iter().any(|x| std::ptr::eq(x, b));
+    let width = |b: &Binding| b.show.chars().count() + 1 + (b.hint)(ctx).chars().count();
+    let mut keep = vec![false; all.len()];
+    let mut used = 0usize;
+    for own in [true, false] {
+        for (i, b) in all.iter().enumerate() {
+            if mine(b) != own {
+                continue;
+            }
+            let add = if used == 0 { width(b) } else { width(b) + 3 };
+            if used + add <= budget {
+                used += add;
+                keep[i] = true;
+            }
+        }
+    }
+    all.into_iter().zip(keep).filter_map(|(b, k)| k.then_some(b)).collect()
+}
+
 /// The footer line for this scope and state, filled to `width`: the left
 /// cluster in priority order, skipping what does not fit, then the right
 /// cluster. `? keys` closes the line wherever `?` resolves — and only there:
@@ -10721,6 +10747,35 @@ mod tests {
         // And it says which thing it would undo.
         let arch = Ctx { can_undo: true, undo_word: "undo archive", ..Default::default() };
         assert_eq!(hint_for(Scope::Board, Verb::Undo, &arch), Some(("u", "undo archive")));
+    }
+
+    /// T-1012: a dialog's frame keeps its own keys before inherited ones. The
+    /// tier page's Model row, 60 cells, with Global's `u undo archive` (prio
+    /// 15) offered: by prio alone it took `i type a name`'s place and
+    /// `esc back`'s; kept own-first, `u` is the one left out, and what is
+    /// kept stays in prio order.
+    #[test]
+    fn frame_keys_keep_a_dialogs_own_keys_before_inherited_ones() {
+        let ctx = Ctx {
+            can_undo: true,
+            undo_word: "undo archive",
+            tier_on_step: true,
+            tier_on_model: true,
+            tier_edit_enter_word: "next",
+            ..Default::default()
+        };
+        let words = |bs: Vec<&Binding>| bs.iter().map(|b| b.show).collect::<Vec<_>>();
+        let (by_prio, _) = footer_split(Scope::TierEdit, &ctx);
+        assert_eq!(words(by_prio), ["jk", "h l", "u", "enter", "i", "esc"]);
+        assert_eq!(
+            words(frame_keys(Scope::TierEdit, &ctx, 60)),
+            ["jk", "h l", "enter", "i", "esc"]
+        );
+        // With room for all, nothing moves.
+        assert_eq!(
+            words(frame_keys(Scope::TierEdit, &ctx, 200)),
+            ["jk", "h l", "u", "enter", "i", "esc"]
+        );
     }
 
     /// A ticket's own shell is behind a gate (T-300, user: "keep the feature

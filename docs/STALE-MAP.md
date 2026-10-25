@@ -36724,3 +36724,27 @@ here (`a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`), is T-997'
 ## T-1011 — `u undo` stays out of settings dialogs
 
 `u` is a Global binding, so every dialog scope inherited it and its hint (`u undo archive` in the tier dialog) while the key undid a ticket the dialog is not about. `App::ctx()` now clears `can_undo` while the scope is a settings-style dialog (Settings, Sections, Usage, Prompts, Sharing, Tiers, TierEdit, Boards, Brief, Links, Theme, ColumnSettings, Summary, Transcript, PullRequests, Tour): the key is inert and unhinted there, by the one predicate that gates both. Board, ticket, diff, drawer, archived list, menu and releases keep it. No golden changed.
+
+## A dialog's frame keeps its own keys before the ones it inherits (T-1012, 2026-10-25, the person: "tiers missing custom model name")
+
+- **What was wrong:** the tier page's frame held one row of hints, 60 cells in a 66-wide dialog
+  at any terminal size. A pending archive undo put `u undo archive` (`Scope::Global`, prio 15)
+  into every frame whose chain reaches Global. `footer_items` sorts the whole chain by prio
+  alone, so on the Model row `u` came ahead of `enter next` (20) and `i type a name` (25). `i`
+  and `esc back` were then the hints that did not fit:
+  `╰─── jk select ∙ h l step ∙ u undo archive ∙ enter next ─╯`. The ring and the saved word were
+  never wrong. A typed name, an older saved name and `gpt-6-astra` were each checked live on
+  the branch's binary with this machine's own lists, and each was kept, drawn and cycled.
+- **The fix:** `ui::dialog::keys` keeps the scope's own keys first, then the inherited ones in
+  the room left, and draws what it kept in prio order. When everything fits, nothing moves: no
+  existing golden changed. The fix covers every framed dialog, not only the tier page.
+  T-1011, merged first, took `u` out of the settings dialogs, so the tier page no longer shows
+  the overflow. The rule still holds for the dialogs that keep `u`: the menu, the drawer and the
+  archived list. The selection is `keymap::frame_keys`, which `dialog::keys` draws.
+- **Tests:** `frame_keys_keep_a_dialogs_own_keys_before_inherited_ones` in core builds the
+  overflow from a bare `Ctx`. The golden `tier_edit_model_undo_187x53`, at the person's terminal
+  size (read off the TUI's tty), pins `i type a name` on the Model row with an archive pending.
+- **Not changed:** the TIERS list row pads the name to `tier::NAME_MAX` (16), so a long model
+  clips the row's tail: `coder             Claude Code ∙ claude-sonnet-4-6 ∙ high ∙ ~`, which
+  cuts the `default` mark. Padding to the longest name in the list is a visual change for its
+  own ticket.

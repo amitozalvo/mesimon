@@ -11882,7 +11882,7 @@ fn tier_model_row_keeps_its_i_hint_with_an_archive_to_undo() {
     app.seed_archive_undo(ulid::Ulid(9999));
     app.mode = Mode::TierEdit { id: "01BARE".into(), idx: 2, field: None, armed: false };
     assert!(app.ctx().tier_on_model && !app.ctx().can_undo);
-    let rows = render(&mut app, 120, 30);
+    let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("enter next ∙ i type a name ∙ esc back")), "{rows:?}");
     assert!(!rows.iter().any(|r| r.contains("undo")), "{rows:?}");
 }
@@ -11931,6 +11931,22 @@ fn golden_tier_model_ring() {
     assert!(!rows.iter().any(|r| r.contains("enter next")), "a ring of one: {rows:?}");
     has(&rows, "i type a name");
     golden("tier_edit_model_codex_none_120x30", &rows);
+}
+
+/// T-1012: the tier page's Model row wears `i type a name` with an archive
+/// to undo, at the person's 187×53. The archive once put `u undo archive`
+/// into this frame ahead of `i` (T-1011 took it out of settings dialogs;
+/// `keymap::frame_keys` keeps a dialog's own keys first wherever it is not).
+#[test]
+fn golden_tier_model_row_keeps_its_i_hint_at_the_persons_size() {
+    let mut app = tier_app();
+    app.seed_archive_undo(ulid_n(99));
+    assert!(app.ctx().can_undo, "an archive to undo on the board");
+    app.mode = Mode::TierEdit { id: "01CODER".into(), idx: 2, field: None, armed: false };
+    let rows = render(&app, 187, 53);
+    let edge = rows.iter().find(|r| r.contains("╰─")).expect("the frame's bottom edge");
+    assert!(edge.contains("enter next ∙ i type a name ∙ esc back"), "{edge}");
+    golden("tier_edit_model_undo_187x53", &rows);
 }
 
 /// The tiers list in both scopes — the machine's own, then this board's
