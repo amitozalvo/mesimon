@@ -28,7 +28,7 @@ spec.loader.exec_module(runner)
 class RoadPassTests(unittest.TestCase):
     def test_a_full_workspace_suite_is_followed_by_the_mod_road(self):
         self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], None),
-                         ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)"])
+                         ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)"])
         self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], 4)[-2:],
                          ["--test-threads", "4"])
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace"], None),
@@ -36,7 +36,7 @@ class RoadPassTests(unittest.TestCase):
 
     def test_no_fail_fast_reaches_the_mod_road(self):
         self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace", "--no-fail-fast"], None),
-                         ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)", "--no-fail-fast"])
+                         ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)", "--no-fail-fast"])
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--no-fail-fast"], None),
                          ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"])
         # Past `--` it is the test binary's word, not the suite's.

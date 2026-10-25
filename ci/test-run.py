@@ -291,7 +291,10 @@ def road_pass(command, jobs):
     if command[:1] != ["cargo"] or "--workspace" not in command:
         return None
     if command[1:3] == ["nextest", "run"]:
-        mod = ["cargo", "nextest", "run", "-p", "mesimon", "-E", "kind(test)"]
+        # The whole workspace, filtered, rather than `-p mesimon`: one
+        # package alone unifies features differently and relinks for a
+        # minute on a runner what the first pass just built (T-1023).
+        mod = ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)"]
         if jobs:
             mod += ["--test-threads", str(jobs)]
     elif command[1:2] == ["test"]:
