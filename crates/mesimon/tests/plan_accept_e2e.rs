@@ -508,6 +508,83 @@ impl Bed {
             .await_state(self.sid, "dialog up", |s| *s == SessionState::RequiresAction { reason });
     }
 
+    /// A one-question `AskUserQuestion` input asking `q`.
+    fn ask(q: &str) -> serde_json::Value {
+        serde_json::json!({"questions": [{"question": q, "header": "Which",
+            "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}],
+            "multiSelect": false}]})
+    }
+
+    /// A hook body for `tool`'s call, naming `id` when given.
+    fn frame(tool: &str, id: Option<&str>, input: &serde_json::Value) -> String {
+        let mut f = serde_json::json!({"tool_name": tool, "tool_input": input});
+        if let Some(id) = id {
+            f["tool_use_id"] = serde_json::json!(id);
+        }
+        f.to_string()
+    }
+
+    /// A call's line as the engine writes it, under its message's `id`.
+    fn line(message: &str, tool: &str, id: &str, input: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"uuid": format!("c-{id}"), "type": "assistant", "message": {
+            "id": message, "content": [{"type": "tool_use", "id": id, "name": tool,
+                "input": input}]}})
+    }
+
+    /// The interrupt record an Esc writes.
+    fn esc() -> serde_json::Value {
+        serde_json::json!({"uuid": "esc", "type": "user", "timestamp": now_iso(),
+            "message": {"content": [{"type": "text",
+                "text": "[Request interrupted by user for tool use]"}]}})
+    }
+
+    /// The call the record is held on, as persisted.
+    fn held_call(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.h.paths.sessions_file()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        v["sessions"].as_array()?.iter().find(|s| s["id"] == self.sid.to_string())?["dialog_call"]
+            .as_str()
+            .map(String::from)
+    }
+
+    /// Two questions in one message (T-988), `toolu_a` "Which colour?" and
+    /// `toolu_b` "Which size?" under `msg_1`, their lines written first.
+    /// `reversed`: B's `PreToolUse` is heard first, so A is held. Returns
+    /// once the seat is on the questions, the expected call is held and both
+    /// requests are decided.
+    fn two_questions(&mut self, reversed: bool) {
+        let (qa, qb) = (Self::ask("Which colour?"), Self::ask("Which size?"));
+        self.append_all(&[
+            Self::line("msg_1", "AskUserQuestion", "toolu_a", &qa),
+            Self::line("msg_1", "AskUserQuestion", "toolu_b", &qb),
+        ]);
+        self.two_questions_heard(reversed);
+    }
+
+    /// `two_questions`' hooks alone, the lines left to the caller.
+    fn two_questions_heard(&mut self, reversed: bool) {
+        let (qa, qb) = (Self::ask("Which colour?"), Self::ask("Which size?"));
+        let (a, b) = (
+            Self::frame("AskUserQuestion", Some("toolu_a"), &qa),
+            Self::frame("AskUserQuestion", Some("toolu_b"), &qb),
+        );
+        let decided =
+            self.decisions().iter().filter(|d| d["source"] == "PermissionRequest").count();
+        let (first, second) = if reversed { (&b, &a) } else { (&a, &b) };
+        self.hook("PreToolUse", first);
+        self.hook("PreToolUse", second);
+        self.hook("PermissionRequest", &Self::frame("AskUserQuestion", None, &qa));
+        self.hook("PermissionRequest", &Self::frame("AskUserQuestion", None, &qb));
+        let question = SessionState::RequiresAction { reason: Reason::Question };
+        self.c.await_state(self.sid, "on the questions", |s| *s == question);
+        let held = if reversed { "toolu_a" } else { "toolu_b" };
+        wait_until(Duration::from_secs(10), "the held call named, both requests decided", || {
+            self.held_call().as_deref() == Some(held)
+                && self.decisions().iter().filter(|d| d["source"] == "PermissionRequest").count()
+                    >= decided + 2
+        });
+    }
+
     fn result(&self, id: &str, error: bool, text: &str) {
         self.append(Self::result_of(id, error, text));
     }
@@ -1385,6 +1462,49 @@ fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
         };
         assert!(needs.is_none(), "no dialog stands (restart: {restart}): {needs:?}");
     }
+
+    // ---- T-988: B too big to draw is A's sibling, its hook heard first ----
+    // A's answer holds the seat on B, B's own fence restored with it though
+    // B never projects: B's Esc ends it, not read as an earlier turn's.
+    let Some(mut b) = Bed::boot("planbigsibling") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    let small = Bed::input("AskUserQuestion");
+    let big = serde_json::json!({"questions": [{"question": "Which?", "header": "Which",
+        "options": [{"label": "A", "description": "x".repeat(17 * 1024)},
+            {"label": "B", "description": ""}], "multiSelect": false}]});
+    b.append_all(&[("toolu_a", &small), ("toolu_b", &big)].map(|(id, input)| {
+        serde_json::json!({"uuid": format!("c-{id}"), "type": "assistant", "message": {
+            "id": "msg_1", "content": [{"type": "tool_use", "id": id,
+                "name": "AskUserQuestion", "input": input}]}})
+    }));
+    let frame = |id: Option<&str>, input: &serde_json::Value| {
+        let mut f = serde_json::json!({"tool_name": "AskUserQuestion", "tool_input": input});
+        if let Some(id) = id {
+            f["tool_use_id"] = serde_json::json!(id);
+        }
+        f.to_string()
+    };
+    b.hook("PreToolUse", &frame(Some("toolu_b"), &big));
+    b.hook("PreToolUse", &frame(Some("toolu_a"), &small));
+    b.hook("PermissionRequest", &frame(None, &small));
+    b.hook("PermissionRequest", &frame(None, &big));
+    b.c.await_state(b.sid, "on the question", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Question }
+    });
+    b.hook("PostToolUse", &frame(Some("toolu_a"), &small));
+    b.result("toolu_a", false, "Your questions have been answered.");
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(
+        b.state(),
+        Some(SessionState::RequiresAction { reason: Reason::Question }),
+        "B stands"
+    );
+    b.result("toolu_b", true, STOP);
+    b.append(serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+        "message": {"content": [{"type": "text",
+            "text": "[Request interrupted by user for tool use]"}]}}));
+    b.c.await_state(b.sid, "off the question B's own Esc ended", |s| *s == interrupted);
 }
 
 /// T-957 round 11: an id-less `PermissionRequest` names a call only as a
@@ -1745,4 +1865,357 @@ fn an_esc_inside_an_accept_s_settle_rests_interrupted() {
         }
     }
     assert!(met, "no read of the Esc landed inside the accept's settle in eight tries");
+}
+
+/// T-988: two plans or two questions in one message, measured on Claude
+/// Code 2.1.310 with a real Sonnet on both roads: the dialogs are drawn one
+/// after the other, and A's answer moved the seat to `Running` while B stood
+/// 6 to 8 s. Questions go `PreToolUse(A) PreToolUse(B) PermissionRequest(A)
+/// PermissionRequest(B)` (distinct inputs, so A's id-less request is the
+/// earlier call's, not a replacement); plans go `PreToolUse(A)
+/// PermissionRequest(A) PreToolUse(B) PermissionRequest(B)` (one plan file,
+/// so the same input for both), the two calls' lines under one message id.
+/// Each hook is a process of its own, and live
+/// B's `PreToolUse` once arrived before A's. Each `PostToolUse` names its
+/// call. A's answer, with its result on the transcript, leaves the seat on
+/// B's dialog past the settle, in either arrival order; B's answer leaves it.
+#[test]
+fn two_dialogs_in_one_message_hold_the_seat_until_the_second_is_answered() {
+    let ask = |q: &str| {
+        serde_json::json!({"questions": [{"question": q, "header": "Which",
+            "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}],
+            "multiSelect": false}]})
+    };
+    let held_call = |b: &Bed| -> Option<String> {
+        let text = std::fs::read_to_string(b.h.paths.sessions_file()).unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        v["sessions"].as_array()?.iter().find(|s| s["id"] == b.sid.to_string())?["dialog_call"]
+            .as_str()
+            .map(String::from)
+    };
+    let needs = |b: &mut Bed| match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you.and_then(|n| n.request),
+        other => panic!("get_ticket: {other:?}"),
+    };
+    // Each case's hooks in the order the daemon hears them: (event, call).
+    let asks =
+        [("PreToolUse", 0), ("PreToolUse", 1), ("PermissionRequest", 0), ("PermissionRequest", 1)];
+    // Each hook is a process of its own: live, B's `PreToolUse` arrived 14 ms
+    // before A's.
+    let reordered =
+        [("PreToolUse", 1), ("PreToolUse", 0), ("PermissionRequest", 0), ("PermissionRequest", 1)];
+    let plans =
+        [("PreToolUse", 0), ("PermissionRequest", 0), ("PreToolUse", 1), ("PermissionRequest", 1)];
+    let cases = [
+        (
+            "twoasks",
+            "AskUserQuestion",
+            Reason::Question,
+            [ask("Which colour?"), ask("Which size?")],
+            asks,
+        ),
+        (
+            "twoasksreordered",
+            "AskUserQuestion",
+            Reason::Question,
+            [ask("Which colour?"), ask("Which size?")],
+            reordered,
+        ),
+        (
+            "twoplans",
+            "ExitPlanMode",
+            Reason::Plan,
+            [Bed::input("ExitPlanMode"), Bed::input("ExitPlanMode")],
+            plans,
+        ),
+    ];
+    for (name, tool, reason, inputs, order) in cases {
+        let Some(mut b) = Bed::boot(name) else { return };
+        b.start();
+        // A tail read while running mints the cursor, so results are read live.
+        std::thread::sleep(Duration::from_millis(2500));
+        let held = SessionState::RequiresAction { reason };
+        let ids = ["toolu_a", "toolu_b"];
+        let frame = |id: Option<&str>, input: &serde_json::Value| {
+            let mut f = serde_json::json!({"tool_name": tool, "tool_input": input});
+            if let Some(id) = id {
+                f["tool_use_id"] = serde_json::json!(id);
+            }
+            f.to_string()
+        };
+        b.append_all(&[0, 1].map(|n| {
+            serde_json::json!({"uuid": format!("c-{}", ids[n]), "type": "assistant",
+                "message": {"id": "msg_1", "content": [{"type": "tool_use", "id": ids[n],
+                    "name": tool, "input": inputs[n]}]}})
+        }));
+        for (event, n) in order {
+            let named = (event == "PreToolUse").then_some(ids[n]);
+            b.hook(event, &frame(named, &inputs[n]));
+        }
+        b.c.await_state(b.sid, "on the first dialog", |s| *s == held);
+        wait_until(Duration::from_secs(10), "both requests decided", || {
+            b.decisions().iter().filter(|d| d["source"] == "PermissionRequest").count() >= 2
+        });
+        let last_named = order.iter().rev().find(|(e, _)| *e == "PreToolUse").map(|(_, n)| ids[*n]);
+        assert_eq!(held_call(&b).as_deref(), last_named, "{name}: the last named call is held");
+
+        // ---- A answered: B is still to be answered --------------------------
+        b.hook("PostToolUse", &frame(Some("toolu_a"), &inputs[0]));
+        b.result("toolu_a", false, "User has answered.");
+        // Past the settle and two tail reads.
+        std::thread::sleep(Duration::from_millis(3500));
+        assert_eq!(
+            b.state(),
+            Some(held.clone()),
+            "{name}: B stands: {:?}",
+            b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+        );
+        assert_eq!(held_call(&b).as_deref(), Some("toolu_b"), "{name}: still held on B");
+        assert_eq!(needs(&mut b).as_deref(), Some("toolu_b"), "{name}: get_ticket names B");
+
+        // ---- B answered: the seat leaves ------------------------------------
+        b.hook("PostToolUse", &frame(Some("toolu_b"), &inputs[1]));
+        b.result("toolu_b", false, "User has answered.");
+        b.c.await_state(b.sid, "running on B's answer", |s| *s == SessionState::Running);
+        assert!(needs(&mut b).is_none(), "{name}: no dialog stands");
+    }
+}
+
+/// T-988 round 1 (T-996's cold read): a sibling is a call of the held
+/// call's message with no result on the transcript, and only that. Live on
+/// 2.1.310, an Esc on two questions or a "No" on two plans writes both
+/// refusals in one millisecond, in call order, then the interrupt; "Chat
+/// about this" on A writes A's refusal alone and B stays drawn, answerable.
+/// - **Chat about A** (no hook): B answered leaves the seat, never held back
+///   on the refused A.
+/// - **Esc on both**, in either result order (the hook set wrote A's first,
+///   the mod road B's first, 33 ms before the interrupt): the held call's
+///   end and its interrupt take the seat out, the other refusal read as the
+///   sibling's, never as a word that takes the interrupt from it.
+/// - **A's result read by the tail before A's `PostToolUse`** (A held): the
+///   answer re-points to B and re-affirms it, so the leave A's end set
+///   settling does not commit.
+/// - **A late answer of an earlier message** moves nothing.
+#[test]
+fn a_sibling_is_an_unanswered_call_of_the_held_call_s_message() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let question = SessionState::RequiresAction { reason: Reason::Question };
+    let (qa, qb) = (Bed::ask("Which colour?"), Bed::ask("Which size?"));
+    let (frame, line, esc) = (Bed::frame, Bed::line, Bed::esc);
+    let two = |name: &str, reversed: bool| -> Option<Bed> {
+        let mut b = Bed::boot(name)?;
+        b.start();
+        std::thread::sleep(Duration::from_millis(2500));
+        b.two_questions(reversed);
+        Some(b)
+    };
+
+    // ---- chat about A: A refused on the transcript, no hook; B answered ---
+    let Some(mut b) = two("sibchat", false) else { return };
+    b.result("toolu_a", true, "The user doesn't want to proceed with this tool use.");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(b.state(), Some(question.clone()), "B stands after A's refusal");
+    b.hook("PostToolUse", &frame("AskUserQuestion", Some("toolu_b"), &qb));
+    b.result("toolu_b", false, "Your questions have been answered.");
+    b.c.await_state(b.sid, "running on B's answer, not held on A", |s| *s == SessionState::Running);
+
+    // ---- Esc on both, A held: one write, A's end and its interrupt --------
+    let Some(mut b) = two("sibesc", true) else { return };
+    b.append_all(&[
+        Bed::result_of("toolu_a", true, STOP),
+        Bed::result_of("toolu_b", true, STOP),
+        esc(),
+    ]);
+    b.c.await_state(b.sid, "interrupted by the held call's Esc", |s| *s == interrupted);
+
+    // ---- Esc on both, B held, B's refusal written first (the mod road's
+    // order, live): A's refusal between B's end and the interrupt is the
+    // sibling's, and the interrupt is B's.
+    let Some(mut b) = two("sibescrev", false) else { return };
+    b.append_all(&[
+        Bed::result_of("toolu_b", true, STOP),
+        Bed::result_of("toolu_a", true, STOP),
+        esc(),
+    ]);
+    b.c.await_state(b.sid, "interrupted by the held call's Esc", |s| *s == interrupted);
+
+    // ---- A's result read before A's hook, A held: the seat stays on B -----
+    let Some(mut b) = two("sibtailfirst", true) else { return };
+    let before = b.departures().len();
+    b.result("toolu_a", false, "Your questions have been answered.");
+    wait_until(Duration::from_secs(10), "the tail read A's end", || b.departures().len() > before);
+    b.hook("PostToolUse", &frame("AskUserQuestion", Some("toolu_a"), &qa));
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(
+        b.state(),
+        Some(question.clone()),
+        "B stands: {:?}",
+        b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+    );
+    b.hook("PostToolUse", &frame("AskUserQuestion", Some("toolu_b"), &qb));
+    b.result("toolu_b", false, "Your questions have been answered.");
+    b.c.await_state(b.sid, "running on B's answer", |s| *s == SessionState::Running);
+
+    // ---- a late answer of an earlier message moves nothing ----------------
+    // Plans w1 and y1 in one message, both accepted on the transcript; the
+    // next message's plan w2 is held when w1's `PostToolUse` arrives. The
+    // seat is not moved to y1, w1's sibling, and w2's own answer leaves it.
+    let Some(mut b) = Bed::boot("sibolder") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    let plan = Bed::input("ExitPlanMode");
+    let planned = SessionState::RequiresAction { reason: Reason::Plan };
+    b.append_all(&[
+        line("msg_1", "ExitPlanMode", "toolu_w1", &plan),
+        line("msg_1", "ExitPlanMode", "toolu_y1", &plan),
+    ]);
+    b.hook("PreToolUse", &frame("ExitPlanMode", Some("toolu_w1"), &plan));
+    b.hook("PreToolUse", &frame("ExitPlanMode", Some("toolu_y1"), &plan));
+    b.c.await_state(b.sid, "on the plans", |s| *s == planned);
+    b.append_all(&[
+        Bed::result_of("toolu_w1", false, "User has approved your plan."),
+        Bed::result_of("toolu_y1", false, "User has approved your plan."),
+        line("msg_2", "ExitPlanMode", "toolu_w2", &plan),
+    ]);
+    b.hook("PreToolUse", &frame("ExitPlanMode", Some("toolu_w2"), &plan));
+    std::thread::sleep(Duration::from_millis(2500));
+    b.hook("PostToolUse", &frame("ExitPlanMode", Some("toolu_w1"), &plan));
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(
+        b.state(),
+        Some(planned.clone()),
+        "w2 stands: {:?}",
+        b.decisions().iter().rev().take(4).collect::<Vec<_>>()
+    );
+    b.hook("PostToolUse", &frame("ExitPlanMode", Some("toolu_w2"), &plan));
+    b.result("toolu_w2", false, "User has approved your plan.");
+    b.c.await_state(b.sid, "running on w2's answer", |s| *s == SessionState::Running);
+}
+
+/// T-988 round 2 (T-996's second read). Two questions in one message, B held.
+/// - **A `Stop` before A's late completion**, B still open on the transcript:
+///   the stated end wins, `Idle{EndTurn}`, and B is neither held again nor
+///   drawn.
+/// - **A cursor minted after both calls' lines**, before their refusals (the
+///   seat reached both dialogs before the first transcript poll): the
+///   measured mod order, B's refusal, A's, the interrupt, ends interrupted
+///   at High, A's refusal read as B's sibling's.
+/// - **A split read across a committed `Running`**: the held call's refusal
+///   in one read, its `Running` committed, then the sibling's refusal and
+///   the interrupt in the next: interrupted at High, unpinned and under the
+///   flap pin, with the hooks in order and reversed (round 3).
+#[test]
+fn a_stated_end_and_a_split_read_keep_the_held_call_s_end() {
+    const STOP: &str =
+        "The user doesn't want to proceed with this tool use. STOP what you are doing.";
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    let qa = Bed::ask("Which colour?");
+    let confidence = |b: &mut Bed| {
+        board_of(b.c.request(Command::Snapshot))
+            .sessions
+            .iter()
+            .find(|s| s.id == b.sid)
+            .map(|s| s.confidence)
+    };
+    let needs = |b: &mut Bed| match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you,
+        other => panic!("get_ticket: {other:?}"),
+    };
+
+    // ---- a Stop, then A's late completion with B open ---------------------
+    let Some(mut b) = Bed::boot("sibstop") else { return };
+    b.start();
+    std::thread::sleep(Duration::from_millis(2500));
+    b.two_questions(false);
+    // The tail's first look at the held dialogs (it re-reads an open call
+    // once a minute), so only the completion meets the Stop's settle.
+    std::thread::sleep(Duration::from_millis(2500));
+    b.hook("Stop", r#"{"stop_hook_active":false}"#);
+    b.hook("PostToolUse", &Bed::frame("AskUserQuestion", Some("toolu_a"), &qa));
+    b.c.await_state(b.sid, "the Stop's end", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+    });
+    std::thread::sleep(Duration::from_millis(2000));
+    assert_eq!(
+        b.state(),
+        Some(SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn })
+    );
+    assert!(needs(&mut b).is_none(), "B is not drawn again");
+    assert_eq!(b.held_call(), None);
+
+    // ---- a cursor minted after both calls' lines ---------------------------
+    let Some(mut b) = Bed::boot("sibminted") else { return };
+    b.start();
+    b.hook("Stop", r#"{"stop_hook_active":false}"#);
+    b.c.await_state(b.sid, "at rest", |s| matches!(s, SessionState::Idle { .. }));
+    // At rest: a tail read forgets the cursor.
+    std::thread::sleep(Duration::from_millis(2500));
+    let qb = Bed::ask("Which size?");
+    b.append_all(&[
+        serde_json::json!({"uuid": "p2", "type": "user", "message": {"content": "ask me"}}),
+        Bed::line("msg_1", "AskUserQuestion", "toolu_a", &qa),
+        Bed::line("msg_1", "AskUserQuestion", "toolu_b", &qb),
+    ]);
+    b.prompt();
+    b.two_questions_heard(false);
+    // A poll mints the cursor at the end of the file, after both lines.
+    std::thread::sleep(Duration::from_millis(2500));
+    b.append_all(&[
+        Bed::result_of("toolu_b", true, STOP),
+        Bed::result_of("toolu_a", true, STOP),
+        Bed::esc(),
+    ]);
+    b.c.await_state(b.sid, "interrupted by the held call's Esc", |s| *s == interrupted);
+    assert_eq!(confidence(&mut b), Some(mesimon_core::board::Confidence::High));
+
+    // ---- a split read across a committed Running, unpinned and pinned -----
+    // In order (B held, B's refusal first), and reversed (A's `PreToolUse`
+    // heard last, so A is held, and A's refusal first: B's, read after
+    // A's `Running` committed, is the sibling's whichever branch reads it).
+    for (pinned, reversed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (held, sibling) =
+            if reversed { ("toolu_a", "toolu_b") } else { ("toolu_b", "toolu_a") };
+        let name = format!("sibsplit{}{}", u8::from(pinned), u8::from(reversed));
+        let Some(mut b) = Bed::boot(&name) else { return };
+        b.start();
+        if pinned {
+            // More than four committed changes in 20 s arm the pin.
+            for _ in 0..3 {
+                b.hook("Stop", r#"{"stop_hook_active":false}"#);
+                b.c.await_state(b.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+                b.prompt();
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(2500));
+        }
+        b.two_questions(reversed);
+        b.result(held, true, STOP);
+        b.c.await_state(b.sid, "running on the held call's refusal", |s| {
+            *s == SessionState::Running
+        });
+        let armed =
+            b.decisions().iter().rev().find(|d| d["source"] == "dialog_result").is_some_and(|d| {
+                d["decision"]["after"]["pinned_until"]
+                    .as_u64()
+                    .is_some_and(|until| until > d["at_ms"].as_u64().unwrap())
+            });
+        assert_eq!(armed, pinned, "the pin as this case wants it");
+        b.append_all(&[Bed::result_of(sibling, true, STOP), Bed::esc()]);
+        b.c.await_state(b.sid, "interrupted by the held call's Esc", |s| *s == interrupted);
+        assert_eq!(
+            confidence(&mut b),
+            Some(mesimon_core::board::Confidence::High),
+            "the held call's own end (pinned: {pinned}, reversed: {reversed})"
+        );
+    }
 }

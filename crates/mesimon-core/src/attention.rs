@@ -334,6 +334,18 @@ pub enum Signal {
     DialogEnded {
         interrupted: bool,
     },
+    /// A held plan or question dialog still stands after another call's
+    /// answer (T-988): two calls in one message are drawn one after the
+    /// other, and the answered call's completion says the next one is still
+    /// to be answered, a sibling the daemon read open on the transcript. It
+    /// re-affirms a held dialog, which cancels a leave to `Running` already
+    /// settling (the answered call's own end, read off the tail first), and
+    /// like `DialogEnded` it never replaces a leave settling anywhere else (a
+    /// `Stop`'s turn end or park). Never a dialog entered: from anywhere but
+    /// a held plan or question it says nothing.
+    DialogStands {
+        tool: AttentionTool,
+    },
     Notification {
         kind: NotificationKind,
     },
@@ -803,7 +815,7 @@ impl Machine {
         // turn's end, and its `on_done` and the crown's wake ride it. Only a
         // leave to `Running` (the accept's `PostToolUse`, or this signal's
         // own) gives way, to the interrupt that stopped it.
-        if matches!(sig, Signal::DialogEnded { .. })
+        if matches!(sig, Signal::DialogEnded { .. } | Signal::DialogStands { .. })
             && self.pending.as_ref().is_some_and(|p| p.to != SessionState::Running)
         {
             return None;
@@ -1193,6 +1205,17 @@ impl Machine {
                     _ => None,
                 }
             }
+            Signal::DialogStands { tool } => match &self.state {
+                S::RequiresAction { reason: Reason::Plan | Reason::Question } => {
+                    t(S::RequiresAction {
+                        reason: match tool {
+                            AttentionTool::AskUserQuestion => Reason::Question,
+                            AttentionTool::ExitPlanMode => Reason::Plan,
+                        },
+                    })
+                }
+                _ => None,
+            },
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -2231,6 +2254,50 @@ mod tests {
             assert!(m5.pending.is_none());
         }
         assert_eq!(m(SessionState::Running).apply(&ended, 1_000), None);
+    }
+
+    #[test]
+    fn a_dialog_that_stands_cancels_only_a_leave_to_running() {
+        // T-988: the answered sibling's own end, read off the tail first,
+        // set `Running` settling; the next call still stands, and its
+        // re-affirmation cancels that leave.
+        let stands = |tool| Signal::DialogStands { tool };
+        let ended = Signal::DialogEnded { interrupted: false };
+        let question = SessionState::RequiresAction { reason: Reason::Question };
+        let mut m1 = m(question.clone());
+        assert!(m1.apply(&ended, 1_000).is_none());
+        assert!(m1.apply(&stands(AttentionTool::AskUserQuestion), 1_200).is_none());
+        assert!(m1.pending.is_none(), "the leave to Running is cancelled");
+        assert_eq!(m1.tick(1_000 + SETTLE_MS), None);
+        // A `Stop` heard first: its end stands, park or not (round 2).
+        let stop = |blocking_tasks, monitoring_tasks| Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks,
+            monitoring_tasks,
+            teammates: 0,
+        };
+        for (blocking, monitoring, rest) in [
+            (false, false, StopReason::EndTurn),
+            (true, false, StopReason::Background),
+            (false, true, StopReason::Monitoring),
+        ] {
+            let mut m2 = m(question.clone());
+            assert!(m2.apply(&stop(blocking, monitoring), 1_000).is_none());
+            assert!(m2.apply(&stands(AttentionTool::AskUserQuestion), 1_200).is_none());
+            let c = m2.tick(1_000 + SETTLE_MS).expect("the Stop's own deadline");
+            assert_eq!(c.to, SessionState::Idle { stop_reason: rest });
+        }
+        // Never a dialog entered: from anywhere but a held plan or question.
+        for state in [
+            SessionState::Running,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        ] {
+            let mut m3 = m(state.clone());
+            assert_eq!(m3.apply(&stands(AttentionTool::ExitPlanMode), 1_000), None, "{state:?}");
+            assert!(m3.pending.is_none());
+        }
     }
 
     #[test]

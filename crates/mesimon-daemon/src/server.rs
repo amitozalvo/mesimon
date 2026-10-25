@@ -1078,6 +1078,10 @@ pub struct Daemon {
     /// tail reads for that dialog ended an earlier one.
     prompts_heard: HashMap<uuid::Uuid, u64>,
     dialog_heard: HashMap<uuid::Uuid, (String, u64)>,
+    /// The plan and question calls each seat's hooks named that no result
+    /// has closed (T-988), kept while the record holds a call: two in one message raise both requests after both calls, so an
+    /// id-less request may be an earlier call's, not a replacement.
+    dialog_open: HashMap<uuid::Uuid, Vec<mesophon::OpenCall>>,
     /// The machine's agent tiers (T-443), `tiers.toml` as last read — the
     /// layer under `board.tiers`, re-read when another board changes it.
     machine_tiers: tiers::MachineTierCache,
@@ -1989,6 +1993,7 @@ impl Daemon {
             crown_answer_lines: HashMap::new(),
             prompts_heard: HashMap::new(),
             dialog_heard: HashMap::new(),
+            dialog_open: HashMap::new(),
             machine_tiers: tiers::MachineTierCache::new(crate::paths::machine_tiers_file().ok()),
             usage: crate::usage::UsageState::new(crate::usage::shared_file()),
             tier_set_at: HashMap::new(),
@@ -5510,6 +5515,7 @@ impl Daemon {
         }
         self.control_release_permission(id, &frame);
         self.control_observe_dialog(id, &frame);
+        let answered = self.dialog_answered(id, &frame);
         let now = now_ms();
         let mut observation = self
             .board
@@ -5528,6 +5534,18 @@ impl Daemon {
                 crate::agents::adapter(hook_kind).map(|adapter| adapter.parse_hook(&frame, record))
             })
             .unwrap_or_default();
+        // An answer read against the held call (T-988): a sibling still to be
+        // answered re-affirms its dialog, which cancels a leave to `Running`
+        // the answered call's end set settling, read off the tail before this
+        // frame came, and never a stated end's; an answer of another message,
+        // or one after a stated end, moves nothing.
+        match answered {
+            Some(mesophon::Answered::Stands(tool)) => {
+                observation.signal = Some(Signal::DialogStands { tool });
+            }
+            Some(mesophon::Answered::Nothing) => observation.signal = None,
+            None => {}
+        }
         // Pane death is transport lifecycle shared by shells and both agents.
         if frame.event == "PaneDied" {
             observation.signal = Some(Signal::PaneDied {
@@ -5591,6 +5609,7 @@ impl Daemon {
                 let board = &self.board;
                 self.prompts_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
                 self.dialog_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                self.dialog_open.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
                 *self.prompts_heard.entry(id).or_default() += 1;
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);

@@ -1,6 +1,7 @@
 //! Owner control is authenticated and applied here, on the board's single writer.
 use super::*;
 use crate::team::control_io::{self, Event as NetEvent};
+use mesimon_core::attention::AttentionTool;
 use mesimon_core::mesophon::{self as api, Answer, Info, LocalAction, Reply};
 use mesimon_team::{
     control::{self, Channel, Wire},
@@ -14,6 +15,28 @@ use std::{
     collections::{BTreeMap, HashSet},
     sync::mpsc::SyncSender,
 };
+
+/// A plan or question call a seat's hooks named that no closing hook has
+/// been heard for (T-988): its tool, its print, what it draws if it can be
+/// drawn, and the prompts heard when it was named, its fence (round 4).
+pub(super) struct OpenCall {
+    call: String,
+    tool: AttentionTool,
+    print: String,
+    content: Option<api::DialogContent>,
+    heard: u64,
+}
+
+/// What an interaction's answer says of the dialog the seat is held on,
+/// read against the transcript (T-988).
+pub(super) enum Answered {
+    /// A call of the answered call's own message, with no result, is still
+    /// to be answered: the seat stays on it.
+    Stands(AttentionTool),
+    /// It moves nothing: the answer is for a call of another message, or a
+    /// stated end (a `Stop`'s) is already settling.
+    Nothing,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Grant {
@@ -1169,6 +1192,10 @@ impl Daemon {
         if self.control.dialogs.get(&id).is_some_and(|d| dialog_dropped(frame, d)) {
             self.control.dialogs.remove(&id);
         }
+        // The open calls (T-988) live only while the record holds one.
+        if self.board.sessions.iter().any(|s| s.id == id && s.dialog_call.is_none()) {
+            self.dialog_open.remove(&id);
+        }
         if !matches!(frame.event.as_str(), "PreToolUse" | "PermissionRequest") {
             return;
         }
@@ -1179,12 +1206,23 @@ impl Daemon {
         // id-less `PermissionRequest` repeats the dialog the seat's last
         // plan or question hook carried, the same tool's same input. A
         // repeat keeps that dialog's identity: its request below, its named
-        // call and its prompt count here (round 11).
+        // call and its prompt count here (round 11). So does the request of
+        // a call still open beside it (T-988): two questions in one message
+        // go `PreToolUse(A) PreToolUse(B) PermissionRequest(A)
+        // PermissionRequest(B)`, and A's request is no replacement of B.
         let print = interaction.then(|| interaction_print(tool, &frame.payload["tool_input"]));
         let repeat = frame.event == "PermissionRequest"
             && frame.payload["tool_use_id"].is_null()
-            && print.is_some()
-            && self.board.sessions.iter().any(|s| s.id == id && s.dialog_print == print);
+            && print.as_ref().is_some_and(|print| {
+                self.board
+                    .sessions
+                    .iter()
+                    .any(|s| s.id == id && s.dialog_print.as_ref() == Some(print))
+                    || self
+                        .dialog_open
+                        .get(&id)
+                        .is_some_and(|open| open.iter().any(|o| o.print == *print))
+            });
         // The call the record is held on (T-957 rounds 9, 10), observed from
         // the hook whether or not its content projects: a dialog too big to
         // draw still names its call, and a replacement that gives no id
@@ -1192,6 +1230,29 @@ impl Daemon {
         if interaction {
             let call =
                 frame.payload["tool_use_id"].as_str().filter(|s| s.len() <= 256).map(String::from);
+            if let (Some(call), Some(print)) = (&call, &print) {
+                if frame.event == "PreToolUse" {
+                    let open = self.dialog_open.entry(id).or_default();
+                    if !open.iter().any(|o| o.call == *call) {
+                        // Bounded: a held spell names a message's few.
+                        if open.len() == 16 {
+                            open.remove(0);
+                        }
+                        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+                        open.push(OpenCall {
+                            call: call.clone(),
+                            tool: if tool == "ExitPlanMode" {
+                                AttentionTool::ExitPlanMode
+                            } else {
+                                AttentionTool::AskUserQuestion
+                            },
+                            print: print.clone(),
+                            content: content.clone(),
+                            heard,
+                        });
+                    }
+                }
+            }
             // The prompts heard when it was named (round 4): an Esc read for
             // it after another is heard ended an earlier turn.
             if let Some(call) = &call {
@@ -1227,6 +1288,109 @@ impl Daemon {
         {
             return;
         }
+        self.control_project(id, request, content);
+    }
+
+    /// A plan's or a question's answer, read against the call the seat is
+    /// held on (T-988), after `control_observe_dialog` saw the frame. Two
+    /// such calls in one message are drawn one after the other, and every
+    /// road's `PostToolUse` names its call, but which `PreToolUse` came last
+    /// is no evidence: each hook is a process of its own, and two calls'
+    /// hooks 14 ms apart arrived the other way round (2.1.310). The engine's
+    /// own record is: each block of a message is a line under the message's
+    /// `id`, and a call's end is its `tool_result`, a refusal's too, which
+    /// fires no hook (T-447). So the transcript is read here, at the answer,
+    /// seconds after the calls' lines were written (read at the calls' hooks
+    /// they were not yet on disk in 2 of 5 live runs).
+    /// - The held call answered, and a call of its message is open with no
+    ///   prompt heard since it was named (T-968's fence): the seat is held on
+    ///   that sibling, its own fence restored, and it is drawn for the board.
+    /// - Another call answered while the held one is open in its message:
+    ///   the held dialog stands, its fence restored.
+    /// - Another call answered while the held one is of another message or
+    ///   answered on the tail: nothing moves.
+    /// - A stated end already settling (a `Stop` heard before the late
+    ///   completion): nothing moves, and nothing is re-pointed or drawn.
+    /// - No transcript, no line for the answered call, or the open calls
+    ///   lost to a restart: `None`, and the answer is read as before.
+    pub(super) fn dialog_answered(
+        &mut self,
+        id: uuid::Uuid,
+        frame: &HookFrame,
+    ) -> Option<Answered> {
+        if !matches!(frame.event.as_str(), "PostToolUse" | "PostToolUseFailure")
+            || frame.payload.get("agent_id").is_some()
+        {
+            return None;
+        }
+        let call = frame.payload["tool_use_id"].as_str()?;
+        let open = self.dialog_open.get_mut(&id)?;
+        let named = open.iter().any(|o| o.call == call);
+        open.retain(|o| o.call != call);
+        let interaction =
+            matches!(frame.payload["tool_name"].as_str(), Some("AskUserQuestion" | "ExitPlanMode"));
+        if !interaction || !named {
+            return None;
+        }
+        let rec = self.board.sessions.iter().find(|s| s.id == id)?;
+        let held = rec.dialog_call.clone()?;
+        let path = rec.transcript_path.clone()?;
+        let ticket = rec.ticket;
+        let now = self.prompts_heard.get(&id).copied().unwrap_or(0);
+        let open = self.dialog_open.get(&id)?;
+        let unspoken: Vec<&OpenCall> = open.iter().filter(|o| o.heard >= now).collect();
+        let candidates: Vec<&str> = if held == call {
+            unspoken.iter().map(|o| o.call.as_str()).collect()
+        } else {
+            vec![held.as_str()]
+        };
+        let read =
+            crate::agents::claude::tail::siblings(std::path::Path::new(&path), call, &candidates)?;
+        let pick = |c: &str| {
+            unspoken
+                .iter()
+                .find(|o| o.call == c)
+                .map(|o| (o.call.clone(), o.tool, o.print.clone(), o.content.clone(), o.heard))
+        };
+        let stands = if held == call {
+            read.open.last().and_then(|c| pick(c))
+        } else if read.open.contains(&held) {
+            pick(&held)
+        } else if read.closed.contains(&held) {
+            self.feed.board("automation", "answer_of_another_message", Some(ticket));
+            return Some(Answered::Nothing);
+        } else {
+            None
+        };
+        let (next, tool, print, content, heard) = stands?;
+        // A stated end settling (a `Stop` heard before this late completion)
+        // wins: the dialog is neither re-pointed nor drawn again (round 2).
+        let ending = self.machines.get(&id).and_then(|m| m.view().pending).is_some_and(|p| {
+            !matches!(p.state, SessionState::Running | SessionState::RequiresAction { .. })
+        });
+        if ending {
+            self.feed.board("automation", "sibling_answer_after_an_end", Some(ticket));
+            return Some(Answered::Nothing);
+        }
+        self.dialog_heard.insert(id, (next.clone(), heard));
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            if rec.dialog_call.as_ref() != Some(&next) {
+                rec.dialog_call = Some(next.clone());
+                rec.dialog_print = Some(print);
+                self.persist_sessions();
+            }
+        }
+        // Drawn for the board as its own hook would have been.
+        let projected = self.control.dialogs.get(&id).is_some_and(|d| d.request == next);
+        if let (false, Some(content)) = (projected, content) {
+            self.control_project(id, next, content);
+        }
+        self.feed.board("automation", "sibling_dialog_stands", Some(ticket));
+        Some(Answered::Stands(tool))
+    }
+
+    /// `content` drawn for the board as `id`'s dialog under `request`.
+    fn control_project(&mut self, id: uuid::Uuid, request: String, content: api::DialogContent) {
         // A new dialog on a record already stopped on that kind of dialog
         // has no state edge to wake the crown with (T-943): a plan sent
         // back is replanned and stopped on again inside the attention

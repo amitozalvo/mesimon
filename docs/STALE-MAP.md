@@ -36131,3 +36131,138 @@ All four came from parking. The seed removes the window instead of fencing it.
   `no shell environment captured yet`.
 - With the seed call disabled, the first test fails on the hook set's argv.
 - `shellenv::tests::the_last_capture_seeds_a_provisional_environment` covers the reader.
+
+## Two plans or questions in one message: the seat holds until the held call's own answer (T-988, 2026-10-25, named beside T-976)
+
+**Measured first.** Claude Code 2.1.310, Sonnet 5.5 (low), on a scratch board run by this branch's
+daemon before the change, `MESIMON_CLAUDE_ROAD` forced to each road. The ticket's title asked
+for two calls in one message; the driver polled the record (`state`, `dialog_call`) and the pane
+every 100 ms, answered A in the pane, waited 8 s, answered B. The driver and its timelines live
+outside this repository.
+- **Two questions, hooks road:** `PreToolUse(A) PreToolUse(B) PermissionRequest
+  PermissionRequest`; A answered at 51.0 s, `running` at 53.0 s (the leave's settle), "Which
+  size?" drawn until B's answer at 59.2 s. **The card read working for 6 s with a dialog up.**
+- **Two questions, mod road:** the same frames by the mod; answered at 90.3 s, `running` at
+  92.3 s, B drawn until 98.4 s.
+- **Two plans, accepted:** `PreToolUse(A) PermissionRequest PreToolUse(B) PermissionRequest`;
+  accepting A drew B ("Exit plan mode? 2 of 2"), and the seat went `running` 2 s after A's accept
+  while B stood 6 s more.
+- **Two plans, refused:** one Esc refused both (as T-976 saw), the seat `idle{interrupted}`; no gap.
+- Nothing re-asserted B: its `PermissionRequest` had already come, before A's answer, and no
+  `Notification` fires for a dialog.
+- **Every `PostToolUse` names its call**, on the hooks road, the mod's relayed `classic.*` and the
+  native road's (T-976's frames, and `register.ts`'s native relay); mesimon dropped the id at the
+  signal.
+- **Seen beside it:** with distinct inputs, A's id-less `PermissionRequest` printed differently
+  from B's (the last named), so round 12 read it as a replacement and let `dialog_call` go: the
+  record held no call by the time A was answered.
+
+**Decided, by identity, no count and no clock** (as revised by round 1, T-996's cold read).
+- **The open calls.** The daemon keeps the interaction calls each seat's hooks named and no
+  closing hook was heard for (`dialog_open`: call, tool, print, drawn content, and the prompts
+  heard when it was named, its fence; memory only, kept while the record holds a call, bounded
+  at 16). An id-less `PermissionRequest` whose print is an open call's is that call's request, a
+  repeat: it keeps the held call and the projection. A print no open call carries is still a
+  replacement (T-957's regression unchanged).
+- **Siblings are read off the transcript, at the answer** (`tail::siblings`). Claude Code writes
+  each block of a message on a line of its own under the message's `id`; two calls in one
+  message share it (`msg_011CgNa…` on both, live). A call is open beside the answered one when
+  its line is under the same id **and no `tool_result` for it is on the tail**: a refusal writes
+  its result and fires no hook (T-447), so "no closing hook heard" is not "open". A call under
+  another id, or with its result there, is closed. The lines are read at the answer, seconds
+  after the calls: read at the calls' own hooks they were not yet on disk in 2 of 5 live runs,
+  although their stamps came first.
+- **The verdict on an interaction's `PostToolUse(X)`** (`dialog_answered`, applied in `on_hook`
+  in place of the frame's own signal):
+  - X is the held call, and a call of X's message is open with no prompt heard since it was named
+    (T-968's fence): the seat is held on that sibling (`dialog_call` persisted, **its own prompt
+    fence restored into `dialog_heard`**, drawn for the board through `control_project` when its
+    content projects, the crown's T-943 wake included), and the machine is given that dialog's
+    `PreToolUse`: **the re-point re-affirms the dialog**, which cancels a leave the answered
+    call's end set settling (the tail can read X's result before X's hook reaches the writer).
+  - X is another call and the held call is open in X's message: the held dialog stands, its
+    fence restored, re-affirmed.
+  - X is another call and the held call is of another message or answered on the tail: **nothing
+    moves** (a late completion of an older message never re-points over a newer held call).
+  - No transcript, no line for X, or the open calls lost to a restart: the frame's own signal,
+    the old road.
+  The latest `PreToolUse` is not the held call by itself: each hook is a process of its own, and
+  live B's `PreToolUse` reached the daemon 14 ms before A's.
+- **The recovery reads siblings the same way.** With the held call known and its own line read
+  by the cursor, a result for another plan or question call the cursor read under the same
+  message id is that sibling's closing: it neither replaces the held call's end nor takes the
+  interrupt after them, whatever the order the engine writes them in. Without the held call's
+  line there is no sibling, and an earlier dialog's result is read as before
+  (`an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing`'s
+  `tail_end_of_another_dialog`; a first version of round 1 that took every call read since the
+  last prompt line skipped it). A Stop's end and T-968's later-prompt fence are untouched.
+
+**Round 2 (T-996's second read of round 1).**
+- **The re-affirm is a signal of its own, `Signal::DialogStands`.** Round 1 sent the completion
+  on as an ordinary `PreToolUse`, which cancels any pending leave: a `Stop` heard before A's late
+  completion, with B still open, lost its `EndTurn`. `DialogStands` targets only a held plan or
+  question, cancels a leave to `Running` (the answered call's own end, read off the tail first),
+  and like `DialogEnded` never replaces a leave settling anywhere else (`EndTurn`, `Background`,
+  `Monitoring`). A real `PreToolUse` is unchanged. And `dialog_answered` reads the machine first:
+  with a stated end settling, the completion moves nothing, and the sibling is neither re-pointed
+  nor drawn (feed `sibling_answer_after_an_end`).
+- **A cursor minted after the calls' lines seeds their identities.** A seat that reached both
+  dialogs before its first transcript poll had a cursor at the end of the file with no calls
+  read, so the measured mod order (B's refusal, A's, the interrupt) read A's refusal as a word:
+  B's end lost its interrupt and the seat went `Running`. The recovery now seeds the calls of the
+  held call's own message off the tail (`tail::message_calls`), once a spell and before the
+  read's lines, still keyed on the held call's own message id.
+- **The ended call anchors siblings across `Running`.** After B's refusal settles to `Running`
+  nothing is held, so a later read of A's refusal and the interrupt took B's `ended` and the
+  interrupt went Low (dropped under the flap pin, the seat left `Running`). The sibling check now
+  anchors on the held call or, with none held, on the call whose end the cursor read last; an
+  intervening word takes `ended` and the anchor with it. Prompt and projection fences unchanged.
+- Pinned by `plan_accept_e2e::a_stated_end_and_a_split_read_keep_the_held_call_s_end` (a `Stop`
+  before A's late completion; a cursor minted after both lines; a split read across a committed
+  `Running`, unpinned and pinned) and `attention::a_dialog_that_stands_cancels_only_a_leave_to_running`;
+  each case fails on round 1's code. The shared two-question setup (`Bed::two_questions`) now
+  waits for the expected held call and both requests' decisions, not only the state.
+- **Round 3 (T-996's third read):** the result branch that reads the call the cursor last saw
+  (`self.dialog`) checked siblings against the held call alone, so with the hooks reversed (A
+  held, A's refusal first, its `Running` committed) B's refusal replaced A's end and took the
+  interrupt. It now anchors as the sibling branch does, on the held call or the ended one
+  (`sibling_anchor`), before `ended` is replaced. Pinned by the reversed split read in
+  `a_stated_end_and_a_split_read_keep_the_held_call_s_end`, unpinned and pinned, which fails on
+  round 2's code.
+
+**Refusals, measured (round 1).** Same driver, Claude Code 2.1.310, Sonnet, both roads, on the
+build before round 1:
+- **Esc on two questions:** both refusals, then `[Request interrupted by user for tool use]`.
+  Hooks road: A's then B's in one millisecond, the interrupt 1 ms later; the seat went
+  `idle{interrupted}`. Mod road: **B's refusal first**, then A's, the interrupt 33 ms later; the
+  seat went `running`, wrong: A's refusal took the interrupt from B's end. B is gone either way.
+- **"No" on two plans** (the two-plan dialog offers "Yes" and "No" and no words field): as the
+  Esc, in call order on both roads, interrupt 1 to 15 ms later; `idle{interrupted}`. Words typed
+  after arrive as the next prompt.
+- **"Chat about this" on A:** A's refusal alone, no interrupt; **B stays drawn and answerable**
+  and was answered 8 s later. On both roads the build before round 1 re-pointed the seat to the
+  refused A at B's answer and held needs-you until the turn's `Stop`.
+- Pinned by `plan_accept_e2e::a_sibling_is_an_unanswered_call_of_the_held_call_s_message` (chat
+  about A; Esc in both result orders; A's result read before A's hook; a late answer of an
+  earlier message) and the reversed oversized sibling in
+  `a_question_too_big_to_draw_still_ends_on_its_own_result`; each section fails on the build
+  before round 1.
+- **Verified live on round 1's build**, both roads: "Chat about this" on A held needs-you through
+  the 8 s gap and left on B's answer; Esc ended `idle{interrupted}` (the mod road wrote the held
+  B's refusal first in both of its runs, the hook set A's first in both); two questions answered
+  and two plans accepted held through the gap and left on B's answer, one plan run by the
+  re-point. Again on the final build (load 34 to 40): Esc on both roads `idle{interrupted}` (the
+  mod road's interrupt 600 ms after the refusals), "Chat about this" on the mod road held and
+  left on B's answer. Before round 1, the first version held all of these but the two refusal shapes above.
+
+**Stated limits.**
+- A late or missing message-id line at the answer takes the old early-leave road.
+- The open calls do not survive a daemon restart; the record's `dialog_call` does.
+- The projection may show B while the pane draws A (pre-existing; what an answer sent from the
+  phone in that moment lands on was not tested).
+- A fork's `classic.PreToolUse` carries no `agentId` and can enter the open calls.
+- Three calls in one message are covered by the same rule, tested only by `tail::siblings`' unit.
+- The tail re-reads an open plan or question call at a cursor's first look and then once a minute,
+  and that re-read re-affirms the dialog: it cancels a `Stop` settling while the call's line is
+  the transcript's last word. The engine writes a dialog's result before its turn's `Stop`, so
+  only a staged transcript meets it; the e2e lets that first look pass before its `Stop`.

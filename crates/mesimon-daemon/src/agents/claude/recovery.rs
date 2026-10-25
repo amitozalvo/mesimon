@@ -53,6 +53,45 @@ pub(super) struct ClaudeRecovery {
     /// The call the last departure was for, so a spell's first look back
     /// does not give it twice.
     departed: Option<String>,
+    /// The plan and question calls read since the last prompt, each with
+    /// its message's `id` (T-988), bounded: a result for one under the held
+    /// call's message id is that sibling's.
+    calls: Vec<(String, Option<String>)>,
+    /// The held spell and call whose message's calls were last seeded off
+    /// the tail (round 2), once a spell.
+    calls_read: Option<(Option<u64>, Option<String>)>,
+}
+
+/// The calls in `calls` read under the held call's message id, the held
+/// call aside (T-988): none when the held call's own line was not read.
+fn siblings_of<'a>(
+    calls: &'a [(String, Option<String>)],
+    held: Option<&'a str>,
+) -> impl Iterator<Item = &'a str> + 'a {
+    let message =
+        held.and_then(|h| calls.iter().find(|(c, _)| c == h).and_then(|(_, m)| m.as_deref()));
+    calls
+        .iter()
+        .filter(move |(c, m)| {
+            message.is_some() && m.as_deref() == message && Some(c.as_str()) != held
+        })
+        .map(|(c, _)| c.as_str())
+}
+
+/// The call siblings are read against (round 2): the held call, or with
+/// none held, the call whose end this cursor read last, so a sibling's
+/// refusal read after that end's `Running` committed still leaves the
+/// interrupt to it. An intervening word takes `ended`, and the anchor with it.
+fn sibling_anchor<'a>(
+    held: Option<&'a str>,
+    ended: Option<&'a (TailTool, String)>,
+) -> Option<&'a str> {
+    held.or(ended.map(|(_, id)| id.as_str()))
+}
+
+/// Whether `call` is a sibling of the held call `held` in `calls`.
+fn sibling_of(calls: &[(String, Option<String>)], held: Option<&str>, call: &str) -> bool {
+    siblings_of(calls, held).any(|c| c == call)
 }
 
 /// The transcript's word for a held dialog: the tail event that says THIS
@@ -215,6 +254,8 @@ impl ClaudeRecovery {
         self.dialog_read = None;
         self.ended = None;
         self.departed = None;
+        self.calls.clear();
+        self.calls_read = None;
     }
 
     /// Claude Code's own session file for this record, found once and
@@ -445,10 +486,43 @@ impl ClaudeRecovery {
         // The records of the interrupts tied to a dialog's end on this seat:
         // every hint of theirs goes after the read (round 7).
         let mut owned: Vec<String> = Vec::new();
+        // The call a hook named for the held dialog (T-988): with two calls
+        // in one message, a result for the other one is that sibling's
+        // closing, neither the held dialog's end nor the owner of the
+        // interrupt after it, wherever the engine writes it among them. Only
+        // where this cursor read the held call's line and the other call's
+        // under the same message id: an earlier dialog's result is not one.
+        let held_call = held.and(record.dialog_call.as_deref());
+        // A cursor minted after the held call's line (round 2: both dialogs
+        // reached before the first poll) seeds the calls of that call's own
+        // message off the tail, once a spell and before this read's lines:
+        // the measured mod order, B's refusal then A's, is read with A known
+        // as B's sibling.
+        if let Some(held) = held_call.filter(|h| !self.calls.iter().any(|(c, _)| c == h)) {
+            let look = (record.state_changed_at, record.dialog_call.clone());
+            if self.calls_read.as_ref() != Some(&look) {
+                self.calls_read = Some(look);
+                for call in tail::message_calls(&path, held) {
+                    if !self.calls.iter().any(|(c, _)| *c == call.0) {
+                        if self.calls.len() == 16 {
+                            self.calls.remove(0);
+                        }
+                        self.calls.push(call);
+                    }
+                }
+            }
+        }
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             let mut attributed = false;
             if let Some((tool, id)) = tail::dialog_call(&value) {
+                if !self.calls.iter().any(|(c, _)| c == id) {
+                    if self.calls.len() == 16 {
+                        self.calls.remove(0);
+                    }
+                    let message = value["message"]["id"].as_str().map(String::from);
+                    self.calls.push((id.to_string(), message));
+                }
                 self.dialog = Some((tool, id.to_string()));
                 self.ended = None;
                 answered = None;
@@ -466,8 +540,16 @@ impl ClaudeRecovery {
                         .map(|(tool, id)| (tool, id.to_string()))
                 })
             {
-                self.ended = Some(call.clone());
-                answered = Some((call, false));
+                if !sibling_of(&self.calls, sibling_anchor(held_call, self.ended.as_ref()), &call.1)
+                {
+                    self.ended = Some(call.clone());
+                    answered = Some((call, false));
+                }
+            } else if siblings_of(&self.calls, sibling_anchor(held_call, self.ended.as_ref()))
+                .any(|c| tail::carries_result_of(&value, c))
+            {
+                // A sibling's result (T-988): it leaves `ended` to the held
+                // call's end, for the interrupt after them.
             } else if tail::speaks(&value) {
                 let ended = self.ended.take();
                 // Only an interrupt right after a result is that dialog's
@@ -484,6 +566,7 @@ impl ClaudeRecovery {
             // turn (round 2): the interrupt ended the one before it, and says
             // nothing of this one, at High or Low.
             if mesimon_core::adopt::user_prompt(&value).is_some() {
+                self.calls.clear();
                 answered = answered.filter(|(_, interrupted)| !interrupted);
                 hints.retain(|(kind, _, _)| *kind != TailHint::AbortedMidStream);
             }

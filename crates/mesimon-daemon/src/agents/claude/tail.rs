@@ -235,6 +235,69 @@ pub fn dialog_call(v: &serde_json::Value) -> Option<(TailTool, &str)> {
     Some((tool, call["id"].as_str()?))
 }
 
+/// The plan and question calls `calls` read against `answered`'s message on
+/// the tail (T-988). The engine writes each block of a message on a line of
+/// its own under the message's `id`, and the lines can reach the file after
+/// the blocks' hooks. A call is open beside `answered` when its line is under
+/// the same id and no `tool_result` for it is on the tail; it is closed when
+/// its line is under another id, or its result is there. A call the tail does
+/// not show is neither. `None` when `answered`'s own line is not read.
+pub fn siblings(path: &Path, answered: &str, calls: &[&str]) -> Option<Siblings> {
+    let len = std::fs::metadata(path).ok()?.len();
+    let text = window_text(path, len, PROMPT_WINDOW)?;
+    let mut messages: Vec<(String, String)> = Vec::new();
+    let mut results: Vec<String> = Vec::new();
+    for v in (TailRecords { end: text.len(), text }) {
+        if let (Some((_, id)), Some(message)) = (dialog_call(&v), v["message"]["id"].as_str()) {
+            messages.push((id.to_string(), message.to_string()));
+        } else if carries_tool_result(&v) {
+            let blocks = v["message"]["content"].as_array().into_iter().flatten();
+            results.extend(blocks.filter_map(|b| b["tool_use_id"].as_str()).map(String::from));
+        }
+    }
+    let message_of = |call: &str| messages.iter().find(|(c, _)| c == call).map(|(_, m)| m);
+    let own = message_of(answered)?;
+    let mut siblings = Siblings::default();
+    for call in calls {
+        let answered = results.iter().any(|r| r == call);
+        match message_of(call) {
+            Some(m) if m == own && !answered => siblings.open.push(call.to_string()),
+            Some(_) => siblings.closed.push(call.to_string()),
+            None if answered => siblings.closed.push(call.to_string()),
+            None => {}
+        }
+    }
+    Some(siblings)
+}
+
+/// The plan and question calls written under `call`'s message id, `call`
+/// included, in file order, each with that id (T-988 round 2): what a cursor
+/// minted after the calls' lines seeds its siblings from. Empty when
+/// `call`'s line, or its id, is not on the tail.
+pub fn message_calls(path: &Path, call: &str) -> Vec<(String, Option<String>)> {
+    let Some(len) = std::fs::metadata(path).ok().map(|m| m.len()) else { return Vec::new() };
+    let Some(text) = window_text(path, len, PROMPT_WINDOW) else { return Vec::new() };
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for v in (TailRecords { end: text.len(), text }) {
+        if let (Some((_, id)), Some(message)) = (dialog_call(&v), v["message"]["id"].as_str()) {
+            calls.push((id.to_string(), message.to_string()));
+        }
+    }
+    let Some(own) = calls.iter().find(|(c, _)| c == call).map(|(_, m)| m.clone()) else {
+        return Vec::new();
+    };
+    calls.into_iter().rev().filter(|(_, m)| *m == own).map(|(c, m)| (c, Some(m))).collect()
+}
+
+/// `siblings`' answer.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Siblings {
+    /// Calls of the answered call's message with no result on the tail.
+    pub open: Vec<String>,
+    /// Calls of another message, or answered on the tail.
+    pub closed: Vec<String>,
+}
+
 /// Whether `v` carries the result of the tool call `id`: the dialog's own
 /// end, whatever closed it (T-957). Claude Code writes it at the keypress,
 /// on 2.1.310 as on 2.1.287: `is_error` with "the user said: …" for a plan
@@ -1224,5 +1287,45 @@ mod tests {
         assert!(dialog_call(&call("Write")).is_none());
         // A tool's call is not its result.
         assert!(!carries_result_of(&call("ExitPlanMode"), "toolu_1"));
+    }
+
+    /// T-988: two questions in one message are two lines under one message
+    /// id (2.1.310); a plan sent back and planned again is two messages; a
+    /// call whose result is on the tail is closed.
+    #[test]
+    fn siblings_read_the_answered_call_s_message_and_the_results() {
+        let path = tmp("siblings");
+        let call = |message: &str, id: &str| {
+            serde_json::json!({"uuid": id, "type": "assistant", "message": {"id": message,
+                "content": [{"type": "tool_use", "id": id, "name": "AskUserQuestion",
+                    "input": {"questions": []}}]}})
+        };
+        let result = |id: &str| {
+            serde_json::json!({"uuid": format!("r-{id}"), "type": "user", "message": {"content":
+                [{"type": "tool_result", "tool_use_id": id, "content": "x"}]}})
+        };
+        let mut f = std::fs::File::create(&path).unwrap();
+        for v in [call("msg_1", "a"), call("msg_1", "b"), call("msg_1", "c"), result("a")] {
+            writeln!(f, "{v}").unwrap();
+        }
+        for v in [call("msg_2", "d"), result("d"), call("msg_3", "e")] {
+            writeln!(f, "{v}").unwrap();
+        }
+        let s = |open: &[&str], closed: &[&str]| Siblings {
+            open: open.iter().map(|c| c.to_string()).collect(),
+            closed: closed.iter().map(|c| c.to_string()).collect(),
+        };
+        assert_eq!(siblings(&path, "a", &["b", "c"]), Some(s(&["b", "c"], &[])));
+        assert_eq!(siblings(&path, "b", &["a", "c"]), Some(s(&["c"], &["a"])), "a answered");
+        assert_eq!(siblings(&path, "e", &["d"]), Some(s(&[], &["d"])), "an earlier message");
+        assert_eq!(siblings(&path, "a", &["e"]), Some(s(&[], &["e"])), "a later message");
+        assert_eq!(siblings(&path, "a", &["z"]), Some(s(&[], &[])), "not on the tail");
+        assert_eq!(siblings(&path, "z", &["a"]), None, "the answered call not read");
+        assert_eq!(siblings(&path.with_file_name("none.jsonl"), "a", &["b"]), None);
+        let m1 = Some("msg_1".to_string());
+        let seeded = |c: &str| (c.to_string(), m1.clone());
+        assert_eq!(message_calls(&path, "b"), vec![seeded("a"), seeded("b"), seeded("c")]);
+        assert_eq!(message_calls(&path, "e"), vec![("e".to_string(), Some("msg_3".into()))]);
+        assert!(message_calls(&path, "z").is_empty(), "not on the tail");
     }
 }
