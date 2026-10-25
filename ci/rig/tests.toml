@@ -132,11 +132,19 @@
 #              within 10 s of the person leaving; on the mod road, T-931, it
 #              went by the mod's submit within 10 s of being owed, the person
 #              still in, its row never saying it waited),
-#              steered (T-974: an `ask_agent_sent` line for the ticket with
-#              deliver now or immediately whose `beside` names an earlier
-#              send's ask still `sent` or `handed`, its own `ask` another,
-#              and a crown wake for the ticket, cause answered, after it: the
-#              turn's end spoke for the first).
+#              steered:<word>[:<secs>] (T-974: an `ask_agent_sent` line for
+#              the ticket with deliver now or immediately whose `beside`
+#              names an earlier send's ask still `sent` or `handed`, its own
+#              `ask` another, and the first answered crown wake for the
+#              ticket after it names that earlier ask at <word>, within
+#              <secs> of the earlier send when given: the turn's end spoke
+#              for the first, the long command cut short),
+#              held_steer:<word> (T-974 round 1: the same steer beside a
+#              held `sent` submit; a later answered wake names the submit
+#              taken, and a wake naming the steer before it is recorded:
+#              the board sees it only where the steer's turn ended outside
+#              the held prompt's settle; the observed line counts the
+#              worker's prompts holding <word>, the words landing twice).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -855,8 +863,8 @@ title = "ST1 · the crown keeps a worker to its brief while an earlier ask is ou
 blind = true
 workspace = "worktree"
 brief = "Reply with the single word ready and end your turn. Read no file and run no command unless the crown asks for one."
-expect = "the crown starts the worker, then asks it to run a long sleep; the ask goes into the idle agent and its turn runs the sleep, the ask out (handed). Told only that the worker is spending its time outside its brief, the crown sends it words at once, with ask_agent deliver now or immediately, while that earlier ask is still out, rather than waiting for the turn's end: the board admits the steer beside the earlier ask (T-974), the steer's send names its own ask in the feed and the earlier one beside it at its word, and the turn's end wakes the crown for the earlier ask."
-checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered"]
+expect = "the crown starts the worker, then asks it to run a long sleep; the ask goes into the idle agent and its turn runs the sleep, the ask out (handed). Told only that the worker is spending its time outside its brief, the crown sends it words at once, with ask_agent deliver now or immediately, while that earlier ask is still out, rather than waiting for the turn's end: the board admits the steer beside the earlier ask (T-974), the steer's send names its own ask in the feed and the earlier one beside it at its word, and the turn's end, well before the sleep's 240 s, wakes the crown naming the earlier ask taken (round 1: by the wake's own ask, not any answered wake); the worker replies ready, then stopped."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered:taken:200", "replies:ready,stopped"]
 
   [[test.steps]]
   crown = "ST1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: ST1 started. When the board wakes you for {key}, end your turn with the single line: ST1 seen."
@@ -871,6 +879,24 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered"]
   [[test.steps]]
   crown = "ST1: {key}'s agent is spending its time outside its brief: its ticket needs only the word ready, and the sleep it runs is not needed. Have it stop and reply with the single word stopped. Then end your turn with the single line: ST1 steered. When the board wakes you for {key}, end your turn with the single line: ST1 seen."
   until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "ST2"
+title = "ST2 · the crown steers a worker whose turn holds its earlier ask: do the steps below"
+workspace = "worktree"
+brief = "Run the shell command `sleep 90` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
+expect = "T-974 round 1, measured end to end on the real mod: while the worker's first turn runs its foreground sleep (90 s: a find over /usr ended under the first ask on this machine, so the steer met an idle agent, refused), the crown's ask_agent deliver now goes down the mod as a submit Claude Code holds to the running turn's end (receipt sent). The crown then sends the same words with deliver immediately: admitted beside the held submit as an ask of its own, its receipt naming the first in earlier at sent, its words read inside the running turn. The held submit then runs as a turn of its own and its end wakes the crown naming the first ask taken; the steer's turn's end wakes the crown naming the steer only where the board saw it end apart (the engine's Stop and the held prompt can come 0.3 s apart, one stretch to the board, round 1). The same words reach the worker twice, once as the steer and once as the held submit (T-934); the observed line counts them."
+checks = ["road:mod", "fed:prompt_by_mod", "crown:ask_agent=2", "held_steer:mango"]
+
+  [[test.steps]]
+  crown = "ST2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: ST2 started."
+  until = { events = ["UserPromptSubmit"], state = "working" }
+  settle = false
+
+  [[test.steps]]
+  crown = "ST2, {key}'s agent is in a long command: call ask_agent for {key} with deliver now and the text: Reply with the single word mango and end your turn. Read no file and run no command. Then call ask_agent for {key} once more, with the seen that first receipt returned, deliver immediately and the same text. Then end your turn with two lines: ST2 first, followed by the asked status the first receipt gave; and ST2 second, followed by the second receipt's asked status and the status its earlier gives. When the board wakes you for {key}, end your turn with the single line: ST2 seen."
+  until = { stops = 2, state = "idle" }
   wake = true
 
 [[test]]

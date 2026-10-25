@@ -6290,7 +6290,7 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     // The crown's first ask, at the idle worker: its turn runs on it.
     let first_ask = |c: &mut TestClient, probe: &str| {
         let first = receipt(ask(c, probe, Deliver::Idle));
-        wait_until(std::time::Duration::from_secs(10), "the first ask's words", || landed(probe));
+        wait_until(std::time::Duration::from_secs(25), "the first ask's words", || landed(probe));
         start(c, ws);
         wait_until(std::time::Duration::from_secs(10), "the first ask out", || {
             asked(c).is_some_and(|v| v.ask == first.ask && v.status == out_word)
@@ -6336,6 +6336,15 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     stop(&mut c, ws);
     wake_for(&first.ask);
     assert!(!landed(&format!("ask {}", steer.ask)), "the turn's end is the first's");
+    // The feed's wake names the ask its turn answered, and its word (round 1).
+    let named = format!("\"ask\":\"{} {}\"", first.ask, if mod_road { "taken" } else { "sent" });
+    wait_until(std::time::Duration::from_secs(5), "the wake's feed line names the first", || {
+        std::fs::read_to_string(&feed_path).unwrap_or_default().lines().any(|l| {
+            l.contains("\"kind\":\"crown_wake\"")
+                && l.contains("\"cause\":\"answered\"")
+                && l.contains(&named)
+        })
+    });
     let after = asked(&mut c).unwrap();
     let first_word = if mod_road { "taken" } else { "sent" };
     assert_eq!(after.earlier[0].status, first_word, "{after:?}");
@@ -6361,6 +6370,102 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     assert_eq!(read_got().matches("mesimon-probe-9744").count(), 1, "nothing resent");
     let next = receipt(ask(&mut c, "mesimon-probe-9746 after", Deliver::Idle));
     assert_ne!(next.ask, carried.ask, "the turn's end lifted the block");
+    // The crown's wake holds the shared checkout's queue for its owed
+    // window (T-936) before the ask goes.
+    wait_until(std::time::Duration::from_secs(25), "the idle ask's words", || {
+        landed("mesimon-probe-9746")
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+
+    // ---- a restart while the worker stands at a dialog (round 1) -------------
+    // A dialog is mid-turn: the restart's look at it answers nothing, the
+    // ask and its turn stay open, and the end after the answer takes it
+    // and wakes the crown once, naming it.
+    let at_dialog = first_ask(&mut c, "mesimon-probe-9747 then a dialog");
+    let permission = r#"{"tool_name":"Bash"}"#;
+    hook_send(&hook_sock, &ws.to_string(), "PermissionRequest", permission);
+    c.await_state(ws, "at the dialog", |s| matches!(s, SessionState::RequiresAction { .. }));
+    h.restart();
+    let mut c = h.client("crown_steer_3");
+    let back = asked(&mut c).expect("the ask out was kept");
+    assert_eq!((back.status.as_str(), back.ask.as_str()), (out_word, at_dialog.ask.as_str()));
+    c.await_state(ws, "still at the dialog", |s| matches!(s, SessionState::RequiresAction { .. }));
+    // The restart's look runs on the tick for a worker at a dialog.
+    settle();
+    settle();
+    let wakes = |id: &str| read_got().matches(&format!("ask {id}")).count();
+    assert_eq!(wakes(&at_dialog.ask), 0, "the look at a dialog answers nothing");
+    assert_eq!(asked(&mut c).unwrap().status, out_word);
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", permission);
+    c.await_state(ws, "past the dialog", |s| *s == SessionState::Running);
+    stop(&mut c, ws);
+    wake_for(&at_dialog.ask);
+    settle();
+    assert_eq!(wakes(&at_dialog.ask), 1, "one end, one wake: {}", read_got());
+    if mod_road {
+        assert_eq!(asked(&mut c).unwrap().status, "taken");
+    }
+    let after = receipt(ask(&mut c, "mesimon-probe-9748 after the dialog", Deliver::Idle));
+    assert_ne!(after.ask, at_dialog.ask, "nothing blocks after the end");
+    if !mod_road {
+        return;
+    }
+
+    // ---- a held submit, a steer, and its entered in one stretch (round 1) ---
+    // ST2 on the real mod: the engine's Stop and the held submit's prompt
+    // came 0.3 s apart, so the board saw one working stretch. The submit's
+    // `entered` takes the turn's mark from the steer, the one end takes it
+    // and names it, and the same words reached the agent twice.
+    wait_until(std::time::Duration::from_secs(25), "the idle ask's words", || {
+        landed("mesimon-probe-9748")
+    });
+    wait_until(std::time::Duration::from_secs(10), "the idle ask handed", || {
+        asked(&mut c).is_some_and(|v| v.ask == after.ask && v.status == "handed")
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let switch = |name: &str, on: bool| {
+        let f = h.dir.join(name);
+        if on {
+            std::fs::write(f, "").unwrap();
+        } else {
+            let _ = std::fs::remove_file(f);
+        }
+    };
+    switch("mod-hold-entered", true);
+    start(&mut c, ws);
+    let twice = "mesimon-probe-9749 twice";
+    let held = receipt(ask(&mut c, twice, Deliver::Now));
+    assert_eq!(held.status, "sent", "held to the running turn's end");
+    wait_until(std::time::Duration::from_secs(5), "the held submit's words", || landed(twice));
+    let steer = receipt(ask(&mut c, twice, Deliver::Immediately));
+    let earlier: Vec<_> =
+        steer.earlier.iter().map(|e| (e.ask.as_str(), e.status.as_str())).collect();
+    assert_eq!(earlier, [(held.ask.as_str(), "sent")], "the crown is told the submit is out");
+    wait_until(std::time::Duration::from_secs(5), "the steer's send-now", || sent_now(twice));
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    switch("mod-release", true);
+    let held_word = |c: &mut TestClient| {
+        asked(c).and_then(|v| v.earlier.into_iter().find(|e| e.ask == held.ask)).map(|e| e.status)
+    };
+    wait_until(std::time::Duration::from_secs(10), "the held submit entered", || {
+        held_word(&mut c).as_deref() == Some("handed")
+    });
+    stop(&mut c, ws);
+    wake_for(&held.ask);
+    settle();
+    assert!(!landed(&format!("ask {}", steer.ask)), "the one end is the submit's: {}", read_got());
+    assert_eq!(held_word(&mut c).as_deref(), Some("taken"));
+    assert_eq!(read_got().matches(twice).count(), 2, "the same words, as the steer and the submit");
+    switch("mod-hold-entered", false);
+    switch("mod-release", false);
+    let next = receipt(ask(&mut c, "mesimon-probe-9750 after", Deliver::Idle));
+    assert_ne!(next.ask, held.ask, "nothing blocks after the end");
 }
 
 /// A stub that records every byte its pane is sent, raw: no line

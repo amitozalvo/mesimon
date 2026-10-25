@@ -1533,11 +1533,16 @@ impl Daemon {
                 ) && !guessed(s)
             });
         let asked = self.turn_asks.remove(&worker);
+        // The ask kept for the end that is one is this edge's no longer
+        // (T-974, round 1): a look or a probe here answers nothing with it,
+        // or the real end would answer it a second time.
         let asked = if dialog || !ended {
             if let Some(a @ TurnAsk::Asked { .. }) = asked {
                 self.turn_asks.insert(worker, a);
+                None
+            } else {
+                asked
             }
-            asked
         } else {
             self.crown_ask_turn_ended(worker, asked)
         };
@@ -1593,8 +1598,20 @@ impl Daemon {
                 // Past the window and still working: its end judges it.
                 continue;
             }
-            let asked = self.turn_asks.remove(&worker);
-            let fresh = self.turns_open.remove(&worker);
+            // At a dialog the turn is still open (T-974, round 1): the
+            // crown's ask it rides and the open turn stay for the end that
+            // is one, as `turn_ended` keeps them, and this look is a
+            // baseline that answers nothing. A dialog is never an end.
+            let dialog = self
+                .board
+                .live_agent(worker)
+                .is_some_and(|s| matches!(s.state, SessionState::RequiresAction { .. }));
+            let (asked, fresh) = if dialog {
+                let kept = matches!(self.turn_asks.get(&worker), Some(TurnAsk::Asked { .. }));
+                (if kept { None } else { self.turn_asks.remove(&worker) }, false)
+            } else {
+                (self.turn_asks.remove(&worker), self.turns_open.remove(&worker))
+            };
             let u = owed.join(Unjudged { asked, fresh });
             self.probe_turn(worker, ProbeWhy::Restart { asked: u.asked, fresh: u.fresh });
         }
@@ -2260,7 +2277,9 @@ impl Daemon {
             self.hold_unwatched_sends(worker);
             self.feed.board("automation", "watch_ended", Some(worker));
         }
-        self.feed.crown_wake(crown, worker, cause.word());
+        let named = ask.filter(|_| cause == WakeCause::Answered);
+        let named = named.map(|a| format!("{} {}", a.ask, a.said.word()));
+        self.feed.crown_wake(crown, worker, cause.word(), named);
         self.crown_touched(worker, crown, "woke");
     }
 

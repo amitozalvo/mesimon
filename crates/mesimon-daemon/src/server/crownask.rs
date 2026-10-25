@@ -590,6 +590,11 @@ impl Daemon {
                     a.set(Stage::Taken, now);
                 }
                 said = word.map(|said| TurnAsk::Asked { crown, ask, said });
+            } else if a.stage == Stage::Handed && a.own_turn {
+                // Handed words that started a turn of their own, under
+                // another ask's mark (round 1): that turn began before this
+                // proven end, so it has ended. The wake is the mark's.
+                a.set(Stage::Taken, now);
             }
             if a.blocks() && !a.submit {
                 a.released = true;
@@ -716,6 +721,24 @@ impl Daemon {
             .map(|a| a.id)
     }
 
+    /// Whether an ask is a steer (T-974): `now` or `immediately`, on a road
+    /// the crown sends (`sends`), at a pane whose agent is in a turn the
+    /// board observed running: `Running`, proven (no guess off the tail).
+    /// Not `Failed`, `Unknown` (a restart's agent before a hook speaks), a
+    /// dialog, a start, an idle with background tasks (words there start a
+    /// turn, they steer none) or a parked seat (round 1). Only a steer
+    /// passes an ask still out; every other ask keeps the one-ask rule.
+    pub(super) fn steer_admits(&self, seat: &QueuedSeat, deliver: Deliver, sends: bool) -> bool {
+        let QueuedSeat::Pane(id) = seat else { return false };
+        sends
+            && deliver.at_once()
+            && self
+                .board
+                .sessions
+                .iter()
+                .any(|s| s.id == *id && s.state == SessionState::Running && !crownwake::guessed(s))
+    }
+
     /// The second ask's refusal, while the first is out: the oldest ask
     /// that still blocks is the one it names.
     pub(super) fn crown_ask_blocks(&self, target: ulid::Ulid, key: &str) -> Option<String> {
@@ -726,14 +749,19 @@ impl Daemon {
 
 /// Whether the running turn's mark `current` stays over `mark` (T-974): it
 /// names another of the ticket's asks still out (`list`), whose turn this
-/// is; a steer that went into it does not take it over. Any other mark
-/// gives way, as `mark_turn` decides.
+/// is; a steer that went into it does not take it over. An ask that starts
+/// a turn of its own (a held `submit` entered, words to an idle agent)
+/// always takes the mark (round 1): the turn running from here is its, even
+/// where the board saw no end between it and the steer's (the engine's
+/// `Stop` and the held submit's prompt 0.3 s apart, inside the settle). Any
+/// other mark gives way, as `mark_turn` decides.
 pub(super) fn keeps_turn(current: Option<&TurnAsk>, mark: &TurnAsk, list: &[CrownAsk]) -> bool {
     let (Some(TurnAsk::Asked { ask: rode, .. }), TurnAsk::Asked { ask, .. }) = (current, mark)
     else {
         return false;
     };
-    rode != ask && list.iter().any(|a| a.id == *rode && a.blocks())
+    let own_turn = list.iter().any(|a| a.id == *ask && a.own_turn);
+    !own_turn && rode != ask && list.iter().any(|a| a.id == *rode && a.blocks())
 }
 
 /// What an owed entry's ack proves for the crown's ask it carries.
@@ -1198,6 +1226,46 @@ mod ledger_tests {
         assert_eq!(ids, [next]);
     }
 
+    /// Round 1, ST2's sequence on the real mod: a held submit out, a steer
+    /// (a fill) into the running turn and its prompt hook, then the submit's
+    /// `entered` before the board saw that turn end (the engine's Stop and
+    /// the held prompt 0.3 s apart, inside the settle). The submit takes the
+    /// turn's mark, the one end the board sees takes it and names it, the
+    /// steer is released, and nothing blocks after.
+    #[test]
+    fn a_held_submit_entered_after_a_steer_takes_the_turn_it_starts() {
+        let mut b = bed("held");
+        let crown = b.crown;
+        let held = b.ask(Stage::Sent, true);
+        b.d.crown_asks.get_mut(&b.worker).unwrap()[0].submit = true;
+        let steer = b.ask(Stage::Sent, false);
+        b.d.crown_ask_acked(b.worker, b.seat, steer);
+        assert_eq!(
+            b.d.turn_asks.get(&b.worker),
+            Some(&TurnAsk::Asked { crown, ask: steer, said: Said::Sent })
+        );
+        assert!(b.d.crown_ask_handed(b.worker, held));
+        assert_eq!(
+            b.d.turn_asks.get(&b.worker),
+            Some(&TurnAsk::Asked { crown, ask: held, said: Said::Handed }),
+            "the submit's own turn takes the mark"
+        );
+        let asked = b.d.turn_asks.remove(&b.worker);
+        let said = b.d.crown_ask_turn_ended(b.worker, asked);
+        assert_eq!(said, Some(TurnAsk::Asked { crown, ask: held, said: Said::Taken }));
+        assert_eq!((b.word_of(held), b.word_of(steer)), ("taken", "sent"));
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None);
+        // A handed submit under another own-turn ask's mark is taken at
+        // the end too, never left blocking.
+        let a1 = b.ask(Stage::Handed, true);
+        b.d.crown_asks.get_mut(&b.worker).unwrap().last_mut().unwrap().submit = true;
+        let a2 = b.ask(Stage::Handed, true);
+        let mark = Some(TurnAsk::Asked { crown, ask: a2, said: Said::Handed });
+        b.d.crown_ask_turn_ended(b.worker, mark);
+        assert_eq!((b.word_of(a1), b.word_of(a2)), ("taken", "taken"));
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None);
+    }
+
     /// The asks still out ride `crown.json` at their word and come back so
     /// after a restart; one a turn rode that no kept record names is
     /// `unknown`, as from a ledger an older build wrote.
@@ -1235,6 +1303,55 @@ mod ledger_tests {
         assert_eq!(again.word_of(first), "handed", "handed in its own pane waits for its end");
     }
 
+    /// Round 1: the steer's exception asks for a turn the board observed
+    /// running. With a submit still out, `now` and `immediately` pass it at
+    /// a proven `Running` agent the crown started, and nowhere else: not a
+    /// guessed run, `Failed`, `Unknown`, `Spawning`, an idle (background
+    /// tasks or not), a dialog, a parked seat, a person's agent, or `idle`.
+    #[test]
+    fn a_steer_needs_a_turn_observed_running() {
+        let mut b = bed("admits");
+        b.d.board.crown_mode = CrownMode::Autonomous;
+        b.d.board.sessions[0].started_by = Some(b.crown);
+        let mut a = CrownAsk::queued(b.crown, 1);
+        a.stage = Stage::Sent;
+        a.submit = true;
+        a.session = Some(b.seat);
+        b.d.crown_asks.insert(b.worker, vec![a]);
+        let admits = |b: &Bed, deliver: Deliver| {
+            let seat = b.d.seat_of(b.worker);
+            let sends = b.d.crown_ask_hold(b.crown, b.worker, &seat).is_none();
+            b.d.steer_admits(&seat, deliver, sends)
+        };
+        let set = |b: &mut Bed, state: SessionState, confidence: Confidence| {
+            b.d.board.sessions[0].state = state;
+            b.d.board.sessions[0].confidence = confidence;
+        };
+        set(&mut b, SessionState::Running, Confidence::High);
+        assert!(admits(&b, Deliver::Now) && admits(&b, Deliver::Immediately));
+        assert!(!admits(&b, Deliver::Idle), "idle keeps the rule");
+        assert!(b.d.crown_ask_blocks(b.worker, "T-2").is_some(), "the submit is out");
+        set(&mut b, SessionState::Running, Confidence::Low);
+        assert!(!admits(&b, Deliver::Now), "a run guessed off the tail");
+        for state in [
+            SessionState::Failed { reason: mesimon_core::board::FailReason::Server },
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+            SessionState::Spawning,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Sleeping,
+        ] {
+            set(&mut b, state.clone(), Confidence::High);
+            assert!(!admits(&b, Deliver::Now), "{state:?}");
+            assert!(!admits(&b, Deliver::Immediately), "{state:?}");
+        }
+        // A person's agent the crown does not watch: held for a person.
+        set(&mut b, SessionState::Running, Confidence::High);
+        b.d.board.sessions[0].started_by = None;
+        assert!(!admits(&b, Deliver::Now), "a person's agent");
+    }
+
     /// A settled record is not kept; a queued one is the queue's.
     #[test]
     fn only_an_ask_out_is_kept() {
@@ -1270,6 +1387,14 @@ mod ledger_tests {
         assert!(!keeps_turn(Some(&TurnAsk::Merge), &steer, &list));
         assert!(!keeps_turn(None, &steer, &list));
         assert!(!keeps_turn(Some(&rode), &steer, &[]), "the board no longer holds it");
+        // A held submit entered after the steer: its own turn takes the
+        // mark from the steer that rode the turn before (round 1, ST2).
+        let mut held = CrownAsk::queued(c, 2);
+        held.stage = Stage::Handed;
+        held.submit = true;
+        held.own_turn = true;
+        let entered = TurnAsk::Asked { crown: c, ask: held.id, said: Said::Handed };
+        assert!(!keeps_turn(Some(&rode), &entered, &[first.clone(), held]), "its own turn");
         first.released = true;
         assert!(!keeps_turn(Some(&rode), &steer, &[first]), "no longer out");
     }

@@ -34818,3 +34818,61 @@ mid-turn behind a raced paste.
   `steered` check reads the feed's `ask` and `beside` and the answered wake after them. A2's
   second ask became `deliver: idle`, a resend, which the rule still refuses; its steer case is
   ST1's.
+
+**Round 1, the cold read of `a5de8221`.** One P1, two P2s, one P3, and one defect the new rig
+case found.
+- **P1: a restart at a dialog.** The restart's look (`hear_restored`) counts a worker at
+  `RequiresAction` as settled, and it removed the turn's mark and its open turn to probe them as
+  an answered turn.
+  - The handed submit then had no mark at its real end. It never settled, so it blocked idle asks
+    on that pane, and the look had already woken the crown for it at the dialog.
+  - Now, at a dialog, the look leaves an `Asked` mark and `turns_open` in place and probes a
+    baseline that answers nothing. `turn_ended`'s restart branch passes no kept `Asked` on
+    either: it already kept the mark at a dialog, but then handed it to the restart probe, which
+    could answer it a second time.
+  - A dialog is never an end. The proven end after the answer settles the ask through
+    `crown_ask_turn_ended` and wakes the crown once, naming it.
+  - The regression is the e2e's dialog section (handed or sent → dialog → restart → answer →
+    Stop) on both roads. Without the fix it fails at its first assertion: the look woke the crown
+    at the dialog.
+- **P2: what admits a steer.** The steer's test was `!session_idle`, which admitted `Failed`,
+  `Unknown` and `Spawning`. It is now `steer_admits`: a `Pane` seat whose agent is `Running` and
+  not guessed (`crownwake::guessed`), on a road the crown sends, at `now` or `immediately`.
+  - Not admitted: `Idle{Background}` (words there start a turn rather than steer one), a dialog,
+    a parked seat, a person's agent, `idle`.
+  - `a_steer_needs_a_turn_observed_running` covers each of those beside a submit still out.
+- **P2: the rig's evidence.**
+  - The `crown_wake` feed line names the ask its turn answered and that ask's word (`ask`:
+    `<id> <word>`, additive).
+  - `steered:<word>[:<secs>]` requires the first answered wake after the steer to name the
+    earlier ask at `<word>`, within `<secs>` of its send. ST1 asks `taken:200` and the replies
+    `ready, stopped`.
+  - **ST2** is the reopened T-930 sequence on the real mod. A `now` submit is held behind a
+    foreground `sleep 90`, then the same words are sent with `immediately`. Its check
+    `held_steer:mango` records both ids, the words' count in the worker's prompts, and every
+    wake's ask.
+  - A2 (its second ask now `idle`) was run.
+- **Found by ST2's first run: an ask that starts its own turn always takes the mark.**
+  - The engine's `Stop` for the steer's turn and the held submit's prompt came 0.3 s apart, inside
+    the attention settle, so the board saw one working stretch and one end.
+  - The submit's `entered` met the steer's mark, and `keeps_turn` kept it. The end then named the
+    steer, and the submit stayed `handed` for good.
+  - Now `keeps_turn` never keeps a mark over an ask that starts a turn of its own (`own_turn`).
+  - `crown_ask_turn_ended` takes any other handed own-turn ask at a proven end (its turn began
+    before it), so none is left blocking under another's mark.
+  - The unit is `a_held_submit_entered_after_a_steer_takes_the_turn_it_starts`. The e2e's mod
+    section replays the merged stretch, and without the fix it fails.
+- **Measured (ST2 after the fix, claude 2.1.310).**
+  - The submit stayed `sent`. The steer was admitted with `earlier` naming it `sent`.
+  - The engine's Stop and the held prompt came together at 52.4 s, the board saw one end, and one
+    answered wake named the submit `taken`. No wake named the steer.
+  - The same words reached the worker twice, 2 of its 4 prompts.
+  - **What the crown is told:** the steer's receipt says the earlier ask is still out (`earlier`:
+    `sent`). The rules say a held submit runs when the running turn ends, and the turn's end names
+    the submit. The second copy is the crown's to weigh from that receipt; the board does not
+    refuse it.
+- **P3: the tool's refusal clause.** It now reads "while its last ask is still outstanding, except
+  now or immediately in a running turn". To keep `ask_agent` under the cap, the `deliver` property
+  is back to its original line: the exception sits once, in the clause the reader found
+  contradicted. `ask_agent` is 819 bytes. The rules say "into a running turn" where they said
+  "to a working agent".

@@ -125,14 +125,25 @@ impl FeedWriter {
 
     /// The board noted a wake for the crown (T-414): the worker that
     /// finished or raised its hand, and why. Keys only — the sentence the
-    /// crown receives is never in the feed (D11).
-    pub fn crown_wake(&mut self, crown: ulid::Ulid, worker: ulid::Ulid, cause: &str) {
-        self.push(json!({
+    /// crown receives is never in the feed (D11). A turn that answered a
+    /// crown ask names it and its word then (`ask`: `<id> <word>`, T-974).
+    pub fn crown_wake(
+        &mut self,
+        crown: ulid::Ulid,
+        worker: ulid::Ulid,
+        cause: &str,
+        ask: Option<String>,
+    ) {
+        let mut line = json!({
             "kind": "crown_wake",
             "crown": crown,
             "worker": worker,
             "cause": cause,
-        }));
+        });
+        if let Some(ask) = ask {
+            line["ask"] = json!(ask);
+        }
+        self.push(line);
     }
 
     /// Who requested which shell; capture contents never enter the feed.

@@ -7850,13 +7850,11 @@ impl Daemon {
                 // A second ask while the first is out with the agent (T-938):
                 // refused, naming it, so a resend never puts a second copy in
                 // behind the board's back. One still on the queue is replaced.
-                // A steer is not a resend (T-974): `now` or `immediately` to a
-                // working agent the crown sends to is a person's send-now on
-                // its say-so, admitted beside the ask still out as its own.
-                let steer = sends
-                    && deliver.at_once()
-                    && matches!(seat, QueuedSeat::Pane(id) if !self.session_idle(id));
-                if !steer {
+                // A steer is not a resend (T-974): `now` or `immediately` into
+                // a turn observed running, of an agent the crown sends to, is
+                // a person's send-now on its say-so, admitted beside the ask
+                // still out as its own (`steer_admits`).
+                if !self.steer_admits(&seat, deliver, sends) {
                     if let Some(message) = self.crown_ask_blocks(target, &key) {
                         return Response::Err { message };
                     }

@@ -252,7 +252,7 @@ pub const CROWN_WAKES: &str = concat!(
      person, the agent's side or the board, with why) or unknown (with why), none of \
      them resent. A new ask replaces the crown's last on that ticket while it is queued; with \
      deliver idle it is refused while that one is out (sent or handed, before the turn it went \
-     into ends), and with deliver now or immediately to a working agent it goes beside it as an \
+     into ends), and with deliver now or immediately into a running turn it goes beside it as an \
      ask of its own, asked then reading it and earlier the one still out. \
      A ticket a person started wakes this session only once watch_ticket watches it or \
      hold_ticket holds it. A ticket with no agent that carries a pull request (one \
@@ -920,8 +920,9 @@ pub fn tools() -> Vec<Value> {
                             only). A person sends (^y) or takes back (^u); if the crown is \
                             autonomous, an agent it started or watches gets them \
                             as deliver says (asked says where they stand). Refused with no agent, \
-                            at once at a dialog, or while its last ask is still outstanding. A \
-                            turn ending after them wakes this session.",
+                            at once at a dialog, or while its last ask is still outstanding, \
+                            except now or immediately in a running turn. A turn ending after \
+                            them wakes this session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -932,7 +933,7 @@ pub fn tools() -> Vec<Value> {
                     "text": { "type": "string", "description": "Words a person types; one led by / is typed and entered as a command." },
                     "seen": { "type": "string" },
                     "plan": { "type": "boolean" },
-                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately; now and immediately pass an out ask mid-turn." },
+                    "deliver": { "type": "string", "description": "Optional: idle (default), now, immediately." },
                 },
                 "required": ["key", "text", "seen"],
                 "additionalProperties": false,
