@@ -733,9 +733,12 @@ fn a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end() {
     b.start();
     let stop = r#"{"stop_hook_active":false}"#;
     let mut n = 0;
+    // A shared runner's tail polls land inside the settle in two tries of
+    // eleven, not three in four (T-1019, macos-14): more tries there.
+    let tries = if std::env::var_os("MESIMON_CI").is_some() { 24 } else { 8 };
     for (error, text) in [(true, REFUSED), (false, "User has approved your plan.")] {
         let mut met = false;
-        for _ in 0..8 {
+        for _ in 0..tries {
             n += 1;
             let id = format!("toolu_s{n}");
             b.call("ExitPlanMode", &id);
@@ -774,7 +777,7 @@ fn a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end() {
                 break;
             }
         }
-        assert!(met, "no read of the result landed inside a Stop's settle in eight tries");
+        assert!(met, "no read of the result landed inside a Stop's settle in {tries} tries");
     }
 }
 

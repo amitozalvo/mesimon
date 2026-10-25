@@ -15,6 +15,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      tests:
+        # Arguments for `cargo test` in place of the whole suite, e.g.
+        # `-p mesimon --test hook_e2e -- m2_attention`: a fix round's run
+        # answers in the build time plus its tests, and skips the other
+        # gates. Empty runs everything (T-1019).
+        description: "cargo test arguments to run in place of the whole suite"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -69,24 +78,37 @@ jobs:
       # a quiet day and its own commit, not a side effect of adding CI.
 
       - name: Clippy
+        if: inputs.tests == ''
         run: python3 -B ci/test-run.py -- cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Duplicate dependency drift
+        if: inputs.tests == ''
         run: ./ci/check-dup-deps.sh
 
       # The mascot's PNGs and the installer's welcome are goldens of the creature
       # engine now (`cargo test -p mesimon-tui creature`), covered by the Test step.
       - name: Installer
+        if: inputs.tests == ''
         run: python3 -B ci/test_installer.py
 
       - name: Test
+        if: inputs.tests == ''
         run: python3 -B ci/test-run.py --timeout 4200 -- cargo test --workspace --no-fail-fast
 
+      # The input rides an environment variable, never the script's text, and
+      # is split into words on purpose.
+      - name: Test (only what the dispatch names)
+        if: inputs.tests != ''
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: python3 -B ci/test-run.py --one-road -- cargo test $TESTS
+
       - name: MEASURE the mod road's pass (T-1019, to be removed)
-        if: always()
+        if: always() && inputs.tests == ''
         env:
           MESIMON_TEST_ROAD: mod
         run: python3 -B ci/test-run.py --timeout 4200 --one-road -- cargo test -p mesimon --tests --no-fail-fast
 
       - name: Test cleanup failure paths and runner concurrency
+        if: inputs.tests == ''
         run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p 'test_*_test.py' -v
