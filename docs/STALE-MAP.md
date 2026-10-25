@@ -34568,7 +34568,8 @@ next round, not mid-round at the engine's choice), nor weigh another round again
 
 **What shipped.**
 - **Two board switches.** `Board::crown_context` (on by default) and `Board::crown_cost` (off),
-  T-712's shape: `#[serde(default)]`, written either way in `columns.toml`, no schema bump.
+  T-712's shape: `#[serde(default)]`, written either way in `columns.toml`; `COLUMNS_SCHEMA`
+  9 since round 1 (below).
   `Command::SetCrownContext` / `SetCrownCost` are local only (`agent_allows` false). They are
   the Settings › Crown rows **Reads context** and **Reads cost** under Watches tickets, and
   `doctor`'s `crown reads context` / `crown reads cost` lines.
@@ -34608,6 +34609,42 @@ next round, not mid-round at the engine's choice), nor weigh another round again
   `get_ticket` and named the fuller one. It passed on its first run (2026-10-25, Sonnet
   workers on the mod road, Opus crown): the crown read 83,830 and 147,020 of 1,000,000, named
   the second, and ran no Bash.
+- **Round 1 (the cold read of `188be90d`).**
+  - **The reads are the crown's.** A worker calling `get_ticket` with its own key went through
+    `AgentReadTicket`, and `crown_target` returns the caller's own ticket before its crown
+    check, so the worker read `context`, and `cost` with that switch on. The keyed read now
+    adds them only where the caller's ticket wears the crown. `crown_reads_e2e` asserts it over
+    the real MCP shim: a worker's unkeyed and keyed reads carry none of `context`,
+    `context_about`, `cost` or `cost_about`; the crown's own two carry all four. With the gate
+    taken out, the test fails at the worker's keyed read.
+  - **`COLUMNS_SCHEMA` 8 → 9.** The crown's decision, overriding the brief's "no bump" by the
+    column-setting recipe's own rule. A person's `crown_context = false` saved here, then a v8
+    build's next write, dropped the key; back on this build the default read it on again, so
+    a person's off was lost. At v9 the v8 build refuses the file and bars its writes
+    (`a_v8_build_is_barred_from_a_file_holding_a_crown_context_off`). `crown_cost` rides the
+    bump, though dropping it only loses an opt-in.
+  - **A Codex reading's window is its own line's.** The pass fell back to the last reading's
+    window, so a thread moved by `turn_context` to a model whose lines name none read the old
+    model's 258,400 and a made-up share. Now no window means no `context`. The ledger test
+    walks a known window, then a model with none, then a known one again.
+  - **Old cursors get their reading.** A `costs.json` cursor from before T-969 sits at its
+    transcript's end, and a pass reads only what grew, so a long-idle worker would never get a
+    reading. `Cursor::fill_seen` (false on such a cursor) has its passed lines searched once,
+    the last 8 MiB (`last_reading`), by the pass's own rules. Offsets, message ids, totals and
+    hours are not touched. A reply further back than 8 MiB of tool output leaves the reading to
+    the next reply. Tested: an idle Claude transcript, one ending on a compaction and a Codex
+    rollout get their readings; the hours and offsets do not move; the next pass reads nothing.
+  - **The cost is the card's.** The e2e compares `cost.usd`, `tokens` and `unpriced` with the
+    snapshot's `TicketCost` for the same ticket.
+  - **The mod road, live.** Rig `CX2`: the crown starts a Sonnet worker on the mod road, sends
+    it `/compact` through `ask_agent`, then words. It passed (2026-10-25, Claude Code 2.1.310):
+    the board fed `command_sent` (the paste road, not the mod's `submit`), the worker's
+    transcript wrote a `compact_boundary` with `trigger: manual`, and the worker then answered
+    the words. Its two replies read 83,817 before and 83,621 after. A two-turn conversation is
+    mostly system prompt and tools, so the check reports both readings and does not judge
+    which way they move. The drop on a long conversation is the transcripts' measurement
+    above. The clause's mod-road claim now rests on this run, not only on routing and the
+    fake mod.
 - **A collision in `mcp_e2e`.** Its leak scan read `list_board`'s `daemon.path` (T-941), the
   binary's path. In a worktree whose title says "session" (this one) that path holds the
   word, so the scan sees a false leak. The test now leaves that one path out of the scan.

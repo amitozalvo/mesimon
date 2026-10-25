@@ -7469,7 +7469,12 @@ impl Daemon {
                             view.crowned = Some(self.board.is_crowned(ticket));
                         }
                         view.watched = target != ticket && self.crown_watched.contains(&target);
-                        self.crown_reads(&mut view, target);
+                        // The crown's reads are the crown's (T-969, round
+                        // 1): a worker naming its own key reads its ticket
+                        // and nothing of them.
+                        if self.board.is_crowned(ticket) {
+                            self.crown_reads(&mut view, target);
+                        }
                         Response::AgentTicket { ticket: view }
                     }
                     None => no_such_ticket(),

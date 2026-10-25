@@ -89,6 +89,13 @@ pub struct Cursor {
     /// the next line read writes it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Fill>,
+    /// `fill` stands for every line before `offset` (T-969, round 1): the
+    /// cursor read them all with this build, or the lines it had passed
+    /// before were searched once for their last reading (`last_reading`).
+    /// A cursor from before T-969 says false and is searched on its next
+    /// pass, idle or not, with no count moved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_seen: bool,
 }
 
 /// The two counts of a ticket's mod-reported turns (T-581), in tokens: the
@@ -227,7 +234,7 @@ impl Ledger {
             return false;
         }
         // Read from its start, so every `pr create` in it is seen (T-810).
-        let cursor = Cursor { codex, backfilled: true, ..Cursor::default() };
+        let cursor = Cursor { codex, backfilled: true, fill_seen: true, ..Cursor::default() };
         t.conversations.insert(path.to_string(), cursor);
         true
     }
@@ -551,7 +558,7 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
             subagents(&j.path).into_iter().map(|path| Job {
                 ticket: j.ticket,
                 path,
-                cursor: Cursor { backfilled: true, ..Cursor::default() },
+                cursor: Cursor { backfilled: true, fill_seen: true, ..Cursor::default() },
             })
         })
         .filter(|j| !known.contains(&j.path))
@@ -567,19 +574,33 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     let len = std::fs::metadata(&job.path).ok()?.len();
     let mut cursor = job.cursor;
     let new = cursor.offset == 0 && cursor.recent.is_empty() && cursor.totals.is_none();
-    if len == cursor.offset && !new {
+    // A subagent's transcript is no reading of its session's context.
+    let own = !job.path.contains("/subagents/");
+    // A cursor that passed its lines before the reading was kept (T-969,
+    // round 1) has them searched once, here, before what grew is read: an
+    // idle session's transcript at its end gets its reading too.
+    let searched = !cursor.fill_seen && len >= cursor.offset;
+    if searched {
+        cursor.fill_seen = true;
+        if own && cursor.offset > 0 {
+            cursor.fill = last_reading(&job.path, cursor.offset, cursor.codex, &cursor.model);
+        }
+    }
+    if len == cursor.offset && !new && !searched {
         return None;
     }
     if len < cursor.offset {
-        cursor = Cursor { codex: cursor.codex, backfilled: true, ..Cursor::default() };
+        cursor =
+            Cursor { codex: cursor.codex, backfilled: true, fill_seen: true, ..Cursor::default() };
     }
     let mut file = std::fs::File::open(&job.path).ok()?;
     file.seek(SeekFrom::Start(cursor.offset)).ok()?;
     let mut buf = Vec::new();
     file.take(READ_CAP.min(len - cursor.offset)).read_to_end(&mut buf).ok()?;
     let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
-        // Nothing whole yet; a new transcript is still worth recording.
-        return new.then_some(Done {
+        // Nothing whole yet; a new transcript is still worth recording, and
+        // so is a reading the search found.
+        return (new || searched).then_some(Done {
             ticket: job.ticket,
             path: job.path,
             cursor,
@@ -589,8 +610,6 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         });
     };
     let text = String::from_utf8_lossy(&buf[..end]);
-    // A subagent's transcript is no reading of its session's context.
-    let own = !job.path.contains("/subagents/");
     let mut added = Vec::new();
     let mut pr_urls = Vec::new();
     let mut pr_acted = Vec::new();
@@ -605,30 +624,19 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
                     let grew = delta(&cursor.totals.unwrap_or_default(), &tokens);
                     cursor.totals = Some(tokens);
                     let model = cursor.model.clone().unwrap_or_else(|| "codex".into());
-                    // The `token_count` after a compaction reads no input.
-                    if last_input > 0 {
-                        let window = window.or(cursor.fill.as_ref().and_then(|f| f.window));
-                        let model = model.clone();
-                        cursor.fill =
-                            Some(Fill { tokens: last_input, model, window, compacted: false });
+                    if let Some(f) = codex_reading(&model, last_input, window) {
+                        cursor.fill = Some(f);
                     }
                     added.push((stamp(at_ms, now_ms), model, grew));
                 }
-                Some(CodexLine::Compacted) => {
-                    cursor.fill.get_or_insert_with(Fill::default).compacted = true;
-                }
+                Some(CodexLine::Compacted) => compacted(&mut cursor.fill),
                 None => {}
             }
         } else if own && claude_compacted(line) {
-            cursor.fill.get_or_insert_with(Fill::default).compacted = true;
+            compacted(&mut cursor.fill);
         } else if let Some(turn) = claude_turn(line) {
-            // A reply's input is the whole prompt the model read; an
-            // auto-compaction's own requests are written with none.
-            let input =
-                turn.tokens.input + turn.tokens.read + turn.tokens.write_5m + turn.tokens.write_1h;
-            if own && !turn.sidechain && input > 0 {
-                let model = turn.model.clone();
-                cursor.fill = Some(Fill { tokens: input, model, window: None, compacted: false });
+            if let Some(f) = claude_reading(&turn).filter(|_| own) {
+                cursor.fill = Some(f);
             }
             if cursor.recent.contains(&turn.id) {
                 continue;
@@ -642,6 +650,82 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     }
     cursor.offset += end as u64 + 1;
     Some(Done { ticket: job.ticket, path: job.path, cursor, added, pr_urls, pr_acted })
+}
+
+/// How far back `last_reading` searches a transcript it had passed: the
+/// last reply is near its end, and a reply further back than this many
+/// bytes of tool output leaves the reading to the next one.
+const FILL_TAIL: u64 = 8 << 20;
+
+/// A Claude reply's reading (T-969): its input is the whole prompt the
+/// model read. A subagent's message in the session's transcript is none,
+/// and neither is an auto-compaction's own request, written with no usage.
+fn claude_reading(turn: &mesimon_core::cost::Turn) -> Option<Fill> {
+    let t = &turn.tokens;
+    let input = t.input + t.read + t.write_5m + t.write_1h;
+    (!turn.sidechain && input > 0).then(|| Fill {
+        tokens: input,
+        model: turn.model.clone(),
+        window: None,
+        compacted: false,
+    })
+}
+
+/// A Codex request's reading (T-969), with the window its own line names
+/// and no other (round 1): a model the thread moved to may name none, and
+/// the last one's would be another model's. The `token_count` after a
+/// compaction reads no input and is none.
+fn codex_reading(model: &str, last_input: u64, window: Option<u64>) -> Option<Fill> {
+    (last_input > 0).then(|| Fill {
+        tokens: last_input,
+        model: model.to_string(),
+        window,
+        compacted: false,
+    })
+}
+
+/// A compaction came after the last reading (T-969).
+fn compacted(fill: &mut Option<Fill>) {
+    fill.get_or_insert_with(Fill::default).compacted = true;
+}
+
+/// The reading `path`'s lines before `end` leave (T-969, round 1), for a
+/// cursor that passed them before readings were kept: the last
+/// `FILL_TAIL` bytes, whole lines only, by the same rules as a pass, and
+/// nothing counted. `model` is the Codex model the cursor last read, which
+/// a `turn_context` in the searched lines replaces.
+fn last_reading(path: &str, end: u64, codex: bool, model: &Option<String>) -> Option<Fill> {
+    let start = end.saturating_sub(FILL_TAIL);
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    file.take(end - start).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = text.lines();
+    if start > 0 {
+        lines.next(); // the tail of a line the search began inside
+    }
+    let mut model = model.clone().unwrap_or_else(|| "codex".into());
+    let mut fill = None;
+    for line in lines {
+        if codex {
+            match codex_line(line) {
+                Some(CodexLine::Model(m)) => model = m,
+                Some(CodexLine::Totals { last_input, window, .. }) => {
+                    if let Some(f) = codex_reading(&model, last_input, window) {
+                        fill = Some(f);
+                    }
+                }
+                Some(CodexLine::Compacted) => compacted(&mut fill),
+                None => {}
+            }
+        } else if claude_compacted(line) {
+            compacted(&mut fill);
+        } else if let Some(f) = claude_turn(line).as_ref().and_then(claude_reading) {
+            fill = Some(f);
+        }
+    }
+    fill
 }
 
 /// The `opened here` fact (T-739) and the `acted on here` fact (T-859) on
@@ -1307,10 +1391,93 @@ mod tests {
         ledger.apply(scan(ledger.jobs(), NOW));
         assert_eq!(ledger.fill(x, &rpath).unwrap().tokens, 24_769);
         assert!(!ledger.fill(x, &rpath).unwrap().compacted);
+        // The thread moves to a model whose lines name no window: its
+        // reading carries none, never the last model's (round 1), and so
+        // gives no view; a line that names one again gives one.
+        let bare = r#"{"timestamp":"2026-10-01T16:03:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30000,"cached_input_tokens":0,"output_tokens":20},"last_token_usage":{"input_tokens":30000,"output_tokens":10}}}}"#;
+        let custom = r#"{"timestamp":"2026-10-01T16:03:00Z","type":"turn_context","payload":{"model":"my-own-model"}}"#;
+        append(&rollout, &format!("{custom}\n{bare}\n"));
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(x, &rpath).unwrap();
+        assert_eq!((fill.tokens, fill.window, fill.model.as_str()), (30_000, None, "my-own-model"));
+        assert!(mesimon_core::context::codex_view(fill).is_none(), "no window, no reading");
+        append(
+            &rollout,
+            &format!(
+                "{}\n{}\n",
+                r#"{"timestamp":"2026-10-01T16:04:00Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}"#,
+                tc(40_000)
+            ),
+        );
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let fill = ledger.fill(x, &rpath).unwrap();
+        assert_eq!((fill.tokens, fill.window), (40_000, Some(258_400)));
+        assert_eq!(mesimon_core::context::codex_view(fill).unwrap().pct, Some(15));
         // The account by kind is the hours' sum, as the card's figure is.
         let (c, kinds) = ledger.account(t, NOW).unwrap();
         assert_eq!(c.tokens, kinds.total());
         assert_eq!((kinds.input, kinds.write_1h), (2 * 4, 10 * 4), "four replies counted");
         assert!(ledger.account(ulid::Ulid::new(), NOW).is_none());
+    }
+
+    /// T-969, round 1: a cursor from before readings were kept, sitting at
+    /// its transcript's end, is searched once for the last reading its
+    /// lines leave, a compaction after it included; nothing is counted
+    /// again, and the next pass reads nothing.
+    #[test]
+    fn a_cursor_from_before_readings_gets_its_last_one_and_counts_nothing_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let idle = dir.path().join("idle.jsonl");
+        let compacted = dir.path().join("compacted.jsonl");
+        std::fs::write(
+            &idle,
+            format!("{}\n{}\n", fill_line("m1", 300_000, false), fill_line("m2", 640_000, false)),
+        )
+        .unwrap();
+        let boundary = r#"{"isSidechain":false,"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual"}}"#;
+        std::fs::write(&compacted, format!("{}\n{boundary}\n", fill_line("c1", 700_000, false)))
+            .unwrap();
+        let rollout = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                r#"{"timestamp":"2026-10-01T16:00:00Z","type":"turn_context","payload":{"model":"gpt-6-astra"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-01T16:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200000,"cached_input_tokens":0,"output_tokens":10},"last_token_usage":{"input_tokens":200000,"output_tokens":10},"model_context_window":258400}}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let t = ulid::Ulid::new();
+        let mut ledger = Ledger::default();
+        for p in [&idle, &compacted] {
+            ledger.learn(t, &p.display().to_string(), false, false);
+        }
+        ledger.learn(t, &rollout.display().to_string(), true, false);
+        ledger.apply(scan(ledger.jobs(), NOW));
+        // As a build before T-969 left them: read to the end, no reading.
+        for c in ledger.tickets.get_mut(&t).unwrap().conversations.values_mut() {
+            c.fill = None;
+            c.fill_seen = false;
+        }
+        let before = ledger.tickets[&t].hours.clone();
+        let offsets: Vec<u64> =
+            ledger.tickets[&t].conversations.values().map(|c| c.offset).collect();
+        ledger.apply(scan(ledger.jobs(), NOW));
+        let ip = idle.display().to_string();
+        let cp = compacted.display().to_string();
+        let fill = ledger.fill(t, &ip).unwrap();
+        assert_eq!((fill.tokens, fill.compacted), (640_000, false));
+        let fill = ledger.fill(t, &cp).unwrap();
+        assert_eq!((fill.tokens, fill.compacted), (700_000, true));
+        let fill = ledger.fill(t, &rollout.display().to_string()).unwrap();
+        assert_eq!(
+            (fill.tokens, fill.window, fill.model.as_str()),
+            (200_000, Some(258_400), "gpt-6-astra")
+        );
+        assert_eq!(ledger.tickets[&t].hours, before, "no token counted twice");
+        let after: Vec<u64> = ledger.tickets[&t].conversations.values().map(|c| c.offset).collect();
+        assert_eq!(after, offsets, "the accounting cursor stays where it was");
+        assert!(scan(ledger.jobs(), NOW).is_empty(), "searched once");
     }
 }

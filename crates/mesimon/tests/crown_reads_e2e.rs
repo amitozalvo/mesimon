@@ -143,8 +143,61 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     let cost = v.cost.expect("the ticket's cost");
     assert_eq!((cost.input, cost.cache_write, cost.output), (6, 3_000, 120), "{cost:?}");
     assert_eq!(cost.tokens, cost.input + cost.output + cost.cache_write + cost.cache_read);
-    assert!(cost.usd.starts_with('$'), "{}", cost.usd);
+    // The card's own figure: the snapshot's account of the same ticket.
+    let card = match c.request(Command::Snapshot) {
+        Response::Board { costs, .. } => {
+            costs.into_iter().find(|x| x.ticket == w).expect("W's cost")
+        }
+        other => panic!("snapshot: {other:?}"),
+    };
+    assert_eq!(cost.usd, mesimon_core::cost::usd_word(card.usd));
+    assert_eq!((cost.tokens, cost.unpriced), (card.tokens, card.unpriced));
     assert!(v.cost_about.unwrap().contains("not a bill"));
+
+    // Round 1: the reads are the crown's. Over the real MCP shim, with
+    // both switches on and W's reading and cost on hand, W's own reads,
+    // unkeyed and by its own key, carry none of the four fields; the
+    // crown's of its own ticket, unkeyed and keyed, carry its own.
+    let four = ["context", "context_about", "cost", "cost_about"];
+    let crown_transcript = h.dir.join("crown.jsonl");
+    hook_send_with(
+        &hook_sock,
+        &sa.to_string(),
+        "SessionStart",
+        Some("startup"),
+        &json!({
+            "session_id": "c0ffee00-0000-0000-0000-000000000970",
+            "transcript_path": crown_transcript,
+            "cwd": h.repo,
+        })
+        .to_string(),
+    );
+    append(&crown_transcript, &reply("k1", 400_000));
+    turn_read(&h, sa, &crown_transcript);
+    let ka = key_of(&mut c, a);
+    let mut worker = Shim::start(&h.paths.orch_sock(), sw);
+    worker.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    worker.notify("notifications/initialized");
+    for args in [json!({}), json!({ "key": kw })] {
+        let answer = worker.call_ok("get_ticket", args.clone());
+        assert_eq!(answer["key"], json!(kw), "{args}");
+        for f in four {
+            assert!(answer.get(f).is_none(), "a worker's {args} read carries {f}: {answer}");
+        }
+    }
+    let mut crown = Shim::start(&h.paths.orch_sock(), sa);
+    crown.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    crown.notify("notifications/initialized");
+    for args in [json!({}), json!({ "key": ka })] {
+        let answer = crown.call_ok("get_ticket", args.clone());
+        for f in four {
+            assert!(answer.get(f).is_some(), "the crown's {args} read lacks {f}: {answer}");
+        }
+        assert_eq!(answer["context"]["tokens"], json!(400_000), "{args}");
+    }
+    let answer = crown.call_ok("get_ticket", json!({ "key": kw }));
+    assert_eq!(answer["context"]["tokens"], json!(92_957));
+    assert_eq!(answer["cost"]["usd"], json!(cost.usd));
     assert!(read(&mut c, sa, &kn).cost.is_none(), "nothing counted, nothing said");
 
     // Context off over the wire: gone with its line; cost stays.
@@ -159,12 +212,6 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     assert!(matches!(c.request(Command::SetCrownCost { on: false }), Response::Ok));
     let v = read(&mut c, sa, &kw);
     assert!(v.cost.is_none() && v.cost_about.is_none());
-    // A worker reads neither of its own ticket, whatever the switches say.
-    assert!(matches!(c.request(Command::SetCrownContext { on: true }), Response::Ok));
-    match c.send(Principal::Agent { session: sw }, Command::AgentGetTicket) {
-        Response::AgentTicket { ticket } => assert!(ticket.context.is_none()),
-        other => panic!("get_ticket: {other:?}"),
-    }
     // An agent cannot turn either switch.
     for cmd in [Command::SetCrownContext { on: false }, Command::SetCrownCost { on: true }] {
         assert!(matches!(c.send(Principal::Agent { session: sa }, cmd), Response::Err { .. }));

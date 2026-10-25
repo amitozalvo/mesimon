@@ -62,7 +62,12 @@ pub(crate) mod imports;
 /// v8 (T-739) adds a column's `requires_pipeline`, the same widening if
 /// dropped; `arrives_on` and `arrives_env` ride the same bump, though a
 /// build that drops them only moves nothing.
-pub const COLUMNS_SCHEMA: u32 = 8;
+/// v9 (T-969, round 1) adds the board's `crown_context`, on unless a person
+/// turned it off: a v8 build would drop `crown_context = false` on its next
+/// write, and this build back would read the crown's context read on again
+/// — the `mcp_tools` reason, a person's off lost. `crown_cost` rides the
+/// same bump, though dropping it only loses an opt-in.
+pub const COLUMNS_SCHEMA: u32 = 9;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -170,12 +175,13 @@ struct ColumnsFile {
     #[serde(default = "yes")]
     crown_watches: bool,
     /// The crown reads a session's context fill (`Board::crown_context`,
-    /// T-969). Absent means ON, written either way, so an off survives. No
-    /// bump: a build before it has no such field to hand its crown.
+    /// T-969). Absent means ON, written either way, so an off survives a
+    /// save here; v9 bars a v8 build's write, which would drop an off and
+    /// read on again once this build is back (round 1).
     #[serde(default = "yes")]
     crown_context: bool,
     /// The crown reads a ticket's cost (`Board::crown_cost`, T-969). Absent
-    /// means OFF, written either way, so an on survives. No bump, as above.
+    /// means OFF, written either way, so an on survives; it rides v9.
     #[serde(default)]
     crown_cost: bool,
     /// Reviewed pull requests are a ticket's (`Board::reviewed_prs`,
@@ -1473,6 +1479,35 @@ mod tests {
         cleanup(&dir, &paths);
     }
 
+    /// T-969, round 1: a person's `crown_context = false` is written at v9,
+    /// which a v8 build refuses and bars, so its next write cannot drop the
+    /// off for this build to read on again; a v8 file loads here, reads the
+    /// defaults, and is written back at v9.
+    #[test]
+    fn a_v8_build_is_barred_from_a_file_holding_a_crown_context_off() {
+        let (dir, paths) = scratch("crownbump");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            "schema_version = 8\nnext_key = 2\n\n[[columns]]\nname = \"TODO\"\norder = \"a0\"\n",
+        );
+        let mut b = load(&paths).unwrap().board;
+        assert!(b.crown_context, "a v8 file reads the default");
+        b.crown_context = false;
+        save_columns(&paths, &b).unwrap();
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("schema_version = 9"), "{text}");
+        assert!(text.contains("crown_context = false"), "{text}");
+        // What the v8 reader decides of this file: newer, so refused and
+        // its writes barred, the off left on disk.
+        let found = toml::from_str::<toml::Value>(&text).unwrap()["schema_version"]
+            .as_integer()
+            .unwrap() as u32;
+        assert!(matches!(verdict(found, 8), Verdict::Newer(9)));
+        assert!(!load(&paths).unwrap().board.crown_context, "the off is this build's still");
+        cleanup(&dir, &paths);
+    }
+
     /// T-732: the crown's watch switch — absent reads on in the daemon and
     /// in doctor, an off survives a save, an on is written.
     #[test]
@@ -2685,10 +2720,10 @@ order = "a0"
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 8);
+        assert_eq!(COLUMNS_SCHEMA, 9);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(8)));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(9)));
     }
 
     /// T-499 removed the column's `auto_run`. A file that still says it

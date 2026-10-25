@@ -2946,6 +2946,31 @@ Reply with the single word ready and end your turn."""
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, none of {words}")
+            elif name == "compacted":
+                # T-969, round 1: the worker's own transcript records a
+                # compaction of trigger `arg` with a reply on each side of
+                # it, both readings in the observed line. Which way the
+                # reading moves is not judged: on a short conversation the
+                # system prompt and tools are most of it (49,282 to 50,651
+                # measured), on a long one it drops by the hundred thousand.
+                def fill_of(r):
+                    u = (r.get("message") or {}).get("usage") or {}
+                    return (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                            + u.get("cache_creation_input_tokens", 0))
+                at = next((i for i, r in enumerate(rows) if r.get("type") == "system"
+                           and r.get("subtype") == "compact_boundary"
+                           and (r.get("compactMetadata") or {}).get("trigger") == arg), None)
+                main = [(i, fill_of(r)) for i, r in enumerate(rows) if r.get("type") == "assistant"
+                        and not r.get("isSidechain") and fill_of(r) > 0]
+                before = [f for i, f in main if at is not None and i < at]
+                after = [f for i, f in main if at is not None and i > at]
+                if at is None:
+                    check(c, False, f"no {arg} compact_boundary in the transcript")
+                elif not before or not after:
+                    check(c, False, f"boundary at row {at}; replies before {before[-1:]}, after {after[:1]}")
+                else:
+                    check(c, True,
+                          f"{arg} boundary; last reply before read {before[-1]}, first after {after[0]}")
             elif name == "context_nearer":
                 # T-969: the crown read each of the test's workers' context
                 # off get_ticket since the test began, and its last line

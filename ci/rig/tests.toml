@@ -123,6 +123,9 @@
 #              the test's tickets' context off get_ticket since the test
 #              began, and its last line beginning <prefix> names the one
 #              whose reading stood nearest its window, and no other),
+#              compacted:<trigger> (T-969: the worker's transcript records a
+#              compact_boundary of that trigger with a reply on each side;
+#              both readings are observed, which way they move is not judged),
 #              held_for_person (T-918: the crown's wake waited the whole of
 #              `person_leaves`' stay, its row `leave or 10m idle`, and
 #              went in
@@ -1612,3 +1615,25 @@ checks = ["road:mod", "started_by_crown", "reply:done", "context_nearer:CX1 near
   [[test.steps]]
   crown = "CX1: which of {key} and {key2} is nearer its context limit? End your turn with one line: CX1 nearer: <its key>."
   until = { crown_only = true }
+
+[[test]]
+id = "CX2"
+title = "CX2 · the crown compacts a worker through ask_agent: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "on the mod road, the crown's ask_agent text /compact reaches the worker's box typed and entered (the board's command_sent), Claude Code compacts the conversation (a manual compact_boundary in the worker's transcript, a reply on each side of it), and the worker answers the words after it (T-969, round 1: the live measurement of the clause on the mod road)."
+checks = ["road:mod", "started_by_crown", "fed:command_sent", "compacted:manual", "reply:after"]
+
+  [[test.steps]]
+  crown = "CX2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: CX2 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: CX2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "CX2: call ask_agent for {key} with the text /compact and no other words, deliver idle, then end your turn with the single line: CX2 compacting."
+  until = { events = ["PostCompact"], state = "idle" }
+
+  [[test.steps]]
+  crown = "CX2: call ask_agent for {key} with the text: Reply with the single word after and end your turn. Then end your turn with the single line: CX2 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: CX2 seen again."
+  until = { stops = 1, state = "idle" }
+  wake = true
