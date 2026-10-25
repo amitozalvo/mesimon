@@ -8461,6 +8461,14 @@ fn terminal_app_description_bar_fills_every_row_without_moving_the_text() {
             let mut app = app_noted();
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
             app.theme = Theme::new(flavor, profile);
+            // The shin animates on `creature_clock`, which starts at the first
+            // draw; hold it an hour ahead (elapsed of a future instant is zero)
+            // so two renders cannot straddle a frame under load (T-994).
+            let _ = cells(&app, 120, 30);
+            if let Some((key, _)) = app.creature_clock.get() {
+                let held = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+                app.creature_clock.set(Some((key, held)));
+            }
             let before = cells(&app, 120, 30);
             let lines = lines_of(&before);
             let first = lines.iter().position(|l| l.contains("What changed")).unwrap() as u16;
