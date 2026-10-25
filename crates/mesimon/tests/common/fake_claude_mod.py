@@ -147,10 +147,14 @@ def answer(frame):
 
 def held_entered(frame_id):
     """`entered` once the test releases it (`mod-hold-entered`); a release
-    file reading `dropped` reports the engine's refusal instead, late."""
+    file reading `dropped` reports the engine's refusal instead, late.
+    `mod-release-<frame id>` releases that frame alone (T-990)."""
     release = os.path.join(HERE, "mod-release")
-    while not os.path.exists(release):
+    own = os.path.join(HERE, f"mod-release-{frame_id}")
+    while not os.path.exists(release) and not os.path.exists(own):
         time.sleep(0.05)
+    if os.path.exists(own):
+        release = own
     with open(release) as f:
         dropped = f.read().strip() == "dropped"
     relay("ModSubmit", frame_id,

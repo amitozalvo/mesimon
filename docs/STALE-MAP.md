@@ -35655,3 +35655,120 @@ two apart needs the placeholder's styling, which `capture_input_screen` drops. N
   - before any hold (`nopaint`), then a prompt: dropped;
   - a person attached to an empty box: held, then `unsent` at a 6 s wait, the client still
     listed.
+
+## A crown wake the mod took is told at the take, as a paste is at the paste (T-990, 2026-10-25, gap row 61 on T-925)
+
+**Seen.** One finished turn of a parked reader (T-989) reached the crown three times in five
+minutes. On the board's journal and feed (UTC) it was five frames:
+- 05:16:38.99 wake to an idle crown, frame `QTJ`. The crown's `UserPromptSubmit` landed at 40.66.
+  At 50.54 the frame was retired `crown_wake_unconfirmed` and its wake was owed again. Its
+  `entered` landed at 57.19, `no owner`.
+- 05:19:59.56 after the crown's turn, the owed wake went again (`RR0P`). The crown's prompt
+  landed at 05:20:19.89, twenty seconds later, behind a 4.9 s `ModUsage` writer turn. `RR0P` was
+  retired at 05:20:10.50, and in the same tick, with the seat still reading idle, `RR11` went.
+- `RR11` was retired at 05:20:22.43, and `RR2M` went at 05:21:03.33 and was retired at
+  05:21:13.92. All three were later `entered`, `no owner`, and a fifth, `RR5S`, was delivered at
+  05:22:50.
+- Writer turns ran 1 to 5 s a message (`persist_sessions` 2 to 3 s). After a 26.8 s tick at
+  07:09:22 the same crown retired five frames ten seconds apart, and three were later `entered`.
+  2026-10-24 15:55:23, thirty seconds after a restart, has one more.
+- T-973's and T-984's "after a restart" wakes did not repeat: no crown frame retired after the
+  04:34:42 or 05:08:59 restarts.
+
+**Cause.** A submitted wake had one window, `INFLIGHT_MS` (10 s) from the send, enforced twice:
+by the attempt (`Entering::expires_ms`, `lose_entering`) and by its owed entry (`settle_owed`).
+Past it, the attempt was retired and its wakes owed again, whatever the bridge had acknowledged.
+The mod's report rides the same ordered relay chain as the hook events (`register.ts`'s `tail`),
+and the daemon read that chain fifteen to twenty seconds behind. T-934's held submit does the
+same: the report comes at the running turn's end. So a long turn, or a slow writer, read as a
+loss, and each retirement put another copy into a crown that already had the first. The paste
+road never repeated: its wake is told at the paste and nothing resends it. Staged in
+`crown_e2e::a_crown_wake_whose_receipt_is_late_is_sent_once` on main's daemon: two copies on the
+mod pass, one retired; one copy on the hook set's.
+
+**Round 0 (`7717f56f`), withdrawn.** It waited for a taken frame's report through two of the crown's
+turn ends instead of the clock. T-992's cold read: one lost report on a crown that does not turn
+again held every later wake for good; "two ends" counted anonymous state edges (a quiet-probe
+idle, a person's turn), so it could still retire a frame the engine held and send it again; the
+take was memory-only, so a restart gave the attempt the ten-second window back. The crown chose
+the hook set's rule instead (round 1).
+
+**Shipped (rounds 1 and 2).**
+- **The take is the delivery.** When the crown's bridge acknowledges a submitted wake's frame
+  (`mod_taken`, or the frame's own report if it comes first), `take_crown_wake` tells its wakes
+  (`told`: hands down, `crown_wake_sent`), journals `crown wake <frame> in session <id>: taken`,
+  and moves the attempt out of `crown_wake_entering` into `Daemon::crown_wakes_taken`. Nothing
+  resends a taken frame on a clock or on turn ends. Its `entered` removes it and says
+  `crown_wake_delivered`.
+- **The roads that re-owe stay.**
+  - An explicit `dropped` or `rejected` for that frame id, fenced by seat, frame and live pane
+    as before.
+  - The seat losing the pane the frame went to: a park, a death or a relaunch (`lose_taken`, in
+    the drain's first step).
+
+  Either one owes the wakes again (`owe_again`). The hands told at the take stay down, and the
+  wake's sentence says them again.
+- **The drain is never held past a bound.** Once taken, the attempt no longer holds the drain.
+  What holds later wakes is the owed entry every delivery has: until the prompt's
+  `UserPromptSubmit`, else `INFLIGHT_MS` (10 s). That expiry resends nothing (`submit_unacked`).
+  This is the smallest bound because it already exists and applies to every delivery: a second
+  bound would only buy folding. Later wakes still fold while the crown's turn runs, since the
+  drain waits for the seat to take words.
+- **An untaken frame keeps its window.** It is retired `unconfirmed` and owed again, and it leaves
+  the bridge's outbox (`mod_unqueue`). A poll after that cannot take it, so a late ack names a
+  frame no attempt holds and does nothing.
+- **Restart.** `crown.json` keeps `taken` (same schema 2, no bump). The wakes left `entering`
+  at the take, so a build that drops the field resends none of them; it loses only the re-owe on
+  a later refusal or lost pane. A restarted daemon reads a taken wake as told and never gives it
+  a window. One owed again after the restart says `after a restart`.
+- **A taken record's life (round 2).** It lives until its `entered`, an explicit refusal, the
+  loss of its seat or pane, or a crown change, however many are out, and it never holds the
+  drain. Round 1 capped the list at eight and evicted the oldest. T-992's second read: nine
+  unanswered, then a refusal of the first, and that refusal found nothing to owe again, its wake
+  told with its hand down. The cap is gone. **The bound is the pane:** a record whose report
+  was lost lives as long as the pane its frame went to.
+
+**Limits.**
+- A taken frame that the engine drops with no refusal, no pane loss and no report is lost, as a
+  pasted wake is on the hook set.
+- The board may deliver a wake twice when a frame's ack is already in a poll response as its
+  window expires. The frame is retired and owed again, and its words may still go in:
+  `mod_unqueue` stops a later poll from taking it, not one already in flight.
+- A report sent while no daemon listened is lost (`mesimon hook` fails open). A frame already
+  taken is unaffected; an untaken attempt kept across the restart retires at its window as before.
+- A refusal of a taken wake comes after its hands came down. The re-owed sentence says them
+  again, and the hand stays down.
+
+**Tests.**
+- `crown_e2e::a_crown_wake_whose_receipt_is_late_is_sent_once`, both passes: one copy, nothing
+  retired, told once. On the mod pass, the frame is taken and its own `entered` is
+  `crown_wake_delivered`, never `no owner`.
+- `a_crown_wake_nobody_answers_is_retired_and_goes_again`, phase 2 back to its idle meaning. The
+  mod holds each report and the crown never turns. The first worker's wake is told at its take.
+  The second's goes as its own frame once the first's owed entry passes its window. Neither is
+  resent, nothing retires, and the late reports are each their own frame's. Phase 1 (never taken)
+  is unchanged.
+- `a_wake_taken_before_a_restart_is_told_once` (was `a_wake_offered_before_a_restart_retires_unconfirmed`):
+  taken and told, a restart, the report twelve seconds later to the new daemon. One frame, one copy
+  in the pane, nothing retired, told once, the receipt owned.
+- `a_crown_wake_refused_while_unknown_is_owed_until_it_goes`: told at the take, a restart, then
+  that frame's refusal matched to the kept taken wake. Owed again, typed once, `after a restart`.
+- `a_crown_wake_refused_at_end_turn_is_owed_until_it_goes` accepts a take before the refusal: its
+  typed delivery is told after the refusal.
+- Three tests that read "nothing told before `entered`" now read the take:
+  - `a_new_plan_while_the_old_wake_is_entering_outlives_its_settle`: told at the take, and the
+    new plan's wake still goes as a frame of its own.
+  - `a_crown_a_person_stopped_holds_its_wake_and_its_hand`, phase B: the hand comes down at the
+    take; the refusal types nothing under the person and owes the wake again.
+  - `a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person`: nothing is told after the
+    refusal.
+- A prompt that acks a taken wake's owed entry says no delivery: the entry's own frame marks it
+  a submit (`ack_owed`, T-936 A3).
+- `nine_taken_wakes_each_keep_their_refusal_and_their_pane` (round 2, mod road):
+  - nine wakes taken and unanswered, with a restart after the fifth;
+  - the first frame's `dropped` is matched to its persisted record, owed again and typed once;
+  - then the crown's pane is killed, and every other taken wake is owed again, each once.
+
+  It fails with round 1's eviction put back.
+- The ledger round trip keeps a taken wake.
+- T-602's restart tests are unchanged.

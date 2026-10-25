@@ -90,6 +90,14 @@ pub(super) struct Ledger {
     /// box is cleared. It sends nothing a person wrote, which is the bar.
     #[serde(skip_serializing_if = "Option::is_none")]
     entering: Option<Entering>,
+    /// `Daemon::crown_wakes_taken` (T-990): the wakes told at their frame's
+    /// take, kept for the frame's refusal or a lost pane, so a restart
+    /// neither gives one a second window nor forgets what a refusal owes.
+    /// Same schema, no bump: the wakes left `entering` at the take, so a
+    /// build that drops the field resends none of them; it loses only the
+    /// re-owe on a later refusal or a pane gone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    taken: Vec<Entering>,
     /// `Daemon::crown_asks` (T-974): the crown's asks still out, `sent` or
     /// `handed`, each with the seat, pane and frame its receipts are fenced
     /// by, so a restart keeps their word and the turn's end still settles
@@ -131,6 +139,7 @@ impl Daemon {
             held: self.crown_held.iter().copied().collect(),
             hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
             entering: (*self.crown_wake_entering).clone(),
+            taken: self.crown_wakes_taken.to_vec(),
             out_asks: self.kept_crown_asks(),
             expects: self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
         }
@@ -150,6 +159,7 @@ impl Daemon {
             || self.crown_held.is_dirty()
             || self.crown_hands.is_dirty()
             || self.crown_wake_entering.is_dirty()
+            || self.crown_wakes_taken.is_dirty()
             || self.crown_asks.is_dirty()
             || self.crown_expects.is_dirty()
     }
@@ -165,6 +175,7 @@ impl Daemon {
         self.crown_held.mark_clean();
         self.crown_hands.mark_clean();
         self.crown_wake_entering.mark_clean();
+        self.crown_wakes_taken.mark_clean();
         self.crown_asks.mark_clean();
         self.crown_expects.mark_clean();
     }
@@ -247,6 +258,18 @@ impl Daemon {
                 e
             })
             .into();
+        // A taken wake (T-990) stays told; one owed again from here says
+        // `after a restart`, as the owed do.
+        self.crown_wakes_taken = ledger
+            .taken
+            .into_iter()
+            .filter(|e| e.crown == crown)
+            .map(|mut e| {
+                e.wakes.retain(|w| on_board(&w.worker));
+                e.wakes.iter_mut().for_each(|w| w.late = true);
+                e
+            })
+            .collect();
         self.crown_wakes = ledger
             .wakes
             .into_iter()
@@ -317,6 +340,19 @@ mod tests {
             expires_ms: Some(9),
             parked: false,
         });
+        // T-990: a wake told at its frame's take, kept for its refusal.
+        ledger.taken = vec![Entering {
+            crown: ulid::Ulid::from_parts(1, 1),
+            session: uuid::Uuid::from_u128(5),
+            text: "T-7 raised its hand".into(),
+            wakes: Vec::new(),
+            telling: Default::default(),
+            person_came: false,
+            frame: Some("01TAKEN".into()),
+            pane: Some("123:%4".into()),
+            expires_ms: Some(9),
+            parked: false,
+        }];
         ledger.out_asks.insert(
             w,
             vec![KeptAsk {
@@ -336,6 +372,8 @@ mod tests {
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
         assert_eq!(back.out_asks, ledger.out_asks, "T-974: the asks out keep their word");
+        let taken = back.taken.iter().filter_map(|e| e.frame.as_deref()).collect::<Vec<_>>();
+        assert_eq!(taken, ["01TAKEN"], "T-990: a taken wake survives the restart");
         let newer = format!("{{\"schema_version\": {}}}", CROWN_SCHEMA + 1);
         assert!(matches!(parse(&newer), Err((Some(_), _))));
         assert!(matches!(parse("{"), Err((None, _))));

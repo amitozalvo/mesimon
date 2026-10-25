@@ -2562,6 +2562,11 @@ impl Daemon {
             self.control_cancel(id);
             self.drop_owed(id);
         }
+        // Taken wakes (T-990) were told this crown; they are kept for no
+        // other.
+        if !self.crown_wakes_taken.is_empty() {
+            self.crown_wakes_taken.clear();
+        }
         if self.crown_wakes.is_empty() && entering.is_none() {
             return;
         }

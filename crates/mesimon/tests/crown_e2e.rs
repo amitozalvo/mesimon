@@ -2501,7 +2501,17 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
         })
     });
     assert!(!read_file(&feed).contains("prompt_pasted_after_refusal"));
-    assert!(!read_file(&feed).contains("\"crown_wake_sent\""), "nothing told");
+    // Told at most at the frame's take (T-990), never after its refusal.
+    let at_ms = |cmd: &str| -> Vec<u64> {
+        read_file(&feed)
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|l| l["cmd"] == cmd)
+            .filter_map(|l| l["at_ms"].as_u64())
+            .collect()
+    };
+    let refused = at_ms("crown_wake_refused")[0];
+    assert!(at_ms("crown_wake_sent").iter().all(|t| *t <= refused), "nothing told after it");
     assert!(c.board().sessions.iter().all(|s| s.id != sa || s.unsent.is_none()), "not unsent");
     // What the person types next is theirs alone.
     assert!(tmux(&tmux_sock)
@@ -2665,10 +2675,10 @@ fn attach_listed(tmux_sock: &std::path::Path, session: &str) -> bool {
 /// in the crown's pane the wake is held as before T-931: no submit and no
 /// paste, the worker's hand still up and the wake still owed. Once they
 /// leave, one paste into the empty box delivers it, and only then does the
-/// hand come down. And a submit still pending as a person comes in and
-/// types, refused after their Esc, types nothing under them, tells nothing
-/// and lowers no hand: the wake is owed again, held for them, and one safe
-/// delivery after they send their words and leave settles both.
+/// hand come down. And a submit taken (told there, its hand down, T-990)
+/// and still pending as a person comes in and types, refused after their
+/// Esc, types nothing under them: the wake is owed again, held for them,
+/// and one safe delivery after they send their words and leave settles it.
 #[test]
 fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let Some(h) = Harness::boot_bare(
@@ -2826,7 +2836,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let screen = String::from_utf8_lossy(&screen.stdout).to_string();
     assert!(screen.contains("half a thought") && !screen.contains("raised its hand"), "{screen}");
     assert_eq!(pasted(), 1, "nothing typed under them");
-    assert!(hand_up(&mut c), "no hand down on a refusal");
+    assert!(!hand_up(&mut c), "down at the take (T-990); the refusal owes the wake again");
     assert_eq!(wake_rows(&mut c, a).len(), 1, "the wake is still owed");
     assert!(c.board().sessions.iter().all(|s| s.id != sa || s.unsent.is_none()));
 
@@ -9043,8 +9053,8 @@ fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
 
 /// A new plan while the crown's wake for the old one is still entering
 /// (T-943 on T-936, Astra's specimen). Every pane is on the mod road, so the
-/// crown's wake goes down its mod as a `submit` frame and is `Entering`
-/// until that frame's `entered`; the crown's mod holds it. Meanwhile the
+/// crown's wake goes down its mod as a `submit` frame, told at its take
+/// (T-990); the crown's mod holds its `entered`. Meanwhile the
 /// crown sends the plan back and the worker replans. When the old frame
 /// enters and settles, the new plan's obligation is still owed and its
 /// request is the one `get_ticket` reads: the crown is woken for it again.
@@ -9080,7 +9090,9 @@ fn a_new_plan_while_the_old_wake_is_entering_outlives_its_settle() {
     wait_until(std::time::Duration::from_secs(10), "the wake's frame held by the mod", || {
         submits(&b) == 1
     });
-    assert!(crown_wakes(&mut b) > 0, "the entering wake is still pending");
+    wait_until(std::time::Duration::from_secs(5), "told at the take (T-990)", || {
+        crown_wakes(&mut b) == 0
+    });
     assert_eq!(b.typed().matches(&wake).count(), 0, "not entered yet");
     // While it is entering, the crown sends the plan back; W replans.
     let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
@@ -12719,12 +12731,13 @@ fn a_crown_wake_refused_at_end_turn_is_owed_until_it_goes() {
     refused_crown_wake("crown_refused_idle", false);
 }
 
-/// The same refusal landing while the crown reads `Unknown`: the submit is
-/// out and taken, a prompt goes into the crown (which says nothing of the
-/// wake), and the daemon restarts mid-turn, keeping the attempt for its
-/// frame. That frame's refusal then lands, matched while the crown reads
-/// `Unknown`: the wake is owed again, the hand still up, and the next
-/// delivery, typed, settles both, `after a restart`.
+/// The same refusal landing after the take, while the crown reads
+/// `Unknown`: the submit is out and taken, so told (T-990), a prompt goes
+/// into the crown (which says nothing more of the wake), and the daemon
+/// restarts mid-turn, keeping the taken wake for its frame. That frame's
+/// refusal then lands, matched while the crown reads `Unknown`: the wake
+/// is owed again, and the next delivery, typed, settles it, `after a
+/// restart`.
 #[test]
 fn a_crown_wake_refused_while_unknown_is_owed_until_it_goes() {
     refused_crown_wake("crown_refused_unknown", true);
@@ -12835,28 +12848,46 @@ fn refused_crown_wake(name: &str, restart: bool) {
         wait_until(std::time::Duration::from_secs(5), "the telling in the feed", || {
             at("crown_wake_sent").is_some()
         });
-        let (refused, sent) = (at("crown_wake_refused").unwrap(), at("crown_wake_sent").unwrap());
-        assert!(sent >= refused, "told only after the refusal: {refused} {sent}");
+        // A take before the refusal tells it there too (T-990); the typed
+        // delivery is told after the refusal either way.
+        let last_sent = || {
+            read_file(&feed)
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|l| l["cmd"] == "crown_wake_sent")
+                .filter_map(|l| l["at_ms"].as_u64())
+                .max()
+        };
+        let refused = at("crown_wake_refused").unwrap();
+        wait_until(std::time::Duration::from_secs(5), "told after the refusal", || {
+            last_sent().is_some_and(|sent| sent >= refused)
+        });
         assert_eq!(submitted(), 1, "one submit; the second road is the guarded paste");
         wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
             !hand_up(&mut c)
         });
         return;
     }
-    // A prompt goes into the crown while the submit is out: no word that
-    // the wake went, nor a delivery said in the feed (T-936, A3).
-    assert!(hand_up(&mut c));
-    start(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    assert!(hand_up(&mut c) && at("crown_wake_sent").is_none(), "no prompt tells it");
-    assert!(at("crown_wake_delivered").is_none(), "no delivery read off a prompt");
-    // The frame out, as the fake mod recorded it.
+    // The frame out, as the fake mod recorded it, and its take: told there
+    // (T-990), as a paste is at the paste, and no delivery said in the
+    // feed until its own receipt (T-936, A3); a prompt says nothing more.
     let first = frames()
         .lines()
         .filter(|l| l.contains("\"submit\"") && l.contains("raised its hand"))
         .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .and_then(|v| v["id"].as_str().map(str::to_string))
         .expect("the submitted frame");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let taken = format!("crown wake {first} in session {sa}: taken");
+    wait_until(std::time::Duration::from_secs(10), "the take", || {
+        read_file(&journal).contains(&taken)
+    });
+    wait_until(std::time::Duration::from_secs(5), "told at the take", || {
+        !hand_up(&mut c) && at("crown_wake_sent").is_some()
+    });
+    start(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert!(at("crown_wake_delivered").is_none(), "no delivery read off a prompt");
     // A restart mid-turn: the crown reads `Unknown`, and the attempt is kept
     // for its frame, its seat's pane the same.
     drop(c);
@@ -12864,18 +12895,16 @@ fn refused_crown_wake(name: &str, restart: bool) {
     let mut c = h.client(&format!("{name}_2"));
     let state = c.board().sessions.iter().find(|s| s.id == sa).map(|s| s.state.clone());
     assert!(matches!(state, Some(SessionState::Unknown { .. })), "{state:?}");
-    // That frame's refusal lands while the crown reads `Unknown`: matched,
-    // the wake owed again and the hand still up.
+    // That frame's refusal lands while the crown reads `Unknown`: matched
+    // to the taken wake the restart kept, and owed again.
     std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
-    let journal = h.paths.state_dir.join("daemon.log");
     let refused = format!("crown wake {first} in session {sa}: refused, dropped");
     wait_until(std::time::Duration::from_secs(10), "the frame's refusal matched", || {
         read_file(&journal).contains(&refused)
     });
     let state = c.board().sessions.iter().find(|s| s.id == sa).map(|s| s.state.clone());
     assert!(matches!(state, Some(SessionState::Unknown { .. })), "refused while {state:?}");
-    assert!(hand_up(&mut c), "no hand down on the refusal");
-    assert!(at("crown_wake_sent").is_none(), "nothing told");
+    assert!(at("crown_wake_delivered").is_none(), "no delivery said");
     assert!(
         pending_of(&mut c, Some(a))
             .iter()
@@ -12900,13 +12929,15 @@ fn refused_crown_wake(name: &str, restart: bool) {
     assert!(last.contains("after a restart"), "{last}");
 }
 
-/// T-936, the third read: a crown's submitted wake that nobody answers is
-/// waited for no longer than its window (ten seconds). Retired, its wakes
-/// are owed again with the hands as they were, and a second worker's wake
-/// that waited behind it goes with them in the next attempt; a late report
-/// of the retired frame settles nothing. Once with the frame never
-/// acknowledged (the crown's bridge stopped), once taken and never
-/// answered: both `unconfirmed`.
+/// T-936, the third read: a crown's submitted wake whose frame its bridge
+/// never acknowledged (the bridge stopped) is waited for no longer than its
+/// window (ten seconds). Retired `unconfirmed`, its wakes are owed again
+/// with the hands as they were, and a second worker's wake that waited
+/// behind it goes with them in the next attempt; a late report of the
+/// retired frame settles nothing. T-990: a frame the mod took and never
+/// answered is told at the take and sent again by nothing, and with no
+/// crown turn between, the next worker's wake goes as its own prompt once
+/// the first's owed entry is past its window.
 #[test]
 fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     let Some(h) = Harness::boot_bare(
@@ -13053,31 +13084,148 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     }
 
     // ---- 2. taken and never answered ---------------------------------------
-    std::fs::write(h.dir.join("mod-hold-submit"), "").unwrap();
+    // The mod takes each frame and holds its report (T-990): the take is the
+    // delivery, so nothing waits on the report, a crown turn or a clock.
+    std::fs::write(h.dir.join("mod-hold-entered"), "").unwrap();
+    let takes = || read_file(&journal).lines().filter(|l| l.ends_with(": taken")).count();
+    let (taken0, frames0) = (takes(), submits().len());
     raise(&mut c, seats[0], "which key, again?");
-    wait_until(std::time::Duration::from_secs(10), "the frame taken", || {
-        submits().len() >= 2 + usize::from(submits().iter().any(|(id, _)| *id == old))
+    wait_until(std::time::Duration::from_secs(25), "the frame taken", || takes() == taken0 + 1);
+    wait_until(std::time::Duration::from_secs(5), "told at the take", || {
+        hands(&mut c) == [false, false] && count("crown_wake_sent") == 2
     });
     raise(&mut c, seats[1], "which branch, again?");
-    wait_until(std::time::Duration::from_secs(20), "the unconfirmed attempt retired", || {
-        retired("crown_wake_unconfirmed").len() == 2
+    wait_until(std::time::Duration::from_secs(25), "the next wake, no crown turn", || {
+        takes() == taken0 + 2
     });
-    let held = retired("crown_wake_unconfirmed")[1].clone();
-    assert_eq!(hands(&mut c), [true, true], "hands as they were");
-    assert_eq!(count("crown_wake_sent"), 1, "nothing more told");
-    std::fs::write(h.dir.join("mod-release-submit"), "").unwrap();
-    let late = format!("mod submit {held} for session {sa}: entered, no owner");
-    wait_until(std::time::Duration::from_secs(15), "the held frame's late report", || {
-        read_file(&journal).contains(&late)
+    wait_until(std::time::Duration::from_secs(5), "both told", || {
+        hands(&mut c) == [false, false] && count("crown_wake_sent") == 3
     });
-    wait_until(std::time::Duration::from_secs(15), "the next attempt told", || {
-        count("crown_wake_sent") == 2
+    assert_eq!(retired("crown_wake_unconfirmed").len(), 1, "no taken frame retired");
+    let ours: Vec<(String, String)> = submits().into_iter().skip(frames0).collect();
+    assert_eq!(ours.len(), 2, "nothing resent: {ours:?}");
+    assert!(ours[0].1.contains(&k1) && !ours[0].1.contains(&k2), "{}", ours[0].1);
+    assert!(ours[1].1.contains(&k2) && !ours[1].1.contains(&k1), "{}", ours[1].1);
+    // The held reports land late: each its own frame's, settling nothing more.
+    std::fs::write(h.dir.join("mod-release"), "").unwrap();
+    wait_until(std::time::Duration::from_secs(15), "both receipts", || {
+        let feed = read_file(&feed);
+        ours.iter().all(|(id, _)| feed.contains(&format!("\"reason\":\"{id}\"")))
     });
-    let newest = submits().into_iter().rfind(|(id, _)| *id != held).expect("a new attempt").1;
-    assert!(newest.contains(&k1) && newest.contains(&k2), "both wakes in it: {newest}");
-    wait_until(std::time::Duration::from_secs(5), "both hands down", || {
-        hands(&mut c) == [false, false]
+    for (id, _) in &ours {
+        let nobody = format!("mod submit {id} for session {sa}: entered, no owner");
+        assert!(!read_file(&journal).contains(&nobody), "{id}'s receipt had its owner");
+    }
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(submits().len(), frames0 + 2, "nothing resent after the receipts");
+    assert_eq!(count("crown_wake_sent"), 3, "nothing told again");
+}
+
+/// T-990: one worker's finished turn reaches the crown once, however long
+/// its receipt takes. The crown reads idle, the wake goes, and the crown's
+/// prompt and the mod's `entered` come long past the ten-second window, as
+/// on 2026-10-25 under a writer turning at two to five seconds a message
+/// (four frames retired `unconfirmed`, each later `entered`, five copies of
+/// one event in the crown). On the mod pass the stand-in engine holds the
+/// frame's `entered` (`mod-hold-entered`); the paste road's own ack waits
+/// as long. Either way the crown's pane holds one copy and none retires.
+#[test]
+fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_wake_once",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_wake_once");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let count = |cmd: &str| read_file(&feed).matches(&format!("\"cmd\":\"{cmd}\"")).count();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let mod_road = test_road() == "mod";
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-990 worker");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if mod_road {
+        std::fs::write(h.dir.join("mod-hold-entered"), "").unwrap();
+    }
+    let got_crown = h.dir.join(format!("got-{ka}.txt"));
+    let finished = format!("{kw} \"mesimon-probe-990 worker\" finished its turn");
+    let copies = || read_file(&got_crown).matches(&finished).count();
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the finish in the crown's pane", || {
+        copies() == 1
     });
+    // The crown's receipt is late: twelve seconds before its prompt is
+    // heard, then a turn, then the mod's `entered`, then its end.
+    std::thread::sleep(std::time::Duration::from_secs(12));
+    start(&mut c, sa);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    if mod_road {
+        // This frame's own receipt: taken and told before it, then its
+        // `entered`, owned.
+        let frame = read_file(&h.dir.join(format!("mod-{sa}.ndjson")))
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["kind"] == "submit")
+            .filter(|v| v["text"].as_str().is_some_and(|t| t.contains(&finished)))
+            .find_map(|v| v["id"].as_str().map(str::to_string))
+            .expect("the finish's frame");
+        assert!(read_file(&journal).contains(&format!("crown wake {frame} in session {sa}: taken")));
+        std::fs::write(h.dir.join("mod-release"), "").unwrap();
+        wait_until(std::time::Duration::from_secs(10), "the frame's own receipt", || {
+            count("crown_wake_delivered") == 1
+        });
+        let nobody = format!("mod submit {frame} for session {sa}: entered, no owner");
+        assert!(!read_file(&journal).contains(&nobody), "its receipt had its owner");
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    stop(&mut c, sa);
+    // Room for a resend to land, were one owed.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let retired: Vec<String> = read_file(&journal)
+        .lines()
+        .filter(|l| l.contains("crown wake ") && l.ends_with("crown_wake_unconfirmed"))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(copies(), 1, "one event, one prompt; retired: {retired:?}");
+    assert!(retired.is_empty(), "nothing retired: {retired:?}");
+    assert_eq!(count("crown_wake_sent"), 1, "told once");
 }
 
 /// T-936, the third read's heard-never: a wake that wakes a parked crown
@@ -13564,14 +13712,13 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
     assert_eq!(typed(), 1, "once");
 }
 
-/// T-936, the fifth read: an unanswered submitted wake retires
-/// `unconfirmed`, whatever the daemon knows of its bridge. The crown's
-/// bridge takes the frame; the daemon restarts before its `entered`, keeping
-/// the attempt for a fresh window; the bridge never polls the new daemon;
-/// and the retirement still says `unconfirmed`, never `unreceived`: the
-/// frame was offered before the restart.
+/// T-990: a wake the crown's bridge took before a restart is told, and the
+/// restart keeps it told. The mod takes the frame, puts the words in and
+/// holds its `entered`; the daemon restarts; the report comes twelve
+/// seconds later, to the new daemon. One copy in the crown's pane, nothing
+/// retired, the report its own frame's, the wake told once.
 #[test]
-fn a_wake_offered_before_a_restart_retires_unconfirmed() {
+fn a_wake_taken_before_a_restart_is_told_once() {
     let Some(h) = Harness::boot_bare(
         "crown_offered_restart",
         Some(BOX_STUB),
@@ -13638,8 +13785,9 @@ fn a_wake_offered_before_a_restart_retires_unconfirmed() {
     up(ws1);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    // The crown's mod takes the frame and holds it, unanswered.
-    std::fs::write(h.dir.join("mod-hold-submit"), "").unwrap();
+    // The crown's mod takes the frame, puts the words in and holds its
+    // report.
+    std::fs::write(h.dir.join("mod-hold-entered"), "").unwrap();
     match c.send(
         Principal::Agent { session: ws1 },
         Command::AgentRaiseHand { reason: "which key?".into() },
@@ -13658,29 +13806,184 @@ fn a_wake_offered_before_a_restart_retires_unconfirmed() {
         frame().is_some()
     });
     let frame = frame().unwrap();
-    // Its bridge polls no more: the new daemon never hears from it.
-    let bridge = std::fs::read_to_string(h.dir.join(format!("mod-bridge-{sa}.pid")))
-        .unwrap()
-        .trim()
-        .to_string();
-    let signal = |sig: &str| {
-        assert!(std::process::Command::new("kill")
-            .args([sig, &bridge])
-            .status()
-            .unwrap()
-            .success());
-    };
-    signal("-STOP");
+    let taken = format!("crown wake {frame} in session {sa}: taken");
+    wait_until(std::time::Duration::from_secs(10), "the take", || {
+        read_file(&journal).contains(&taken)
+    });
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let count = |cmd: &str| read_file(&feed).matches(&format!("\"cmd\":\"{cmd}\"")).count();
+    wait_until(std::time::Duration::from_secs(5), "told at the take", || {
+        count("crown_wake_sent") == 1 && c.board().ticket(w1).unwrap().raised.is_none()
+    });
     drop(c);
     h.restart();
     let _c = h.client("crown_offered_restart_2");
-    let retired = format!("crown wake {frame} in session {sa}: crown_wake_unconfirmed");
-    wait_until(std::time::Duration::from_secs(25), "the kept attempt retired", || {
-        read_file(&journal).contains(&retired)
+    // Past a window the restart once gave it: nothing retires or resends.
+    std::thread::sleep(std::time::Duration::from_secs(12));
+    std::fs::write(h.dir.join("mod-release"), "").unwrap();
+    // The restart's own look at the worker may owe it a wake of its own
+    // (T-602): this frame's receipt is the one read.
+    let receipt = format!("\"reason\":\"{frame}\"");
+    wait_until(std::time::Duration::from_secs(15), "the frame's own receipt", || {
+        read_file(&feed).contains(&receipt) && count("crown_wake_delivered") >= 1
     });
-    assert!(!read_file(&journal).contains("crown_wake_unreceived"), "never said unreceived");
-    std::fs::remove_file(h.dir.join("mod-hold-submit")).unwrap();
-    signal("-CONT");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let log = read_file(&journal);
+    assert!(!log.contains("crown_wake_unconfirmed"), "nothing retired");
+    let nobody = format!("mod submit {frame} for session {sa}: entered, no owner");
+    assert!(!log.contains(&nobody), "the receipt had its owner");
+    let submits = read_file(&h.dir.join(format!("mod-{sa}.ndjson")))
+        .lines()
+        .filter(|l| l.contains("\"submit\"") && l.contains("raised its hand"))
+        .count();
+    assert_eq!(submits, 1, "one frame");
+    let got = read_file(&h.dir.join("got.txt"));
+    assert_eq!(got.matches("raised its hand").count(), 1, "one copy in the pane");
+}
+
+/// T-990, round 2: every taken wake keeps what its refusal or a lost pane
+/// needs, however many are out. Nine wakes go down the crown's mod, each
+/// taken, told and left unanswered, with a restart after the fifth (the
+/// records come back from `crown.json`). The first frame's refusal then
+/// lands: owed again and typed once. Then the crown's pane goes: every
+/// other taken wake still unanswered is owed again.
+#[test]
+fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
+    let Some(h) = Harness::boot_bare(
+        "crown_nine_taken",
+        Some(BOX_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_CLAUDE_ROAD", "mod"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_nine_taken");
+    let journal = h.paths.state_dir.join("daemon.log");
+    let got = h.dir.join("got.txt");
+    let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let up = |sid: uuid::Uuid| {
+        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+        hook_send_with(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            Some("startup"),
+            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+        );
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-990 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    up(sa);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: kw.clone(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+                expect_secs: None,
+            },
+        ),
+        Response::AgentStarted { .. }
+    ));
+    wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    up(ws);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let raise = |c: &mut TestClient, why: &str| match c
+        .send(Principal::Agent { session: ws }, Command::AgentRaiseHand { reason: why.into() })
+    {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    };
+    // The frames taken, in order, as the journal says them.
+    let taken = || -> Vec<String> {
+        read_file(&journal)
+            .lines()
+            .filter(|l| l.ends_with(": taken"))
+            .filter_map(|l| l.split("crown wake ").nth(1)?.split(' ').next().map(str::to_string))
+            .collect()
+    };
+    let lines = |what: &str| read_file(&got).lines().filter(|l| l.contains(what)).count();
+
+    // ---- nine taken, unanswered, a restart after the fifth -----------------
+    std::fs::write(h.dir.join("mod-hold-entered"), "").unwrap();
+    for i in 0..9 {
+        if i == 5 {
+            drop(c);
+            h.restart();
+            c = h.client("crown_nine_taken_2");
+        }
+        let before = taken().len();
+        raise(&mut c, &format!("question {i}"));
+        wait_until(std::time::Duration::from_secs(25), &format!("wake {i} taken"), || {
+            taken().len() > before
+        });
+        // The crown's prompt for it clears its owed entry, and its turn ends.
+        start(&mut c, sa);
+        stop(&mut c, sa);
+    }
+    let frames = taken();
+    assert!(frames.len() >= 9, "nine taken: {frames:?}");
+    assert!(!read_file(&journal).contains("crown_wake_unconfirmed"), "none retired");
+
+    // ---- the first frame's refusal: owed again, typed once -----------------
+    let typed = lines("raised its hand");
+    std::fs::write(h.dir.join(format!("mod-release-{}", frames[0])), "dropped").unwrap();
+    let refused = format!("crown wake {} in session {sa}: refused, dropped", frames[0]);
+    wait_until(std::time::Duration::from_secs(10), "the first frame's refusal matched", || {
+        read_file(&journal).contains(&refused)
+    });
+    wait_until(std::time::Duration::from_secs(15), "the refused wake typed", || {
+        lines("raised its hand") == typed + 1
+    });
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(lines("raised its hand"), typed + 1, "typed once");
+
+    // ---- the crown's pane goes: every other taken wake owed again ----------
+    assert!(matches!(c.request(Command::KillSession { id: sa }), Response::Ok));
+    let owed = || {
+        read_file(&journal)
+            .lines()
+            .filter(|l| l.ends_with("taken, its pane gone; owed again"))
+            .count()
+    };
+    wait_until(std::time::Duration::from_secs(15), "every other taken wake owed again", || {
+        owed() == frames.len() - 1
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(owed(), frames.len() - 1, "each once");
+    assert!(
+        pending_of(&mut c, Some(a))
+            .iter()
+            .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
+        "the wake owed"
+    );
 }
 
 /// Set up the fifth read's launch-road specimens: a hook-road crown with a

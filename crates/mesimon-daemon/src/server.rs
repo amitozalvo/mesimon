@@ -926,6 +926,11 @@ pub struct Daemon {
     /// `crownwake::Entering`): told at its Enter, owed again if the box
     /// never sends it. Kept in `crown.json`.
     crown_wake_entering: Tracked<Option<crownwake::Entering>>,
+    /// The crown's wakes whose `submit` frame its bridge took (T-990): told
+    /// at the take, as a paste is at the paste, and kept by frame only for
+    /// the roads that owe them again (the frame's refusal, its seat or pane
+    /// gone). Nothing resends one on a clock or a turn. Kept in `crown.json`.
+    crown_wakes_taken: Tracked<Vec<crownwake::Entering>>,
     /// Each worker's work as its last judged turn left it and as the last
     /// wake about it described it (T-469): what the next turn's end is
     /// compared with — a second idle at the same tip delivers nothing —
@@ -1932,6 +1937,7 @@ impl Daemon {
             asks_in: HashMap::new(),
             crown_wakes: Default::default(),
             crown_wake_entering: Default::default(),
+            crown_wakes_taken: Default::default(),
             crown_heard: Default::default(),
             crown_hands: Default::default(),
             crown_recheck: HashMap::new(),
@@ -6211,6 +6217,7 @@ impl Daemon {
         if let Some(owed) = self.owed.get_mut(&id).filter(|o| o.frame.as_deref() == Some(frame)) {
             owed.taken = true;
         }
+        self.take_crown_wake(id, frame);
     }
 
     /// The mod's report on a `submit` (T-575), the frame's id as its reason.
@@ -6236,8 +6243,10 @@ impl Daemon {
             // since replaced). Each owner's effects, once. A crown wake's
             // entry is never an ordinary delivery: a duplicate report after
             // the wake was told is still the wake's, and does nothing.
+            // A report is a take too (T-990): the bridge's ack may come later.
+            self.take_crown_wake(id, fid);
             let live = self.board.sessions.iter().any(|s| s.id == id && s.state.has_pane());
-            let owner = if self.submitted_wake(id, fid) {
+            let owner = if self.taken_wake(id, fid).is_some() {
                 SubmitOwner::Wake
             } else if live
                 && self.owed.get(&id).is_some_and(|o| {
@@ -6255,11 +6264,14 @@ impl Daemon {
                 self.mod_taken(id, fid);
             }
             match owner {
-                // Told on its own receipt, which the feed says.
+                // Told at its take; its own receipt, which the feed says,
+                // settles what was kept for a refusal.
                 SubmitOwner::Wake => {
+                    if let Some(i) = self.taken_wake(id, fid) {
+                        self.crown_wakes_taken.remove(i);
+                    }
                     let crown = self.board.crown;
                     self.feed.board(Ack::CROWN_WAKE.by, Ack::CROWN_WAKE.word, crown);
-                    self.wake_entered(id);
                     self.persist_and_notify();
                 }
                 // The words the card called unsent went in: the seat's unsent
@@ -6300,16 +6312,27 @@ impl Daemon {
             }
             return;
         }
-        // The crown's wake refused (T-936): owed again, nothing told and no
-        // hand down, and the seat's next wake goes by the guarded paste road
-        // (a person in the pane or a draft waits) until its next prompt.
-        // Never pasted from here.
-        if matches!(outcome, "dropped" | "rejected") && self.submitted_wake(id, fid) {
+        // The crown's wake refused (T-936): owed again, and the seat's next
+        // wake goes by the guarded paste road (a person in the pane or a
+        // draft waits) until its next prompt. Never pasted from here. Before
+        // its take nothing was told and no hand came down; after it (T-990)
+        // the wakes told at the take are owed again, their hands as the
+        // take left them.
+        let taken = self.taken_wake(id, fid);
+        if matches!(outcome, "dropped" | "rejected")
+            && (taken.is_some() || self.submitted_wake(id, fid))
+        {
             if self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
                 self.drop_owed(id);
             }
             self.journal.line(&format!("crown wake {fid} in session {id}: refused, {outcome}"));
-            self.wake_not_entered(id);
+            match taken {
+                Some(i) => {
+                    let e = self.crown_wakes_taken.remove(i);
+                    self.owe_again(e.wakes);
+                }
+                None => _ = self.wake_not_entered(id),
+            }
             self.crown_submit_refused.insert(id);
             let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
             self.feed.board_outcome("daemon", "crown_wake_refused", ticket, outcome);
@@ -6539,6 +6562,8 @@ impl Daemon {
             let entering = self.crown_wake_entering.as_ref().filter(|e| e.session == id);
             let (submitted, parked) =
                 entering.map_or((false, false), |e| (e.frame.is_some(), e.parked));
+            // One taken (T-990) has left `entering`; its entry's frame says it.
+            let submitted = submitted || owed.frame.is_some();
             let owed_again = wake && !submitted && !parked && entering.is_some() && {
                 self.wake_not_entered(id)
             };
@@ -9750,14 +9775,15 @@ impl Daemon {
 
     /// The entering wake lost the owed entry that would enter it.
     fn lose_entering(&mut self) -> bool {
-        let Some(e) = self.crown_wake_entering.as_ref() else { return false };
+        let lost = self.lose_taken();
+        let Some(e) = self.crown_wake_entering.as_ref() else { return lost };
         let id = e.session;
         // A submitted wake (T-936) waits for its frame's answer, whatever
         // became of the owed entry: only a seat gone, or a pane replaced,
         // owes it again unanswered. Delivery is never read off a prompt.
         if e.frame.is_some() {
             if e.expires_ms.is_some_and(|at| at <= now_ms()) {
-                return self.retire_submitted_wake(id);
+                return self.retire_submitted_wake(id) || lost;
             }
             let pane = e.pane.clone();
             let same = self
@@ -9766,12 +9792,12 @@ impl Daemon {
                 .iter()
                 .find(|s| s.id == id)
                 .is_some_and(|s| s.state.has_pane() && s.pane_key == pane);
-            return !same && self.wake_not_entered(id);
+            return (!same && self.wake_not_entered(id)) || lost;
         }
         if self.crown_wake_owed(id) {
-            return false;
+            return lost;
         }
-        self.wake_not_entered(id)
+        self.wake_not_entered(id) || lost
     }
 
     /// A submitted wake whose frame nobody answered inside its window
@@ -9810,6 +9836,63 @@ impl Daemon {
         self.crown_wake_entering
             .as_ref()
             .is_some_and(|e| crownwake::submitted_fence(e, rec, id, frame))
+    }
+
+    /// The crown's bridge took its submitted wake's frame (T-990): the take
+    /// is the delivery, as the paste is on the hook set. Claude Code holds a
+    /// `submit` made mid-turn to that turn's end (T-934), and the mod's
+    /// `entered` reached the daemon fifteen to twenty seconds late under
+    /// load, so no wait for it is a bound on delivery: the wakes are told
+    /// now and the drain is free. The frame and its wakes are kept only for
+    /// the roads that owe them again: its refusal, its seat or pane gone.
+    fn take_crown_wake(&mut self, id: uuid::Uuid, frame: &str) {
+        if !self.submitted_wake(id, frame) {
+            return;
+        }
+        let Some(e) = self.crown_wake_entering.take() else { return };
+        self.journal.line(&format!("crown wake {frame} in session {id}: taken"));
+        self.told(e.crown, e.telling.clone());
+        // Kept until its `entered`, its refusal, its seat or pane gone or a
+        // crown change, however many are out (T-990, round 2): one evicted
+        // could no longer be owed again by its refusal.
+        self.crown_wakes_taken.push(e);
+    }
+
+    /// The taken wake this mod report is for (T-990), fenced as an untaken
+    /// one is: seat, frame and the live pane it went to.
+    fn taken_wake(&self, id: uuid::Uuid, frame: &str) -> Option<usize> {
+        let rec = self.board.sessions.iter().find(|s| s.id == id);
+        self.crown_wakes_taken.iter().position(|e| crownwake::submitted_fence(e, rec, id, frame))
+    }
+
+    /// Taken wakes whose seat lost the pane the frame went to (T-990): a
+    /// park, a death or a relaunch. Owed again, as an untaken one is:
+    /// nothing says the engine ran the words before the pane went. A report
+    /// for one from here is no one's.
+    fn lose_taken(&mut self) -> bool {
+        let gone: Vec<usize> = self
+            .crown_wakes_taken
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                !self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|s| s.id == e.session && s.state.has_pane() && s.pane_key == e.pane)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in gone.iter().rev() {
+            let e = self.crown_wakes_taken.remove(*i);
+            let frame = e.frame.as_deref().unwrap_or("");
+            self.journal.line(&format!(
+                "crown wake {frame} in session {}: taken, its pane gone; owed again",
+                e.session
+            ));
+            self.owe_again(e.wakes);
+        }
+        !gone.is_empty()
     }
 
     /// `create_ticket`, for an agent: the same mint a human's composer gets
