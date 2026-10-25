@@ -3088,9 +3088,12 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     draw(sa, "half a thought", idle.clone());
     client.kill().unwrap();
     let _ = client.wait();
-    wait_until(std::time::Duration::from_secs(10), "the wake held for the draft", || {
-        held(&mut c, a).as_deref() == Some("after your draft")
-    });
+    wait_until_says(
+        std::time::Duration::from_secs(10),
+        "the wake held for the draft",
+        || held(&mut c, a),
+        |h| h.as_deref() == Some("after your draft"),
+    );
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(wakes(&pastes()), 1, "nothing pasted into their draft");
     // They send it (the runtime's turn on it is not this test's), and the box
@@ -13489,6 +13492,14 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     wait_until(std::time::Duration::from_secs(15), "the next attempt told", || {
         count("crown_wake_sent") == 1
     });
+    // Told at the bridge's take (T-990), which the stand-in mod records a
+    // beat later, once it has read the frame (T-1019, the macOS runner).
+    wait_until_says(
+        std::time::Duration::from_secs(5),
+        "a new attempt",
+        || submits(),
+        |s| s.iter().any(|(id, _)| *id != old),
+    );
     let again = submits().into_iter().find(|(id, _)| *id != old).expect("a new attempt").1;
     assert!(again.contains(&k1) && again.contains(&k2), "both wakes in it: {again}");
     wait_until(std::time::Duration::from_secs(5), "both hands down", || {

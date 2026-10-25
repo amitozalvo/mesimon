@@ -82,5 +82,11 @@ jobs:
       - name: Test
         run: python3 -B ci/test-run.py --timeout 4200 -- cargo test --workspace --no-fail-fast
 
+      - name: MEASURE the mod road's pass (T-1019, to be removed)
+        if: always()
+        env:
+          MESIMON_TEST_ROAD: mod
+        run: python3 -B ci/test-run.py --timeout 4200 --one-road -- cargo test -p mesimon --tests --no-fail-fast
+
       - name: Test cleanup failure paths and runner concurrency
         run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p 'test_*_test.py' -v

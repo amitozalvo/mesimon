@@ -70,13 +70,15 @@ exec cat >> \"$(dirname \"$0\")/got.bin\"
 
 /// An empty composer that takes the first paste and then reads as holding
 /// text for the life of the pane (the T-566 box, after the paste): no
-/// repaint and no ack, so the Enters after the paste run out. (`<&0`: a
-/// non-interactive shell's background job reads `/dev/null` otherwise.)
+/// repaint and no ack, so the Enters after the paste run out. (`3<&0` first:
+/// a non-interactive shell's background job reads `/dev/null`, and dash, as
+/// POSIX says, gives it that before a `<&0` is read, T-1019.)
 const LATE_STRAY: &str = "#!/bin/sh
 d=\"$(dirname \"$0\")\"
 stty -icanon -echo -isig 2>/dev/null
 printf '\\033[?2004h\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts'
-cat <&0 >> \"$d/got.bin\" &
+exec 3<&0
+cat <&3 >> \"$d/got.bin\" &
 until grep -q '200~' \"$d/got.bin\" 2>/dev/null; do sleep 0.05; done
 printf '\\033[999;1H\\033[3A────────────────────\\n❯ crown). The crown guessed\\n────────────────────\\n  ? for shortcuts\\033[2A\\033[28G'
 wait
@@ -92,7 +94,8 @@ stty -icanon -echo -isig 2>/dev/null
 box() {
   printf '\\033[?2004h\\033[999;1H\\033[3A────────────────────\\n\\033[2K❯ %s\\n────────────────────\\n  ? for shortcuts\\033[2A\\033[%sG' \"$1\" \"$2\"
 }
-cat <&0 >> \"$d/got.bin\" &
+exec 3<&0
+cat <&3 >> \"$d/got.bin\" &
 while :; do
   [ -e \"$d/title\" ] && rm \"$d/title\" && box 'recover me' 13
   [ -e \"$d/draft\" ] && rm \"$d/draft\" && box 'recover me and a draft' 25
