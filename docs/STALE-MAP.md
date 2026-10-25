@@ -35529,3 +35529,85 @@ before the pane's `SessionStart` let the words go.
 - A person's prompt before an unheld launch's paste (a draft sent inside the composer's first
   cadence) still acks the parked words as `prompt_submitted`, as before. Only a hold makes the board
   know the box was the person's.
+
+**Round 1 (the cold read of `fbd12329`, two P1s and four P2s).** Each correction reuses a rule
+the board already had. Where round 0's lines above say otherwise, this round replaces them.
+1. **The paste's own edge reads the pane now** (P1). Round 0 decided on the sampler's screen, which
+   can be older than a person's typing, and pasted past `paste_at`'s check. `launch_refusal` is
+   T-958/T-966's rule at the launch's edge, read just before the keys (an edge fork, as T-857
+   allows):
+   - any client that holds (`clients_at_pane` is `Here`) is a person at the box;
+   - past clients idle or none, a fresh capture decides: an empty box takes the keys, and so does
+     a box holding exactly the typed title or, after a person's resend spent its clear, whatever
+     it holds (T-570);
+   - anything else, an unreadable screen included, holds the words. No delay was added.
+
+   A person attached to a launching pane with an empty box therefore holds its words too, as
+   T-958 holds a person's own send. They go when the person leaves or goes idle past T-945's
+   bound, or they are left `unsent` at the wait. While held, the edge forks once a cadence (the
+   client listing), bounded by the composer's wait.
+2. **A recovery never clears a person's text** (P1). The restart's resend (T-722) used to re-arm
+   `clear_first` and Ctrl+C whatever the box held, so a handover while a draft held the brief
+   cleared that draft. Now only a person's own resend (`Owed::clears_draft`: their Shift+Enter,
+   their blank ask) clears whatever the box holds. A recovery clears only the board's typed title
+   (`Owed::typed`, set from the ticket's title); any other text holds the brief, and the wait
+   leaves it `unsent`. The clear itself is a key, and is held while a client is `Here`.
+3. **Any launch words still parked are not a person's prompt's ack** (P2). Round 0 caught only
+   words a hold had been seen for, so a prompt inside the first cadence still read as their ack
+   (`prompt_submitted`, `control_submitted`). Now, after T-984's crown-ask branch, a Claude
+   entry still parked and armed by its pane's `SessionStart`, crown wakes excepted (T-936's own
+   road), is dropped and its words kept on the seat `unsent`. That is T-984's measured window,
+   from the box painting to the board's first press.
+   - Before the `SessionStart` no box is up to type in (Claude Code fires it during startup), so
+     a prompt then is a lost or late frame, and it keeps the ordinary ack. The first draft of this
+     round dropped those too, and 19 `crown_e2e` tests on both roads went red. Their workers stand
+     in for the brief's own ack with a bare `UserPromptSubmit` and no `SessionStart`, an order a
+     real pane never sends.
+   - Two `crown_e2e` tests from T-973 (`a_turn_thinking_across_a_restart_is_not_heard_as_finished`,
+     `a_begun_expectation_does_not_outlive_a_restart`) sent the worker's `SessionStart` and then,
+     at once or after a fixed 500 ms, its brief's ack, ahead of the board's paste. They now wait
+     on the hook road for the brief's line in the stub's record before the ack, which is the order
+     a real pane sends. The feed says `prompt_unsent_by_hand`, with T-984's reason ("a person's
+   prompt arrived before these words were pasted"), and a phone's pending reads `rejected`. Round
+   0's `prompt_dropped_by_hand` is gone, and so is its Not-done line about the first cadence. The
+   chain in `ack_owed` is now: a parked crown ask (T-984), then parked launch words (this), then the
+   ordinary ack. One entry still takes one branch.
+4. **The wait is the one armed at the edge** (P2). Round 0 renewed it on the first empty read after
+   a hold, and a new draft reset the release, so a delete-and-retype cycle could keep the words
+   waiting indefinitely. The renewal and `Owed::released` are gone; the edge's read in 1 is the
+   release. A person's Enter empties the box before its `UserPromptSubmit`, but their typing kept
+   their client `Here`, so the edge holds the words until the hook drops them by 3.
+   - Not staged: a draft typed through no client (`send-keys` from outside, as the e2e types),
+     sent by Enter, whose hook comes later than the next dispatch. The edge then reads an empty box
+     with nobody at the pane, and the words go into the turn that Enter started. That is the limit.
+5. **The feed says what was read** (P2). `composer_held` carries the edge's fact:
+   - `composer holds text other than the typed title`;
+   - `a_person_attached`;
+   - `composer could not be read`.
+
+   It never says "a person's draft": the T-566 box's stray text may be the board's own.
+6. **Coverage put back** (P2). `spawn_ready_e2e::a_give_up_is_marked_and_the_resend_clears_the_box_once`
+   is restored, with a stub (`LATE_STRAY`) whose box is empty for the first paste and holds text
+   after it: the paste goes, no ack comes, the presses run out into `prompt_submit_gave_up` and
+   `unsent`, and the resend clears once and pastes as is. The round-0 hold-timeout case is kept as
+   `a_box_holding_other_text_holds_the_brief_until_the_wait_runs_out`.
+
+**Round 1 tests.**
+- `prompt_e2e::a_launch_s_words_wait_for_a_person_s_draft` gains three phases:
+  - a person's prompt after the pane's `SessionStart` and before its box paints (the stub's
+    `nopaint` switch), so before any hold, leaves the words `unsent`;
+  - a draft typed at a barrier between the sample that let the words go and the edge's read
+    (`MESIMON_TEST_LAUNCH_BARRIER`) is held, with no paste and no Enter;
+  - an attached control client with an empty box holds the words until it leaves.
+- `spawn_ready_e2e::a_restart_s_resend_never_clears_the_text_that_held_its_brief`: a held brief,
+  a restart, then the recovery's resend is held again and left `unsent`, with no Ctrl+C and no
+  paste.
+- Stubbed off, each guard's test fails: the edge read (the barrier's draft is never held), the
+  recovery's clear (`"restart me \u{3}"` reached the pane) and the before-hold branch (the words
+  are never kept unsent).
+
+**A limit, measured (2.1.310).** A draft with the cursor moved to its start (Home or Ctrl+A) sits
+at the input's first column, `(2, row)`, which is where Claude Code parks the cursor before a
+placeholder. `composer::read` reads that box `Empty` (`composer.rs`, the cursor-at-start rule),
+so the edge pastes, and the words land before the draft and join it at the Enter. Telling the
+two apart needs the placeholder's styling, which `capture_input_screen` drops. Not changed here.

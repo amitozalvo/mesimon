@@ -4531,6 +4531,13 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     );
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
     c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // The brief's own ack follows its paste (T-987): a prompt before it is
+    // a person's, and leaves the brief unsent.
+    if test_road() == "hooks" {
+        wait_until(std::time::Duration::from_secs(15), "the brief's paste", || {
+            lines_with(title).iter().any(|l| l.starts_with(title))
+        });
+    }
     hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"brief"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     let sessions = h.dir.join("claude-home").join("sessions");
@@ -14758,6 +14765,13 @@ fn a_begun_expectation_does_not_outlive_a_restart() {
     close(t0 - 30_000);
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
     std::thread::sleep(std::time::Duration::from_millis(500));
+    // The brief's own ack follows its paste (T-987): a prompt before it is
+    // a person's, and leaves the brief unsent.
+    if !mod_road {
+        wait_until(std::time::Duration::from_secs(15), "the brief's paste", || {
+            lines_with("mesimon-probe-973").iter().any(|l| l.starts_with("mesimon-probe-973"))
+        });
+    }
     send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     send(ws, "Stop", r#"{"stop_hook_active":false}"#);

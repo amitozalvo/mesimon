@@ -830,7 +830,9 @@ wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_se
 `MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release
 sets it; a mods-off refusal stays a named skip), `MESIMON_RIG_NO_FLAGS` (the rig's `--flags-off`:
 every launch gets `DISABLE_GROWTHBOOK=1`; never a user's), `MESIMON_TEST_FAIL_ENTER` (a file
-path: while it exists, a pane's Enter fails after its paste went in, T-938), `MESIMON_SAMPLE_DELAY_MS`
+path: while it exists, a pane's Enter fails after its paste went in, T-938),
+`MESIMON_TEST_LAUNCH_BARRIER` (a file path: while it exists, a launch's paste edge waits, at most
+10 s, after writing `<path>.reached`, T-987), `MESIMON_SAMPLE_DELAY_MS`
 (how long a `sample_agent` read waits before its capture and again before it lands, T-973).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via

@@ -227,6 +227,13 @@ const BOX_UNKNOWN: &str =
 /// (`BoxRead::Unknown`): leaving is the release a person has. A box no
 /// sample read (`BoxRead::Unread`) has no word.
 const BOX_UNKNOWN_WORD: &str = "box unknown ∙ leave";
+/// Why a launch's words wait at their box (T-987): the feed's outcome, the
+/// fact the reader knows. A box holding text it cannot tell from a draft.
+const COMPOSER_NOT_OURS: &str = "composer holds text other than the typed title";
+/// A box read at the edge as no composer, or a screen that could not be read.
+const COMPOSER_UNREAD: &str = "composer could not be read";
+/// No composer on the sample yet: still painting, not held.
+const BOX_NOT_READY: &str = "no composer yet";
 /// The tail `paste_at` puts on a refusal before any key.
 const NOT_SENT: &str = " ∙ the words were not sent";
 /// How long a write to a subscriber's socket may block the writer thread
@@ -2381,13 +2388,12 @@ struct Owed {
     /// The words wait for a person's draft to leave the box (T-987), and
     /// the feed has said so once (`composer_held`).
     held: bool,
-    /// A held box read empty once: the words go on the next sample that
-    /// reads it so, a cadence on, which leaves the person's Enter time for
-    /// its `UserPromptSubmit` (`ack_owed` drops the words then).
-    released: bool,
-    /// The resend's one Ctrl+C is spent (`clear_first`). A resend's box is
-    /// its own to clear and is never held for a draft.
+    /// The resend's one Ctrl+C is spent (`clear_first`).
     cleared: bool,
+    /// A person's own resend (T-570: their Shift+Enter, their blank ask):
+    /// its one Ctrl+C clears whatever the box holds. A recovery's clears
+    /// only the board's typed title (T-987).
+    clears_draft: bool,
 }
 
 /// Claude Code's refusal of a plugin's input after a person's Esc (T-894,
@@ -2443,8 +2449,8 @@ impl Owed {
             screen_acked: false,
             typed: None,
             held: false,
-            released: false,
             cleared: false,
+            clears_draft: false,
         }
     }
 
@@ -2473,8 +2479,8 @@ impl Owed {
             screen_acked: false,
             typed: None,
             held: false,
-            released: false,
             cleared: false,
+            clears_draft: false,
         }
     }
 
@@ -5762,7 +5768,10 @@ impl Daemon {
         let mut owed = Owed::launch(ticket, parked, Ack::PROMPT);
         owed.mod_road = self.on_mod_road(id);
         owed.next_press = Some(now_ms());
+        // A recovery, not a person's resend (T-987): its Ctrl+C clears only
+        // the title the start typed, and any other text holds the brief.
         owed.clear_first = true;
+        owed.typed = self.board.ticket(ticket).map(|t| t.title.trim().to_string());
         self.owed.insert(id, owed);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.unsent = None;
@@ -5864,6 +5873,7 @@ impl Daemon {
         owed.next_press = Some(now);
         owed.ready_by = Some(now + composer_wait_ms());
         owed.clear_first = true;
+        owed.clears_draft = true;
         self.owed.insert(id, owed);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
@@ -6477,12 +6487,18 @@ impl Daemon {
         // Words a launch could not deliver (T-570) are moot once the agent
         // takes a prompt, whoever typed it.
         let mut changed = !command && rec.unsent.take().is_some();
-        // A launch's words held for a person's draft (T-987) that are not a
-        // crown ask's (those took the branch above): the person's own prompt
-        // went first from the box they waited on, so it is not their ack. It
-        // makes them moot, as it makes unsent ones moot above, and nothing
-        // says they went. One entry takes one of these branches, never two.
-        let held = self.owed.get(&id).is_some_and(|o| o.held && o.parked.is_some());
+        // A launch's words still parked on a Claude seat whose pane said its
+        // `SessionStart` (the entry is armed), and that are not a crown ask's
+        // (those took T-984's branch) nor a crown wake's (owed again below,
+        // T-936): nothing of the board's is in the box, so the prompt is a
+        // person's, typed ahead of them (T-987). It is not their ack: they
+        // are kept on the seat, unsent, and nothing says they went. Before
+        // the `SessionStart` no box was up to type in, and a prompt then (a
+        // lost or late frame) keeps the ordinary ack. One entry takes one of
+        // these branches, never two.
+        let ahead_of_launch = self.owed.get(&id).is_some_and(|o| {
+            o.parked.is_some() && o.next_press.is_some() && o.ack.word != Ack::CROWN_WAKE.word
+        }) && self.session_kind(id) == SessionKind::Claude;
         if let Some(ask) = ahead {
             self.drop_owed(id);
             self.crown_ask_dropped(ticket, Some(ask), "person", PROMPT_AHEAD_OF_ASK);
@@ -6495,13 +6511,14 @@ impl Daemon {
                 &[],
             );
             changed = true;
-        } else if held {
-            self.drop_owed(id);
+        } else if ahead_of_launch {
+            let words = self.drop_owed(id).and_then(|o| o.parked);
+            self.mark_unsent(id, words);
             self.feed.board_outcome(
                 "local",
-                "prompt_dropped_by_hand",
+                "prompt_unsent_by_hand",
                 Some(ticket),
-                "a person's draft went first",
+                PROMPT_AHEAD_OF_ASK,
             );
             self.control_unsent(id);
             changed = true;
@@ -6911,8 +6928,9 @@ impl Daemon {
                 let composer = screen.map_or(Composer::Absent, composer::read);
                 // The composed spawn's box holds the title it typed; a box
                 // holding anything else holds a person's draft (T-987).
-                let typed = self.owed.get(&id).and_then(|o| o.typed.as_deref());
-                let ours = typed.zip(screen).is_some_and(|(t, s)| composer::holds_only(s, t));
+                let typed = self.owed.get(&id).and_then(|o| o.typed.clone());
+                let ours =
+                    typed.as_deref().zip(screen).is_some_and(|(t, s)| composer::holds_only(s, t));
                 // A crown wake parked on this launch (T-936) is never pasted
                 // from here: this screen may be older than a person's draft.
                 // Once the pane draws a box, the wake goes back to owed, and
@@ -6929,14 +6947,44 @@ impl Daemon {
                     continue;
                 }
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
+                // The composer's wait runs from the edge that armed it and is
+                // never renewed by a hold (T-987).
                 let ready_by = *owed.ready_by.get_or_insert(now + composer_wait_ms());
-                // A box holding anything but the board's own text holds a
-                // person's draft (T-987), and is no composer for the words:
-                // pasted under it, they are one prompt with it at the next
-                // Enter. A person at the pane owns the box (T-958).
-                let draft = composer == Composer::Holding && !ours && !owed.clear_first;
-                match composer {
-                    _ if ready_by <= now && (draft || composer == Composer::Absent) => {
+                // The resend's one Ctrl+C (T-570), into a box holding text: a
+                // person's own resend clears whatever is there, and a box that
+                // still reads as holding is then pasted into as it is, never a
+                // second press, which exits Claude. A recovery (the restart's
+                // resend, T-722) clears only the board's own typed title.
+                let clear = composer == Composer::Holding
+                    && owed.clear_first
+                    && !owed.cleared
+                    && (owed.clears_draft || ours);
+                let as_is = owed.clears_draft && owed.cleared;
+                // A box holding anything else is no composer for the words
+                // (T-987): pasted under that text, they are one prompt with
+                // it at the next Enter, and a person at the pane owns the
+                // box (T-958). They wait with no key, inside the wait.
+                let draft = composer == Composer::Holding && !ours && !as_is && !clear;
+                if composer == Composer::Absent && ready_by > now {
+                    owed.next_press = Some(now + SUBMIT_RETRY_MS);
+                    continue;
+                }
+                // At the edge of a key, the box and its clients are read now,
+                // as `paste_at` reads them (T-958, T-966): the sample above
+                // may be older than a person's typing.
+                let held = if composer == Composer::Absent {
+                    Some(BOX_NOT_READY)
+                } else if draft {
+                    Some(COMPOSER_NOT_OURS)
+                } else if clear {
+                    (self.clients_at_pane(&sid16) == PaneClients::Here).then_some(A_PERSON_ATTACHED)
+                } else {
+                    launch_barrier();
+                    self.launch_refusal(&sid16, typed.as_deref(), as_is)
+                };
+                let Some(owed) = self.owed.get_mut(&id) else { continue };
+                match held {
+                    Some(_) if ready_by <= now => {
                         let words = owed.parked.take();
                         let wake = owed.ack.word == Ack::CROWN_WAKE.word;
                         self.drop_owed(id);
@@ -6949,51 +6997,22 @@ impl Daemon {
                         changed = true;
                         continue;
                     }
-                    Composer::Absent => {
+                    Some(why) => {
+                        if why != BOX_NOT_READY && !owed.held {
+                            owed.held = true;
+                            self.feed.board_outcome("daemon", "composer_held", Some(ticket), why);
+                        }
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
-                    // The resend's one Ctrl+C (T-570): the box holds what
-                    // the failed start left in it. The paste waits a cadence
-                    // for the cleared box, and a box that still reads as
-                    // holding then is pasted into as it is — never a second
-                    // press, which exits Claude.
-                    Composer::Holding if owed.clear_first && !owed.cleared => {
+                    None if clear => {
                         owed.cleared = true;
                         let _ = self.backend.clear_input(&sid16);
                         owed.screen_after = now;
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
-                    // The words wait, with no key, for the box to read
-                    // empty inside the composer's wait, as for a composer
-                    // not yet painted: the draft deleted, or sent first
-                    // (`ack_owed` drops them then). The feed says so once.
-                    Composer::Holding if draft => {
-                        owed.released = false;
-                        if !owed.held {
-                            owed.held = true;
-                            self.feed.board_outcome(
-                                "daemon",
-                                "composer_held",
-                                Some(ticket),
-                                "a person's draft",
-                            );
-                        }
-                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
-                        continue;
-                    }
-                    // Emptied: the words go on the next sample that reads it
-                    // so, a cadence on, past a person's Enter and its
-                    // `UserPromptSubmit`; the box is up, so its wait renews.
-                    Composer::Empty if owed.held && !owed.released => {
-                        owed.released = true;
-                        owed.screen_after = now;
-                        owed.ready_by = Some(now + composer_wait_ms());
-                        owed.next_press = Some(now + SUBMIT_RETRY_MS);
-                        continue;
-                    }
-                    Composer::Holding | Composer::Empty => {}
+                    None => {}
                 }
             }
             let Some(owed) = self.owed.get_mut(&id) else { continue };
@@ -9207,6 +9226,33 @@ impl Daemon {
             return PaneClients::Here;
         };
         PaneClients::of(&clients, now_ms(), crownwake::person_idle_ms())
+    }
+
+    /// Why a launch's parked words are not typed into `sid`'s pane now
+    /// (T-987): `paste_at`'s rule at this edge, read now (T-958, T-966). Any
+    /// client that holds is a person at the box. Past clients idle or none,
+    /// the box is read from a fresh screen: empty takes the keys, and so does
+    /// a box holding exactly the title the board typed (`typed`) or, after a
+    /// person's resend spent its clear, whatever it holds (`as_is`, T-570).
+    /// Anything else, a screen unread included, holds them. `None` to type.
+    fn launch_refusal(&self, sid: &str, typed: Option<&str>, as_is: bool) -> Option<&'static str> {
+        use crate::agents::claude::composer::{self, Composer};
+        if self.clients_at_pane(sid) == PaneClients::Here {
+            return Some(A_PERSON_ATTACHED);
+        }
+        let Ok(screen) = self.backend.capture_input_screen(sid) else {
+            return Some(COMPOSER_UNREAD);
+        };
+        match composer::read(&screen) {
+            Composer::Empty => None,
+            Composer::Holding
+                if as_is || typed.is_some_and(|t| composer::holds_only(&screen, t)) =>
+            {
+                None
+            }
+            Composer::Holding => Some(COMPOSER_NOT_OURS),
+            Composer::Absent => Some(COMPOSER_UNREAD),
+        }
     }
 
     /// Why words of the board's would land on a person's (T-918), as the
@@ -20620,6 +20666,25 @@ fn composer_wait_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(COMPOSER_WAIT_MS)
+}
+
+/// Test seam only (T-987): while the file `MESIMON_TEST_LAUNCH_BARRIER` names
+/// exists, a launch's dispatch edge waits, at most 10 s, after writing
+/// `<path>.reached`: the gap between the sample that let the words go and
+/// the edge's own read, where an e2e types.
+fn launch_barrier() {
+    let Some(path) = std::env::var_os("MESIMON_TEST_LAUNCH_BARRIER") else { return };
+    let path = std::path::PathBuf::from(path);
+    if !path.exists() {
+        return;
+    }
+    let mut reached = path.clone().into_os_string();
+    reached.push(".reached");
+    let _ = std::fs::write(&reached, "");
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while path.exists() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Test seam only — e2e cannot wait out the real 10 s bridge wait (T-575).

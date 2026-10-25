@@ -431,19 +431,33 @@ fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
 /// Measured before the change (and on Claude Code 2.1.310 with Sonnet): the
 /// words were pasted under the draft and one Enter sent both as one prompt.
 /// Now a box holding anything but the board's own text holds the words, with
-/// no key: they go alone once the draft is deleted, and are dropped, never
-/// acked, when the person sends the draft first. (A draft that outlasts the
-/// composer's wait leaves them unsent: `spawn_ready_e2e`'s T-566 pane.)
+/// no key, and so does a person at the pane (T-958), read again at the edge
+/// of the paste: they go alone once the draft is deleted or the person
+/// leaves, and are kept unsent, never acked, when the person's own prompt
+/// goes first, held or not yet. (A draft that outlasts the composer's wait
+/// leaves them unsent too: `spawn_ready_e2e`'s T-566 pane.)
 #[test]
 fn a_launch_s_words_wait_for_a_person_s_draft() {
-    const STUB: &str = "#!/bin/sh\nprintf '\\033[999;3H\\033[2A'\n\
-                        while IFS= read -r line; do \
-                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    // While `nopaint` exists the composer is not painted yet: a pane past
+    // its `SessionStart` with no box on screen.
+    let stub = format!(
+        "#!/bin/sh\nwhile [ -e \"$(dirname \"$0\")/nopaint\" ]; do sleep 0.05; done\n{COMPOSER}\
+         printf '\\033[999;3H\\033[2A'\n\
+         while IFS= read -r line; do \
+         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
+    );
     // The paste road's own mechanics: on the mod road the words go down its
     // `submit` and no box is read (T-575), so this runs on the hook set
     // under both passes.
-    let hooks = [("MESIMON_CLAUDE_ROAD", "hooks")];
-    let Some(h) = Harness::boot_with_env("prompt-held", Some(STUB), &hooks) else { return };
+    let dir = std::env::temp_dir().join(format!("msmn-t987-barrier-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let barrier = dir.join("barrier");
+    let reached = dir.join("barrier.reached");
+    let env = [
+        ("MESIMON_CLAUDE_ROAD", "hooks"),
+        ("MESIMON_TEST_LAUNCH_BARRIER", barrier.to_str().unwrap()),
+    ];
+    let Some(h) = Harness::boot_bare("prompt-held", Some(&stub), &env) else { return };
     let got = h.dir.join("got.txt");
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();
@@ -478,7 +492,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         keys(sid, &["-l", text]);
         wait_until(Duration::from_secs(5), "the draft in the box", || pane(sid).contains(text));
     };
-    let held = |c: &mut TestClient, n: usize| {
+    let held = |c: &mut TestClient, n: usize, probe: &str| {
         wait_until(Duration::from_secs(10), "the words held for the draft", || {
             feed_count(&h, "composer_held", ticket) == n
         });
@@ -486,7 +500,8 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         assert_eq!(feed_count(&h, "composer_held", ticket), n, "said once per hold");
         let rec = c.board().sessions.into_iter().find(|s| s.state.is_live()).expect("seat");
         assert!(rec.pending_submit, "the words are still owed");
-        assert!(rec.unsent.is_none(), "and not given up");
+        let given_up = rec.unsent.as_ref().is_some_and(|u| u.text.contains(probe));
+        assert!(!given_up, "and not given up");
     };
     let sleep_seat = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -508,7 +523,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     };
     draft(sid, "person-draft-B");
     hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), "{}");
-    held(&mut c, 1);
+    held(&mut c, 1, "mesimon-probe-987b");
     assert!(!read().contains("mesimon-probe-987b"), "no paste under the draft: {:?}", read());
     // The person deletes the draft: the brief goes, under the title alone.
     for _ in 0.."person-draft-B".len() {
@@ -546,7 +561,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     ask(&mut c, "mesimon-probe-987a the board's words");
     draft(sid, "person-draft-A");
     hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
-    held(&mut c, 2);
+    held(&mut c, 2, "mesimon-probe-987a");
     assert!(read().is_empty(), "nothing typed under the draft: {:?}", read());
     for _ in 0.."person-draft-A".len() {
         keys(sid, &["BSpace"]);
@@ -561,24 +576,99 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     });
     sleep_seat(&mut c, sid);
 
-    // The person sends the draft instead: their prompt goes alone and makes
-    // the board's words moot, as it makes unsent words moot (T-570), with
-    // no ack said for words that never went.
+    // The person sends the draft instead: their prompt goes alone, and the
+    // board's words stay on the seat, unsent, with no ack said for them.
     let _ = std::fs::remove_file(&got);
     ask(&mut c, "mesimon-probe-987c the board's words");
     draft(sid, "person-draft-C");
     hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
-    held(&mut c, 3);
+    held(&mut c, 3, "mesimon-probe-987c");
     keys(sid, &["Enter"]);
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"person-draft-C"}"#);
-    wait_until(Duration::from_secs(5), "the words dropped by the person's prompt", || {
-        feed_count(&h, "prompt_dropped_by_hand", ticket) == 1
+    let unsent = |c: &mut TestClient, words: &str| {
+        wait_until(Duration::from_secs(5), "the words kept unsent", || {
+            c.board().sessions.iter().any(|s| {
+                s.id == sid
+                    && !s.pending_submit
+                    && s.unsent.as_ref().is_some_and(|u| u.text == words)
+            })
+        });
+    };
+    unsent(&mut c, "mesimon-probe-987c the board's words");
+    wait_until(Duration::from_secs(5), "the feed's word for them", || {
+        feed_count(&h, "prompt_unsent_by_hand", ticket) == 1
     });
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat");
-    assert!(!rec.pending_submit && rec.unsent.is_none(), "nothing owed: {:?}", rec.unsent);
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(read(), "person-draft-C\n", "the person's prompt went alone");
     assert_eq!(feed_count(&h, "prompt_submitted", ticket), 2, "no ack for words never sent");
+    sleep_seat(&mut c, sid);
+
+    // A person's prompt before any hold was seen: the pane said its
+    // `SessionStart`, its box not painted yet, the words still parked. They
+    // are no less unsent.
+    let _ = std::fs::remove_file(&got);
+    let nopaint = h.stub.as_ref().expect("the stub").with_file_name("nopaint");
+    std::fs::write(&nopaint, "").unwrap();
+    ask(&mut c, "mesimon-probe-987d the board's words");
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"typed ahead"}"#);
+    unsent(&mut c, "mesimon-probe-987d the board's words");
+    wait_until(Duration::from_secs(5), "the feed's word for them", || {
+        feed_count(&h, "prompt_unsent_by_hand", ticket) == 2
+    });
+    std::fs::remove_file(&nopaint).unwrap();
+    wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(read().is_empty(), "nothing typed after the person's prompt: {:?}", read());
+    assert_eq!(feed_count(&h, "prompt_submitted", ticket), 2);
+    sleep_seat(&mut c, sid);
+
+    // The sample that let the words go read an empty box; the person types
+    // between it and the paste (the barrier holds the edge there). The
+    // edge's own read holds them: no paste and no Enter.
+    let _ = std::fs::remove_file(&got);
+    ask(&mut c, "mesimon-probe-987e the board's words");
+    wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
+    std::fs::write(&barrier, "").unwrap();
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    wait_until(Duration::from_secs(10), "the dispatch edge", || reached.exists());
+    keys(sid, &["-l", "person-draft-E"]);
+    wait_until(Duration::from_secs(5), "the draft in the box", || {
+        pane(sid).contains("person-draft-E")
+    });
+    std::fs::remove_file(&barrier).unwrap();
+    held(&mut c, 4, "mesimon-probe-987e");
+    assert!(read().is_empty(), "no paste and no Enter under the draft: {:?}", read());
+    for _ in 0.."person-draft-E".len() {
+        keys(sid, &["BSpace"]);
+    }
+    wait_until(Duration::from_secs(15), "the words once the box is empty", || {
+        read().contains("mesimon-probe-987e")
+    });
+    assert_eq!(read(), "mesimon-probe-987e the board's words\n", "alone, once");
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(5), "the ask's ack", || {
+        feed_count(&h, "prompt_submitted", ticket) == 3
+    });
+    sleep_seat(&mut c, sid);
+
+    // A person with the pane open and the box empty owns it too (T-958):
+    // the words wait for them to leave.
+    let _ = std::fs::remove_file(&got);
+    ask(&mut c, "mesimon-probe-987f the board's words");
+    wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
+    let sid16: String = sid.simple().to_string().chars().take(16).collect();
+    let person = person_attaches(&tmux_sock, &sid16);
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    held(&mut c, 5, "mesimon-probe-987f");
+    assert!(read().is_empty(), "nothing typed under a person: {:?}", read());
+    person_leaves(&tmux_sock, &sid16, person);
+    wait_until(Duration::from_secs(15), "the words once the person left", || {
+        read().contains("mesimon-probe-987f")
+    });
+    assert_eq!(read(), "mesimon-probe-987f the board's words\n", "alone, once");
+    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }

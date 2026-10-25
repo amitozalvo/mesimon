@@ -68,6 +68,20 @@ printf '\\033[?2004h\\033[999;1H\\033[3A─────────────�
 exec cat >> \"$(dirname \"$0\")/got.bin\"
 ";
 
+/// An empty composer that takes the first paste and then reads as holding
+/// text for the life of the pane (the T-566 box, after the paste): no
+/// repaint and no ack, so the Enters after the paste run out. (`<&0`: a
+/// non-interactive shell's background job reads `/dev/null` otherwise.)
+const LATE_STRAY: &str = "#!/bin/sh
+d=\"$(dirname \"$0\")\"
+stty -icanon -echo -isig 2>/dev/null
+printf '\\033[?2004h\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts'
+cat <&0 >> \"$d/got.bin\" &
+until grep -q '200~' \"$d/got.bin\" 2>/dev/null; do sleep 0.05; done
+printf '\\033[999;1H\\033[3A────────────────────\\n❯ crown). The crown guessed\\n────────────────────\\n  ? for shortcuts\\033[2A\\033[28G'
+wait
+";
+
 fn got(h: &Harness) -> String {
     String::from_utf8_lossy(&std::fs::read(h.dir.join("got.bin")).unwrap_or_default()).into_owned()
 }
@@ -203,15 +217,16 @@ fn a_composer_that_never_paints_is_a_failed_start() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
-/// The T-566 pane: a box holding text the start did not type is no composer
-/// for the brief (T-987: it reads as a person's draft, and words pasted
-/// under it would join it), so the brief waits out the composer's wait with
-/// no key, and the seat keeps what it never took. Its Shift+Enter (`resend`)
-/// clears the box with exactly one Ctrl+C — a second exits Claude, so a box
-/// that still reads as holding is pasted into as it is — and pastes the
-/// title and the brief whole; the agent's ack clears the mark.
+/// The T-566 pane from the start: a box holding text other than the typed
+/// title is no composer for the brief (T-987: the reader cannot tell it from
+/// a person's draft, and words pasted under it would join it), so the brief
+/// waits out the composer's wait with no key, and the seat keeps what it
+/// never took. Its Shift+Enter (`resend`) clears the box with exactly one
+/// Ctrl+C — a second exits Claude, so a box that still reads as holding is
+/// pasted into as it is — and pastes the title and the brief whole; the
+/// agent's ack clears the mark.
 #[test]
-fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
+fn a_box_holding_other_text_holds_the_brief_until_the_wait_runs_out() {
     let env = [("MESIMON_COMPOSER_WAIT_MS", "3000"), HOOKS];
     let Some(h) = Harness::boot_bare("resend", Some(STRAY), &env) else { return };
     let hook_sock = h.paths.hook_sock();
@@ -265,5 +280,96 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
         feed_count(&h, "prompt_resent", ticket) == 1
     });
     err_containing(resend(&mut c), "nothing unsent");
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// The T-566 pane after the paste (T-570): the brief went into an empty
+/// composer, no ack came, and the Enters run out on a box that now holds
+/// text, so the seat keeps what it never took. Its Shift+Enter (`resend`)
+/// clears the box with exactly one Ctrl+C and pastes the title and the brief
+/// whole into what is left; the agent's ack clears the mark.
+#[test]
+fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
+    let Some(h) = Harness::boot_bare("resend-late", Some(LATE_STRAY), &[HOOKS]) else { return };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("resend-late");
+    let (ticket, sid) = composed(&mut c, &h, "resend me");
+    std::thread::sleep(Duration::from_millis(500));
+    session_start(&hook_sock, sid);
+
+    wait_until(Duration::from_secs(15), "prompt_submit_gave_up", || {
+        feed_count(&h, "prompt_submit_gave_up", ticket) == 1
+    });
+    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
+    assert!(!got(&h).contains('\x03'), "the first paste clears nothing");
+    assert_eq!(pastes(&got(&h)).len(), 1, "the first paste went in: {:?}", got(&h));
+    assert_eq!(feed_count(&h, "composer_held", ticket), 0, "an empty box held nothing");
+
+    let resend = |c: &mut TestClient| {
+        c.request(Command::PromptSession {
+            ticket,
+            text: String::new(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: true,
+            uploads: Vec::new(),
+        })
+    };
+    assert!(matches!(resend(&mut c), Response::Ok));
+    wait_until(Duration::from_secs(10), "the resend's paste", || pastes(&got(&h)).len() == 2);
+    let text = got(&h);
+    assert_eq!(text.matches('\x03').count(), 1, "exactly one Ctrl+C: {text:?}");
+    let ctrl_c = text.find('\x03').unwrap();
+    let second = text.match_indices(OPEN).nth(1).map(|(at, _)| at).unwrap();
+    assert!(ctrl_c < second, "the box is cleared before the paste: {text:?}");
+    assert_eq!(pastes(&text)[1], format!("resend me\n\n{BRIEF}"), "title and brief: {text:?}");
+    hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
+    wait_until(Duration::from_secs(3), "the ack clears the mark", || {
+        let rec = record(&mut c, sid);
+        rec.unsent.is_none() && !rec.pending_submit
+    });
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// A brief held for text in its box when the daemon restarts (T-987 round
+/// 1): the restart's resend (T-722) is a recovery, not the person's resend,
+/// so its one Ctrl+C clears only the title the start typed. The box's other
+/// text holds the brief again, and the wait leaves it unsent: no Ctrl+C and
+/// no paste ever reach the pane.
+#[test]
+fn a_restart_s_resend_never_clears_the_text_that_held_its_brief() {
+    let env = [("MESIMON_COMPOSER_WAIT_MS", "6000"), HOOKS];
+    let Some(h) = Harness::boot_bare("resend-restart", Some(STRAY), &env) else { return };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("resend-restart");
+    let (ticket, sid) = composed(&mut c, &h, "restart me");
+    std::thread::sleep(Duration::from_millis(500));
+    let transcript = h.dir.join(format!("{sid}.jsonl"));
+    let start = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    wait_until(Duration::from_secs(5), "the brief held", || {
+        feed_count(&h, "composer_held", ticket) == 1
+    });
+    drop(c);
+    h.restart();
+    let mut c = h.client("resend-restart-2");
+    wait_until(Duration::from_secs(10), "the restart's resend", || {
+        feed_count(&h, "prompt_resent", ticket) == 1
+    });
+    wait_until(Duration::from_secs(20), "the resend's wait to run out", || {
+        feed_count(&h, "prompt_submit_not_ready", ticket) == 1
+    });
+    assert_eq!(feed_count(&h, "composer_held", ticket), 2, "held again after the restart");
+    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    let text = got(&h);
+    assert!(!text.contains('\x03'), "no Ctrl+C into the box: {text:?}");
+    assert!(pastes(&text).is_empty(), "no paste under its text: {text:?}");
     let _ = c.request(Command::KillSession { id: sid });
 }
