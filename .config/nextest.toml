@@ -1,7 +1,7 @@
 # The second safety layer under the fixture supervisors (ci/test_guard.py): a
 # test that wedges is killed after four slow intervals, and a child still
 # holding the pipes after the test returned is reported as a LEAK. No thread
-# cap here — `cargo nextest run --workspace` runs at nextest's default, ~WALL
+# cap here — `cargo nextest run --workspace` runs at nextest's default, ~7 min
 # on the author's Mac; `ci/test-run.py --jobs N` is where a bounded run asks
 # for one, and CI sets NEXTEST_TEST_THREADS (T-1023).
 [profile.default]

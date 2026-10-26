@@ -87,7 +87,7 @@ python3 -B ci/release-watch.py [--dry-run|--mark-read]  # on a claude/codex vers
 cargo ut                                              # the inner loop: every unit test, ~1 s
 cargo test -p mesimon-core attention                  # one module's tests
 cargo test -p mesimon --test hook_e2e                 # one e2e; skips without tmux
-cargo nextest run --workspace                         # everything, e2es in PARALLEL (~30 s)
+cargo nextest run --workspace                         # everything, e2es in PARALLEL (~7 min on 11 cores)
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy
 cargo run                                             # TUI for cwd; `-- daemon --repo <p>` runs the daemon
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
