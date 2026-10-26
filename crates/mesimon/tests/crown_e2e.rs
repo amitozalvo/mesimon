@@ -16762,7 +16762,9 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
 /// crown's next ask is admitted while it runs, queued, its words held until
 /// that turn's end. The controls: that ask, and one
 /// more on a wake's parked road, each followed by a prompt AFTER the
-/// board's paste, take the ack road and speak of their ask at the turn end.
+/// board's paste, take the ack road and speak of their ask at the turn end;
+/// the prompt hook carries the ask's own words, so it is the agent's
+/// receipt (T-1025): `handed`, and `taken` at the end.
 #[test]
 fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     let Some(h) = Harness::boot_with_env(
@@ -16876,7 +16878,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
         });
     };
     let wake_for = |id: &str| {
-        let line = format!("{head} ended a turn after ask {id} was sent; receipt unconfirmed");
+        let line = format!("{head} ended its turn after your ask went in (ask {id}: taken");
         wait_until(std::time::Duration::from_secs(20), "the wake for the ask", || {
             crown_said().contains(&line)
         });
@@ -16949,7 +16951,9 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     });
     assert!(!crown_said()[said..].contains(&format!("ask {}", first.ask)), "{}", crown_said());
     start_with(&mut c, ws, "mesimon-probe-9843 asked again");
-    assert_eq!(asked(&mut c).status, "sent");
+    wait_until(std::time::Duration::from_secs(10), "handed by its prompt hook", || {
+        asked(&mut c).status == "handed"
+    });
     stop(&mut c, ws);
     wake_for(&second.ask);
     crown_takes(&mut c);
@@ -16963,9 +16967,418 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
         in_w().contains("mesimon-probe-9844")
     });
     start_with(&mut c, ws, "mesimon-probe-9844 after the box");
-    settle();
-    let acked = asked(&mut c);
-    assert_eq!((acked.status.as_str(), acked.ask.as_str()), ("sent", third.ask.as_str()));
+    wait_until(std::time::Duration::from_secs(10), "handed by its prompt hook", || {
+        asked(&mut c).status == "handed"
+    });
+    assert_eq!(asked(&mut c).ask, third.ask);
     stop(&mut c, ws);
     wake_for(&third.ask);
+}
+
+/// T-1025: a person's Esc in a worker's pane does not drop the crown's
+/// held ask. Claude Code holds a mod's `submit` behind the running turn and
+/// the Esc clears that queue: the stand-in engine (`mod-queue-submit`)
+/// reports the frame removed in Claude Code 2.1.310's words, and the Esc's
+/// interrupt record, the one end the board sees on the mod road (the
+/// tail's Low hint), ends the turn. The board puts the ask back on its
+/// queue (`asked: queued`, why says so), the interrupted seat takes the
+/// words by keys into its empty box, they land once, and the ask reads
+/// `sent` again, never `dropped`. On the hook set there is no queue to
+/// lose: the paste mid-turn reached the stub, the Esc ends the turn the ask
+/// rode, the ask reads `sent`, no longer blocks, and nothing goes twice.
+/// Then an ask the agent's own receipt named (`handed`: the mod's `entered`
+/// on the mod pass; the prompt hook carrying the words on the hook set,
+/// T-1025's receipt) at an Esc reads `taken`, and the next ask goes. A
+/// second removal of the same words drops the ask, by the agent, as before.
+#[test]
+fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_ask_esc",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_COMPOSER_WAIT_MS", "1500"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_ask_esc");
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+    let landed = |probe: &str| read_got().contains(probe);
+    let copies = |probe: &str| read_got().matches(probe).count();
+    let fed = |cmd: &str| {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&format!("\"cmd\":\"{cmd}\"")))
+            .count()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mod_road = test_road() == "mod";
+    let switch = |name: &str, on: bool| {
+        let f = h.dir.join(name);
+        if on {
+            std::fs::write(f, "").unwrap();
+        } else {
+            let _ = std::fs::remove_file(f);
+        }
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1025 worker");
+    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let v = read(&mut c, sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: v.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    // W's transcript, the road its Esc is read on: `SessionStart` is the one
+    // frame that names it (D24). The brief parked on the launch is acked or
+    // superseded by W's first prompt below.
+    let transcript = h.dir.join(format!("{ws}.jsonl"));
+    std::fs::write(&transcript, "").unwrap();
+    let start_body = format!(
+        r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp","source":"startup"}}"#,
+        transcript.display()
+    );
+    hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start_body);
+    c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // The Esc: no hook fires; the engine's own record of the interrupt is
+    // the one word, read off the tail (Low), as on the author's board.
+    let esc = || {
+        use std::io::Write;
+        let mut f = std::fs::File::options().append(true).open(&transcript).unwrap();
+        writeln!(
+            f,
+            r#"{{"uuid":"{}","type":"user","message":{{"role":"user","content":[{{"type":"text","text":"[Request interrupted by user]"}}]}}}}"#,
+            ulid::Ulid::new()
+        )
+        .unwrap();
+    };
+    let interrupted = |c: &mut TestClient| {
+        c.await_state(ws, "interrupted", |s| {
+            *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted }
+        });
+    };
+    // The tail's cursor is minted at the first read of a running seat (a 2 s
+    // cadence) and starts at the file's end: a record written before it
+    // exists is never read. Three seconds into a turn, as the tail e2e waits.
+    let tail_minted = || std::thread::sleep(std::time::Duration::from_millis(3000));
+    // The attention machine pins inferred signals after more than four
+    // committed changes in twenty seconds (`FLAP_MAX`): a second Esc read
+    // off the tail inside that window of the first would be dropped as a
+    // flap. The test's cadence is the flap; a person's is not.
+    let flap_clear = || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            mesimon_core::attention::FLAP_WINDOW_MS + 500,
+        ))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
+        landed(&format!("{kw} \"mesimon-probe-1025 worker\" finished its turn"))
+    });
+    let got_crown = h.dir.join(format!("got-{ka}.txt"));
+    let crown_lines = || std::fs::read_to_string(&got_crown).unwrap_or_default().lines().count();
+    let taken = std::cell::Cell::new(0);
+    let crown_takes = |c: &mut TestClient| {
+        wait_until(std::time::Duration::from_secs(10), "a wake in the crown's pane", || {
+            crown_lines() > taken.get()
+        });
+        taken.set(crown_lines());
+        start(c, sa);
+        stop(c, sa);
+    };
+    crown_takes(&mut c);
+
+    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
+    let word = |c: &mut TestClient| asked(c).map(|a| a.status);
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
+        let v = read(c, sa, &kw).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver,
+                expect_secs: None,
+            },
+        )
+    };
+    let receipt = |r: Response| match r {
+        Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
+        other => panic!("ask_agent: {other:?}"),
+    };
+    let refused = |r: Response, first: &str| match r {
+        Response::Err { message } => {
+            assert!(message.contains(first) && message.contains("is refused"), "{message}")
+        }
+        other => panic!("a second ask while the first is out: {other:?}"),
+    };
+    let wake_for = |id: &str, said: &str| {
+        let head = format!("{kw} \"mesimon-probe-1025 worker\"");
+        let line = if said == "sent" {
+            format!("{head} ended a turn after ask {id} was sent; receipt unconfirmed")
+        } else {
+            format!("{head} ended its turn after your ask went in (ask {id}: {said}")
+        };
+        wait_until(std::time::Duration::from_secs(20), &format!("the wake for ask {said}"), || {
+            landed(&line)
+        });
+    };
+    // W's stand-in engine alone queues its submits: the crown's wake into
+    // its own pane goes as ever.
+    let queue_switch = format!("mod-queue-submit-{ws}");
+    let frames_with = |probe: &str| {
+        std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson")))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(probe))
+            .count()
+    };
+    // The frames W's engine holds for `probe`, oldest first, and the Esc
+    // for one of them: the engine's report that its queue lost it, by that
+    // frame alone (`mod-release-<id>`), so a re-sent frame waits for its own.
+    let frames_of = |probe: &str| -> Vec<String> {
+        std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson")))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(probe))
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["id"].to_string())
+            .map(|id| id.trim_matches('"').to_string())
+            .collect()
+    };
+    let removed = |fid: &str| write_whole(&h.dir.join(format!("mod-release-{fid}")), "removed");
+
+    // ---- 1. a held ask the Esc removes goes again, once ---------------------
+    switch(&queue_switch, mod_road);
+    start(&mut c, ws);
+    tail_minted();
+    let held = receipt(ask(&mut c, "mesimon-probe-10251 held", Deliver::Now));
+    assert_eq!(held.status, "sent", "{held:?}");
+    if mod_road {
+        wait_until(std::time::Duration::from_secs(10), "the submit queued by the engine", || {
+            frames_with("mesimon-probe-10251 held") == 1
+        });
+        settle();
+        assert!(!landed("mesimon-probe-10251 held"), "queued behind the turn: nothing typed");
+        refused(ask(&mut c, "mesimon-probe-10252 again", Deliver::Idle), &held.ask);
+        // The Esc: the engine reports the queued prompt removed, and the
+        // interrupt record ends the turn.
+        removed(&frames_of("mesimon-probe-10251 held")[0]);
+        wait_until(std::time::Duration::from_secs(10), "the ask back on the queue", || {
+            word(&mut c).as_deref() == Some("queued")
+        });
+        let back = asked(&mut c).unwrap();
+        assert_eq!(back.ask, held.ask, "the same ask, not a new one");
+        assert!(back.why.contains("removed the prompt from its queue"), "{back:?}");
+        wait_until(std::time::Duration::from_secs(5), "the feed's requeue line", || {
+            fed("crown_ask_requeued") == 1
+        });
+        assert_eq!(fed("prompt_submit_refused"), 0, "not a refusal");
+        assert!(c.board().live_agent(w).unwrap().unsent.is_none(), "not the person's to resend");
+        switch(&queue_switch, false);
+        esc();
+        interrupted(&mut c);
+        // The queue sends the words again at the idle: by keys, into the
+        // stopped seat's box (a submit is refused after an Esc, T-894).
+        wait_until(std::time::Duration::from_secs(15), "the words sent again", || {
+            landed("mesimon-probe-10251 held")
+        });
+        wait_until(std::time::Duration::from_secs(10), "the ask sent again", || {
+            word(&mut c).as_deref() == Some("sent")
+        });
+        assert_eq!(asked(&mut c).unwrap().ask, held.ask);
+        assert_eq!(frames_with("mesimon-probe-10251 held"), 1, "typed, not submitted again");
+        wait_until(std::time::Duration::from_secs(5), "the feed's second send", || {
+            fed("ask_agent_sent") == 2
+        });
+        // Its own prompt hook, carrying the words: the agent's receipt.
+        hook_send(
+            &hook_sock,
+            &ws.to_string(),
+            "UserPromptSubmit",
+            r#"{"prompt":"mesimon-probe-10251 held"}"#,
+        );
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        wait_until(std::time::Duration::from_secs(10), "handed by its prompt hook", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        refused(ask(&mut c, "mesimon-probe-10253 meanwhile", Deliver::Idle), &held.ask);
+        stop(&mut c, ws);
+        wake_for(&held.ask, "taken");
+        assert_eq!(copies("mesimon-probe-10251 held"), 1, "landed once");
+        crown_takes(&mut c);
+    } else {
+        // The paste reached the stub mid-turn: the Esc ends the turn the ask
+        // rode, and the ask reads sent and no longer blocks.
+        wait_until(std::time::Duration::from_secs(5), "the words in W's turn", || {
+            landed("mesimon-probe-10251 held")
+        });
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+        settle();
+        refused(ask(&mut c, "mesimon-probe-10252 again", Deliver::Idle), &held.ask);
+        esc();
+        interrupted(&mut c);
+        settle();
+        assert_eq!(word(&mut c).as_deref(), Some("sent"));
+        assert_eq!(copies("mesimon-probe-10251 held"), 1, "nothing sent twice");
+        assert_eq!(fed("crown_ask_requeued"), 0, "no queue to lose on the hook set");
+        let next = receipt(ask(&mut c, "mesimon-probe-10252 after", Deliver::Idle));
+        assert_ne!(next.ask, held.ask, "the Esc lifted the block");
+        wait_until(std::time::Duration::from_secs(10), "the next ask typed", || {
+            landed("mesimon-probe-10252 after")
+        });
+        // Its prompt hook carries the words: the agent's receipt (T-1025).
+        hook_send(
+            &hook_sock,
+            &ws.to_string(),
+            "UserPromptSubmit",
+            r#"{"prompt":"mesimon-probe-10252 after"}"#,
+        );
+        c.await_state(ws, "running", |s| *s == SessionState::Running);
+        wait_until(std::time::Duration::from_secs(10), "handed by its prompt hook", || {
+            word(&mut c).as_deref() == Some("handed")
+        });
+        stop(&mut c, ws);
+        wake_for(&next.ask, "taken");
+        crown_takes(&mut c);
+    }
+
+    // ---- 2. a handed ask at an Esc reads taken, and the next ask goes -------
+    // The author's second gap (T-1025's note): the ask whose turn the
+    // person interrupted stayed handed, and every new ask was refused.
+    let own = receipt(ask(&mut c, "mesimon-probe-10254 own turn", Deliver::Idle));
+    wait_until(std::time::Duration::from_secs(15), "the words at W's idle", || {
+        landed("mesimon-probe-10254 own turn")
+    });
+    // The prompt hook of the turn they start: on the mod pass the stand-in
+    // engine's `entered` handed the ask already, and this is the turn's
+    // begin; on the hook set the hook's words are the receipt.
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "UserPromptSubmit",
+        r#"{"prompt":"mesimon-probe-10254 own turn"}"#,
+    );
+    wait_until(std::time::Duration::from_secs(10), "the ask handed", || {
+        word(&mut c).as_deref() == Some("handed")
+    });
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    flap_clear();
+    refused(ask(&mut c, "mesimon-probe-10255 blocked", Deliver::Idle), &own.ask);
+    esc();
+    interrupted(&mut c);
+    wait_until(std::time::Duration::from_secs(10), "the Esc takes the ask", || {
+        word(&mut c).as_deref() == Some("taken")
+    });
+    assert_eq!(asked(&mut c).unwrap().ask, own.ask);
+    let after = receipt(ask(&mut c, "mesimon-probe-10256 after the esc", Deliver::Idle));
+    assert_ne!(after.ask, own.ask, "the Esc ended the turn: the next ask goes");
+    wait_until(std::time::Duration::from_secs(15), "the next ask typed", || {
+        landed("mesimon-probe-10256 after the esc")
+    });
+    assert!(!landed("mesimon-probe-10255 blocked"), "the refused words reach nobody");
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "UserPromptSubmit",
+        r#"{"prompt":"mesimon-probe-10256 after the esc"}"#,
+    );
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    stop(&mut c, ws);
+    wake_for(&after.ask, "taken");
+    crown_takes(&mut c);
+
+    // ---- 3. the same words removed a second time are dropped ---------------
+    if mod_road {
+        switch(&queue_switch, true);
+        start(&mut c, ws);
+        let twice = receipt(ask(&mut c, "mesimon-probe-10257 twice", Deliver::Now));
+        wait_until(std::time::Duration::from_secs(10), "the submit queued by the engine", || {
+            frames_with("mesimon-probe-10257 twice") == 1
+        });
+        removed(&frames_of("mesimon-probe-10257 twice")[0]);
+        wait_until(std::time::Duration::from_secs(10), "the ask back on the queue", || {
+            word(&mut c).as_deref() == Some("queued")
+        });
+        // The seat is running again before its idle: a person typed. The
+        // queue holds the words, and the prompt is a person's ahead of them.
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"theirs"}"#);
+        settle();
+        wait_until(std::time::Duration::from_secs(10), "dropped by the person's prompt", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        let dropped = asked(&mut c).unwrap();
+        assert_eq!((dropped.ask.as_str(), dropped.by.as_str()), (twice.ask.as_str(), "person"));
+        assert!(!landed("mesimon-probe-10257 twice"), "the person's words took their place");
+        stop(&mut c, ws);
+        // The crown takes W's end, or its owed wake holds the shared
+        // checkout's queue for its window.
+        crown_takes(&mut c);
+        // And a removal of words already sent again: dropped by the agent.
+        let again = receipt(ask(&mut c, "mesimon-probe-10258 again", Deliver::Idle));
+        wait_until(std::time::Duration::from_secs(10), "the submit queued by the engine", || {
+            frames_with("mesimon-probe-10258 again") == 1
+        });
+        removed(&frames_of("mesimon-probe-10258 again")[0]);
+        // Sent again at the idle, in the same second: a submit again, since
+        // the seat read no Esc this time, and the engine queues it; the
+        // queue runs dry a second time.
+        wait_until(std::time::Duration::from_secs(15), "the words sent again", || {
+            frames_with("mesimon-probe-10258 again") == 2
+        });
+        wait_until(std::time::Duration::from_secs(10), "the ask sent again", || {
+            word(&mut c).as_deref() == Some("sent")
+        });
+        wait_until(std::time::Duration::from_secs(5), "the feed's second requeue", || {
+            fed("crown_ask_requeued") == 3
+        });
+        removed(&frames_of("mesimon-probe-10258 again")[1]);
+        wait_until(std::time::Duration::from_secs(10), "dropped at the second removal", || {
+            word(&mut c).as_deref() == Some("dropped")
+        });
+        let dropped = asked(&mut c).unwrap();
+        assert_eq!((dropped.ask.as_str(), dropped.by.as_str()), (again.ask.as_str(), "agent"));
+        assert!(dropped.why.contains("removed from the queue"), "{dropped:?}");
+        assert!(!landed("mesimon-probe-10258 again"), "twice removed: nobody has them");
+        assert_eq!(fed("crown_ask_requeued"), 3, "no third re-queue");
+        switch(&queue_switch, false);
+    }
 }

@@ -37226,3 +37226,95 @@ running. When a box draws is the pane's, and nothing records it.
   `nextest` run failed 6, all this change's: the five crown e2es and `mcp_e2e` above, the stale
   look among them; the second passed **3,114/3,114**. Clippy clean. Rig `WR1` on Sonnet 5.5
   (crown Opus 5.5) **passed**, its report asking the person for nothing.
+
+## A person's Esc re-sends the crown's held ask once, and ends the turn it rode (T-1025, 2026-10-26, filed by the crown from the person's report)
+
+**Seen** (the author's board, 2026-10-25, Claude Code 2.1.310, mod road; the feed and the
+journal, UTC): 20:14:31 the crown's ask TB6 (`now`) went down the mod, was entered a second
+later into an idle worker and read `handed`, its own turn. 20:16:25 its ask TBA3
+(`immediately`): the mod's fill, the send-now keys, the prompt hook 50 ms after as a mark, and
+2.5 s later the engine's `turn.complete{aborted}` — Claude Code's send-now aborts the running
+request and begins a turn on the words, with no `Stop`. 20:20:03 its ask TBGR (`now`): a
+`submit` held behind the running turn; its owed window closed at +10 s (`submit_unacked`) and
+the record stayed `sent` by its frame. 20:39:15.940 the person's Esc: `ModSubmit dropped`,
+reason "the prompt was removed from the queue before it ran", `ModUsage{aborted}` 22 ms
+after, no `Stop`; the journal read `dropped, nothing owed`, and TBGR read `dropped, by agent`.
+20:39:19 the seat read `Idle{Interrupted}` at **Low** (the transcript's interrupt record, the
+tail's hint). `turn_ended` took `Interrupted` only above `guessed`, so TB6's mark stayed, TB6
+read `handed`, and every ask after was refused naming it (the ticket's second note) until
+20:45:59, when the turn ended `background` at High and TB6 read `taken`. TBA3 ended `unknown`
+by `settle_why`: its window closed and its agent was not working after the Esc. The crown wrote
+its words as a note for the person to point the agent at.
+
+**Shipped.**
+- **The record keeps the words.** `CrownAsk.text`, from the queue's send and the direct send
+  (`crown_ask_sent`), never fed or shown; `KeptAsk.text` and `again` ride `crown.json`, schema 2
+  unchanged (a build before this reads neither; one from before T-1025 wrote neither).
+- **The engine's removal re-queues the ask once.** `crownask::removed_from_queue` reads Claude
+  Code's words; `on_mod_submit` takes a `dropped` in them before the owed and the late road:
+  `crown_ask_removed` finds the ask by seat, frame and live pane (`sent`, not yet `again`, words
+  kept; a record whose ticket has a newer ask queued is left to the drop), resets it to `queued`
+  as the ticket's latest, and `requeue_crown_ask` puts a `QueuedAsk` by the crown on the board's
+  queue — `sends` by the hold its first send passed, held on a question as `park_ask` holds —
+  or drops it by the board naming why (the ticket closed, the seat moved, a person's ask queued
+  ahead). From there it is the queue's: `drain_queue` at the agent's idle, every guard. The feed
+  says `crown_ask_requeued` / `crown_ask_requeue_refused` with the ask's id; `asked` reads
+  `queued` with `REQUEUED_WHY` while it waits, then `sent` again. A second removal of the same
+  record takes the refusal road and drops by the agent, the owed road now naming the engine's
+  reason as the late road did. A person's prompt ahead of the queued words drops them by the
+  person, as any queued crown ask (`ack_owed`'s `forget_queued_before`).
+- **A person's own `now` prompt the Esc removes stays as it was**: kept `unsent` for their resend
+  (T-894's road), as Claude Code puts a typed queued prompt back in the box; the card lights.
+  The comparison the brief asked for: a person's prompt queued on the board (`after its turn`)
+  waits on the board's queue and lands at the interrupted idle; one sent `now` down the mod is
+  the engine's to lose and comes back `prompt not sent`.
+- **A stopped seat takes words by keys.** `takes_by_submit` is false where `crown_wake_typed`
+  holds (the seat reads `Idle{Interrupted}`, or its mod refused the last submit), for every ask
+  and not the crown's wake alone; `paste_at`'s `stopped` folded into it. Claude Code holds a
+  plugin's input after an Esc until the person types (T-894), and keys are what it takes; typed
+  words meet the queue's person hold and its empty-box rule (T-958, T-966), which is where a
+  re-sent ask must land, instead of T-894's refusal-then-paste under nobody's guard.
+- **A person's Esc settles the crown's asks at any confidence.** `crownwake::turn_ended`'s
+  `settles` is `ended || Idle{Interrupted}`: the mark is taken, `crown_ask_turn_ended` runs, a
+  `handed` own-turn ask reads `taken`, a steer beside it is released. The guessed-restart
+  return, the merge step's unproven hold (T-1004) and the probes keep `ended`. A Low
+  `Interrupted` outside a restart is only ever the engine's own interrupt record.
+- **A prompt hook that carries the words hands the ask.** `Daemon::frame_words` holds the
+  `UserPromptSubmit` frame's `prompt` only while the frame is handled (D11: read, never kept),
+  `ack_owed` passes it to `crown_ask_acked`, and `ack_edge` hands a paste or a fill whose words
+  it is; other words, or none, mark the turn as before; a held submit still waits for its own
+  `entered`. T-938's "a paste-road ask never reads handed" is now "unless its prompt hook names
+  the words": an `immediately` fill reads `handed` 50 ms after its keys, and `taken` at its end.
+- **Stand-in engine.** `mod-queue-submit` holds a submit untyped as 2.1.310 queues a plugin's
+  prompt, released by `mod-release[-<frame>]`: `removed` relays the engine's drop in its words,
+  anything else types the words and relays `entered`. Any switch file takes a `-<session>`
+  suffix for one pane's engine alone: the crown's wake must not meet the worker's queue.
+
+**Tests.** `crownask`: the removal (by frame and seat, once, the latest, a handed or wordless
+record left alone, a turn's end saying nothing of a queued record), the words predicate, the
+ack by words, the view's why, the ledger round trip old and new.
+`crown_e2e::a_person_s_esc_re_sends_the_crown_s_held_ask_once`, both passes: a held ask
+removed at the Esc goes back to `queued` (why says so, no refusal, nothing `unsent`), the Esc's
+record ends the turn, the queue types the words into the stopped box once, the ask reads
+`sent` again and then `handed` by its own prompt hook and `taken` at its end; on the hook set
+the paste reached the stub mid-turn, the Esc lifts the block, nothing goes twice; a `handed`
+ask at an Esc reads `taken` and the next ask goes (the ticket's second note); a person's prompt
+ahead of re-queued words drops them by the person; a second removal drops by the agent,
+naming the engine's words. The test waits the attention machine's flap window out between two
+tail-read Escs (`FLAP_WINDOW_MS`): the test's cadence is the flap, a person's is not.
+
+**Limits, stated.**
+- No rig run: what the crown is told is unchanged (the six status words stay; `asked.why` says
+  more). The engine's words are the author's feed's, not a recording; whether 2.1.310 still
+  refuses a submit after a stop (T-894 measured 2.1.308) is not measured, and the typed road
+  does not depend on it.
+- A `/clear` or an exit clears the queue too: the seat's own edges then move the re-queued ask
+  by the queue's rules (a parked or replaced seat drops it by the board).
+- A removal reported after a restart re-sends only from a ledger this build wrote.
+- The crown is not woken at the Esc itself; it reads the state and `asked: queued`, and the
+  re-sent ask's turn wakes it as any ask's does.
+- **Validation:** `cargo ut` green; `crown_e2e`, `mod_turns_e2e`, `ask_queue_e2e`,
+  `compact_e2e`, `crown_hold_e2e` and the three interrupt e2es on both passes; one full
+  `cargo nextest run --workspace` per road, **3,119/3,119** each, no rerun; clippy clean. The
+  one test the change moved: T-984's two controls now read `handed` (their prompt hook carries
+  the words) and their wake `taken`.

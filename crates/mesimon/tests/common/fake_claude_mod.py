@@ -39,7 +39,15 @@ and tmux's `TMUX`/`TMUX_PANE`. It does what `register.ts`'s bridge loop does:
   a submit's result as Claude Code 2.1.309 holds a plugin's prompt to the
   running turn's end (T-938): the words are typed as ever, and `entered` is
   relayed only once a `mod-release` file appears (reading `dropped`, a late
-  refusal instead: read at once, so a test writes it whole); and `mod-late` one whose
+  refusal instead: read at once, so a test writes it whole); `mod-queue-submit`
+  one whose engine QUEUES a submit as Claude Code 2.1.310 queues a plugin's
+  prompt behind the running turn (T-1025): nothing is typed until a
+  `mod-release` file appears, and then the words go in and `entered` is
+  relayed, or, the file reading `removed`, the engine's words for a queue a
+  person's Esc cleared are relayed as `dropped` and nothing is typed (any
+  switch file may be suffixed `-<session>` to stand for one pane's mod
+  alone); and
+  `mod-late` one whose
   bridge first polls the milliseconds its text names after the engine
   starts (T-879);
 - respawns a bridge that died, with the mod's backoff, and not one that was
@@ -161,8 +169,34 @@ def held_entered(frame_id):
           {"outcome": "dropped", "reason": "a hook blocked it"} if dropped else {"outcome": "entered"})
 
 
+def held_queue(frame_id, text):
+    """A submit queued behind the running turn (`mod-queue-submit`, T-1025):
+    typed and `entered` once the test releases it; a release reading
+    `removed` is Claude Code's own report for a queue a person's Esc
+    cleared, and the words reach nobody."""
+    release = os.path.join(HERE, "mod-release")
+    own = os.path.join(HERE, f"mod-release-{frame_id}")
+    while not os.path.exists(release) and not os.path.exists(own):
+        time.sleep(0.05)
+    if os.path.exists(own):
+        release = own
+    with open(release) as f:
+        removed = f.read().strip() == "removed"
+    if removed:
+        relay("ModSubmit", frame_id, {"outcome": "dropped",
+              "reason": "the prompt was removed from the queue before it ran"})
+        return
+    ok = deliver(text)
+    relay("ModSubmit", frame_id,
+          {"outcome": "entered"} if ok else {"outcome": "rejected", "error": "no pane"})
+
+
 def switch(name):
-    return os.path.exists(os.path.join(HERE, name))
+    """A switch file next to the stand-in, for every pane of the fixture,
+    or `<name>-<session>` for this pane alone (T-1025: a crown's wake must
+    not meet the worker's queued engine)."""
+    return os.path.exists(os.path.join(HERE, name)) or os.path.exists(
+        os.path.join(HERE, f"{name}-{SESSION}"))
 
 
 def speaks():
@@ -234,6 +268,9 @@ def main():
             elif kind == "submit" and switch("mod-hold-entered"):
                 deliver(frame.get("text") or "")
                 threading.Thread(target=held_entered, args=(frame_id,), daemon=True).start()
+            elif kind == "submit" and switch("mod-queue-submit"):
+                threading.Thread(target=held_queue, args=(frame_id, frame.get("text") or ""),
+                                 daemon=True).start()
             elif kind == "submit":
                 ok = deliver(frame.get("text") or "")
                 relay("ModSubmit", frame_id,

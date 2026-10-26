@@ -1573,6 +1573,18 @@ impl Daemon {
                         | SessionState::Idle { stop_reason: StopReason::Interrupted }
                 ) && !guessed(s)
             });
+        // A person's Esc ends the turn the crown's ask rode at whatever
+        // confidence the board read it (T-1025): on the mod road an
+        // interrupt fires no `Stop`, and the engine's own record of it
+        // (`[Request interrupted by user]`, the tail's Low hint) was the one
+        // end the board ever saw, so a `handed` ask kept its mark and
+        // blocked the crown's next ask for six minutes. The guessed-restart
+        // return above still comes first; the merge step's unproven hold
+        // (T-1004) and the probes keep `ended`.
+        let interrupted = self.board.live_agent(worker).is_some_and(|s| {
+            s.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
+        });
+        let settles = ended || interrupted;
         let asked = self.turn_asks.remove(&worker);
         // A merge step's mark taken on no end (T-1004, round 2) loses the
         // fact that its turn was never seen to end, so the held landing
@@ -1583,7 +1595,7 @@ impl Daemon {
         // The ask kept for the end that is one is this edge's no longer
         // (T-974, round 1): a look or a probe here answers nothing with it,
         // or the real end would answer it a second time.
-        let asked = if dialog || !ended {
+        let asked = if dialog || !settles {
             if let Some(a @ TurnAsk::Asked { .. }) = asked {
                 self.turn_asks.insert(worker, a);
                 None

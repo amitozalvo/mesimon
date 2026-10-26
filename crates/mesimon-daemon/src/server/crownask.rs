@@ -55,6 +55,27 @@
 //! went to, and the restart's look owns its next end. An ask a turn rode
 //! but no kept record names (a ledger an older build wrote) comes back
 //! `unknown`, as before.
+//!
+//! **A person's Esc does not drop the words (T-1025).** Claude Code holds a
+//! mod's `submit` behind the running turn, and the person's interrupt
+//! clears that queue: the mod reports the frame `dropped`, "the prompt was
+//! removed from the queue before it ran" (2.1.310), before the agent had
+//! the words. The record keeps the words (`text`) for exactly that: the
+//! ask goes back to `queued`, once (`again`), on the board's own queue, and
+//! the agent's idle sends it as a new ask is sent, by the queue's every
+//! guard (a person at the pane, a draft in the box, a question up). A
+//! second removal, a refusal in any other words, or a person's prompt ahead
+//! of the queued words drops it as before. The person's interrupt is also
+//! the end of the turn the ask rode, whatever confidence the board read it
+//! at (`crownwake::turn_ended`): a `handed` ask that blocked the crown's
+//! next ask until a later end read `taken` at the Esc.
+//!
+//! **A prompt hook that carries the words hands them (T-1025).** Claude
+//! Code's `UserPromptSubmit` names the prompt's text, so a paste's or a
+//! fill's ack whose text is the ask's words is the agent's own receipt of
+//! them (`ack_edge`): the ask reads `handed`, and its turn's end `taken`.
+//! Other words in the hook (a person's own prompt) still mark the turn and
+//! hand nothing, as T-938 had it.
 
 use super::*;
 use crownwake::Said;
@@ -104,6 +125,13 @@ pub(super) struct CrownAsk {
     pub(super) own_turn: bool,
     /// The turn the words went into has ended: no longer a block.
     pub(super) released: bool,
+    /// The words, as the crown gave them, kept for the one re-send after
+    /// the engine removed them at a person's interrupt (T-1025), and for
+    /// the prompt hook that names them. Never fed, never shown.
+    pub(super) text: Option<String>,
+    /// Already put back on the queue once after such a removal: a second
+    /// removal drops it.
+    pub(super) again: bool,
     pub(super) stage: Stage,
     pub(super) since_ms: u64,
 }
@@ -119,6 +147,8 @@ impl CrownAsk {
             submit: false,
             own_turn: false,
             released: false,
+            text: None,
+            again: false,
             stage: Stage::Queued,
             since_ms: now,
         }
@@ -139,6 +169,7 @@ impl CrownAsk {
         let (by, why) = match &self.stage {
             Stage::Dropped { by, why } => ((*by).to_string(), why.clone()),
             Stage::Unknown { why } => (String::new(), why.clone()),
+            Stage::Queued if self.again => (String::new(), REQUEUED_WHY.to_string()),
             _ => (String::new(), String::new()),
         };
         mesimon_core::command::AgentAskedView {
@@ -176,6 +207,22 @@ impl CrownAsk {
 pub(super) const RESTORED_WHY: &str =
     "an earlier crown ask is recorded; its outcome was not retained";
 
+/// Why an ask reads `queued` a second time (T-1025): Claude Code removed
+/// the held prompt from its queue at a person's interrupt, before the agent
+/// had it, and the board's queue sends it again at the agent's idle.
+pub(super) const REQUEUED_WHY: &str = "Claude Code removed the prompt from its queue at a \
+                                      person's interrupt, before the agent had it; the words \
+                                      wait on the board's queue and go again at the agent's idle";
+
+/// Claude Code's own words for a held prompt its queue lost (2.1.310,
+/// T-1025): "the prompt was removed from the queue before it ran". A
+/// person's Esc clears the queue; so does a `/clear` or an exit, which the
+/// seat's own edges say.
+pub(super) fn removed_from_queue(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("removed") && r.contains("queue")
+}
+
 /// An ask still out, as `crown.json` keeps it (T-974): what its receipts
 /// and its turn's end are fenced by, and whether a receipt handed it. Only
 /// `sent` and `handed` are kept; the rest settle nothing after a restart.
@@ -199,6 +246,11 @@ pub(super) struct KeptAsk {
     pub(super) handed: bool,
     #[serde(default)]
     pub(super) since_ms: u64,
+    /// The words (T-1025), so a removal after a restart still re-sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) again: bool,
 }
 
 impl KeptAsk {
@@ -220,6 +272,8 @@ impl KeptAsk {
             released: a.released,
             handed,
             since_ms: a.since_ms,
+            text: a.text.clone(),
+            again: a.again,
         })
     }
 
@@ -234,6 +288,8 @@ impl KeptAsk {
             submit: self.submit,
             own_turn: self.own_turn,
             released: self.released,
+            text: self.text,
+            again: self.again,
             stage: if self.handed { Stage::Handed } else { Stage::Sent },
             since_ms: self.since_ms,
         }
@@ -283,13 +339,16 @@ impl Daemon {
 
     /// The queued words were dispatched: into `session`'s pane, down its
     /// mod, or parked on its wake. `working` is whether its agent was in a
-    /// turn just before. The owed entry the dispatch made carries the ask
-    /// from here, so only its own ack hands it.
+    /// turn just before; `text` the words as the crown gave them (T-1025),
+    /// kept on the record for the one re-send after a removal and for the
+    /// prompt hook that names them. The owed entry the dispatch made
+    /// carries the ask from here, so only its own ack hands it.
     pub(super) fn crown_ask_sent(
         &mut self,
         target: ulid::Ulid,
         session: uuid::Uuid,
         working: bool,
+        text: Option<String>,
     ) {
         let owed = self.owed.get(&session).filter(|o| o.ticket == target);
         let frame = owed.and_then(|o| o.frame.clone());
@@ -312,6 +371,9 @@ impl Daemon {
         ask.frame = frame.clone();
         ask.submit = submit;
         ask.own_turn = submit || !working;
+        if text.is_some() {
+            ask.text = text;
+        }
         ask.set(Stage::Sent, now_ms());
         let id = ask.id;
         if let Some(o) = self.owed.get_mut(&session).filter(|o| o.ticket == target) {
@@ -412,6 +474,44 @@ impl Daemon {
         }
     }
 
+    /// The mod reports `frame` removed from Claude Code's queue before it
+    /// ran (T-1025, a person's interrupt): the ask it was, found by seat,
+    /// frame and live pane, goes back to `queued`, once, and the record
+    /// becomes the ticket's latest, for the queue's send to find. The words
+    /// come back with the target and the ask's id; `None` for a frame that
+    /// is no ask's, an ask already put back once, one whose words were not
+    /// kept (a ledger an older build wrote), or one a newer ask of the
+    /// crown's has replaced on the queue (the latest reads `queued`): those
+    /// drop as before, and the newer ask stays the ticket's latest.
+    pub(super) fn crown_ask_removed(
+        &mut self,
+        session: uuid::Uuid,
+        frame: &str,
+    ) -> Option<(ulid::Ulid, ulid::Ulid, String)> {
+        let (target, id) = self.crown_ask_by_frame(session, frame)?;
+        let list = self.crown_asks.get_mut(&target)?;
+        if list.last().is_some_and(|a| a.stage == Stage::Queued) {
+            return None;
+        }
+        let at = list.iter().position(|a| a.id == id)?;
+        let a = &list[at];
+        if a.stage != Stage::Sent || a.again {
+            return None;
+        }
+        let text = a.text.clone()?;
+        let mut a = list.remove(at);
+        a.session = None;
+        a.pane = None;
+        a.frame = None;
+        a.submit = false;
+        a.own_turn = false;
+        a.released = false;
+        a.again = true;
+        a.set(Stage::Queued, now_ms());
+        list.push(a);
+        Some((target, id, text))
+    }
+
     /// The agent's own edge for the words: its turn now carries the ask,
     /// unless another ask still out rides it (`keeps_turn`).
     fn crown_ask_handed(&mut self, target: ulid::Ulid, ask: ulid::Ulid) -> bool {
@@ -441,6 +541,7 @@ impl Daemon {
     }
 
     /// The owed entry tagged with `ask` was acked: `session`'s prompt hook,
+    /// with the prompt's text where the hook carries it (`words`, T-1025),
     /// or a Codex steer counted or turn begun (`ack_edge` decides what it
     /// proves).
     pub(super) fn crown_ask_acked(
@@ -448,6 +549,7 @@ impl Daemon {
         target: ulid::Ulid,
         session: uuid::Uuid,
         ask: ulid::Ulid,
+        words: Option<&str>,
     ) {
         let codex = self.session_kind(session) == SessionKind::Codex;
         let pane = self.pane_of(session);
@@ -456,7 +558,7 @@ impl Daemon {
             return;
         }
         let crown = a.crown;
-        match ack_edge(a, codex) {
+        match ack_edge(a, codex, words) {
             AckEdge::Hand => {
                 self.crown_ask_handed(target, ask);
             }
@@ -606,6 +708,14 @@ impl Daemon {
         let mut said = asked;
         for a in list.iter_mut() {
             let mine = matches!(asked, Some(TurnAsk::Asked { ask, .. }) if ask == a.id);
+            // Back on the queue (T-1025): in no turn, bound to no pane, and
+            // an end says nothing of it.
+            if a.stage == Stage::Queued {
+                if mine {
+                    said = None;
+                }
+                continue;
+            }
             let same_seat = seat.as_ref().is_some_and(|(id, pane)| {
                 a.session.is_none_or(|s| s == *id) && bind_pane(a, pane.as_deref())
             });
@@ -809,9 +919,10 @@ pub(super) fn keeps_turn(current: Option<&TurnAsk>, mark: &TurnAsk, list: &[Crow
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum AckEdge {
     /// A receipt that names these words: a Codex steer or turn counted by
-    /// its tag.
+    /// its tag, or a Claude prompt hook whose text is the ask's words
+    /// (T-1025).
     Hand,
-    /// A prompt hook, which names no words (a person's prompt fires one
+    /// A prompt hook with other words, or none (a person's prompt fires one
     /// too): the turn now running ran after the ask went in, and the ask
     /// stays `sent`.
     Mark,
@@ -820,11 +931,15 @@ pub(super) enum AckEdge {
     Nothing,
 }
 
-pub(super) fn ack_edge(a: &CrownAsk, codex: bool) -> AckEdge {
+pub(super) fn ack_edge(a: &CrownAsk, codex: bool, words: Option<&str>) -> AckEdge {
     if a.stage != Stage::Sent || a.submit {
         return AckEdge::Nothing;
     }
-    if codex {
+    let named = match (words, &a.text) {
+        (Some(heard), Some(mine)) => heard.trim() == mine.trim(),
+        _ => false,
+    };
+    if codex || named {
         AckEdge::Hand
     } else {
         AckEdge::Mark
@@ -971,10 +1086,65 @@ mod tests {
     /// spoken for by its own `entered` alone; a Codex steer's tag hands.
     #[test]
     fn only_a_receipt_that_names_the_words_hands_the_ask() {
-        assert_eq!(ack_edge(&out(false), false), AckEdge::Mark);
-        assert_eq!(ack_edge(&out(true), false), AckEdge::Nothing);
-        assert_eq!(ack_edge(&out(false), true), AckEdge::Hand);
-        assert_eq!(ack_edge(&ask(Stage::Handed), true), AckEdge::Nothing, "already handed");
+        assert_eq!(ack_edge(&out(false), false, None), AckEdge::Mark);
+        assert_eq!(ack_edge(&out(true), false, None), AckEdge::Nothing);
+        assert_eq!(ack_edge(&out(false), true, None), AckEdge::Hand);
+        assert_eq!(ack_edge(&ask(Stage::Handed), true, None), AckEdge::Nothing, "already handed");
+    }
+
+    /// T-1025: a prompt hook that carries the ask's own words is the
+    /// agent's receipt of them; other words, or a record that kept none,
+    /// still only mark the turn; a held submit waits for its `entered`
+    /// whatever the hook says.
+    #[test]
+    fn a_prompt_hook_carrying_the_words_hands_a_paste_or_a_fill() {
+        let mut a = out(false);
+        a.text = Some("reply with mango".into());
+        assert_eq!(ack_edge(&a, false, Some("reply with mango\n")), AckEdge::Hand);
+        assert_eq!(ack_edge(&a, false, Some("the person's own")), AckEdge::Mark);
+        assert_eq!(ack_edge(&a, false, None), AckEdge::Mark, "a hook with no text");
+        let mut kept_none = out(false);
+        kept_none.text = None;
+        assert_eq!(ack_edge(&kept_none, false, Some("reply with mango")), AckEdge::Mark);
+        let mut held = out(true);
+        held.text = Some("reply with mango".into());
+        assert_eq!(ack_edge(&held, false, Some("reply with mango")), AckEdge::Nothing);
+    }
+
+    /// T-1025: Claude Code's words for a held prompt its queue lost, and
+    /// nothing else the mod reports.
+    #[test]
+    fn the_engine_s_removal_is_read_by_its_words() {
+        assert!(removed_from_queue("the prompt was removed from the queue before it ran"));
+        assert!(!removed_from_queue("the session was stopped and nobody has sent input since"));
+        assert!(!removed_from_queue("a hook blocked it"));
+        assert!(!removed_from_queue(""));
+    }
+
+    /// T-1025: a record put back on the queue says why while it waits, and
+    /// a kept ask carries its words and its once across a restart.
+    #[test]
+    fn a_requeued_ask_says_why_and_its_words_ride_the_ledger() {
+        let mut a = ask(Stage::Queued);
+        assert!(a.view(1_000).why.is_empty());
+        a.again = true;
+        let v = a.view(1_000);
+        assert_eq!((v.status.as_str(), v.why.as_str()), ("queued", REQUEUED_WHY));
+        let mut kept = out(true);
+        kept.text = Some("words".into());
+        kept.again = true;
+        let k = KeptAsk::of(&kept).unwrap();
+        let text = serde_json::to_string(&k).unwrap();
+        let back: KeptAsk = serde_json::from_str(&text).unwrap();
+        let back = back.record();
+        assert_eq!((back.text.as_deref(), back.again), (Some("words"), true));
+        // A ledger from before T-1025 carries neither: no words, not again.
+        let mut plain = out(true);
+        plain.text = None;
+        let text = serde_json::to_string(&KeptAsk::of(&plain).unwrap()).unwrap();
+        assert!(!text.contains("\"text\"") && !text.contains("\"again\""), "{text}");
+        let back: KeptAsk = serde_json::from_str(&text).unwrap();
+        assert_eq!((back.text, back.again), (None, false));
     }
 
     /// T-938, correction 6: a mod report is the ask's only from its seat,
@@ -1245,7 +1415,7 @@ mod ledger_tests {
         let refusal = b.d.crown_ask_blocks(b.worker, "T-2").unwrap();
         assert!(refusal.contains(&first.to_string()), "the oldest out is named: {refusal}");
         // The steer's prompt hook: a mark, which leaves the turn the first's.
-        b.d.crown_ask_acked(b.worker, b.seat, steer);
+        b.d.crown_ask_acked(b.worker, b.seat, steer, None);
         assert_eq!(
             b.d.turn_asks.get(&b.worker),
             Some(&TurnAsk::Asked { crown, ask: first, said: Said::Handed })
@@ -1280,7 +1450,7 @@ mod ledger_tests {
         let held = b.ask(Stage::Sent, true);
         b.d.crown_asks.get_mut(&b.worker).unwrap()[0].submit = true;
         let steer = b.ask(Stage::Sent, false);
-        b.d.crown_ask_acked(b.worker, b.seat, steer);
+        b.d.crown_ask_acked(b.worker, b.seat, steer, None);
         assert_eq!(
             b.d.turn_asks.get(&b.worker),
             Some(&TurnAsk::Asked { crown, ask: steer, said: Said::Sent })
@@ -1444,5 +1614,95 @@ mod ledger_tests {
         assert!(!keeps_turn(Some(&rode), &entered, &[first.clone(), held]), "its own turn");
         first.released = true;
         assert!(!keeps_turn(Some(&rode), &steer, &[first]), "no longer out");
+    }
+
+    /// T-1025: the engine's removal of a held submit puts its ask back on
+    /// the queue once, as the ticket's latest, words kept; by its frame and
+    /// live pane alone; and a second removal, a record already put back, a
+    /// handed one, or one that kept no words is nobody's to re-send.
+    #[test]
+    fn a_removed_submit_goes_back_to_queued_once_and_keeps_its_words() {
+        let mut b = bed("removed");
+        let first = b.ask(Stage::Handed, true);
+        let held = b.ask(Stage::Sent, true);
+        {
+            let a = b.d.crown_asks.get_mut(&b.worker).unwrap().last_mut().unwrap();
+            a.submit = true;
+            a.frame = Some("F7".into());
+            a.text = Some("reply with mango".into());
+        }
+        // A steer beside it: the held one is no longer the latest.
+        let steer = b.ask(Stage::Sent, false);
+        assert_eq!(b.d.crown_ask_removed(b.seat, "F8"), None, "another frame");
+        assert_eq!(b.d.crown_ask_removed(uuid::Uuid::from_u128(9), "F7"), None, "another seat");
+        let got = b.d.crown_ask_removed(b.seat, "F7");
+        assert_eq!(got, Some((b.worker, held, "reply with mango".to_string())));
+        let list = &b.d.crown_asks[&b.worker];
+        let ids: Vec<_> = list.iter().map(|a| a.id).collect();
+        assert_eq!(ids, [first, steer, held], "the latest, for the queue's send to find");
+        let a = list.last().unwrap();
+        assert!(a.stage == Stage::Queued && a.again && !a.submit && a.frame.is_none());
+        assert!(a.session.is_none() && a.pane.is_none() && !a.blocks());
+        let v = b.d.crown_asked_view(b.worker).unwrap();
+        assert_eq!(
+            (v.ask.as_str(), v.status.as_str(), v.why.as_str()),
+            (held.to_string().as_str(), "queued", REQUEUED_WHY)
+        );
+        assert_eq!(KeptAsk::of(a), None, "a queued ask is the queue's, not the ledger's");
+        // Sent again by the queue, into the seat, then removed a second time.
+        {
+            let a = b.d.crown_asks.get_mut(&b.worker).unwrap().last_mut().unwrap();
+            a.stage = Stage::Sent;
+            a.session = Some(b.seat);
+            a.pane = Some("100:%1".into());
+            a.frame = Some("F9".into());
+            a.submit = true;
+        }
+        assert_eq!(b.d.crown_ask_removed(b.seat, "F9"), None, "once");
+        assert_eq!(b.word_of(held), "sent", "left for the refusal road to drop");
+        // A handed one, or one with no words kept, is not re-sent either.
+        {
+            let list = b.d.crown_asks.get_mut(&b.worker).unwrap();
+            let a = list.iter_mut().find(|a| a.id == first).unwrap();
+            a.frame = Some("F1".into());
+            a.submit = true;
+            a.text = Some("first".into());
+            let s = list.iter_mut().find(|a| a.id == steer).unwrap();
+            s.frame = Some("F2".into());
+            s.submit = true;
+        }
+        assert_eq!(b.d.crown_ask_removed(b.seat, "F1"), None, "handed: the agent has them");
+        assert_eq!(b.d.crown_ask_removed(b.seat, "F2"), None, "no words kept");
+        // The end of a turn says nothing of a record back on the queue.
+        {
+            let a = b.d.crown_asks.get_mut(&b.worker).unwrap().last_mut().unwrap();
+            a.stage = Stage::Queued;
+            a.session = None;
+            a.pane = None;
+            a.frame = None;
+            a.submit = false;
+        }
+        let crown = b.crown;
+        let said = b.d.crown_ask_turn_ended(
+            b.worker,
+            Some(TurnAsk::Asked { crown, ask: held, said: Said::Sent }),
+        );
+        assert_eq!(said, None);
+        assert_eq!(b.word_of(held), "queued");
+        assert!(b.d.crown_asks[&b.worker].last().unwrap().pane.is_none(), "bound to no pane");
+        // A newer ask of the crown's queued on the ticket: the removed one
+        // drops as before, and the newer stays the latest.
+        {
+            let a = b.d.crown_asks.get_mut(&b.worker).unwrap().last_mut().unwrap();
+            a.stage = Stage::Sent;
+            a.again = false;
+            a.session = Some(b.seat);
+            a.pane = Some("100:%1".into());
+            a.frame = Some("F9".into());
+            a.submit = true;
+        }
+        let newer = b.ask(Stage::Queued, false);
+        assert_eq!(b.d.crown_ask_removed(b.seat, "F9"), None, "a newer ask waits");
+        assert_eq!(b.d.crown_asks[&b.worker].last().unwrap().id, newer);
     }
 }

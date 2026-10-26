@@ -104,6 +104,14 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
 - **Claude's `prompt_id` names the turn, not the words** (2.1.310, T-983): it is on every hook
   frame and is every `user` record's `promptId`. Words typed mid-turn fire `UserPromptSubmit`
   under the running turn's id, and a prompt's own record lands 80–180 ms after its hook.
+- **A person's Esc clears Claude Code's prompt queue, and a held `$.prompt.submit` resolves
+  `{ drop: "the prompt was removed from the queue before it ran" }`** (2.1.310, T-1025). The
+  interrupt fires no `Stop`: `turn.complete{reason: aborted}` (which a send-now's abort fires
+  too, with the next turn beginning at once, so it is no end) and the transcript's interrupt
+  record, read off the tail at Low, are all the engine says. The daemon re-queues a crown ask
+  on those words once (`crownask::removed_from_queue`), and that Low interrupt settles the
+  crown's asks (`crownwake::turn_ended`). A `UserPromptSubmit` carries the prompt's text, and
+  one whose text is a crown ask's words is the agent's receipt of them (`crownask::ack_edge`).
 - **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
   (interrupt, a hook above settled first, budget), and the first read rides the first event's:
   the mod keeps a value only once read whole and never caches a failed read (T-594), and no

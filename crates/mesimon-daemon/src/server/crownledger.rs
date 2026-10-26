@@ -413,6 +413,8 @@ mod tests {
                 released: false,
                 handed: true,
                 since_ms: 9,
+                text: Some("reply with mango".into()),
+                again: false,
             }],
         );
         let text = serde_json::to_string_pretty(&ledger).unwrap();

@@ -1031,6 +1031,11 @@ pub struct Daemon {
     /// The `prompt_id` of the hook frame being handled, and its seat
     /// (T-983, round 1): the one id a begin inside that frame binds.
     frame_prompt: Option<(uuid::Uuid, String)>,
+    /// The prompt's text in the `UserPromptSubmit` frame being handled
+    /// (T-1025), for the ack of the crown's ask alone (`crownask::ack_edge`:
+    /// a hook that carries the ask's words is the agent's receipt of them).
+    /// Read, never kept (D11): set as the frame is handled, cleared after.
+    frame_words: Option<String>,
     /// The crown's expectation of a turn's length, by ticket (T-973,
     /// `crownexpect`): armed by `start_agent`'s and `ask_agent`'s
     /// `expect_secs`, begun with the turn their words begin, ended with it.
@@ -2001,6 +2006,7 @@ impl Daemon {
             turn_since: HashMap::new(),
             prompt_ids: HashMap::new(),
             frame_prompt: None,
+            frame_words: None,
             crown_expects: Default::default(),
             held: crate::movegate::HeldMoves::default(),
             crown_watched: Default::default(),
@@ -5478,10 +5484,16 @@ impl Daemon {
     fn on_hook(&mut self, frame: HookFrame) {
         // The frame's own `prompt_id` is what a begin inside it may bind
         // (T-983, round 1), and only while it is handled: a begin anywhere
-        // else is id-less, never the cache's earlier turn.
+        // else is id-less, never the cache's earlier turn. Its prompt's
+        // text the same (T-1025), for the crown ask's ack alone.
         self.frame_prompt = None;
+        self.frame_words = (frame.event == "UserPromptSubmit")
+            .then(|| frame.payload.get("prompt").and_then(serde_json::Value::as_str))
+            .flatten()
+            .map(str::to_string);
         self.hook_frame(frame);
         self.frame_prompt = None;
+        self.frame_words = None;
     }
 
     fn hook_frame(&mut self, frame: HookFrame) {
@@ -6448,6 +6460,34 @@ impl Daemon {
             self.persist_and_notify();
             return;
         }
+        let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
+        // A held submit Claude Code's queue lost at a person's interrupt
+        // (T-1025: "the prompt was removed from the queue before it ran",
+        // 2.1.310): the agent never had the words, and a drop left the crown
+        // to read the state and send them again. The ask they were, by seat,
+        // frame and live pane, goes back on the board's queue once, words
+        // kept, and the agent's idle sends it by the queue's road and its
+        // guards (a person at the pane, a draft in the box, a question up).
+        // A person's own words so removed stay theirs, kept unsent for
+        // their resend as any refusal keeps them: Claude Code hands them
+        // back to the box they typed in, and the card does the same. A
+        // second removal, or a refusal in any other words, drops the ask as
+        // before.
+        if outcome == "dropped" && said.is_some_and(crownask::removed_from_queue) {
+            if let Some((target, ask, text)) = self.crown_ask_removed(id, fid) {
+                if self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid)) {
+                    self.drop_owed(id);
+                }
+                self.journal.line(&format!(
+                    "mod submit {fid} for session {id}: removed from Claude Code's queue; ask \
+                     {ask} queued again"
+                ));
+                self.requeue_crown_ask(target, id, ask, text);
+                self.drain_queue();
+                self.persist_and_notify();
+                return;
+            }
+        }
         let ours = self.owed.get(&id).is_some_and(|o| o.frame.as_deref() == Some(fid));
         if !ours {
             self.journal
@@ -6456,7 +6496,6 @@ impl Daemon {
             // refusal after it is still that ask's, found by seat, frame
             // and pane, and a report the board cannot read leaves it
             // unknown, never a newer delivery's.
-            let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
             let changed = match outcome {
                 "dropped" | "rejected" => self.crown_ask_refused(
                     id,
@@ -6478,7 +6517,6 @@ impl Daemon {
             }
             return;
         }
-        let said = frame.payload["error"].as_str().or(frame.payload["reason"].as_str());
         self.journal.line(&format!(
             "mod submit {fid} for session {id}: {outcome}: {}",
             said.map(|s| mesimon_core::text::cap_bytes(s, 300)).unwrap_or("no reason given")
@@ -6569,7 +6607,11 @@ impl Daemon {
             self.crown_ask_refused(
                 id,
                 fid,
-                &format!("its Claude Code refused the prompt: {outcome}"),
+                &format!(
+                    "its Claude Code refused the prompt: {outcome}{}",
+                    said.map(|s| format!(" ({})", mesimon_core::text::cap_bytes(s, 120)))
+                        .unwrap_or_default()
+                ),
             );
         } else {
             self.crown_ask_unread(
@@ -6692,9 +6734,11 @@ impl Daemon {
                 self.mark_turn(ticket, ask);
             }
             // This entry's own ack hands the crown's ask it carries (T-938);
-            // no other prompt does.
+            // no other prompt does. The hook's own text, where it carries
+            // one, says whether the words are the ask's (T-1025).
             if let Some(ask) = owed.ask {
-                self.crown_ask_acked(ticket, id, ask);
+                let words = self.frame_words.take();
+                self.crown_ask_acked(ticket, id, ask, words.as_deref());
             }
             changed = true;
         }
@@ -9561,12 +9605,13 @@ impl Daemon {
             && self.takes_by_submit(id, &self.crown_wake_text())
     }
 
-    /// The crown's wake is typed into this seat rather than submitted
-    /// (T-936): its mod refused the last one (until the seat's next prompt),
-    /// or the seat reads `Idle{Interrupted}`, an inferred state, where a
-    /// person's Esc makes Claude Code refuse a plugin's input (T-894). The
-    /// second is only a shortcut: a refusal itself is the frame's answer,
-    /// whatever the state read.
+    /// The crown's wake, and since T-1025 every ask (`takes_by_submit`), is
+    /// typed into this seat rather than submitted (T-936): its mod refused
+    /// the last one (until the seat's next prompt), or the seat reads
+    /// `Idle{Interrupted}`, an inferred state, where a person's Esc makes
+    /// Claude Code refuse a plugin's input (T-894). The second is only a
+    /// shortcut: a refusal itself is the frame's answer, whatever the state
+    /// read.
     fn crown_wake_typed(&self, id: uuid::Uuid) -> bool {
         self.crown_submit_refused.contains(&id)
             || self.board.sessions.iter().any(|s| {
@@ -13962,11 +14007,10 @@ impl Daemon {
         }
         // A Claude session whose mod is up takes the words by its `submit`
         // (T-575): a turn of its own, held behind a running one, never typed.
-        // A slash command is for the box, and is typed into it.
-        // The crown's wake where a submit would be refused is typed (T-936,
-        // `crown_wake_by_submit`).
-        let stopped = ack.word == Ack::CROWN_WAKE.word && self.crown_wake_typed(id);
-        if !immediately && !stopped && self.takes_by_submit(id, text) {
+        // A slash command is for the box, and is typed into it. Words into a
+        // seat where a submit would be refused are typed (T-936, T-1025:
+        // `takes_by_submit` reads `crown_wake_typed`).
+        if !immediately && self.takes_by_submit(id, text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
             if !self.mod_submit(id, ticket, words, ack) {
                 return Err("nothing to send".into());
@@ -14098,11 +14142,17 @@ impl Daemon {
     /// Words for this session go down as its mod's `submit` (T-575): a
     /// Claude session whose mod speaks it, and words that are not a command
     /// for the box (`$.prompt.submit` refuses a `/`). The paste road's one
-    /// test of it, which the crown's wake hold asks too (T-931).
+    /// test of it, which the crown's wake hold asks too (T-931). Not into a
+    /// seat a person's Esc stopped, or whose mod refused the last submit
+    /// (`crown_wake_typed`, T-1025): Claude Code holds a plugin's input
+    /// there until the person types (T-894), and the keys are what it takes;
+    /// typed words are held for a person at the pane and go only into an
+    /// empty box (T-958, T-966), which is where a re-sent ask must land.
     fn takes_by_submit(&self, id: uuid::Uuid, text: &str) -> bool {
         self.session_kind(id) == SessionKind::Claude
             && self.mod_speaks(id, "submit")
             && !road::is_command(text)
+            && !self.crown_wake_typed(id)
     }
 
     /// The owed entry for words just pasted into a live Claude pane,
@@ -15386,6 +15436,92 @@ impl Daemon {
         Ok(())
     }
 
+    /// Put the crown's ask `ask` back on the queue (T-1025) after Claude
+    /// Code's queue lost its held prompt at a person's interrupt: at the
+    /// pane it went to, the words as the crown gave them, sent by the queue
+    /// as a crown's ask is (`sends` by the hold its first send passed, held
+    /// on a question as `park_ask` holds one). The record already reads
+    /// `queued` (`crown_ask_removed`). Where the queue cannot take it — the
+    /// ticket closed, its seat moved, a person's ask queued on the ticket,
+    /// which goes first — the ask is dropped by the board, naming why.
+    fn requeue_crown_ask(
+        &mut self,
+        target: ulid::Ulid,
+        session: uuid::Uuid,
+        ask: ulid::Ulid,
+        text: String,
+    ) {
+        let crown = self
+            .crown_asks
+            .get(&target)
+            .and_then(|l| l.iter().find(|a| a.id == ask))
+            .map(|a| a.crown);
+        let Some(crown) = crown else { return };
+        let seat = QueuedSeat::Pane(session);
+        let refused = if self.open_ticket(target).is_err() {
+            Some("its ticket is closed")
+        } else if self.prompt_target(target) != Some(session) {
+            Some("its agent's seat moved before the words could go again")
+        } else if self.queued.iter().any(|q| q.ticket == target) {
+            // A crown's queued ask leaves no `sent` record to remove
+            // (`crown_ask_removed`): the one queued here is a person's.
+            Some("a person's ask is queued on the ticket and goes first")
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            let why = format!(
+                "Claude Code removed the prompt from its queue at a person's interrupt, and {why}"
+            );
+            self.crown_ask_dropped(target, Some(ask), "board", &why);
+            self.feed.board_ask(
+                "daemon",
+                "crown_ask_requeue_refused",
+                Some(target),
+                Some(&why),
+                Some(ask),
+                &[],
+            );
+            return;
+        }
+        let cwd = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == session)
+            .map(|s| s.cwd.clone())
+            .unwrap_or_default();
+        let sends = self.crown_ask_hold(crown, target, &seat).is_none();
+        let held = self.session_asking(session).then_some("agent asked");
+        self.queued.push(QueuedAsk {
+            ticket: target,
+            seat,
+            cwd,
+            text,
+            queued_at: now_ms(),
+            by: Some(crown),
+            sends,
+            accept_plan: false,
+            send_on_accept: false,
+            held,
+            plan: false,
+            deliver: Deliver::Idle,
+            from_board: None,
+        });
+        self.feed.board_ask(
+            "daemon",
+            "crown_ask_requeued",
+            Some(target),
+            Some("removed from Claude Code's queue at a person's interrupt"),
+            Some(ask),
+            &[],
+        );
+        if held.is_some() {
+            self.feed.board("automation", "queued_ask_held_question", Some(target));
+        }
+        self.persist_queue();
+    }
+
     /// Is the ticket's checkout the shared one — `SharedCheckout` by
     /// strategy and no worktree bound to it? Only this kind of empty seat
     /// can queue a start before its checkout is resolved.
@@ -15800,7 +15936,7 @@ impl Daemon {
                 // answer (T-469), as after a person's `^y`.
                 Some(crown) => {
                     if let Some(seat_id) = seat_id {
-                        self.crown_ask_sent(ticket, seat_id, working);
+                        self.crown_ask_sent(ticket, seat_id, working, words.clone());
                     }
                     let ask = self.crown_ask_sent_id(ticket);
                     self.feed.board_ask("agent", "ask_agent_sent", Some(ticket), None, ask, &[]);
@@ -16316,7 +16452,7 @@ impl Daemon {
         if q.by.is_some() {
             match (&response, seat_id) {
                 (Response::Err { .. }, _) => self.crown_ask_failed(ticket, q.by, &response),
-                (_, Some(seat_id)) => self.crown_ask_sent(ticket, seat_id, working),
+                (_, Some(seat_id)) => self.crown_ask_sent(ticket, seat_id, working, words.clone()),
                 _ => {}
             }
             if let (Some(words), false) = (words, matches!(response, Response::Err { .. })) {
