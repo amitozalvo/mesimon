@@ -37827,3 +37827,16 @@ ran the following; no CI result is claimed (T-1030).
   gate, not a green Linux result or a CI run; the working-tree run earns no release stamp.
   Final `cargo fmt --all -- --check` and `git diff --check` passed. The review's exact
   commands, failures, reruns and the commit are also in the ticket's validation note.
+
+## T-1044 accepted change rebased onto e937ba3f (2026-10-26)
+
+- Rebased the accepted **0564adce** onto **e937ba3f**. Only STALE-MAP conflicted;
+  all blocks remain, main's first. The accepted code is unchanged: the rebased commits
+  are **22716aa1** and **661a93f3**.
+- The requested post-rebase reruns each ran once through the bounded runner with
+  `NO_COLOR` unset: `cargo ut` passed **2,753 tests**, with ten existing ignores and a
+  clean nine-owner fixture audit; `cargo build --workspace` passed, with a clean
+  one-owner audit. `git diff --check` passed. No retries were needed in this round.
+- The e2es, full suite, Linux and real-agent rig were not repeated: the accepted review
+  narrowed this rebase's checks to units and the workspace build; their prior results,
+  including the Linux failures and timeouts, remain above.
