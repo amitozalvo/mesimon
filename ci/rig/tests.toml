@@ -98,7 +98,7 @@
 #              that same turn a sample_agent of its key returns a reading,
 #              not an error, then the reply beginning <prefix>),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
-#              beginning <prefix> holds <word>, or with `!<word>` does not;
+#              beginning <prefix> holds <word> (a comma list: any of them), or with `!<word>` does not;
 #              `{reply}` is the worker's last reply, T-991), plan_read
 #              (T-991: the crown's transcript in order: a get_ticket with plan
 #              true whose own result has the whole plan and the worker's word,
@@ -1052,7 +1052,7 @@ title = "F3S · merge_ticket on a forge-owned branch is refused in the forge's w
 workspace = "worktree"
 brief = "Write a file named F3S.txt holding the single line f3s, commit it with git with the message F3S, then reply with the single word done and end your turn. Read no other file and run no other command."
 expect = "scripted transport (T-930's review moved the refusal here from F3's blind oracle): the worker commits; its PR binds off a stub forge, and the crown, told to, calls merge_ticket on it; the call is refused in words naming the forge, and the crown's line carries them; nothing lands."
-checks = ["road:mod", "started_by_crown", "crown:merge_ticket", "unlanded", "crown_line:F3S refused:forge", "replies:done"]
+checks = ["road:mod", "started_by_crown", "crown:merge_ticket", "unlanded", "crown_line:F3S refused:forge,github,gitlab", "replies:done"]
 
   [[test.steps]]
   crown = "F3S: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F3S started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: F3S seen."

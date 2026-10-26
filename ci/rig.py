@@ -3950,7 +3950,9 @@ Reply with the single word ready and end your turn."""
                 if word.startswith("!"):
                     ok = bool(line) and word[1:].lower() not in line.lower()
                 else:
-                    ok = word.lower() in line.lower()
+                    # Any of a comma list: merge_refusal names the forge by its
+                    # name ("merge it on GitHub", T-810), not the word "forge".
+                    ok = any(w.lower() in line.lower() for w in word.split(","))
                 check(c, ok, f"said {line[:120]!r}" if line else f"no line {prefix!r}")
             elif name == "plan_read":
                 # T-991 (D7): the head, then the whole with plan, then the
