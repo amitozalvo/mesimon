@@ -666,17 +666,8 @@ def stopped(pid, what):
 
 
 def unique_calls(rows):
-    """(name, result) per tool use, each id once: Claude Code writes an MCP
-    tool_use row twice under one id."""
-    seen, out = set(), []
-    calls = rig.tool_calls(rows)
-    ids = [b.get("id") for r in rows for b in ((r.get("message") or {}).get("content") or [])
-           if isinstance(b, dict) and b.get("type") == "tool_use"]
-    for i, call in zip(ids, calls):
-        if i not in seen:
-            seen.add(i)
-            out.append(call)
-    return out
+    """(name, result) per tool use, each id once (`rig.tool_calls` does)."""
+    return rig.tool_calls(rows)
 
 
 def squash(names):

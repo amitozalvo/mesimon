@@ -208,6 +208,42 @@ class PlanReadTests(unittest.TestCase):
         self.assertFalse(self.judge(only_blob), "a blob's accept, after the whole, is no accept")
 
 
+class DoubledRowTests(unittest.TestCase):
+    """T-1034: Claude Code 2.1.310 writes an MCP tool_use row twice under one
+    id, and its tool_result twice; every reader counts each id once."""
+
+    @staticmethod
+    def rows():
+        def use(i, key):
+            return {"type": "assistant", "message": {"id": "m" + i, "content": [
+                {"type": "tool_use", "id": i, "name": "mcp__mesimon__ask_agent",
+                 "input": {"key": key}}]}}
+
+        def res(i, text, err=False):
+            return {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": i, "is_error": err, "content": text}]}}
+        bash = {"type": "assistant", "message": {"id": "mb", "content": [
+            {"type": "tool_use", "id": "b1", "name": "Bash", "input": {}}]}}
+        ask1 = json.dumps({"asked": {"ask": "A1"}})
+        refusal = rig.OUTSTANDING_ASK_MARK + ": A1"
+        return [use("u1", "T-1"), use("u1", "T-1"), res("u1", ask1), res("u1", ask1),
+                bash, use("u2", "T-1"), use("u2", "T-1"), res("u2", refusal, True), res("u2", refusal, True)]
+
+    def test_calls_and_inputs_count_each_id_once(self):
+        rows = self.rows()
+        self.assertEqual([n.rsplit("__", 1)[-1] for n, _ in rig.tool_calls(rows)],
+                         ["ask_agent", "Bash", "ask_agent"])
+        self.assertEqual(len(rig.tool_inputs(rows)), 3)
+        self.assertEqual(len(rig.tool_uses(rows)), 3)
+
+    def test_measures_count_each_id_once(self):
+        m = rig.crown_measures(rows=self.rows(), since_ms=0)
+        self.assertEqual((m["calls"], m["failed"], len(m["receipt_bytes"])), (3, 1, 1))
+
+    def test_the_first_two_asks_are_two_asks(self):
+        self.assertTrue(rig.second_ask_refusal(self.rows(), "T-1")[0])
+
+
 class RestartEnvironmentTests(unittest.TestCase):
     def test_a_losing_attempt_s_capture_is_not_the_winner_s(self):
         with tempfile.TemporaryDirectory() as d:

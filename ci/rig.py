@@ -391,9 +391,36 @@ def summary_rows(body):
     return rows, headings
 
 
+def once(rows):
+    """`rows` with each tool_use id and each tool_result's tool_use_id kept
+    once (T-1034): Claude Code 2.1.310 writes an MCP tool_use block in two
+    rows under one id, and its result twice. Other blocks stay as they are."""
+    uses, results, out = set(), set(), []
+    for row in rows:
+        msg = row.get("message") or {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            out.append(row)
+            continue
+        kept = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                if b.get("id") in uses:
+                    continue
+                uses.add(b.get("id"))
+            elif isinstance(b, dict) and b.get("type") == "tool_result":
+                if b.get("tool_use_id") in results:
+                    continue
+                results.add(b.get("tool_use_id"))
+            kept.append(b)
+        out.append(row if len(kept) == len(content) else {**row, "message": {**msg, "content": kept}})
+    return out
+
+
 def tool_calls(rows):
     """(tool name, its result) for every tool use in a transcript, in order;
     a result is `{is_error, text}`, or None while none came."""
+    rows = once(rows)
     results = {}
     for row in rows:
         content = (row.get("message") or {}).get("content")
@@ -423,7 +450,7 @@ def second_ask_refusal(rows, key):
     receipt names its ask, and the second's answer is the outstanding-ask
     refusal naming that same ask."""
     results, asks = {}, []
-    for row in rows:
+    for row in once(rows):
         content = (row.get("message") or {}).get("content")
         for b in content if isinstance(content, list) else []:
             if not isinstance(b, dict):
@@ -458,6 +485,7 @@ def receipt_ask_outcome(rows, key):
     carries the seen the start's receipt returned, no get_ticket of `key`
     came between the two, and the ask's answer is its receipt (its `asked`
     record), not the stale refusal."""
+    rows = once(rows)
     results = {}
     for row in rows:
         content = (row.get("message") or {}).get("content")
@@ -534,7 +562,7 @@ def plan_read_order(rows, key, word):
             return None
         return None if b.get("is_error") or not isinstance(got, dict) else got
 
-    for r in rows:
+    for r in once(rows):
         if r.get("type") not in ("assistant", "user") or done:
             continue
         blocks = (r.get("message") or {}).get("content")
@@ -745,7 +773,7 @@ def sampled_before(rows, key, prefix):
 def tool_inputs(rows):
     """(tool name, its input) for every tool use in a transcript, in order."""
     out = []
-    for row in rows:
+    for row in once(rows):
         content = (row.get("message") or {}).get("content")
         for b in content if isinstance(content, list) else []:
             if isinstance(b, dict) and b.get("type") == "tool_use":
@@ -4041,7 +4069,7 @@ Reply with the single word ready and end your turn."""
                 # engine writes the blocks of one message, a line each.
                 tool, _, n = arg.partition(":")
                 by = {}
-                for row in rows:
+                for row in once(rows):
                     m = row.get("message") or {}
                     content = m.get("content")
                     for b in content if isinstance(content, list) else []:

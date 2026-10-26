@@ -37623,3 +37623,16 @@ ran the following; no CI result is claimed (T-1030).
   network check. Formatting and diff checks passed. The full workspace suite and SE1 were
   not repeated in this round: the person's rebase instruction narrowed the bar to these
   gates; their previous runs remain recorded above. CI remains off (T-1030).
+
+## The rig reads each tool_use id once (T-1034, 2026-10-26)
+
+- **What was wrong:** Claude Code 2.1.310 (seen on the mod road, build 0.1.0-beta.13) writes each
+  `mcp__mesimon__*` tool_use block in two transcript rows under one id, and its tool_result twice
+  (ToolSearch and Bash rows are not doubled). The rig's readers iterated rows, so the demo
+  crown's 27-minute transcript read 165 calls, 4 failed, 24 receipts where there were 88, 2, 12.
+- **What changed:** `ci/rig.py`'s `once(rows)` keeps each tool_use id and each result's
+  `tool_use_id` once; `tool_calls`, `tool_inputs` (so `tool_uses`), `second_ask_refusal`,
+  `receipt_ask_outcome`, `plan_read_order` and the `one_message` check read through it. The demo
+  board's `unique_calls` is now `rig.tool_calls`. `DoubledRowTests` in `ci/rig_test.py` pins it.
+- **Not measured:** whether the hook road's transcripts carry the double row; the fix is
+  indifferent to it. Verdicts recorded before this (counts, receipt and result bytes) read high.
