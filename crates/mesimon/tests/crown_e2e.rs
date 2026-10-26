@@ -17436,8 +17436,8 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
         assert!(message.contains("changed since it was read"), "{message}");
     };
 
-    // The start is parked on the worktree's cut: nothing has moved yet, so
-    // the receipt's stamp is the read's.
+    // The start is parked on the worktree's cut. The receipt covers its
+    // launch; a read taken here remains strict (T-1042).
     let seen = read(&mut c, sa, &kw).unwrap().seen;
     let start = match c.send(
         Principal::Agent { session: sa },
@@ -17699,4 +17699,268 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     stop(&mut c, ws);
     let fresh = read(&mut c, sa, &kw).unwrap().seen;
     parked(sleep(&mut c, fresh));
+}
+
+/// T-1042: each event is a separate daemon run. Holding an already-held
+/// ticket exercises keyed_target without changing the seat or needing a
+/// painted dialog. The same call must work after get_ticket.
+fn receipt_boundary(case: &str) {
+    use mesimon_core::board::Reason;
+    let Some(h) = Harness::boot_with_env(
+        &format!("receipt_{case}"),
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("receipt_boundary");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1042 worker");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let hook = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    // Keep the crown working: its wakes cannot introduce unrelated pastes.
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let mut receipt = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { seen: Some(seen), .. } => seen,
+        other => panic!("start: {other:?}"),
+    };
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "worker launched", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let before_prompt = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    hook(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    let hold = |c: &mut TestClient, seen: String| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentHoldTicket { key: kw.clone(), hold: true, seen: Some(seen) },
+        )
+    };
+    let stale = |resp: Response| {
+        let Response::Err { message } = resp else { panic!("not stale: {resp:?}") };
+        assert!(message.contains("changed since it was read"), "{message}");
+    };
+    // A read made while a receipt exists cannot borrow its allowance.
+    stale(hold(&mut c, before_prompt));
+    let read_running = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    let stop = |c: &mut TestClient| {
+        hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    match case {
+        "pane_prompt" => {
+            // Running -> Running: no state word or timestamp need change.
+            hook(ws, "UserPromptSubmit", r#"{"prompt":"a person's new words"}"#);
+            // The hook command only writes its socket; it does not wait
+            // for the writer. Running -> Running gives await_state no
+            // barrier, so wait for this session's second prompt decision.
+            wait_until(std::time::Duration::from_secs(10), "second prompt processed", || {
+                std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .filter(|event| {
+                        event["kind"] == "state_decision"
+                            && event["session"] == ws.to_string()
+                            && event["source"] == "UserPromptSubmit"
+                    })
+                    .count()
+                    >= 2
+            });
+        }
+        "second_turn" | "tool_turn" => {
+            stop(&mut c);
+            if case == "tool_turn" {
+                hook(
+                    ws,
+                    "PreToolUse",
+                    r#"{"tool_name":"Bash","tool_use_id":"next","tool_input":{}}"#,
+                );
+            } else {
+                hook(ws, "UserPromptSubmit", r#"{"prompt":"second turn"}"#);
+            }
+            c.await_state(ws, "next turn", |s| *s == SessionState::Running);
+        }
+        "crown_ask" | "ask_then_person" => {
+            receipt = match c.send(
+                Principal::Agent { session: sa },
+                Command::AgentAskTicket {
+                    key: kw.clone(),
+                    seen: Some(receipt),
+                    text: "mesimon-probe-1042 crown followup".into(),
+                    plan: false,
+                    deliver: Deliver::Idle,
+                    expect_secs: None,
+                },
+            ) {
+                Response::AgentAsked { seen: Some(seen), .. } => seen,
+                other => panic!("ask: {other:?}"),
+            };
+            stop(&mut c);
+            wait_until(std::time::Duration::from_secs(15), "crown's queue delivered", || {
+                std::fs::read_to_string(h.dir.join("got.txt"))
+                    .unwrap_or_default()
+                    .contains("mesimon-probe-1042 crown followup")
+            });
+            hook(ws, "UserPromptSubmit", r#"{"prompt":"crown followup"}"#);
+            c.await_state(ws, "crown's next turn", |s| *s == SessionState::Running);
+            stop(&mut c);
+            if case == "crown_ask" {
+                assert!(matches!(hold(&mut c, receipt), Response::AgentHeld { .. }));
+                return;
+            }
+            hook(ws, "UserPromptSubmit", r#"{"prompt":"person's later turn"}"#);
+            c.await_state(ws, "person's later turn", |s| *s == SessionState::Running);
+        }
+        "queued_person" => {
+            assert!(!matches!(
+                c.request(Command::PromptSession {
+                    ticket: w,
+                    text: "mesimon-probe-1042 person's queued words".into(),
+                    queued: true,
+                    immediately: false,
+                    accept_plan: false,
+                    plan: false,
+                    tier: None,
+                    resend: false,
+                    uploads: Vec::new(),
+                }),
+                Response::Err { .. }
+            ));
+            stop(&mut c);
+            wait_until(std::time::Duration::from_secs(15), "person's queue delivered", || {
+                std::fs::read_to_string(h.dir.join("got.txt"))
+                    .unwrap_or_default()
+                    .contains("mesimon-probe-1042 person's queued words")
+            });
+            hook(ws, "UserPromptSubmit", r#"{"prompt":"person's queued words"}"#);
+            c.await_state(ws, "queued turn", |s| *s == SessionState::Running);
+        }
+        "plan" | "question" | "person_accept" | "person_answer" => {
+            let plan = matches!(case, "plan" | "person_accept");
+            let body = if plan {
+                json!({"tool_name":"ExitPlanMode", "tool_use_id":"request", "tool_input":{"plan":"An unread plan"}})
+            } else {
+                json!({"tool_name":"AskUserQuestion", "tool_use_id":"request", "tool_input":{"questions":[{"question":"Which?","header":"Choice","options":[{"label":"Blue","description":"Blue"},{"label":"Red","description":"Red"}],"multiSelect":false}]}})
+            }.to_string();
+            hook(ws, "PreToolUse", &body);
+            let reason = if plan { Reason::Plan } else { Reason::Question };
+            c.await_state(ws, "needs you", |s| *s == SessionState::RequiresAction { reason });
+            if case.starts_with("person_") {
+                // A receipt minted AFTER reading the dialog must also die
+                // when the person answers it, without a new prompt hook.
+                let fresh = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+                receipt = match hold(&mut c, fresh) {
+                    Response::AgentHeld { seen: Some(seen), .. } => seen,
+                    other => panic!("hold: {other:?}"),
+                };
+                hook(ws, "PostToolUse", &body);
+                c.await_state(ws, "person answered", |s| *s == SessionState::Running);
+            }
+        }
+        "quota" | "failure" => {
+            let error = if case == "quota" { "rate_limit" } else { "server_error" };
+            let body = json!({"error":error,"last_assistant_message":"The turn stopped"});
+            hook_send_with(
+                &h.paths.hook_sock(),
+                &ws.to_string(),
+                "StopFailure",
+                Some(error),
+                &body.to_string(),
+            );
+            c.await_state(ws, "failed or limited", |s| {
+                matches!(
+                    s,
+                    SessionState::Failed { .. }
+                        | SessionState::RequiresAction { .. }
+                        | SessionState::Throttled
+                )
+            });
+        }
+        "read" => {
+            // The receipt covers its own turn ending; the read does not.
+            stop(&mut c);
+            stale(hold(&mut c, read_running));
+            assert!(matches!(hold(&mut c, receipt), Response::AgentHeld { .. }));
+            return;
+        }
+        _ => panic!("unknown case {case}"),
+    }
+    stale(hold(&mut c, receipt));
+    let fresh = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    assert!(matches!(hold(&mut c, fresh), Response::AgentHeld { .. }));
+}
+
+#[test]
+fn a_receipt_stamp_expires_on_a_person_s_prompt() {
+    receipt_boundary("pane_prompt");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_second_turn() {
+    receipt_boundary("second_turn");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_turn_without_a_prompt_hook() {
+    receipt_boundary("tool_turn");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_person_s_queued_words() {
+    receipt_boundary("queued_person");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_plan() {
+    receipt_boundary("plan");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_question() {
+    receipt_boundary("question");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_quota_limit() {
+    receipt_boundary("quota");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_failed_turn() {
+    receipt_boundary("failure");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_person_s_plan_accept() {
+    receipt_boundary("person_accept");
+}
+#[test]
+fn a_receipt_stamp_expires_on_a_person_s_answer() {
+    receipt_boundary("person_answer");
+}
+#[test]
+fn a_read_stays_strict_beside_a_receipt_stamp() {
+    receipt_boundary("read");
+}
+
+#[test]
+fn a_receipt_stamp_covers_only_its_own_queued_ask() {
+    receipt_boundary("crown_ask");
+}
+#[test]
+fn an_ask_s_receipt_stamp_expires_on_a_later_person_s_turn() {
+    receipt_boundary("ask_then_person");
 }

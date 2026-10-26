@@ -137,7 +137,7 @@ impl Daemon {
             self.with_ticket(target, |t| t.manual_merge = hold);
             let cmd = if hold { "hold_ticket" } else { "return_ticket" };
             self.feed.board(by.actor(), cmd, Some(target));
-            self.crown_touched(own, target, if hold { "held" } else { "returned" });
+            self.crown_mark(own, target, if hold { "held" } else { "returned" });
         }
         let held = self.train_hold_word(target);
         Response::AgentHeld {

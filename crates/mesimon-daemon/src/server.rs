@@ -105,6 +105,7 @@ mod crownexpect;
 mod crownhold;
 mod crownledger;
 mod crownplan;
+mod crownreceipt;
 mod crownrules;
 mod crownsample;
 mod crownwake;
@@ -539,16 +540,6 @@ enum Msg {
     AgentSampled(u64, Box<crownsample::SampleRead>),
 }
 
-/// The stamp a crown receipt handed back for its target (T-1035), beside
-/// the target's words as the receipt saw them (`Daemon::words_token`) and
-/// the seat it saw, if any: the receipt holds for that seat's motion, not
-/// for another seat in its place.
-struct Receipt {
-    stamp: String,
-    words: String,
-    seat: Option<uuid::Uuid>,
-}
-
 pub struct Daemon {
     paths: Paths,
     board: Board,
@@ -916,14 +907,11 @@ pub struct Daemon {
     /// (T-783), by the receiving ticket, for the card's line under its
     /// title. In memory, like the touches: the transcript is the record.
     crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
-    /// The last stamp a crown receipt handed back for each ticket (T-1035),
-    /// kept with the ticket's words as the receipt saw them. A write's own
-    /// consequences — the seat it started, woke or wrote to moving through
-    /// its states, the board's automatic moves that follow — leave that
-    /// stamp good (`receipt_holds`); a note, a title, a tag, a move by
-    /// hand, a raised hand or a hold since make it stale. In memory, like
+    /// The last receipt per ticket, with allowances for only its own
+    /// launch, ask or merged notice (T-1035, T-1042; `crownreceipt`).
+    /// A foreign prompt or needs-you stop revokes it. In memory, like
     /// the touches: a restart asks for a fresh read.
-    receipts: HashMap<ulid::Ulid, Receipt>,
+    receipts: HashMap<ulid::Ulid, crownreceipt::Receipt>,
     /// How many times each ticket was moved or reordered by someone — a
     /// person, an agent, a peer, never a rule (T-1035): what a receipt's
     /// words count in place of the column, so a rule's move after the
@@ -2413,6 +2401,8 @@ enum WakeBox {
 /// until the ack; a PASTED entry went in with its own Enter and only waits,
 /// `INFLIGHT_MS`, before the checkout stops counting it as busy.
 struct Owed {
+    /// Identity of this delivery across its launch-to-mod conversion (T-1042).
+    receipt_id: ulid::Ulid,
     ticket: ulid::Ulid,
     /// Not yet pasted: `Some` on the launch roads (the composed spawn, the
     /// wake-and-ask, a Codex pane's paste, which `drive_codex_inputs` makes
@@ -2539,6 +2529,7 @@ impl Owed {
     /// A launch entry: words parked for a pane on its way, an Enter owed.
     fn launch(ticket: ulid::Ulid, parked: Parked, ack: Ack) -> Self {
         Owed {
+            receipt_id: ulid::Ulid::new(),
             ticket,
             parked: Some(parked),
             presses: SUBMIT_ATTEMPTS,
@@ -2569,6 +2560,7 @@ impl Owed {
     /// A paste that already went in with its Enter: only the ack is owed.
     fn pasted(ticket: ulid::Ulid, ack: Ack, now: u64) -> Self {
         Owed {
+            receipt_id: ulid::Ulid::new(),
             ticket,
             parked: None,
             presses: 0,
@@ -6340,7 +6332,7 @@ impl Daemon {
         }
         let Some(owed) = self.owed.remove(&id) else { return false };
         let Some(words) = owed.parked else { return false };
-        let (asked, ask) = (owed.asked, owed.ask);
+        let (asked, ask, receipt_id) = (owed.asked, owed.ask, owed.receipt_id);
         if !self.mod_submit(id, owed.ticket, words, owed.ack) {
             self.drop_owed(id);
             return true;
@@ -6348,6 +6340,7 @@ impl Daemon {
         if let Some(o) = self.owed.get_mut(&id) {
             o.asked = asked;
             o.ask = ask;
+            o.receipt_id = receipt_id;
         }
         // A parked wake's words went down the mod: the ask's frame is this
         // one, and it runs as a turn of its own (T-938).
@@ -6699,6 +6692,9 @@ impl Daemon {
         let ahead_of_launch = self.owed.get(&id).is_some_and(|o| {
             o.parked.is_some() && o.next_press.is_some() && o.ack.word != Ack::CROWN_WAKE.word
         }) && self.session_kind(id) == SessionKind::Claude;
+        if !command {
+            self.receipt_prompt(id, ahead.is_some() || ahead_of_launch);
+        }
         if let Some(ask) = ahead {
             self.drop_owed(id);
             self.crown_ask_dropped(ticket, Some(ask), "person", PROMPT_AHEAD_OF_ASK);
@@ -7486,6 +7482,7 @@ impl Daemon {
             }
         }
         let snapshot = rec.clone();
+        self.receipt_state(&snapshot, change);
         self.feed.session_state(&snapshot, &change.from, hook);
         // A turn ending settles the ticket's rebase ask (T-435): the train's
         // hold for a ticket in its rebase turn lasts exactly that turn.
@@ -8371,7 +8368,7 @@ impl Daemon {
                     Some(target),
                     road.word(),
                 );
-                self.crown_touched(ticket, target, "asked");
+                self.crown_mark(ticket, target, "asked");
                 match road {
                     // Sent now (T-600): the person's `^y` on the parked words,
                     // made by the board on the crown's say-so — a pane takes
@@ -8397,7 +8394,7 @@ impl Daemon {
                             ask,
                             &beside,
                         );
-                        self.crown_touched(ticket, target, "sent");
+                        self.crown_mark(ticket, target, "sent");
                     }
                     // An idle agent takes the words now, its touch turning
                     // to `sent`; a busy one when its turn ends, as a
@@ -8425,10 +8422,14 @@ impl Daemon {
                 // The stamp is read after: a wake moves the agent's state,
                 // which the stamp covers.
                 self.broadcast();
+                let seen = self.receipt_seen(target);
+                if let Some(ask) = self.crown_asks.get(&target).and_then(|l| l.last()) {
+                    self.allow_receipt_prompt(target, crownreceipt::Prompt::Ask(ask.id));
+                }
                 Response::AgentAsked {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     replaced,
-                    seen: Some(self.receipt_seen(target)),
+                    seen: Some(seen),
                     held_for_person,
                     held_because,
                     road: Some(road),
@@ -8688,6 +8689,12 @@ impl Daemon {
                 self.feed.board(by.actor(), "start_agent", Some(target));
                 let seen =
                     self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
+                if prompt == StartPrompt::Brief {
+                    self.allow_receipt_prompt(
+                        target,
+                        crownreceipt::Prompt::Launch { crown: ticket },
+                    );
+                }
                 // A checkout worker's first delivery is a HEAD past this one;
                 // a woken one's next is a HEAD past the wake.
                 self.probe_turn(target, ProbeWhy::Baseline);
@@ -8861,6 +8868,14 @@ impl Daemon {
                         self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "merged");
                         let notice = self.notice_after_merge(target, &by);
                         let seen = self.crown_touched(ticket, target, "merged");
+                        if let Some(o) = self.owed.values().find(|o| {
+                            notice == "sent"
+                                && o.ticket == target
+                                && o.asked == Some(TurnAsk::Merge)
+                        }) {
+                            let next = crownreceipt::Prompt::Delivery(o.receipt_id);
+                            self.allow_receipt_prompt(target, next);
+                        }
                         Response::AgentMerged {
                             key: self
                                 .board
@@ -9304,48 +9319,6 @@ impl Daemon {
         }
     }
 
-    /// A receipt's stamp still holds for `id` (T-1035): it is the last one
-    /// a receipt handed back for the ticket, and nothing a person or
-    /// another principal writes has changed since. What the crown's own
-    /// write set in motion — its start's worktree cut, launch and first
-    /// prompt, with the board's `on_working` move; its merge's notice turn,
-    /// with the board's `on_merged` move; its ask's turn; its park — is
-    /// not news to the crown, and does not stale it.
-    fn receipt_holds(&self, id: ulid::Ulid, seen: &str) -> bool {
-        self.receipts.get(&id).is_some_and(|r| {
-            r.stamp == seen && r.words == self.words_token(id) && self.seat_holds(id, r.seat)
-        })
-    }
-
-    /// The seat a receipt saw is the seat there now (T-1035): the same
-    /// record, through whatever states it passed; or, where the receipt saw
-    /// none (a start parked on its worktree's cut), one the crown started.
-    /// A seat gone, or a person's own in its place, is news.
-    fn seat_holds(&self, id: ulid::Ulid, saw: Option<uuid::Uuid>) -> bool {
-        match (saw, self.board.live_agent(id)) {
-            (Some(saw), Some(seat)) => saw == seat.id,
-            (None, Some(seat)) => seat.started_by.is_some(),
-            (None, None) => true,
-            (Some(_), None) => false,
-        }
-    }
-
-    /// The fresh stamp a crown receipt hands back for `target` (T-1035),
-    /// kept with the ticket's words so the write's own consequences do not
-    /// stale it (`receipt_holds`). Every receipt's stamp comes through
-    /// here; a read's (`get_ticket`) does not, since nothing of the
-    /// crown's is in motion after a read.
-    fn receipt_seen(&mut self, target: ulid::Ulid) -> String {
-        let board = &self.board;
-        self.receipts.retain(|t, _| board.ticket(*t).is_some());
-        self.moved_by_hand.retain(|t, _| board.ticket(*t).is_some());
-        let stamp = self.seen_token(target);
-        let words = self.words_token(target);
-        let seat = self.board.live_agent(target).map(|s| s.id);
-        self.receipts.insert(target, Receipt { stamp: stamp.clone(), words, seat });
-        stamp
-    }
-
     fn check_seen(&self, id: ulid::Ulid, seen: Option<&str>) -> std::result::Result<(), String> {
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
         let Some(seen) = seen.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -9400,13 +9373,22 @@ impl Daemon {
         if target == own {
             return None;
         }
+        self.crown_mark(own, target, action);
+        Some(self.receipt_seen(target))
+    }
+
+    /// A card touch without a reply. In particular, delivering a queued
+    /// ask must not replace the stamp its caller already holds (T-1042).
+    fn crown_mark(&mut self, own: ulid::Ulid, target: ulid::Ulid, action: &str) {
+        if target == own {
+            return;
+        }
         let now = mesimon_core::clock::now_ms();
         self.crown_touches.retain(|_, t| now.saturating_sub(t.at_ms) < CROWN_TOUCH_KEPT_MS);
         self.crown_touches.insert(
             target,
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
         );
-        Some(self.receipt_seen(target))
     }
 
     /// Words went between the crown and `ticket`'s agent (T-783): the card
@@ -10311,7 +10293,7 @@ impl Daemon {
         // The crown's filing is one of its touches (T-544), so the board
         // strikes the new card from the crown's; any other agent's is not.
         if self.board.is_crowned(from) {
-            self.crown_touched(from, id, "created");
+            self.crown_mark(from, id, "created");
         }
         let t = self.board.ticket(id);
         let key = t.map(|t| t.short_key.clone()).unwrap_or_default();
@@ -16052,7 +16034,7 @@ impl Daemon {
                     }
                     let ask = self.crown_ask_sent_id(ticket);
                     self.feed.board_ask("agent", "ask_agent_sent", Some(ticket), None, ask, &[]);
-                    self.crown_touched(crown, ticket, "sent");
+                    self.crown_mark(crown, ticket, "sent");
                     if let Some(words) = &words {
                         self.crown_said(ticket, words);
                     }
@@ -20623,6 +20605,7 @@ impl Daemon {
             }
         }
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            self.receipts.remove(&rec.ticket);
             rec.set_state(SessionState::Sleeping);
             if rec.kind == SessionKind::Codex {
                 rec.codex_stopping = true;

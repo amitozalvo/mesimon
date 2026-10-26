@@ -2488,7 +2488,7 @@ impl Daemon {
             self.crown_answer_lines.insert(id, line);
             self.persist_sessions();
         }
-        self.crown_touched(crown, ticket, touch);
+        self.crown_mark(crown, ticket, touch);
         self.crown_said(ticket, answer);
         self.broadcast();
     }

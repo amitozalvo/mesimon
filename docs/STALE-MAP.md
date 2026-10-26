@@ -37494,3 +37494,85 @@ ran the following; no CI result is claimed (T-1030).
   **Handed on:** T-1042 (Codex) bounds a receipt to the turn the crown's own write started
   (a person's prompt in the pane, a plan or question stop, and later turns stale it), on
   this branch's tip; `receipt_holds`, `words_token` and `check_seen` are left as they are here.
+
+## A receipt covers its own turn, not news the crown has not read (T-1042, 2026-10-26)
+
+- **T-1035's road kept, its limit refuted.** The start's launch and `on_working`, and a
+  merge's notice turn and automatic move, are consequences of the crown's write. They still
+  leave its receipt usable by the immediate ask or the park after the notice. But the seat
+  alone can carry news: a person's prompt, a new question or plan, a failed turn, a usage
+  limit, or a later turn. The tools' individual gates do not establish that the crown read
+  that news. T-1035's deliberate exclusion of all seat motion was broader than its brief.
+- **The boundary is attribution, not elapsed time.** `server/crownreceipt.rs` keeps the
+  full read token and words token beside the last receipt. Ordinary receipts are strict.
+  Only a start that sends its brief, an ask's identified record, or a merge that actually
+  sends its notice grants an allowance. A launch is the crown-started seat's first brief;
+  an ask is its `Owed.ask`; a notice is its own delivery's identity, preserved when parked
+  words move onto the mod road. `ack_owed`, shared by Claude's prompt and Codex's new-turn
+  observation, consumes each allowance once, before settling those words. The existing
+  person's-prompt road (ahead of parked launch/ask words) consumes none and revokes the
+  receipt. A person's queued delivery has neither the ask's id nor the notice's identity.
+  A later prompt without an allowance revokes it even while the state stays `Running`.
+  A proven new working edge without an attributed prompt also revokes it.
+- **The first needs-you stop ends the allowance.** Plans, questions, other attention states,
+  throttling and failure revoke the receipt as the daemon applies the state. A dialog's
+  departure revokes a receipt minted while it stood, so a person's answer or accept with
+  no prompt hook cannot slip through. Parking and losing the pane end it too. No later
+  idle, repeated state or return to working revives a revoked receipt. Without attribution,
+  the check requires a fresh read; it does not guess from `turn_asks` that old crown words
+  caused a later turn. An allowance covers the normal end of its own turn and the automatic
+  moves after it, which is why merge then sleep still works.
+- **Reads and receipts cannot alias.** A receipt has a fresh opaque `receipt:` stamp, distinct
+  from the full hash a read returns at the same moment. Otherwise T-1035's last-receipt
+  exception also relaxed a `get_ticket` returning that identical hash. `seen_token` itself
+  is unchanged. The next receipt can carry forward still-valid allowances from its chain;
+  a words edit still stales them. `crown_mark` records asynchronous card touches without
+  issuing a receipt: draining an ask must not replace the stamp already handed to its caller.
+  All of this remains writer-thread memory, with no schema or wire-shape change. The tool
+  text is unchanged: the stamp remains opaque and a refusal still asks for `get_ticket`.
+- **Regressions beside T-1035's two.** Separate `crown_e2e` cases cover a person's prompt
+  while already running, a second turn, a turn beginning through a tool hook, a person's
+  queued words, a plan, a question, a quota limit, a failed turn, a person's plan accept and
+  a person's answer. Each refuses the receipt at the shared keyed-write gate and accepts
+  the same write after a fresh read. The dialog-departure cases mint a receipt after reading
+  the dialog, so they do not merely retest its arrival. A read before the launch's first
+  prompt and one before its normal end remain strict. A positive queued-crown-ask case keeps
+  its receipt across that ask's delivery and end; the next person's turn revokes it.
+- **Validation and reruns.** The first focused run of T-1035's two cases failed on sandbox
+  socket denial; its cleanup also lacked `ps`. The elevated focused rerun passed 13/13
+  (the original two plus the first eleven new cases). The three retained fixture manifests
+  were inspected and their paths removed only after process and inode checks. `cargo ut`
+  first stopped on six sandbox-denied tmux backend tests; their six retained fixtures were
+  checked and cleaned the same way. Its elevated rerun reached two unchanged TUI color
+  failures because this shell supplied `NO_COLOR=1`. The second unit rerun, with that variable
+  unset, passed **2,739**, with **10 ignored** (measurement probes, child entry points and the
+  live release-channel check); fixture audit clean. The requested four integration binaries
+  together passed **119/119**, none skipped, on their first combined run, audit clean.
+  Live rig **SE1 ran once**, on Claude Code 2.1.310 with crown `claude-opus-5-5`: **7/7**,
+  the ask carrying the start's stamp with zero intervening reads, `first` then `fig`. Its
+  reset parked the rig and stopped its daemon and private tmux server.
+  The first full-workspace attempt stopped at **105 passed, 1 failed**, **11 skipped**,
+  **3,023 unrun**: the new same-state-prompt test raced the hook listener against the command
+  listener. A hook command writes its socket without waiting for the daemon; `Running` to
+  `Running` supplies no state barrier. The test now waits for that session's second prompt
+  state-decision event before asserting refusal; no production code or assertion weakened.
+  That attempt's fixture audit was clean.
+  The focused rerun of `a_receipt_stamp_expires_on_a_person_s_prompt` passed **1/1**, audit
+  clean. Full-gate rerun #1 (`--no-fail-fast`, `NO_COLOR` unset) passed **3,129/3,129**, with
+  **11 ignored**: the ten above plus the restart-skew subprocess helper exercised by its
+  parent tests. SE1 was not rerun: the only subsequent behavioral test change was this
+  synchronization barrier, with the product unchanged.
+  The same full-gate rerun's mod-road pass passed **390/390**, with that one helper ignored
+  and the seven unit-test binaries excluded from the repeated pass. The final fixture audit
+  was clean (**827 owners**). The suite ran on the working tree before the requested commit,
+  so the runner issued no commit stamp. `cargo fmt --all -- --check` and `git diff --check`
+  passed. CI was not run (off by T-1030); no visual changes or golden regeneration.
+- **Rebase requested after delivery.** This ticket now sits on T-1035 tip
+  `23fc41ffd7495712540dc66e35c9680886631a7f`, including its second commit's hand-sort,
+  column-rename and teammate-order tracking and its replaced-seat regression. The receipt
+  struct and checks moved into `crownreceipt` in this ticket, so the conflict was resolved
+  by retaining T-1035's seat identity there, checked alongside the words for both strict and
+  active receipts. A new receipt inherits allowances only while that seat still holds;
+  the first attributed launch prompt binds a receipt that initially saw no seat to its
+  actual session. Both STALE-MAP records and both added e2e cases are retained. Validation
+  above predates this rebase; the requested post-rebase runs are recorded below.

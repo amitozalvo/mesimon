@@ -303,8 +303,9 @@ takes a ticket id** — the ticket comes from the session binding, so there is n
 to get wrong. `to_column` is a plain string validated server-side, never an enum, because column
 names are the user's words. `core/src/mcp.rs` holds the definitions, the description lint (no
 second person, no imperatives) and the ≤820-byte cap. **A crown receipt's `seen` comes from
-`Daemon::receipt_seen`, never `seen_token`** (T-1035): what the write itself set in motion — the
-seat, the board's rules after it — must not stale its own receipt, while a read's stamp stays strict.
+`Daemon::receipt_seen`, never `seen_token`** (T-1035, T-1042). Only an identified launch, ask
+or merged notice grants its own turn allowance (`crownreceipt`); a foreign prompt or needs-you
+stop revokes it. A read's stamp stays strict and is distinct from every receipt.
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: a new wire command
 will not compile until someone decides whether an agent may send it. That is the enforcement for

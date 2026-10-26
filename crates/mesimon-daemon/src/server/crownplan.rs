@@ -356,7 +356,7 @@ impl Daemon {
                 self.crown_answer_lines.insert(id, line);
                 self.persist_sessions();
             }
-            self.crown_touched(plan.crown, plan.ticket, "accepted plan");
+            self.crown_mark(plan.crown, plan.ticket, "accepted plan");
             self.broadcast();
         }
         self.crown_plan_reply(plan.reply, plan.session, plan.ticket, status, reason);

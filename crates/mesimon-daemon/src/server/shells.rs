@@ -239,7 +239,7 @@ impl Daemon {
                 rec.shell_close_request = Some(request);
             }
             self.feed.board(by.actor(), "request_close_shell", Some(target));
-            self.crown_touched(own, target, "close shell?");
+            self.crown_mark(own, target, "close shell?");
             self.persist_and_notify();
         }
         Response::AgentTicketUpdated {

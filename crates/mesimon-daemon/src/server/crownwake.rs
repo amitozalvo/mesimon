@@ -2409,7 +2409,7 @@ impl Daemon {
         let named = ask.filter(|_| cause == WakeCause::Answered);
         let named = named.map(|a| format!("{} {}", a.ask, a.said.word()));
         self.feed.crown_wake(crown, worker, cause.word(), named);
-        self.crown_touched(worker, crown, "woke");
+        self.crown_mark(worker, crown, "woke");
     }
 
     /// A start the crown asked for could not be made (T-777): its worktree
