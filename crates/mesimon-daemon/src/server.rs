@@ -540,10 +540,13 @@ enum Msg {
 }
 
 /// The stamp a crown receipt handed back for its target (T-1035), beside
-/// the target's words as the receipt saw them (`Daemon::words_token`).
+/// the target's words as the receipt saw them (`Daemon::words_token`) and
+/// the seat it saw, if any: the receipt holds for that seat's motion, not
+/// for another seat in its place.
 struct Receipt {
     stamp: String,
     words: String,
+    seat: Option<uuid::Uuid>,
 }
 
 pub struct Daemon {
@@ -9309,7 +9312,22 @@ impl Daemon {
     /// with the board's `on_merged` move; its ask's turn; its park — is
     /// not news to the crown, and does not stale it.
     fn receipt_holds(&self, id: ulid::Ulid, seen: &str) -> bool {
-        self.receipts.get(&id).is_some_and(|r| r.stamp == seen && r.words == self.words_token(id))
+        self.receipts.get(&id).is_some_and(|r| {
+            r.stamp == seen && r.words == self.words_token(id) && self.seat_holds(id, r.seat)
+        })
+    }
+
+    /// The seat a receipt saw is the seat there now (T-1035): the same
+    /// record, through whatever states it passed; or, where the receipt saw
+    /// none (a start parked on its worktree's cut), one the crown started.
+    /// A seat gone, or a person's own in its place, is news.
+    fn seat_holds(&self, id: ulid::Ulid, saw: Option<uuid::Uuid>) -> bool {
+        match (saw, self.board.live_agent(id)) {
+            (Some(saw), Some(seat)) => saw == seat.id,
+            (None, Some(seat)) => seat.started_by.is_some(),
+            (None, None) => true,
+            (Some(_), None) => false,
+        }
     }
 
     /// The fresh stamp a crown receipt hands back for `target` (T-1035),
@@ -9323,7 +9341,8 @@ impl Daemon {
         self.moved_by_hand.retain(|t, _| board.ticket(*t).is_some());
         let stamp = self.seen_token(target);
         let words = self.words_token(target);
-        self.receipts.insert(target, Receipt { stamp: stamp.clone(), words });
+        let seat = self.board.live_agent(target).map(|s| s.id);
+        self.receipts.insert(target, Receipt { stamp: stamp.clone(), words, seat });
         stamp
     }
 
@@ -11590,8 +11609,14 @@ impl Daemon {
     /// the crown's write leaves it good and anyone's makes it stale.
     fn note_hand_move(&mut self, id: ulid::Ulid, by: &Principal) {
         if !matches!(by, Principal::Automation { .. }) {
-            *self.moved_by_hand.entry(id).or_default() += 1;
+            self.hand_moved(id);
         }
+    }
+
+    /// Someone moved or reordered `id` by a road that is not
+    /// `place_ticket`'s: a column's sort, its rename, a teammate's order.
+    fn hand_moved(&mut self, id: ulid::Ulid) {
+        *self.moved_by_hand.entry(id).or_default() += 1;
     }
 
     /// The held lines still standing (T-749): a column rule's until the
@@ -17428,6 +17453,7 @@ impl Daemon {
             if let Some(t) = self.board.ticket(id) {
                 let _ = store::save_ticket(&self.paths, t);
             }
+            self.hand_moved(id);
         }
         self.moves.rename_column(name, &to);
         for g in self.grace.values_mut() {
@@ -17526,6 +17552,7 @@ impl Daemon {
             if let Some(t) = self.board.ticket(id) {
                 let _ = store::save_ticket(&self.paths, t);
             }
+            self.hand_moved(id);
         }
         self.broadcast();
         Response::Ok

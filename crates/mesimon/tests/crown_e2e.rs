@@ -25,7 +25,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{
-    Confidence, CrownMode, FailReason, MergeInto, SessionKind, SessionState, WorkspaceStrategy,
+    Confidence, CrownMode, FailReason, MergeInto, SessionKind, SessionState, SortBy,
+    WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentTicketChange, AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver,
@@ -17493,8 +17494,11 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     stale(ask(&mut c, Some(start), "words on an older read"));
 
     // So does a person's move, by hand, where the board's own did not.
+    // (A second after the crown's ticket reached REVIEW on its turn's end,
+    // for the sort below.)
     let fresh = read(&mut c, sa, &kw).unwrap().seen;
     let seen = taken(ask(&mut c, fresh, "a fourth"));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(matches!(
         c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
         Response::Ok
@@ -17502,6 +17506,30 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     stale(ask(&mut c, Some(seen), "words on a read before the move"));
     let fresh = read(&mut c, sa, &kw).unwrap().seen;
     taken(ask(&mut c, fresh, "a fifth"));
+
+    // A person's sort that reorders the ticket is a reorder by hand (one
+    // that leaves its place alone is not: a slot's key is the same whoever
+    // lands in it, so the ticket, below the crown's in REVIEW and the newer
+    // arrival, goes first under a newest-first sort); and a seat that is
+    // not the one the receipt saw — the crown's worker killed, a person's
+    // own started in its place — is news. Both make the stamp stale.
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = taken(ask(&mut c, fresh, "a sixth"));
+    let order = c.board().ticket(w).unwrap().order.clone();
+    assert!(matches!(
+        c.request(Command::SortColumn { column: "REVIEW".into(), by: SortBy::NewestArrival }),
+        Response::Ok
+    ));
+    assert_ne!(c.board().ticket(w).unwrap().order, order, "the sort moved the ticket");
+    stale(ask(&mut c, Some(seen), "words on a read before the sort"));
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = taken(ask(&mut c, fresh, "a seventh"));
+    let _ = c.request(Command::KillSession { id: ws });
+    wait_until(std::time::Duration::from_secs(10), "the seat to empty", || {
+        c.board().live_agent(w).is_none()
+    });
+    c.spawn_claude(w);
+    stale(ask(&mut c, Some(seen), "words for a seat the crown did not start"));
 }
 
 /// T-1035, the second case: a merge's receipt stamp outlives the merged

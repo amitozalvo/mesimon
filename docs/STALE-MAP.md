@@ -37426,7 +37426,15 @@ ran the following; no CI result is claimed (T-1030).
   (`on_working`, `on_done`, `on_merged`, the train). So a rule's move after the crown's write
   leaves its receipt good and anyone's move makes it stale, which a column name in the hash
   could not tell apart. The crown's own `move_ticket` bumps it too and hands back a receipt
-  past the bump, so it loses nothing.
+  past the bump, so it loses nothing. The roads that change a ticket's place without
+  `place_ticket` bump it as well (`hand_moved`, after the automated review of the first commit):
+  a person's column sort and column rename, each ticket the board reports touched, and a
+  teammate's reorder applied by the team sync where the order differs.
+- **The seat the receipt saw.** The receipt also keeps the live seat's id, if any
+  (`Receipt::seat`, `seat_holds`): it holds for that same record through whatever states it
+  passes, and where it saw none (a start parked on its worktree's cut) for a seat the crown
+  started (`started_by`). A seat gone, or a person's own in its place after a kill, is news
+  and makes the stamp stale, as the full token always said.
 - **What still refuses, as the brief required:** a person's note edit (the note's `rev`), a
   person's move or reorder (the count), another principal's write (a worker's note, its
   `move_ticket`, its raised hand), a person's `t` (the hold word), a hand told to the crown, a
@@ -37435,9 +37443,9 @@ ran the following; no CI result is claimed (T-1030).
   worker's turn ending after a read still refuses the crown's write with the ticket's state in
   words. In memory, like the touches: a restart drops the grants and the counts, and a stamp
   from before it asks for a fresh read, as the comment on `seen_token` always said.
-- **Its limit, on purpose:** a receipt's stamp does not go stale on the seat alone — a person's
-  prompt to the worker, their `x`, `c` or `k` on it, or the worker's own turn ending after the
-  receipt. Each tool keeps its own gate over the seat (`sleep_agent` idle only and the crown's
+- **Its limit, on purpose:** a receipt's stamp does not go stale on the seat's state alone — a
+  person's prompt to the worker, their `x` or `c` on it, or the worker's own turn ending after
+  the receipt. Each tool keeps its own gate over the seat (`sleep_agent` idle only and the crown's
   own, `merge_ticket` not under a working agent, `answer_agent` the dialog's request,
   `start_agent` the empty or parked seat, `ask_agent` the road by the state it finds), so a
   stamp that outlives the seat's motion admits no write those gates would refuse. A read's
@@ -37451,7 +37459,9 @@ ran the following; no CI result is claimed (T-1030).
   the start parked on the worktree's cut, the launch, the first prompt and `on_working` land
   (the read's stamp asserted moved), the ask with the start's stamp is taken and the ask's with
   its own; a person's note makes the start's and the last receipt's stale; a person's move makes
-  the next receipt's stale where the board's own did not.
+  the next receipt's stale where the board's own did not; a person's sort of the column makes
+  the next stale; the crown's worker killed and a person's own started in its place makes the
+  next stale.
   `crown_e2e::a_merge_s_receipt_stamp_outlives_the_notice_turn`: the merge with the notice on,
   the notice turn run and ended, the merged wake gone (the read's stamp moved), `sleep_agent`
   with the merge's stamp parks the worker, `start_agent` with the park's wakes it, a person's
@@ -37474,3 +37484,13 @@ ran the following; no CI result is claimed (T-1030).
   the first turn 35 s, the words sent at its `Stop`, `first` then `fig`, the crown woken
   `answered`). `ST2`'s brief still asks for the sleep and was not run here. One full
   `cargo nextest run --workspace` after the rig's reset: **3,116/3,116**, 11 skipped, no rerun.
+  **The second commit** (the seat the receipt saw; a person's sort, a column rename and a
+  teammate's reorder counted as moves by hand), after the automated review of the first: `cargo
+  ut` green, clippy clean, fmt clean; the start e2e's sort case was wrong twice on the test's
+  side before it held (a sort that leaves the ticket in its slot reassigns the same key, so it
+  is rightly no move: the ticket now goes first under a newest-first sort); the four e2e
+  binaries 106/106 and the full suite **3,116/3,116**, 11 skipped, no rerun. The rig was not
+  run again: nothing the crown is told changed, and the start e2e holds the seat road.
+  **Handed on:** T-1042 (Codex) bounds a receipt to the turn the crown's own write started
+  (a person's prompt in the pane, a plan or question stop, and later turns stale it), on
+  this branch's tip; `receipt_holds`, `words_token` and `check_seen` are left as they are here.
