@@ -57,3 +57,25 @@ filter = """
 """
 threads-required = "num-test-threads"
 priority = 100
+
+# CI's runners only (ci.yml sets NEXTEST_PROFILE=ci on the full suite). These
+# eight are red on the GitHub runners, even run alone, and green on the
+# author's Mac alone and in the full suite, both roads. The release gate runs
+# on that Mac (`ci/test-run.py`, profile default), so they still gate every
+# release; CI skips them by the person's decision of 2026-10-26, until the
+# ticket that names them in the backlog is taken up.
+[profile.ci]
+default-filter = """
+not (
+    (binary_id(mesimon-backend-tmux) & test(=tests::legacy_enter_and_detach_reach_fresh_and_surviving_clients))
+  | (binary_id(mesimon::crown_e2e) & (
+      test(=a_crown_a_person_stopped_holds_its_wake_and_its_hand)
+    | test(=a_worker_s_dialog_outlives_a_daemon_restart)
+    | test(=an_expectation_waits_for_its_wake_behind_a_worktree_rebuild)))
+  | (binary_id(mesimon::plan_accept_e2e) & (
+      test(=an_id_less_permission_request_keeps_a_call_only_as_a_repeat)
+    | test(=an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing)
+    | test(=a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running)
+    | test(=a_stated_end_and_a_split_read_keep_the_held_call_s_end)))
+)
+"""
