@@ -70,7 +70,7 @@ impl Daemon {
         hold: bool,
         seen: Option<String>,
     ) -> Response {
-        let target = match self.keyed_target(own, Some(&key), seen.as_deref(), false) {
+        let (target, write) = match self.keyed_target(own, Some(&key), seen.as_deref(), false) {
             Ok(t) => t,
             Err(message) => return Response::Err { message },
         };
@@ -147,7 +147,7 @@ impl Daemon {
             changed,
             merge: self.merge_state_word(target).is_some().then(|| self.merge_by(target)),
             detail: self.hold_detail(target, &key, held, changed),
-            seen: Some(self.receipt_seen(target)),
+            seen: Some(self.receipt_seen(target, Some(write))),
         }
     }
 

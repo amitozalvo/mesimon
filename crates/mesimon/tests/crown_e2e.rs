@@ -254,7 +254,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         c.board().column_tickets("IN PROGRESS").iter().map(|t| t.short_key.clone()).collect();
     assert_eq!(order, [kd.clone(), kb.clone()], "D above B");
 
-    // ---- rename, with the receipt's stamp; the old stamp is now stale --------
+    // ---- parallel renames can share the same receipt stamp (T-1047) --------
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentRenameTicket {
@@ -276,10 +276,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
             seen: Some(fresh.clone()),
         },
     ) {
-        Response::Err { message } => assert!(message.contains("changed since"), "{message}"),
+        Response::AgentTicketUpdated { change: AgentTicketChange::Rename { title }, .. } => {
+            assert_eq!(title, "again")
+        }
         other => panic!("a reused stamp: {other:?}"),
     }
-    assert_eq!(c.board().ticket(b).unwrap().title, "fix it properly");
+    assert_eq!(c.board().ticket(b).unwrap().title, "again");
     assert_eq!(touches(&mut c).iter().find(|t| t.ticket == b).unwrap().action, "renamed");
 
     // ---- a note and a tag on another ticket ---------------------------------
@@ -17726,6 +17728,82 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     stop(&mut c, ws);
     let fresh = read(&mut c, sa, &kw).unwrap().seen;
     parked(sleep(&mut c, fresh));
+}
+
+/// T-1047: the writer serializes parallel calls, but both arrived with the
+/// same pre-batch read. No intervening read or receipt stamp is needed.
+#[test]
+fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
+    let Some(h) = Harness::boot_with_env(
+        "parallel_crown_stamp",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("parallel_crown_stamp");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("parallel edits");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let rename = |c: &mut TestClient, seen: Option<String>, title: &str| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentRenameTicket { key: kw.clone(), title: title.into(), seen },
+        )
+    };
+    assert!(matches!(
+        rename(&mut c, seen.clone(), "first write"),
+        Response::AgentTicketUpdated { .. }
+    ));
+    let second = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentMoveTicket {
+            key: Some(kw.clone()),
+            to_column: "REVIEW".into(),
+            before: None,
+            idempotency_key: None,
+            seen: seen.clone(),
+        },
+    );
+    assert!(matches!(second, Response::AgentMoved { .. }), "parallel move: {second:?}");
+    assert_eq!(c.board().ticket(w).unwrap().column, "REVIEW");
+
+    // Notes have no seen parameter, but the pre-note read belongs to this
+    // same chain too. Earlier inputs survive the crown's note.
+    let pre_note = read(&mut c, sa, &kw).unwrap().seen;
+    let note = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentWriteNote {
+            key: Some(kw.clone()),
+            note: None,
+            text: "the crown's own note".into(),
+        },
+    );
+    assert!(matches!(note, Response::AgentNoteWritten { .. }), "note: {note:?}");
+    let after_note = rename(&mut c, pre_note, "parallel with the note");
+    assert!(
+        matches!(after_note, Response::AgentTicketUpdated { .. }),
+        "after note: {after_note:?}"
+    );
+    assert!(matches!(
+        rename(&mut c, seen.clone(), "still the same chain"),
+        Response::AgentTicketUpdated { .. }
+    ));
+
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "TODO".into(), before: None }),
+        Response::Ok
+    ));
+    let refused = rename(&mut c, seen, "must not overwrite foreign news");
+    assert!(
+        matches!(refused, Response::Err { ref message } if message.contains("changed since")),
+        "foreign move: {refused:?}"
+    );
+    assert_eq!(c.board().ticket(w).unwrap().title, "still the same chain");
 }
 
 /// T-1042: each event is a separate daemon run. Holding an already-held

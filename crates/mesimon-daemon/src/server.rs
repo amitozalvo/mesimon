@@ -7967,11 +7967,11 @@ impl Daemon {
                 // The target: the caller's own ticket, or with a key another
                 // ticket — the crown's road (T-411), judged against the
                 // ticket as it was READ (`seen`).
-                let target = match self.keyed_target(ticket, key.as_deref(), seen.as_deref(), false)
-                {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, key.as_deref(), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 // Position is priority: `before` lands above a named ticket
                 // in the destination; nothing named lands at the top, as
                 // every agent move did.
@@ -7995,7 +7995,7 @@ impl Daemon {
                         // `place_ticket` already saved the ticket file and
                         // broadcast. A move touches no session and no column,
                         // so there is nothing else to persist.
-                        let seen = self.crown_touched(ticket, target, "moved");
+                        let seen = self.crown_touched(ticket, target, "moved", write);
                         Response::AgentMoved {
                             column,
                             board_version: self.board_version,
@@ -8077,11 +8077,12 @@ impl Daemon {
                 {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
+                let write = self.receipt_write(target, None);
                 let resp = self.write_note(target, note, text, None, &by);
                 if let Response::NoteWritten { note } = resp {
                     self.feed.board(by.actor(), "write_note", Some(target));
                     let seen = self
-                        .crown_touched(ticket, target, "note")
+                        .crown_touched(ticket, target, "note", write)
                         .unwrap_or_else(|| self.seen_token(target));
                     if keyed {
                         Response::AgentNoteWritten { note, seen }
@@ -8097,10 +8098,11 @@ impl Daemon {
             // command does, and answers with the changed fields and a fresh
             // stamp, so the next edit needs no second read (T-1031).
             Command::AgentRenameTicket { key, title, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
                     authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
@@ -8125,7 +8127,7 @@ impl Daemon {
                 }
                 self.feed.board(by.actor(), "rename_ticket", Some(target));
                 let seen = self
-                    .crown_touched(ticket, target, "renamed")
+                    .crown_touched(ticket, target, "renamed", write)
                     .unwrap_or_else(|| self.seen_token(target));
                 Response::AgentTicketUpdated {
                     key,
@@ -8134,10 +8136,11 @@ impl Daemon {
                 }
             }
             Command::AgentSetWorkspace { key, workspace, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
                     authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
@@ -8153,7 +8156,7 @@ impl Daemon {
                 }
                 self.feed.board(by.actor(), "set_workspace", Some(target));
                 let seen = self
-                    .crown_touched(ticket, target, "workspace")
+                    .crown_touched(ticket, target, "workspace", write)
                     .unwrap_or_else(|| self.seen_token(target));
                 Response::AgentTicketUpdated {
                     key,
@@ -8164,10 +8167,11 @@ impl Daemon {
                 }
             }
             Command::AgentArchiveTicket { key, restore, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), restore) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), restore) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 // The person's switch (T-590), judged at the call and before
                 // anything changes: off, a card leaves the board, and comes
                 // back, by a person's hand alone.
@@ -8202,7 +8206,7 @@ impl Daemon {
                     Some(target),
                 );
                 let seen = self
-                    .crown_touched(ticket, target, word)
+                    .crown_touched(ticket, target, word, write)
                     .unwrap_or_else(|| self.seen_token(target));
                 Response::AgentTicketUpdated {
                     key,
@@ -8216,10 +8220,11 @@ impl Daemon {
             // budget and the seat rule are the daemon's; the agent names a
             // ticket and nothing else — no kind, no prompt, no session.
             Command::AgentAskTicket { key, text, seen, plan, deliver, expect_secs } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8450,7 +8455,7 @@ impl Daemon {
                 // The stamp is read after: a wake moves the agent's state,
                 // which the stamp covers.
                 self.broadcast();
-                let seen = self.receipt_seen(target);
+                let seen = self.receipt_seen(target, Some(write));
                 if let Some(ask) = self.crown_asks.get(&target).and_then(|l| l.last()) {
                     self.allow_receipt_prompt(target, crownreceipt::Prompt::Ask(ask.id));
                 }
@@ -8473,10 +8478,11 @@ impl Daemon {
             // receipt waits for the hook edge: this arm queues the walk and
             // the writer parks the call's reply with it (`answer_waits`).
             Command::AgentAnswerTicket { key, seen, request, index, text, answers } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8513,7 +8519,7 @@ impl Daemon {
                             outcome: "awaiting_delivery".into(),
                             reason: None,
                             answer: String::new(),
-                            seen: Some(self.receipt_seen(target)),
+                            seen: Some(self.receipt_seen(target, Some(write))),
                         }
                     }
                     Err(message) => Response::Err { message },
@@ -8527,10 +8533,11 @@ impl Daemon {
             // waits for the hook edge: the writer parks the call's reply
             // with the press (`plan_waits`).
             Command::AgentAcceptPlan { key, seen, request } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8555,7 +8562,7 @@ impl Daemon {
                             key,
                             outcome: "awaiting_delivery".into(),
                             reason: None,
-                            seen: Some(self.receipt_seen(target)),
+                            seen: Some(self.receipt_seen(target, Some(write))),
                         }
                     }
                     Err(message) => Response::Err { message },
@@ -8568,10 +8575,11 @@ impl Daemon {
             // leave: the writer parks the call's reply with the walk
             // (`answer_waits`).
             Command::AgentRevisePlan { key, seen, request, text } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8594,17 +8602,18 @@ impl Daemon {
                             key,
                             outcome: "awaiting_delivery".into(),
                             reason: None,
-                            seen: Some(self.receipt_seen(target)),
+                            seen: Some(self.receipt_seen(target, Some(write))),
                         }
                     }
                     Err(message) => Response::Err { message },
                 }
             }
             Command::AgentStartTicket { key, seen, plan, tier, workspace, expect_secs } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8715,8 +8724,12 @@ impl Daemon {
                     self.arm_expect(target, None, secs);
                 }
                 self.feed.board(by.actor(), "start_agent", Some(target));
-                let seen =
-                    self.crown_touched(ticket, target, if woken { "woken" } else { "started" });
+                let seen = self.crown_touched(
+                    ticket,
+                    target,
+                    if woken { "woken" } else { "started" },
+                    write,
+                );
                 if prompt == StartPrompt::Brief {
                     self.allow_receipt_prompt(
                         target,
@@ -8743,10 +8756,11 @@ impl Daemon {
             // keyed call is as deliberate as a keypress — and the scope is
             // `started_by`: a person's agent is the person's to park.
             Command::AgentSleepTicket { key, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8775,7 +8789,7 @@ impl Daemon {
                 self.persist_sessions();
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
                 let seen = self
-                    .crown_touched(ticket, target, "parked")
+                    .crown_touched(ticket, target, "parked", write)
                     .unwrap_or_else(|| self.seen_token(target));
                 self.broadcast();
                 Response::AgentTicketUpdated {
@@ -8799,10 +8813,11 @@ impl Daemon {
             // against the person's links and carried to that board's daemon.
             Command::AgentAskBoard { board, text } => self.agent_ask_board(ticket, board, text),
             Command::AgentWatchTicket { key, unwatch, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8843,7 +8858,7 @@ impl Daemon {
                 let cmd = if unwatch { "unwatch_ticket" } else { "watch_ticket" };
                 self.feed.board(by.actor(), cmd, Some(target));
                 let seen = self
-                    .crown_touched(ticket, target, word)
+                    .crown_touched(ticket, target, word, write)
                     .unwrap_or_else(|| self.seen_token(target));
                 // The watch flips no board field, so nothing else tells the
                 // TUI to take a snapshot and strike the bolt (T-719).
@@ -8867,10 +8882,11 @@ impl Daemon {
             // is (the board's crown mode) and whether the branch is one a
             // merge can take, each refusal in words naming the next step.
             Command::AgentMergeTicket { key, seen } => {
-                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
-                    Ok(t) => t,
-                    Err(message) => return Response::Err { message },
-                };
+                let (target, write) =
+                    match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                        Ok(t) => t,
+                        Err(message) => return Response::Err { message },
+                    };
                 if target == ticket {
                     return Response::Err {
                         message: format!(
@@ -8895,7 +8911,7 @@ impl Daemon {
                     Response::Merge { outcome: MergeOutcome::Merged, detail, .. } => {
                         self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "merged");
                         let notice = self.notice_after_merge(target, &by);
-                        let seen = self.crown_touched(ticket, target, "merged");
+                        let seen = self.crown_touched(ticket, target, "merged", write);
                         if let Some(o) = self.owed.values().find(|o| {
                             notice == "sent"
                                 && o.ticket == target
@@ -8992,9 +9008,10 @@ impl Daemon {
                     },
                 };
                 let by = Principal::Agent { session };
+                let write = self.receipt_write(target, None);
                 match self.agent_tag_ticket(&by, target, &name, group, remove) {
                     Response::AgentTagged { tags, replaced, board_version, .. } => {
-                        let seen = self.crown_touched(ticket, target, "tagged");
+                        let seen = self.crown_touched(ticket, target, "tagged", write);
                         // A tag already worn changes nothing and broadcasts
                         // nothing; the touch still needs its snapshot (T-719).
                         self.broadcast();
@@ -9253,14 +9270,14 @@ impl Daemon {
         key: Option<&str>,
         seen: Option<&str>,
         archived_ok: bool,
-    ) -> std::result::Result<ulid::Ulid, String> {
-        let Some(key) = key else { return Ok(own) };
+    ) -> std::result::Result<(ulid::Ulid, crownreceipt::Write), String> {
+        let Some(key) = key else { return Ok((own, self.receipt_write(own, None))) };
         let target = self.crown_target(own, key, archived_ok)?;
         if target == own {
-            return Ok(own);
+            return Ok((own, self.receipt_write(own, None)));
         }
         self.check_seen(target, seen)?;
-        Ok(target)
+        Ok((target, self.receipt_write(target, seen)))
     }
 
     /// The words an uncrowned agent reads when it reaches for another
@@ -9402,12 +9419,13 @@ impl Daemon {
         own: ulid::Ulid,
         target: ulid::Ulid,
         action: &str,
+        write: crownreceipt::Write,
     ) -> Option<String> {
         if target == own {
             return None;
         }
         self.crown_mark(own, target, action);
-        Some(self.receipt_seen(target))
+        Some(self.receipt_seen(target, Some(write)))
     }
 
     /// A card touch without a reply. In particular, delivering a queued

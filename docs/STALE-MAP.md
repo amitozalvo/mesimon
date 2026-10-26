@@ -37624,6 +37624,74 @@ ran the following; no CI result is claimed (T-1030).
   not repeated in this round: the person's rebase instruction narrowed the bar to these
   gates; their previous runs remain recorded above. CI remains off (T-1030).
 
+## A crown's parallel writes keep the stamp they superseded (T-1047, 2026-10-26)
+
+- **Measurement.** Three stale refusals in one day, across two Opus crowns: the development
+  crown's parallel note + move, its hold + start on T-1045 at 19:40 IST, and the demo crown's
+  note + start on its T-5 at 14:09 IST (T-1032, episode 2). Each cost a read and a resend.
+  T-1042's fresh receipt helps serial calls; a parallel sibling already carries the earlier
+  stamp and cannot use the receipt it has not received.
+- **Rule.** The receipt chain keeps the input stamps superseded by this crown session's own
+  writes. `receipt_holds` accepts those through the same words, seat and full-or-active checks
+  as its current stamp. The same revocations discard the whole chain. A foreign edit, move
+  or hand-sort, a foreign turn, needs-you, a dialog leaving, a lost or replaced seat, and a
+  replacement crown session still refuse. Unrelated reads gain no allowance.
+- **Implementation detail required by the write paths.** A small `crownreceipt::Write` value
+  captures the checked input, valid prior chain identity and seat before the synchronous
+  mutation. The receipt consumes it after success: an own note, rename, hold or move changes
+  the words token itself, so testing only the post-write words would discard the chain.
+  A failed call installs nothing, and revocation during the call cannot resurrect the prior
+  chain. Notes and tags have no `seen` parameter: they capture the current pre-edit read token.
+  Deferred replies have no such witness and retain only a chain that still holds. The chain
+  also records the crown seat's session id so a replacement session cannot inherit it.
+  All bookkeeping remains in writer-thread memory; wire shape and tool text are unchanged.
+- **Tests.** Receipt units cover shared read and receipt inputs, unstamped own edits, foreign
+  moves and hand-sorts, seat identity, revocation (including inside a write), deferred replies
+  and crown session replacement. The wire case sends two writes with one pre-batch stamp,
+  carries the chain across a note, then proves a person's move still refuses. The older e2e
+  assertion that a crown's repeated rename stamp must refuse now expects acceptance.
+- **Validation and reruns.** `cargo check -p mesimon-daemon --offline` passed. The first
+  focused `cargo test -p mesimon-daemon crownreceipt` had one pass and six fixture setup
+  failures: the new temporary path exceeded macOS's Unix-socket limit. Its supervisor also
+  failed cleanup because the sandbox denied `ps`; the retained registry named no sockets or
+  daemons. The six failed-constructor directories were removed, the audit registry retained.
+  After shortening the path, that exact focused command was rerun with command-scoped
+  elevation: **7/7**, audit clean. The subsequent deferred-reply regression was covered by
+  `cargo ut`: **2,760 passed, 10 ignored**, audit clean.
+  The first `cargo nextest run -p mesimon --test crown_e2e` had **90 passes, one failure,
+  18 not run** under fail-fast: the new case named BACKLOG, absent from the fixture's default
+  columns. Changing that test destination to REVIEW needed no product fix. Its exact focused
+  rerun, `cargo nextest run -p mesimon --test crown_e2e
+  parallel_crown_writes_share_the_stamp_their_own_edits_superseded`, passed **1/1**, with
+  108 unrelated tests filtered out and a clean audit. The final workspace gate below reruns
+  the whole crown binary, including those 18 cases, on both roads.
+  All test commands used `ci/test-run.py`; after the first sandbox cleanup denial they used
+  command-scoped elevation, with `NO_COLOR` unset for the repository gates. The ten unit
+  ignores are configured measurements, subprocess entry points and the live-release network
+  check. No tool text changed, so the conditional rig run was not needed.
+- **Final workspace run (once).** `cargo nextest run --workspace --no-fail-fast` completed
+  its first pass with **3,160 passed, 11 configured skips**, including **109/109 crown
+  cases**. Two `approve_bridge` tests reported output pipes held after exit (`LEAK`):
+  `a_renewing_round_that_runs_out_says_so_and_prints_nothing` and
+  `a_hook_set_s_run_that_runs_out_ends_with_nothing`. Both passed without leak warnings in
+  the same runner's mod-road pass. That pass finished **399/400**, one configured subprocess
+  helper skipped, with **109/109 crown cases** and no leaks. Its one failure was
+  `snooze_e2e::a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top`: `is_archived` reported
+  a missing ticket at its two-second wake. The feed records `snooze_woke` two milliseconds
+  before shutdown. The helper reads the board and archive in separate requests, so a wake
+  between them can appear absent from both. This case had made only local create/snooze
+  requests and had no agent or crown; none of the changed receipt code ran. The full command
+  therefore **failed**, despite all receipt/crown tests passing. Its fixture audit was clean
+  (**845 owners**). The snooze helper and product were left unchanged on this ticket.
+  The only diagnostic rerun after the full gate was
+  `MESIMON_TEST_ROAD=mod cargo nextest run -p mesimon --test snooze_e2e
+  a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top`, again through the elevated bounded
+  runner: **1/1**, no skips or leaks, audit clean (2 owners). This does not turn the full
+  run into a pass; the full suite was not repeated. The first pass's eleventh skip and the
+  mod pass's single skip are the restart-skew subprocess helper, exercised by its parent
+  tests; the other ten are the unit ignores listed above. `cargo fmt --all --check` and
+  `git diff --check` passed.
+
 ## The rig reads each tool_use id once (T-1034, 2026-10-26)
 
 - **What was wrong:** Claude Code 2.1.310 (seen on the mod road, build 0.1.0-beta.13) writes each

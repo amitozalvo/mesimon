@@ -2159,7 +2159,7 @@ impl Daemon {
                     reason.as_deref(),
                 );
                 let key = self.board.ticket(pending.ticket).map(|t| t.short_key.clone());
-                let seen = Some(self.receipt_seen(pending.ticket));
+                let seen = Some(self.receipt_seen(pending.ticket, None));
                 // A plan sent back answers as the accept does (T-943): the
                 // crown called `accept_plan`.
                 let response = match revise {

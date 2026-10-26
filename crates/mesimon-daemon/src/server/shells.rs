@@ -244,7 +244,7 @@ impl Daemon {
         }
         Response::AgentTicketUpdated {
             key: key.into(),
-            seen: self.receipt_seen(target),
+            seen: self.receipt_seen(target, None),
             change: mesimon_core::command::AgentTicketChange::ShellClose {
                 shell,
                 close_requested: true,
