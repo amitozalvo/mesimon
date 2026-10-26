@@ -1,6 +1,14 @@
 name: ci
 
-# The Linux job runs on every push to main and every pull request: a fresh
+# OFF on purpose since 2026-10-26 (the person's decision, ticket T-1030): the
+# runners turn a changing handful of timing-sensitive e2es red on most runs
+# while the same tests pass on the author's Mac, and the release gate
+# (`ci/test-run.py`) runs the whole suite there before every release. So no
+# push or pull request starts this workflow; a manual dispatch still runs it
+# (Actions tab, or `gh workflow run ci.yml --ref <branch>`). To turn it back
+# on, restore the `push` and `pull_request` triggers below.
+#
+# When on, the Linux job runs on every push to main and every pull request: a fresh
 # checkout, an empty ~/.local/state, no leftover tmux servers — the clean-room
 # check a laptop cannot give you, and the machine a WSL tester looks like. The
 # real release gate is still `ci/release.sh`, which runs this same suite
@@ -11,9 +19,6 @@ name: ci
 # target mesimon ships is the machine it is developed on, and a shared runner
 # adds minutes, not evidence.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       tests:
