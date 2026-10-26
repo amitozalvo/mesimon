@@ -1,8 +1,40 @@
 # The second safety layer under the fixture supervisors (ci/test_guard.py): a
 # test that wedges is killed after four slow intervals, and a child still
 # holding the pipes after the test returned is reported as a LEAK. No thread
-# cap here — `cargo nextest run --workspace` stays the ~30 s parallel suite;
-# `ci/test-run.py --jobs N` is where a bounded run asks for one.
+# cap here — `cargo nextest run --workspace` runs at nextest's default, ~WALL
+# on the author's Mac; `ci/test-run.py --jobs N` is where a bounded run asks
+# for one, and CI sets NEXTEST_TEST_THREADS (T-1023).
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 leak-timeout = "2s"
+
+# Tests that read green alone and red under the parallel suite's load (T-1023's
+# runs, T-1029): each runs one at a time with the others of this group, beside
+# everything else at the usual thread count. A test red in here is not a load
+# flake. T-1027's two plan_accept_e2e tests (T-957) are left out on purpose.
+[test-groups]
+serial-timing = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = """
+(binary_id(mesimon-backend-tmux) & test(=tests::legacy_enter_and_detach_reach_fresh_and_surviving_clients))
+| (binary_id(mesimon-tui) & (
+    test(=ui::tests::test_archive_refused_shakes_the_card)
+  | test(=ui::tests::test_summary_change_sweeps_the_row)
+  | test(=ui::tests::diff_pages_glide_and_file_changes_cancel_the_motion)
+  | test(=ui::tests::a_moved_card_leaves_a_ghost_and_a_trail_in_the_gutter)))
+| (binary_id(mesimon::spawn_ready_e2e) & test(=a_give_up_is_marked_and_the_resend_clears_the_box_once))
+| (binary_id(mesimon::crown_e2e) & (
+    test(=a_crown_a_person_stopped_holds_its_wake_and_its_hand)
+  | test(=the_crown_sends_a_plan_back_with_words)
+  | test(=a_worker_s_dialog_outlives_a_daemon_restart)))
+| (binary_id(mesimon::provider_e2e) & test(=an_unacked_codex_steer_is_pressed_once_and_given_up))
+| (binary_id(mesimon::plan_accept_e2e) & (
+    test(=an_esc_inside_an_accept_s_settle_rests_interrupted)
+  | test(=an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing)
+  | test(=an_id_less_permission_request_keeps_a_call_only_as_a_repeat)))
+| (binary_id(mesimon::mod_auto_e2e) & test(=a_launch_before_the_fresh_capture_takes_the_mod_on_the_last_one))
+| (binary_id(mesimon::shell_line_e2e) & test(=a_shell_line_into_a_box_holding_a_draft_is_refused))
+| (binary_id(mesimon::forge_e2e) & test(=a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds))
+"""
+test-group = "serial-timing"
