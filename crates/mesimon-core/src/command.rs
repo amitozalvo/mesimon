@@ -2363,6 +2363,9 @@ pub enum Response {
         session_started: bool,
         #[serde(default)]
         budget_left: u8,
+        /// At capacity, the seats held and what frees one (T-1048).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_about: Option<String>,
         /// The name of the tier the agent launched on — or will, once its
         /// worktree is cut (T-584). Empty from a daemon before the field.
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -4183,7 +4186,10 @@ mod tests {
         )
         .unwrap();
         match old {
-            super::Response::AgentStarted { prompt, .. } => assert_eq!(prompt, Option::None),
+            super::Response::AgentStarted { prompt, budget_about, .. } => {
+                assert_eq!(prompt, Option::None);
+                assert_eq!(budget_about, Option::None);
+            }
             other => panic!("{other:?}"),
         }
     }

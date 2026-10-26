@@ -37908,3 +37908,57 @@ ran the following; no CI result is claimed (T-1030).
 - The e2es, full suite, Linux and real-agent rig were not repeated: the accepted review
   narrowed this rebase's checks to units and the workspace build; their prior results,
   including the Linux failures and timeouts, remain above.
+
+## T-1048 — a full start receipt says what frees a seat (2026-10-26)
+
+- Demo episode 3 (T-1045's scorecard, gap 4): at 20:16:08 the Opus crown
+  read `budget_left: 0` on T-4's start receipt while T-2 and T-3 were merged
+  and idle, and asked the person to raise the limit without attempting another
+  start. On the next turn the budget refusal explained sleeping; the crown
+  parked three workers and continued. The number alone hid the board fact
+  until a call the crown expected to fail.
+- At zero, `start_agent` now carries `budget_about`: “Crown-started agents are
+  awake (<ticket keys>). A seat frees when its agent sleeps (sleep_agent parks
+  an idle one) or exits.” The keys come from the same seat count as the budget,
+  including reserved starts. Above zero the field is absent. The optional wire
+  field has `serde(default)` for older daemon/stub receipts; MCP passes through
+  the daemon's words. The refusal's text is unchanged; no tool or budget policy
+  changed.
+- The existing crown receipt e2e checks both zero and nonzero, the MCP unit
+  checks forwarding and omission, and the wire unit reads an older receipt.
+  SB1 is blind: with a one-seat budget it starts a worker, waits for idle, then
+  asks for another ticket's worker without naming a remedy. Its transcript
+  check requires the zero receipt before a successful park, then a successful
+  second start; any raised hand fails, and refused calls remain in the evidence. The test restores the
+  prior budget, and offline cases exercise missing/error results and ordering.
+- SB1 ran once on Claude Code 2.1.310's mod road, crown `claude-opus-5-5`
+  (high), workers `claude-sonnet-5-5` (low), against the just-built binary
+  (`--no-build`). The real receipt carried the exact new `budget_about` above.
+  The crown first attempted the second start, read the budget refusal, then
+  parked T-1 and started T-2. Both workers answered `done`; it raised no hand.
+  The initial grader reported **FAIL** because it also forbade a refused start,
+  a requirement this ticket did not ask for. Corrected to the ticket's stated
+  park/start/no-hand acceptance, preserving refused calls in its evidence.
+  This sample does **not** show that the receipt alone taught it to free a seat.
+  No live retry was taken. `--reset --no-build` parked the remaining session,
+  archived the three rig tickets and stopped its daemon and private tmux.
+  Rejudging that same retained transcript with the corrected criterion returned
+  **PASS**: `start_agent T-1 → start_agent T-2 refused → sleep_agent T-1 →
+  start_agent T-2`. The original run table stays as recorded; the corrected
+  local result is `target/rig/SB1-acceptance.json`.
+- `cargo ut` passed **2,753**, with ten existing ignores and a clean nine-owner
+  fixture audit, under the bounded runner with `NO_COLOR` unset. The first
+  attempt found a missing bool annotation in the new MCP test fixture (fixed),
+  and its sandboxed cleanup could not invoke `ps`; a command-scoped elevated
+  check found both recorded process IDs gone before the clean rerun. The
+  retained failure is not counted as a pass. The offline rig suite passed
+  **41/41** after the grader correction; formatting and `git diff --check` pass.
+- Because the optional response field changes the wire, the full bounded
+  `cargo nextest run --workspace` ran once: **3,152/3,152** on the normal road
+  and **399/399** on the automatic mod integration pass, including the receipt
+  e2e on both. The fixture audit was clean for **844 owners**. The 11 existing
+  skips are measurements, child helpers and the live-release network test;
+  the mod pass excludes non-integration binaries and skips its child helper
+  as a standalone test. No tmux integration was skipped. This is a local
+  macOS check on the working tree, not a release stamp; Linux and manual TUI
+  checks were not run for this receipt-only change.

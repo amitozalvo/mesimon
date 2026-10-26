@@ -533,6 +533,48 @@ def receipt_ask_outcome(rows, key):
         f"answered {'stale' if stale else 'taken' if taken else said[:120]!r}")
 
 
+def budget_reused(rows, first, second):
+    """T-1048: the zero receipt, a successful park, then a successful start;
+    no hand. Refused calls remain evidence, but do not satisfy a step."""
+    calls, phase, observed = {}, 0, []
+    for row in once(rows):
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use":
+                name = (b.get("name") or "").rsplit("__", 1)[-1]
+                key = (b.get("input") or {}).get("key")
+                if name == "raise_hand":
+                    return False, "the crown raised its hand"
+                calls[b.get("id")] = (name, key, phase)
+            elif b.get("type") == "tool_result":
+                name, key, called_at = calls.get(b.get("tool_use_id"), (None, None, None))
+                if name not in ("start_agent", "sleep_agent"):
+                    continue
+                body = b.get("content")
+                text = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                if b.get("is_error"):
+                    observed.append(f"{name} {key} refused")
+                    continue
+                observed.append(f"{name} {key}")
+                if name == "start_agent":
+                    try:
+                        receipt = json.loads(text)
+                    except ValueError:
+                        return False, f"no start receipt: {text[:120]}"
+                    if receipt.get("status") not in ("started", "waiting_for_worktree"):
+                        return False, f"no fresh start: {text[:120]}"
+                    if key == first and phase == 0 and receipt.get("budget_left") == 0:
+                        phase = 1
+                    elif key == second and called_at == 2:
+                        phase = 3
+                elif key == first and called_at == 1:
+                    phase = 2
+    return phase == 3, " → ".join(observed) or "no start receipt"
+
+
 def plan_read_order(rows, key, word):
     """`plan_read` (T-991, D7): the crown had this request's whole plan before
     it accepted it, read off its transcript in order, record by record and
@@ -3228,7 +3270,10 @@ Reply with the single word ready and end your turn."""
         self.looks = ([{"state": record["checkout0"], "crown": True, "worker": False}]
                       if any(c.startswith("crown_wrote_nothing") for c in test.get("checks", [])) else None)
         ok = True
+        budget = self.board()["crown_budget"] if "budget" in test else None
         try:
+            if budget is not None:
+                self.wire.set_crown_budget(test["budget"])
             for step in test["steps"]:
                 if ok:
                     ok = self.run_step(test, step, record)
@@ -3239,6 +3284,8 @@ Reply with the single word ready and end your turn."""
         finally:
             # An exception skips the steps above: DB1's stamp goes back here.
             ok = self.restore_binary(record) and ok
+            if budget is not None:
+                self.wire.set_crown_budget(budget)
         time.sleep(SWEEP_WAIT)
         self.watch()
         # Evidence, not a gate: is this worker's mod alive end to end now?
@@ -3967,6 +4014,14 @@ Reply with the single word ready and end your turn."""
                 crown = self.agent_of(board, self.crown)
                 ok, seen = second_ask_refusal(transcript(crown) if crown else [], key)
                 check(c, ok and arg == "refused_outstanding", seen)
+            elif name == "budget_reused":
+                crown = self.agent_of(board, self.crown)
+                since = record.get("t0_ms", 0)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
+                keys = self.keys_of(test)
+                ok, seen = budget_reused(crown_rows, keys["key"], keys["key2"])
+                check(c, ok, seen)
             elif name == "receipt_ask":
                 # `receipt_ask:accepted` (T-1035): read off the crown's own
                 # calls and results, so a re-read before the ask fails too.

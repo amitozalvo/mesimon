@@ -8740,10 +8740,18 @@ impl Daemon {
                 // a woken one's next is a HEAD past the wake.
                 self.probe_turn(target, ProbeWhy::Baseline);
                 let (held, _) = self.crown_seats();
+                let budget_left = self.board.crown_budget.saturating_sub(held.len() as u8);
                 Response::AgentStarted {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     session_started,
-                    budget_left: self.board.crown_budget.saturating_sub(held.len() as u8),
+                    budget_left,
+                    budget_about: (budget_left == 0).then(|| {
+                        format!(
+                            "Crown-started agents are awake ({}). A seat frees when its agent \
+                             sleeps (sleep_agent parks an idle one) or exits.",
+                            held.join(", ")
+                        )
+                    }),
                     tier: self.tier_book().launch(target, kind).name,
                     woken,
                     workspace: crown::workspace_word(wanted).to_string(),

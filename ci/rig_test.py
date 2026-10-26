@@ -137,6 +137,61 @@ def whole_body(request=REQ):
 ACCEPTED = json.dumps({"key": "T-1", "outcome": "accepted"})
 
 
+class BudgetReceiptTests(unittest.TestCase):
+    def sequence(self):
+        def use(cid, name, key):
+            return assistant({"type": "tool_use", "id": cid,
+                              "name": f"mcp__mesimon__{name}", "input": {"key": key}})
+        receipt = json.dumps({"status": "waiting_for_worktree", "budget_left": 0})
+        return [use("s1", "start_agent", "T-1"), plan_result("s1", receipt),
+                use("p1", "sleep_agent", "T-1"), plan_result("p1", "ok"),
+                use("s2", "start_agent", "T-2"), plan_result("s2", receipt)]
+
+    def judge(self, rows):
+        return rig.budget_reused(rows, "T-1", "T-2")[0]
+
+    def test_zero_receipt_then_park_then_start_passes(self):
+        self.assertTrue(self.judge(self.sequence()))
+
+    def test_a_park_before_the_zero_receipt_fails(self):
+        rows = self.sequence()
+        rows[1], rows[2] = rows[2], rows[1]
+        self.assertFalse(self.judge(rows))
+
+    def test_a_start_before_the_park_receipt_fails(self):
+        rows = self.sequence()
+        rows[3], rows[4] = rows[4], rows[3]
+        self.assertFalse(self.judge(rows))
+
+    def test_missing_or_failed_results_fail(self):
+        for index in (1, 3, 5):
+            with self.subTest(index=index):
+                rows = self.sequence()
+                self.assertFalse(self.judge(rows[:index] + rows[index + 1:]))
+                rows[index]["message"]["content"][0]["is_error"] = True
+                self.assertFalse(self.judge(rows))
+
+    def test_a_hand_even_after_success_fails(self):
+        rows = self.sequence() + [assistant(plan_call("h1", "raise_hand"))]
+        self.assertFalse(self.judge(rows))
+
+    def test_a_refused_start_does_not_replace_the_park_but_is_reported(self):
+        rows = self.sequence()
+        rows[2:2] = [assistant(plan_call("s0", "start_agent")),
+                     plan_result("s0", "budget spent", error=True)]
+        ok, seen = rig.budget_reused(rows, "T-1", "T-2")
+        self.assertTrue(ok)
+        self.assertIn("start_agent T-1 refused", seen)
+
+    def test_room_left_or_wrong_holder_fails(self):
+        rows = self.sequence()
+        rows[1] = plan_result("s1", json.dumps({"status": "started", "budget_left": 1}))
+        self.assertFalse(self.judge(rows))
+        rows = self.sequence()
+        rows[2]["message"]["content"][0]["input"]["key"] = "T-3"
+        self.assertFalse(self.judge(rows))
+
+
 class PlanReadTests(unittest.TestCase):
     """T-991, rounds 2 and 3: D7's outcome, read in order: this request's
     whole plan, then its accept, each on its own good result; a head read is

@@ -351,6 +351,7 @@ fn render(resp: Response) -> Value {
             key,
             session_started,
             budget_left,
+            budget_about,
             tier,
             woken,
             workspace,
@@ -367,6 +368,9 @@ fn render(resp: Response) -> Value {
                 "budget_left": budget_left,
                 "wakes": mcp::CROWN_RULES_AT
             });
+            if let Some(about) = budget_about {
+                body["budget_about"] = json!(about);
+            }
             if !tier.is_empty() {
                 body["tier"] = json!(tier);
             }
@@ -898,11 +902,12 @@ mod tests {
 
     #[test]
     fn a_start_receipt_says_started_or_waiting_never_false() {
-        let body = |session_started, woken| {
+        let body = |session_started, woken: bool| {
             let v = render(Response::AgentStarted {
                 key: "T-7".into(),
                 session_started,
                 budget_left: 0,
+                budget_about: (!woken).then(|| "the daemon's budget explanation".into()),
                 tier: "deep".into(),
                 woken,
                 workspace: "worktree".into(),
@@ -916,6 +921,8 @@ mod tests {
         assert_eq!(now["status"], "started");
         assert_eq!(now["key"], "T-7");
         assert_eq!(now["budget_left"], 0);
+        assert_eq!(now["budget_about"], "the daemon's budget explanation");
+        assert!(body(true, true).get("budget_about").is_none());
         // T-584: the receipt names the tier the agent launched on.
         assert_eq!(now["tier"], "deep");
         // T-537, T-930: the receipt names where the rules are read (that the
@@ -949,6 +956,7 @@ mod tests {
                 key: "T-7".into(),
                 session_started,
                 budget_left: 0,
+                budget_about: None,
                 tier: "coder".into(),
                 woken,
                 workspace: "worktree".into(),

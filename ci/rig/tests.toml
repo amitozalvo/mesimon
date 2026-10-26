@@ -17,6 +17,7 @@
 #              and the ticket's title (`<id> · do the steps below`) carry no
 #              word of `expect`, which only the verdict note repeats; the
 #              crown brief's scripting rules are lifted in it.
+#   budget     optional crown seat limit for this test, restored afterward.
 #   steps      in order. A `crown` step is words the rig sends the crown as a
 #              prompt ({key} is the test ticket's key); the rig then waits
 #              for `until` on the worker and for the crown to settle. A `rig`
@@ -48,6 +49,7 @@
 #              finished with nothing pending; an /exit ends no turn and
 #              wakes nobody, so that step ends when the crown is quiet.
 #   checks     what the verdict reads, each a name `ci/rig.py` defines:
+#              budget_reused (T-1048: zero receipt, park, next start, no hand),
 #              road:<mod|hooks>, plugin_dir, no_plugin_dir, started_by_crown,
 #              started_by_person (the rig step `person_start` started it, W1),
 #              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
@@ -1933,4 +1935,26 @@ checks = ["road:mod", "started_by_crown", "crown:start_agent=1", "crown:ask_agen
   [[test.steps]]
   crown = "SE1: call ask_agent for {key} with deliver idle, the seen that start_agent's receipt returned (call get_ticket neither before nor after), and the text: Reply with the single word fig and end your turn. Read no file and run no command. Then end your turn with two lines: SE1 asked, followed by accepted or refused as the call answered; and SE1 reason, followed by the refusal's words where it was refused. When the board wakes you for {key}, end your turn with the single line: SE1 seen."
   until = { stops = 2, state = "idle" }
+  wake = true
+
+# T-1048: the second request names no budget remedy; the receipt supplies it.
+[[test]]
+id = "SB1"
+title = "SB1 · do the steps below"
+blind = true
+budget = 1
+siblings = ["SB1 · one more ticket"]
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "after a start receipt says budget_left 0, the crown parks its idle worker and starts the next ticket, without raising its hand; any refused start remains in the observed calls."
+checks = ["road:mod", "started_by_crown", "reply:done", "budget_reused"]
+
+  [[test.steps]]
+  crown = "SB1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: SB1 started. When the board wakes you for it, end your turn with the single line: SB1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "Please have {key2}'s own agent carry out its brief in its own worktree. When it finishes, tell me what it answered."
+  until = { stops = 1, state = "idle", on = "key2" }
   wake = true

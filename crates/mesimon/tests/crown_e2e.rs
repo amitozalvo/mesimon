@@ -569,6 +569,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             key,
             session_started,
             budget_left,
+            budget_about,
             woken,
             workspace,
             prompt,
@@ -581,6 +582,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             assert_eq!(prompt, Some(StartPrompt::Brief));
             assert_eq!(workspace, "worktree");
             assert_eq!(budget_left, 1);
+            assert_eq!(budget_about, None, "room remains, so no budget explanation");
         }
         other => panic!("the first start: {other:?}"),
     }
@@ -632,7 +634,19 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // The cap: the third start is refused with the number and the holders.
     let v2 = read(&mut c, sa, &k2).unwrap();
     match start(&mut c, &k2, v2.seen) {
-        Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
+        Response::AgentStarted { budget_left, budget_about, .. } => {
+            assert_eq!(budget_left, 0);
+            let mut held = [k1.clone(), k2.clone()];
+            held.sort();
+            assert_eq!(
+                budget_about,
+                Some(format!(
+                    "Crown-started agents are awake ({}). A seat frees when its agent \
+                     sleeps (sleep_agent parks an idle one) or exits.",
+                    held.join(", ")
+                ))
+            );
+        }
         other => panic!("the second start: {other:?}"),
     }
     let v3 = read(&mut c, sa, &k3).unwrap();
