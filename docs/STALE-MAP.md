@@ -38005,3 +38005,71 @@ ran the following; no CI result is claimed (T-1030).
   3,162/3,162 (11 configured skips), then 401/401 on the mod road (one configured
   subprocess-helper skip), with no leak warnings and a clean 847-owner fixture audit.
   Formatting and diff checks passed. The delivery note records the two focused reruns.
+
+## Older MCP readers keep compatible receipts; an incompatible call stops before dispatch (T-1052, 2026-10-27)
+
+- T-1031's compact receipts introduced response variants an already-running MCP
+  process could not decode, even though its write had succeeded. Compact keyed
+  reads also omitted vocabulary required by the beta.13 reader, and T-930's
+  `CrownRules` wrapper was another new variant. Sleep and wake refreshed the
+  process, but the old error named neither the recovery nor whether a write ran.
+- Each new MCP request, on stdio and `--call`, carries `mcp_protocol: 1` beside
+  its envelope. This is a response contract, independent of a release/build
+  version and of authorization. It travels on every request because connections
+  are per-call and a daemon can change between calls. Missing means the frozen
+  unversioned beta.13 contract; older daemons ignore the added field.
+- For that legacy contract the writer requests full ticket vocabulary and plans,
+  turns compact edit confirmations back into full `AgentTicket` replies and keyed
+  note confirmations into `NoteWritten`. The connection writer removes a
+  `CrownRules` wrapper, including on deferred replies, without counting its
+  stripped rules as delivered. The legacy own-ticket read carries the rules.
+  Current readers keep compact replies and the existing rule-delivery accounting.
+- The compatibility check runs before agent dispatch. A command outside the
+  frozen legacy tool set, or a reader contract the daemon does not support, is
+  refused using the existing `Err` shape, saying the request was not applied,
+  sleep and wake on the card reloads the tools, and `raise_hand` remains available
+  to tell the person. That tool remains admitted through compatibility and still
+  crosses ordinary session, tier and authorization gates. The mod's bridge is
+  not an MCP tool and keeps its independent protocol. No restart or new board
+  indicator is automatic.
+- This is compatibility with the beta.13 response contract, not a promise about
+  every historical binary. A development shim without the capability field uses
+  that baseline and must refresh to use newer tools. Adding a future tool does
+  not silently admit it to the frozen baseline. A future response change needs
+  its own reviewed conversion or a new contract and pre-dispatch refusal.
+- The real socket regression uses an absent capability and a frozen subset of
+  beta.13's decoder: note/rename success, full reads, retained crown rules, a
+  refused rename and train hold with unchanged state, and a usable `raise_hand`
+  under an unsupported contract. Unit checks cover full-plan reads and deferred
+  rule stripping. MR1 reads the daemon's actual refusal through a fixture helper's
+  command output and measures whether a real agent raises its hand naming sleep
+  and wake; it tests the wording, while the socket regression tests MCP decoding.
+- Validation: `cargo ut` passed **2,764** with ten configured ignores after
+  removing the inherited `NO_COLOR=1`; the first run's two underline-color
+  assertions failed with that variable set. Workspace/all-target clippy passed
+  with warnings denied, the offline rig suite passed **41/41**, and MR1 passed
+  on Claude Code 2.1.311: the worker raised its hand naming sleep and wake after
+  the real refusal, with no note written. Its rig board was reset afterward.
+- The single full nextest run completed **3,165/3,166** (11 configured skips),
+  followed by **401/402** on the mod road (one configured helper skip), with a
+  clean **849-owner** audit. All four MCP integration tests passed on the mod
+  road; the new compatibility case also passed in isolation. The first pass's
+  `m1_acceptance_headless` failed at its one-shot socket connect, before sending
+  a request: that fixture waits for the path, unlike the shared client's connect
+  retry. The mod pass's async findings-turn case observed a merge after
+  `async_hook_unobserved` reported process argv/parentage/birth unavailable;
+  compatibility dispatch and async-hook observation are separate paths. Neither
+  failure is reported as a full-suite pass.
+- The initial targeted socket test was denied by the sandbox, including its
+  cleanup process inspection. Its exact elevated rerun reached the assertions;
+  a mistaken legacy-test note-id type was corrected, then the case passed.
+  The two retained sandbox fixtures were cleaned only after checking their
+  registered PIDs/sockets were inactive and their directory identities matched.
+  Configured skips are timing/measurement probes, a live-network check and
+  subprocess helpers run by parent tests. Linux/Docker and manual TUI checks
+  were not run for this MCP transport change.
+- Both exact failing cases passed once in isolation without product/test changes:
+  `m1_e2e` on the default road (**1/1**, 2.17 s) and the async findings-turn case
+  under `MESIMON_TEST_ROAD=mod` (**1/1**, 19.70 s); each audit was clean with two
+  owners. These reruns establish the failures were not reproduced in isolation,
+  not a green full run. Formatting and `git diff --check` passed.

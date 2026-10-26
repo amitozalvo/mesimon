@@ -81,6 +81,22 @@ pub struct Envelope {
     pub command: Command,
 }
 
+/// MCP response contract, independent of the binary's release version.
+/// Zero (including an absent field) is the unversioned beta.13 contract.
+/// One adds compact ticket receipts, optional vocabulary and crown-rule blocks.
+pub const MCP_PROTOCOL: u32 = 1;
+
+/// Per-request capabilities: MCP opens a new socket for every call, and a
+/// daemon can be replaced between calls. Older daemons ignore this field.
+/// This advertises a reader, never an authorization grant.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WireRequest<T = Envelope> {
+    #[serde(flatten)]
+    pub envelope: T,
+    #[serde(default)]
+    pub mcp_protocol: u32,
+}
+
 /// One note named across the wire: the ticket it is on and its id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteRef {

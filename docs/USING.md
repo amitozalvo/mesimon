@@ -104,6 +104,12 @@ where the check is off.
   `brief not sent` instead, and its Shift+Enter sends it. A Codex agent's words still waiting
   for it are sent when it is next idle at its prompt.
 
+An agent's Mesimon tools can keep running across an update. The daemon keeps
+compatible replies for older tools where possible. If a call requires newer tools,
+it refuses the call before applying it and explains that sleeping and waking the
+agent from its card reloads them. The agent can still use `raise_hand` to bring
+that request to you. Updating the board does not restart the agent for you.
+
 ## Release channels
 
 mesimon has two release channels. **Stable** is what the install line and Homebrew give you.

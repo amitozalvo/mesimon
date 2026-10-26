@@ -33,6 +33,29 @@ pub fn one_shot(
     write: Option<Duration>,
     read: Option<Duration>,
 ) -> Result<Response, Fault> {
+    exchange(sock, env, write, read)
+}
+
+/// MCP states the response contract on every call, including --call's
+/// short-lived process. All policy remains at the daemon's dispatch.
+pub fn one_shot_mcp(
+    sock: &Path,
+    env: &Envelope,
+    read: Option<Duration>,
+) -> Result<Response, Fault> {
+    let request = mesimon_core::command::WireRequest {
+        envelope: env,
+        mcp_protocol: mesimon_core::command::MCP_PROTOCOL,
+    };
+    exchange(sock, &request, None, read)
+}
+
+fn exchange(
+    sock: &Path,
+    env: &impl serde::Serialize,
+    write: Option<Duration>,
+    read: Option<Duration>,
+) -> Result<Response, Fault> {
     let stream = UnixStream::connect(sock).map_err(Fault::Connect)?;
     if write.is_some() {
         stream.set_write_timeout(write).map_err(Fault::Connect)?;

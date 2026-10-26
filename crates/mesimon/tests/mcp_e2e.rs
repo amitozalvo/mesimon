@@ -12,6 +12,7 @@
 mod common;
 use common::*;
 
+use std::io::BufRead;
 use std::io::Write;
 use std::process::{Command as Proc, Stdio};
 use std::time::{Duration, Instant};
@@ -20,6 +21,140 @@ use mesimon_core::board::SessionKind;
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
+
+/// Send the actual old envelope (no capability field), or an unsupported
+/// contract. Do not use TestClient's current-reader envelope or unwrap rules.
+fn compatibility_call(
+    c: &mut TestClient,
+    session: uuid::Uuid,
+    command: Command,
+    protocol: Option<u32>,
+) -> Value {
+    let mut wire = serde_json::to_value(mesimon_core::command::Envelope {
+        principal: Principal::Agent { session },
+        command,
+    })
+    .unwrap();
+    if let Some(protocol) = protocol {
+        wire["mcp_protocol"] = json!(protocol);
+    }
+    writeln!(c.write, "{wire}").unwrap();
+    let mut line = String::new();
+    c.read.read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+#[test]
+fn old_mcp_receipts_remain_readable_and_incompatible_writes_do_not_happen() {
+    let Some(h) = Harness::boot("mcp-compat", Some("#!/bin/sh\ncat >/dev/null\n")) else {
+        return;
+    };
+    let mut c = h.client("mcp-compat");
+    let own = c.create_ticket("coordinate");
+    let other = c.create_ticket("original title");
+    let key = c.board().ticket(other).unwrap().short_key.clone();
+    let sid = c.spawn_claude(own);
+    assert!(matches!(c.request(Command::CrownTicket { id: own }), Response::Ok));
+
+    // This subset freezes the beta.13 reader at the changed surfaces: no
+    // new receipt variants, and vocabulary fields are required, not optional.
+    #[derive(serde::Deserialize, Debug)]
+    #[serde(tag = "resp", rename_all = "snake_case")]
+    #[allow(dead_code)]
+    enum LegacyResponse {
+        AgentTicket { ticket: LegacyTicket },
+        NoteWritten { note: Option<ulid::Ulid> },
+        AgentRaised { reason: String, board_version: u64 },
+        Err { message: String },
+    }
+    #[derive(serde::Deserialize, Debug)]
+    #[allow(dead_code)]
+    struct LegacyTicket {
+        key: String,
+        title: String,
+        allowed_columns: Vec<String>,
+        allowed_tags: Vec<Value>,
+        seen: String,
+    }
+    let legacy = |value: &Value| {
+        serde_json::from_value::<LegacyResponse>(value.clone())
+            .unwrap_or_else(|e| panic!("old reader failed: {e}: {value}"))
+    };
+    // A write before the first own read must not acquire a CrownRules
+    // wrapper the old reader cannot parse, or lose its successful receipt.
+    let written = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentWriteNote { key: Some(key.clone()), note: None, text: "kept once".into() },
+        None,
+    );
+    assert!(matches!(legacy(&written), LegacyResponse::NoteWritten { note: Some(_) }));
+    let own_read = compatibility_call(&mut c, sid, Command::AgentGetTicket { full: false }, None);
+    legacy(&own_read);
+    assert!(own_read["ticket"]["crown"].is_string(), "stripped rules were not told");
+    let read = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentReadTicket { key: key.clone(), full: false, plan: false },
+        None,
+    );
+    legacy(&read);
+    let renamed = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentRenameTicket {
+            key: key.clone(),
+            title: "legacy rename".into(),
+            seen: Some(read["ticket"]["seen"].as_str().unwrap().into()),
+        },
+        None,
+    );
+    legacy(&renamed);
+    assert_eq!(renamed["ticket"]["title"], "legacy rename");
+    assert_eq!(renamed["ticket"]["notes"].as_array().unwrap().len(), 1);
+
+    // With a contract the daemon cannot speak, the same authorized write
+    // is refused before dispatch, not after its result becomes unreadable.
+    let refused = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentRenameTicket {
+            key: key.clone(),
+            title: "must not happen".into(),
+            seen: Some(renamed["ticket"]["seen"].as_str().unwrap().into()),
+        },
+        Some(mesimon_core::command::MCP_PROTOCOL + 1),
+    );
+    let LegacyResponse::Err { message } = legacy(&refused) else { panic!("{refused}") };
+    assert!(message.contains("not applied"));
+    assert!(message.contains("Sleeping and waking"));
+    assert!(message.contains("raise_hand"));
+    assert_eq!(c.board().ticket(other).unwrap().title, "legacy rename");
+
+    // A post-beta.13 command carrying no reader capability is also stopped
+    // before it could place a hold on the train.
+    let hold = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentHoldTicket {
+            key: key.clone(),
+            hold: true,
+            seen: Some(renamed["ticket"]["seen"].as_str().unwrap().into()),
+        },
+        None,
+    );
+    assert!(matches!(legacy(&hold), LegacyResponse::Err { .. }));
+    assert!(!c.board().ticket(other).unwrap().manual_merge);
+    let raised = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentRaiseHand {
+            reason: "Please sleep and wake this agent to refresh its tools".into(),
+        },
+        Some(mesimon_core::command::MCP_PROTOCOL + 1),
+    );
+    assert!(matches!(legacy(&raised), LegacyResponse::AgentRaised { .. }));
+}
 
 // ------------------------------------------------------------ the wire
 

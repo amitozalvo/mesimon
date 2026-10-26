@@ -1759,6 +1759,12 @@ class Rig:
 
     def file_one(self, test, title):
         tid = self.wire.create_ticket(test.get("column", "TODO"), title)
+        if "{mcp_probe}" in test["brief"]:
+            receipt = os.path.join(self.out, f"mcp-probe-{tid}.json")
+            test["mcp_probe_receipt"] = receipt
+            command = shlex.join([sys.executable, "-B", os.path.join(HERE, "rig", "mcp_probe.py"),
+                                  self.paths.orch_sock, tid, receipt])
+            test["brief"] = test["brief"].replace("{mcp_probe}", command)
         # `{stub}` is the stub forge's folder (T-859): a pane's PATH is the
         # person's, so a brief that wants the stub `gh` names its path.
         test["brief"] = test["brief"].replace("{stub}", self.forge_stub())
@@ -3507,6 +3513,16 @@ Reply with the single word ready and end your turn."""
                 said = [h for h in hands if arg in h]
                 check(c, said, repr(said[-1][:100]) if said
                       else f"{len(hands)} hands, none naming {arg}: {[h[:60] for h in hands[-2:]]}")
+            elif name == "mcp_refused":
+                try:
+                    with open(test["mcp_probe_receipt"]) as f:
+                        receipt = json.load(f)
+                    response = receipt["response"]
+                    check(c, receipt["unchanged"] and response.get("resp") == "err"
+                          and "not applied" in response.get("message", "")
+                          and "raise_hand" in response.get("message", ""), str(response))
+                except (OSError, KeyError, ValueError) as error:
+                    check(c, False, str(error))
             elif name == "hand":
                 # The worker's own hand (T-908), its reason naming `arg`,
                 # case aside: what the worker wrote, from its transcript.

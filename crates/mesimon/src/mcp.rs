@@ -580,7 +580,7 @@ fn render(resp: Response) -> Value {
 
 /// One request, one connection, one line each way.
 fn ask(sock: &std::path::Path, env: &Envelope) -> Result<Response, String> {
-    use mesimon_daemon::oneshot::{one_shot, Fault};
+    use mesimon_daemon::oneshot::{one_shot_mcp, Fault};
     let wait = match env.command {
         Command::AgentAnswerTicket { .. }
         | Command::AgentAcceptPlan { .. }
@@ -588,7 +588,7 @@ fn ask(sock: &std::path::Path, env: &Envelope) -> Result<Response, String> {
         _ => READ_TIMEOUT_SECS,
     };
     let read = Some(std::time::Duration::from_secs(wait));
-    one_shot(sock, env, None, read).map_err(|fault| match fault {
+    one_shot_mcp(sock, env, read).map_err(|fault| match fault {
         Fault::Connect(e) => {
             format!("mesimon daemon is not reachable ({e}); the board may be closed")
         }

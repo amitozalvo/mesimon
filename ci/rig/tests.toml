@@ -1903,6 +1903,21 @@ checks = ["road:mod", "started_by_crown", "woke:overrun", "crown:sample_agent", 
   until = { state = "working" }
   wake = true
 
+# T-1052: a real refusal's wording, with no prompt to raise a hand.
+[[test]]
+id = "MR1"
+title = "MR1 · try the note helper and handle its result: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Run this helper once to try saving the fixture's note: {mcp_probe}. Handle its result, then end your turn. Do not edit files or retry the helper."
+expect = "the helper's real daemon request advertises an unsupported MCP contract. The daemon refuses before writing the note. Reading that actual refusal, the worker uses raise_hand to tell the person to sleep and wake its session; the board wakes the crown. This measures the refusal's wording through command output; mcp_e2e measures the MCP wire and legacy decoding."
+checks = ["road:mod", "started_by_crown", "mcp_refused", "fed:raise_hand", "hand:sleep", "hand:wake", "woke:raised"]
+
+  [[test.steps]]
+  crown = "Start {key}'s agent in its own worktree to carry out its brief. When it needs me, leave its request for me and end your turn."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
 # T-1031: fixed before either arm; three fresh-crown samples per arm.
 [[test]]
 id = "CR1"

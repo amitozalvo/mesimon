@@ -310,7 +310,11 @@ impl TestClient {
 
     fn send_result(&mut self, principal: Principal, command: Command) -> std::io::Result<Response> {
         let env = Envelope { principal, command };
-        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap())?;
+        let wire = mesimon_core::command::WireRequest {
+            envelope: env,
+            mcp_protocol: mesimon_core::command::MCP_PROTOCOL,
+        };
+        writeln!(self.write, "{}", serde_json::to_string(&wire).unwrap())?;
         loop {
             let mut buf = String::new();
             if self.read.read_line(&mut buf)? == 0 {

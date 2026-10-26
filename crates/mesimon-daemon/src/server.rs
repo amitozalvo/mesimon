@@ -110,6 +110,7 @@ mod crownreceipt;
 mod crownrules;
 mod crownsample;
 mod crownwake;
+mod mcpcompat;
 mod mesophon;
 mod peer;
 mod shelf;
@@ -439,7 +440,7 @@ struct ClientReply {
 }
 
 enum Msg {
-    Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
+    Request(Envelope, u32, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     /// A reply carrying the crown's rules reached its connection (T-930).
     CrownTold(uuid::Uuid, u64),
     Hook(HookFrame),
@@ -1730,14 +1731,14 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
             Msg::AgentSampled(id, read) => d.sample_landed(id, *read),
             Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen),
-            Msg::Request(env, reply, stream) => {
+            Msg::Request(env, protocol, reply, stream) => {
                 // The mod's bridge poll is no tool call, so it tells no crown.
                 let caller = match (&env.principal, &env.command) {
                     (_, Command::ModNext { .. }) => None,
                     (Principal::Agent { session }, _) => Some(*session),
                     _ => None,
                 };
-                let resp = d.handle(env, &stream);
+                let resp = d.handle_compatible(env, protocol, &stream);
                 // `answer_agent` (T-569) answers when its delivery settles:
                 // the reply waits with it, and the shim's call with the reply.
                 // `accept_plan` (T-582) the same way, when its press settles.
@@ -3109,28 +3110,42 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         }
         let mut delivered = None;
         let mut told = None;
-        let resp = match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => match env.command {
-                // Read-only diff service: answered here, never forwarded —
-                // a slow git must not stall the single writer (M4b).
-                Command::DiffList { .. } | Command::DiffFile { .. } => serve_diff(&diff_ctx, &env),
-                _ => {
-                    let (rtx, rrx) = channel();
-                    if tx.send(Msg::Request(env, rtx, writer.clone())).is_err() {
-                        break;
+        let mut legacy_agent = false;
+        let resp = match serde_json::from_str::<mesimon_core::command::WireRequest>(&line) {
+            Ok(request) => {
+                let env = request.envelope;
+                legacy_agent = matches!(env.principal, Principal::Agent { .. })
+                    && request.mcp_protocol != mesimon_core::command::MCP_PROTOCOL;
+                match env.command {
+                    // Read-only diff service: answered here, never forwarded —
+                    // a slow git must not stall the single writer (M4b).
+                    Command::DiffList { .. } | Command::DiffFile { .. } => {
+                        serve_diff(&diff_ctx, &env)
                     }
-                    match rrx.recv() {
-                        Ok(reply) => {
-                            delivered = reply.delivered;
-                            told = reply.told;
-                            reply.response
+                    _ => {
+                        let (rtx, rrx) = channel();
+                        if tx
+                            .send(Msg::Request(env, request.mcp_protocol, rtx, writer.clone()))
+                            .is_err()
+                        {
+                            break;
                         }
-                        Err(_) => Response::Err { message: "daemon gone".into() },
+                        match rrx.recv() {
+                            Ok(reply) => {
+                                delivered = reply.delivered;
+                                told = reply.told;
+                                reply.response
+                            }
+                            Err(_) => Response::Err { message: "daemon gone".into() },
+                        }
                     }
                 }
-            },
+            }
             Err(e) => Response::Err { message: format!("bad envelope: {e}") },
         };
+        // Deferred replies take this path too. A legacy MCP reader does not
+        // know the wrapper, and stripping it must not mark its rules told.
+        let (resp, told) = mcpcompat::wire_reply(resp, told, legacy_agent);
         // Serialize BEFORE taking the writer lock: this same Arc sits in
         // `Daemon::subscribers`, and the writer thread's broadcast() blocks
         // on it — a large response must hold it only for the write itself.
