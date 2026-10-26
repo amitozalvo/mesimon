@@ -19,7 +19,8 @@ use mesimon_core::command::{Command, Response};
 use mesimon_core::mcp::crown_view;
 use mesimon_core::Principal;
 
-const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+const STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
 
 /// One `list_board` from `session`: the rules beside it, or `None`.
 fn listed(c: &mut TestClient, session: uuid::Uuid) -> Option<String> {

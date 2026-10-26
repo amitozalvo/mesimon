@@ -450,7 +450,12 @@ fn draft_stub() -> String {
 /// of the paste: they go alone once the draft is deleted or the person
 /// leaves, and are dropped, never acked, when the person's own prompt goes
 /// first, held or not yet. (A draft that outlasts the composer's wait
-/// leaves them unsent too: `spawn_ready_e2e`'s T-566 pane.)
+/// leaves them unsent too: `spawn_ready_e2e`'s T-566 pane.) The frames are
+/// Claude Code's own (T-1014), replayed by event: the rig's DR1 on 2.1.310,
+/// where a draft typed after the start's title and before the brief went
+/// with the title as the person's one prompt and the brief was dropped, and
+/// EP1's wake. Unlike the hand-written frames they name the transcript, and a
+/// parked pane sends its `SessionEnd`.
 #[test]
 fn a_launch_s_words_wait_for_a_person_s_draft() {
     let stub = draft_stub();
@@ -481,6 +486,30 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let read = || std::fs::read_to_string(&got).unwrap_or_default();
+    // Claude Code's frames (T-1014): the rig's DR1 on 2.1.310 for a start, a
+    // draft and the person's prompt, EP1 for a wake and a parked pane's end.
+    let (start, wake) =
+        (trace::Trace::load("t987-draft-first"), trace::Trace::load("t961-prompt-at-wake"));
+    let transcript = h.dir.join("held-seat.jsonl");
+    let send =
+        |t: &trace::Trace, sid: uuid::Uuid, event: &'static str, reason: Option<&'static str>| {
+            t.send(&hook_sock, sid, &transcript, |l| {
+                l["event"] == event && l["reason"].as_str() == reason
+            });
+        };
+    // A prompt in the engine's shape: the test's words, a turn's own id.
+    let prompted = |sid: uuid::Uuid, words: &str| {
+        start.send_with(
+            &hook_sock,
+            sid,
+            &transcript,
+            |l| l["event"] == "UserPromptSubmit",
+            |p| {
+                p["prompt"] = serde_json::json!(words);
+                p["prompt_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+            },
+        );
+    };
     let keys = |sid: uuid::Uuid, args: &[&str]| {
         let sid16: String = sid.simple().to_string().chars().take(16).collect();
         tmux(&tmux_sock).args(["send-keys", "-t", &sid16]).args(args).output().unwrap();
@@ -512,9 +541,10 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         assert!(!given_up, "and not given up");
     };
     let sleep_seat = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        send(&start, sid, "Stop", None);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
         assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        send(&wake, sid, "SessionEnd", Some("other"));
         c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
     };
 
@@ -530,7 +560,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         other => panic!("spawn failed: {other:?}"),
     };
     draft(sid, "person-draft-B");
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), "{}");
+    send(&start, sid, "SessionStart", Some("startup"));
     held(&mut c, 1, "mesimon-probe-987b");
     assert!(!read().contains("mesimon-probe-987b"), "no paste under the draft: {:?}", read());
     // The person deletes the draft: the brief goes, under the title alone.
@@ -543,10 +573,13 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     let text = read();
     assert!(!text.contains("person-draft"), "the draft never rode along: {text:?}");
     assert_eq!(text.lines().next(), Some("held seat "), "the title leads the brief: {text:?}");
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    prompted(sid, "held seat mesimon-probe-987b the brief");
     wait_until(Duration::from_secs(5), "the brief's ack", || {
         feed_count(&h, "prompt_submitted", ticket) == 1
     });
+    // The conversation is on disk once it took a prompt, so a wake resumes
+    // it and types no title (T-603).
+    std::fs::write(&transcript, "{}\n").unwrap();
     sleep_seat(&mut c, sid);
 
     // A person's ask at the sleeping seat: the wake types nothing, so any
@@ -568,7 +601,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     let _ = std::fs::remove_file(&got);
     ask(&mut c, "mesimon-probe-987a the board's words");
     draft(sid, "person-draft-A");
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    send(&wake, sid, "SessionStart", Some("resume"));
     held(&mut c, 2, "mesimon-probe-987a");
     assert!(read().is_empty(), "nothing typed under the draft: {:?}", read());
     for _ in 0.."person-draft-A".len() {
@@ -578,7 +611,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         read().contains("mesimon-probe-987a")
     });
     assert_eq!(read(), "mesimon-probe-987a the board's words\n", "alone, once");
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    prompted(sid, "the board's words");
     wait_until(Duration::from_secs(5), "the ask's ack", || {
         feed_count(&h, "prompt_submitted", ticket) == 2
     });
@@ -590,10 +623,10 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     let _ = std::fs::remove_file(&got);
     ask(&mut c, "mesimon-probe-987c the board's words");
     draft(sid, "person-draft-C");
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    send(&wake, sid, "SessionStart", Some("resume"));
     held(&mut c, 3, "mesimon-probe-987c");
     keys(sid, &["Enter"]);
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"person-draft-C"}"#);
+    prompted(sid, "person-draft-C");
     let dropped = |c: &mut TestClient, n: usize| {
         wait_until(Duration::from_secs(5), "the words dropped by the person's prompt", || {
             feed_count(&h, "prompt_dropped_by_hand", ticket) == n
@@ -615,9 +648,9 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     let nopaint = h.stub.as_ref().expect("the stub").with_file_name("nopaint");
     std::fs::write(&nopaint, "").unwrap();
     ask(&mut c, "mesimon-probe-987d the board's words");
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    send(&wake, sid, "SessionStart", Some("resume"));
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"typed ahead"}"#);
+    prompted(sid, "typed ahead");
     dropped(&mut c, 2);
     std::fs::remove_file(&nopaint).unwrap();
     wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
@@ -633,7 +666,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     ask(&mut c, "mesimon-probe-987e the board's words");
     wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
     std::fs::write(&barrier, "").unwrap();
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    send(&wake, sid, "SessionStart", Some("resume"));
     wait_until(Duration::from_secs(10), "the dispatch edge", || reached.exists());
     keys(sid, &["-l", "person-draft-E"]);
     wait_until(Duration::from_secs(5), "the draft in the box", || {
@@ -649,7 +682,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
         read().contains("mesimon-probe-987e")
     });
     assert_eq!(read(), "mesimon-probe-987e the board's words\n", "alone, once");
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    prompted(sid, "the board's words");
     wait_until(Duration::from_secs(5), "the ask's ack", || {
         feed_count(&h, "prompt_submitted", ticket) == 3
     });
@@ -662,7 +695,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
     wait_until(Duration::from_secs(15), "the composer", || pane(sid).contains('❯'));
     let sid16: String = sid.simple().to_string().chars().take(16).collect();
     let person = person_attaches(&tmux_sock, &sid16);
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+    send(&wake, sid, "SessionStart", Some("resume"));
     held(&mut c, 5, "mesimon-probe-987f");
     assert!(read().is_empty(), "nothing typed under a person: {:?}", read());
     person_leaves(&tmux_sock, &sid16, person);
@@ -807,7 +840,12 @@ fn a_first_brief_gives_way_to_a_person_s_prompt_and_to_their_presence() {
 /// a daemon restart and its words wait, while an old pane a restarted daemon
 /// recovers takes them at once; the stub's first frame already holds what
 /// was typed before it. On the mod road the mod's `submit` takes them and
-/// nothing waits.
+/// nothing waits. The frames are Claude Code's own (T-1014): the rig's EP1 on
+/// 2.1.310, a Sonnet worker on the hook set parked and woken with a person's
+/// words, replayed by event: its `SessionStart`s (the wake's carries the
+/// cache fields and no model), its `UserPromptSubmit` (a fresh `prompt_id`
+/// each, since the id names the turn), its `Stop`, and the `SessionEnd` the
+/// parked pane sends on its way out, which the hand-written frames lacked.
 #[test]
 fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
     // Ten seconds: a young pane must still be young after a daemon restart.
@@ -873,17 +911,23 @@ fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
     // it is absent the conversation never took a prompt and a wake types the
     // title again (T-603); once it exists a wake resumes and types nothing.
     let transcript = h.dir.join(format!("{sid}.jsonl"));
-    let start = serde_json::json!({ "transcript_path": transcript }).to_string();
+    let engine = trace::Trace::load("t961-prompt-at-wake");
+    let send = |event: &'static str, reason: Option<&'static str>| {
+        engine.send(&hook_sock, sid, &transcript, |l| {
+            l["event"] == event && l["reason"].as_str() == reason
+        });
+    };
     wait_until(Duration::from_secs(15), "the plain start's title in the box", || {
         pane(sid).contains("❯ early seat")
     });
-    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
+    send("SessionStart", Some("startup"));
     // Each phase parks the seat and wakes it: a pane whose box is held
     // undrawn while `nopaint` exists.
     let fresh_pane = |c: &mut TestClient| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        send("Stop", None);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
         assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        send("SessionEnd", Some("other"));
         c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
         for f in ["got.txt", "first.txt", "cleared.txt"] {
             let _ = std::fs::remove_file(h.dir.join(f));
@@ -899,14 +943,20 @@ fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
             wait_until(Duration::from_secs(10), "the mod's bridge", || pid.exists());
             std::thread::sleep(Duration::from_millis(300));
         }
-        hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), &start);
+        send("SessionStart", Some("resume"));
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
     let draw = || {
         std::fs::remove_file(&nopaint).unwrap();
     };
     let ack = |c: &mut TestClient, n: usize| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        engine.send_with(
+            &hook_sock,
+            sid,
+            &transcript,
+            |l| l["event"] == "UserPromptSubmit",
+            |p| p["prompt_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string()),
+        );
         wait_until(Duration::from_secs(5), "the prompt's ack", || {
             feed_count(&h, "prompt_submitted", ticket) == n
         });

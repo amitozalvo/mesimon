@@ -19,7 +19,8 @@ use serde_json::json;
 mod common;
 use common::*;
 
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+const RECORDING_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
                               printf '%s\\n' \"$line\" \
                               >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";

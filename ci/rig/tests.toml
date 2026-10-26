@@ -163,6 +163,14 @@
 #              naming the steer is not required: the board sees one only
 #              where the steer's turn ended outside the held prompt's
 #              settle; `ci/rig.py::steer_verdict`).
+#              T-1014: held_between:<n> (from the person's key <n> in the
+#              pane, `pane_keys`, to key <n+1> the card said needs-you and
+#              nothing else), left_after:<n>:<secs>:<source> (the card left
+#              needs-you within <secs> of key <n>, a state decision of
+#              <source> between them: dialog_result, PostToolUse),
+#              one_message:<tool>:<n> (<n> calls of <tool> under one message
+#              id), never_in_prompts:<words> (no prompt of the worker's holds
+#              them).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -204,6 +212,16 @@
 #              with the crown's launches on `road` (hooks|mod; with
 #              `idle_ms`, the bound a client holds a wake for) and parks
 #              and wakes the crown onto it.
+#              T-1014 adds `pane_keys` (a person's keys in the worker's pane:
+#              `screen` words it waits to see first, `fed` a board line for
+#              the ticket it waits for first, `keys` for tmux, `literal`
+#              text, `before` seconds, `hold` seconds watched after, `until`
+#              the card word then waited for) and `draft_at_launch` (once
+#              the worker's seat exists, T-987's launch barrier goes up; at
+#              the barrier `text` is typed into the box, then it comes down;
+#              needs `crown_road` with `barrier = true`). With `--record`
+#              every case's frames and transcript lines are cut into
+#              `target/rig/traces/<id>.jsonl`, an e2e fixture.
 #              `binary_moved` (T-941) moves the rig daemon's binary's mtime a
 #              second on, bytes untouched, and `binary_back` restores it (DB1); a
 #              crown step with `until = { crown_only = true }` waits on the
@@ -1637,6 +1655,92 @@ checks = ["started_by_crown", "fed:prompt_waits_for_composer", "prompt_once:Repl
   [[test.steps]]
   rig = "prompt_at_start"
   text = "Reply with the single word ready and end your turn. Read no file and run no command."
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "mod"
+
+# ---- Real-engine evidence (T-1014): what Claude Code itself sends on a
+# person's refusal, two dialogs in one message and a draft-first launch.
+# Each also records its trace with `--record` (an e2e fixture).
+
+[[test]]
+id = "RF1"
+title = "RF1 · a plan the person refuses in the pane: do the steps below"
+workspace = "worktree"
+brief = "Plan this, then do it once your plan is accepted: create the file notes/rf1.txt holding the single line rf1. Use the ExitPlanMode tool to present the plan. Read no other file and run no command."
+plan = true
+expect = "the worker starts in plan mode and stops on its plan; the board wakes the crown, which leaves it standing. The person presses Esc on the plan dialog in the worker's pane, which fires no hook (T-447): the card leaves needs-you within 5 s of the key, the leave decided by the dialog's own result in the transcript (dialog_result, T-957) and never by a later timer, and nothing is written."
+checks = ["road:mod", "started_by_crown", "words:working,needs_you,idle", "left_after:1:5:dialog_result", "no_file:notes/rf1.txt"]
+
+  [[test.steps]]
+  crown = "RF1: call start_agent for {key} with workspace worktree, no tier and plan true, then end your turn with the single line: RF1 started. Its agent will stop on its plan: when the board wakes you for that plan, do NOT accept it or send it back, and end your turn with the single line: RF1 waiting. Each time the board wakes you for {key} after that, end your turn with the single line: RF1 seen."
+  until = { events = ["PreToolUse"], state = "needs_you" }
+  wake = true
+
+  [[test.steps]]
+  rig = "pane_keys"
+  screen = "Ready to code?"
+  keys = ["Escape"]
+  until = "idle"
+
+[[test]]
+id = "QQ1"
+title = "QQ1 · two questions in one message, answered in the pane: do the steps below"
+workspace = "worktree"
+brief = """Do these two things one at a time and nothing else.
+1. Ask me two questions with TWO AskUserQuestion tool calls made together in ONE message, side by side (two calls, not one call holding two questions): the first call asks "Which colour?" with the options "red" and "blue", the second asks "Which size?" with the options "small" and "large". Wait for my answers.
+2. Then reply with the two words I chose, colour first, separated by a space, and end your turn.
+Read no file and run no command."""
+expect = "the worker makes two AskUserQuestion calls in one message and the pane draws the first; the board wakes the crown, which leaves them standing. The person answers the first in the pane (Enter on its first row, red) and the pane draws the second: the card holds needs-you from that key to the next, 8 s and more, and never reads working while a dialog is up (T-988). The person answers the second (Enter, small): the card leaves needs-you within 5 s of that key, on the second call's PostToolUse, and the worker replies red small."
+checks = ["road:mod", "started_by_crown", "one_message:AskUserQuestion:2", "held_between:1", "left_after:2:5:PostToolUse", "not_fed:answer_by_mod", "reply:small"]
+
+  [[test.steps]]
+  crown = "QQ1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: QQ1 started. Its agent will stop on questions: each time the board wakes you for a question of {key}'s, do NOT answer it, and end your turn with the single line: QQ1 waiting. When the board wakes you because {key}'s agent finished, end your turn with the single line: QQ1 seen."
+  until = { events = ["PreToolUse"], state = "needs_you" }
+  wake = true
+
+  [[test.steps]]
+  rig = "pane_keys"
+  screen = "Which colour?"
+  keys = ["Enter"]
+  hold = 8
+
+  [[test.steps]]
+  rig = "pane_keys"
+  screen = "Which size?"
+  keys = ["Enter"]
+  before = 0
+  until = "idle"
+
+[[test]]
+id = "DR1"
+title = "DR1 · a person's draft in the box goes before the brief"
+workspace = "worktree"
+brief = "Reply with the single word brief and end your turn. Read no file and run no command. mesimon-probe-1014"
+expect = "the worker runs on the hook set, where a start types the title and pastes the brief after it. A person types a draft into the box after the title, at the launch's edge, before the brief's paste: the brief waits with no key (composer_held) and is never pasted under the draft. The person presses Enter: the title and the draft go as the person's prompt, and the brief, which that prompt makes moot, is dropped by the board, never acked (prompt_dropped_by_hand, no prompt_submitted): no prompt of the worker's holds it (T-987). The worker answers the draft with the word draft."
+checks = ["started_by_crown", "fed:composer_held", "fed:prompt_dropped_by_hand", "not_fed:prompt_submitted", "never_in_prompts:mesimon-probe-1014", "prompts:1", "reply:draft"]
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "hooks"
+  barrier = true
+
+  [[test.steps]]
+  crown = "DR1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: DR1 started. Each time the board wakes you for {key}, end your turn with the single line: DR1 seen."
+  until = { crown_only = true }
+  settle = false
+
+  [[test.steps]]
+  rig = "draft_at_launch"
+  text = " and reply with the single word draft and end your turn. Read no file and run no command."
+
+  [[test.steps]]
+  rig = "pane_keys"
+  fed = "composer_held"
+  screen = "single word draft"
+  keys = ["Enter"]
+  until = "idle"
 
   [[test.steps]]
   rig = "crown_road"

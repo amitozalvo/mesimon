@@ -248,7 +248,8 @@ fn write(path: &Path, body: &str) {
 
 #[test]
 fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-stub-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -413,7 +414,8 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
 /// turn's lines, until its pipeline reads passed.
 #[test]
 fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-nopr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -641,7 +643,8 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
 /// merge, and leaves with the board's switch.
 #[test]
 fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-named-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -786,7 +789,8 @@ fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
 }
 
 /// The crown's stub: each line it reads is appended to `got.txt` beside it.
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+const RECORDING_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 /// An open PR as `gh pr list --json` prints it, with the checks, the
@@ -1103,7 +1107,8 @@ fn the_crown_hears_the_forges_edges() {
 /// daemon was down is the one feed line the first live pass adds.
 #[test]
 fn the_prs_survive_a_restart_and_the_first_pass_lists() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-keep-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -1232,7 +1237,8 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
 /// a ticket opened meanwhile binds and the row clears.
 #[test]
 fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let name = "forge_lost";
     let (stub_dir, path_var) = gh_stub(name);
     let gh = stub_dir.join("gh");
@@ -1815,7 +1821,8 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
 /// pull requests on is what starts the reads.
 #[test]
 fn a_board_that_merges_into_main_never_calls_the_forge() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let name = "forge_main";
     let (stub_dir, path_var) = gh_stub(name);
     let prs_file = stub_dir.join("prs.json");
@@ -2030,7 +2037,8 @@ esac
 /// commit is not on staging, and takes the ticket once both are.
 #[test]
 fn a_deployed_arrival_waits_for_every_repositorys_pr() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-two-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -2178,7 +2186,8 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
 /// deployment stands (T-801).
 #[test]
 fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-older-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -2294,7 +2303,8 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
 /// minute.
 #[test]
 fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minute() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-busy");
     let prs_file = stub_dir.join("prs.json");
     let checks_file = stub_dir.join("checks.json");
@@ -2851,7 +2861,8 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
 /// and the conflict the rebase fixed clears on the board.
 #[test]
 fn a_train_rebase_turn_is_read_at_its_end() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-rebase-read");
     let prs_file = stub_dir.join("prs.json");
     let log = stub_dir.join("calls.log");
@@ -2976,7 +2987,8 @@ fn follow_up(path: &Path, branch: &str) -> String {
 
 #[test]
 fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-done");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -3207,7 +3219,8 @@ fn an_opening_read_mid_turn_rides_the_turns_wake() {
 /// is the forge's as well: no train merge, and `m` asks for a PR.
 #[test]
 fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-carried");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -3356,7 +3369,8 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
 /// first is named by the PR once the forge says it merged.
 #[test]
 fn the_pipeline_gate_judges_the_branchs_tip() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-tip");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -3452,7 +3466,8 @@ fn the_pipeline_gate_judges_the_branchs_tip() {
 /// when: pipeline passes` takes the ticket with the list still stale.
 #[test]
 fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-mr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -3547,7 +3562,8 @@ fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
 /// pass, DONE's `merged` takes the ticket, and REVIEW never does.
 #[test]
 fn an_open_mrs_state_is_read_from_the_mr_itself() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -3655,7 +3671,8 @@ fn squashed_pr(n: u64, branch: &str, head: &str, squash: &str) -> String {
 /// commits are asked once, not on every pass.
 #[test]
 fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-past");
     let prs_file = stub_dir.join("prs.json");
     let commits = stub_dir.join("commits");
@@ -3781,7 +3798,8 @@ fn lists(log: &Path) -> usize {
 /// `fix/alpha`), keeps it after the base took the merge.
 #[test]
 fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-cut-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -4003,7 +4021,8 @@ fn a_pr_opened_before_the_ledger_looked_binds_quietly_after_the_backfill() {
 /// snapshot's `forge.trouble` carries the same line.
 #[test]
 fn a_cli_never_signed_in_is_trouble_with_its_fix() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let name = "forge_unsigned";
     let (stub_dir, path_var) = gh_stub(name);
     std::fs::write(
@@ -4663,7 +4682,8 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
 /// train unarmed, the minute at 60 s.
 #[test]
 fn a_pr_create_is_read_mid_turn_and_at_a_gated_turn_end() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
     let (stub_dir, path_var) = gh_stub("forge-create");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");

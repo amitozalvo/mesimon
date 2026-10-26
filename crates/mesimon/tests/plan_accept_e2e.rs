@@ -695,6 +695,56 @@ fn a_refused_dialog_clears_on_its_own_result_in_the_transcript() {
     }
 }
 
+/// T-957 as Claude Code sends it (T-1014): the rig's RF1 on 2.1.310, a
+/// Sonnet worker in plan mode on the mod road whose plan the person refuses
+/// with Esc in the pane, replayed frame for frame and line for line. No hook
+/// fires for the Esc. Unlike the sequence written by hand above, the plan's
+/// call is not on disk while its dialog is up: the engine writes that
+/// message's lines (the plan file's `Write`, then the call) at the Esc, in
+/// the same millisecond as the call's refused result ("… STOP what you are
+/// doing …", `toolDenialKind: user-rejected`), the interrupt and the turn's
+/// close. So the departure is read from an ended call (`closed_dialog`), and
+/// the seat rests interrupted.
+#[test]
+fn a_plan_refused_with_esc_leaves_on_its_own_result_as_recorded() {
+    let trace = trace::Trace::load("t957-plan-refused-esc");
+    let Some(mut b) = Bed::boot("planno_rec") else { return };
+    let plan = trace
+        .frames()
+        .into_iter()
+        .find(|(e, _, p)| *e == "PreToolUse" && p["tool_name"] == "ExitPlanMode")
+        .map(|(_, _, p)| p["tool_use_id"].as_str().unwrap().to_string())
+        .expect("the plan's call");
+    let sock = b.h.paths.hook_sock();
+    let mut r = trace.replay(&sock, b.sid, &b.transcript);
+    r.through(trace::frame("UserPromptSubmit", None));
+    b.c.await_state(b.sid, "running", |s| *s == SessionState::Running);
+    // The model's first seconds: a tail read while running mints the cursor.
+    std::thread::sleep(Duration::from_millis(2500));
+    let on_plan = SessionState::RequiresAction { reason: Reason::Plan };
+    r.through(trace::frame("PermissionRequest", Some("ExitPlanMode")));
+    b.c.await_state(b.sid, "on the plan", |s| *s == on_plan);
+    assert_eq!(b.held_call().as_deref(), Some(plan.as_str()), "the plan's call is held");
+    assert!(
+        !std::fs::read_to_string(&b.transcript).unwrap().contains(&plan),
+        "the call's line is not on disk while its dialog stands"
+    );
+    // A dialog standing is not left by the clock.
+    std::thread::sleep(Duration::from_millis(3000));
+    assert_eq!(b.state(), Some(on_plan.clone()), "the plan stands");
+
+    // ---- the Esc: no frame, the message's lines and the refusal --------------
+    r.rest();
+    let interrupted =
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
+    b.c.await_state(b.sid, "interrupted off the plan", |s| *s == interrupted);
+    let left = b
+        .departures()
+        .into_iter()
+        .any(|d| d["decision"]["before"]["state"] == serde_json::to_value(&on_plan).unwrap());
+    assert!(left, "the plan's own result decided it: {:?}", b.decisions());
+}
+
 /// T-447's own road, kept (T-957): the native road (T-657) relays every
 /// `tool.call` as a `PreToolUse`, so there the agent's next call is the
 /// refusal's first frame, and no transcript result is written here for
@@ -1904,22 +1954,15 @@ fn two_dialogs_in_one_message_hold_the_seat_until_the_second_is_answered() {
         other => panic!("get_ticket: {other:?}"),
     };
     // Each case's hooks in the order the daemon hears them: (event, call).
-    let asks =
-        [("PreToolUse", 0), ("PreToolUse", 1), ("PermissionRequest", 0), ("PermissionRequest", 1)];
     // Each hook is a process of its own: live, B's `PreToolUse` arrived 14 ms
     // before A's.
     let reordered =
         [("PreToolUse", 1), ("PreToolUse", 0), ("PermissionRequest", 0), ("PermissionRequest", 1)];
     let plans =
         [("PreToolUse", 0), ("PermissionRequest", 0), ("PreToolUse", 1), ("PermissionRequest", 1)];
+    // Two questions in the order Claude Code sends them is the recording's
+    // (`two_questions_in_one_message_hold_the_seat_as_recorded`, T-1014).
     let cases = [
-        (
-            "twoasks",
-            "AskUserQuestion",
-            Reason::Question,
-            [ask("Which colour?"), ask("Which size?")],
-            asks,
-        ),
         (
             "twoasksreordered",
             "AskUserQuestion",
@@ -1985,6 +2028,64 @@ fn two_dialogs_in_one_message_hold_the_seat_until_the_second_is_answered() {
         b.c.await_state(b.sid, "running on B's answer", |s| *s == SessionState::Running);
         assert!(needs(&mut b).is_none(), "{name}: no dialog stands");
     }
+}
+
+/// T-988 as Claude Code sends it (T-1014): the rig's QQ1 on 2.1.310, a
+/// Sonnet worker on the mod road asking two questions in one message, the
+/// person answering each in the pane, replayed frame for frame and line for
+/// line. Two things differ from the sequence measured by hand above: each
+/// call's `PreToolUse` is followed by its own `PermissionRequest` (A, A's,
+/// B, B's), and the calls' lines reach the transcript about 0.7 s after both
+/// hooks, not before them. A's answer (its `PostToolUse`, then its result
+/// 0.1 s later) leaves the seat on B's question; B's leaves it.
+#[test]
+fn two_questions_in_one_message_hold_the_seat_as_recorded() {
+    let trace = trace::Trace::load("t988-two-questions");
+    let Some(mut b) = Bed::boot("twoasks_rec") else { return };
+    let calls: Vec<String> = trace
+        .frames()
+        .into_iter()
+        .filter(|(e, _, p)| *e == "PreToolUse" && p["tool_name"] == "AskUserQuestion")
+        .map(|(_, _, p)| p["tool_use_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(calls.len(), 2, "two calls: {:?}", trace.events());
+    let (a, second) = (&calls[0], &calls[1]);
+    let sock = b.h.paths.hook_sock();
+    let mut r = trace.replay(&sock, b.sid, &b.transcript);
+    r.through(trace::frame("UserPromptSubmit", None));
+    b.c.await_state(b.sid, "running", |s| *s == SessionState::Running);
+    // The model's first seconds: a tail read while running mints the cursor.
+    std::thread::sleep(Duration::from_millis(2500));
+    let question = SessionState::RequiresAction { reason: Reason::Question };
+    let answered_a = r.until(trace::frame("PostToolUse", Some("AskUserQuestion"))).unwrap();
+    assert_eq!(answered_a["payload"]["tool_use_id"], a.as_str(), "A is answered first");
+    b.c.await_state(b.sid, "on the questions", |s| *s == question);
+    wait_until(Duration::from_secs(10), "the last named call held", || {
+        b.held_call().as_deref() == Some(second.as_str())
+    });
+
+    // ---- A answered: B is still to be answered ------------------------------
+    r.through(trace::result_of(a));
+    // Past the settle and two tail reads.
+    std::thread::sleep(Duration::from_millis(3500));
+    assert_eq!(b.state(), Some(question.clone()), "B stands: {:?}", b.decisions());
+    assert_eq!(b.held_call().as_deref(), Some(second.as_str()), "still held on B");
+    let needs = match b
+        .c
+        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
+    {
+        Response::AgentTicket { ticket } => ticket.needs_you.and_then(|n| n.request),
+        other => panic!("get_ticket: {other:?}"),
+    };
+    assert_eq!(needs.as_deref(), Some(second.as_str()), "get_ticket names B");
+
+    // ---- B answered: the seat leaves, and the turn ends ---------------------
+    r.through(trace::result_of(second));
+    b.c.await_state(b.sid, "running on B's answer", |s| *s == SessionState::Running);
+    r.rest();
+    b.c.await_state(b.sid, "the turn's end", |s| {
+        *s == SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+    });
 }
 
 /// T-988 round 1 (T-996's cold read): a sibling is a call of the held

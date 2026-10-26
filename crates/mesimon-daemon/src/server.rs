@@ -1427,6 +1427,8 @@ pub fn run(paths: Paths) -> Result<()> {
     // Readers may finish out of order; enqueue frames in ACCEPT order. Otherwise
     // a tiny PreToolUse can overtake SessionStart and be erased by late startup.
     let (read_tx, read_rx) = std::sync::mpsc::channel();
+    // The trace recorder, a test seam (T-1014): every frame in this order.
+    let recorder = crate::trace::Recorder::from_env();
     std::thread::spawn(move || {
         let mut next = 0u64;
         let mut completed = std::collections::BTreeMap::new();
@@ -1435,6 +1437,9 @@ pub fn run(paths: Paths) -> Result<()> {
             while let Some(frame) = completed.remove(&next) {
                 if let Some(frame) = frame {
                     let (frame, reply): (HookFrame, UnixStream) = frame;
+                    if let Some(recorder) = &recorder {
+                        recorder.frame(&frame);
+                    }
                     let message = if frame.event == "RemotePermission" {
                         Msg::RemotePermission(frame, reply)
                     } else if frame.road == mesimon_core::road::Road::Mod {

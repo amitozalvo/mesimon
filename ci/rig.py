@@ -988,6 +988,67 @@ def sweep(repo, dry):
             say(f"    {d} could not be removed whole")
 
 
+# A transcript record the fixture keeps whole (T-1014): the conversation's
+# own. Every other kind (the engine's request blobs, attachments, file
+# history, latches) keeps only these keys: what a tail reader may pass over,
+# never what it carries, which holds the person's memory and system prompt.
+WHOLE_RECORDS = ("user", "assistant", "system")
+STUB_KEYS = ("type", "subtype", "uuid", "parentUuid", "timestamp", "promptId", "isMeta",
+             "operation")
+
+
+def fixture_of(raw, repo, state_dir):
+    """A recorded trace as the e2e fixture: the header, then each line with
+    `t` (ms from the first) for its stamp, the session as `{session}`, the
+    transcript's path, the session's cwd, the repo, the state dir and the
+    home (slashed or dashed, as Claude Code names a project) as
+    placeholders, a thinking block with no words or signature, and a record
+    outside `WHOLE_RECORDS` cut to `STUB_KEYS` (an attachment keeps its
+    kind). `raw` is the raw file's lines, its header first."""
+    header, lines = raw[0], raw[1:]
+    sessions = sorted({l["session"] for l in lines if len(l["session"]) == 36})
+    names = {}
+    for n, s in enumerate(sessions, 1):
+        tag = "" if len(sessions) == 1 else str(n)
+        names[s] = f"{{session{tag}}}"
+        names[sid16(s)] = f"{{sid16{tag}}}"
+    swaps = [(k, v) for k, v in names.items()]
+    for l in lines:
+        payload = l.get("payload") or {}
+        if payload.get("transcript_path"):
+            swaps.append((payload["transcript_path"], "{transcript}"))
+        if payload.get("cwd"):
+            swaps += [(payload["cwd"], "{cwd}"), (os.path.realpath(payload["cwd"]), "{cwd}")]
+    home = os.environ["HOME"]
+    swaps += [(repo, "{repo}"), (state_dir, "{state}"), (home, "~"),
+              (home.replace("/", "-"), "~"), (home.replace("/", "-").replace(".", "-"), "~")]
+    swaps = sorted({p for p in swaps if p[0]}, key=lambda p: -len(p[0]))
+    base = lines[0]["at_ms"] if lines else 0
+    out = [header]
+    for l in lines:
+        l = dict(l)
+        l["t"] = l.pop("at_ms") - base
+        record = l.get("line")
+        if isinstance(record, dict):
+            if record.get("type") not in WHOLE_RECORDS:
+                stub = {k: record[k] for k in STUB_KEYS if k in record}
+                if isinstance(record.get("attachment"), dict):
+                    stub["attachment"] = {"type": record["attachment"].get("type")}
+                record = stub
+            else:
+                record = json.loads(json.dumps(record))
+                for block in (record.get("message") or {}).get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "thinking":
+                        block["thinking"] = ""
+                        block["signature"] = ""
+            l["line"] = record
+        text = json.dumps(l, ensure_ascii=False)
+        for old, new in swaps:
+            text = text.replace(old, new)
+        out.append(json.loads(text))
+    return out
+
+
 class Phone:
     """The phone and the daemon's wait, stood in for at the socket the phone
     mod's `mesimon approve` dials (T-581): each request (a RemotePermission
@@ -1154,6 +1215,8 @@ class Rig:
         self.branch = None
         # The rig's seams on every start of its daemon (`--flags-off`).
         self.seams = {"MESIMON_RIG_NO_FLAGS": "1"} if getattr(args, "flags_off", False) else {}
+        if getattr(args, "record", False):
+            self.seams["MESIMON_RECORD_TRACE"] = os.path.join(self.out, "trace.jsonl")
         self.phone = None
         # The second board X1 lays (T-733), while it stands, and its feed after.
         self.peer = None
@@ -2121,6 +2184,96 @@ Reply with the single word ready and end your turn."""
                 return False
             record["person_came_ms"] = int(time.time() * 1000)
             return True
+        if what == "pane_keys":
+            # A person's keys in the worker's pane (T-1014): the dialog the
+            # card shows answered or refused there, never through the board.
+            # `screen` is words the pane must show first, `keys` what tmux
+            # sends (`literal` typed as text), `hold` seconds the rig then
+            # watches before the step ends, `until` the card word it then
+            # waits for, `fed` a board line for the ticket it waits for
+            # first. The press's time is kept for the checks (`keys`).
+            rec = self.agent_of(self.board(), test["ticket"])
+            pane = sid16(rec["id"])
+            if step.get("screen") and not self.wait_for(
+                    f"{step['screen']!r} in {test['key']}'s pane", lambda: step["screen"] in
+                    self.tmux("capture-pane", "-p", "-t", pane).stdout, 60, self.watch):
+                record["failures"].append(f"the pane never showed {step['screen']!r}")
+                return False
+            if step.get("fed") and not self.wait_for(f"the board's {step['fed']}", lambda: any(
+                    l.get("kind") == "board" and l.get("cmd") == step["fed"]
+                    and l.get("ticket") == test["ticket"] for l in self.feed_lines), 60, self.watch):
+                record["failures"].append(f"the board never said {step['fed']}")
+                return False
+            time.sleep(step.get("before", 1))
+            self.watch()
+            at_ms = int(time.time() * 1000)
+            if step.get("literal"):
+                self.tmux("send-keys", "-t", pane, "-l", step["literal"])
+            out = self.tmux("send-keys", "-t", pane, *step.get("keys", []))
+            record["keys"].append(at_ms)
+            self.log(f"the person pressed {' '.join(step.get('keys', [])) or 'nothing'} in "
+                     f"{test['key']}'s pane ({out.returncode}), press {len(record['keys'])}")
+            deadline = time.time() + step.get("hold", 0)
+            while time.time() < deadline:
+                self.watch()
+                self.sub.wait(0.5)
+            if step.get("until"):
+                want = step["until"]
+                mark = next((i for i, l in enumerate(self.feed_lines)
+                             if l.get("at_ms", 0) >= at_ms), len(self.feed_lines))
+
+                def there():
+                    r = self.agent_of(self.board(), test["ticket"])
+                    stopped = want != "idle" or any(
+                        l.get("kind") == "hook" and of_session(l, r["id"])
+                        and l.get("event") == "Stop" for l in self.feed_lines[mark:]) or (
+                        r["state"].get("stop_reason") or r["state"].get("reason")) == "interrupted"
+                    return word_of(r["state"]) == want and stopped
+
+                if not self.wait_for(f"{test['key']} {want}", there, STEP_TIMEOUT, self.watch):
+                    record["failures"].append(f"the worker never went {want} after the keys")
+                    return False
+                self.quiet_since = None
+                self.wait_for("crown", lambda: self.crown_settled(), STEP_TIMEOUT, self.watch)
+            return True
+        if what == "draft_at_launch":
+            # T-987: a draft in the worker's box while its launch's words wait
+            # at the daemon's launch barrier (`crown_road` with `barrier`):
+            # the gap between the sample that let them go and the edge's own
+            # read of the box. The barrier goes up once the worker's seat is
+            # on the board, so the crown's own words never meet it; the
+            # writer waits at it, so the rig then reads only the files and
+            # tmux until it is down.
+            barrier = os.path.join(self.out, "barrier")
+            reached = barrier + ".reached"
+            for stale in (barrier, reached):
+                if os.path.exists(stale):
+                    os.remove(stale)
+            rec = self.wait_for(f"{test['key']}'s seat", lambda: self.agent_of(
+                self.board(), test["ticket"]), 120)
+            if not rec:
+                record["failures"].append("no seat on the ticket for the barrier")
+                return False
+            with open(barrier, "w"):
+                pass
+            pane = sid16(rec["id"])
+            deadline = time.time() + 120
+            while time.time() < deadline and not os.path.exists(reached):
+                time.sleep(0.02)
+            if not os.path.exists(reached):
+                os.remove(barrier)
+                record["failures"].append("the launch's words never reached the barrier")
+                return False
+            self.tmux("send-keys", "-t", pane, "-l", step["text"])
+            typed = step["text"].strip()[:20]
+            until = time.time() + 5
+            while time.time() < until and typed not in self.tmux(
+                    "capture-pane", "-p", "-t", pane).stdout:
+                time.sleep(0.05)
+            os.remove(barrier)
+            os.remove(reached)
+            self.log(f"the person's draft typed into {test['key']}'s box at the launch's edge")
+            return True
         if what == "crown_road":
             # A3 (T-945): the rig's crown on `road` (hooks|mod). The road
             # is read at each launch, so the daemon restarts with the seam
@@ -2130,6 +2283,8 @@ Reply with the single word ready and end your turn."""
             env = {"MESIMON_CLAUDE_ROAD": "hooks"} if road == "hooks" else {}
             if step.get("idle_ms"):
                 env["MESIMON_PERSON_IDLE_MS"] = str(step["idle_ms"])
+            if step.get("barrier"):
+                env["MESIMON_TEST_LAUNCH_BARRIER"] = os.path.join(self.out, "barrier")
             # The road is judged by the woken crown's record below, never by
             # `road.json`, which a restarted daemon rewrites only when it
             # changes its mind.
@@ -2971,7 +3126,9 @@ Reply with the single word ready and end your turn."""
         t0 = time.time()
         say(f"\n▶ {test['id']} {test['key']}: {test['title']}")
         record = {"failures": [], "pings": [], "doctor": None, "wakes": [],
-                  "t0_ms": int(t0 * 1000), "checkout0": self.checkout()}
+                  "t0_ms": int(t0 * 1000), "checkout0": self.checkout(), "keys": []}
+        trace = self.seams.get("MESIMON_RECORD_TRACE")
+        trace_at = os.path.getsize(trace) if trace and os.path.exists(trace) else 0
         # The crown is asked at once: the first span is its own.
         self.looks = ([{"state": record["checkout0"], "crown": True, "worker": False}]
                       if any(c.startswith("crown_wrote_nothing") for c in test.get("checks", [])) else None)
@@ -3000,9 +3157,41 @@ Reply with the single word ready and end your turn."""
         verdict = self.judge(test, start_mark, record, time.time() - t0)
         if not ok:
             verdict["pass"] = False
+        if trace:
+            self.cut_trace(test, trace, trace_at, verdict)
         self.record(test, verdict)
         self.current = self.looks = None
         return verdict
+
+    # ---- traces (T-1014)
+
+    def cut_trace(self, test, trace, at, verdict):
+        """The test's workers' lines of the recorder's file since the test
+        began (`--record`): kept whole as `traces/<id>.raw.jsonl` (private:
+        paths, prompts, the engine's request blobs) and cut into
+        `traces/<id>.jsonl`, the fixture an e2e replays (`fixture_of`)."""
+        recs = [r for r in (self.agent_of(self.board(), tid)
+                            for tid, _, _ in self.test_tickets(test)) if r]
+        ids = {r["id"] for r in recs} | {sid16(r["id"]) for r in recs}
+        with open(trace, "rb") as f:
+            f.seek(at)
+            raw = [json.loads(l) for l in f.read().decode("utf-8", "replace").splitlines()
+                   if l.strip()]
+        header = {"trace": test["id"], "claude": self.claude_version,
+                  "road": recs[0].get("road", "hooks") if recs else None,
+                  "model": verdict.get("model"), "recorded": time.strftime("%Y-%m-%d"),
+                  "by": f"python3 -B ci/rig.py --record --only {test['id']}",
+                  "verdict": "PASS" if verdict["pass"] else "FAIL"}
+        mine = [header] + [l for l in raw if l.get("session") in ids]
+        d = os.path.join(self.out, "traces")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"{test['id']}.raw.jsonl"), "w") as f:
+            f.writelines(json.dumps(l) + "\n" for l in mine)
+        path = os.path.join(d, f"{test['id']}.jsonl")
+        with open(path, "w") as f:
+            f.writelines(json.dumps(l, ensure_ascii=False) + "\n"
+                         for l in fixture_of(mine, self.repo, self.paths.state_dir))
+        say(f"  trace: {len(mine) - 1} lines → {path}")
 
     # ---- verdicts
 
@@ -3715,6 +3904,64 @@ Reply with the single word ready and end your turn."""
                         and l.get("ticket") == tid]
                 check(c, any(f"#{arg} bound, reviewed here" in s for s in said),
                       "; ".join(said) or "the forge said nothing of the ticket")
+            elif name == "held_between":
+                # T-988: from the person's key <n> in the pane to key <n+1>,
+                # the card read needs-you and nothing else, polls and feed.
+                n = int(arg)
+                keys = record.get("keys", [])
+                if len(keys) <= n:
+                    check(c, False, f"{len(keys)} presses recorded")
+                else:
+                    a, b = keys[n - 1], keys[n]
+                    # The word the card already said at the first press, and
+                    # every word it said after it until the next: a card that
+                    # never changed says one word.
+                    said = sorted(self.history.get(key, []))
+                    seen = [w for t, w in said if t < a][-1:] + [w for t, w in said if a <= t < b]
+                    check(c, seen and all(w == "needs_you" for w in seen),
+                          f"{(b - a) / 1000:.1f} s between the presses: "
+                          + (" → ".join(squeeze(seen)) or "no word seen"))
+            elif name == "left_after":
+                # T-957, T-988: the card left needs-you within <secs> of the
+                # person's key <n>, and a decision of <source> came between
+                # the key and that change: the dialog's own result, never a
+                # later timer.
+                n, secs, source = arg.split(":")
+                keys = record.get("keys", [])
+                if len(keys) < int(n):
+                    check(c, False, f"{len(keys)} presses recorded")
+                else:
+                    at = keys[int(n) - 1]
+                    left = next((l for l in mine if l.get("kind") == "session_state"
+                                 and l.get("at_ms", 0) >= at and feed_word(l) != "needs_you"), None)
+                    between = [l.get("source") for l in mine if l.get("kind") == "state_decision"
+                               and at <= l.get("at_ms", 0) <= (left or {}).get("at_ms", at)]
+                    if left is None:
+                        check(c, False, "the card never left needs-you after the press")
+                    else:
+                        took = (left["at_ms"] - at) / 1000
+                        check(c, took <= float(secs) and source in between,
+                              f"{feed_word(left)} {took:.1f} s after the press; decided by "
+                              + (", ".join(dict.fromkeys(s for s in between if s)) or "nothing"))
+            elif name == "one_message":
+                # T-988: <n> calls of <tool> under one message id, as the
+                # engine writes the blocks of one message, a line each.
+                tool, _, n = arg.partition(":")
+                by = {}
+                for row in rows:
+                    m = row.get("message") or {}
+                    content = m.get("content")
+                    for b in content if isinstance(content, list) else []:
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == tool:
+                            by.setdefault(m.get("id"), []).append(b.get("id"))
+                most = max((len(v) for v in by.values()), default=0)
+                check(c, most == int(n), f"{sum(len(v) for v in by.values())} {tool} calls over "
+                      f"{len(by)} messages, at most {most} in one")
+            elif name == "never_in_prompts":
+                # T-987: no prompt of the worker's holds <words>.
+                got = [p for p in user_prompts(rows) if arg in p]
+                check(c, not got, f"{len(got)} prompts hold {arg!r}" if got
+                      else f"no prompt holds {arg!r}")
             else:
                 check(c, False, "unknown check")
         return results
@@ -3925,6 +4172,9 @@ def main():
                     help=f"the Claude rig crown's effort (default {CROWN_EFFORT})")
     ap.add_argument("--flags-off", action="store_true",
                     help="Claude Code's flags service off for the rig's sessions (T-598's seam)")
+    ap.add_argument("--record", action="store_true",
+                    help="record each test's frames and transcript lines (T-1014) into "
+                         "target/rig/traces/<id>.jsonl, an e2e fixture")
     args = ap.parse_args()
 
     repo = git(os.getcwd(), "rev-parse", "--show-toplevel") or git(HERE, "rev-parse", "--show-toplevel")

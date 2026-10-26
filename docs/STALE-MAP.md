@@ -37006,3 +37006,84 @@ and `ci.yml` is unchanged.
   moves back to the root, in a line.
 - **Where a new line goes** is at the top of `CLAUDE.md`: a rule or trap in the root or the one
   area's file, a recipe in the skill.
+
+## Real-engine evidence for four every-user changes: rig cases and recorded traces (T-1014, 2026-10-26, filed from T-1013's retro)
+
+**Why.** The retro (T-1009, T-1010) rated T-957, T-988, T-961 and T-987 medium or low confidence.
+Their e2es replayed frames a test author chose, and T-943's had replayed events the engine never
+sends. This ticket is evidence only: no change to attention, the prompt roads, or any agent or
+crown text.
+
+**What shipped.**
+- **The recorder seam, `MESIMON_RECORD_TRACE`** (`daemon/src/trace.rs`). The hook socket's
+  ordering thread hands a copy of every frame it takes, hook set's and mod's, to a recorder
+  thread of its own, and nothing on the writer waits on it. A transcript is followed from the
+  moment a frame names it (`transcript_path`), from its length then, polled every 50 ms, a line
+  recorded once whole. Each line carries the epoch millisecond the recorder saw it.
+- **The rig records** (`ci/rig.py --record`). Each case's worker lines are cut into
+  `target/rig/traces/<id>.raw.jsonl` (private) and `<id>.jsonl`, the fixture (`fixture_of`, tested
+  in `ci/rig_test.py`). In the fixture, paths, the session and the home (slashed or dashed) are
+  placeholders, times are milliseconds from the first line, and a thinking block keeps no words.
+  Only `user`, `assistant` and `system` records stay whole. On 2.1.310 the transcript also
+  carries `api-request-shape`, `api-request-blob`, `api-request`, `attachment`,
+  `file-history-*`, `queue-operation`, `atis-latch`, `mode`, `permission-mode` and `last-prompt`
+  records, and the blobs and attachments hold the system prompt and the person's memory. Each of
+  those keeps its kind and stamps alone.
+- **Rig cases** RF1 (T-957: Esc on a plan in the pane), QQ1 (T-988: two `AskUserQuestion` calls
+  in one message, each answered in the pane) and DR1 (T-987: a draft typed at the launch's edge,
+  then the person's Enter). EP1 (T-961) stands as it was and was recorded too. New steps:
+  `pane_keys` and `draft_at_launch`, plus `crown_road`'s `barrier` (T-987's
+  `MESIMON_TEST_LAUNCH_BARRIER`, raised only once the worker's seat exists, so the crown's own
+  young-seat words never meet it). New checks: `held_between`, `left_after`, `one_message` and
+  `never_in_prompts`.
+- **Fixtures** in `crates/mesimon/tests/traces/` (Claude Code 2.1.310, Sonnet 5.5 low), replayed
+  by `common::trace`. `plan_accept_e2e` gains `a_plan_refused_with_esc_leaves_on_its_own_result_
+  as_recorded` and `two_questions_in_one_message_hold_the_seat_as_recorded`, the latter replacing
+  the hand-written `twoasks` case; the reordered and two-plan cases stay hand-written, since
+  nothing recorded them. `prompt_e2e`'s T-961 and T-987 tests send the recorded frames by event,
+  with the test's words and a fresh `prompt_id` in a prompt.
+
+**Rig runs** (workers Sonnet 5.5 low, crown Opus 5.5 high):
+
+| run | load | case | verdict |
+|---|---|---|---|
+| 20261026-130729 | T-1031's full nextest | RF1 | FAIL, the rig's: its screen check waited for "Would you like to proceed", which 2.1.310 wraps over two lines |
+| 20261026-130729 | same | QQ1 | FAIL, the rig's: `held_between` read only word changes; the card held needs-you 8.1 s, then left 2.6 s after the second key |
+| 20261026-131316 | T-1031's nextest | RF1 | PASS: off needs-you 2.3 s after the Esc, decided by `dialog_result` |
+| 20261026-131316 | same | QQ1 | PASS: needs-you 8.2 s between the keys; off 1.6 s after the second, on `PostToolUse` |
+| 20261026-131741 | T-1032's demo board starting, no cargo | EP1 | PASS: `prompt_waits_for_composer`, one prompt, `ready` |
+| 20261026-131741 | same | DR1 | PASS: `composer_held`, then `prompt_dropped_by_hand`; one prompt, the title and the draft |
+
+**Where the engine differs from the hand-written sequences.** All four mechanisms held, and no
+fix ticket follows.
+- **T-988, mod road.** The order was `PreToolUse(A) PermissionRequest(A) PreToolUse(B)
+  PermissionRequest(B)`, not T-988's measured `PreToolUse(A) PreToolUse(B) PermissionRequest
+  PermissionRequest` (its block says the mod road sent "the same frames"; this sample did not).
+  The two calls' lines, under one message id, reached the transcript about 0.7 s after both
+  hooks, while the hand-written case writes them first. Each answer's `PostToolUse` came about
+  0.12 s before its result line.
+- **T-957, Esc on a plan.** While the dialog stood, the plan's call was not on disk. At the Esc
+  the engine wrote that message's lines in one millisecond:
+  - the plan file's `Write` and the `ExitPlanMode` call;
+  - the call's refused result: `is_error`, "… STOP what you are doing …", `toolDenialKind:
+    user-rejected`, `toolUseResult: "User rejected tool use"`;
+  - the interrupt record and `turn_duration`.
+
+  The hand-written beds write the call before its hook. No hook fired for the Esc; the mod sent
+  its `ModUsage`. The departure is the look back's ended call (`closed_dialog`).
+- **T-961, a wake.** The parked pane sent `SessionEnd` (`other`), which the hand-written frames
+  lacked. The wake's `SessionStart` (`resume`) carries `context_tokens`,
+  `prompt_cache_likely_expired`, `seconds_since_last_response` and `estimated_cache_write_usd`,
+  and no `model`. The person's words reached the engine as its `UserPromptSubmit` 1.4 s after
+  that `SessionStart`.
+- **T-987.** The person's Enter sent the typed title and the draft as one prompt, and the board
+  dropped the brief (`prompt_dropped_by_hand`): the brief does **not** follow. This is T-987 as
+  shipped ("the prompt makes them moot"). The ticket's words "the brief follows" are not the
+  mechanism, and on a crown's start this leaves the worker without its brief. That is a
+  question for the person, not a defect found here. The hand-written frames named no
+  transcript (`{}`); every real frame names one.
+
+**Limits.** One sample per case: RF1 and QQ1 on the mod road, EP1 and DR1 on the hook set. A
+replay keeps the frames' order and shapes, not their timing: gaps are capped at 0.3 s, and a
+replay waits 2.5 s after its prompt, where a model thinks, so the tail's cursor is minted while
+running. When a box draws is the pane's, and nothing records it.

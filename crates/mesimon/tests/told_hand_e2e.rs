@@ -19,7 +19,8 @@ use common::*;
 
 /// Each line the stub reads is appended to one file beside it, so the
 /// crown's sentences and the workers' words are all there.
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+const RECORDING_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {

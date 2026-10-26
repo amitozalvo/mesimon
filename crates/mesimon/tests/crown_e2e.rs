@@ -998,7 +998,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
 /// beside it, so the crown's sentences and the workers' words are all there,
 /// and to one per ticket (`got-<key>.txt`), so a count of what reached one
 /// pane reads that pane alone (T-937).
-const RECORDING_STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+const RECORDING_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
                               printf '%s\\n' \"$line\" \
                               >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
@@ -13540,12 +13541,9 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     });
     // Told at the bridge's take (T-990), which the stand-in mod records a
     // beat later, once it has read the frame (T-1019, the macOS runner).
-    wait_until_says(
-        std::time::Duration::from_secs(5),
-        "a new attempt",
-        submits,
-        |s| s.iter().any(|(id, _)| *id != old),
-    );
+    wait_until_says(std::time::Duration::from_secs(5), "a new attempt", submits, |s| {
+        s.iter().any(|(id, _)| *id != old)
+    });
     let again = submits().into_iter().find(|(id, _)| *id != old).expect("a new attempt").1;
     assert!(again.contains(&k1) && again.contains(&k2), "both wakes in it: {again}");
     wait_until(std::time::Duration::from_secs(5), "both hands down", || {

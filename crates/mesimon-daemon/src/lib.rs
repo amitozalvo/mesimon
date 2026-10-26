@@ -34,6 +34,7 @@ pub mod team;
 pub(crate) mod testrepo;
 // Compatibility path; native transcript recovery belongs to the Claude adapter.
 pub use agents::claude::tail;
+pub mod trace;
 pub mod train;
 pub mod trust_dialog;
 pub mod usage;

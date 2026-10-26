@@ -1,5 +1,5 @@
-"""Offline checks of the Claude rig's readiness predicates (A3, T-945) and
-ST2's acceptance (T-974)."""
+"""Offline checks of the Claude rig's readiness predicates (A3, T-945),
+ST2's acceptance (T-974) and the trace fixture's cut (T-1014)."""
 import importlib.util
 import json
 import os
@@ -288,6 +288,52 @@ class SteerVerdictTests(unittest.TestCase):
     def test_no_wake_or_a_wake_short_of_taken_fails(self):
         self.assertFalse(self.verdict(self.lines(wake=None), self.prompts())[0])
         self.assertFalse(self.verdict(self.lines(wake="A handed"), self.prompts())[0])
+
+
+class FixtureTests(unittest.TestCase):
+    """A recorded trace becomes a fixture in a public repository (T-1014)."""
+
+    SID = "0123abcd-0000-4000-8000-00000000beef"
+
+    def raw(self):
+        home = os.environ["HOME"]
+        cwd = f"{home}/state/worktrees/T-1-x"
+        transcript = f"{home}/.claude/projects/{cwd.replace('/', '-')}/{self.SID}.jsonl"
+        frame = {"at_ms": 1000, "kind": "hook", "session": self.SID, "event": "SessionStart",
+                 "reason": "startup", "payload": {"cwd": cwd, "transcript_path": transcript,
+                                                  "scratchpad_dir": f"/tmp/c{home.replace('/', '-')}"}}
+        blob = {"at_ms": 1200, "kind": "transcript", "session": self.SID,
+                "line": {"type": "api-request-blob", "hash": "h",
+                         "message": {"content": "the person's private memory"}}}
+        note = {"at_ms": 1200, "kind": "transcript", "session": self.SID,
+                "line": {"type": "attachment", "uuid": "u", "timestamp": "2026-10-26T00:00:00.000Z",
+                         "attachment": {"type": "instructions", "content": "private rules"}}}
+        said = {"at_ms": 1500, "kind": "transcript", "session": self.SID,
+                "line": {"type": "assistant", "cwd": cwd, "message": {"id": "m", "content": [
+                    {"type": "thinking", "thinking": "private", "signature": "EqRkZXNpZw"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "Read",
+                     "input": {"file_path": f"{cwd}/a.txt"}}]}}}
+        return [{"trace": "X1", "claude": "2.1.310"}, frame, blob, note, said], home
+
+    def test_paths_sessions_and_private_records_leave_the_fixture(self):
+        raw, home = self.raw()
+        out = rig.fixture_of(raw, "/repo", "/state")
+        text = json.dumps(out)
+        self.assertEqual(out[0]["trace"], "X1", "the header first")
+        for gone in (home, home.replace("/", "-"), self.SID, "private", "EqRkZXNpZw"):
+            self.assertNotIn(gone, text)
+        frame, blob, note, said = out[1:]
+        self.assertEqual((frame["t"], said["t"]), (0, 500), "times from the first line")
+        self.assertEqual(frame["session"], "{session}")
+        self.assertEqual(frame["payload"]["transcript_path"], "{transcript}")
+        self.assertEqual(frame["payload"]["cwd"], "{cwd}")
+        self.assertEqual(blob["line"], {"type": "api-request-blob"}, "a blob keeps its kind alone")
+        self.assertEqual(note["line"]["attachment"], {"type": "instructions"})
+        self.assertEqual(note["line"]["timestamp"], "2026-10-26T00:00:00.000Z")
+        blocks = said["line"]["message"]["content"]
+        self.assertEqual(blocks[0], {"type": "thinking", "thinking": "", "signature": ""})
+        self.assertEqual(blocks[1]["input"]["file_path"], "{cwd}/a.txt")
+        self.assertEqual(said["line"]["message"]["id"], "m", "a message id stays: siblings")
 
 
 if __name__ == "__main__":

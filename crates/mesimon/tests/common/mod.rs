@@ -28,6 +28,8 @@ use serde_json::{json, Value};
 #[path = "../../../../ci/test_support.rs"]
 pub mod support;
 
+pub mod trace;
+
 // Also used by the paid relay's product tests, compiled from its own repository
 // beside this one: there `MESIMON_CORE_DIR` (its `.cargo/config.toml`) names
 // this checkout, and those tests build mesimon first.
@@ -63,6 +65,7 @@ pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_NO_TAG_SEED",
     "MESIMON_PANE_QUIET_MS",
     "MESIMON_PINGPONG_MS",
+    "MESIMON_RECORD_TRACE",
     "MESIMON_SERVER_GUARD_TICKS",
     "MESIMON_SLEEP_MIN_AGE_MS",
     "MESIMON_INACTIVITY_PARK_TICKS",
@@ -720,7 +723,8 @@ pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
 /// newline to translate it, and an echo waiting then lands there, so a
 /// start's title typed during the paint was drawn onto the top rule, which
 /// then read as no composer (T-1019, the Ubuntu runner).
-pub const COMPOSER: &str = "printf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────\
+pub const COMPOSER: &str =
+    "printf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────\
                             \\033[999;1H\\033[2A❯ \\033[999;1H\\033[1A────────────────────\
                             \\033[999;1H  ? for shortcuts\\033[H'\n";
 

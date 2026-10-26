@@ -122,9 +122,10 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
 
 #[test]
 fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
-    let Some(h) =
-        Harness::boot("attachments-mcp", Some("#!/bin/sh\ncat | while IFS= read -r line; do :; done\n"))
-    else {
+    let Some(h) = Harness::boot(
+        "attachments-mcp",
+        Some("#!/bin/sh\ncat | while IFS= read -r line; do :; done\n"),
+    ) else {
         return;
     };
     let mut c = h.client("pictures");

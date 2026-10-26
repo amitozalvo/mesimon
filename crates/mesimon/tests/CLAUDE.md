@@ -41,7 +41,10 @@ path: while it exists, a pane's Enter fails after its paste went in, T-938),
 10 s, after writing `<path>.reached`, T-987), `MESIMON_SAMPLE_DELAY_MS`
 (how long a `sample_agent` read waits before its capture and again before it lands, T-973),
 `MESIMON_RECHECK_MS` (how long the restart's look waits for a worker the crown's ledger names to
-settle before letting it go, a minute, T-1004).
+settle before letting it go, a minute, T-1004), `MESIMON_RECORD_TRACE` (a file path: the daemon
+appends every frame its hook socket takes and every line a session's transcript gains, stamped,
+T-1014; `ci/rig.py --record` sets it and cuts each case into a fixture under `traces/`, which
+`common::trace` replays).
 
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.
