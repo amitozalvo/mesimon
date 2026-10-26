@@ -37962,3 +37962,23 @@ ran the following; no CI result is claimed (T-1030).
   as a standalone test. No tmux integration was skipped. This is a local
   macOS check on the working tree, not a release stamp; Linux and manual TUI
   checks were not run for this receipt-only change.
+
+## T-1048 accepted change rebased onto 6b53b03c (2026-10-26)
+
+- Rebased accepted **959ec6d4** onto **6b53b03c** as **1f6387b4**. Git applied
+  it without conflicts; `git range-diff` reports the accepted patch unchanged.
+  T-1047's write-stamp handling remains in the same `start_agent` arm beside
+  the budget explanation. Main's STALE-MAP content remains intact and first.
+- Each requested post-rebase gate ran once through `ci/test-run.py`, with
+  `NO_COLOR` unset and command-scoped process permissions: `cargo ut` passed
+  **2,760**, with ten existing ignores and a clean nine-owner fixture audit,
+  for post-rebase unit coverage; `cargo build --workspace` passed, with a clean
+  one-owner audit, for workspace compatibility; `cargo test -p mesimon --test
+  crown_e2e` passed **109/109**, no skips, with a clean **107-owner** audit,
+  for the shared start/receipt area and the explicit review request, even
+  though the text rebase needed no conflict resolution. No retries were needed.
+- `git diff --check` passed for handoff whitespace. The full nextest suite,
+  offline rig suite and live SB1 were not repeated: the accepted review scoped
+  this round to those three gates. The earlier SB1 run, the refused second
+  start before parking, the corrected no-hand grader and the completed reset
+  remain recorded above; no stronger behavioral claim is made after rebase.
