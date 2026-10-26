@@ -37594,3 +37594,32 @@ ran the following; no CI result is claimed (T-1030).
   The full post-rebase gate was not repeated. Final formatting and diff checks passed.
   The configured skips have the same measurement/helper/live-network reasons listed above;
   CI remains off by T-1030. This validation note changes no tested product code.
+
+- **Rebase onto main after review.** All four commits, including the delivered fix
+  `dd24e118` and its validation note `ab0d80ed`, were replayed onto `91adece0` (T-1043),
+  after `22a0cdec` (T-1025). The append conflicts kept main's crown cases and both of its
+  STALE-MAP blocks first, followed by every T-1035 and T-1042 block. Server changes merged
+  without a textual conflict. T-1025's `crown_ask_sent` keeps the re-queued ask's id and
+  tags the new owed entry with it, so `Prompt::Ask` keeps its unused allowance across the
+  removal and consumes it only when the re-sent words begin their turn. `Owed::receipt_id`
+  identifies a delivery, not an ask: constructors mint it, launch-to-mod conversion retains
+  it, and a re-send may mint another without changing the ask allowance. Asynchronous queue
+  dispatch still calls `crown_mark`, so it cannot replace a receipt with an unseen stamp.
+  The Esc e2e now retains the original ask receipt and uses it for a keyed write after the
+  re-sent turn ends on the mod road; intervening reads supply no replacement stamp. No
+  product behavior or crown wording changed in this rebase.
+- **This rebase's local checks and rerun.** The added mod-road Esc receipt assertion's
+  first run failed because its follow-up `hold_ticket` is unavailable in the fixture's
+  shared checkout (and the assertion expected the wrong response type). The test now uses
+  `rename_ticket` with the existing title and prints any unexpected response. Its one
+  targeted rerun, `MESIMON_TEST_ROAD=mod … cargo nextest run -p mesimon --test crown_e2e
+  a_person_s_esc_re_sends_the_crown_s_held_ask_once`, passed **1/1**, with 107 unrelated
+  tests filtered out and a clean fixture audit (2 owners). No product fix was needed.
+  The requested post-rebase gates each ran once: `cargo ut` **2,744 passed, 10 ignored**;
+  `cargo build --workspace` passed; `cargo nextest run -p mesimon --test crown_e2e
+  --test mcp_e2e` **111/111**, no skips or leak warnings, audit clean (109 owners). Tests
+  used the bounded runner with command-scoped elevation and `NO_COLOR` unset. The ten unit
+  ignores are the configured timing/fd measurements, child entry points and live-release
+  network check. Formatting and diff checks passed. The full workspace suite and SE1 were
+  not repeated in this round: the person's rebase instruction narrowed the bar to these
+  gates; their previous runs remain recorded above. CI remains off (T-1030).

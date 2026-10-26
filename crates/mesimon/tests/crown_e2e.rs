@@ -17191,7 +17191,10 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
     switch(&queue_switch, mod_road);
     start(&mut c, ws);
     tail_minted();
-    let held = receipt(ask(&mut c, "mesimon-probe-10251 held", Deliver::Now));
+    let (held, held_seen) = match ask(&mut c, "mesimon-probe-10251 held", Deliver::Now) {
+        Response::AgentAsked { asked: Some(asked), seen: Some(seen), .. } => (asked, seen),
+        other => panic!("ask_agent: {other:?}"),
+    };
     assert_eq!(held.status, "sent", "{held:?}");
     if mod_road {
         wait_until(std::time::Duration::from_secs(10), "the submit queued by the engine", || {
@@ -17245,6 +17248,20 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
         stop(&mut c, ws);
         wake_for(&held.ask, "taken");
         assert_eq!(copies("mesimon-probe-10251 held"), 1, "landed once");
+        // T-1042 on T-1025: the new owed delivery still names the same
+        // ask. Its unused receipt allowance survives the removal and is
+        // consumed by the re-sent words' one turn, without a fresh stamp.
+        match c.send(
+            Principal::Agent { session: sa },
+            Command::AgentRenameTicket {
+                key: kw.clone(),
+                title: "mesimon-probe-1025 worker".into(),
+                seen: Some(held_seen),
+            },
+        ) {
+            Response::AgentTicketUpdated { .. } => {}
+            other => panic!("the re-sent ask's receipt: {other:?}"),
+        }
         crown_takes(&mut c);
     } else {
         // The paste reached the stub mid-turn: the Esc ends the turn the ask
