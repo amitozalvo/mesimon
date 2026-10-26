@@ -36867,3 +36867,81 @@ Codex session and restarts it quickly took the same road.
   seat's report: the synthetic runtime leaves its `stopped` behind, which cleared a re-raised
   flag on the next poll and hid the bug locally (the real runtime removes its files). Red with
   the arm restored, green 3/3 on each road with the fix.
+
+## CI answers in minutes: nextest, a road a job, 16 tests at a time (T-1023, 2026-10-26)
+
+The Test step ran `cargo test --workspace`, which runs the 87 test binaries one after another,
+and then the mod road's pass on the same runner: 47.6 min on ubuntu-24.04 and 67.4 min on
+macos-14 (T-1019's runs). It now runs `cargo nextest run` (pinned 0.9.143,
+`taiki-e/install-action`), each road in a job of its own, and the whole run takes the slowest
+job's time.
+
+- **The e2es wait on their own timers; they barely use the CPU.** `crown_e2e`'s 92 tests sum to
+  1,942 / 1,938 / 1,955 s on ubuntu-24.04 at 4, 8 and 16 threads, and the same 20 tests sum to
+  525 s there and 542 s on a laptop. So the binary's wall time was 499 / 266 / 153 s, and the
+  lever is threads, not cores. The cost is load: the suite's summed test time grows from
+  4,101 s (4 threads) to 4,286 (16) and 4,675 (32) on ubuntu, and from 4,942 (3) to 5,825 (16)
+  and 6,608 (32) on macos-14, with timing-sensitive tests going red past that point (below).
+  Chosen: 16 on ubuntu-24.04 (4 vCPU), 12 on macos-14 (3 cores), as `NEXTEST_TEST_THREADS`,
+  which a named run's `--test-threads` overrides.
+- **Each road is a job of its own** (`matrix.road`, the ticket's step 4 by road rather than by
+  binary). With both roads on one runner at 16 threads, the tests took 270 + 268 s on ubuntu
+  (9.0 min after the build) and 358 + 344 s on macos-14 (11.7 min). Split, they take 268 s and
+  269 s on ubuntu and 441 s and 424 s on macos-14 at 12 threads. Clippy, the dependency drift
+  check, the installer and the runner's own tests run in the hooks job only. The cost is one more
+  build per OS, about 1.3 min on ubuntu and 2.1 min on macos; the repository is public, so
+  standard runners cost nothing.
+- **The mod road's selection is the whole workspace, filtered:** `--workspace -E
+  'package(mesimon) & kind(test)'` (372 tests, the same as `-p mesimon -E kind(test)`). One
+  package alone unifies features differently, and relinked for 1m05s on ubuntu what the first
+  pass had just built; filtered, it finishes in 0.11 s. `ci/test-run.py`'s own second pass (the
+  local release gate) takes the same filter, carries `--no-fail-fast` when the suite has it,
+  and runs after a red first pass in that case, so one run reports every red on both roads.
+- **The build.** `Swatinem/rust-cache` saves only from a green job by default. A red run
+  therefore never saved, and macos-14 never runs on main, so before this every macOS run and
+  every run after a red one started cold (`No cache found` in 40225754743). It now saves on
+  failure, from the hooks job. Warm, the test build is 1m19s on ubuntu (cold 1m39s to 1m49s)
+  and 2m01s on macos (cold 2m14s to 2m29s), because rust-cache keeps no workspace-crate
+  artifacts. Clippy warm is 30 s on ubuntu and 54 s on macos. `cargo nextest archive` was not
+  adopted: the mod job would wait for the hooks job's build instead of building beside it, which
+  saves runner minutes and no wall time.
+- **A named run** (`tests` input: nextest arguments, split with `shlex`, so `-E 'binary(x) &
+  test(/y/)'` stays one word; `road` is `hooks`, `mod` or `both`) of `-p mesimon --test
+  hook_e2e` took 1m06s for the whole job on ubuntu (27.6 s build, 13.8 s test) and 1m17s on
+  macos.
+
+| run | where | build (test profile) | tests | job, start to end |
+|---|---|---|---|---|
+| 40225754743, `cargo test`, one runner | ubuntu | 1m39s | 22.4 min hooks + ~23 min mod | 48 min (both passes, T-1019) |
+| same | macos-14 | 2m29s | 31.2 min hooks + ~33 min mod | 67 min |
+| 40241969633, nextest, 4 / 3 threads (cancelled in the mod pass) | ubuntu | 1m49s | 1,025 s hooks, 1,010 s mod | — |
+| same | macos-14 | 2m14s | 1,619 s hooks | — |
+| 40246644999, nextest, 16 threads, one runner | ubuntu | 1m21s | 270 s + 268 s | 11.3 min |
+| same | macos-14 | 2m14s | 358 s + 344 s | 16.3 min |
+| 40246650527 / 40246655936, 32 threads, named whole-workspace | ubuntu | 1m19s / 1m21s | 161 s hooks, 151 s mod | 4.0 / 3.9 min |
+| same | macos-14 | 2m10s / 1m54s | 214 s hooks, 203 s mod | 6.2 / 5.6 min |
+| **40248051641, a road a job, 16 / 12 threads** | ubuntu | 1m19s | 268 s hooks, 269 s mod | **6.8 / 6.2 min** |
+| same | macos-14 | 2m01s / 2m07s | 441 s hooks, 424 s mod | **11.1 / 10.2 min** |
+
+- **Reds that the load brings (reported, not patched; no test changed here).** Beside T-1019's
+  known reds (`plan_accept_e2e::a_repeated_prompt_heard_…` and `…a_stated_end_and_a_split_read_…`,
+  T-957; `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn`, T-1026):
+  `mesimon-backend-tmux::tests::legacy_enter_and_detach_reach_fresh_and_surviving_clients` is red
+  in every ubuntu nextest run, even at 4 threads, and in macOS runs at 16 and 32 threads ("test
+  daemon exited 1", a 3.8 s wait for key bytes), and it is green under serial `cargo test`.
+  `mesimon-tui`'s animation goldens (`test_archive_refused_shakes_the_card`,
+  `test_summary_change_sweeps_the_row`, `diff_pages_glide_…`, `a_moved_card_leaves_a_ghost_…`)
+  are red on ubuntu at 16 threads or more. `spawn_ready_e2e::a_give_up_is_marked_and_the_resend_
+  clears_the_box_once` is red on macos-14 at 12, 16 and 32 threads, on both roads.
+  `crown_e2e::a_crown_a_person_stopped_holds_its_wake_and_its_hand` (the mod road, ubuntu) was red
+  in 2 of 3 runs at 16 threads. Once each: `provider_e2e::an_unacked_codex_steer_…`,
+  `plan_accept_e2e::an_esc_inside_an_accept_s_settle_…`, `…an_old_interrupt_replayed_…`,
+  `…an_id_less_permission_request_…`, `mod_auto_e2e::a_launch_before_the_fresh_capture_…`,
+  `shell_line_e2e::a_shell_line_into_a_box_holding_a_draft_is_refused`,
+  `forge_e2e::a_summary_address_and_news_on_a_warm_pull_request_…` (32 threads),
+  `crown_e2e::the_crown_sends_a_plan_back_with_words` (32), and
+  `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` (macos, 3 threads, the mod road).
+- **Watch:** `.config/nextest.toml` kills a test at 120 s (4 × 30 s). The slowest test,
+  `crown_e2e::a_codex_crown_s_wake_waits_for_a_person_…`, takes 86 to 111 s on the runners at
+  every thread count. CLAUDE.md's "~30 s" for the local nextest suite is old: the suite sums to
+  about 4,100 s of test time, almost all of it waiting.
