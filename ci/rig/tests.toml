@@ -1288,6 +1288,33 @@ checks = ["road:mod", "started_by_crown", "woke:forge", "crown_never:pr checks,-
   rig = "forge_off"
 
 [[test]]
+id = "F13"
+title = "F13 · the crown hears a merged pipeline pass where no column names an environment: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Write a file named F13.txt holding the single line f13, commit it with git with the message F13, then reply with the single word done and end your turn. Read no other file and run no other command."
+expect = "A merged PR binds with its merge commit's pipeline running on a board naming no environment. The crown reads the board's words and ends its turn when asked to wait for the merged pipeline. Its pass wakes the crown once as merged pipeline passed #42, and the crown reports that merged pipeline, without polling the forge."
+checks = ["road:mod", "started_by_crown", "woke:forge", "crown_never:pr checks,--watch,sleep,ci status,pr view", "crown_line:F13 passed:42", "crown_line:F13 passed:merged", "replies:done"]
+
+  [[test.steps]]
+  crown = "F13: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F13 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: F13 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_merged_running"
+
+  [[test.steps]]
+  crown = "F13: {key}'s pull request merged, and its merge commit's pipeline is running. No column on this board names an environment. Wait for that pipeline to pass, and once it has passed, end your turn with one line that begins F13 passed: followed by the pull request's number and whether this was the open or merged pipeline."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_merged_pass"
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "M1"
 title = "M1 · the crown says who merges a delivered ticket, on a board that merges into main and then through pull requests: do the steps below"
 blind = true

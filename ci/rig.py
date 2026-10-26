@@ -59,6 +59,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import socket
 import subprocess
@@ -108,6 +109,7 @@ case "$1 $2" in
   api\\ *)
     case "$4" in
       *check-runs*) cat "$MSMN_GH_CHECKS" 2>/dev/null || echo '{"check_runs":[]}' ;;
+      */commits/*/status) echo '{"state":"pending","statuses":[]}' ;;
       *deployments/*/statuses*) echo '[{"state":"success"}]' ;;
       *deployments*) echo '[]' ;;
       *) echo '{}' ;;
@@ -2701,7 +2703,7 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the stub forge's PR never bound to the ticket")
                 return False
             return True
-        if what == "forge_merged_elsewhere":
+        if what in ("forge_merged_elsewhere", "forge_merged_running"):
             # The worker's work merged on the forge as PR 42 at a head its
             # branch is not at (T-778): the branch reads ahead of the local
             # base, which the forge never moved, and nothing folds it merged.
@@ -2712,6 +2714,11 @@ Reply with the single word ready and end your turn."""
                 return False
             d = self.forge_stub()
             self.forge_branch = branch
+            if what == "forge_merged_running":
+                checks = os.path.join(d, "checks.json")
+                with open(checks + ".tmp", "w") as f:
+                    json.dump({"check_runs": [{"name": "deploy", "status": "in_progress"}]}, f)
+                os.replace(checks + ".tmp", checks)
             self.write_pr(d, branch, "MERGED", "passed", head="c0ffee42" * 5)
             env = {
                 "PATH": d + ":" + os.environ.get("PATH", ""),
@@ -2719,12 +2726,27 @@ Reply with the single word ready and end your turn."""
                 "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
                 "MESIMON_FORGE_EVERY_MS": "2000",
             }
+            if what == "forge_merged_running":
+                # The forge prefers the captured login-shell PATH. Keep this
+                # fixture's stub first there too, as the e2e harness does.
+                shell = os.path.join(d, "login-shell")
+                with open(shell, "w") as f:
+                    f.write("#!/bin/sh\nPATH=" + shlex.quote(env["PATH"])
+                            + "\nexport PATH\nfor command; do :; done\nexec /bin/sh -c \"$command\"\n")
+                os.chmod(shell, 0o700)
+                env["SHELL"] = shell
+                # No provisional capture of the person's PATH on restart.
+                try:
+                    os.unlink(os.path.join(self.paths.rt_dir, "shellenv.env"))
+                except FileNotFoundError:
+                    pass
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
             bound = self.wait_for("the merged PR to bind", lambda: any(
                 p["ticket"] == test["ticket"] and p["number"] == 42 and p["state"] == "merged"
+                and (what != "forge_merged_running" or p["pipeline"] == "running")
                 for p in self.snapshot().get("prs", [])) and any(
                 w["ticket"] == test["ticket"] and not w.get("merged")
                 for w in self.snapshot().get("worktrees", [])), STEP_TIMEOUT, self.watch)
@@ -2841,13 +2863,20 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the worker's turn on the crown's words never ended")
                 return False
             return True
-        if what == "forge_pass":
+        if what in ("forge_pass", "forge_merged_pass"):
             # The pipeline passes on the forge (T-744): the board wakes the
             # crown with the news, and the step ends when the crown's turn
             # on it did; what it did is the checks'.
             d = self.forge_stub()
             mark = len(self.feed_lines)
-            self.write_pr(d, self.forge_branch, "OPEN", "passed")
+            if what == "forge_merged_pass":
+                checks = os.path.join(d, "checks.json")
+                with open(checks + ".tmp", "w") as f:
+                    json.dump({"check_runs": [{"name": "deploy", "status": "completed",
+                                              "conclusion": "success"}]}, f)
+                os.replace(checks + ".tmp", checks)
+            else:
+                self.write_pr(d, self.forge_branch, "OPEN", "passed")
             wake = self.forge_wake(test, mark)
             record["wakes"].append(wake.get("cause") if wake else "none came")
             if not wake:
@@ -3077,10 +3106,10 @@ Reply with the single word ready and end your turn."""
         d = os.path.join(self.paths.state_dir, "forge-stub")
         os.makedirs(d, mode=0o700, exist_ok=True)
         gh = os.path.join(d, "gh")
-        if not os.path.exists(gh):
-            with open(gh, "w") as f:
-                f.write(GH_STUB)
-            os.chmod(gh, 0o755)
+        with open(gh + ".tmp", "w") as f:
+            f.write(GH_STUB)
+        os.chmod(gh + ".tmp", 0o755)
+        os.replace(gh + ".tmp", gh)
         checks = os.path.join(d, "checks.json")
         if not os.path.exists(checks):
             with open(checks, "w") as f:

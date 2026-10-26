@@ -851,6 +851,14 @@ fn the_crown_hears_the_forges_edges() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_crown");
     through_prs(&mut c);
+    // T-1043: the original no-pass contract is for boards reading an environment.
+    let mut done = c.board().column("DONE").unwrap().settings.clone();
+    done.arrives_on = Arrival::Deployed;
+    done.arrives_env = Some("production".into());
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+        Response::Ok
+    ));
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let lines_with = |needle: &str| -> Vec<String> {
@@ -1353,6 +1361,7 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
 /// else none.
 const GLAB_STUB: &str = r#"#!/bin/sh
 [ -n "$MSMN_GLAB_LOG" ] && echo "$*" >> "$MSMN_GLAB_LOG"
+[ -f "$MSMN_GLAB_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
 case "$1 $2" in
   "auth status") exit 0 ;;
   "mr list") cat "$MSMN_GLAB_MRS" 2>/dev/null || echo '[]' ;;
@@ -4788,4 +4797,202 @@ fn a_pr_create_is_read_mid_turn_and_at_a_gated_turn_end() {
     assert!(!fed("pr_create_seen", b), "no pr create was seen: the look read the push");
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-1043: a merged pipeline's pass is news on a board reading no
+/// environment, on both forges. Failure still wakes; a young failed run's
+/// retry passes, once. An environment's deployment replaces that pass news.
+fn merged_pipeline_news(gitlab: bool, environment: bool, outage: bool) {
+    let name = format!("forge_merged_pass_{gitlab}_{environment}_{outage}");
+    let (stub_dir, path_var) = gh_stub(&name);
+    let glab = stub_dir.join("glab");
+    write(&glab, GLAB_STUB);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let prs = stub_dir.join("prs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let deploys = stub_dir.join("deploys");
+    let offline = stub_dir.join("offline");
+    let log = stub_dir.join("calls");
+    write(&prs, "[]");
+    let Some(h) = Harness::boot_with_env(
+        &name,
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_FORGE_BACKOFF_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs.display().to_string()),
+            ("MSMN_GH_CHECKS", &pipelines.display().to_string()),
+            ("MSMN_GH_DEPLOYS", &deploys.display().to_string()),
+            ("MSMN_GLAB_MRS", &prs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_DEPLOYS", &deploys.display().to_string()),
+            ("MSMN_GLAB_FAIL", &offline.display().to_string()),
+            ("MSMN_GLAB_LOG", &log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let remote = if gitlab {
+        "https://gitlab.example.com/lab/api.git"
+    } else {
+        "https://github.com/example/forge.git"
+    };
+    git(&h.repo, &["remote", "add", "origin", remote]);
+    let mut c = h.client(&name);
+    through_prs(&mut c);
+    if environment {
+        let mut done = c.board().column("DONE").unwrap().settings.clone();
+        done.arrives_on = Arrival::Deployed;
+        done.arrives_env = Some("production".into());
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
+            Response::Ok
+        ));
+    }
+    // A pipeline-pass arrival must never take this merged-pipeline news.
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.arrives_on = Arrival::PipelinePasses;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    let k = crowned(&h, &mut c);
+    let label = if gitlab { "!1" } else { "#42" };
+    let said = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    let pipeline = |status: &str| {
+        if gitlab {
+            write(
+                &pipelines.with_extension(&k.tip),
+                &format!(r#"[{{"id":7,"status":"{status}"}}]"#),
+            );
+            write(
+                &pipelines.with_extension("jobs"),
+                &format!(r#"[{{"name":"test","status":"{status}"}}]"#),
+            );
+        } else {
+            let (state, conclusion) = match status {
+                "running" => ("in_progress", "null"),
+                "failed" => ("completed", "\"failure\""),
+                "success" => ("completed", "\"success\""),
+                _ => unreachable!(),
+            };
+            write(
+                &pipelines,
+                &format!(
+                    r#"{{"check_runs":[{{"name":"test","status":"{state}","conclusion":{conclusion}}}]}}"#
+                ),
+            );
+        }
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    pipeline("running");
+    let merged = if gitlab {
+        mr_json("api", 1, &k.branch, &k.tip, Some(&k.tip))
+            .replace("\"updated_at\":", &format!("\"merged_at\":\"{}\",\"updated_at\":", iso_now()))
+    } else {
+        pr_json(&k.branch, &k.tip, "MERGED", Some(&k.tip), None)
+    };
+    write(&prs, &merged);
+    wait_until(Duration::from_secs(20), "the merged pipeline running", || {
+        prs_of(&mut c)
+            .iter()
+            .any(|p| p.ticket == k.worker && p.state == "merged" && p.pipeline == "running")
+    });
+    wait_until(Duration::from_secs(20), "the merge wake", || wakes(&h, k.worker, "merged") == 1);
+    h.one_turn(&mut c, k.crown);
+    if !outage {
+        pipeline("failed");
+        wait_until(Duration::from_secs(20), "the merged pipeline failure wake", || {
+            said().contains(&format!("pipeline failed {label}: test"))
+        });
+        h.one_turn(&mut c, k.crown);
+    } else {
+        write(&offline, "offline");
+        let calls = || std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+        let before = calls();
+        wait_until(Duration::from_secs(20), "an offline glab read", || calls() > before);
+    }
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: k.worker, column: "TODO".into(), before: None }),
+        Response::Ok
+    ));
+    let column = c.board().ticket(k.worker).unwrap().column.clone();
+    if environment {
+        if gitlab {
+            write(
+                &deploys.with_extension("production"),
+                &format!(
+                    r#"[{{"sha":"{}","status":"success","created_at":"{}"}}]"#,
+                    k.tip,
+                    iso_now()
+                ),
+            );
+        } else {
+            write(
+                &deploys,
+                &format!(r#"[{{"id":7,"sha":"{}","environment":"production"}}]"#, k.tip),
+            );
+        }
+    }
+    pipeline("success");
+    if outage {
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!said().contains("merged pipeline passed"), "{}", said());
+        assert!(prs_of(&mut c).iter().any(|p| p.ticket == k.worker && p.pipeline == "running"));
+        std::fs::remove_file(&offline).unwrap();
+    }
+    let news = if environment { "deployed to production" } else { "merged pipeline passed" };
+    wait_until(Duration::from_secs(20), "the merged pipeline's news", || {
+        said().contains(&format!("{news} {label}"))
+    });
+    h.one_turn(&mut c, k.crown);
+    std::thread::sleep(Duration::from_millis(2000));
+    assert_eq!(said().matches(&format!("{news} {label}")).count(), 1, "{}", said());
+    assert_eq!(
+        said().matches(&format!("pipeline failed {label}: test")).count(),
+        usize::from(!outage),
+        "{}",
+        said()
+    );
+    if environment {
+        assert!(!said().contains("pipeline passed"), "{}", said());
+    } else {
+        assert_eq!(c.board().ticket(k.worker).unwrap().column, column, "news moves no card");
+    }
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+#[test]
+fn github_merged_pipeline_pass_is_news_without_environments() {
+    merged_pipeline_news(false, false, false);
+}
+
+#[test]
+fn gitlab_merged_pipeline_pass_is_news_without_environments() {
+    merged_pipeline_news(true, false, false);
+}
+
+#[test]
+fn github_merged_pipeline_deployment_replaces_pass_news() {
+    merged_pipeline_news(false, true, false);
+}
+
+#[test]
+fn gitlab_merged_pipeline_deployment_replaces_pass_news() {
+    merged_pipeline_news(true, true, false);
+}
+
+#[test]
+fn gitlab_merged_pipeline_pass_during_outage_is_news_on_recovery() {
+    merged_pipeline_news(true, false, true);
 }

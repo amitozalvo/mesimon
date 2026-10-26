@@ -37318,3 +37318,78 @@ tail-read Escs (`FLAP_WINDOW_MS`): the test's cadence is the flap, a person's is
   `cargo nextest run --workspace` per road, **3,119/3,119** each, no rerun; clippy clean. The
   one test the change moved: T-984's two controls now read `handed` (their prompt hook carries
   the words) and their wake `taken`.
+
+## A merged pipeline's pass is news where no environment is read (T-1043, 2026-10-26)
+
+**Why.** A GitLab board naming no environment never told its crown that a merged MR's
+merge-commit pipeline had passed. T-767 correctly removed that pass from column arrivals,
+but also silenced its news: without a column's environment, no deployment is read to say it
+instead. The crown's words promised a pass without that qualification. An intervening CLI
+outage was not the cause: failed reads retain the last set and recovery compares against it.
+
+**Decision.** `Edge.merged_passed` is news alone, per PR and merge commit, compared against
+the last read. A pass says `merged pipeline passed !N` (GitHub: `#N`), in the pipeline part of
+`Edge::news`, only when the read's query named no environment. `Sample.reads_envs` carries
+that fact from the query to the writer, including turn-end reads. Where any environment is
+read, deployments, manual waits and failures remain the news; no extra pass is said.
+`Edge.passed`, `requires_pipeline`, column arrivals, DONE and the merge train are unchanged.
+The existing merge-commit cache keeps a pass settled, and the young-failure read window
+allows a failed run's retry to report its pass. No environment or extra forge read is added.
+
+**Words.** The crown's rules and the paragraph beside its PRs now distinguish the open
+pipeline from the merged pipeline and name when the latter's pass is heard. They state the
+board's behavior; the crown's way of waiting remains its own.
+
+**Coverage.** A unit covers both forge labels, a repeated read, a changed merge commit, an
+open-to-merged pass, and no arrival edge. Five `forge_e2e` cases cover both forges without
+environments (failure then retry passing once), both reading production (failure then
+deployment, no pass news), and GitLab recovery after a pass during an outage. The original
+T-767 crown e2e now names production, preserving its no-pass assertion under that contract.
+Rig F13 asks an Opus crown to wait for a merged pipeline on a board naming no environment;
+the stub passes it, and the verdict checks the forge wake, the crown's report naming the
+merged pipeline and PR 42, and no polling.
+
+**Local verification and reruns.** The bounded runner (`python3 -B ci/test-run.py -- …`)
+ran the following; no CI result is claimed (T-1030).
+
+- `cargo ut`, first attempt: failed in six tmux-backend tests because the sandbox denied
+  sockets, and cleanup failed because it denied `ps`. The retained registry was inspected
+  with elevation: no fixture processes remained; only its inode-checked fixture directories
+  were removed. This attempt is not a pass.
+- `cargo ut`, first rerun with command-scoped elevation: the changed areas passed, but two
+  existing TUI color-output tests failed with the session's inherited `NO_COLOR=1`. Cleanup
+  was clean. Second rerun, with `env -u NO_COLOR` and elevation: **2,740 passed**, ten
+  explicitly ignored (timing/fd probes, child entry points run by their parents, and the
+  live-release network check); cleanup clean. The final workspace run also checks the later
+  wording clarification retaining open PRs' manual-job news.
+- `cargo test -p mesimon --test forge_e2e --test crown_e2e --test mcp_e2e`, with elevation:
+  **39 forge, 92 crown and 3 MCP passed**, none ignored; cleanup clean. No targeted rerun.
+- Rig F13's first invocation used `--crown-model opus`: setup stopped before the case,
+  because the rig requires the exact model name and Claude reported `claude-opus-5-5`.
+  `python3 -B ci/rig.py --reset` parked its one session, archived its two tickets, and stopped
+  its daemon and private tmux server. The first rerun used
+  `--crown-model claude-opus-5-5 --no-build`, against the binary that setup built, but was
+  interrupted at PR binding. Suspecting the worker's empty branch, the fixture was changed
+  to commit its own file and rerun; that second rerun also stayed at binding and was
+  interrupted. The actual cause was the captured login-shell PATH choosing the real `gh`
+  before the stub, so neither attempt saw the fixture PR. Each interrupted run had clean
+  bounded cleanup and was followed by `--reset` (two sessions parked, two tickets archived,
+  daemon and private tmux stopped). F13 now gives its forge stage an isolated login shell
+  with the stub first, discarding that fixture's provisional capture before the restart;
+  no person's shell files change. The third rerun used the same exact-model command.
+  Before it could establish the running baseline, its stub's missing commit-status response
+  was corrected in the template and that fixture to `{"state":"pending","statuses":[]}`
+  (matching the e2e stub); `{}` had correctly read unknown. The rig refreshes its stub from
+  the template on each use. F13 then **passed**: Opus ended its waiting turn, heard the
+  forge wake and said `F13 passed: #42, merged pipeline.`, with no polling calls. The case
+  took 200 s, the complete run 4.1 minutes; cleanup was clean. The final `--reset` parked
+  its remaining session, archived its two tickets, and stopped its daemon and private tmux.
+- `env -u NO_COLOR python3 -B ci/test-run.py -- cargo nextest run --workspace
+  --no-fail-fast`, with elevation, **one full invocation**: **3,120 passed** on the first
+  road (484 s), then **380 passed** on the mod road (480 s); fixture audit clean (806
+  owners). The first road skipped the ten opt-in/helper unit entries above and the
+  restart-skew subprocess helper; the mod pass skipped that helper alone, exercised by
+  its parent tests. No suite rerun, no added skip. The dirty-tree run is not a release stamp.
+- `cargo fmt --all -- --check`, `git diff --check`, Python/TOML parsing, and the stub's
+  shell syntax and empty commit-status response checks passed. No rendering goldens,
+  Linux/release gates or CI were requested or run for this change.

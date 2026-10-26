@@ -18997,7 +18997,8 @@ impl Daemon {
             // since says its settled state (T-769).
             self.forge.opens(t, &set);
             let unchanged = self.forge.sets.get(&t) == Some(&set);
-            let edge = old.as_ref().map(|old| crate::forge::edge(old, &set, &held));
+            let edge =
+                old.as_ref().map(|old| crate::forge::edge(old, &set, &held, sample.reads_envs));
             // A ticket's first read is a baseline, but a PR in it its reads
             // never held is an opening all the same (T-782): a worker's
             // first turn can open one before any read of its ticket, and
@@ -19009,7 +19010,7 @@ impl Daemon {
             // first read is a baseline, news only for the opening it found.
             let mut warm = old.is_some() && !unchanged;
             if edge.is_none() {
-                let first = crate::forge::edge(&[], &set, &held);
+                let first = crate::forge::edge(&[], &set, &held, sample.reads_envs);
                 if !first.opened.is_empty() {
                     openings.insert(t, first.opening().join(", "));
                     edged = true;

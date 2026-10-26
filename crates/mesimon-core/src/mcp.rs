@@ -131,7 +131,9 @@ pub const PRS_ABOUT: &str = "The board reads these off the forge on its own: wit
      failed or hit a rate limit. Each change (a pipeline's pass or failure, a review, a \
      conflict, a merge, a deployment) wakes the crown for a ticket it started, watches with \
      watch_ticket, holds with hold_ticket or that has no agent; the session on the ticket \
-     itself is not woken and reads the change here. A watch command (gh pr checks --watch, \
+     itself is not woken and reads the change here. A merged PR brings deployments to the \
+     environments columns name, jobs waiting and failures, and passes only where no column \
+     names an environment. A watch command (gh pr checks --watch, \
      glab ci status --live) or a sleep loop on a pull request keeps a session busy, which \
      holds the merge train and the crown's wake.";
 
@@ -177,8 +179,10 @@ pub const CROWN_WAKES: &str = concat!(
      finishes a turn with nothing pending on it (no words queued for it, no hand up, no merge \
      the merge train will make), is merged, ends a turn after the crown's ask went out, raises its hand, asks a \
      question, stops on a plan, hits a usage limit, ends its turn on an error (get_ticket's state \
-     carries why, under failed), or its pull request has news from the forge (a pipeline failed \
-     or passed, a job waiting, a deployment, a conflict, a review, a later PR merged, each \
+     carries why, under failed), or its pull request has news from the forge (on an open PR, \
+     a pipeline failed or passed, or a job waiting; on a merged PR, a deployment to an environment a column names, \
+     a job waiting, a failure, or a pass where no column names an environment; a conflict, \
+     a review, a later PR merged, each \
      named with its PR; \
      its get_ticket carries the PR under prs), one sentence naming \
      the ticket and what changed arrives as this session's next prompt, once it is idle. A turn \
@@ -3120,6 +3124,9 @@ mod tests {
         ] {
             assert!(PRS_ABOUT.contains(words), "PRS_ABOUT names {words:?}");
         }
+        assert!(CROWN_WAKES.contains("a pass where no column names an environment"));
+        assert!(CROWN_WAKES.contains("a deployment to an environment a column names"));
+        assert!(PRS_ABOUT.contains("passes only where no column names an environment"));
         assert_eq!(lint_tool_text(PRS_ABOUT), Ok(()));
         assert!(PRS_ABOUT.len() < 1000, "one paragraph beside the PRs: {}", PRS_ABOUT.len());
     }

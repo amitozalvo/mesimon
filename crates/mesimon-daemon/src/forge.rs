@@ -312,8 +312,11 @@ pub struct Edge {
     pub bound: Vec<(String, Pipeline)>,
     /// The worst pipeline over the open PRs turned passed (T-767): what
     /// `requires_pipeline` waits for, never a merged commit's pipeline,
-    /// which is the deploy edges' (`waiting`, `deployed`).
+    /// which has its own news (`merged_passed`, `stopped`, `reached`).
     pub passed: bool,
+    /// Merged PRs whose merge commit turned passed, heard only where the
+    /// query reads no environment (T-1043). News alone, never an arrival.
+    pub merged_passed: Vec<String>,
     /// Every PR of the set is merged, and was not before: the ticket's
     /// arrival, on every repository at once (T-768). A closed PR is no PR
     /// to wait for (T-797): the set merged is one merged and none open.
@@ -372,7 +375,8 @@ impl Edge {
     }
 
     /// What the crown hears of the edge (T-744), one phrase per edge, each
-    /// naming its PR: `merged !2`, `pipeline passed !1`, `waiting on
+    /// naming its PR: `merged !2`, `pipeline passed !1`,
+    /// `merged pipeline passed !2` (where no environment is read), `waiting on
     /// deploy:production !1`, `deployed to staging !1`, `conflict !1`,
     /// `conflict cleared !1`, `review approved !1`, `changes requested !1`,
     /// `pipeline failed !1: test-linux`, in the forge's order: merged, then
@@ -412,6 +416,9 @@ impl Edge {
                 }
                 _ => {}
             }
+        }
+        for label in &self.merged_passed {
+            out.push(format!("merged pipeline passed {label}"));
         }
         for (label, env) in &self.reached {
             out.push(format!("deployed to {} {label}", forge::job_word(env)));
@@ -473,8 +480,9 @@ fn arrived_envs(set: &[Pr]) -> Vec<String> {
 /// The edge between two reads of one ticket's set. `held` is every PR, by
 /// repository and number, the ticket's reads held before this one
 /// (`State::held`): an open PR outside it is newly bound, and brings its
-/// settled state in as its first edge (T-769).
-pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
+/// settled state in as its first edge (T-769). `reads_envs` is this pass's
+/// query: merged passes are news only where it reads no environment (T-1043).
+pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)], reads_envs: bool) -> Edge {
     let was = |p: &Pr| old.iter().find(|o| o.repo == p.repo && o.number == p.number);
     // A reviewed PR newly bound is no opening (T-859): the worker reviewed
     // it, and the feed's line says so; its settled state is still news.
@@ -521,6 +529,21 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)]) -> Edge {
         passed: now_open == Pipeline::Passed
             && (then_open != Pipeline::Passed
                 || kept.iter().any(|(o, p)| o.head_oid != p.head_oid)),
+        merged_passed: new
+            .iter()
+            .filter(|p| {
+                !reads_envs
+                    && p.state == PrState::Merged
+                    && !p.merge_oid.is_empty()
+                    && p.pipeline == Pipeline::Passed
+                    && !was(p).is_some_and(|o| {
+                        o.state == PrState::Merged
+                            && o.merge_oid == p.merge_oid
+                            && o.pipeline == Pipeline::Passed
+                    })
+            })
+            .map(Pr::label)
+            .collect(),
         merged: all_merged(new) && !all_merged(old),
         landed: new
             .iter()
@@ -597,6 +620,8 @@ pub struct RepoReport {
 #[derive(Debug, Clone, Default)]
 pub struct Sample {
     pub at_ms: u64,
+    /// Whether this pass asked for any deployment environments.
+    pub reads_envs: bool,
     pub probes: Vec<(String, HostProbe)>,
     pub repos: Vec<RepoReport>,
     /// Each queried ticket's set, newest first; a ticket with nothing bound
@@ -684,7 +709,7 @@ pub fn look(legs: &[LegQuery], tails: &[(String, crate::cost::Cursor)], at_ms: u
 
 /// The pass, on a worker thread.
 pub fn sample(mut q: Query, now_ms: u64) -> Sample {
-    let mut out = Sample { at_ms: now_ms, ..Default::default() };
+    let mut out = Sample { at_ms: now_ms, reads_envs: !q.envs.is_empty(), ..Default::default() };
     for p in &q.probes {
         out.probes.push((p.host.clone(), probe_host(&p.host, &p.candidates)));
     }
@@ -2337,7 +2362,7 @@ mod tests {
     /// newly bound.
     fn edge(old: &[Pr], new: &[Pr]) -> Edge {
         let held: Vec<(String, u64)> = old.iter().map(|p| (p.repo.clone(), p.number)).collect();
-        super::edge(old, new, &held)
+        super::edge(old, new, &held, true)
     }
 
     fn pr(number: u64, state: PrState, pipeline: Pipeline) -> Pr {
@@ -2754,6 +2779,38 @@ mod tests {
         assert!(e.passed && !e.opened.is_empty());
     }
 
+    #[test]
+    fn merged_pass_news_is_per_commit_and_never_an_arrival() {
+        for forge in [Forge::GitHub, Forge::GitLab] {
+            let mut p = pr(1, PrState::Merged, Pipeline::Running(String::new()));
+            p.forge = forge;
+            p.merge_oid = "merge-one".into();
+            let old = [p.clone()];
+            p.pipeline = Pipeline::Passed;
+            let new = [p.clone()];
+            let e = super::edge(&old, &new, &[], false);
+            assert_eq!(e.news(&new), [format!("merged pipeline passed {}", p.label())]);
+            assert!(!e.passed && !e.merged && e.deployed.is_empty());
+            assert!(!super::edge(&new, &new, &[], false).any(), "said once");
+            assert!(!super::edge(&old, &new, &[], true).any(), "environments replace pass news");
+            let mut open = p.clone();
+            open.state = PrState::Open;
+            assert_eq!(
+                super::edge(&[open], &new, &[], false).merged_passed,
+                [p.label()],
+                "the open pipeline passing never hides the merge commit's pass"
+            );
+            p.merge_oid = "merge-two".into();
+            assert_eq!(
+                super::edge(&new, &[p.clone()], &[], false).merged_passed,
+                [p.label()],
+                "another merge commit is another pass"
+            );
+            p.merge_oid.clear();
+            assert!(super::edge(&old, &[p], &[], false).merged_passed.is_empty());
+        }
+    }
+
     /// T-767: an opening is a PR the ticket's reads never held; one read
     /// again after a read that missed it, or a baseline's, is not.
     #[test]
@@ -3011,7 +3068,7 @@ mod tests {
         assert!(e.conflict[0].on);
         // Held before (a read missed it): no opening, nothing said.
         let held = [("o/r".to_string(), 3)];
-        let e = super::edge(&[], &now, &held);
+        let e = super::edge(&[], &now, &held, true);
         assert!(!e.any(), "{e:?}");
     }
 
