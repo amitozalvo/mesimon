@@ -142,7 +142,11 @@ class Demo:
     def start_daemon(self, binary):
         os.makedirs(self.paths.state_dir, mode=0o700, exist_ok=True)
         log = open(self.paths.daemon_log, "ab")
-        env = rig.terminal_env({"MESIMON_DETACHED": "1"})
+        # The tmux seam reaches the daemon when the tester's shell sets it,
+        # so `stop` and the daemon resolve the same tmux (`tmux_bin`).
+        seam = {"MESIMON_TMUX_BIN": os.environ["MESIMON_TMUX_BIN"]} \
+            if os.environ.get("MESIMON_TMUX_BIN") else {}
+        env = rig.terminal_env({"MESIMON_DETACHED": "1", **seam})
         subprocess.Popen([binary, "daemon", "--repo", self.repo], stdin=subprocess.DEVNULL,
                          stdout=log, stderr=log, env=env, start_new_session=True, cwd=self.repo)
         log.close()
@@ -210,7 +214,8 @@ class Demo:
         say(f"  {key} crowned and started on the board's brief: {r.get('resp')}")
         sid = self.wait_crown_idle(w, crown, 300)
         took = time.time() - t0
-        self.save({"repo": self.repo, "bin": binary, "build": hello.get("build"),
+        self.save({"repo": self.repo, "bin": binary, "tmux": tmux_bin(binary),
+                   "build": hello.get("build"),
                    "crown": crown, "crown_key": key, "crown_session": sid, "laid_ms": now_ms(),
                    "lay_seconds": round(took), "feed_off": read_feed(self.paths)[1],
                    "log_off": os.path.getsize(self.paths.daemon_log), "rows_seen": 0,
@@ -489,7 +494,11 @@ class Demo:
             say("  no demo daemon runs")
         self.stop_holder()
         if self.paths and os.path.exists(self.paths.tmux_sock):
-            out = subprocess.run(["tmux", "-S", self.paths.tmux_sock, "kill-server"],
+            ep = self.load()
+            # A client from another tmux build is refused by the server
+            # (protocol version): the daemon's own tmux, never PATH's alone.
+            tmux = ep.get("tmux") or tmux_bin(ep.get("bin") or default_bin() or "")
+            out = subprocess.run([tmux, "-S", self.paths.tmux_sock, "kill-server"],
                                  capture_output=True, text=True)
             say("  the demo's tmux server stopped" if out.returncode == 0
                 else f"  tmux kill-server: {out.stderr.strip() or 'no server'}")
@@ -645,6 +654,19 @@ def usage_line(usage):
     windows = (((usage or {}).get("claude") or {}).get("reading") or {}).get("windows") or []
     return ", ".join(f"{w.get('label')} {w.get('percent'):.0f}%" for w in windows
                      if isinstance(w, dict) and isinstance(w.get("percent"), (int, float)))
+
+
+def tmux_bin(binary):
+    """The tmux the demo daemon runs, by `mesimon_backend_tmux::tmux_bin`'s
+    ladder: `MESIMON_TMUX_BIN`, then `mesimon-tmux` beside the binary, then
+    the PATH the daemon was started with."""
+    seam = os.environ.get("MESIMON_TMUX_BIN")
+    if seam:
+        return seam
+    sibling = os.path.join(os.path.dirname(binary), "mesimon-tmux")
+    if binary and os.path.exists(sibling):
+        return sibling
+    return shutil.which("tmux", path=rig.terminal_env().get("PATH")) or "tmux"
 
 
 def default_bin():
