@@ -2772,12 +2772,7 @@ Reply with the single word ready and end your turn."""
             d = self.forge_stub()
             self.forge_branch = branch
             self.write_pr(d, branch, "OPEN", "running")
-            env = {
-                "PATH": d + ":" + os.environ.get("PATH", ""),
-                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
-                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
-                "MESIMON_FORGE_EVERY_MS": "2000",
-            }
+            env = self.forge_env(d)
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
@@ -2806,26 +2801,7 @@ Reply with the single word ready and end your turn."""
                     json.dump({"check_runs": [{"name": "deploy", "status": "in_progress"}]}, f)
                 os.replace(checks + ".tmp", checks)
             self.write_pr(d, branch, "MERGED", "passed", head="c0ffee42" * 5)
-            env = {
-                "PATH": d + ":" + os.environ.get("PATH", ""),
-                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
-                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
-                "MESIMON_FORGE_EVERY_MS": "2000",
-            }
-            if what == "forge_merged_running":
-                # The forge prefers the captured login-shell PATH. Keep this
-                # fixture's stub first there too, as the e2e harness does.
-                shell = os.path.join(d, "login-shell")
-                with open(shell, "w") as f:
-                    f.write("#!/bin/sh\nPATH=" + shlex.quote(env["PATH"])
-                            + "\nexport PATH\nfor command; do :; done\nexec /bin/sh -c \"$command\"\n")
-                os.chmod(shell, 0o700)
-                env["SHELL"] = shell
-                # No provisional capture of the person's PATH on restart.
-                try:
-                    os.unlink(os.path.join(self.paths.rt_dir, "shellenv.env"))
-                except FileNotFoundError:
-                    pass
+            env = self.forge_env(d)
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
@@ -2852,12 +2828,7 @@ Reply with the single word ready and end your turn."""
             d = self.forge_stub()
             self.forge_branch = branch
             self.write_pr(d, branch, "CLOSED", "passed")
-            env = {
-                "PATH": d + ":" + os.environ.get("PATH", ""),
-                "MSMN_GH_PRS": os.path.join(d, "prs.json"),
-                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
-                "MESIMON_FORGE_EVERY_MS": "2000",
-            }
+            env = self.forge_env(d)
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
@@ -2884,12 +2855,7 @@ Reply with the single word ready and end your turn."""
             with open(path + ".tmp", "w") as f:
                 f.write("[]")
             os.replace(path + ".tmp", path)
-            env = {
-                "PATH": d + ":" + os.environ.get("PATH", ""),
-                "MSMN_GH_PRS": path,
-                "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
-                "MESIMON_FORGE_EVERY_MS": "2000",
-            }
+            env = self.forge_env(d)
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
                 record["failures"].append("the daemon would not restart with the stub forge")
@@ -3177,13 +3143,27 @@ Reply with the single word ready and end your turn."""
             WAKE_GRACE * 2, self.watch)
 
     def forge_env(self, d):
-        """The daemon's environment on the stub forge in `d`."""
-        return {
+        """The daemon's environment on the stub forge in `d`. The forge
+        prefers the captured login-shell PATH over the daemon's own, so the
+        stub is put first there too, as the e2e harness does (T-1046)."""
+        env = {
             "PATH": d + ":" + os.environ.get("PATH", ""),
             "MSMN_GH_PRS": os.path.join(d, "prs.json"),
             "MSMN_GH_CHECKS": os.path.join(d, "checks.json"),
             "MESIMON_FORGE_EVERY_MS": "2000",
         }
+        shell = os.path.join(d, "login-shell")
+        with open(shell, "w") as f:
+            f.write("#!/bin/sh\nPATH=" + shlex.quote(env["PATH"])
+                    + "\nexport PATH\nfor command; do :; done\nexec /bin/sh -c \"$command\"\n")
+        os.chmod(shell, 0o700)
+        env["SHELL"] = shell
+        # No provisional capture of the person's PATH on restart.
+        try:
+            os.unlink(os.path.join(self.paths.rt_dir, "shellenv.env"))
+        except FileNotFoundError:
+            pass
+        return env
 
     def forge_stub(self):
         """A stub `gh` (T-739): `auth status` passes, `pr list` prints the
