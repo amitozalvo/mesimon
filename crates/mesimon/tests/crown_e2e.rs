@@ -17820,6 +17820,127 @@ fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
     assert_eq!(c.board().ticket(w).unwrap().title, "still the same chain");
 }
 
+/// T-1050: a start and a park are the crown's own writes too. Each pair
+/// carries one pre-batch read; a person's later move ends that allowance.
+#[test]
+fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
+    let Some(h) = Harness::boot_with_env(
+        "parallel_crown_lifecycle",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("parallel_crown_lifecycle");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1050 start and park");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let hook = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
+    };
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "crown running", |s| *s == SessionState::Running);
+
+    let move_worker = |c: &mut TestClient, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentMoveTicket {
+                key: Some(kw.clone()),
+                to_column: "DONE".into(),
+                before: None,
+                idempotency_key: None,
+                seen,
+            },
+        )
+    };
+    let person_move = |c: &mut TestClient, seen: Option<String>| {
+        assert!(matches!(
+            c.request(Command::MoveTicket { id: w, column: "TODO".into(), before: None }),
+            Response::Ok
+        ));
+        let refused = move_worker(c, seen);
+        assert!(
+            matches!(refused, Response::Err { ref message } if message.contains("changed since")),
+            "person's move must stale the shared stamp: {refused:?}"
+        );
+    };
+
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let held = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentHoldTicket { key: kw.clone(), hold: true, seen: seen.clone() },
+    );
+    assert!(matches!(held, Response::AgentHeld { .. }), "hold: {held:?}");
+    let started = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen: seen.clone(),
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    );
+    assert!(matches!(started, Response::AgentStarted { .. }), "parallel start: {started:?}");
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "worker launched", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    hook(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ws, "worker running", |s| *s == SessionState::Running);
+    hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "worker idle", |s| matches!(s, SessionState::Idle { .. }));
+    let moved = move_worker(&mut c, seen.clone());
+    assert!(matches!(moved, Response::AgentMoved { .. }), "after start: {moved:?}");
+    person_move(&mut c, seen);
+
+    // Reestablish an active chain just as the soak's completed ask had,
+    // then read the idle worker afresh before sending the park + move pair.
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let asked = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentAskTicket {
+            key: kw.clone(),
+            seen: fresh,
+            text: "mesimon-probe-1050 followup".into(),
+            plan: false,
+            deliver: Deliver::Idle,
+            expect_secs: None,
+        },
+    );
+    assert!(matches!(asked, Response::AgentAsked { .. }), "ask: {asked:?}");
+    wait_until(std::time::Duration::from_secs(15), "followup delivered", || {
+        std::fs::read_to_string(h.dir.join("got.txt"))
+            .unwrap_or_default()
+            .contains("mesimon-probe-1050 followup")
+    });
+    hook(ws, "UserPromptSubmit", r#"{"prompt":"followup"}"#);
+    c.await_state(ws, "followup running", |s| *s == SessionState::Running);
+    hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "followup idle", |s| matches!(s, SessionState::Idle { .. }));
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let parked = c.send(
+        Principal::Agent { session: sa },
+        Command::AgentSleepTicket { key: kw.clone(), seen: seen.clone() },
+    );
+    assert!(matches!(parked, Response::AgentTicketUpdated { .. }), "park: {parked:?}");
+    c.await_state(ws, "worker sleeping", |s| *s == SessionState::Sleeping);
+    let moved = move_worker(&mut c, seen.clone());
+    assert!(matches!(moved, Response::AgentMoved { .. }), "parallel move: {moved:?}");
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+    person_move(&mut c, seen);
+}
+
 /// T-1042: each event is a separate daemon run. Holding an already-held
 /// ticket exercises keyed_target without changing the seat or needing a
 /// painted dialog. The same call must work after get_ticket.

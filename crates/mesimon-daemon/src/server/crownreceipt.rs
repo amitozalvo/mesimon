@@ -34,6 +34,14 @@ pub(super) struct Receipt {
     beginning: bool,
 }
 
+impl Receipt {
+    pub(super) fn park(&mut self) {
+        self.active = false;
+        self.next.clear();
+        self.beginning = false;
+    }
+}
+
 impl Daemon {
     pub(super) fn receipt_holds(&self, id: ulid::Ulid, seen: &str) -> bool {
         self.receipts.get(&id).is_some_and(|r| {
@@ -247,6 +255,50 @@ mod tests {
             assert!(d.receipt_holds(id, &seen), "the whole own-write chain survives");
             assert_eq!(d.receipts[&id].superseded.len(), 2, "shared inputs are deduplicated");
         });
+    }
+
+    #[test]
+    fn an_own_park_keeps_the_input_and_prior_chain_without_owing_another_turn() {
+        for prior in [false, true] {
+            with_ticket(|d, id| {
+                let seen = d.seen_token(id);
+                if prior {
+                    rename(d, id, &seen, "own write");
+                    d.allow_receipt_prompt(id, Prompt::Ask(ulid::Ulid::new()));
+                }
+                let input = d.seen_token(id);
+                let write = d.receipt_write(id, Some(&input));
+                let sid = d.board.live_agent(id).unwrap().id;
+                d.park_record(sid, None, 123, Park::Crown);
+                d.receipt_seen(id, Some(write));
+                assert!(d.receipt_holds(id, &input), "the park keeps its input read");
+                assert!(d.receipt_holds(id, &seen), "the earlier chain survives");
+                assert!(!d.receipts[&id].active);
+                assert!(d.receipts[&id].next.is_empty());
+                assert!(!d.receipts[&id].beginning);
+                rename(d, id, &input, "parallel sibling");
+                let seat = d.board.live_agent(id).unwrap().clone();
+                d.receipt_state(
+                    &seat,
+                    &Change {
+                        from: SessionState::Sleeping,
+                        to: SessionState::Running,
+                        attention_added: false,
+                        confidence: Confidence::High,
+                    },
+                );
+                assert!(!d.receipt_holds(id, &input), "a foreign turn still revokes");
+            });
+        }
+        for park in [Park::Deliberate, Park::Automatic] {
+            with_ticket(|d, id| {
+                let seen = d.seen_token(id);
+                rename(d, id, &seen, "own write");
+                let sid = d.board.live_agent(id).unwrap().id;
+                d.park_record(sid, None, 123, park);
+                assert!(!d.receipt_holds(id, &seen), "a foreign park still revokes");
+            });
+        }
     }
 
     #[test]

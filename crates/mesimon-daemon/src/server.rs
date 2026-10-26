@@ -136,6 +136,8 @@ const GATE_SESSION: &str = "msmn-gate";
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Park {
     Deliberate,
+    /// A checked `sleep_agent` write; its receipt chain owns this park.
+    Crown,
     Automatic,
 }
 
@@ -8789,7 +8791,7 @@ impl Daemon {
                 };
                 // A working worker is refused in the words a person's `z`
                 // reads over the same seat (`still_awake`), behind its key.
-                if let Err(why) = self.sleep_one(sid, false, Park::Deliberate) {
+                if let Err(why) = self.sleep_one(sid, false, Park::Crown) {
                     return Response::Err {
                         message: format!("{key}: {}", mesimon_core::quiet::still_awake(kind, &why)),
                     };
@@ -20684,7 +20686,16 @@ impl Daemon {
             }
         }
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            self.receipts.remove(&rec.ticket);
+            if park == Park::Crown {
+                // The checked write owns this park (T-1050). Keep its
+                // chain identity for receipt_seen, but no prompt or turn
+                // remains owed by the seat it just stopped.
+                if let Some(r) = self.receipts.get_mut(&rec.ticket) {
+                    r.park();
+                }
+            } else {
+                self.receipts.remove(&rec.ticket);
+            }
             rec.set_state(SessionState::Sleeping);
             if rec.kind == SessionKind::Codex {
                 rec.codex_stopping = true;
@@ -20707,7 +20718,7 @@ impl Daemon {
             rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
-        if park == Park::Deliberate {
+        if park != Park::Automatic {
             self.lower_hand_of(id);
         }
         self.recovery.remove(&id);
