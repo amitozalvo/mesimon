@@ -167,6 +167,8 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
   reads a 3.5-minute `cargo` call as a dead turn.
 - **Claude Code's session file flips `idle` at the end of every turn**, milliseconds before the
   `Stop` hook fires, so a status probe races the hook on every turn.
+- **Async hooks are absent from `Stop.background_tasks` and the mod lifecycle (2.1.310).**
+  Their detached direct children outlive Stop; exit-2 rewakes measured 44–71 ms (T-1044).
 - **A teammate is listed `running` in every later `Stop` payload for its whole life**, idle or
   not, so teammates are counted and never classed.
 - **`automove` is edge-triggered**, and a second `UserPromptSubmit` to an already-`Running`

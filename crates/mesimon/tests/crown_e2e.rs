@@ -1905,10 +1905,19 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     // Two clients on the crown's session; W1 delivers while they are fresh.
     let (mut one, _) = attach_client(&tmux_sock, &crown);
     let (mut two, two_name) = attach_client(&tmux_sock, &crown);
-    let first = session_activity(&tmux_sock, &crown);
     let h1 = commit(&h.repo, "w1.txt");
     start(&mut c, ws1);
-    stop(&mut c, ws1);
+    hook_send(&hook_sock, &ws1.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    // Keep the person active while the turn-end process scan finishes.
+    // The five-second client clock below starts from this last real key.
+    wait_until(std::time::Duration::from_secs(15), "worker idle with an active client", || {
+        renew_activity(&tmux_sock, &crown, &two_name);
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == ws1 && matches!(s.state, SessionState::Idle { .. }))
+    });
+    let first = session_activity(&tmux_sock, &crown);
     let delivered = format!("{kw1} \"mesimon-probe-945 worker\" delivered (commit {h1}");
     wait_until(std::time::Duration::from_secs(10), "the row names the bound", || {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE_5S)
@@ -15143,7 +15152,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     let answered = |lines_with: &dyn Fn(&str) -> Vec<String>| {
         ask_ends(&worker).iter().map(|l| lines_with(l).len()).sum::<usize>()
     };
-    let ask = |c: &mut TestClient, text: &str| {
+    let ask = |c: &mut TestClient, text: &str, expect_secs: u64| {
         let v = read(c, sa, &kw).unwrap();
         match c.send(
             Principal::Agent { session: sa },
@@ -15153,14 +15162,14 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
                 seen: v.seen,
                 plan: false,
                 deliver: Deliver::Idle,
-                expect_secs: Some(3),
+                expect_secs: Some(expect_secs),
             },
         ) {
             Response::AgentAsked { held_for_person: false, .. } => {}
             other => panic!("ask_agent: {other:?}"),
         }
     };
-    ask(&mut c, "mesimon-probe-973 ask one");
+    ask(&mut c, "mesimon-probe-973 ask one", 3);
     wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
         !lines_with("mesimon-probe-973 ask one").is_empty()
     });
@@ -15178,7 +15187,8 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     crown_turn(&mut c, sa);
 
     // ---- 5. a turn that ends inside its expectation wakes nobody for it ----
-    ask(&mut c, "mesimon-probe-973 ask two");
+    // Include the turn-end process scan in this short turn's budget (T-1044).
+    ask(&mut c, "mesimon-probe-973 ask two", 10);
     wait_until(std::time::Duration::from_secs(10), "the second ask's words", || {
         !lines_with("mesimon-probe-973 ask two").is_empty()
     });

@@ -98,6 +98,7 @@ impl Mint {
     }
 }
 
+mod asynchooks;
 mod attachments;
 mod bridge;
 mod crownask;
@@ -592,6 +593,7 @@ pub struct Daemon {
     costs_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
+    async_hooks: asynchooks::Holds,
     /// Words mesimon owes a pane an ack for, by session — the ONE ledger
     /// (T-244) every paste road of the daemon's lands in: the composed
     /// spawn's Enter, the board's ask at a sleeping claude, a queued ask,
@@ -1892,6 +1894,7 @@ impl Daemon {
             started_barred,
             costs_barred,
             machines,
+            async_hooks: Default::default(),
             owed: HashMap::new(),
             queued,
             plan_accept: HashMap::new(),
@@ -3788,6 +3791,7 @@ impl Daemon {
         self.want_claude_startup();
         self.want_codex_inputs();
         let mut changed = self.drive_codex_inputs(now);
+        changed |= self.tick_async_stops(now);
         // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
         // record stops carrying it.
         let mut expired = Vec::new();
@@ -4087,6 +4091,19 @@ impl Daemon {
         let observations = recovery.poll(record, sample, now);
         let mut changed = false;
         for observation in observations {
+            // Keep the adapter's cursor current while a Stop is held. Only
+            // its state claims wait: dropping the whole sample would lose
+            // dialog results and leave the next turn on an old cursor.
+            if self.async_stop_pending(id) {
+                let ticket = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket);
+                self.feed.board_outcome(
+                    "automation",
+                    "async_hook_recovery_held",
+                    ticket,
+                    observation.source,
+                );
+                continue;
+            }
             let principal = Principal::Automation { rule: "agent_recovery".into() };
             if matches!(
                 authorize(&principal, &Action::Mutate, &Resource::Session { id }),
@@ -5639,6 +5656,7 @@ impl Daemon {
                 self.feed.hook_event(&frame.session, &frame.event, Some("straggler"));
                 return;
             }
+            let sig = self.hold_async_stop(id, sig, &frame, observation.detail.clone(), now);
             // A Codex runtime outlives its pane until cleanup confirms; a
             // record already closed is left as it closed (T-1026).
             if matches!(sig, Signal::PaneDied { .. }) {
@@ -7521,14 +7539,18 @@ impl Daemon {
         );
         let turn_began =
             matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn });
-        if change.confidence == Confidence::High
+        let held_stop = self.async_stop_pending(id);
+        if !held_stop
+            && change.confidence == Confidence::High
             && (turn_began || (dialog_left && snapshot.kind.is_agent()))
             && matches!(change.to, SessionState::Running)
         {
             self.lower_hand_on(snapshot.ticket);
             self.forget_told_hand(snapshot.ticket);
         }
-        self.auto_move(snapshot.ticket, id, &change.to, change.confidence);
+        if !held_stop {
+            self.auto_move(snapshot.ticket, id, &change.to, change.confidence);
+        }
         // A turn ended (T-469): what it was asked for goes with it, and an
         // `EndTurn` — `Background` is a park and the rest are guesses — at
         // Medium or better, the confidence automove's `on_done` takes, sends
@@ -7545,7 +7567,10 @@ impl Daemon {
         if change.to == SessionState::Running {
             self.lingered.remove(&id);
             // A prompt went in: the mod's next submit may be taken (T-936).
-            self.crown_submit_refused.remove(&id);
+            // A held Stop only keeps work open; it is not a new prompt.
+            if !held_stop {
+                self.crown_submit_refused.remove(&id);
+            }
         }
         // And the stretch's start (T-944): kept across the park's demote.
         let kept = self.tasks_since.get(&id).copied();
@@ -7556,7 +7581,7 @@ impl Daemon {
         // A turn's age, and the crown's expectation of it (T-973): from the
         // edge that begins the turn to the edge that leaves it.
         if snapshot.kind.is_agent() {
-            if crownexpect::turn_begins(&change.from, &change.to) {
+            if !held_stop && crownexpect::turn_begins(&change.from, &change.to) {
                 self.turn_since.insert(id, now);
                 self.expect_new_turn(snapshot.ticket, id);
                 self.expect_began(snapshot.ticket, None, Some(id), now);
@@ -7578,7 +7603,7 @@ impl Daemon {
             } else if mesimon_core::quiet::is_working(&snapshot) {
                 // Never for a seat with no pane (T-936): a Codex seat whose
                 // pane died keeps `codex_stopping`, which reads as working.
-                if change.to.has_pane() {
+                if change.to.has_pane() && !held_stop {
                     self.turns_open.insert(snapshot.ticket);
                 }
             } else {
@@ -19438,6 +19463,9 @@ impl Daemon {
         changed |= stage!(self, "probe_codex_startup", self.probe_codex_startup(&s.screens, at));
         changed |= stage!(self, "probe_claude_startup", self.probe_claude_startup(&s.screens, at));
         if let Some(facts) = &s.facts {
+            if let Some(rows) = &s.hook_rows {
+                changed |= self.sample_async_stops(facts, rows, at);
+            }
             let panes =
                 stage!(self, "refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
             changed |= panes.changed;
@@ -20500,6 +20528,9 @@ impl Daemon {
         now: u64,
         enforce_floor: bool,
     ) -> std::result::Result<(), String> {
+        if self.async_stop_pending(rec.id) {
+            return Err("waiting for turn-end child processes and their rewake grace".into());
+        }
         // The kind × state clause is core's (`quiet::sleep_eligible`), shared
         // with the TUI's pre-judgement; what follows is what only the daemon
         // can see.
@@ -21883,6 +21914,7 @@ mod queued_person_push_tests {
             screens: box_read.map(|b| (sid.to_string(), b)).into_iter().collect(),
             rss: None,
             rows: None,
+            hook_rows: None,
             alive: None,
             access: None,
             took: Duration::ZERO,

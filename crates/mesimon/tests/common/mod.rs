@@ -53,6 +53,7 @@ fn mesimon_binary() -> &'static str {
 /// daemon on default timings and pass, or fail, for the wrong reason.
 pub const DAEMON_SEAMS: &[&str] = &[
     "MESIMON_ARCHIVE_SUGGEST_MS",
+    "MESIMON_ASYNC_HOOK_CAP_MS",
     "MESIMON_CLAUDE_BIN",
     "MESIMON_CLAUDE_HOME",
     "MESIMON_CLAUDE_ROAD",

@@ -37636,3 +37636,113 @@ ran the following; no CI result is claimed (T-1030).
   board's `unique_calls` is now `rig.tool_calls`. `DoubledRowTests` in `ci/rig_test.py` pins it.
 - **Not measured:** whether the hook road's transcripts carry the double row; the fix is
   indifferent to it. Verdicts recorded before this (counts, receipt and result bytes) read high.
+
+## T-1044 — an interactive turn waits for unaccounted hook children (2026-10-26)
+
+- **Measured, not an exact completion protocol:** Claude Code **2.1.310** keeps asyncRewake
+  hooks outside the task registry that supplies `Stop.background_tasks`. The recorded WR1
+  commit turn had `background_tasks: []` at Stop while the plugin review's child survived it.
+  Its transcript supplied a `stop_hook_summary`, not a pending/completed async-hook ledger.
+  The installed command-hook runner spawns a detached Unix child directly under Claude;
+  a clean probe confirmed `pid == pgid`, `ppid == claude`, unlike terminal pipeline children.
+  No plugin switches or settings are injected by Mesimon.
+- **Mod surface:** the installed mod declarations and command-hook runner expose no hook
+  lifecycle callback. `process.spawn` interception does not cover that runner. Headless
+  `--output-format stream-json --include-hook-events` *does* emit `hook_started` and
+  `hook_response` with IDs and exit codes (confirmed with a 12-second clean hook); that is
+  not an interactive pane or its transcript. Both interactive roads consequently use the
+  same process approximation. Upstream references:
+  [hooks](https://code.claude.com/docs/en/hooks),
+  [mod API](https://code.claude.com/docs/en/plugins/mods/reference),
+  [mod events](https://code.claude.com/docs/en/plugins/mods/events).
+- **Rewake measurement:** five Stop/exit-2 cycles in one real interactive 2.1.310 session,
+  using a local Python asyncRewake hook which slept two seconds, printed a synthetic finding,
+  logged immediately before `sys.exit(2)`, and logged its next `UserPromptSubmit` invocation.
+  Gaps were **70.057, 50.159, 44.488, 45.817, 48.759 ms**. These include Python shutdown and
+  the prompt observer's startup, not merely Claude's internal queue delay. A preliminary
+  interactive run measured 46.577 ms. Probe scripts/logs are local artifacts under
+  `target/async-hook-probe/`; the recorder trace is `target/rig/traces/WR1.raw.jsonl`.
+  **REWAKE_MS = 3,000** gives over 42 times the largest measured gap; it is a grace, not a
+  guaranteed maximum latency. Exit alone cannot distinguish a clean review from findings.
+- **What is held:** an owned Claude pane's top-level Stop is saved, with the turn kept open.
+  A worker off the writer thread samples full argv, direct parentage, process group and birth
+  time. Birth comes from `proc_pidinfo` on macOS and `/proc/<pid>/stat` on Linux; rounded
+  `ps etime` was too coarse at launch. Candidates are direct children of the pane process,
+  leading their own process group, born since the turn began and no later than 1.5 seconds
+  after Stop. A known child's PID and birth are retained through a rewake into another turn.
+  Age excludes launch-time MCP servers; argv excludes usual MCP server spellings, Mesimon's
+  mod bridge/MCP calls/hooks/gates, Claude's keep-awake/statusline, and shell commands already
+  listed by Stop. These heuristics do not read or change a plugin's configuration.
+- **Delivery and bound:** the initial **SCAN_MS = 1,500** window admits Stop hooks dispatched
+  after the board's observer. With a seen child, three seconds of absence precede release;
+  with no child, the first complete sample after the scan window releases. The ordinary
+  attention-machine settle is dated from the original Stop, overlapping the scan. While held, recovery hints cannot close the turn,
+  the train cannot take it, park is refused with the child/grace reason, and no delivered
+  crown wake is made. A new prompt or own tool call cancels the saved Stop. A held Stop is
+  not a new prompt: it does not answer a raised hand, restart an expectation or clear the
+  crown's refused-submit fallback. **CAP_MS = ten minutes from Stop** releases the original
+  Stop even if a child or an unreadable process table remains. The feed's `async_hook_cap`
+  names the elapsed bound and says completion was unconfirmed; `async_hook_wait` reports
+  only the child count, never argv. The test seam is `MESIMON_ASYNC_HOOK_CAP_MS`.
+- **Limits:** short-lived children entirely between samples, a hook born after the scan
+  window, reparented descendants, or a rewake later than the grace can escape the hold.
+  A custom MCP server reconnecting under an unrecognizable argv may hold until the cap;
+  a hook whose argv looks like excluded infrastructure may be missed. This is process
+  evidence, never a claim that review passed. Pending Stops and child identities are memory
+  only: daemon restart loses this hold and falls back to existing recovery until another Stop
+  arrives. The cap deliberately restores today's delivery behavior, including its risk.
+  Worker/crown brief text remains unchanged: it already calls background work unfinished.
+- **Validation log:** WR1 recording first hit sandbox state-directory denial, then its exact
+  elevated rerun recorded the real commit turn but failed the existing semantic assertion
+  about who merges (the worker said “crown or you”); its other checks passed. `--reset
+  --no-build` stopped that rig. Preliminary timing drivers hit a Python syntax error, then a
+  trust dialog, then incomplete composer submission; the five measurements above came from
+  the subsequent manual PTY session, exited with `/exit`.
+  The new three-test e2e's first run hit sandbox socket/process denial; its exact elevated
+  rerun passed 3/3. The denied run's four fixture owners were inspected and cleaned by their
+  registered identities. The first affected-suite run failed four existing tests because
+  terminal pipeline children were classified as hooks: `a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude`,
+  `a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not`,
+  `worktree_follow_up_waits_for_idle_with_send_now_and_take_back`, and
+  `a_begun_expectation_outlives_a_restart_by_its_own_prompt`. Process-group and precise-birth
+  checks fixed those. The next affected-suite rerun failed the crown's refused-wake restart
+  case: the synthetic running edge cleared its fallback; the held-Stop distinction fixes it.
+  The first `cargo ut` run failed two existing TUI color tests under inherited `NO_COLOR=1`;
+  the isolated `quiet::tests` rerun reproduced both. The gate rerun with `NO_COLOR` removed
+  passed (ten pre-existing ignored tests: measurement probes, PTY/helper children, and the live-release network test). Focused async-hook unit tests passed twice.
+
+  The next complete affected-suite run reached all 131 cases; three crown regressions
+  remained: `the_board_wakes_the_crown_when_a_started_worker_delivers` exposed duplicate
+  Stops reopening an already delivered turn (now left to the original machine),
+  `an_attached_client_holds_the_crown_wake_only_while_active` needed its simulated person to
+  stay active during the new scan, and `a_turn_past_its_expect_secs_wakes_the_crown_once`
+  needed its inside-budget case to budget that scan. The original Stop's settle now overlaps
+  the scan rather than being charged again afterward. The last two fixtures retain their
+  behavioral assertions; the long-turn case still overruns its original three-second budget.
+  The six-case regression rerun passed the three hook cases and the active-client case;
+  the finish case additionally exercises `/clear` then Stop, which must not insert a new
+  open-turn ledger entry, and the expectation case hit a fixture `git add .` race with
+  `.mesimon/board/columns.tmp` before any assertions. Those two were rerun after fixing the
+  ledger edge; both passed (2/2). No fixture or test was weakened for the race.
+  The first full-workspace attempt stopped at 319/3,119 (317 passed, two failures, eleven
+  pre-existing ignored): `a_stop_heard_before_the_dialog_s_result_is_read_keeps_its_turn_end`
+  could no longer arrange a result inside the old settle, and
+  `a_stated_end_and_a_split_read_keep_the_held_call_s_end` exposed an old recovery cursor.
+  The correction consumes recovery samples while holding only their state claims, with
+  `async_hook_recovery_held` recording the source; the dialog test accepts a read inside
+  either the new hold or the ordinary settle and still asserts the stated end and REVIEW.
+  Clippy passed on that first full-run tree; it is rerun after this correction.
+  The subsequent complete `plan_accept_e2e` + `async_hook_e2e` rerun passed **29/29**,
+  with all 58 fixture owners cleaned. The full-workspace rerun uses `--no-fail-fast` so
+  both roads report all remaining failures, if any, within the bounded runner.
+- **Final full suite:** the rerun passed **3,119/3,119** on the normal road and **378/378**
+  integration tests on the mod road; fixture audit was clean for **803 owners**. The eleven
+  pre-existing ignored tests are timing/FD measurements, helper children exercised by their
+  parents, and the live-release network test; the mod pass skips that integration helper
+  as a standalone test. No tmux integration was skipped. This is a local macOS run, with
+  `NO_COLOR` removed; CI is off. Linux/Docker was not run, so the Linux `/proc` birth reader
+  is not runtime-verified here. The pre-commit dirty tree earns no release-suite stamp.
+  The final-tree `cargo ut` rerun and the `cargo clippy --workspace --all-targets -- -D warnings`
+  rerun both passed, with clean fixture audits. `cargo fmt --all -- --check` and
+  `git diff --check` passed. The worker/crown brief did not change, so no new brief rig case
+  was required; WR1 above was the recorder experiment, not a claimed passing behavior gate.
