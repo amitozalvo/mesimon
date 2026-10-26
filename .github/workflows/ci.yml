@@ -27,10 +27,11 @@ on:
         default: ""
       road:
         # Which road a named run's Claude launches take: the mod road's reds
-        # are chased with `mod`. The whole suite always runs both.
+        # are chased with `mod`, both roads at once with `both`. The whole
+        # suite always runs both.
         description: "road for the named tests"
         type: choice
-        options: [hooks, mod]
+        options: [hooks, mod, both]
         default: hooks
 
 permissions:
@@ -58,8 +59,23 @@ jobs:
         # only on a manual dispatch. (A job-level `if` cannot see `matrix`, so
         # the event picks the matrix instead.)
         os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-24.04", "macos-14"]') || fromJSON('["ubuntu-24.04"]') }}
+        # Each road's pass is a job of its own, side by side (T-1023): one
+        # runner ran them one after the other, and on macos-14's three cores
+        # the two took 11.7 min after the build. The other gates run in the
+        # hooks job alone. A named run takes the road its dispatch names.
+        road: ${{ (inputs.tests == '' || inputs.road == 'both') && fromJSON('["hooks", "mod"]') || fromJSON(format('["{0}"]', inputs.road)) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 110
+    # The slowest job measured: 2.2 min of build and 6 min of tests (T-1023).
+    timeout-minutes: 40
+    env:
+      MESIMON_TEST_ROAD: ${{ matrix.road }}
+      # The e2es spend their time on their own timers, not the CPU: a test
+      # takes as long here as on a laptop (crown_e2e's 92 tests sum to about
+      # 1,940 s at 4, 8 and 16 threads alike), so the runner runs many more
+      # tests than it has cores, until the load starts to slow them: past
+      # 16 on ubuntu-24.04's four cores, 12 on macos-14's three. A named
+      # run's own --test-threads wins.
+      NEXTEST_TEST_THREADS: ${{ startsWith(matrix.os, 'macos') && '12' || '16' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -72,10 +88,13 @@ jobs:
           components: clippy
 
       # Saved after a red run too: a red run is the one a fix round follows,
-      # and without this every such round built from nothing (T-1023).
+      # and without this every such round built from nothing. Saved by the
+      # hooks job, whose build (clippy's and the tests') covers the mod
+      # job's (T-1023).
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          save-if: ${{ matrix.road == 'hooks' }}
 
       # The suite runs every test in its own process, all binaries at once:
       # `cargo test` ran the e2e binaries one after another (T-1023).
@@ -97,35 +116,31 @@ jobs:
       # a quiet day and its own commit, not a side effect of adding CI.
 
       - name: Clippy
-        if: inputs.tests == ''
+        if: inputs.tests == '' && matrix.road == 'hooks'
         run: python3 -B ci/test-run.py -- cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Duplicate dependency drift
-        if: inputs.tests == ''
+        if: inputs.tests == '' && matrix.road == 'hooks'
         run: ./ci/check-dup-deps.sh
 
       # The mascot's PNGs and the installer's welcome are goldens of the creature
       # engine now (`cargo test -p mesimon-tui creature`), covered by the Test step.
       - name: Installer
-        if: inputs.tests == ''
+        if: inputs.tests == '' && matrix.road == 'hooks'
         run: python3 -B ci/test_installer.py
 
-      # Both roads' passes, measured on 2026-10-25 under `cargo test` (T-1019):
-      # 24 + 23 min on ubuntu-24.04, 34 + 33 min on macos-14. --no-fail-fast
-      # carries to the mod road's pass, which runs after a red first pass
-      # too, so one run reports every red. test-run.py's own 1200 s default
-      # is the local release gate's and stays.
-      #
-      # The e2es spend their time on their own timers, not the CPU: a test
-      # takes as long here as on a laptop (crown_e2e's 92 tests sum to about
-      # 1,940 s at 4, 8 and 16 threads alike), so the runner runs many more
-      # tests than it has cores. Both passes and a named run read it; a
-      # named run's own --test-threads wins (T-1023).
+      # Measured on 2026-10-25 under `cargo test`, both roads on one runner
+      # (T-1019): 24 + 23 min on ubuntu-24.04, 34 + 33 min on macos-14. On
+      # nextest, a road a job (T-1023): see the STALE-MAP block for the
+      # table. The mod road's job runs the `mesimon` crate's integration
+      # tests, filtered from the whole workspace so its build is the hooks
+      # job's. test-run.py's own 1200 s default is the local release gate's
+      # and stays.
       - name: Test
         if: inputs.tests == ''
-        env:
-          NEXTEST_TEST_THREADS: '16'
-        run: python3 -B ci/test-run.py --timeout 5400 -- cargo nextest run --workspace --no-fail-fast
+        run: |
+          if [ "$MESIMON_TEST_ROAD" = mod ]; then set -- -E 'package(mesimon) & kind(test)'; fi
+          python3 -B ci/test-run.py --one-road --timeout 1800 -- cargo nextest run --workspace --no-fail-fast "$@"
 
       # The input rides an environment variable, never the script's text, and
       # is split into words as a shell would quote them (shlex), so a filter
@@ -134,11 +149,9 @@ jobs:
         if: inputs.tests != ''
         env:
           TESTS: ${{ inputs.tests }}
-          MESIMON_TEST_ROAD: ${{ inputs.road }}
-          NEXTEST_TEST_THREADS: '16'
         run: |
           python3 -B -c 'import os, shlex, sys; os.execvp(sys.executable, [sys.executable, "-B", "ci/test-run.py", "--one-road", "--", "cargo", "nextest", "run", "--no-fail-fast", *shlex.split(os.environ["TESTS"])])'
 
       - name: Test cleanup failure paths and runner concurrency
-        if: inputs.tests == ''
+        if: inputs.tests == '' && matrix.road == 'hooks'
         run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p 'test_*_test.py' -v
