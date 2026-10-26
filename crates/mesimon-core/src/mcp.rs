@@ -458,10 +458,13 @@ pub const COST_ABOUT: &str = "usd is the board's estimate, not a bill: every tok
 /// and it left three loops running past its last turn, which read as
 /// unfinished work for ten hours. The facts stay; how its report reads and
 /// what its turn leaves were cut (T-930, the rig's WR1 measures the report).
+/// It said the board "closes the ticket" until T-1037: a column's
+/// `on_merged` is what moves a merged ticket, and a board may have none.
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
-     rebase and closes the ticket. The board reads a background task or monitor still running \
+     rebase. Where a merge moves the ticket is a column's setting, automove's on_merged \
+     where the ticket's column has one. The board reads a background task or monitor still running \
      after a turn as unfinished work: the branch is not merged behind it, and the crown is \
      told. Words in the pane reach no one: raise_hand on this ticket wakes the crown and \
      lights the card.";

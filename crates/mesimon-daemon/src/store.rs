@@ -2665,6 +2665,7 @@ order = "a0"
                     agent_tools: mesimon_core::board::AgentTools::Read,
                     on_working: Some("QA".into()),
                     on_done: None,
+                    on_merged: None,
                     requires_merge: true,
                     requires_ticked: true,
                     requires_pipeline: false,

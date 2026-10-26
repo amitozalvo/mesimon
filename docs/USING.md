@@ -628,6 +628,9 @@ hand to say which ticket waits for your `m`. The crown reads who merges on every
 (`merge: by train, crown or person`, with the reason), and the sentence that wakes it on a
 delivery carries the word. A branch behind its base is never merged by the crown: it asks the
 worker to rebase first.
+Where a merged ticket goes is its column's **Branch merged** setting: a merge by the train, the
+crown or `m` moves the card to the column it names. A new board's REVIEW names DONE; on a board
+made before this setting, REVIEW names nothing and a merged card stays there until it is moved.
 The crown can also take one ticket off the train for its own review, the same flag as `t`, while
 the train stays on for every other ticket. Held, the train neither merges that branch nor asks its
 agent to rebase. The worker's delivery wakes the crown, and the crown's words still reach the

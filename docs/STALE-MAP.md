@@ -37172,3 +37172,57 @@ running. When a box draws is the pane's, and nothing records it.
   ended at 126k where it ended at 171k; one wake per merge (episode 1: 1.10); the train's own
   rebase ask was reached. One episode each, so these are described, not claimed as an effect.
   `measure` prints the figures and `reset` keeps an episode's record under `demo-episodes/`.
+
+## A merge moves a ticket on where its column says: `on_merged`, REVIEW → DONE on a new kanban board (T-1037, 2026-10-26, the demo soak)
+
+- **What was wrong:** the demo board soak (T-1032) ended with 10 merged, parked tickets in
+  REVIEW. Nothing on the kanban template moved a merged ticket, DONE took one only by a move, the
+  worker was told "the board … closes the ticket" and the crown reported the close as the
+  person's. The person chose the board (via the crown, note 2 on the ticket).
+- **Shipped:** `ColumnSettings::on_merged`, a column name in the automove family:
+  `#[serde(default)]`, skipped when unset, no schema bump (a build that drops it only stops the
+  move). `Board::set_column_settings` validates it as it does `on_working`/`on_done` (no
+  self-loop, a column the board has); `rename_column` carries it and `prune_dangling_refs`
+  clears it. `template_settings("REVIEW")` sets `DONE`, so a **new** kanban board has it; an
+  existing board (v4+) is never re-seeded and opts in from the column dialog's `Branch merged`
+  row (GOING OUT, under `Agent ends a turn`). `ColumnSettings::summary` says `merged → DONE`
+  (doctor, the dialog), and `automated()` counts it for the header's mark.
+- **The mover:** `Daemon::move_on_merged`, called in `merge_ticket`'s fully-landed arm, so every
+  merge mesimon makes takes it — the train's, the crown's `merge_ticket`, a person's `m` — not
+  only the train's: the setting is the column's, and a crown merge out of REVIEW left the same
+  card. `place_ticket` under `Automation { rule: "on_merged" }`, so the DONE gate and the move gate
+  hold as for an automove; the feed says `on_merged` and a `movement_decision`. It runs before
+  the merged notice, so the notice's turn starts in DONE, which has no `on_working`; before this,
+  that turn dragged the card from REVIEW to IN PROGRESS and its end back to REVIEW. A merge made
+  outside mesimon (git by hand, a forge) moves nothing here; a forge board has `arrives_on`.
+- **Agent text:** `get_ticket`'s `automove` gains `on_merged` (absent where unset, so other
+  columns' reads are unchanged). `mcp::WORKER_UNDER_CROWN` no longer asserts the close: "Where a
+  merge moves the ticket is a column's setting, automove's on_merged where the ticket's column
+  has one." The crown's rules are unchanged; "a merged branch's ticket is admitted to the done
+  column" and `sleep_agent`'s "move_ticket then closes its ticket" stay true (on a board with the
+  setting the move is already made, and a move to the column a ticket is in is a no-op).
+- **Not reclaim:** the brief read DONE's `reclaim` as tearing worktrees down. It prices the
+  header's `X`/`Z` offers; a worktree goes at archive. This change puts merged tickets where `X`
+  offers to archive them and reclaims no disk by itself.
+- **A look the merge outran:** the crown's turn-end look samples the branch off the writer and
+  lands as `Msg::TurnProbed`; the train's look, asked at the same turn's end (T-678), can merge
+  in between. `train_takes` read the reach of the ticket's column *now*, DONE after the move,
+  where the train does not reach, so the held delivery went out at once in stale words
+  (`delivered (merge_state ahead, merge: nobody, column DONE)`) instead of being folded into the
+  landing's wake (`a_delivery_the_train_will_take_wakes_the_crown_at_its_merge` caught it).
+  `Daemon::merged_out_of` keeps the column and tip of each ticket's last `on_merged` move, memory
+  only; a look at that tip that does not read merged is judged in that column.
+- **Work after the merge:** DONE has no `on_working`, so a merged worker the crown asks for more
+  stays in DONE, and the train, which reaches REVIEW, does not take its new commits; the crown
+  merges it (`merge: by crown`, the column stops short of the train) or a person moves it back.
+  DONE was not given `on_working`: the merged notice's own turn would then drag every merged
+  card to IN PROGRESS. Three crown e2es that continue work after a merge now move the card back
+  by hand, as a person would; `one_landing_…` turns REVIEW's `on_merged` off first, so its last
+  part still tests the crown's own close into DONE. The crown's wake lines now end `column DONE`.
+- **Golden:** `column_settings_120x30` became `column_settings_120x32`: at 30 lines the new row
+  scrolls the dialog's `Agent behaviour` door away, which the test pins on screen.
+- **Validation:** `cargo ut` green (one run's `permission_connection_stays_duplex_until_process_cancellation`
+  failed once under load, untouched code, 3/3 alone and green on the rerun). The first full
+  `nextest` run failed 6, all this change's: the five crown e2es and `mcp_e2e` above, the stale
+  look among them; the second passed **3,114/3,114**. Clippy clean. Rig `WR1` on Sonnet 5.5
+  (crown Opus 5.5) **passed**, its report asking the person for nothing.

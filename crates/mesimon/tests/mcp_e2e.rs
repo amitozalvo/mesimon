@@ -573,7 +573,7 @@ fn agent_board_tools_tier_and_collisions() {
     // turn's start that moves it, and the end of a turn does nothing.
     assert_eq!(
         shim.call_ok("get_ticket", json!({}))["automove"],
-        json!({"on_working": "IN PROGRESS", "on_done": null})
+        json!({"on_working": "IN PROGRESS", "on_done": null, "on_merged": "DONE"})
     );
 
     // The retry after a dropped connection: the same tool-use id must replay

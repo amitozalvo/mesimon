@@ -1816,8 +1816,9 @@ fn golden_board_header_automated_120() {
     golden("board_header_automated_120x30", &lines);
 }
 
-/// The column settings dialog over the board (T-117): thirteen rows, the
-/// selected row's detail under them, `esc back` in its edge.
+/// The column settings dialog over the board (T-117): every row, the
+/// selected row's detail under them, `esc back` in its edge. 32 lines tall
+/// since T-1037's `Branch merged` row; at 30 the door scrolls away.
 #[test]
 fn golden_column_settings_120() {
     let mut app = app_graphite(fixture(false));
@@ -1828,10 +1829,10 @@ fn golden_column_settings_120() {
         ratatui::crossterm::event::KeyModifiers::NONE,
     )
     .unwrap();
-    let lines = render(&app, 120, 30);
+    let lines = render(&app, 120, 32);
     assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
-    golden("column_settings_120x30", &lines);
+    golden("column_settings_120x32", &lines);
 }
 
 /// T-806: on a short screen the column dialog is a window over its rows

@@ -3942,8 +3942,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     assert_eq!(
         merged,
         format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
-             key={kw} for state and notes"
+            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
+             get_ticket key={kw} for state and notes"
         )
     );
     start(&mut c, sa);
@@ -3979,6 +3979,21 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     stop(&mut c, sa);
 
     // ---- 4. new work is a new delivery; a person's rebase ask is a step ----
+    // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037). From
+    // here the board is one from before that setting, so 5 is the crown's
+    // own close: REVIEW keeps a merged ticket, and the person brings this
+    // one back for more work.
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.on_merged = None;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
     commit(&path, "more.txt");
     start(&mut c, ws);
     stop(&mut c, ws);
@@ -7486,6 +7501,13 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     assert_eq!(feed_count("\"crown_wake_deferred\""), 1);
     start(&mut c, sa);
     stop(&mut c, sa);
+    // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037),
+    // which the train does not reach: the person brings it back for more.
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
 
     // ---- 2. the rebase the train asked for left it behind: the crown hears
     std::fs::write(h.repo.join("base1.txt"), "base\n").unwrap();
@@ -7676,6 +7698,14 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     stop(&mut c, sa);
 
     // ---- 2. a delivery heard, then merged with its notice -----------------
+    // The first merge closed the card in DONE (REVIEW's `on_merged`,
+    // T-1037), which the train does not reach: the person brings it back
+    // for the follow-up.
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
     train(&mut c, false);
     commit(&path, "two.txt");
     start(&mut c, ws);
@@ -7691,8 +7721,8 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     assert_eq!(
         line,
         format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
-             key={kw} for state and notes"
+            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
+             get_ticket key={kw} for state and notes"
         )
     );
     wait_until(std::time::Duration::from_secs(5), "the merged feed line", || {
@@ -11168,8 +11198,8 @@ fn the_crown_merges_where_the_train_will_not() {
     assert_eq!(
         lines_with(&worker)[3],
         format!(
-            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
-             notes"
+            "{worker} merged (merge_state ahead → merged, column DONE) ∙ get_ticket key={kw} \
+             for state and notes"
         )
     );
     assert!(lines_with(&notice).is_empty(), "the pref is off: no notice");
@@ -11365,8 +11395,8 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     assert_eq!(
         lines_with(&worker)[1],
         format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
-             key={kw} for state and notes"
+            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
+             get_ticket key={kw} for state and notes"
         )
     );
 

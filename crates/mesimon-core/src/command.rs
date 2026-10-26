@@ -2790,6 +2790,11 @@ pub struct AgentAutomoveView {
     pub on_working: Option<String>,
     #[serde(default)]
     pub on_done: Option<String>,
+    /// Where a merge of the ticket's branch moves it (T-1037). Absent where
+    /// the column has no such rule, so the read every other column gets is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_merged: Option<String>,
     /// The board's last automatic move of this ticket that a column or the
     /// move gate refused (T-749), in the refusal's words, while it stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]

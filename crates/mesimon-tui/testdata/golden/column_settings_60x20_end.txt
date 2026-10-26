@@ -1,6 +1,5 @@
  BOARD   mesimon › kanban-tui   7 tickets
   ╭─ COLUMN ∙ IN PROGRESS ───────────────────────────────╮
-  │ COMING IN                                            │
   │  Moves in when           nothing                     │
   │  Needs merged branch     ○ off                       │
   │  Needs passed pipeline   ○ off                       │
@@ -9,6 +8,7 @@
   │ GOING OUT                                            │
   │  Agent starts working    stays                       │
   │  Agent ends a turn       stays                       │
+  │  Branch merged           stays                       │
   │                                                      │
   │ FINISHED TICKETS                                     │
   │  Offer                   off                         │

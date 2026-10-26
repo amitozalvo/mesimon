@@ -7546,6 +7546,7 @@ impl App {
             },
             col_on_working: cs.on_working.clone().unwrap_or_default(),
             col_on_done: cs.on_done.clone().unwrap_or_default(),
+            col_on_merged: cs.on_merged.clone().unwrap_or_default(),
             col_sleep_after: cs.sleep_after_minutes,
             col_requires_merge: cs.requires_merge,
             col_requires_pipeline: cs.requires_pipeline,
@@ -9921,6 +9922,13 @@ impl App {
                 }
                 let next = self.next_column_target(|s| s.on_done.clone());
                 self.set_column(|s| s.on_done = next)?;
+            }
+            Verb::ColumnOnMerged => {
+                if !self.catch_up()? {
+                    return Ok(());
+                }
+                let next = self.next_column_target(|s| s.on_merged.clone());
+                self.set_column(|s| s.on_merged = next)?;
             }
             Verb::ColumnSleepAfter => {
                 self.set_column(|s| s.sleep_after_minutes = s.next_sleep_after())?
@@ -17755,7 +17763,9 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
-        for verb in [Verb::ColumnOnWorking, Verb::ColumnOnDone, Verb::ColumnArrives] {
+        for verb in
+            [Verb::ColumnOnWorking, Verb::ColumnOnDone, Verb::ColumnOnMerged, Verb::ColumnArrives]
+        {
             for _ in 0..2 {
                 // Each press waits on the ask the one before it sent.
                 release_late(&hold, LATE);
@@ -17767,6 +17777,7 @@ mod tests {
         let todo = app.board.sorted_columns()[0].settings.clone();
         assert_eq!(todo.on_working.as_deref(), Some("done"), "doing, then done: {todo:?}");
         assert_eq!(todo.on_done.as_deref(), Some("done"), "{todo:?}");
+        assert_eq!(todo.on_merged.as_deref(), Some("done"), "{todo:?}");
         assert_eq!(todo.arrives_on, Arrival::PipelinePasses, "{todo:?}");
     }
 

@@ -1450,7 +1450,7 @@ impl CodexApproval {
 /// Everything a column decides (T-117). Every automation the daemon runs
 /// on a ticket is a field here, read off the ticket's column through
 /// `Board::column` and never off a column NAME: `on_working`/`on_done` ARE
-/// automove, `train` is the merge train's reach, `requires_merge` is the
+/// automove, `on_merged` its merge edge (T-1037), `train` is the merge train's reach, `requires_merge` is the
 /// DONE gate (`requires_ticked` its summary-box twin), `reclaim` is the
 /// sleep/archive offer. The defaults are what a column with no template
 /// settings did before: nothing moves, tools full, mode inherited, train
@@ -1498,6 +1498,12 @@ pub struct ColumnSettings {
     /// (`Idle{EndTurn}` at Medium or better). `None` = stay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_done: Option<String>,
+    /// The column a ticket moves to when a merge mesimon makes lands its
+    /// branch while it sits here (T-1037): the train's, the crown's or a
+    /// person's `m`. `None` = stay. No schema bump: a build that drops it
+    /// only leaves a merged ticket where it was, as every build before did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_merged: Option<String>,
     /// Entry is refused while the ticket's worktree branch is unmerged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub requires_merge: bool,
@@ -1565,6 +1571,7 @@ impl ColumnSettings {
         self.arrives_on != Arrival::Nothing
             || self.on_working.is_some()
             || self.on_done.is_some()
+            || self.on_merged.is_some()
             || self.train != TrainReach::Off
             || self.sleep_after_minutes > 0
     }
@@ -1610,6 +1617,9 @@ impl ColumnSettings {
         }
         if let Some(c) = &self.on_done {
             out.push(format!("done → {c}"));
+        }
+        if let Some(c) = &self.on_merged {
+            out.push(format!("merged → {c}"));
         }
         if self.requires_merge {
             out.push("entry needs a merged branch".into());
@@ -2719,6 +2729,7 @@ pub fn template_settings(name: &str) -> Option<ColumnSettings> {
         },
         "REVIEW" => ColumnSettings {
             on_working: Some("IN PROGRESS".into()),
+            on_merged: Some("DONE".into()),
             train: TrainReach::Merge,
             refuses_new: true,
             ..d()
@@ -2850,8 +2861,8 @@ impl Board {
     }
 
     /// Give every column named like the template its template settings, then
-    /// drop any `on_working`/`on_done` naming a column this board does not
-    /// have (a quarantine-rebuilt board may lack one). The v3→v4 road and the
+    /// drop any `on_working`/`on_done`/`on_merged` naming a column this board
+    /// does not have (a quarantine-rebuilt board may lack one). The v3→v4 road and the
     /// fresh board's; returns whether anything changed.
     pub fn seed_template_settings(&mut self) -> bool {
         let mut changed = false;
@@ -2866,8 +2877,8 @@ impl Board {
         changed | !self.prune_dangling_refs().is_empty()
     }
 
-    /// Clear every `on_working`/`on_done` that names a column the board does
-    /// not have. Returns `(column, field)` for each one cleared, so the
+    /// Clear every `on_working`/`on_done`/`on_merged` that names a column the
+    /// board does not have. Returns `(column, field)` for each one cleared, so the
     /// caller can say so.
     pub fn prune_dangling_refs(&mut self) -> Vec<(String, &'static str)> {
         let names: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
@@ -2883,6 +2894,10 @@ impl Board {
             if c.settings.on_done.as_ref().is_some_and(|n| !names.contains(n)) {
                 c.settings.on_done = None;
                 out.push((c.name.clone(), "on_done"));
+            }
+            if c.settings.on_merged.as_ref().is_some_and(|n| !names.contains(n)) {
+                c.settings.on_merged = None;
+                out.push((c.name.clone(), "on_merged"));
             }
         }
         out
@@ -3000,7 +3015,7 @@ impl Board {
 
     /// Rename a column, carrying every ticket in it — ARCHIVED ONES INCLUDED,
     /// since an archive keeps its column for the restore — and every other
-    /// column's `on_working`/`on_done` naming it. Returns the ticket ids
+    /// column's `on_working`/`on_done`/`on_merged` naming it. Returns the ticket ids
     /// that changed so the caller writes only those files.
     pub fn rename_column(&mut self, from: &str, to: &str) -> Result<Vec<ulid::Ulid>, String> {
         if self.column(from).is_none() {
@@ -3022,6 +3037,9 @@ impl Board {
             if c.settings.on_done.as_deref() == Some(from) {
                 c.settings.on_done = Some(to.to_string());
             }
+            if c.settings.on_merged.as_deref() == Some(from) {
+                c.settings.on_merged = Some(to.to_string());
+            }
         }
         if self.default_column.as_deref() == Some(from) {
             self.default_column = Some(to.to_string());
@@ -3039,7 +3057,7 @@ impl Board {
     /// Delete a column. Refused while any live ticket is in it — an archived
     /// one keeps its column string and the restore falls back to the first
     /// column — and refused for the last column. Clears every
-    /// `on_working`/`on_done` pointing at it; returns those, as
+    /// `on_working`/`on_done`/`on_merged` pointing at it; returns those, as
     /// `prune_dangling_refs` does.
     pub fn delete_column(&mut self, name: &str) -> Result<Vec<(String, &'static str)>, String> {
         if self.column(name).is_none() {
@@ -3091,14 +3109,16 @@ impl Board {
         Ok(())
     }
 
-    /// Replace a column's settings whole. `on_working`/`on_done` must name a
+    /// Replace a column's settings whole. `on_working`/`on_done`/`on_merged` must name a
     /// column the board has, other than this one — a self-loop is refused,
     /// not resolved.
     pub fn set_column_settings(&mut self, name: &str, s: ColumnSettings) -> Result<(), String> {
         if self.column(name).is_none() {
             return Err(format!("no such column: {name}"));
         }
-        for (field, target) in [("working", &s.on_working), ("done", &s.on_done)] {
+        for (field, target) in
+            [("working", &s.on_working), ("done", &s.on_done), ("merged", &s.on_merged)]
+        {
             if let Some(t) = target {
                 if t == name {
                     return Err(format!("when {field}: a column cannot move a ticket to itself"));
@@ -5250,6 +5270,8 @@ mod tests {
         assert_eq!(b.column("IN PROGRESS").unwrap().settings.train, TrainReach::Rebase);
         assert_eq!(b.column("REVIEW").unwrap().settings.on_working.as_deref(), Some("IN PROGRESS"));
         assert_eq!(b.column("REVIEW").unwrap().settings.train, TrainReach::Merge);
+        // A branch the train merges out of REVIEW closes there (T-1037).
+        assert_eq!(b.column("REVIEW").unwrap().settings.on_merged.as_deref(), Some("DONE"));
         assert!(b.column("DONE").unwrap().settings.requires_merge);
         assert!(b.column("DONE").unwrap().settings.reclaim);
         assert_eq!(b.reclaim_columns().into_iter().collect::<Vec<_>>(), vec!["DONE"]);
@@ -5291,6 +5313,12 @@ mod tests {
         assert_eq!(b.column("TODO").unwrap().settings.on_working.as_deref(), Some("DOING"));
         assert_eq!(b.column("REVIEW").unwrap().settings.on_working.as_deref(), Some("DOING"));
         assert_eq!(b.column("DOING").unwrap().settings.on_done.as_deref(), Some("REVIEW"));
+        b.rename_column("DONE", "SHIPPED").unwrap();
+        assert_eq!(b.column("REVIEW").unwrap().settings.on_merged.as_deref(), Some("SHIPPED"));
+        // A deleted target is cleared and said, as the automoves are.
+        b.columns.retain(|c| c.name != "SHIPPED");
+        assert!(b.prune_dangling_refs().contains(&("REVIEW".into(), "on_merged")));
+        assert_eq!(b.column("REVIEW").unwrap().settings.on_merged, None);
     }
 
     #[test]
@@ -5437,6 +5465,13 @@ mod tests {
         assert!(b.set_column_settings("TODO", s).unwrap_err().contains("itself"));
         let s = ColumnSettings { on_done: Some("NOPE".into()), ..Default::default() };
         assert!(b.set_column_settings("TODO", s).unwrap_err().contains("no such column"));
+        let s = ColumnSettings { on_merged: Some("REVIEW".into()), ..Default::default() };
+        assert_eq!(
+            b.set_column_settings("REVIEW", s).unwrap_err(),
+            "when merged: a column cannot move a ticket to itself"
+        );
+        let s = ColumnSettings { on_merged: Some("NOPE".into()), ..Default::default() };
+        assert!(b.set_column_settings("REVIEW", s).unwrap_err().contains("no such column"));
         let s = ColumnSettings {
             on_done: Some("DONE".into()),
             agent_tools: AgentTools::Read,
@@ -5627,7 +5662,12 @@ mod tests {
         let s = template_settings("REVIEW").unwrap();
         assert_eq!(
             s.summary(),
-            ["takes no new tickets", "working → IN PROGRESS", "merge train: auto-merge"]
+            [
+                "takes no new tickets",
+                "working → IN PROGRESS",
+                "merged → DONE",
+                "merge train: auto-merge"
+            ]
         );
         assert!(s.automated());
         assert!(!template_settings("DONE").unwrap().automated());

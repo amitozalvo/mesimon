@@ -2040,9 +2040,17 @@ impl Daemon {
             pr_conflict: self.forge.pr_conflict(worker),
         };
         let asked = self.train.asked_tips();
+        // A look the merge outran (T-1037): taken at the tip that merged,
+        // before the merge, it lands after `on_merged` moved the card on.
+        // It is judged in the column the merge found the ticket in, so a
+        // delivery the train took is held for the landing's wake there too.
+        let column = match self.merged_out_of.get(&worker) {
+            Some((from, tip)) if !look.merged && *tip == look.tip => from.as_str(),
+            _ => t.column.as_str(),
+        };
         let reading = mesimon_core::train::Reading {
             merge_into: self.board.merge_into,
-            reach: self.board.column(&t.column).map(|c| c.settings.train).unwrap_or_default(),
+            reach: self.board.column(column).map(|c| c.settings.train).unwrap_or_default(),
             flags: &flags,
             seat: self.train_seat(worker),
             base_tip: &look.base_tip,

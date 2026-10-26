@@ -580,6 +580,9 @@ pub enum Verb {
     ColumnTools,
     ColumnOnWorking,
     ColumnOnDone,
+    /// The column dialog's `Branch merged` row (T-1037): where a merge
+    /// mesimon makes moves a ticket from here.
+    ColumnOnMerged,
     /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
     ColumnSleepAfter,
     ColumnRequiresMerge,
@@ -1834,6 +1837,7 @@ pub struct Ctx {
     pub col_tools_word: &'static str,
     pub col_on_working: String,
     pub col_on_done: String,
+    pub col_on_merged: String,
     /// The column's own idle park in minutes; zero is off (T-543).
     pub col_sleep_after: u32,
     pub col_requires_merge: bool,
@@ -6728,6 +6732,14 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
+    // T-1037: a merged ticket left in REVIEW was nobody's to close.
+    MenuItem {
+        verb: Verb::ColumnOnMerged,
+        label: |_| "Branch merged".into(),
+        detail: |_| "by auto merge, the crown or m ∙ the card moves there on its own".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ColumnReclaim,
         label: |_| "Offer".into(),
@@ -6831,7 +6843,7 @@ pub fn column_group(verb: Verb) -> Option<&'static str> {
         | Verb::ColumnRequiresMerge
         | Verb::ColumnRequiresPipeline
         | Verb::ColumnRequiresTicked => "COMING IN",
-        Verb::ColumnOnWorking | Verb::ColumnOnDone => "GOING OUT",
+        Verb::ColumnOnWorking | Verb::ColumnOnDone | Verb::ColumnOnMerged => "GOING OUT",
         Verb::ColumnReclaim | Verb::ColumnTrain => "FINISHED TICKETS",
         Verb::ColumnAgentBehaviour => "",
         Verb::ColumnClaudeMode
@@ -6883,6 +6895,7 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::ColumnRequiresTicked => Value::Switch(c.col_requires_ticked),
         Verb::ColumnOnWorking => moves(&c.col_on_working),
         Verb::ColumnOnDone => moves(&c.col_on_done),
+        Verb::ColumnOnMerged => moves(&c.col_on_merged),
         Verb::ColumnReclaim => {
             choice(&["off", "sleep", "archive", "sleep + archive"], or(c.col_offers_word, "off"))
         }
@@ -10365,7 +10378,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 14);
+        assert_eq!(column_items(&other).len(), 15);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(

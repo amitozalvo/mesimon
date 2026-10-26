@@ -19,12 +19,14 @@
                   │ GOING OUT                                                                        │
                   │  Agent starts working    stays                                                   │
                   │  Agent ends a turn       stays                                                   │
+                  │  Branch merged           stays                                                   │
                   │                                                                                  │
                   │ FINISHED TICKETS                                                                 │
                   │  Offer                   ● off   ○ sleep         ○ archive   ○ sleep + archive   │
                   │  Auto merge              ● off   ○ rebase only   ○ on                            │
                   │                                                                                  │
                   │  Agent behaviour         mode auto ∙ tools full ∙ sleep off ›                    │
+                  │                                                                                  │
                   │  what this column is for ∙ agents read it to pick a column                       │
                   ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
  COLUMN                                                                                                          ? keys

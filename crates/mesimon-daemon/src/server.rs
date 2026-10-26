@@ -972,6 +972,11 @@ pub struct Daemon {
     /// told of (T-527), heard by the crown on the next tick (`hear_merges`).
     /// Filled only while a crown is worn.
     crown_landed: Vec<ulid::Ulid>,
+    /// The column each ticket's last `on_merged` move took it out of, and
+    /// the tip it merged at (T-1037), so a turn's look taken before that
+    /// merge is judged where the merge found the ticket (`train_takes`).
+    /// Memory only: it speaks for a look in flight across one merge.
+    merged_out_of: HashMap<ulid::Ulid, (String, String)>,
     /// What the turn now running on a ticket was asked for (T-469), set by
     /// the ack of words that carried a reason (`Owed::asked`) and taken by
     /// that turn's end: the crown's ask comes back as an answer, a
@@ -1984,6 +1989,7 @@ impl Daemon {
             crown_written: String::new(),
             crown_written_for: None,
             crown_landed: Vec::new(),
+            merged_out_of: HashMap::new(),
             turn_asks: Default::default(),
             turns_open: Default::default(),
             failing: HashMap::new(),
@@ -11028,6 +11034,7 @@ impl Daemon {
                 .map(|c| AgentAutomoveView {
                     on_working: c.settings.on_working.clone(),
                     on_done: c.settings.on_done.clone(),
+                    on_merged: c.settings.on_merged.clone(),
                     held: self.held_items().into_iter().find(|h| h.ticket == id).map(|h| h.words),
                 })
                 .unwrap_or_default(),
@@ -13688,6 +13695,7 @@ impl Daemon {
                 // The merge just moved the checkout's branch: the header's
                 // `↑` should say so before the next 10 s bucket.
                 self.queue_git_sample();
+                self.move_on_merged(id);
                 self.persist_and_notify();
                 Response::Merge {
                     outcome: MergeOutcome::Merged,
@@ -13718,6 +13726,29 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// A column's `on_merged` (T-1037): a merge mesimon made moves the
+    /// ticket on, through `place_ticket` under the automation principal, so
+    /// the column's gates and the move gate hold as for an automove. It runs
+    /// inside the merge, before the merged notice the train, the crown or a
+    /// person's `m` sends, so that notice's turn starts in the new column
+    /// and not on REVIEW's `on_working`.
+    fn move_on_merged(&mut self, id: ulid::Ulid) {
+        let Some(from) = self.board.ticket(id).map(|t| t.column.clone()) else { return };
+        let Some(dest) = self.board.column(&from).and_then(|c| c.settings.on_merged.clone()) else {
+            return;
+        };
+        let by = Principal::Automation { rule: "on_merged".into() };
+        let outcome = match self.place_ticket(id, &dest, Position::Top, &by, None, "on_merged") {
+            Ok(_) => {
+                let tip = self.wt_agg.get(&id).map(|a| a.tip.clone()).unwrap_or_default();
+                self.merged_out_of.insert(id, (from.clone(), tip));
+                "moved".to_string()
+            }
+            Err(reason) => format!("refused: {reason}"),
+        };
+        self.feed.movement_decision(id, &from, Some(&dest), &outcome);
     }
 
     /// The m flow's inject stages: paste a rebase request or the merged

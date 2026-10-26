@@ -291,12 +291,17 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     });
     // The merge stamps the train's act, which lights the board's mark (T-811).
     assert!(automation_of(&mut c).acted_at_ms >= armed_at);
+    // REVIEW's `on_merged` (T-1037) closed it in the same step: DONE before
+    // its agent hears of the merge, so the notice's turn starts there.
+    assert_eq!(c.board().ticket(a).unwrap().column, "DONE");
+    assert!(feed().contains("\"on_merged\""), "{}", feed());
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
         text().contains(&format!("Your branch {branch_a} has been merged into main"))
     });
     // The notice started a turn on A: the train waits for it. Ack and end it.
     start(&mut c, sa);
     stop(&mut c, sa);
+    assert_eq!(c.board().ticket(a).unwrap().column, "DONE", "DONE drags no turn back");
     // B fell behind: asked to rebase — once.
     wait_until(Duration::from_secs(15), "B to be asked to rebase", || {
         text().contains(&format!("Rebase your current branch {branch_b} onto main"))
@@ -358,6 +363,8 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     wait_until(Duration::from_secs(15), "C to be merged once re-armed", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
     });
+    let board = c2.board();
+    assert!([b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "DONE"));
     std::thread::sleep(Duration::from_millis(1500));
     assert!(
         !text().contains(&format!("Your branch {branch_c}")),
