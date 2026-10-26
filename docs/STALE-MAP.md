@@ -36945,3 +36945,46 @@ job's time.
   `crown_e2e::a_codex_crown_s_wake_waits_for_a_person_…`, takes 86 to 111 s on the runners at
   every thread count. CLAUDE.md's "~30 s" for the local nextest suite is old: the suite sums to
   about 4,100 s of test time, almost all of it waiting.
+
+## CI's load reds: a serial group on both runners, five run alone on macOS, and what stayed red (T-1029, 2026-10-26)
+
+T-1023's nextest suite was red on most runs for tests that pass serially. `.config/nextest.toml`
+now puts the 16 load-red names T-1023 recorded (and one this ticket saw twice) in a
+`serial-timing` test group (`max-threads = 1`), by binary and exact test name; the four
+`mesimon-tui` animation goldens share no exact pattern, so they are named. T-1027's two
+`plan_accept_e2e` tests (T-957) are left out and stay red. No test, timeout or retry changed,
+and `ci.yml` is unchanged.
+- **A group keeps its tests off each other, not off the other threads.** With the group alone
+  (runs 40249908893, 40250883015, 40250889439, 40250896825), ubuntu-24.04's `legacy_enter_…` and
+  the four goldens, red in every T-1023 run, were green 4 of 4; macos-14's grouped reds were not
+  (`spawn_ready_e2e`'s give-up 2 of 4, `plan_accept_e2e`'s `an_old_interrupt_…` 2 of 4,
+  `an_esc_inside_…` and `provider_e2e`'s steer 1 of 4). The goldens stamp `Instant::now() - d`
+  and then render, so they read the process's CPU time, which the other 15 threads take.
+- **Alone and first** (`threads-required = "num-test-threads"`, `priority = 100`, so no queue
+  drains for them) on every platform (40252758285, 40252764712, 40252770405): those macOS five
+  went green 3 of 3, and the ubuntu test step went from 268 s to 432–459 s, macOS's from
+  425–441 s to 603–659 s. Shipped on macOS alone (nextest's `platform` key), where it costs
+  about 90 s a job (516–545 s).
+- **Red alone or inside the group, so not a load flake** (a ticket each, the person's read):
+  `mesimon-backend-tmux::tests::legacy_enter_and_detach_reach_fresh_and_surviving_clients`
+  (ubuntu: alone 2 of 3, at positions 13 of 3102; grouped 2 of 3 in the final runs; "test daemon
+  exited 1" after a 3.2–3.8 s wait for key bytes) and `crown_e2e::a_crown_a_person_stopped_holds_
+  its_wake_and_its_hand` (ubuntu, both roads now: alone at position 1, grouped 3 of 7; "timed out
+  waiting for the wake typed into the empty box"). On macos-14's mod road:
+  `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` (grouped and alone, "the dialog
+  drawn"), `crown_e2e::an_expectation_waits_for_its_wake_behind_a_worktree_rebuild` (3 of 10,
+  alone included, a 20 s wait for "the overrun of the words' own turn") and `plan_accept_e2e`'s
+  `an_id_less_permission_request_…` and `an_old_interrupt_…` (alone at positions 2 and 3 in
+  40255111650; the T-957 file).
+- **Once each, not load-shaped:** `crown_e2e::a_delivery_the_train_will_take_wakes_the_crown_at_
+  its_merge` (0.7 s, macOS: the test's `git add .` met the daemon's `.mesimon/board/columns.tmp`
+  mid-rename), `m3_e2e::m3_adoption_and_sleep` (ubuntu: `new-session` met the private server
+  exiting with its last session, "server exited unexpectedly") and `plan_accept_e2e::a_same_
+  print_repeat_inside_a_prompt_s_settle_keeps_the_newer_dialog` (macOS mod, 3.9 s).
+- **The bar was not met.** The three final runs on aac90014 — 40255111650 (11.8 min),
+  40255118097 (13.3 min), 40255124087 (22.4 min, a macOS job queued 11 min behind the others) —
+  were red beyond T-1027's two in every run by the names above: ubuntu in all three, macOS in the
+  first. macOS read only T-1027's two in the other two.
+- **The local suite** (`cargo nextest run --workspace`, nextest's default of 11 threads on the
+  author's Mac, built): 400 s with the group, 466 s with the final config, 3110 of 3110 green both
+  times. CLAUDE.md's "~30 s" is now "~8 min".
