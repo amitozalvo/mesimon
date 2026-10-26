@@ -36925,7 +36925,7 @@ job's time.
 
 - **Reds that the load brings (reported, not patched; no test changed here).** Beside T-1019's
   known reds (`plan_accept_e2e::a_repeated_prompt_heard_…` and `…a_stated_end_and_a_split_read_…`,
-  T-957; `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn`, T-1026):
+  T-957; `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn`, since fixed by T-1026):
   `mesimon-backend-tmux::tests::legacy_enter_and_detach_reach_fresh_and_surviving_clients` is red
   in every ubuntu nextest run, even at 4 threads, and in macOS runs at 16 and 32 threads ("test
   daemon exited 1", a 3.8 s wait for key bytes), and it is green under serial `cargo test`.
