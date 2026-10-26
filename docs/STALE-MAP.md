@@ -37141,3 +37141,28 @@ running. When a box draws is the pane's, and nothing records it.
   command status is retained. Eleven default ignored tests (benchmarks, subprocess helpers
   and the live release download) and the mod pass's helper were not counted as passes.
   Fixture audits and the rig's cleanup were clean; the delivery note records each command.
+
+## The demo board: a second board builds an app under a crown, a tester scores it (T-1032, 2026-10-26)
+
+- **What it is:** `ci/demo/board.py` lays a board of its own on `~/Documents/code/demo-ledger`
+  (a fresh git repo, its own daemon from the binary this board's daemon runs, Setup's kanban
+  answers with worktrees, crown autonomous, watches and samples on, three board tiers: `crown`
+  Opus medium on the crown seat, `coder` Sonnet medium the default, `small` Haiku low) and starts
+  one crowned ticket on the board's brief. `say` is the person's `prompt_session`; `wait`,
+  `watch` and `score` read the snapshot, the feed, the journal and the crown's transcript;
+  `trust` is the person's press on a folder-trust dialog; `stop`/`reset` end its own daemon,
+  its train holder and its tmux by socket. Nothing is asserted: it is scored, not a rig test.
+- **The train is a connection's** (`SetAutomation`), so `lay` leaves a `hold` process beside the
+  daemon standing in for an open TUI; `stop` ends it.
+- **A name the machine layer holds is saved under the machine tier's id** (the board's override,
+  still the board layer): `save_tier` refuses a second tier of the same name. The machine's other
+  tiers stay offered to the demo crown, which twice picked the machine's `fix` over `small`; a
+  board cannot hide one, so episode scores on tier choice carry that confound.
+- **Claude Code writes each MCP tool_use row twice under one id**; the script counts by id
+  (`unique_calls`). The rig does not (T-1034).
+- **Episode 1** (main at b9e95420, build 0.1.0-beta.13, 27 min, quota week 78 → 79 %): all ten
+  items asked in eleven person lines plus three answers, eleven tickets merged by the train in
+  38 to 108 s each, 165 tests green on main, 180/208 on the scorecard (the note on T-1032). Gaps
+  filed: T-1034 to T-1039. The crown serialised every overlapping pair rather than run both
+  under the train, so the train's own rebase ask was not reached; and it hands REVIEW → DONE to
+  the person (T-1037).
