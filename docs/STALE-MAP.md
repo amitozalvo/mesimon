@@ -36988,3 +36988,21 @@ and `ci.yml` is unchanged.
 - **The local suite** (`cargo nextest run --workspace`, nextest's default of 11 threads on the
   author's Mac, built): 400 s with the group, 466 s with the final config, 3110 of 3110 green both
   times. CLAUDE.md's "~30 s" is now "~8 min".
+
+## The root CLAUDE.md is lazy past its rules (T-1024, 2026-10-25, `/doctor`)
+
+- **What was wrong:** `CLAUDE.md` was 69.8k characters — ~17.5k tokens on every request of every
+  session on this repo, over the 40k-character warning on a 200k-context worker, with ~30k of it
+  about one area (the mod road, the recipes, releasing, the test seams).
+- **The decision:** the rules stay in the root; what a session needs only in one area moves word
+  for word to where it loads on demand. Two project skills, `release` and `adding-things`
+  (`.claude/skills/`), load when asked; four nested `CLAUDE.md`s (`crates/mesimon-daemon`,
+  `crates/mesimon-tui`, `crates/mesimon/tests`, `web/mesophon`) load when a session works under
+  that directory. The root keeps every "never", the traps about the shell and macOS, the rebuild
+  trap, the keymap law and one pointer per move; 39.8k characters after. `AGENTS.md` unchanged.
+- **The judgement call:** the Claude Code traps went to the daemon's file although two of them
+  (plan mode's `readOnlyHint`, the `cc-plugin-sec-default` seating) are read in `core/src/mcp.rs`
+  too; both are pinned by tests there, which is the spec. A trap found to bite outside its file
+  moves back to the root, in a line.
+- **Where a new line goes** is at the top of `CLAUDE.md`: a rule or trap in the root or the one
+  area's file, a recipe in the skill.

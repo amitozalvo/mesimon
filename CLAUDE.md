@@ -3,7 +3,8 @@
 The operating contract for Claude Code in this repository.
 
 **Do not add historical implementation detail to this file.** A new decision goes in
-`docs/STALE-MAP.md`; a new rule, recipe or trap goes here, in a line or two. This file was
+`docs/STALE-MAP.md`; a new rule or trap goes here, in a line or two, or in the nested
+`CLAUDE.md` of the one area it is about; a recipe goes in the `adding-things` skill. This file was
 169k characters on 2026-09-11 because every shipped ticket appended a block to it *and* to
 STALE-MAP; the long-form narrative now lives in `docs/ARCHITECTURE.md` and nothing was lost.
 `AGENTS.md` is the same contract for Codex — when you change a rule here, check it there.
@@ -105,50 +106,13 @@ MESIMON_DEMO_KEY_FILE=<key file> assets/demo/record.sh agent  # the agent clip w
 `cargo test --workspace` is valid but runs the e2e binaries serially (~2.5 min). Tests are
 exempt from `unwrap_used` via `clippy.toml`. Say so **before** opening Docker Desktop.
 
-**Release order**: bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3
--B ci/test-run.py` → tag → push → `ci/release.sh`. Never verify before the bump — the bump
-relinks every crate and the run is thrown away. From the tag on, the author runs **one
-command, the relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the
-relay, then the tag, push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses
-while the live relay lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps `target/suite-passed.json`
-(HEAD sha + the tmux that drove it, by path and hash) and `release.sh` skips its own suite when
-the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locally, not on a
-runner. **Both Docker steps are paused by the author** until they say Windows/WSL2 is
-operational — the script prints `SKIPPED`, `MESIMON_RELEASE_DOCKER=1` runs them, and you should
-not open Docker Desktop for a release.
-**Release channels (T-946)**: a version `<last stable>.unstable.N` (from 0.1.0 final,
-`0.2.0-unstable.N`) is an unstable release, tagged `unstable-<version>` in the same repository,
-which no picker since T-877 takes (beta.12's updater on, and the served `install.sh`). The order is the same, the channel is the version's, and
-a promotion is one bump on the soaked commit. The first stable release carrying T-946 ships before
-the first unstable tag. A stable version that may overtake the train keeps the train's schema
-readers, or does not ship. The relay and Remote Control are single-channel: the live relay serves
-both channels' cores, and the relay repository keeps a stable-client and a candidate-client
-fixture passing before a shared deployment that changes their contract.
+**Releasing** — the order, the channels, mesimon.dev, the Homebrew tap, the build-cache
+prune and the Linux cross-build — is the `release` skill (`.claude/skills/release/SKILL.md`).
 
-**mesimon.dev is GitHub Pages on `amitozalvo/mesimon-releases`' main branch** — the page is
-`site/`, and the `install.sh` it serves is the one `release.sh` syncs there after each release,
-never main's. The install line is in five files and `ci/site.sh` fails when one disagrees.
 **Remote Control's hosted origin is `https://remote.mesimon.dev` (port 443), fixed**: a browser
 keeps its pairing and outbox per origin, so any change re-pairs every phone. **Teams' is
 `relay.mesimon.dev:443`** on the same port, split by SNI (T-519); 8443 stays published until
 2027-10 for Macs that signed in before.
-
-**The Homebrew tap** (`brew install amitozalvo/tap/mesimon`) is one formula, generated from
-`ci/homebrew/mesimon.rb` by `ci/homebrew-formula.sh` and pushed to `amitozalvo/homebrew-tap` by
-`release.sh` after `gh release create`. The template's header says how to check a change. The
-updater never replaces a binary brew installed (`release.rs::by_homebrew`).
-
-`ci/prune-deps.py` deletes split-debuginfo objects no current binary references (the runner
-calls it after every run, on the build dir that run used, and it skips a `deps/` unchanged since
-its last prune). It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
-scan is slow in proportion to the *directory*, and one edit to a core crate mints ~6,500 `.o`
-files that cargo never collects. Past 50k entries it advises `cargo clean`.
-
-**The Linux cross-build needs a musl C toolchain** — `x86_64-linux-musl-gcc` and
-`aarch64-linux-musl-gcc` on PATH (`brew trust messense/macos-cross-toolchains`, then `brew
-install messense/macos-cross-toolchains/<target>`), because `ring` came in with Teams (T-332)
-and the daemon links it unconditionally. `ci/build-linux.sh` dies with the brew line when one is
-missing. Apple clang cannot stand in (no musl sysroot).
 
 **mesimon ships its own tmux on macOS** — `ci/build-tmux.sh` builds a static tmux 3.6a into
 `vendor/tmux/` and the release packages it as `mesimon-tmux`, never `tmux` (which would shadow
@@ -166,105 +130,12 @@ Claude sessions have their hooks injected at launch, so sessions spawned by an o
 emit attention — respawn those too. Prefer the `U` chip when a TUI is likely attached; mention
 it after a build rather than pkilling unasked.
 
-## Adding things: the recipes
+## Adding things
 
-Each list is the complete set of places a change touches. The compiler finds most of them (the
-exhaustive matches are the mechanism); this is the rest. **If a step is missing here, add it
-here.**
-
-**A wire command** (something the TUI or an agent asks the daemon to do):
-1. `core/src/command.rs`: the `Command` variant — its serde `snake_case` name is its wire name
-   and its activity-feed name — then `Command::meta()`: read or mutate, logged or not, which
-   ticket. Exhaustive; a new variant does not compile until classified.
-2. `core/src/mcp.rs::agent_allows`: may an agent send it? Exhaustive, no `_` arm. Almost always no.
-3. `daemon/src/server.rs::handle`: the dispatch arm, calling a `Daemon` method. Only
-   `place_ticket` moves a ticket.
-4. The sender: a `Verb` in the TUI (next recipe) or a tool in `mesimon/src/mcp.rs`.
-5. An e2e if it touches a pane or the disk.
-
-**A key binding:**
-1. `core/src/keymap.rs`: a `Binding` in that scope's list (keys, `avail` over `Ctx`, `hint`,
-   `mutates`) and a `Verb`. A fact `Ctx` lacks is a field on it — `Ctx` derives `Default`, so
-   that is the struct plus `App::ctx()` in `tui/src/app.rs`, nothing else. A new `Scope` also
-   goes in `Scope::ALL`, in `parent()`, `word()`, `bindings()` and in `scope_list_is_complete`'s
-   `index()`, or it is validated by nothing; a BARRIER scope (parent `None`, every key its own)
-   joins the exemption list in `q_pops_and_help_is_everywhere` — `?` is text in a text field.
-2. `App::dispatch` in `tui/src/app.rs`: the arm. The match is exhaustive, so the compiler
-   points at it.
-3. `cargo ut` runs the keymap validators. A hint that shows on the board changes the board
-   goldens — remint, then review the diff by eye.
-
-**A column setting:**
-1. The field on `core/src/board.rs::ColumnSettings` — `#[serde(default)]`,
-   `skip_serializing_if` its default. It reaches disk inside the column's `[[columns]]` table
-   and the TUI on the snapshot for free. If its default is today's behaviour, no schema bump;
-   if an older build *dropping* it would widen what a spawn or an agent gets, bump
-   `COLUMNS_SCHEMA` (`daemon/src/store.rs`; the doctrine is on the constant).
-2. `board::template_settings` if the four template columns should carry it — the one place a
-   column name is read as a literal.
-3. The reader (`automove`, `train::plan`, `place_ticket`'s gate, `agents/claude.rs::flags`,
-   `agent_tools_for`, `reclaim_columns`) reads the ticket's column through `Board::column`,
-   never a name. `Board::set_column_settings` validates cross-column references.
-4. `ColumnSettings::summary` (doctor's `columns` line, the dialog's details) and a `MenuItem` in
-   `keymap::COLUMN_ITEMS` with its `Ctx::col_*` word, filled in `App::ctx()`.
-
-**A launch flag** (a column's, a tier's — anything a spawn and a wake must both carry): a
-`LaunchContext` field filled in `Daemon::launch_context`, then `agents/claude.rs::flags` AND
-its `resume` owned-pair list (a wake replays the stored argv), and `agents/codex/mod.rs::prepare`.
-A tier is `core/src/tier.rs`; which one a ticket launches on is `tier::Book`, never a field read.
-
-**A theme:** a `static` `Palette` in `tui/src/theme.rs` (every profile, hand-authored — never
-nearest-matched), a `Flavor` variant and its arms in `palette`/`name`/`blurb` (the compiler
-finds them), a `Kind` for the law or a fourth clause argued in `test_chroma_law`. `cargo ut`
-runs the laws over `Flavor::ALL`; a tag ring must skip the accent's hue band and the ground's.
-The picker, the prefs file and the goldens need nothing — rows come from `Flavor::ALL` and
-goldens are colourless.
-
-**A machine pref** (a `prefs.json` key; T-361 lets a board override most of them):
-1. `core/src/prefs.rs::PrefKey`: the variant, its `name()` (the JSON key), `label()`, and
-   whether `board_overridable` — machine-only is for a key about the terminal or the person (and
-   the machine-only list in `key_names_are_unique_and_the_terminal_keys_are_machine_only`); a
-   named value joins `is_bool`'s exclusions.
-2. `tui/src/prefs.rs`: the `Prefs` field, `load`, `body` (a named value gets the foreign-value
-   clause), `word`, and `overlay` if a board may set it, else `BoardPrefs::is_set`'s `false`
-   arm; a round-trip test.
-3. The `Ctx` field and `App::ctx()`; the `MenuItem` in `SETTINGS_ITEMS`/`NOTIFY_ITEMS` (its
-   `label` is the name alone), its place in `settings_items` and `SettingsSection::for_verb`,
-   and its `keymap::value` arm — what the Settings page draws beside the name; the `Verb` and
-   its arm through `set_pref`. `keymap::pref_key` names the row's key, and board scope then
-   cycles it with no further code.
-4. The push, if anything outside the TUI consumes it: a `push_*`/`reconcile_*` pair for the
-   daemon, `From<&Prefs>` in `notifier.rs` for the notifier, `drive_caffeine` for power. A value
-   that must hold with no board open (a kill switch) is read by the daemon from both files
-   instead, at the moment it decides (`modroad::read_setting`, T-574).
-5. A `doctor` line via `load_home()`.
-**`App::prefs` is the resolved view** (machine under this board's overrides): a test seeds it
-with `seed_pref`, never by assignment, and `save_prefs` writes `machine_prefs`.
-**A row's `detail` says one fact the label lacks** (what the value means, what it costs, or why
-the row is inert), never what Enter does and never the label again; empty is fine. Three
-spellings name Enter: `∙ enter again confirms`, `{error} ∙ enter tries again`, `∙ enter copies
-it` (`keymap::HINT_ENTER_WORDS`; `a_hint_never_explains_enter` reads the source, T-677).
-
-**Something the mouse can pick** (T-716): record a `mouse::Target` over its rect with
-`app.hits.borrow_mut().record` as it is drawn, and a `point_*` arm in `App::click` that presses
-the key a keyboard would (`App::press`), never a second road. A key hint needs nothing: every
-hint `chrome::hint_spans` spells is clickable wherever it is left whole on the frame.
-
-**A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`, plus a golden
-in `tui/src/ui/tests.rs`. The L1 law tests (`test_no_banned_sgr`, `test_no_drawn_structure`) and
-the colour laws in `theme.rs` run in `cargo ut` and say what is wrong.
-
-**The shin (the mascot):** pixels in `assets/mascot/shin.txt`, the engine in `tui/src/creature.rs`,
-inks from `Theme::creature_ink`. A new `SessionState` does not compile until `Anim::of` gives it
-an animation. The notification PNGs and the installer's welcome are the engine's goldens:
-`MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`.
-
-**An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
-`let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
-tmux, the seams and the teardown are the harness's; a shell stub paints Claude's composer
-first (`claude_stub`; `Harness::boot_bare` keeps it as written); `h.client("name")` speaks the
-wire, `hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam
-rides `Harness::boot_with_env`. `prompt_e2e.rs` is the exemplar.
+The recipes — a wire command, a key binding, a column setting, a launch flag, a theme, a
+machine pref, something the mouse can pick, a card or ticket-page visual, the shin, an e2e
+test — are the `adding-things` skill (`.claude/skills/adding-things/SKILL.md`): each lists the
+complete set of places a change touches. **If a step is missing there, add it there.**
 
 **Text from a user or an agent** crosses one of two functions in `core/src/text.rs` at the
 boundary it crosses: `scrub_cells` before it is drawn, `scrub_text` before it leaves for
@@ -272,13 +143,6 @@ another process. The hazard lists live there and nowhere else — **do not write
 
 **Text an agent or the crown is told** states what the board does and what is the person's, never
 how to work (T-930): how to judge, order, phrase or choose is the person's, in their own prompts.
-
-**A paste is one event, and only a text field takes it.** `App::tick` routes `Event::Paste` to
-`App::on_paste`; `EditBuffer::paste` flattens to one line (newlines become spaces) under the
-field's byte `limit` — the same number the daemon caps at. A new text field passes its limit to
-`EditBuffer::new` and joins `App::text_field`, or the layout pause (T-458) reads its Hebrew as
-a stray key. `TextArea::paste` is the multi-line counterpart: newlines kept, CRLF
-normalised, same limit.
 
 **Notes are markdown files under the ticket, and `notes[0]` is the description.**
 `Ticket.notes: Vec<NoteMeta>` is the metadata; the body is `notes/<ULID>.md`, read by
@@ -413,76 +277,9 @@ while no capability stands behind the atom — every Alt binding must be a **nud
 carry a legacy-floor spelling of the same move on the same screen, hinted. A third off-floor
 atom needs one of these two clauses, argued, not a third one.
 
-**Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json`, a
-32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
-silent-failure traps). Thirty-one entries exec `mesimon hook`, a **pure observer** that reads
-stdin to EOF first, **never writes stdout** (stdout is injected into the agent's context), exits
-0 always, and self-aborts at 500 ms. `daemon/src/ingest.rs` distills frames into `Signal`s;
-`core/src/attention.rs` is the pure, time-injected state machine (fixed precedence ranks 0–16,
-ranks 0–8 the attention set; enters at 0 ms, leaves after a 1500 ms settle, 15-min stale
-demote). **No polling for exits** — tmux's `pane-died` hook is the only exit signal, with a 15 s
-server-alive guard for wholesale tmux death. **A death frame names its pane** (`pane` in the hook
-header: `<server pid>:<pane id>`, from `--pane` or the pane's own `TMUX`/`TMUX_PANE`) and the
-record keeps the key it spawned (`SessionRecord.pane_key`); a wake reuses the session name and
-the session uuid, never the pane, so a death frame from another pane is dropped
-(`straggler_death`) and no tmux is asked. A frame or record without a key is trusted. After a daemon restart our sessions sit at
-`Unknown{DaemonRestarted}` and re-derive from the transcript tail at Low confidence until a hook
-re-asserts; reconcile never trusts stale claims. **One thing on that tail is not a claim** (T-663):
-a turn the last daemon saw open whose close the transcript dates after that spell began is the
-turn's end, at Medium (`Signal::TranscriptTurnEnded`, `recovery::turn_closed_in_the_gap`), so
-`on_done` and the crown hear a turn whose `Stop` fell into the restart's window — `mesimon hook`
-fails open, so that `Stop` was lost, never queued. An undated close, or one older than the spell,
-stays the Low hint.
-
-**The mod road carries a Claude session alone (T-577), and the road is `auto`, never a setting
-(T-588).** A Claude launch on a Claude Code ≥ 2.1.287 whose `claude plugin validate` passes (the
-probe, cached per binary in `<state>/mod/probe.json`, warmed when the shell env lands) loads the
-mod laid at `<state>/mod/<version>-<digest8>/` and passes **no `--settings`, no `--mcp-config`
-and no `--allowedTools`**: the mod relays the hook set's events in order through `mesimon hook
---road mod` (`Msg::ModHook`, ingested where `SessionRecord::frames_by_mod`), refuses structured
-writes itself (the gate, below), runs `mesimon approve` from `classic.PermissionRequest`, and
-registers the board's tools with `$.tool.register`, serving each through `mesimon mcp --call`.
-A registered tool asks no permission in any mode, so the daemon's tier check is the only gate.
-A mod-alone launch with no `SessionStart` twice the bridge wait after its spawn has its words
-armed on the paste road (`rescue_silent_mods`, feed `mod_silent`): no hook set would ever send one.
-**`auto` means the mod only where it is proven to load (T-598):** the probe's third step is
-`claude plugin test` on a one-test folder (`modroad::LOAD_PROBE`), whose refusal is a `ModsOff`
-verdict; and under `auto` a silent mod launch whose bridge never polled is relaunched on the hook
-set first (`relaunch_silent_mods`, feed `claude_road_relaunch`), once per record per daemon life,
-writing `ModsOff` too. `ModsOff` is asked again at the next daemon start and after 6 h. **And only where its hook
-events arrive (T-650):** a Team or Enterprise account, or managed settings, seats Claude Code's
-`cc-plugin-sec-default` outermost, whose `classic.*` hook hands every classic event past a
-person's plugins, so the mod loads, serves the tools and takes a `submit` and never hears
-`SessionStart`. The probe's fourth step reads it where it can: `claude auth status --json`'s
-`subscriptionType` (`team`, `enterprise`) or a managed-settings file on the machine is
-`ClassicOff` before any launch, and every launch then is **native** (T-658): the mod with
-`MESIMON_MOD_NATIVE=1`, which relays from Claude Code's own events in the hook set's names, and
-`--settings` naming a one-entry file, `PermissionRequest` alone (`HookSet::PermissionOnly`;
-`SessionRecord::native`, so `frames_by_mod` holds with `--settings` on argv and `on_hook` takes
-that one hook-set event). What the probe cannot see (remotely served managed settings) a launch
-finds: a mod launch whose bridge polled and whose `SessionStart` has not come a bridge wait later
-is relaunched the same way and writes the same verdict, same clock as `ModsOff`. A `submit` the mod reports `entered` clears `unsent`: the agent
-has the words.
-**The mod's half of that road (T-657)**: under `MESIMON_MOD_NATIVE=1` the mod's `classic.*` relays
-go silent and the same frames, by the hook set's names and shapes (`road::NATIVE_EVENTS`), are
-built from `session.*`, `turn.*`, `tool.call` and `agent.spawn`, which the security default lets
-through; the `Stop`'s task list is the one adapter in the mod, a `StopFailure` comes with
-`error: unknown` and `native: true` (the daemon reads the class off the transcript, T-659), and
-`PermissionRequest` is that one-entry hook set's, never a `tool.check` the mod holds.
-The hook set, `mesimon gate` and `mesimon mcp`'s server stay whole for an older Claude Code and
-Codex. The daemon talks to the mod only through `mesimon mod-bridge`'s long poll (`ModNext`),
-never a push from the writer thread. The mod spells nothing on promise 3's never-list (a unit
-test scans it); its two `deny`s are the gate's words and a board tool's refusal.
-**The turn roads ride it (T-575):** for a session whose mod speaks `submit` (`mod_speaks`, from
-the bridge's `--speaks`), every prompt goes down as `$.prompt.submit({ text, asUser: true })`
-and a question's answer as one `answer` frame, confirmed by the mod's `ModAnswer` report alone
-(the engine fires no `PostToolUse` for a dialog the mod closed). Launch words wait for the
-pane's `SessionStart` AND the mod's first poll; the paste road, the composer wait and the
-dialog keys stay for the hook set, Codex, a mod that never polled or an older one, a refusal,
-and the plan accept (T-579). **Each turn's end goes up as `ModUsage` (T-581)**: the engine's
-count of the turn and the main loop's rate-limit windows. A mod session's ticket is counted from
-those reports past a per-conversation fence, the transcript read beside them into a check and
-never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`.
+**Attention flow** (the hook set, the attention machine, exits, restart recovery) and
+**the mod road** (T-577 onward: the probe, `auto`, native launches, the mod's half, the turn
+roads, `ModUsage`) are described in `crates/mesimon-daemon/CLAUDE.md`.
 
 **The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
 never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
@@ -586,23 +383,15 @@ flavor and profile.
 sound, the ticket-shell seam — is set in `lib.rs::run`, never `App::new`**, so no test or golden
 sees a developer's `$EDITOR`, opens a browser, or makes a noise.
 
-**Mesophon (`web/mesophon`) has no build step.** The relay serves it as it is, under a CSP with
-no inline style or script: styling is classes in `style.css`, and Preact/htm are vendored plain
-modules with no bare imports (`vendor/README.md`). Its view subscribes to `store.js` in a layout
-effect, never after paint, or a fast boot's emit is lost and the page freezes at "Starting…".
-A paired phone's writes are `Action::FileTicket` into a column, `Action::StartAgent` on a ticket
-(T-498, under `authorize_execution`), the card edits `MoveTicket`/`RenameTicket`/`TagTicket`/
-`ChooseWorkspace`/`ArchiveTicket` (T-530, T-642, T-737; each is `Mutate` for every other principal, so `place_ticket`
-asks `MoveTicket` of every mover) and `Annotate` on a ticket's notes (T-532): never widen `Paired` to `Mutate`, which also
-reaches `PromptColumn`, merges and deletes, and a filed ticket starts nothing by itself. Every
-side of the control socket drops a peer on a frame it cannot parse, so mail frames go only where
-they were asked for: a host sends `Collect` after `ControlMail` answered, and the relay sends
-`Mail` only then.
+Mesophon's rules (no build step, the CSP, the paired phone's writes) are `web/mesophon/CLAUDE.md`.
 
 ## Traps that were measured
 
 Each of these cost a debugging session. They are facts about other people's software, so they
 will not show up in our tests until they break something.
+The traps about Claude Code's hooks, its mod engine and git are in `crates/mesimon-daemon/CLAUDE.md`;
+the terminal's (iTerm2, kitty, tmux's XTVERSION) in `crates/mesimon-tui/CLAUDE.md`; a test stub's shell
+(bash 3.2's `read`, dash) in `crates/mesimon/tests/CLAUDE.md`.
 
 - **An Enter sent *with* the text is swallowed by Claude's paste detection.** A prompt is a
   bracketed paste and then a *separate* `send-keys Enter`.
@@ -616,79 +405,13 @@ will not show up in our tests until they break something.
   that edge is echoed and cut by the cooked tty (T-570). Launch words go only into a composer
   `agents::claude::composer` reads off the screen. **Exactly one Ctrl+C clears a composer that
   holds text; a second exits Claude** — the resend sends one, only into a box seen holding text.
-- **Claude Code 2.1.287 wraps a launch's pasted brief in `<pasted_content>`** and follows
-  instructions inside only where the person's own words (the typed title) ask: a worker given a
-  bare title declined a four-step brief (T-588). A one-line paste alone arrives as plain text.
 - **A pty in canonical mode keeps only 1 KiB of a line**, which is why long prompts are pasted
   rather than typed.
-- **`$.prompt.submit` refuses a text that begins with `/`**, leading blanks included ("would run
-  a command as the user", 2.1.287): a slash command keeps the paste road on the mod road too
-  (`road::is_command`, T-575).
-- **Claude Code's remote flag `tengu_plugin_hooks_modules` turns mods off with nothing local
-  changing** (2.1.288): `claude plugin validate` passes and `--plugin-dir` is taken, and the mod
-  never loads. `claude plugin test` refuses in its words ("hooks modules are turned off"). No
-  local override exists in the public build; `DISABLE_GROWTHBOOK=1` reads every flag's default,
-  this one's on, and is the rig's pin alone (`MESIMON_RIG_NO_FLAGS`). Never write `~/.claude.json`.
-- **Claude Code seats its `cc-plugin-sec-default` outermost on a Team or Enterprise account, or
-  under managed settings** (2.1.289, T-650), and that plugin's `classic.*` hook is one line,
-  `next.to(e, "append")`: a person's mod, `--plugin-dir` included, gets `session.start`,
-  `tool.call` and `turn.complete` and never a classic hook event. `claude plugin validate` and
-  `claude plugin test` pass all the same; the feed shows `ModUsage` and `ModSubmit` and no
-  `SessionStart`. The seating rule is `qjr` in the binary; `allowManagedHooksOnly` and
-  `disableAllHooks` are a different thing (the module is not loaded at all).
-- **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
-  returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
-- **A `$.prompt.submit` made mid-turn resolves only when its words are consumed** (2.1.309,
-  T-934): held to the running turn's end and run as a turn of its own, its `entered` is that
-  turn starting, an hour later in T-930's case. A crown ask down the mod reads `sent` until then
-  (`crownask`, T-938); a composer Enter's `UserPromptSubmit` is its enqueue, not its absorption.
-- **Claude's `prompt_id` names the turn, not the words** (2.1.310, T-983): it is on every hook
-  frame and is every `user` record's `promptId`. Words typed mid-turn fire `UserPromptSubmit`
-  under the running turn's id, and a prompt's own record lands 80–180 ms after its hook.
-- **A mod's `$` call in flight fails with its dispatch when that dispatch is abandoned**
-  (interrupt, a hook above settled first, budget), and the first read rides the first event's:
-  the mod keeps a value only once read whole and never caches a failed read (T-594), and no
-  event awaits another event's read: a shared in-flight read fails with the dispatch that began
-  it (T-577's three starts at once left two mods silent).
-- **A `tool.call` hook that throws is skipped** (2.1.287, T-577): a built-in tool then runs
-  unjudged, and a registered tool reads to the model as "Claude requested permissions to use …
-  but you haven't granted it yet". A gate or a tool hook never throws; it denies.
-- **`claude plugin validate` reads a hooks module by its spelling** (2.1.289, T-651): every `$`
-  call is `$.noun.event(...)` at the call site (never `$.session[k]()` or a noun passed as a
-  value), `on` takes a string literal, `$.env.get` a literal name, and an event registered twice
-  with no matcher is refused. A helper that loops over names fails validation and never loads.
-- **A `tool.check` hook that holds its verdict holds the permission dialog undrawn** (2.1.289,
-  T-651): the pane reads `Waiting…` until the hook resolves `ask`, so a decision awaited there is
-  phone-or-terminal, never both. And no `Notification{permission_prompt}` fires for a dialog on
-  2.1.289; `tool.check → ask` is that moment.
-- **A registered tool answers with `{ result: <text> }`** (the model reads it verbatim) or an
-  array of API content blocks (an image is `{ type: 'image', source: { type: 'base64', … } }`);
-  an MCP-shaped `{ content, isError }` is refused ("does not match its output shape"), and a
-  hook's `{ isError: true }` is not marked an error: only `{ deny }` is.
-- **A call a mod's `tool.call` hook answers fires no `PostToolUse`** (a registered tool's, a
-  question the mod answered): only the engine's own path fires it.
-- **`turn.complete.usage` says neither a cache write's lifetime nor fast mode** (2.1.288): a mod
-  report's writes and speed follow what the transcript tail last read (`cost::Hint`, T-581).
-- **`classic.PreToolUse` carries no `agentId`**; the `tool.call` beneath it does, by
-  `tool_use_id`.
-- **`$.mcp.call` on a server the mod's manifest lists is refused without an allow rule**, and that
-  server's tools are listed to the model: not an up-channel for mesimon.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
 - **A `connect()` on a unix socket path can still succeed for a few hundred microseconds after
   its listener's `close()` returned** — XNU routes it into the dying backlog. A liveness probe
   that reads "connected" as live is right to; a test that closes and probes at once must wait
   the kernel out (`native_quit_requires_live_listener_not_a_stale_wrapper_socket`).
-- **The hook exec form is `"command": <exe>` plus `"args": [...]`** — docs/11's bare-`args`
-  example fails the live validator. No `if` off tool events; matchers only where supported.
-- **`git diff --raw HEAD` writes the destination blob as forty zeros**, so a mode-only test
-  cannot be blob equality.
-- **`git diff --no-index` exits 1 on differences**, which is not an error.
-- **`-uall`, never `-unormal`**: `-unormal` collapses an untracked directory to one unopenable
-  `? dir/` row.
-- **patch-id comparison needs `--no-renames` on *both* sides** (a path filter would flip rename
-  detection on one only) and the git pins on the command line (`diff.orderFile` gone is fatal,
-  `log.follow` reaches `log` but not `diff-tree`, `log.abbrevCommit` zeroes the commit column).
-- **`--max-count` takes the newest N**, so a walk must be anchored by date, not by count.
 - **`tmutil addexclusion` stalls 11 s on TCC** — keep it detached.
 - **strip invalidates the linker's ad-hoc arm64 signature**; the macOS binary is deliberately
   not stripped, and the symptom elsewhere is SIGKILL.
@@ -698,32 +421,9 @@ will not show up in our tests until they break something.
   `std::env::current_exe`. Under Homebrew on Linux it names the versioned keg
   (`Cellar/mesimon/<v>/bin`), which `brew upgrade` deletes; `current_exe` takes it through
   `opt/mesimon`. macOS names brew's `bin/` link, which survives.
-- **A `!` command in Claude's composer fires no hook while it runs** (2.1.295, T-707): no
-  `UserPromptSubmit`, nothing to the mod, nothing in the transcript until it ends (then
-  `<bash-input>` and `<bash-stdout>` land together), and the pane's `#{pane_current_command}`
-  keeps naming `claude` because the shell is a detached child with no tty. The pane process's
-  children are the one live fact (`bash_mode_foreground`); only a shell younger than the idle
-  spell is the command, since the MCP servers and a background task's shell are older. **And
-  the output is then sent to the model**: a short turn follows with no `UserPromptSubmit` and a
-  `Stop` at its end.
-- **A human refusing a dialog fires no hook.** "No, keep planning", an Esc out of a question or a
-  denied permission emits no `PostToolUse`, no `PostToolUseFailure` and no `PermissionDenied`
-  (that one is auto mode's classifier). The agent's next `PreToolUse` is the first frame that
-  says the dialog is gone, and it is the refusal road (`Signal::ToolStarted`, T-447).
-- **A tool in flight keeps the transcript still for its whole duration**, so an mtime-quiet rule
-  reads a 3.5-minute `cargo` call as a dead turn.
 - **`pgrep -f <pattern>` matches the shell that runs it**, whose own argv holds the pattern: a
   `while pgrep -f …; do sleep 5; done` never ends (T-599's ten hours). Wait on a pid, a pidfile
   or `pgrep -x`, never on the command's own words.
-- **Claude Code's session file flips `idle` at the end of every turn**, milliseconds before the
-  `Stop` hook fires, so a status probe races the hook on every turn.
-- **A teammate is listed `running` in every later `Stop` payload for its whole life**, idle or
-  not, so teammates are counted and never classed.
-- **`automove` is edge-triggered**, and a second `UserPromptSubmit` to an already-`Running`
-  session produces no edge — an e2e assertion resting on one passes for the wrong reason. The
-  attention machine also arms a flap pin after >4 committed changes in 20 s; it drops inferred
-  signals only, and a stated High signal commits through it.
-- **`probe_activity` only scans `Running`**, which is what makes `Idle{Background}` immune to it.
 - **`log` is a zsh builtin** — use `/usr/bin/log`.
 - **The libc crate deprecates its `time_t` alias on musl**, so spelling `libc::time_t` warns in
   the Linux builds only. Let a call's signature infer it; `ci/build-linux.sh` clippies each musl
@@ -735,31 +435,6 @@ will not show up in our tests until they break something.
   a fast-exiting pane can read `pane_dead=1` with no status, stay a zombie and fire no
   `pane-died`. `nudge_unreaped` raises SIGCHLD at the server; a GitHub runner also has `gh` in
   `/usr/bin`, ahead of a test stub that only the daemon's PATH carries.
-- **macOS 14 answers `lseek` on a tty with 0, so bash 3.2's `read` (its `/bin/sh`) loses
-  lines** (T-1019): it reads the tty in chunks and drops every line after the first that one
-  `read()` brought, so a stub's `while read` loses words that arrive in one burst. A stub reads
-  through `cat |` (bash reads a pipe a byte at a time); macOS 27 and Linux say `Illegal seek`.
-  Ubuntu's `/bin/sh` is dash, which has no `read -t`.
-- **tmux keeps one XTVERSION reply per client and types the next one.** Its own attach-time
-  query takes iTerm2's `ESC P >|iTerm2 …`; a pane that asks again through a passthrough gets
-  the reply back as M-P plus text (T-488). `extended-keys` stays `on`, never `always`: snacks.nvim
-  routes its probe around tmux only under `on`, and the root `S-Enter` bind carries Shift+Enter
-  to the panes that never asked.
-- **iTerm2 does not repaint a cell whose only change is its underline colour** (3.6, T-696): a
-  whole line rewritten shows the new colour, one cell rewritten keeps the old. `quiet.rs` writes
-  such a cell twice, bare then underlined, inside the frame's synchronized update.
-- **A kitty key-release report outlives the keypress, and tmux types it.** Under the pushed
-  flags a release is `CSI code;mods:3 u`; tmux 3.6a's CSI-u parser stops at the `:` and passes
-  it to the pane as text. `restore_terminal` pops the flags and then fences on a
-  cursor-position reply before the attach (`settle_key_reports`), so nothing reported under the
-  flags reaches the tmux client.
-- **A `SubagentStop`'s `background_tasks` is the whole session's list**, not the subagent's
-  (2.1.283 fills both Stop hooks from one task registry), and its type labels spell the Bash
-  tool's background commands and the Monitor tool's watches both `shell`. Only the tool result
-  that started a task (`backgroundTaskId`, `taskId`) says which it is (T-483).
-- **Plan mode admits an MCP tool only on `annotations.readOnlyHint: true` and ignores allow
-  rules; default and auto mode admit only on an allow rule and ignore the hint** (2.1.270). A
-  read tool needs both, and `read_rung_is_hinted_read_only` keeps them one list.
 - **macOS keys a process's access to Documents, Desktop and Downloads to its *responsible
   process*, inherited at fork** (T-690): a tmux server forked by the first `new-session`
   answered to the terminal app that opened the board, and once that app quit — and the
@@ -805,48 +480,7 @@ If a fixture is ever left behind, `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock k
 cleans it and its `owner.json` says what it owned. **Never sweep every mesimon socket or `pkill`
 by name** — a dogfooding session's own board is among them.
 
-**Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary for the
-pane-died notify — required in e2e, because the in-process daemon's `current_exe()` is the test
-binary), `MESIMON_REQUIRE_TMUX` (turns the e2e tmux skip into a hard failure — set in CI, because
-a runner without tmux otherwise reports a green suite that ran almost nothing), `MESIMON_CI`
-(relaxes two wall-clock budgets in `hook_e2e`), `MESIMON_NO_DAEMON_RESTART`, `MESIMON_FAKE_BUILD`
-(manufacture a stale or newer build in `Hello`), `MESIMON_DAEMON_BIN` (what `spawn_detached`
-respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
-`MESIMON_DAEMON_EXE` (the file the daemon stamps at start and re-reads for `list_board`'s
-`daemon`, T-941, so an e2e moves a stand-in and never the shared binary),
-`MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
-(how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
-`MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the
-crown is told, T-599), `MESIMON_PARK_STALE_MS` (the park clock that demotes a silent
-`Idle{Background}`, ten minutes, T-944), `MESIMON_PERSON_IDLE_MS` (how long after tmux last
-recorded activity from a client attached to the crown's pane it holds the crown's wake, ten
-minutes, T-945),
-`MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
-checkout before the sweep goes looking for its runtime), `MESIMON_WORKTREE_INIT_MS` (how long
-the repo's `.mesimon-worktree-init.sh` may run in a fresh worktree before it is killed, T-614),
-`MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,
-`MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
-train, CLAUDE.md sample, checkout git sample), `MESIMON_NO_TAG_SEED`,
-`MESIMON_TICKET_SHELLS`, `MESIMON_IDLE_SNAKE_MS` (how long the board waits for a key before its
-snake comes out, T-870; an hour), `MESIMON_UPDATE_GOLDEN`, `MESIMON_MOD_DIR` (T-573's research seam: a Claude
-Code mod folder loaded with `--plugin-dir` in place of the laid one; the spike mod and its driver
-live in `crates/mesimon-daemon/mod-spike/`, measured in STALE-MAP, shipped to nobody),
-`MESIMON_MOD_BRIDGE_WAIT_MS` (how long a mod launch's words wait for its bridge before the paste
-road, T-575), `MESIMON_CLAUDE_ROAD` (`hooks|mod|auto`, a test seam over the `auto` every launch asks; `TestFixture` always
-sets it, `hooks` unless the test process has `MESIMON_TEST_ROAD=mod`, the mod road's pass that
-wraps every stub with `tests/common/fake_claude_mod.py` and twins every `hook_send`),
-`MESIMON_REQUIRE_CLAUDE` (turns `mod_plugin`'s skip without `claude` into a failure; the release
-sets it; a mods-off refusal stays a named skip), `MESIMON_RIG_NO_FLAGS` (the rig's `--flags-off`:
-every launch gets `DISABLE_GROWTHBOOK=1`; never a user's), `MESIMON_TEST_FAIL_ENTER` (a file
-path: while it exists, a pane's Enter fails after its paste went in, T-938),
-`MESIMON_TEST_LAUNCH_BARRIER` (a file path: while it exists, a launch's paste edge waits, at most
-10 s, after writing `<path>.reached`, T-987), `MESIMON_SAMPLE_DELAY_MS`
-(how long a `sample_agent` read waits before its capture and again before it lands, T-973),
-`MESIMON_RECHECK_MS` (how long the restart's look waits for a worker the crown's ledger names to
-settle before letting it go, a minute, T-1004).
-
-The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
-`env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.
+The test seams (every `MESIMON_*` a test may set) and the e2e pattern are `crates/mesimon/tests/CLAUDE.md`.
 
 ## Release notes
 
