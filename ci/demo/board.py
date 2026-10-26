@@ -7,6 +7,7 @@ person's words, watches it and scores it.
     python3 -B ci/demo/board.py say "<words>"              the person's words to the crown
     python3 -B ci/demo/board.py watch                      what changed since the last watch
     python3 -B ci/demo/board.py wait [--for S]             until the crown idles or a card needs you
+    python3 -B ci/demo/board.py measure [--episode DIR]    the figures two episodes compare by
     python3 -B ci/demo/board.py trust <KEY>                the person's accept on a trust dialog
     python3 -B ci/demo/board.py score <what> m s w q h "<note>"  one scorecard row (0-2, or -)
     python3 -B ci/demo/board.py stop                       park, shut the daemon down; keep the repo
@@ -240,11 +241,18 @@ class Demo:
 
     def wait_crown_idle(self, w, crown, timeout):
         sub = Subscription(self.paths.orch_sock)
-        deadline = time.time() + timeout
+        deadline, start_ms = time.time() + timeout, now_ms()
+        feed_off = read_feed(self.paths)[1]
         try:
             while time.time() < deadline:
                 rec = agent_of(w.board(), crown)
-                if rec and rig.word_of(rec["state"]) == "idle" and rec.get("claude_session_id"):
+                # Idle after a turn of its own ended (its `Stop` in the feed),
+                # as rig.py's crown_settled reads it: an idle seen between the
+                # launch and the brief's submit is not the end of a turn.
+                if rec and rig.word_of(rec["state"]) == "idle" and any(
+                        l.get("kind") == "hook" and l.get("event") == "Stop"
+                        and rig.of_session(l, rec["id"]) and l.get("at_ms", 0) >= start_ms
+                        for l in read_feed(self.paths, feed_off)[0]):
                     return rec["id"]
                 # The person's first press on a new repo: Claude Code's folder
                 # trust, answered as `trust` answers it.
@@ -323,6 +331,77 @@ class Demo:
         finally:
             sub.close()
         say(f"{clock()} still going after {timeout} s")
+
+    # ---- measure
+
+    def measure(self, kept=None):
+        """The figures two episodes are compared by (T-1032's episode 2):
+        the crown's context at its first and last turn, the bytes of each
+        get_ticket and write reply it got, its stale-`seen` refusals, and
+        the board's crown wakes per merge. `kept` names an episode `reset`
+        kept; without it, this repo's episode."""
+        if kept:
+            with open(os.path.join(kept, "episode.json")) as f:
+                ep = json.load(f)
+            feed = [os.path.join(kept, n) for n in ("activity.jsonl.1", "activity.jsonl")]
+        else:
+            ep = self.load()
+            feed = [self.paths.feed + ".1", self.paths.feed]
+        path = ep.get("crown_transcript")
+        if not path or not os.path.exists(path):
+            die("no crown transcript recorded: `watch` once first")
+        rows = []
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                try:
+                    rows.append(json.loads(raw))
+                except ValueError:
+                    pass
+        lines = []
+        for fp in feed:
+            try:
+                with open(fp, "rb") as f:
+                    for raw in f:
+                        try:
+                            lines.append(json.loads(raw))
+                        except ValueError:
+                            pass
+            except OSError:
+                pass
+        turns = [t for t in turns_of(rows) if t["context"]]
+        uses = unique_calls(rows)
+        by = {}
+        for name, r in uses:
+            short = (name or "").rsplit("__", 1)[-1]
+            if r and (name or "").startswith("mcp__mesimon__"):
+                by.setdefault(short, []).append(len(r["text"].encode()))
+        stale = sum(1 for _, r in uses if r and r["is_error"] and "changed since it was read" in r["text"])
+        merged = [l for l in lines if l.get("kind") == "board"
+                  and l.get("cmd") in ("merge_train_merged", "agent_merge_ticket")]
+        merges = len(merged)
+        all_wakes = [l for l in lines if l.get("kind") == "crown_wake"]
+        # A merge's wakes: those naming its worker within a minute of it.
+        wakes = [w.get("cause") for m in merged for w in all_wakes
+                 if w.get("worker") == m.get("ticket")
+                 and abs(w.get("at_ms", 0) - m.get("at_ms", 0)) <= 60_000]
+        causes = {}
+        for c in wakes:
+            causes[c] = causes.get(c, 0) + 1
+        say(f"  crown wakes in all {len(all_wakes)}: " + ", ".join(
+            f"{c} {sum(1 for w in all_wakes if w.get('cause') == c)}"
+            for c in sorted({w.get("cause") for w in all_wakes})))
+        say(f"episode {ep.get('build')} laid {clock(ep.get('laid_ms'))}, {len(turns)} turns, "
+            f"{len(uses)} calls")
+        if turns:
+            say(f"  context: first turn {turns[0]['context'] // 1000}k, last {turns[-1]['context'] // 1000}k")
+        for name in sorted(by):
+            b = sorted(by[name])
+            say(f"  {name:<14} {len(b):>3} replies  min {b[0]:>6}  median {b[len(b) // 2]:>6}  "
+                f"max {b[-1]:>6}  total {sum(b):>7} B")
+        say(f"  stale-seen refusals: {stale}")
+        say(f"  merges {merges}, wakes at a merge {len(wakes)} "
+            f"({', '.join(f'{c} {n}' for c, n in sorted(causes.items()))})"
+            + (f", {len(wakes) / merges:.2f} per merge" if merges else ""))
 
     # ---- trust
 
@@ -409,6 +488,7 @@ class Demo:
             say("  crown: no session")
             return
         ep["crown_session"] = rec["id"]
+        ep["crown_transcript"] = rec.get("transcript_path") or ep.get("crown_transcript")
         rows = rig.transcript(rec)
         ep["rows_seen"] = len(rows)
         since = ep.get("turns_ms", 0)
@@ -520,14 +600,18 @@ class Demo:
         self.stop()
         if not self.paths:
             return
-        # Episodes keep their scorecards: they are the soak's record.
-        keep = os.path.join(os.path.dirname(self.paths.state_dir), "demo-scorecards")
-        card = os.path.join(self.dir, "scorecard.md")
-        if os.path.exists(card):
-            os.makedirs(keep, exist_ok=True)
-            dst = os.path.join(keep, f"{time.strftime('%Y%m%d-%H%M%S')}.md")
-            shutil.copy(card, dst)
-            say(f"  scorecard kept at {dst}")
+        # Episodes keep their record: the scorecard, the episode's own file,
+        # the feed and the journal, so a later episode's `measure` can read
+        # this one beside it.
+        if os.path.exists(os.path.join(self.dir, "episode.json")):
+            dst = os.path.join(os.path.dirname(self.paths.state_dir), "demo-episodes",
+                               time.strftime("%Y%m%d-%H%M%S"))
+            os.makedirs(dst, exist_ok=True)
+            for src in (os.path.join(self.dir, "scorecard.md"), os.path.join(self.dir, "episode.json"),
+                        self.paths.feed + ".1", self.paths.feed, self.paths.daemon_log):
+                if os.path.exists(src):
+                    shutil.copy(src, dst)
+            say(f"  the episode's record kept at {dst}")
         for d in (self.repo, self.paths.state_dir, self.paths.rt_dir):
             shutil.rmtree(d, ignore_errors=True)
         say(f"  wiped {self.repo} and its board")
@@ -703,6 +787,8 @@ def main():
     sub.add_parser("watch")
     wt = sub.add_parser("wait")
     wt.add_argument("--for", dest="seconds", type=int, default=600)
+    ms = sub.add_parser("measure")
+    ms.add_argument("--episode", help="a kept episode's folder, from reset")
     tr = sub.add_parser("trust")
     tr.add_argument("key")
     sc = sub.add_parser("score")
@@ -734,6 +820,8 @@ def main():
         demo.say_words(a.words.strip())
     elif a.cmd == "wait":
         demo.wait(a.seconds)
+    elif a.cmd == "measure":
+        demo.measure(a.episode)
     elif a.cmd == "trust":
         demo.trust(a.key)
     elif a.cmd == "watch":
