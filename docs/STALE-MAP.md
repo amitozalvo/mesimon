@@ -37106,6 +37106,10 @@ running. When a box draws is the pane's, and nothing records it.
   edit needs no compensating read. Existing authorization and stale-stamp checks are unchanged.
   MCP regressions chain note writes into renames and refuse rename/move/ask/start after an
   intervening person's edit.
+- **Compatibility (T-1033 review):** a `mesimon mcp` stdio shim started before this build
+  cannot parse `AgentNoteWritten` or `AgentTicketUpdated`, so a hook-road session alive across
+  `U` reads `unreadable daemon response` on a write that did happen; sleep and wake clears it,
+  while the mod road runs a fresh process per call and is unaffected.
 - **Rules:** an own read carries `crown` once per crown context, or on `full: true`. The rules
   themselves are unchanged. The receipt pointers name that explicit read. T-930's first-call
   delivery, acknowledgement after a successful write, and resets on crowning, compaction,

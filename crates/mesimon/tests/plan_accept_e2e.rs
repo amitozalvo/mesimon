@@ -2070,10 +2070,10 @@ fn two_questions_in_one_message_hold_the_seat_as_recorded() {
     std::thread::sleep(Duration::from_millis(3500));
     assert_eq!(b.state(), Some(question.clone()), "B stands: {:?}", b.decisions());
     assert_eq!(b.held_call().as_deref(), Some(second.as_str()), "still held on B");
-    let needs = match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you.and_then(|n| n.request),
         other => panic!("get_ticket: {other:?}"),
     };
