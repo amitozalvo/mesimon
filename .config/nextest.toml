@@ -9,11 +9,9 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 leak-timeout = "2s"
 
 # Tests that read green alone and red under the parallel suite's load (T-1023's
-# runs, T-1029): each runs alone, holding every test thread, and first, so no
-# queue drains for it. A group alone (max-threads = 1) kept them off each other
-# and not off the other threads: green on ubuntu-24.04, still red on macos-14
-# (T-1029's runs). A test red in here is not a load flake. T-1027's two
-# plan_accept_e2e tests (T-957) are left out on purpose.
+# runs, T-1029): each runs one at a time with the others of this group, beside
+# everything else at the usual thread count. T-1027's two plan_accept_e2e tests
+# (T-957) are left out on purpose.
 [test-groups]
 serial-timing = { max-threads = 1 }
 
@@ -41,5 +39,21 @@ filter = """
 | (binary_id(mesimon::forge_e2e) & test(=a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds))
 """
 test-group = "serial-timing"
+
+# The group keeps those tests off each other, not off the other threads: on
+# macos-14's three cores these five were still red in it and green run alone
+# (T-1029). Each holds every test thread, and runs first, so no queue drains
+# for it. Alone everywhere cost ubuntu-24.04 three minutes and fixed nothing
+# there.
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "macos")'
+filter = """
+(binary_id(mesimon::spawn_ready_e2e) & test(=a_give_up_is_marked_and_the_resend_clears_the_box_once))
+| (binary_id(mesimon::provider_e2e) & test(=an_unacked_codex_steer_is_pressed_once_and_given_up))
+| (binary_id(mesimon::plan_accept_e2e) & (
+    test(=an_esc_inside_an_accept_s_settle_rests_interrupted)
+  | test(=an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing)
+  | test(=an_id_less_permission_request_keeps_a_call_only_as_a_repeat)))
+"""
 threads-required = "num-test-threads"
 priority = 100
