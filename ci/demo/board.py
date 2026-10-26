@@ -387,8 +387,12 @@ class Demo:
             if r and (name or "").startswith("mcp__mesimon__"):
                 by.setdefault(short, []).append(len(r["text"].encode()))
         stale = sum(1 for _, r in uses if r and r["is_error"] and "changed since it was read" in r["text"])
-        merged = [l for l in lines if l.get("kind") == "board"
-                  and l.get("cmd") in ("merge_train_merged", "agent_merge_ticket")]
+        # The train's merges, and the crown's own (`merge_ticket` by an agent,
+        # merged: its refusals carry another outcome).
+        merged = [l for l in lines if l.get("kind") == "board" and (
+            l.get("cmd") == "merge_train_merged"
+            or (l.get("cmd") == "merge_ticket" and l.get("actor") == "agent"
+                and l.get("outcome") == "merged"))]
         merges = len(merged)
         all_wakes = [l for l in lines if l.get("kind") == "crown_wake"]
         # A merge's wakes: those naming its worker within a minute of it.
@@ -622,6 +626,14 @@ class Demo:
                         self.paths.feed + ".1", self.paths.feed, self.paths.daemon_log):
                 if os.path.exists(src):
                     shutil.copy(src, dst)
+            # The app the workers built, every branch, so a later scorecard
+            # can run its tests again (`git clone repo.bundle`).
+            out = subprocess.run(["git", "-C", self.repo, "bundle", "create",
+                                  os.path.join(dst, "repo.bundle"), "--all"],
+                                 capture_output=True, text=True,
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")})
+            if out.returncode != 0:
+                say(f"  git bundle: {out.stderr.strip()}")
             say(f"  the episode's record kept at {dst}")
         for d in (self.repo, self.paths.state_dir, self.paths.rt_dir):
             shutil.rmtree(d, ignore_errors=True)
@@ -813,6 +825,10 @@ def main():
         if not binary or not os.path.exists(binary):
             die("no mesimon binary: name one with --bin")
         demo.lay(os.path.realpath(binary))
+        return
+    # A kept episode is read from its own folder, with or without a board laid.
+    if a.cmd == "measure" and a.episode:
+        demo.measure(a.episode)
         return
     if not demo.paths:
         die(f"no repo at {a.repo}: `lay` first")
