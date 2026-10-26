@@ -1205,7 +1205,7 @@ fn quiet_session(
     let (headline, clauses) = quiet_words(rec);
     let mut text: Vec<Line<'static>> = Vec::new();
     let compacting = glyphs::is_compacting(rec);
-    if rec.state == SessionState::Running || compacting {
+    if *glyphs::display_state(rec) == SessionState::Running || compacting {
         // The pulse is the headline here: a turn in flight has a live thing
         // to say about itself, and `quiet_words` leaves the row to it. So
         // does a compaction (T-894), whatever state it began in.
@@ -1254,7 +1254,7 @@ fn agent_anim(rec: &mesimon_core::board::SessionRecord, peek: Option<&crate::pee
     }
     let thinking =
         matches!(peek.and_then(|p| p.activity.as_ref()), Some(crate::peek::Doing::Thinking));
-    Anim::of(&rec.state, thinking)
+    Anim::of(glyphs::display_state(rec), thinking)
 }
 
 /// Why there is nothing to read, and what the session is doing instead. Pure
@@ -1277,7 +1277,7 @@ pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, 
             (word, vec!["its pane is gone, and the pane was the record".into()])
         };
     }
-    match &rec.state {
+    match glyphs::display_state(rec) {
         // The turn is in flight; `quiet_session` gives the row to the pulse.
         SessionState::Running => (
             String::new(),

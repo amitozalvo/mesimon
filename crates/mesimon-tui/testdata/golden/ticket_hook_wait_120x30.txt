@@ -1,0 +1,30 @@
+ TICKET (T-2)   mesimon › kanban-tui
+
+ Keymap validator
+ TODO for >1y ∙ created >1y ago
+ idle ∙ 1 task ∙ >1y
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                                      ⠒ ✻ claude               >1y
+     ▀▀▀▄▀█▀▀    ███                                                                       x sleep
+     ▄▀███▀▄▄▄▄▄▄▀█▀▄
+   ▄▀████████████████▀▄
+   ███▀████████▀███████
+   ███▀▀▀██████▀▀▀█████
+   ▀▀▀██████▀▀██████▀▀▀
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+    monitoring
+    it left no transcript
+
+
+
+
+
+
+
+
+
+ enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

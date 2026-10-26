@@ -558,6 +558,10 @@ pub struct SessionRecord {
     /// as `tasks_running` is; the daemon keeps it in memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks_since: Option<u64>,
+    /// Snapshot-only evidence that Stop is held for hook processes or their
+    /// rewake grace. Older snapshots omit it; older readers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_wait: Option<HookWait>,
     /// A Claude seat whose conversation has never taken a prompt (T-603):
     /// a plain start (`c`, whose title is typed and never submitted), or a
     /// wake of one, which comes up on an empty composer. Claude Code writes
@@ -605,6 +609,13 @@ impl Unsent {
     }
 }
 
+/// Process evidence after a turn ended, not a claim that a review passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookWait {
+    pub count: u32,
+    pub since_ms: u64,
+}
+
 impl SessionRecord {
     /// Whether this record's pane reports through the mod (T-577): a mod
     /// launch from a build that passes no hook set, or a native one (T-658),
@@ -628,7 +639,9 @@ impl SessionRecord {
     /// is `unsent` — an `idle` there reads as a turn that ended, and none
     /// began (T-570).
     pub fn state_word(&self) -> &'static str {
-        if self.unsent_words().is_some() {
+        if self.hook_wait.is_some() {
+            "background"
+        } else if self.unsent_words().is_some() {
             "unsent"
         } else if self.kind.is_agent() && self.foreground.is_some() {
             // A `!` command running in the composer (T-707): the seat is
@@ -714,6 +727,7 @@ impl SessionRecord {
             unsent: None,
             tasks_running: None,
             tasks_since: None,
+            hook_wait: None,
             unprompted: false,
             compacting: false,
         }
@@ -4486,6 +4500,7 @@ mod tests {
         let rec: SessionRecord = serde_json::from_str(m1).unwrap();
         assert_eq!(rec.state, SessionState::unknown());
         assert_eq!(rec.confidence, Confidence::High);
+        assert!(rec.hook_wait.is_none());
         assert!(rec.waiting_since.is_none());
 
         let m1_exited = r#"{

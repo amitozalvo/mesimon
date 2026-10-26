@@ -113,7 +113,12 @@ impl Daemon {
     }
 
     pub(super) fn receipt_state(&mut self, s: &SessionRecord, change: &Change) {
-        if !s.kind.is_agent() {
+        if !s.kind.is_agent()
+            || (self.async_stop_pending(s.id) && change.to == SessionState::Running)
+        {
+            // Holding a Stop may promote an inferred idle to Running. That
+            // synthetic edge neither begins a foreign turn nor consumes the
+            // crown's allowance for the turn its own write started (T-1044).
             return;
         }
         let Some(r) = self.receipts.get_mut(&s.ticket) else { return };
@@ -131,5 +136,72 @@ impl Daemon {
         } else if began || !crownexpect::turn_open(&change.to) {
             r.beginning = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_stop_keeps_its_crowns_receipt_until_a_real_foreign_turn() {
+        let dir = std::env::temp_dir()
+            .join(format!("msmn-hkr-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let (mut d, _, _rx) = crate::server::queued_person_push_tests::daemon(&dir);
+        let rec = &mut d.board.sessions[0];
+        rec.state = SessionState::Running;
+        rec.pane_key = Some("1:%0".into());
+        let rec = rec.clone();
+        let id = rec.id;
+        d.machines.insert(id, Machine::new(SessionState::Running, 1_000));
+        d.receipts.insert(
+            rec.ticket,
+            Receipt {
+                stamp: "own-write".into(),
+                full: String::new(),
+                words: String::new(),
+                seat: Some(id),
+                active: true,
+                next: vec![],
+                beginning: true,
+            },
+        );
+        let change =
+            |from, to| Change { from, to, attention_added: false, confidence: Confidence::High };
+        d.receipt_state(&rec, &change(SessionState::Spawning, SessionState::Running));
+        assert!(!d.receipts[&rec.ticket].beginning, "own prompt consumed once");
+        let frame = HookFrame {
+            session: id.to_string(),
+            event: "Stop".into(),
+            reason: None,
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        d.receipt_state(&rec, &change(SessionState::Running, SessionState::Running));
+        // A held Stop can also promote an inferred idle. This is the
+        // turn_begins edge that used to revoke the receipt after rebase.
+        let idle = SessionState::Idle { stop_reason: StopReason::Unknown };
+        assert!(crownexpect::turn_begins(&idle, &SessionState::Running));
+        d.receipt_state(&rec, &change(idle, SessionState::Running));
+        assert!(d.receipts.contains_key(&rec.ticket));
+        assert!(!d.receipts[&rec.ticket].beginning, "no new prompt allowance");
+        d.sample_async_stops(Some(&[]), Ok(&[]), 3_000);
+        assert!(!d.async_stop_pending(id));
+        let ended = d.machines.get_mut(&id).unwrap().tick(3_000).unwrap();
+        d.receipt_state(&rec, &ended);
+        assert!(d.receipts.contains_key(&rec.ticket), "release is its own turn ending");
+        d.receipt_state(&rec, &change(ended.to, SessionState::Running));
+        assert!(!d.receipts.contains_key(&rec.ticket), "a real foreign turn still revokes");
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

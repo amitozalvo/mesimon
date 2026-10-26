@@ -218,7 +218,12 @@ impl Daemon {
                 }
             }
             Ok((true, rec)) => {
-                let state = mesimon_core::board::agent_state_word(&rec.state).to_string();
+                let state = if self.async_hook_view(rec.id).is_some() {
+                    "background"
+                } else {
+                    mesimon_core::board::agent_state_word(&rec.state)
+                }
+                .to_string();
                 let tail = read.tail.unwrap_or_default();
                 let sample = AgentSampleView {
                     key: s.key.clone(),

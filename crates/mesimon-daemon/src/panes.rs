@@ -120,7 +120,8 @@ pub struct Sample {
     /// RSS by pane process group, over the query's names.
     pub rss: Option<HashMap<i32, u64>>,
     pub rows: Option<Vec<ProcRow>>,
-    pub hook_rows: Option<Vec<HookProcess>>,
+    /// None means not requested; Err means the requested process read failed.
+    pub hook_rows: Option<Result<Vec<HookProcess>, ()>>,
     pub alive: Option<bool>,
     pub access: Option<Access>,
     /// How long the reads took, for the journal.
@@ -134,7 +135,7 @@ pub fn take(backend: &TmuxBackend, repo: &Path, q: Query, gen: u64, at: u64) -> 
     let forks = q.forks();
     let facts = (q.facts || q.rss.is_some()).then(|| backend.pane_facts().ok()).flatten();
     let rows = q.rows.then(process_rows);
-    let hook_rows = if q.hook_rows { facts.as_deref().and_then(hook_process_rows) } else { None };
+    let hook_rows = q.hook_rows.then(|| facts.as_deref().and_then(hook_process_rows).ok_or(()));
     let rss = match (&q.rss, &facts) {
         (Some(ours), Some(facts)) => {
             let pgids: HashSet<i32> = facts
@@ -209,7 +210,17 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
         // Whole-second etime cannot distinguish infrastructure born just
         // before a prompt from a hook born during the turn. An unreadable
         // birth leaves this sample unknown, never an empty tree.
-        let (born_ms, pgid) = process_birth_ms(row.pid)?;
+        let Some((born_ms, pgid)) = process_birth_ms(row.pid) else {
+            // Exiting between ps and the birth read is positive absence,
+            // not a broken reader: it must retain the rewake grace.
+            // SAFETY: signal zero only checks whether this PID exists.
+            let gone = unsafe { libc::kill(row.pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if gone {
+                continue;
+            }
+            return None;
+        };
         rows.push(HookProcess { pid: row.pid, ppid: row.ppid, pgid, born_ms, argv: row.comm });
     }
     Some(rows)

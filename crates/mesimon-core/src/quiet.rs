@@ -409,6 +409,7 @@ mod tests {
             unsent: None,
             tasks_running: None,
             tasks_since: None,
+            hook_wait: None,
             unprompted: false,
             compacting: false,
         }

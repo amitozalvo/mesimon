@@ -13619,3 +13619,33 @@ fn the_queued_ask_row_keeps_its_release_and_bound_on_every_card() {
         }
     }
 }
+
+/// A held Stop reuses the background park, including its existing page words.
+#[test]
+fn golden_hook_wait_uses_the_existing_background_park() {
+    use crate::glyphs::{self, Tier};
+    let mut b = fixture(false);
+    let mut s = session(21, ulid_n(2), SessionKind::Claude, SessionState::Running);
+    s.hook_wait = Some(mesimon_core::board::HookWait { count: 1, since_ms: 1 });
+    s.tasks_running = Some(1);
+    s.tasks_since = Some(1);
+    let mut parked = s.clone();
+    parked.hook_wait = None;
+    parked.state = SessionState::Idle { stop_reason: StopReason::Monitoring };
+    assert_eq!(super::ticket::quiet_words(&s), super::ticket::quiet_words(&parked));
+    assert_eq!(glyphs::record_word(&s), glyphs::record_word(&parked));
+    for spin in 0..8 {
+        assert_eq!(
+            glyphs::session_glyph(&s, Tier::Unicode, spin),
+            glyphs::session_glyph(&parked, Tier::Unicode, spin)
+        );
+    }
+    assert!(!glyphs::is_working(&s));
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    app.cursor_row = Some(1);
+    golden("board_hook_wait_120x30", &render(&app, 120, 30));
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
+    golden("ticket_hook_wait_120x30", &render(&app, 120, 30));
+}

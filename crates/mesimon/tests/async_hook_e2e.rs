@@ -32,6 +32,7 @@ struct Case {
     h: Harness,
     c: TestClient,
     worker: ulid::Ulid,
+    crown: uuid::Uuid,
     sid: uuid::Uuid,
     key: String,
     branch: String,
@@ -100,7 +101,7 @@ impl Case {
         // Any launch-time infrastructure is older than the turn, even at
         // ps's whole-second precision (the mod parity road has a bridge).
         std::thread::sleep(Duration::from_secs(2));
-        let mut case = Self { h, c, worker, sid, key, branch: wt.branch, dir };
+        let mut case = Self { h, c, worker, crown: cs, sid, key, branch: wt.branch, dir };
         case.send("UserPromptSubmit");
         case.c.await_state(sid, "working", |s| *s == SessionState::Running);
         Some(case)
@@ -148,6 +149,37 @@ impl Case {
             self.feed().contains("async_hook_wait")
         });
         assert_eq!(self.c.board().live_agent(self.worker).unwrap().state, SessionState::Running);
+        let snapshot = self.c.board();
+        let seat = snapshot.live_agent(self.worker).unwrap();
+        assert_eq!(seat.hook_wait.unwrap().count, 1);
+        assert_eq!(seat.state_word(), "background");
+        match self.c.send(
+            Principal::Agent { session: self.crown },
+            Command::AgentReadTicket { key: self.key.clone(), full: false, plan: false },
+        ) {
+            Response::AgentTicket { ticket } => {
+                assert_eq!(ticket.state.unwrap().state, "background");
+                let bg = ticket.background.unwrap();
+                assert_eq!(bg.tasks, 1);
+                assert!(bg.since_secs.is_some());
+                assert_eq!(bg.kind.as_deref(), Some("hook processes after the turn"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(self.c.request(Command::SetCrownSamples { on: true }), Response::Ok));
+        match self.c.send(
+            Principal::Agent { session: self.crown },
+            Command::AgentSampleTicket { key: self.key.clone() },
+        ) {
+            Response::AgentSample { sample } => {
+                assert_eq!(sample.state, "background");
+                let bg = sample.background.unwrap();
+                assert_eq!(bg.tasks, 1);
+                assert!(bg.since_secs.is_some());
+                assert_eq!(bg.kind.as_deref(), Some("hook processes after the turn"));
+            }
+            other => panic!("{other:?}"),
+        }
         assert_eq!(self.wakes(), 0, "delivery was announced before the child ended");
         match self.c.request(Command::SleepSession { id: self.sid }) {
             Response::Err { message } => assert!(message.contains("child processes"), "{message}"),
@@ -167,6 +199,7 @@ fn a_clean_child_exit_delivers_after_the_grace_and_allows_a_park() {
     t.c.await_state(t.sid, "clean delivery", |s| {
         *s == SessionState::Idle { stop_reason: StopReason::EndTurn }
     });
+    assert!(t.c.board().live_agent(t.worker).unwrap().hook_wait.is_none());
     assert!(released.elapsed() >= Duration::from_secs(3), "the rewake grace was skipped");
     assert!(released.elapsed() < Duration::from_secs(12), "a clean exit waited for the cap");
     wait_until(Duration::from_secs(10), "crown delivery after child exit", || t.wakes() == 1);

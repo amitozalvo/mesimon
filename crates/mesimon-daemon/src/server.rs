@@ -5656,7 +5656,10 @@ impl Daemon {
                 self.feed.hook_event(&frame.session, &frame.event, Some("straggler"));
                 return;
             }
+            let held = self.async_stop_pending(id);
             let sig = self.hold_async_stop(id, sig, &frame, observation.detail.clone(), now);
+            dirty |= held != self.async_stop_pending(id)
+                || (frame.event == "Stop" && self.async_stop_pending(id));
             // A Codex runtime outlives its pane until cleanup confirms; a
             // record already closed is left as it closed (T-1026).
             if matches!(sig, Signal::PaneDied { .. }) {
@@ -9375,9 +9378,14 @@ impl Daemon {
         // `working` here as it does on the card (T-707).
         let mut seat = s.clone();
         seat.foreground = self.foregrounds.get(&s.id).cloned();
+        seat.hook_wait = self.async_hook_view(s.id);
         Some(AgentStateView {
             state: seat.state_word().to_string(),
-            since_secs: s.state_changed_at.map(|at| now.saturating_sub(at) / 1000),
+            since_secs: seat
+                .hook_wait
+                .map(|h| h.since_ms)
+                .or(s.state_changed_at)
+                .map(|at| now.saturating_sub(at) / 1000),
             raised: t.raised.as_ref().map(|r| r.reason.clone()),
             failed: match s.state {
                 SessionState::Failed { reason } => Some(agent_fail_word(reason).to_string()),
@@ -11299,11 +11307,19 @@ impl Daemon {
     /// (T-599): how many, and since its turn ended. Said, never judged.
     fn agent_background(&self, id: ulid::Ulid) -> Option<AgentBackgroundView> {
         let rec = self.board.live_agent(id)?;
+        if let Some(hooks) = self.async_hook_view(rec.id) {
+            return Some(AgentBackgroundView {
+                tasks: hooks.count,
+                kind: Some("hook processes after the turn".into()),
+                since_secs: Some(now_ms().saturating_sub(hooks.since_ms) / 1000),
+            });
+        }
         if !rec.state.on_tasks() {
             return None;
         }
         Some(AgentBackgroundView {
             tasks: u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX),
+            kind: None,
             since_secs: self.stretch_since(rec).map(|at| now_ms().saturating_sub(at) / 1000),
         })
     }
@@ -14655,6 +14671,11 @@ impl Daemon {
         rec.tasks_running =
             on_tasks.then(|| u32::try_from(rec.background_tasks.count()).unwrap_or(u32::MAX));
         rec.tasks_since = on_tasks.then(|| self.stretch_since(rec)).flatten();
+        rec.hook_wait = self.async_hook_view(rec.id);
+        if let Some(hooks) = rec.hook_wait {
+            rec.tasks_running = Some(hooks.count);
+            rec.tasks_since = Some(hooks.since_ms);
+        }
         // And whether the seat never took a prompt (T-603): one `stat`
         // per idle or parked claude.
         rec.unprompted = self.unprompted_hint(rec);
@@ -19462,10 +19483,11 @@ impl Daemon {
         let person_words = self.queued_person_words();
         changed |= stage!(self, "probe_codex_startup", self.probe_codex_startup(&s.screens, at));
         changed |= stage!(self, "probe_claude_startup", self.probe_claude_startup(&s.screens, at));
+        if let Some(rows) = &s.hook_rows {
+            changed |=
+                self.sample_async_stops(s.facts.as_deref(), rows.as_deref().map_err(|_| ()), at);
+        }
         if let Some(facts) = &s.facts {
-            if let Some(rows) = &s.hook_rows {
-                changed |= self.sample_async_stops(facts, rows, at);
-            }
             let panes =
                 stage!(self, "refresh_panes", self.absorb_panes(facts, s.rows.as_deref(), at));
             changed |= panes.changed;

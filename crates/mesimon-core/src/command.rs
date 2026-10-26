@@ -2905,6 +2905,9 @@ pub struct AgentToolView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBackgroundView {
     pub tasks: u32,
+    /// Absent for the task registry; identifies observed hook processes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_secs: Option<u64>,
 }

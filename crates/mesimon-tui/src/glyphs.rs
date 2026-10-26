@@ -484,6 +484,16 @@ pub(crate) fn bolt(tier: Tier) -> &'static str {
     }
 }
 
+/// A held Stop has the existing background-parked presentation. The
+/// underlying Running state still keeps the daemon's work gates closed.
+pub(crate) fn display_state(rec: &SessionRecord) -> &SessionState {
+    if rec.hook_wait.is_some() && rec.state.has_pane() {
+        &SessionState::Idle { stop_reason: StopReason::Monitoring }
+    } else {
+        &rec.state
+    }
+}
+
 /// Does this session's `Running` mean work is in flight? An agent's does. A
 /// shell has no hook stream, so the daemon pins it at `Running` for the
 /// whole life of its pane (D15: "a live pane is all running means") — that
@@ -498,6 +508,9 @@ pub(crate) fn bolt(tier: Tier) -> &'static str {
 /// while a long `cargo test` runs under it — the foreground is what says it
 /// is busy, and it spins exactly as a shell's does.
 pub(crate) fn is_working(rec: &SessionRecord) -> bool {
+    if rec.hook_wait.is_some() {
+        return false;
+    }
     match rec.kind {
         SessionKind::Bash => rec.state == SessionState::Running && rec.foreground.is_some(),
         _ => {
@@ -532,6 +545,9 @@ pub(crate) fn is_working(rec: &SessionRecord) -> bool {
 /// the ack, on giving up, and on any state where the pane stopped being
 /// pressable, and no state outside these two ever consults it.
 pub(crate) fn is_launching(rec: &SessionRecord) -> bool {
+    if rec.hook_wait.is_some() {
+        return false;
+    }
     match &rec.state {
         SessionState::Spawning => true,
         // `EndTurn` is a turn that FINISHED, which is only reachable through
@@ -593,7 +609,7 @@ pub(crate) fn card_glyph(
     });
     let mut all_plan = !has_attn;
     for s in sessions.iter().filter(usable) {
-        if let SessionState::RequiresAction { reason } = &s.state {
+        if let SessionState::RequiresAction { reason } = display_state(s) {
             has_attn = true;
             all_plan &= matches!(reason, Reason::Plan);
         }
@@ -644,10 +660,9 @@ pub(crate) fn card_glyph(
     // the task ran (dogfood 2026-09-01, T-128: two minutes on a build-poll).
     // Under the spinner deliberately: if any session on the ticket is really
     // working, that is the louder and truer thing to say.
-    if sessions
-        .iter()
-        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::Monitoring }))
-    {
+    if sessions.iter().any(|s| {
+        matches!(display_state(s), SessionState::Idle { stop_reason: StopReason::Monitoring })
+    }) {
         return Some((background(tier, spin), Register::Grey));
     }
     // Interrupted by the user: a known fact, so above `waiting` (which says
@@ -680,6 +695,9 @@ pub(crate) fn card_glyph(
 /// `spin` animates the working and waiting glyphs, exactly as on the card.
 pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
+    if rec.hook_wait.is_some() && rec.state.has_pane() {
+        return (background(tier, spin), Register::Grey);
+    }
     // A compaction in flight (T-894) wears its own slow mark whatever the
     // state under it, exactly as the card does.
     if is_compacting(rec) {
@@ -701,7 +719,7 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
     if matches!(rec.state, SessionState::Idle { .. }) && is_working(rec) {
         return (spinner(tier, spin), Register::Grey);
     }
-    match &rec.state {
+    match display_state(rec) {
         SessionState::Spawning => (launching(tier, spin), Register::Grey),
         SessionState::Running => (spinner(tier, spin), Register::Grey),
         SessionState::RequiresAction { reason: Reason::Plan } => (plan_mark(tier), Register::Attn),
@@ -774,7 +792,7 @@ pub(crate) fn record_word(rec: &SessionRecord) -> &'static str {
     if is_compacting(rec) {
         "compacting"
     } else {
-        state_word(&rec.state)
+        state_word(display_state(rec))
     }
 }
 

@@ -37746,3 +37746,84 @@ ran the following; no CI result is claimed (T-1030).
   rerun both passed, with clean fixture audits. `cargo fmt --all -- --check` and
   `git diff --check` passed. The worker/crown brief did not change, so no new brief rig case
   was required; WR1 above was the recorder experiment, not a claimed passing behavior gate.
+
+## T-1044 review — unavailable process evidence releases, and a held Stop keeps its receipt
+
+- Rebased onto **5cae4960** as requested. STALE-MAP was the only conflict: all of main's
+  blocks precede the ticket's original block, which remains as the record of that revision.
+- A requested process sample now distinguishes **not requested** from **failed**. At the
+  first completed sample at least `SCAN_MS` after Stop, missing pane facts, no matching pane,
+  a missing pane PID, or a failed argv/parent/birth read releases the hold. `async_hook_unobserved`
+  records which evidence was unavailable. A dead pane releases the hold immediately, even
+  inside the scan window. The ten-minute cap remains for observed child work, not for a
+  machine whose process reader cannot work. Five daemon unit cases assert the release,
+  timing and feed reason, including failure after a child was previously observed.
+- T-1042's `receipt_state` now ignores the synthetic Running edge while a Stop is held.
+  It does not consume a prompt allowance or revoke the crown's receipt as a foreign turn.
+  Release remains an ordinary turn end. A unit case consumes the crown's own beginning,
+  holds Stop, exercises the inferred-idle-to-Running edge, releases it, then proves a real
+  later turn still revokes the receipt. Existing crown receipt e2es remain in the gate.
+- Review validation starts with the first fail-open unit run failing five cases before their
+  assertions: macOS's temporary directory plus a UUID made the fixture tmux socket path too
+  long. Those exact fixture directories were cleaned, names shortened, and the same unit
+  command rerun: **7/7 passed**. The new receipt unit case passed on its first run.
+  Further results and every review rerun are recorded in this ticket's validation note.
+
+- The first requested local e2e group passed 136/137. Its train case caught a child exiting
+  between `ps` and the birth lookup: treating that as a failed reader bypassed the grace.
+  A failed birth lookup now checks PID existence with signal zero. `ESRCH` is a confirmed
+  exit and keeps the normal empty-tree grace; an existing but unreadable PID still fails
+  open. No test timing or assertion was relaxed.
+- Held Stops now carry snapshot-only `hook_wait: {count, since_ms}` with `serde(default)`.
+  The underlying machine stays Running to hold the train and delivered wake. The TUI and
+  Remote Control render the existing `Idle{Monitoring}` background-parked glyph and words,
+  including the existing task count/age row. No new glyph, word or row was introduced for
+  the person. The crown's `get_ticket` and `sample_agent` say `background`, with `tasks`,
+  `since_secs` and `kind: "hook processes after the turn"` in the existing background
+  object. Count is observed processes, zero during the initial scan or exit grace; none
+  of these fields claims that a review passed. New/cleared holds and count changes publish
+  snapshots. The e2e asserts all three views and that release clears the decoration.
+- The two new goldens reuse the background presentation and were read by eye: the card has
+  the parked mark and `idle ∙ 1 task ∙ >1y`, the page the same mark and `monitoring`, with
+  the existing geometry. A rendering test also compares its words and animation frames
+  directly to a background park. The first golden-suite run was sandboxed: 1,244 passed,
+  four failed (Unix socket binding and osacompile access), four pre-existing ignored.
+  It was rerun with command-scoped elevation. The first full Linux invocation caught a
+  missing `hook_wait: None` in a core test fixture at compile time; fixed before rerunning.
+
+- Final review checks so far: `cargo ut` passed again after the visibility change (nine
+  fixture owners cleaned); the elevated golden-suite rerun passed **1,248**, with four
+  pre-existing ignored tests. The requested `crown_e2e`, `plan_accept_e2e`, `async_hook_e2e`
+  rerun passed **137/137**, no skips, all **162** fixture owners cleaned. WR1 ran once on
+  Claude Code 2.1.310's mod road, crown `claude-opus-5-5` and workers `claude-sonnet-5-5`:
+  **PASS**. `--reset --no-build` parked the rig's session, archived its two tickets and
+  stopped its daemon and private tmux. The worker/crown brief text remains unchanged.
+- The named Linux hook invocation passed **3/3**, then the script's automatic mod pass
+  broadened to all integration binaries and hit its outer **900 s** timeout (exit **124**).
+  This is not a passing full invocation. Inspection of its retained audit found 90 owners
+  marked cleaned and three still active when the container was removed; no completed
+  fixture audit is claimed for that run. The subsequent full Linux rerun also passed the
+  updated **3/3** hook cases, exercising `/proc` birth/parentage and the new crown/snapshot
+  assertions on Debian 12, distro tmux 3.3a, native arm64, rustc 1.98.0.
+
+- The full Debian 12 rerun ended at the script's **900 s** outer deadline (exit **124**),
+  before the suite completed, with two reported crown failures:
+  `a_crown_a_person_stopped_holds_its_wake_and_its_hand` (already named as Linux-CI-red
+  in the existing nextest configuration) and
+  `a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box`. The latter printed
+  `send-keys: unknown flag -K`; its `renew_activity` fixture uses that flag on main
+  **5cae4960** too, while Debian 12 ships tmux 3.3a. The timeout prevented libtest's final
+  failure details and fixture audit. The retained registry has 92 cleaned owners and three
+  active records at container removal. Linux hook runtime is verified; a complete green
+  Linux suite is **not** claimed. These tests and the Linux runner were not weakened.
+- `cargo clippy --workspace --all-targets -- -D warnings` passed with a clean fixture audit.
+
+- The one final review `cargo nextest run --workspace --no-fail-fast` passed **3,152/3,152**
+  on the normal road and **399/399** on the automatic mod integration pass; the fixture
+  audit was clean for **843 owners**. The 11 existing ignored tests are measurements,
+  child helpers exercised by their parents, and the live-release network test. The mod
+  pass excludes the seven non-integration binaries by design and ignores only its child
+  helper as a standalone test. No tmux integration was skipped. This is the local macOS
+  gate, not a green Linux result or a CI run; the working-tree run earns no release stamp.
+  Final `cargo fmt --all -- --check` and `git diff --check` passed. The review's exact
+  commands, failures, reruns and the commit are also in the ticket's validation note.

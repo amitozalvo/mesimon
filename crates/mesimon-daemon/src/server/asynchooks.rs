@@ -139,6 +139,18 @@ impl Daemon {
         Signal::TurnStarted
     }
 
+    pub(super) fn async_hook_view(&self, id: uuid::Uuid) -> Option<mesimon_core::board::HookWait> {
+        let pending = self.async_hooks.pending.get(&id)?;
+        Some(mesimon_core::board::HookWait {
+            count: self
+                .async_hooks
+                .known
+                .get(&id)
+                .map_or(0, |rows| rows.len().min(u32::MAX as usize) as u32),
+            since_ms: pending.stopped,
+        })
+    }
+
     pub(super) fn async_stop_pending(&self, id: uuid::Uuid) -> bool {
         self.async_hooks.pending.contains_key(&id)
     }
@@ -175,23 +187,44 @@ impl Daemon {
 
     pub(super) fn sample_async_stops(
         &mut self,
-        facts: &[mesimon_backend_tmux::PaneFacts],
-        rows: &[HookProcess],
+        facts: Option<&[mesimon_backend_tmux::PaneFacts]>,
+        rows: Result<&[HookProcess], ()>,
         at: u64,
     ) -> bool {
         let mut ready = Vec::new();
+        let mut changed = false;
         for (id, pending) in &mut self.async_hooks.pending {
             // Never use a sample that started before this Stop.
             if at < pending.stopped {
                 continue;
             }
             let Some(rec) = self.board.sessions.iter().find(|r| r.id == *id) else { continue };
-            let Some(pane) = facts.iter().find(|f| f.session_name == rec.sid16() && !f.pane_dead)
-            else {
-                continue;
+            let pane = facts.and_then(|fs| fs.iter().find(|f| f.session_name == rec.sid16()));
+            let missing = match pane {
+                Some(p) if p.pane_dead => Some("pane is dead"),
+                None if facts.is_none() => Some("pane facts read failed"),
+                None => Some("pane missing from sample"),
+                Some(p) => match rows {
+                    Err(()) => Some("process read failed (argv, parentage or birth unavailable)"),
+                    Ok(rs) if !rs.iter().any(|r| r.pid == p.pane_pid) => {
+                        Some("pane process missing from sample")
+                    }
+                    _ => None,
+                },
             };
-            let Some(_) = rows.iter().find(|r| r.pid == pane.pane_pid) else { continue };
+            if let Some(why) = missing {
+                // Only positively seen children earn a hold. An unreadable
+                // machine must not impose the ten-minute cap on every turn.
+                if pane.is_some_and(|p| p.pane_dead)
+                    || at.saturating_sub(pending.stopped) >= SCAN_MS
+                {
+                    ready.push((*id, Some(why)));
+                }
+                continue;
+            }
+            let (Some(pane), Ok(rows)) = (pane, rows) else { continue };
             let known = self.async_hooks.known.entry(*id).or_default();
+            let before = known.len();
             known.retain(|pid, born| {
                 rows.iter().any(|r| {
                     r.pid == *pid
@@ -213,6 +246,7 @@ impl Daemon {
                 }
                 known.entry(row.pid).or_insert(born);
             }
+            changed |= known.len() != before;
             if !known.is_empty() {
                 if !pending.saw_child {
                     self.feed.board_outcome(
@@ -232,12 +266,16 @@ impl Daemon {
                 if at.saturating_sub(pending.stopped) >= SCAN_MS
                     && (!pending.saw_child || at.saturating_sub(empty) >= REWAKE_MS)
                 {
-                    ready.push(*id);
+                    ready.push((*id, None));
                 }
             }
         }
-        let mut changed = false;
-        for id in ready {
+        for (id, missing) in ready {
+            if let Some(why) = missing {
+                let ticket = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket);
+                self.feed.board_outcome("automation", "async_hook_unobserved", ticket, why);
+                self.async_hooks.known.remove(&id);
+            }
             changed |= self.release_async_stop(id);
         }
         changed
@@ -257,15 +295,110 @@ impl Daemon {
         // already elapsed while we sampled. Do not charge it a second time.
         let (change, decision) = machine.apply_explained(&pending.signal, pending.stopped);
         self.feed.state_decision(id, "async_hook_release", &decision);
-        change.is_some_and(|change| {
-            self.apply_change(id, &change, pending.detail, Some("async_hook_release"))
-        })
+        if let Some(change) = change {
+            self.apply_change(id, &change, pending.detail, Some("async_hook_release"));
+        }
+        // The snapshot loses its hook-wait decoration even if the machine
+        // still has an ordinary settle to flush on its next tick.
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the daemon's release and feed, not only an availability predicate.
+    fn unavailable(
+        facts: Option<Vec<mesimon_backend_tmux::PaneFacts>>,
+        rows: Result<Vec<HookProcess>, ()>,
+        why: &str,
+        dead: bool,
+    ) {
+        let dir = std::env::temp_dir()
+            .join(format!("msmn-hku-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let (mut d, sid, _rx) = crate::server::queued_person_push_tests::daemon(&dir);
+        let id = d.board.sessions[0].id;
+        let rec = &mut d.board.sessions[0];
+        rec.state = SessionState::Running;
+        rec.pane_key = Some("1:%0".into());
+        d.machines.insert(id, Machine::new(SessionState::Running, 1_000));
+        let frame = HookFrame {
+            session: id.to_string(),
+            event: "Stop".into(),
+            reason: None,
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        let facts = facts.map(|mut fs| {
+            for f in &mut fs {
+                f.session_name = sid.clone();
+            }
+            fs
+        });
+        // Even previously seen work cannot turn a failed reader into a cap wait.
+        d.async_hooks.pending.get_mut(&id).unwrap().saw_child = true;
+        d.sample_async_stops(facts.as_deref(), rows.as_deref().map_err(|_| ()), 1_001);
+        assert_eq!(d.async_stop_pending(id), !dead);
+        d.sample_async_stops(facts.as_deref(), rows.as_deref().map_err(|_| ()), 1_000 + SCAN_MS);
+        assert!(!d.async_stop_pending(id), "no cap wait for {why}");
+        d.feed.flush().unwrap();
+        let feed = std::fs::read_to_string(d.paths.activity_log()).unwrap();
+        assert!(feed.contains("async_hook_unobserved") && feed.contains(why), "{feed}");
+        assert!(!feed.contains("async_hook_cap"));
+        let change = d.machines.get_mut(&id).unwrap().tick(10_000).unwrap();
+        assert_eq!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn pane(dead: bool) -> mesimon_backend_tmux::PaneFacts {
+        mesimon_backend_tmux::PaneFacts {
+            session_name: String::new(),
+            pane_pid: 10,
+            pane_dead: dead,
+            reaped: dead,
+            server_pid: 1,
+            current_command: "claude".into(),
+            attached: false,
+            activity: None,
+            title: String::new(),
+        }
+    }
+
+    #[test]
+    fn missing_pane_row_releases_after_scan() {
+        unavailable(Some(vec![]), Ok(vec![]), "pane missing from sample", false);
+    }
+
+    #[test]
+    fn missing_pane_process_releases_after_scan() {
+        unavailable(Some(vec![pane(false)]), Ok(vec![]), "pane process missing from sample", false);
+    }
+
+    #[test]
+    fn failed_process_read_releases_after_scan() {
+        unavailable(Some(vec![pane(false)]), Err(()), "process read failed", false);
+    }
+
+    #[test]
+    fn failed_pane_read_releases_after_scan() {
+        unavailable(None, Err(()), "pane facts read failed", false);
+    }
+
+    #[test]
+    fn dead_pane_releases_before_scan_even_without_processes() {
+        unavailable(Some(vec![pane(true)]), Err(()), "pane is dead", true);
+    }
 
     #[test]
     fn infrastructure_and_reported_shells_are_not_hook_work() {
