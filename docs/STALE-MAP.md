@@ -37692,29 +37692,6 @@ ran the following; no CI result is claimed (T-1030).
   tests; the other ten are the unit ignores listed above. `cargo fmt --all --check` and
   `git diff --check` passed.
 
-## A crown's own park keeps its parallel-write chain (T-1050, 2026-10-26)
-
-- At 21:12 IST on fb4e274d, the crown read the idle T-1046 and sent `sleep_agent`
-  and `move_ticket` with that one stamp. The park succeeded; the move refused until
-  resent with the park's receipt. T-1047's rename/move/note coverage missed this path:
-  `park_record` unconditionally removed the prior receipt. The captured `Write.prior`
-  then had no matching chain, so `keep_input` discarded the read. Owner, words, seat
-  and the post-park full stamp were not the failing conditions.
-- A checked crown sleep now identifies its park explicitly, keeps the chain identity
-  and clears its old prompt/turn allowances. `receipt_seen` retains T-1047's shape and
-  records the completed park's state and timestamp. Personal, automatic and exit parks
-  still revoke; foreign turns, seats, edits and moves retain their existing gates.
-  No tool text or wire shape changed.
-- The park unit covers existing and absent chains, cleared allowances, foreign turns
-  and foreign parks. The wire case covers hold + start and sleep + move with shared
-  reads, including a completed crown ask before the park, and a person's move refusing
-  each old stamp afterwards.
-- Validation: `cargo ut` passed 2,761 tests (ten configured ignores); dedicated
-  `crown_e2e` runs passed 110/110 on each road. The single full workspace run passed
-  3,162/3,162 (11 configured skips), then 401/401 on the mod road (one configured
-  subprocess-helper skip), with no leak warnings and a clean 847-owner fixture audit.
-  Formatting and diff checks passed. The delivery note records the two focused reruns.
-
 ## The rig reads each tool_use id once (T-1034, 2026-10-26)
 
 - **What was wrong:** Claude Code 2.1.310 (seen on the mod road, build 0.1.0-beta.13) writes each
@@ -38005,3 +37982,26 @@ ran the following; no CI result is claimed (T-1030).
   this round to those three gates. The earlier SB1 run, the refused second
   start before parking, the corrected no-hand grader and the completed reset
   remain recorded above; no stronger behavioral claim is made after rebase.
+
+## A crown's own park keeps its parallel-write chain (T-1050, 2026-10-26)
+
+- At 21:12 IST on fb4e274d, the crown read the idle T-1046 and sent `sleep_agent`
+  and `move_ticket` with that one stamp. The park succeeded; the move refused until
+  resent with the park's receipt. T-1047's rename/move/note coverage missed this path:
+  `park_record` unconditionally removed the prior receipt. The captured `Write.prior`
+  then had no matching chain, so `keep_input` discarded the read. Owner, words, seat
+  and the post-park full stamp were not the failing conditions.
+- A checked crown sleep now identifies its park explicitly, keeps the chain identity
+  and clears its old prompt/turn allowances. `receipt_seen` retains T-1047's shape and
+  records the completed park's state and timestamp. Personal, automatic and exit parks
+  still revoke; foreign turns, seats, edits and moves retain their existing gates.
+  No tool text or wire shape changed.
+- The park unit covers existing and absent chains, cleared allowances, foreign turns
+  and foreign parks. The wire case covers hold + start and sleep + move with shared
+  reads, including a completed crown ask before the park, and a person's move refusing
+  each old stamp afterwards.
+- Validation: `cargo ut` passed 2,761 tests (ten configured ignores); dedicated
+  `crown_e2e` runs passed 110/110 on each road. The single full workspace run passed
+  3,162/3,162 (11 configured skips), then 401/401 on the mod road (one configured
+  subprocess-helper skip), with no leak warnings and a clean 847-owner fixture audit.
+  Formatting and diff checks passed. The delivery note records the two focused reruns.
