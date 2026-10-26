@@ -1335,10 +1335,10 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
             "still on B ({word}, replayed: {replayed}): {:?}",
             b.decisions().iter().rev().take(4).collect::<Vec<_>>()
         );
-        let needs = match b
-            .c
-            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-        {
+        let needs = match b.c.send(
+            mesimon_core::Principal::Agent { session: b.sid },
+            Command::AgentGetTicket { full: false },
+        ) {
             Response::AgentTicket { ticket } => ticket.needs_you,
             other => panic!("get_ticket: {other:?}"),
         };
@@ -1413,10 +1413,10 @@ fn an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing() {
             "still on B (split: {split}): {:?}",
             b.decisions().iter().rev().take(4).collect::<Vec<_>>()
         );
-        let needs = match b
-            .c
-            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-        {
+        let needs = match b.c.send(
+            mesimon_core::Principal::Agent { session: b.sid },
+            Command::AgentGetTicket { full: false },
+        ) {
             Response::AgentTicket { ticket } => ticket.needs_you,
             other => panic!("get_ticket: {other:?}"),
         };
@@ -1444,10 +1444,10 @@ fn a_restart_before_a_newer_dialog_s_line_keeps_it() {
     b.stop_on("ExitPlanMode", "toolu_b");
     b.h.restart_after(|| {});
     b.c = b.h.client("planrestartb_2");
-    let needs = |b: &mut Bed| match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = |b: &mut Bed| match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you,
         other => panic!("get_ticket: {other:?}"),
     };
@@ -1506,10 +1506,10 @@ fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
             "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}}));
         b.c.await_state(b.sid, "off the question its own Esc ended", |s| *s == interrupted);
-        let needs = match b
-            .c
-            .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-        {
+        let needs = match b.c.send(
+            mesimon_core::Principal::Agent { session: b.sid },
+            Command::AgentGetTicket { full: false },
+        ) {
             Response::AgentTicket { ticket } => ticket.needs_you,
             other => panic!("get_ticket: {other:?}"),
         };
@@ -1584,10 +1584,10 @@ fn an_id_less_permission_request_keeps_a_call_only_as_a_repeat() {
                     "text": "[Request interrupted by user for tool use]"}]}}),
         ]);
     };
-    let needs = |b: &mut Bed| match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = |b: &mut Bed| match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you,
         other => panic!("get_ticket: {other:?}"),
     };
@@ -1713,10 +1713,10 @@ fn a_question_too_big_to_draw_keeps_its_call_through_an_id_less_repeat() {
     let interrupted =
         SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
     b.c.await_state(b.sid, "off the question by its kept call", |s| *s == interrupted);
-    let needs = match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you,
         other => panic!("get_ticket: {other:?}"),
     };
@@ -1750,10 +1750,10 @@ fn a_dialog_rebuilt_for_an_older_record_keeps_its_request_through_a_repeat() {
         "The user doesn't want to proceed with this tool use. STOP what you are doing.";
     let interrupted =
         SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Interrupted };
-    let needs = |b: &mut Bed| match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = |b: &mut Bed| match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you,
         other => panic!("get_ticket: {other:?}"),
     };
@@ -1946,10 +1946,10 @@ fn two_dialogs_in_one_message_hold_the_seat_until_the_second_is_answered() {
             .as_str()
             .map(String::from)
     };
-    let needs = |b: &mut Bed| match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = |b: &mut Bed| match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you.and_then(|n| n.request),
         other => panic!("get_ticket: {other:?}"),
     };
@@ -2228,10 +2228,10 @@ fn a_stated_end_and_a_split_read_keep_the_held_call_s_end() {
             .find(|s| s.id == b.sid)
             .map(|s| s.confidence)
     };
-    let needs = |b: &mut Bed| match b
-        .c
-        .send(mesimon_core::Principal::Agent { session: b.sid }, Command::AgentGetTicket)
-    {
+    let needs = |b: &mut Bed| match b.c.send(
+        mesimon_core::Principal::Agent { session: b.sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => ticket.needs_you,
         other => panic!("get_ticket: {other:?}"),
     };

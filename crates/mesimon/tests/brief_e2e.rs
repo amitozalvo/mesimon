@@ -136,7 +136,7 @@ fn a_long_description_reaches_the_agent_whole_as_its_first_prompt() {
         other => panic!("plain spawn failed: {other:?}"),
     };
     let view = |c: &mut TestClient| match c
-        .send(Principal::Agent { session: plain }, Command::AgentGetTicket)
+        .send(Principal::Agent { session: plain }, Command::AgentGetTicket { full: false })
     {
         Response::AgentTicket { ticket: view } => view,
         other => panic!("get_ticket failed: {other:?}"),
@@ -271,7 +271,7 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     };
     let rec = c.board().sessions.into_iter().find(|s| s.id == plain).unwrap();
     assert!(!rec.pending_submit && !rec.ticket_read, "a plain spawn owes and reads nothing");
-    match c.send(Principal::Agent { session: plain }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: plain }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket: view } => {
             assert_eq!(view.description.as_deref(), Some(BRIEF), "get_ticket carries the brief");
         }

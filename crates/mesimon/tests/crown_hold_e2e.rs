@@ -25,7 +25,7 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => Ok(ticket),
         Response::Err { message } => Err(message),
@@ -714,7 +714,7 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
     assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
     start(&mut c, sb);
     stop(&mut c, sb);
-    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => assert_eq!(
             ticket.under_crown.as_deref(),
             Some(mesimon_core::mcp::WORKER_UNDER_CROWN),
@@ -722,7 +722,7 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
         ),
         other => panic!("the worker's get_ticket: {other:?}"),
     }
-    match c.send(Principal::Agent { session: sp }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: sp }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert!(ticket.under_crown.is_none(), "a person's agent is no crown's")
         }
@@ -869,7 +869,7 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
             Principal::Agent { session: sa },
             Command::AgentWatchTicket { key: kp.clone(), unwatch: false, seen: v.seen },
         ),
-        Response::AgentTicket { .. }
+        Response::AgentTicketUpdated { .. }
     ));
     drop(c);
     h.restart();

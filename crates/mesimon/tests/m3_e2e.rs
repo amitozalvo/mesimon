@@ -153,7 +153,7 @@ fn m3_adoption_and_sleep() {
     // And the agent tier: no argv of ours means no tool config was ever
     // handed out, so a call claiming this record is nobody mesimon started.
     assert!(matches!(
-        c.send(Principal::Agent { session: obs }, Command::AgentGetTicket),
+        c.send(Principal::Agent { session: obs }, Command::AgentGetTicket { full: false }),
         Response::Err { .. }
     ));
     // A second attach of the same claude session refuses (no orphan ticket).
@@ -218,7 +218,7 @@ fn m3_adoption_and_sleep() {
     // T-240: a taken-over session keeps `Adopted` for life, and the gate on the
     // agent tier once read provenance alone — so the tools it was just handed
     // were refused on every call. The record is now one mesimon launched.
-    match c.send(Principal::Agent { session: obs }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: obs }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket, .. } => assert_eq!(ticket.title, "foreign work in flight"),
         other => panic!("a taken-over session must reach its tools, got {other:?}"),
     }

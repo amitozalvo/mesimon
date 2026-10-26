@@ -111,7 +111,7 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
     }
 
     assert!(matches!(
-        client.send(Principal::Agent { session: id }, Command::AgentGetTicket),
+        client.send(Principal::Agent { session: id }, Command::AgentGetTicket { full: false }),
         Response::Err { .. }
     ));
     assert!(matches!(

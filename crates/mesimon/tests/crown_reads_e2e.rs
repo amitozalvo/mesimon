@@ -32,7 +32,7 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> AgentTicketView {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: true, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read {key}: {other:?}"),
@@ -192,7 +192,12 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     let mut crown = Shim::start(&h.paths.orch_sock(), sa);
     crown.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     crown.notify("notifications/initialized");
-    for args in [json!({}), json!({ "key": ka })] {
+    let compact = crown.call_ok("get_ticket", json!({"key": ka}));
+    assert_eq!(compact["context"]["tokens"], json!(400_000));
+    assert!(compact.get("cost").is_some());
+    assert!(compact.get("context_about").is_none());
+    assert!(compact.get("cost_about").is_none());
+    for args in [json!({}), json!({ "key": ka, "full": true })] {
         let answer = crown.call_ok("get_ticket", args.clone());
         for f in four {
             assert!(answer.get(f).is_some(), "the crown's {args} read lacks {f}: {answer}");

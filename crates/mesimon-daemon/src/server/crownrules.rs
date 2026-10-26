@@ -4,7 +4,7 @@
 //! purpose: a restart tells every crown again, and the rules are the
 //! binary's own text, so a new build is a restart and needs no version.
 //! Nothing is promised from this record: a written line is not a read one,
-//! and the crown's own `get_ticket` carries the rules always.
+//! and the crown's own `get_ticket` with `full: true` carries the rules on request.
 
 use std::collections::{HashMap, HashSet};
 

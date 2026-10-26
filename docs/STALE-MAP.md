@@ -37087,3 +37087,53 @@ fix ticket follows.
 replay keeps the frames' order and shapes, not their timing: gaps are capped at 0.3 s, and a
 replay waits 2.5 s after its prompt, where a model thinks, so the tail's cursor is minted while
 running. When a box draws is the pane's, and nothing records it.
+
+## Crown ticket reads and receipts carry the requested facts (T-1031, 2026-10-26)
+
+- **The four reports:** keyed reads repeated the brief, board vocabulary and field explanations;
+  rename and sleep returned the full ticket; keyed note writes discarded `crown_touched`'s new
+  stamp; and every own read repeated the crown rules. All four held in code. One detail did
+  not: `key_about` was already absent from keyed reads. Workspace, archive/restore, watch and
+  shell-close requests also echoed a full ticket.
+- **Reads:** a crown's keyed `get_ticket` now retains ticket facts, including merge/PR state,
+  notes, summary boxes, agent state, context/cost and `seen`. `full: true` adds the description,
+  board vocabulary and field explanations. `read_note` still reads the whole description;
+  `plan: true` independently reads the whole plan. A worker's own brief stays full, including
+  through its own key. Full reads distinguish an empty vocabulary from an omitted one.
+- **Receipts:** rename, workspace, archive/restore, sleep, watch and shell-close requests return
+  key, fresh `seen`, and their changed fields. False archive/watch values are explicit. A keyed
+  note create, replace or delete returns its note/deletion result and the new `seen`; the next
+  edit needs no compensating read. Existing authorization and stale-stamp checks are unchanged.
+  MCP regressions chain note writes into renames and refuse rename/move/ask/start after an
+  intervening person's edit.
+- **Rules:** an own read carries `crown` once per crown context, or on `full: true`. The rules
+  themselves are unchanged. The receipt pointers name that explicit read. T-930's first-call
+  delivery, acknowledgement after a successful write, and resets on crowning, compaction,
+  clear/new session and daemon restart remain. A first call on another ticket still carries
+  the rules in a separate block; a restart's one delivery remains intentional.
+- **Real MCP sizes:** the same disposable-board fixture, two tickets with identical 4,080-byte briefs,
+  a real daemon and stdio MCP shim, and a stub agent. UTF-8 bytes of result text blocks, excluding
+  the JSON-RPC envelope: keyed read **6,347 → 540**, rename receipt **6,350 → 70**, repeated own
+  read **15,892 → 6,677**. The first own read stays **15,892**, since it carries the rules once.
+  These are fixture measurements, not claims about every ticket's size.
+- **Blind rig:** CR1 asks for a brief read, a note, a rename and a worker start in the person's
+  words, without naming tools; its verdict checks the operations and the worker's answer.
+  Three fresh crowns per arm were fixed before the runs, Opus 5.5 high, workers Sonnet 5.5 low.
+  **3/3 before and 3/3 final samples passed.** The final samples used 9, 8 and 10 tool calls
+  (0 failures), versus 10, 11 and 11 before; result text totalled 15,582, 4,943 and 16,467 bytes,
+  versus 21,957, 22,020 and 22,036. These are small workflow samples, not a general performance
+  claim. The delivery note records every sample and rerun: the original check counted concurrent
+  development edits as crown writes, and two passing post-change samples preceded the correction
+  preserving empty lists on full reads. Neither is folded into the final comparison.
+  No crown-rule sentence was cut.
+- **Validation:** `cargo ut` passed after unsetting the session's `NO_COLOR=1` (two existing
+  ANSI-output tests had failed under it). Targeted crown/read/rule/hold suites passed; MCP's
+  first run caught the empty-vocabulary regression, corrected before its passing rerun with
+  shell coverage. The default workspace run passed 230 tests before a merge-train fixture
+  raced its own post-arm snapshot (`acted_at_ms` was already set). The unchanged test and
+  2,880 unrun tests then passed under an exact continuation filter: 3,111 default-road tests
+  covered. The full mod-road pass passed 373. The attempted native `--rerun` required recording
+  mode, which was not enabled; its wrapper still ran the mod pass, and its nonzero
+  command status is retained. Eleven default ignored tests (benchmarks, subprocess helpers
+  and the live release download) and the mod pass's helper were not counted as passes.
+  Fixture audits and the rig's cleanup were clean; the delivery note records each command.

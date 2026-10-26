@@ -305,7 +305,10 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     });
     // The agent's own view says the same, per repo.
     let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    match c.send(mesimon_core::Principal::Agent { session: sid }, Command::AgentGetTicket) {
+    match c.send(
+        mesimon_core::Principal::Agent { session: sid },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.merge_state.as_deref(), Some("ahead"));
             let api = ticket.repos.iter().find(|r| r.name == "api").expect("api leg");

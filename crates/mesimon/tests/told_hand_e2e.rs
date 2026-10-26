@@ -30,7 +30,7 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => Ok(ticket),
         Response::Err { message } => Err(message),
@@ -136,7 +136,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     // ---- 2. only the crown reads it ---------------------------------------
     let refused = read(&mut c, sb, &kw).expect_err("another agent's keyed read is refused");
     assert!(!refused.contains("mesimon-secret-81"), "{refused}");
-    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.told_hand, None, "the worker's own read carries none")
         }

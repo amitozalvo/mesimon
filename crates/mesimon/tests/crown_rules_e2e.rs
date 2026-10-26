@@ -56,7 +56,7 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     match c.send_raw(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: "T-999".into(), plan: false },
+        Command::AgentReadTicket { key: "T-999".into(), full: false, plan: false },
     ) {
         Response::CrownRules { rules, inner } => {
             assert_eq!(rules, crown_view());
@@ -69,7 +69,7 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
     // ---- the crown's own get_ticket is the telling, and adds nothing ----
     assert!(matches!(c.request(Command::Uncrown), Response::Ok));
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    match c.send_raw(Principal::Agent { session: sa }, Command::AgentGetTicket) {
+    match c.send_raw(Principal::Agent { session: sa }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => assert_eq!(ticket.crown, Some(crown_view())),
         other => panic!("the crown's own read: {other:?}"),
     }
@@ -124,10 +124,15 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
     wait_until(secs, "a clear to forget them", || listed(&mut c, sa).is_some());
     assert_eq!(listed(&mut c, sa), None);
 
-    // ---- the crown's own get_ticket carries them always ---------------------
-    match c.send_raw(Principal::Agent { session: sa }, Command::AgentGetTicket) {
-        Response::AgentTicket { ticket } => assert_eq!(ticket.crown, Some(crown_view())),
+    // ---- a repeated own read omits them; an explicit full read restores them ----
+    match c.send_raw(Principal::Agent { session: sa }, Command::AgentGetTicket { full: false }) {
+        Response::AgentTicket { ticket } => assert_eq!(ticket.crown, None),
         other => panic!("the crown's own read: {other:?}"),
+    }
+
+    match c.send_raw(Principal::Agent { session: sa }, Command::AgentGetTicket { full: true }) {
+        Response::AgentTicket { ticket } => assert_eq!(ticket.crown, Some(crown_view())),
+        other => panic!("explicit rules: {other:?}"),
     }
 
     // ---- a restart: every crown is told again ------------------------------
@@ -181,7 +186,7 @@ fn crown_and_worker(c: &mut TestClient, h: &Harness) -> (uuid::Uuid, uuid::Uuid,
 fn read_seen(c: &mut TestClient, session: uuid::Uuid, key: &str) -> String {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen.expect("a stamp"),
         other => panic!("read {key}: {other:?}"),

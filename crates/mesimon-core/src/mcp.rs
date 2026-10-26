@@ -313,16 +313,16 @@ pub fn crown_view() -> String {
 
 /// Where a crown reads its rules (T-930), in every `start_agent` and
 /// `ask_agent` receipt (`wakes`) in place of the 10 KB `CROWN_WAKES` they
-/// once repeated. The crown's own `get_ticket` carries them always; a reply
+/// once repeated. The crown's own `get_ticket` with `full` carries them; a reply
 /// carries them too until one that did reached the session's connection
 /// since its crowning, compaction or clear, which nothing here promises.
 pub const CROWN_RULES_AT: &str = "The board's rules for the crown (what wakes it, who merges, \
-     what is a person's) are on this session's own get_ticket, under crown.";
+     what is a person's) are on this session's own get_ticket with full true, under crown.";
 
 /// The words before the rules where a call carries them (T-930): the
 /// call's own answer comes first, then this, then `crown_view()`.
 pub const CROWN_RULES_HEAD: &str = "The board's rules for this session's crown (this session's \
-     own get_ticket carries them under crown):";
+     own get_ticket with full true carries them under crown):";
 
 /// What the worktree init script is (T-614), on every `get_ticket`
 /// (`worktree_init.about`): the one place an agent learns that a cold
@@ -560,21 +560,13 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "get_ticket",
-            "description": "Returns this session's ticket, or with key another (crown \
-                            only): key, title, column, workspace, branch, merge state by \
-                            repo, who merges (merge), PRs (prs), the init script, \
-                            the columns move_ticket accepts and what each is for, the \
-                            board's moves and why it last held it (automove), tags, the \
-                            board's (allowed_tags), the description, each note's id, name, \
-                            author, the summary, the agent's state, context and cost (crown \
-                            only: Crown reads context / cost) and the seen stamp edits need. \
-                            The prompt is often the title alone; the description and notes \
-                            are the rest of the brief.",
+            "description": "Returns this session's brief, or with key a ticket's facts (crown only): title, column, workspace, branch, who merges (merge), PRs, notes, the summary, state, context and cost (crown only: Crown reads context / cost), and seen. With key, full adds the description, the columns move_ticket accepts and what each is for, allowed_tags and field explanations. On the crown's own read, full repeats its rules. The prompt is often the title alone; notes hold the rest of the brief. The first note is the description.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "Optional. Another ticket's key." },
                     "plan": { "type": "boolean" },
+                    "full": { "type": "boolean" },
                 },
                 "additionalProperties": false,
             },
@@ -1188,6 +1180,7 @@ pub enum ToolCall {
     /// daemon on every other ticket.
     GetTicket {
         key: Option<String>,
+        full: bool,
         /// With `key`: the plan its agent stopped on, whole (T-991).
         plan: bool,
     },
@@ -1458,7 +1451,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             if plan && key.is_none() {
                 return Err("plan reads another ticket's plan, with key".into());
             }
-            Ok(ToolCall::GetTicket { key, plan })
+            Ok(ToolCall::GetTicket { key, plan, full: flag(args, "full")? })
         }
         "list_board" => Ok(ToolCall::ListBoard),
         "move_ticket" => {
@@ -1741,7 +1734,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
         // The tier. Nineteen tools, twenty commands (`get_ticket` with a
         // key is its own command on the wire).
-        Command::AgentGetTicket
+        Command::AgentGetTicket { .. }
         | Command::AgentListBoard
         | Command::AgentMoveTicket { .. }
         // The crown's road (T-411): the keyed read and the three keyed
@@ -2092,7 +2085,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
 /// command no tier ever admits, which `agent_allows` refuses first anyway.
 pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
     Some(match cmd {
-        Command::AgentGetTicket
+        Command::AgentGetTicket { .. }
         | Command::AgentReadTicket { .. }
         | Command::AgentListBoard
         | Command::AgentReadNote { .. }
@@ -2273,10 +2266,13 @@ mod tests {
         assert_eq!(tier_needed_by_tool("nope"), None);
         // By name and by command agree, for every command an agent may send.
         let calls = [
-            (Command::AgentGetTicket, "get_ticket"),
+            (Command::AgentGetTicket { full: false }, "get_ticket"),
             // `get_ticket` with a key is its own command on the wire (T-411)
             // and sits on the same rung as the tool it rides.
-            (Command::AgentReadTicket { key: "T-1".into(), plan: false }, "get_ticket"),
+            (
+                Command::AgentReadTicket { key: "T-1".into(), full: false, plan: false },
+                "get_ticket",
+            ),
             (Command::AgentListBoard, "list_board"),
             (Command::AgentReadNote { note: ulid::Ulid::nil(), key: None }, "read_note"),
             (
@@ -2657,22 +2653,37 @@ mod tests {
     fn keyed_tools_parse_and_refuse() {
         assert_eq!(
             parse_tool_call("get_ticket", &json!({ "key": " T-4 " })),
-            Ok(ToolCall::GetTicket { key: Some("T-4".into()), plan: false })
+            Ok(ToolCall::GetTicket { key: Some("T-4".into()), full: false, plan: false })
         );
         assert_eq!(
             parse_tool_call("get_ticket", &json!({ "key": "" })),
-            Ok(ToolCall::GetTicket { key: None, plan: false })
+            Ok(ToolCall::GetTicket { key: None, full: false, plan: false })
         );
         assert!(parse_tool_call("get_ticket", &json!({ "key": 4 })).is_err());
+        for key in [None, Some("T-4")] {
+            assert_eq!(
+                parse_tool_call("get_ticket", &json!({"key": key, "full": true})),
+                Ok(ToolCall::GetTicket { key: key.map(str::to_string), full: true, plan: false })
+            );
+        }
+        assert!(parse_tool_call("get_ticket", &json!({"full": "yes"})).is_err());
+        let old: Command = serde_json::from_value(json!({"cmd": "agent_get_ticket"})).unwrap();
+        assert!(matches!(old, Command::AgentGetTicket { full: false }));
+        let old: Command =
+            serde_json::from_value(json!({"cmd": "agent_read_ticket", "key": "T-4"})).unwrap();
+        assert!(matches!(old, Command::AgentReadTicket { full: false, plan: false, .. }));
         // T-991: the whole plan, on the crown's keyed read alone.
         assert_eq!(
             parse_tool_call("get_ticket", &json!({ "key": "T-4", "plan": true })),
-            Ok(ToolCall::GetTicket { key: Some("T-4".into()), plan: true })
+            Ok(ToolCall::GetTicket { key: Some("T-4".into()), full: false, plan: true })
         );
         assert!(parse_tool_call("get_ticket", &json!({ "plan": true })).is_err());
         assert!(parse_tool_call("get_ticket", &json!({ "key": "T-4", "plan": "yes" })).is_err());
-        let wire =
-            serde_json::to_value(Command::AgentReadTicket { key: "T-4".into(), plan: false });
+        let wire = serde_json::to_value(Command::AgentReadTicket {
+            key: "T-4".into(),
+            full: false,
+            plan: false,
+        });
         assert!(!wire.unwrap().to_string().contains("plan"), "an older daemon reads it as before");
         assert_eq!(
             parse_tool_call(
@@ -3864,7 +3875,7 @@ mod tests {
         // daemon judges it against the crown.
         assert_eq!(
             parse_tool_call("get_ticket", &json!({"ticket": "OTHER-9"})).unwrap(),
-            ToolCall::GetTicket { key: None, plan: false }
+            ToolCall::GetTicket { key: None, full: false, plan: false }
         );
         assert_eq!(parse_tool_call("list_board", &json!(null)).unwrap(), ToolCall::ListBoard);
     }
@@ -3878,8 +3889,8 @@ mod tests {
         let allowed = [
             Command::AgentReadShell { shell: uuid::Uuid::nil(), key: None },
             Command::AgentRequestCloseShell { shell: uuid::Uuid::nil(), key: "T-1".into() },
-            Command::AgentGetTicket,
-            Command::AgentReadTicket { key: "T-1".into(), plan: false },
+            Command::AgentGetTicket { full: false },
+            Command::AgentReadTicket { key: "T-1".into(), full: false, plan: false },
             Command::AgentListBoard,
             Command::AgentMoveTicket {
                 to_column: "X".into(),

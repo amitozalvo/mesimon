@@ -242,8 +242,14 @@ impl Daemon {
             self.crown_touched(own, target, "close shell?");
             self.persist_and_notify();
         }
-        self.agent_ticket_view(target)
-            .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+        Response::AgentTicketUpdated {
+            key: key.into(),
+            seen: self.seen_token(target),
+            change: mesimon_core::command::AgentTicketChange::ShellClose {
+                shell,
+                close_requested: true,
+            },
+        }
     }
 
     pub(super) fn confirm_close_shell(

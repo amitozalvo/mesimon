@@ -163,8 +163,10 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
     let command = match call {
         // `get_ticket` with a key is its own command on the wire (T-411), so
         // a shim from before the crown still parses at the daemon.
-        ToolCall::GetTicket { key: None, .. } => Command::AgentGetTicket,
-        ToolCall::GetTicket { key: Some(key), plan } => Command::AgentReadTicket { key, plan },
+        ToolCall::GetTicket { key: None, full, .. } => Command::AgentGetTicket { full },
+        ToolCall::GetTicket { key: Some(key), plan, full } => {
+            Command::AgentReadTicket { key, plan, full }
+        }
         ToolCall::ListBoard => Command::AgentListBoard,
         ToolCall::ReadShell { shell, key } => Command::AgentReadShell { shell, key },
         ToolCall::RequestCloseShell { shell, key } => {
@@ -536,6 +538,18 @@ fn render(resp: Response) -> Value {
             "content": [{ "type": "image", "mimeType": "image/png", "data": data }],
             "isError": false
         }),
+        Response::AgentTicketUpdated { key, seen, change } => {
+            let mut body = json!(change);
+            if let Some(fields) = body.as_object_mut() {
+                fields.remove("kind");
+            }
+            body["key"] = json!(key);
+            body["seen"] = json!(seen);
+            text(&body)
+        }
+        Response::AgentNoteWritten { note, seen } => {
+            text(&json!({ "note": note, "deleted": note.is_none(), "seen": seen }))
+        }
         Response::NoteWritten { note } => {
             text(&json!({ "note": note.map(|n| n.to_string()), "deleted": note.is_none() }))
         }

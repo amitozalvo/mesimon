@@ -207,7 +207,7 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     assert_eq!(session(&mut c, codex).kind, SessionKind::Codex);
     for id in [claude, codex] {
         assert!(matches!(
-            c.send(Principal::Agent { session: id }, Command::AgentGetTicket),
+            c.send(Principal::Agent { session: id }, Command::AgentGetTicket { full: false }),
             Response::AgentTicket { .. }
         ));
         assert!(matches!(
@@ -1634,7 +1634,7 @@ fn a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved(
     let read = |c: &mut TestClient, session: uuid::Uuid, key: &str| -> AgentTicketView {
         match c.send(
             Principal::Agent { session },
-            Command::AgentReadTicket { key: key.into(), plan: false },
+            Command::AgentReadTicket { key: key.into(), full: false, plan: false },
         ) {
             Response::AgentTicket { ticket } => ticket,
             other => panic!("read {key}: {other:?}"),

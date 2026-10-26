@@ -28,8 +28,8 @@ use mesimon_core::board::{
     Confidence, CrownMode, FailReason, MergeInto, SessionKind, SessionState, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver, PendingAction, Response,
-    StartPrompt,
+    AgentTicketChange, AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver,
+    PendingAction, Response, StartPrompt,
 };
 use mesimon_core::Principal;
 use serde_json::json;
@@ -55,7 +55,7 @@ fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => Ok(ticket),
         Response::Err { message } => Err(message),
@@ -149,7 +149,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let reach = |key: &str| -> Vec<Command> {
         let key = Some(key.to_string());
         vec![
-            Command::AgentReadTicket { key: key.clone().unwrap(), plan: false },
+            Command::AgentReadTicket { key: key.clone().unwrap(), full: false, plan: false },
             Command::AgentReadNote { note: ulid::Ulid::new(), key: key.clone() },
             Command::AgentReadAttachment { attachment: ulid::Ulid::new(), key: key.clone() },
             Command::AgentReadShell { shell: uuid::Uuid::new_v4(), key: key.clone() },
@@ -262,7 +262,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
             seen: Some(fresh.clone()),
         },
     ) {
-        Response::AgentTicket { ticket } => assert_eq!(ticket.title, "fix it properly"),
+        Response::AgentTicketUpdated { change: AgentTicketChange::Rename { title }, .. } => {
+            assert_eq!(title, "fix it properly")
+        }
         other => panic!("rename: {other:?}"),
     }
     match c.send(
@@ -288,7 +290,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             key: Some(kb.clone()),
         },
     ) {
-        Response::NoteWritten { note } => note.expect("created"),
+        Response::AgentNoteWritten { note, .. } => note.expect("created"),
         other => panic!("keyed note: {other:?}"),
     };
     match c.send(
@@ -328,7 +330,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Principal::Agent { session: sa },
         Command::AgentSetWorkspace { key: kd.clone(), workspace: "worktree".into(), seen: dv.seen },
     ) {
-        Response::AgentTicket { ticket } => assert_eq!(ticket.workspace, "worktree"),
+        Response::AgentTicketUpdated {
+            change: AgentTicketChange::Workspace { workspace }, ..
+        } => assert_eq!(workspace, "worktree"),
         other => panic!("set_workspace: {other:?}"),
     }
     let bv = read(&mut c, sa, &kb).unwrap();
@@ -375,6 +379,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
     }
     assert!(!c.is_archived(d));
+    assert_eq!(c.board().ticket(d).unwrap().column, "IN PROGRESS");
     assert_eq!(read(&mut c, sa, &kd).unwrap().seen, dv.seen, "nothing changed");
     // A person turns the row on; the board and doctor read it on.
     assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
@@ -417,7 +422,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kd.clone(), restore: false, seen: dv.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("archive: {other:?}"),
     }
     assert!(c.is_archived(d));
@@ -434,7 +439,9 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kd.clone(), restore: true, seen: dv.seen },
     ) {
-        Response::AgentTicket { ticket } => assert_eq!(ticket.column, "IN PROGRESS"),
+        Response::AgentTicketUpdated {
+            change: AgentTicketChange::Archive { archived }, ..
+        } => assert!(!archived),
         other => panic!("restore: {other:?}"),
     }
     assert!(!c.is_archived(d));
@@ -793,7 +800,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         read(c, sa, &kb).unwrap().asked.map(|a| (a.status, a.by, a.since_secs.is_some()))
     };
     assert_eq!(dropped(&mut c), Some(("dropped".into(), "person".into(), true)));
-    match c.send(Principal::Agent { session: sb }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: sb }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => assert!(ticket.asked.is_none(), "{:?}", ticket.asked),
         other => panic!("the worker's own read: {other:?}"),
     }
@@ -1444,9 +1451,11 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     }
     let v2 = read(&mut c, sa, &kw2).unwrap();
     match sleep(&mut c, &kw2, v2.seen) {
-        Response::AgentTicket { ticket } => {
-            assert_eq!(ticket.key, kw2);
-            assert_eq!(ticket.state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+        Response::AgentTicketUpdated {
+            key, change: AgentTicketChange::Sleep { state }, ..
+        } => {
+            assert_eq!(key, kw2);
+            assert_eq!(state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
         }
         other => panic!("sleep_agent: {other:?}"),
     }
@@ -1511,7 +1520,10 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     start(&mut c, ws2);
     stop(&mut c, ws2);
     let v2 = read(&mut c, sa, &kw2).unwrap();
-    assert!(matches!(sleep(&mut c, &kw2, v2.seen), Response::AgentTicket { .. }), "parked again");
+    assert!(
+        matches!(sleep(&mut c, &kw2, v2.seen), Response::AgentTicketUpdated { .. }),
+        "parked again"
+    );
     match start_w3(&mut c) {
         Response::AgentStarted { session_started, budget_left, .. } => {
             assert!(!session_started, "filed for a worktree, so waiting for it first");
@@ -1528,7 +1540,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kw2.clone(), restore: false, seen: v2.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("archive after the park: {other:?}"),
     }
     assert!(c.is_archived(w2));
@@ -5470,7 +5482,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("sleep_agent: {other:?}"),
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
@@ -5555,7 +5567,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("sleep_agent again: {other:?}"),
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
@@ -6524,7 +6536,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
         ) {
-            Response::AgentTicket { .. } => {}
+            Response::AgentTicketUpdated { .. } => {}
             other => panic!("sleep_agent: {other:?}"),
         }
         c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
@@ -7701,8 +7713,8 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
     ) {
-        Response::AgentTicket { ticket } => {
-            assert_eq!(ticket.state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+        Response::AgentTicketUpdated { change: AgentTicketChange::Sleep { state }, .. } => {
+            assert_eq!(state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
         }
         other => panic!("sleep_agent on the wake: {other:?}"),
     }
@@ -8687,7 +8699,7 @@ fn the_crown_accepts_a_plan_by_default() {
     assert_eq!(needs.plan_bytes, Some(plan.len() as u64));
     let whole = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: true },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: true },
     ) {
         Response::AgentTicket { ticket } => ticket.needs_you.expect("the plan"),
         other => panic!("get_ticket with plan: {other:?}"),
@@ -10278,7 +10290,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     };
     let whole_of = |c: &mut TestClient| match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: true },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: true },
     ) {
         Response::AgentTicket { ticket } => ticket.needs_you.expect("the plan, whole"),
         other => panic!("get_ticket with plan: {other:?}"),
@@ -10618,7 +10630,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // The worker reads who merges under a crown; nobody else reads it.
-    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.under_crown.as_deref(), Some(mesimon_core::mcp::WORKER_UNDER_CROWN))
         }
@@ -11533,7 +11545,9 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert!(matches!(sub.request(Command::Subscribe), Response::Ok));
     while sub.next_event(std::time::Duration::from_millis(300)).is_some() {}
     match watch(&mut c, &kw, false) {
-        Response::AgentTicket { ticket } => assert!(ticket.watched, "the receipt says so"),
+        Response::AgentTicketUpdated { change: AgentTicketChange::Watch { watched }, .. } => {
+            assert!(watched, "the receipt says so")
+        }
         other => panic!("watch: {other:?}"),
     }
     assert!(
@@ -11554,7 +11568,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
         feed_has("watch_ticket", w)
     });
     // Watching again changes nothing.
-    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
 
     // ---- 4. a delivery the crown never heard of: delivered -----------------
     commit(&path, "two.txt");
@@ -11634,9 +11648,11 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert_eq!(lines_with(&worker).len(), 4, "{:?}", lines_with(&worker));
 
     // ---- 8. watched again and unwatched by hand: silent after --------------
-    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
     match watch(&mut c, &kw, true) {
-        Response::AgentTicket { ticket } => assert!(!ticket.watched),
+        Response::AgentTicketUpdated { change: AgentTicketChange::Watch { watched }, .. } => {
+            assert!(!watched)
+        }
         other => panic!("unwatch: {other:?}"),
     }
     assert_eq!(
@@ -11652,7 +11668,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert_eq!(lines_with(&worker).len(), 4, "unwatched, so silent");
 
     // ---- 9. the row turned off ends a standing watch -----------------------
-    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
     assert!(matches!(c.request(Command::SetCrownWatches { on: false }), Response::Ok));
     assert!(!read(&mut c, sa, &kw).unwrap().watched, "off ends every watch");
     wait_until(std::time::Duration::from_secs(5), "the drop in the feed", || {
@@ -11696,13 +11712,13 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert!(why.contains("a person started this agent"), "{why}");
     assert!(!row(&mut c).expect("held on W's card").sends);
     // Watched: the queue takes the words, as for a worker the crown started.
-    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
     start(&mut c, ws);
     let (road, _) = ask(&mut c, "mesimon-probe-96 queued", Deliver::Idle);
     assert_eq!(road, AskRoad::Queued, "a busy agent takes them at its idle");
     assert!(row(&mut c).expect("queued on W's card").sends);
     // The unwatch hands the waiting words back to the person.
-    assert!(matches!(watch(&mut c, &kw, true), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, true), Response::AgentTicketUpdated { .. }));
     assert!(!row(&mut c).expect("still on W's card").sends, "held again");
     hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -11714,7 +11730,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     ));
     // Watched again, an idle agent takes words sent now, and the turn that
     // answers wakes the crown as a started worker's does.
-    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicket { .. }));
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
     let (road, _) = ask(&mut c, "mesimon-probe-97 now", Deliver::Now);
     assert_eq!(road, AskRoad::SentNow);
     wait_until(std::time::Duration::from_secs(5), "the words in W's pane", || {
@@ -11904,7 +11920,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("sleep_agent over a usage limit: {other:?}"),
     }
     c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
@@ -11991,7 +12007,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen }
         ),
-        Response::AgentTicket { .. }
+        Response::AgentTicketUpdated { .. }
     ));
     c.await_state(ws, "parked again", |s| *s == SessionState::Sleeping);
     assert!(matches!(
@@ -12439,7 +12455,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: key.into(), seen: v.seen },
         ) {
-            Response::AgentTicket { .. } => {}
+            Response::AgentTicketUpdated { .. } => {}
             other => panic!("sleep_agent {key}: {other:?}"),
         }
         c.await_state(sid, "parked", |s| *s == SessionState::Sleeping);
@@ -16440,7 +16456,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("sleep_agent: {other:?}"),
     }
     c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
@@ -16603,7 +16619,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
         ) {
-            Response::AgentTicket { .. } => {}
+            Response::AgentTicketUpdated { .. } => {}
             other => panic!("sleep_agent: {other:?}"),
         }
         c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
@@ -16819,7 +16835,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
         ) {
-            Response::AgentTicket { .. } => {}
+            Response::AgentTicketUpdated { .. } => {}
             other => panic!("sleep_agent: {other:?}"),
         }
         c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);

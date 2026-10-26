@@ -559,7 +559,7 @@ fn agent_board_tools_tier_and_collisions() {
         }
     }
     // A local client cannot borrow the agent path either.
-    match c.request(Command::AgentGetTicket) {
+    match c.request(Command::AgentGetTicket { full: false }) {
         Response::Err { .. } => {}
         other => panic!("agent commands need an agent principal, got {other:?}"),
     }
@@ -813,4 +813,128 @@ fn gate_verdict(
 ) -> Value {
     let out = gate_raw(hook_sock, session, repo, state_dir, file_path);
     serde_json::from_str(&out).unwrap_or_else(|e| panic!("gate stdout is not json ({e}): {out:?}"))
+}
+
+/// T-1031: sizes are the UTF-8 bytes actually delivered in MCP text blocks,
+/// on one fixed fixture. The first rules delivery is measured separately.
+#[test]
+fn crown_ticket_reply_sizes() {
+    let Some(h) = Harness::boot("crown-reply-sizes", Some("#!/bin/sh\ncat >/dev/null\n")) else {
+        return;
+    };
+    let mut c = h.client("crown-reply-sizes");
+    let own = c.create_ticket("coordinate");
+    let other = c.create_ticket("work");
+    let key = c.board().ticket(other).unwrap().short_key.clone();
+    for ticket in [own, other] {
+        assert!(matches!(
+            c.request(Command::WriteNote {
+                ticket,
+                note: None,
+                text: "A worker's brief.\n".repeat(240),
+                rev: None,
+            }),
+            Response::NoteWritten { .. }
+        ));
+    }
+    let sid = c.spawn_claude(own);
+    assert!(matches!(c.request(Command::CrownTicket { id: own }), Response::Ok));
+    let mut shim = Shim::start(&h.paths.orch_sock(), sid);
+    let _ = shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    shim.notify("notifications/initialized");
+    fn measured(shim: &mut Shim, label: &str, tool: &str, args: Value) -> Value {
+        let r = shim.call(tool, args);
+        assert_eq!(r["isError"], false, "{r}");
+        let bytes: usize = r["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["text"].as_str().unwrap().len())
+            .sum();
+        println!("T-1031 {label}: {bytes} text bytes");
+        serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+    let first = measured(&mut shim, "own first", "get_ticket", json!({}));
+    assert!(first["crown"].as_str().unwrap().contains("crown"));
+    let own_read = measured(&mut shim, "own repeated", "get_ticket", json!({}));
+    assert!(own_read.get("crown").is_none());
+    assert_eq!(own_read["description"], "A worker's brief.\n".repeat(240));
+    let explicit = shim.call_ok("get_ticket", json!({"full": true}));
+    assert_eq!(explicit["crown"], first["crown"]);
+    let read = measured(&mut shim, "keyed read", "get_ticket", json!({"key": key}));
+    for field in [
+        "description",
+        "description_cut",
+        "key_about",
+        "allowed_tags",
+        "allowed_columns",
+        "column_descriptions",
+        "crown",
+    ] {
+        assert!(read.get(field).is_none(), "compact read includes {field}: {read}");
+    }
+    assert!(read["worktree_init"].get("about").is_none());
+    assert!(read["summary"].get("about").is_none());
+    let full = shim.call_ok("get_ticket", json!({"key": key, "full": true}));
+    assert_eq!(full["description"], own_read["description"]);
+    assert_eq!(full["seen"], read["seen"], "read shape does not change the stamp");
+    for field in ["title", "column", "workspace", "merge", "notes", "tags", "automove"] {
+        assert_eq!(full[field], read[field], "fact {field} survives compaction");
+    }
+    assert!(full["worktree_init"]["about"].is_string());
+    assert!(full["summary"]["about"].is_string());
+    assert!(full["allowed_tags"].is_array());
+    assert!(full["allowed_columns"].is_array());
+    let renamed = measured(
+        &mut shim,
+        "rename reply",
+        "rename_ticket",
+        json!({"key": key, "title": "renamed", "seen": read["seen"]}),
+    );
+    assert_eq!(renamed.as_object().unwrap().len(), 3, "only key, seen, title");
+    assert_eq!(renamed["title"], "renamed");
+    assert_ne!(renamed["seen"], read["seen"]);
+
+    // Create, replace and delete each hand back the stamp needed by the
+    // very next edit. No read between the note write and the rename.
+    let mut note = Value::Null;
+    for (i, body) in
+        ["## Summary\n- [ ] pending", "## Summary\n- [x] complete", ""].iter().enumerate()
+    {
+        let before = shim.call_ok("get_ticket", json!({"key": key}));
+        let written = shim.call_ok("write_note", json!({"key": key, "note": note, "text": body}));
+        note = written["note"].clone();
+        assert_ne!(written["seen"], before["seen"]);
+        assert_eq!(written["deleted"], body.is_empty());
+        let updated = shim.call_ok(
+            "rename_ticket",
+            json!({"key": key, "title": format!("after note {i}"), "seen": written["seen"]}),
+        );
+        assert_ne!(updated["seen"], written["seen"]);
+        let fresh = shim.call_ok("get_ticket", json!({"key": key}));
+        if i < 2 {
+            assert_eq!(fresh["summary"]["rows"][0]["done"], i == 1);
+            assert!(fresh["summary"].get("about").is_none());
+        }
+    }
+
+    // An intervening person's write still invalidates a receipt's stamp.
+    let written = shim.call_ok("write_note", json!({"key": key, "text": "crown's last note"}));
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: other,
+            note: None,
+            text: "a person's change".into(),
+            rev: None
+        }),
+        Response::NoteWritten { .. }
+    ));
+    for (tool, args) in [
+        ("rename_ticket", json!({"key": key, "title": "stale", "seen": written["seen"]})),
+        ("move_ticket", json!({"key": key, "to_column": "TODO", "seen": written["seen"]})),
+        ("ask_agent", json!({"key": key, "text": "go", "seen": written["seen"]})),
+        ("start_agent", json!({"key": key, "workspace": "worktree", "seen": written["seen"]})),
+    ] {
+        assert!(shim.call_err(tool, args).contains("changed since it was read"), "{tool}");
+    }
 }

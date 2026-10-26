@@ -210,7 +210,8 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     let stranger = c.spawn_claude(outsider);
     let owner_key = c.board().ticket(owner).unwrap().short_key.clone();
     assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
-    let view = c.send(Principal::Agent { session: worker }, Command::AgentGetTicket);
+    let view =
+        c.send(Principal::Agent { session: worker }, Command::AgentGetTicket { full: false });
     let Response::AgentTicket { ticket: view } = view else { panic!("get_ticket: {view:?}") };
     let json = serde_json::to_value(view).unwrap();
     let ticket = &json;
@@ -332,7 +333,7 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     ));
     let request = Command::AgentRequestCloseShell { shell, key: owner_key.clone() };
     wait_until(Duration::from_secs(10), "shell close request", || {
-        matches!(c.send(as_crown.clone(), request.clone()), Response::AgentTicket { .. })
+        matches!(c.send(as_crown.clone(), request.clone()), Response::AgentTicketUpdated { .. })
     });
     let q = c
         .board()
@@ -343,7 +344,10 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
         .shell_close_request
         .clone()
         .unwrap();
-    assert!(matches!(c.send(as_crown.clone(), request.clone()), Response::AgentTicket { .. }));
+    assert!(matches!(
+        c.send(as_crown.clone(), request.clone()),
+        Response::AgentTicketUpdated { .. }
+    ));
     assert_eq!(
         c.board()
             .sessions
@@ -396,7 +400,7 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
         Response::Ok
     ));
     assert!(matches!(c.request(confirm), Response::Err { .. }), "denial invalidates approval");
-    assert!(matches!(c.send(as_crown.clone(), request), Response::AgentTicket { .. }));
+    assert!(matches!(c.send(as_crown.clone(), request), Response::AgentTicketUpdated { .. }));
     let q = c
         .board()
         .sessions
@@ -414,7 +418,7 @@ fn shell_output_is_shared_scoped_revocable_and_close_is_human_confirmed() {
     );
     assert!(matches!(
         c.send(as_crown.clone(), Command::AgentRequestCloseShell { shell, key: owner_key.clone() }),
-        Response::AgentTicket { .. }
+        Response::AgentTicketUpdated { .. }
     ));
     let q = c
         .board()
@@ -572,7 +576,7 @@ fn crown_archive_and_the_bulk_offer_leave_idle_adopted_shells_alive() {
         } else {
             let Response::AgentTicket { ticket: view } = c.send(
                 principal.clone(),
-                Command::AgentReadTicket { key: key.clone(), plan: false },
+                Command::AgentReadTicket { key: key.clone(), full: false, plan: false },
             ) else {
                 panic!("crown reads target first")
             };

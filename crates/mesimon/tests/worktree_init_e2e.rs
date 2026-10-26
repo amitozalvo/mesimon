@@ -135,7 +135,7 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     assert!(journal.contains("T-1 | seeded the cache"), "the output is in the journal: {journal}");
     // The agent reads the script on its own ticket: present, and how its
     // last run went.
-    match c.send(Principal::Agent { session: s1 }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: s1 }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             let init = ticket.worktree_init.expect("worktree_init on every read");
             assert_eq!(init.script, INIT_SCRIPT);
@@ -163,7 +163,7 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     let journal = std::fs::read_to_string(h.paths.state_dir.join("daemon.log")).unwrap();
     assert!(journal.contains(&format!("init T-2: {failure_outcome} ({INIT_SCRIPT})")), "{journal}");
     assert!(journal.contains("T-2 | no cache here"), "stderr is in the journal too: {journal}");
-    match c.send(Principal::Agent { session: s2 }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: s2 }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             let init = ticket.worktree_init.unwrap();
             assert_eq!(init.last.as_deref(), Some(failure_outcome.as_str()));
@@ -201,7 +201,10 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     let timeout_outcome = init_outcome(&h, t3, "timed out", 2);
     let journal = std::fs::read_to_string(h.paths.state_dir.join("daemon.log")).unwrap();
     assert!(journal.contains(&format!("init T-3: {timeout_outcome} ({INIT_SCRIPT})")), "{journal}");
-    match c.send(Principal::Agent { session: timeout_session }, Command::AgentGetTicket) {
+    match c.send(
+        Principal::Agent { session: timeout_session },
+        Command::AgentGetTicket { full: false },
+    ) {
         Response::AgentTicket { ticket } => {
             let init = ticket.worktree_init.unwrap();
             assert_eq!(init.last.as_deref(), Some(timeout_outcome.as_str()));
@@ -216,7 +219,7 @@ fn the_init_script_runs_before_the_agent_and_never_holds_it_back() {
     assert_eq!(wt.detail, None);
     let s4 = session_of(&mut c, t4);
     assert_eq!(feed_count(&h, "worktree_init", t4), 0);
-    match c.send(Principal::Agent { session: s4 }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: s4 }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             let init = ticket.worktree_init.unwrap();
             assert!(!init.present);

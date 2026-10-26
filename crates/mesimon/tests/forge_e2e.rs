@@ -524,7 +524,7 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     // And on the page and in `get_ticket` (T-749), in the same words.
     let words = "pipeline not read — before REVIEW";
     assert_eq!(held_of(&mut c), [(pr_id, words.to_string())]);
-    match c.send(Principal::Agent { session: pr_sid }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: pr_sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.automove.held.as_deref(), Some(words))
         }
@@ -730,7 +730,9 @@ fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
         }
         other => panic!("merge with a reviewed PR alone: {other:?}"),
     }
-    match c.send(Principal::Agent { session: reviewer_sid }, Command::AgentGetTicket) {
+    match c
+        .send(Principal::Agent { session: reviewer_sid }, Command::AgentGetTicket { full: false })
+    {
         Response::AgentTicket { ticket } => {
             let pr = ticket.prs.iter().find(|p| p.label == "#43").expect("the reviewed PR");
             assert!(pr.reviewed, "{pr:?}");
@@ -893,7 +895,7 @@ fn the_crown_hears_the_forges_edges() {
     turn(&mut c, sa);
     let seen = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
@@ -945,7 +947,7 @@ fn the_crown_hears_the_forges_edges() {
     // its job for a wait or a failure.
     let row = prs_of(&mut c).into_iter().find(|p| p.ticket == w && p.number == 42).unwrap();
     assert_eq!((row.pipeline.as_str(), row.job.as_deref()), ("running", Some("test")));
-    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.prs[0].pipeline, "running", "{:?}", ticket.prs);
             assert_eq!(ticket.prs[0].job, None, "{:?}", ticket.prs);
@@ -1479,7 +1481,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     turn(&mut c, sa);
     let seen = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
@@ -1563,7 +1565,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     // The crown's read of the worker: where it landed, and no merger.
     let view = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read: {other:?}"),
@@ -1712,7 +1714,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     turn(&mut c, sa);
     let seen = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
@@ -1789,7 +1791,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     });
     let view = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read: {other:?}"),
@@ -2436,7 +2438,7 @@ fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
     h.one_turn(c, sa);
     let seen = match c.send(
         Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
@@ -3049,7 +3051,7 @@ fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
     let wa = wt_of(&mut c, a).unwrap();
     assert!(!wa.merged, "an open PR reads unmerged on a landed branch");
     assert_eq!(c.board().ticket(a).unwrap().column, "DONE");
-    match c.send(Principal::Agent { session: a_sid }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: a_sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.merge_state.as_deref(), Some("open PR #2"));
             assert!(ticket.merged_in.is_none());
@@ -3134,7 +3136,7 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     let waited = ended.elapsed();
     let prs = match c.send(
         Principal::Agent { session: k.crown },
-        Command::AgentReadTicket { key: key.clone(), plan: false },
+        Command::AgentReadTicket { key: key.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.prs,
         other => panic!("read: {other:?}"),
@@ -3295,10 +3297,11 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     assert!(!pending.iter().any(|p| p.ticket == id || p.ticket == gamma), "{pending:?}");
 
     // The agent reads who merges it, and `m` is refused in the forge's words.
-    let view = match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
-        Response::AgentTicket { ticket } => ticket,
-        other => panic!("get_ticket: {other:?}"),
-    };
+    let view =
+        match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket { full: false }) {
+            Response::AgentTicket { ticket } => ticket,
+            other => panic!("get_ticket: {other:?}"),
+        };
     let merge = view.merge.expect("a branch says who merges it");
     assert_eq!(
         (merge.by.as_str(), merge.why.as_str()),
@@ -3313,10 +3316,11 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), main_before);
     // The closed one (T-797): the forge's too, and its reopening the road
     // back.
-    let view = match c.send(Principal::Agent { session: gsid }, Command::AgentGetTicket) {
-        Response::AgentTicket { ticket } => ticket,
-        other => panic!("get_ticket: {other:?}"),
-    };
+    let view =
+        match c.send(Principal::Agent { session: gsid }, Command::AgentGetTicket { full: false }) {
+            Response::AgentTicket { ticket } => ticket,
+            other => panic!("get_ticket: {other:?}"),
+        };
     let merge = view.merge.expect("a branch says who merges it");
     assert_eq!(
         (merge.by.as_str(), merge.why.as_str()),
@@ -3340,10 +3344,11 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
     });
     std::thread::sleep(Duration::from_secs(4));
     assert_eq!(feed_count(&h, "merge_train_merged", beta), 0, "the train merges nothing");
-    let view = match c.send(Principal::Agent { session: bsid }, Command::AgentGetTicket) {
-        Response::AgentTicket { ticket } => ticket,
-        other => panic!("get_ticket: {other:?}"),
-    };
+    let view =
+        match c.send(Principal::Agent { session: bsid }, Command::AgentGetTicket { full: false }) {
+            Response::AgentTicket { ticket } => ticket,
+            other => panic!("get_ticket: {other:?}"),
+        };
     let merge = view.merge.expect("a branch says who merges it");
     assert_eq!(
         (merge.by.as_str(), merge.why.as_str()),
@@ -3429,9 +3434,12 @@ fn the_pipeline_gate_judges_the_branchs_tip() {
         })
     });
     assert_eq!(c.board().ticket(id).unwrap().column, "IN PROGRESS");
-    match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
-            assert!(!ticket.allowed_columns.iter().any(|c| c == "REVIEW"), "{ticket:?}")
+            assert!(
+                !ticket.allowed_columns.as_ref().unwrap().iter().any(|c| c == "REVIEW"),
+                "{ticket:?}"
+            )
         }
         other => panic!("get_ticket: {other:?}"),
     }
@@ -3857,7 +3865,7 @@ fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
     assert!(beta_prs.is_empty(), "the cut is no work of beta's: {beta_prs:?}");
     let row = wt_of(&mut c, beta).unwrap();
     assert!(!row.merged, "beta reads unmerged: {row:?}");
-    match c.send(Principal::Agent { session: beta_sid }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: beta_sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert!(ticket.prs.is_empty(), "{:?}", ticket.prs);
             assert_ne!(ticket.merge_state.as_deref(), Some("merged"));
@@ -4110,7 +4118,7 @@ fn parked_squash_merge(name: &str, restart: bool) {
     // The crown parks its worker, as a crown does once a delivery is heard.
     let seen = match c.send(
         Principal::Agent { session: k.crown },
-        Command::AgentReadTicket { key: kw.clone(), plan: false },
+        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),
@@ -4119,7 +4127,7 @@ fn parked_squash_merge(name: &str, restart: bool) {
         Principal::Agent { session: k.crown },
         Command::AgentSleepTicket { key: kw.clone(), seen },
     ) {
-        Response::AgentTicket { .. } => {}
+        Response::AgentTicketUpdated { .. } => {}
         other => panic!("sleep_agent: {other:?}"),
     }
     wait_until(Duration::from_secs(10), "the worker to park", || {
@@ -4626,7 +4634,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     // The crown watches it (T-712), so its turns' ends are the crown's.
     let seen = match c.send(
         Principal::Agent { session: k.crown },
-        Command::AgentReadTicket { key: kp.clone(), plan: false },
+        Command::AgentReadTicket { key: kp.clone(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket.seen,
         other => panic!("read: {other:?}"),

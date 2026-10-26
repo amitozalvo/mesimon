@@ -230,7 +230,7 @@ fn a_composer_that_never_paints_is_a_failed_start() {
         "the card and the chip say so"
     );
     assert!(!got(&h).contains("mesimon-ready"), "nothing was pasted: {:?}", got(&h));
-    match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket: view } => {
             assert_eq!(view.state.map(|s| s.state).as_deref(), Some("unsent"));
         }

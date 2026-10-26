@@ -1868,3 +1868,18 @@ checks = ["road:mod", "started_by_crown", "woke:overrun", "crown:sample_agent", 
   crown = "SA1: call start_agent for {key} with workspace worktree, no tier, no plan and expect_secs 30, then end your turn with the single line: SA1 started. When the board next wakes you for {key}, end your turn with the single line: SA1 worker: followed by long_job if its agent is on a long job that is getting somewhere, or looping if it is stuck in a loop."
   until = { state = "working" }
   wake = true
+
+# T-1031: fixed before either arm; three fresh-crown samples per arm.
+[[test]]
+id = "CR1"
+title = "CR1 · do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Read this ticket and its notes. Reply with the single line receipt checked and end your turn. Run no command and change no file."
+expect = "the crown can find the brief through the compact read, annotate and rename the ticket, start its worker, and hear the worker's completion; the worker reads its full brief and answers receipt checked."
+checks = ["road:mod", "started_by_crown", "crown:write_note", "crown:rename_ticket", "crown:start_agent", "reply:receipt checked"]
+
+  [[test.steps]]
+  crown = "Please look over {key}'s brief, add a note saying what its worker is being asked to do, rename it to CR1 receipt check, and have its own agent carry out that brief in its own worktree. When it finishes, tell me what it answered."
+  until = { stops = 1, state = "idle" }
+  wake = true

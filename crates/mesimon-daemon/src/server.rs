@@ -3668,7 +3668,7 @@ impl Daemon {
             // The agent tier, reached only via `handle_agent`. A local client
             // sending one of these is either confused or probing; either way
             // the answer is no, not "acts as the agent whose id you guessed".
-            Command::AgentGetTicket
+            Command::AgentGetTicket { .. }
             | Command::AgentReadTicket { .. }
             | Command::AgentListBoard
             | Command::AgentMoveTicket { .. }
@@ -7668,14 +7668,14 @@ impl Daemon {
     /// that session's connection since it was crowned, compacted or cleared,
     /// or since the daemon started (T-930), whichever tool it called: a
     /// person may crown an agent mid-run, which never read them. Its own
-    /// `get_ticket` view carries them already (`crown`), so that read adds
-    /// nothing. The second value is what the connection writer reports once
-    /// the line is written. A written line is not a read one, so nothing is
-    /// promised from it: the crown's own `get_ticket` is where they are.
+    /// `get_ticket` receives them in `crown` once; other calls receive a
+    /// separate block. An explicit `full` own read always carries them.
+    /// The second value is what the connection writer reports once the line
+    /// is written; a failed write leaves the rules owed.
     fn with_crown_rules(
         &self,
         session: uuid::Uuid,
-        resp: Response,
+        mut resp: Response,
     ) -> (Response, Option<(uuid::Uuid, u64)>) {
         let crowned = self
             .board
@@ -7687,8 +7687,11 @@ impl Daemon {
             return (resp, None);
         };
         let told = Some((session, generation));
-        if matches!(&resp, Response::AgentTicket { ticket } if ticket.crown.is_some()) {
-            return (resp, told);
+        if let Response::AgentTicket { ticket } = &mut resp {
+            if ticket.crowned == Some(true) {
+                ticket.crown = Some(mcp::crown_view());
+                return (resp, told);
+            }
         }
         (Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }, told)
     }
@@ -7750,7 +7753,7 @@ impl Daemon {
 
         let logged = cmd.meta().logged;
         match cmd {
-            Command::AgentGetTicket => {
+            Command::AgentGetTicket { full } => {
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
                     authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
@@ -7763,6 +7766,9 @@ impl Daemon {
                         // ticket, where the key is a lookup (T-715).
                         view.key_about = Some(mesimon_core::mcp::KEY_ABOUT.to_string());
                         view.crowned = Some(self.board.is_crowned(ticket));
+                        if full && self.board.is_crowned(ticket) {
+                            view.crown = Some(mesimon_core::mcp::crown_view());
+                        }
                         // A worker the board's crown started reads who merges
                         // under it (T-599): the crown worn now, whichever
                         // ticket wore it at the start (T-927).
@@ -7795,7 +7801,7 @@ impl Daemon {
                 }
             }
             // Another ticket, by key (T-411): the crown's one read.
-            Command::AgentReadTicket { key, plan } => {
+            Command::AgentReadTicket { key, plan, full } => {
                 let target = match self.crown_target(ticket, &key, true) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
@@ -7822,6 +7828,12 @@ impl Daemon {
                         // and nothing of them.
                         if self.board.is_crowned(ticket) {
                             self.crown_reads(&mut view, target);
+                            if !full {
+                                view.compact();
+                            }
+                            if full && target == ticket {
+                                view.crown = Some(mesimon_core::mcp::crown_view());
+                            }
                         }
                         Response::AgentTicket { ticket: view }
                     }
@@ -7951,6 +7963,7 @@ impl Daemon {
                 self.read_note(target, note)
             }
             Command::AgentWriteNote { note, text, key } => {
+                let keyed = key.is_some();
                 let target = match key {
                     None => ticket,
                     Some(k) => match self.crown_target(ticket, &k, false) {
@@ -7965,16 +7978,24 @@ impl Daemon {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
                 let resp = self.write_note(target, note, text, None, &by);
-                if matches!(resp, Response::NoteWritten { .. }) {
+                if let Response::NoteWritten { note } = resp {
                     self.feed.board(by.actor(), "write_note", Some(target));
-                    self.crown_touched(ticket, target, "note");
+                    let seen = self
+                        .crown_touched(ticket, target, "note")
+                        .unwrap_or_else(|| self.seen_token(target));
+                    if keyed {
+                        Response::AgentNoteWritten { note, seen }
+                    } else {
+                        Response::NoteWritten { note }
+                    }
+                } else {
+                    resp
                 }
-                resp
             }
             // The crown's three writers (T-411). Each resolves its key
             // through the same gate, checks `seen`, does what the human's
-            // command does, and answers with the ticket as it stands now —
-            // fresh stamp included, so the next edit needs no second read.
+            // command does, and answers with the changed fields and a fresh
+            // stamp, so the next edit needs no second read (T-1031).
             Command::AgentRenameTicket { key, title, seen } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
                     Ok(t) => t,
@@ -7997,13 +8018,20 @@ impl Daemon {
                 if mesimon_core::board::shell_title(&title) {
                     return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
                 }
-                if let err @ Response::Err { .. } = self.with_ticket(target, |t| t.title = title) {
+                if let err @ Response::Err { .. } =
+                    self.with_ticket(target, |t| t.title = title.clone())
+                {
                     return err;
                 }
                 self.feed.board(by.actor(), "rename_ticket", Some(target));
-                self.crown_touched(ticket, target, "renamed");
-                self.agent_ticket_view(target)
-                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+                let seen = self
+                    .crown_touched(ticket, target, "renamed")
+                    .unwrap_or_else(|| self.seen_token(target));
+                Response::AgentTicketUpdated {
+                    key,
+                    seen,
+                    change: mesimon_core::command::AgentTicketChange::Rename { title },
+                }
             }
             Command::AgentSetWorkspace { key, workspace, seen } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
@@ -8024,9 +8052,16 @@ impl Daemon {
                     return err;
                 }
                 self.feed.board(by.actor(), "set_workspace", Some(target));
-                self.crown_touched(ticket, target, "workspace");
-                self.agent_ticket_view(target)
-                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+                let seen = self
+                    .crown_touched(ticket, target, "workspace")
+                    .unwrap_or_else(|| self.seen_token(target));
+                Response::AgentTicketUpdated {
+                    key,
+                    seen,
+                    change: mesimon_core::command::AgentTicketChange::Workspace {
+                        workspace: crown::workspace_word(ws).into(),
+                    },
+                }
             }
             Command::AgentArchiveTicket { key, restore, seen } => {
                 let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), restore) {
@@ -8066,9 +8101,16 @@ impl Daemon {
                     if restore { "unarchive_ticket" } else { "archive_ticket" },
                     Some(target),
                 );
-                self.crown_touched(ticket, target, word);
-                self.agent_ticket_view(target)
-                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+                let seen = self
+                    .crown_touched(ticket, target, word)
+                    .unwrap_or_else(|| self.seen_token(target));
+                Response::AgentTicketUpdated {
+                    key,
+                    seen,
+                    change: mesimon_core::command::AgentTicketChange::Archive {
+                        archived: !restore,
+                    },
+                }
             }
             // The crown's start (T-412): an ask to spawn, judged here. The
             // budget and the seat rule are the daemon's; the agent names a
@@ -8622,10 +8664,17 @@ impl Daemon {
                 }
                 self.persist_sessions();
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
-                self.crown_touched(ticket, target, "parked");
+                let seen = self
+                    .crown_touched(ticket, target, "parked")
+                    .unwrap_or_else(|| self.seen_token(target));
                 self.broadcast();
-                self.agent_ticket_view(target)
-                    .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
+                Response::AgentTicketUpdated {
+                    key,
+                    seen,
+                    change: mesimon_core::command::AgentTicketChange::Sleep {
+                        state: self.agent_state_view(target),
+                    },
+                }
             }
             // The crown's watch (T-712): a ticket a person started, heard of
             // as a worker the crown started is — delivered, finished its
@@ -8683,16 +8732,16 @@ impl Daemon {
                 self.persist_crown();
                 let cmd = if unwatch { "unwatch_ticket" } else { "watch_ticket" };
                 self.feed.board(by.actor(), cmd, Some(target));
-                self.crown_touched(ticket, target, word);
+                let seen = self
+                    .crown_touched(ticket, target, word)
+                    .unwrap_or_else(|| self.seen_token(target));
                 // The watch flips no board field, so nothing else tells the
                 // TUI to take a snapshot and strike the bolt (T-719).
                 self.broadcast();
-                match self.agent_ticket_view(target) {
-                    Some(mut view) => {
-                        view.watched = !unwatch;
-                        Response::AgentTicket { ticket: view }
-                    }
-                    None => no_such_ticket(),
+                Response::AgentTicketUpdated {
+                    key,
+                    seen,
+                    change: mesimon_core::command::AgentTicketChange::Watch { watched: !unwatch },
                 }
             }
             // The crown's train hold (T-919): `t` on a worker's page, with
@@ -10971,7 +11020,7 @@ impl Daemon {
                 }
                 _ => None,
             }),
-            allowed_columns: self.agent_allowed_columns(id),
+            allowed_columns: Some(self.agent_allowed_columns(id)),
             column_descriptions: self.agent_column_descriptions(),
             automove: self
                 .board
@@ -10987,12 +11036,13 @@ impl Daemon {
                 .iter()
                 .map(|r| AgentTagView { name: r.name.clone(), group: r.group })
                 .collect(),
-            allowed_tags: self
-                .board
-                .tags
-                .iter()
-                .map(|d| AgentTagView { name: d.name.clone(), group: d.group })
-                .collect(),
+            allowed_tags: Some(
+                self.board
+                    .tags
+                    .iter()
+                    .map(|d| AgentTagView { name: d.name.clone(), group: d.group })
+                    .collect(),
+            ),
             board_version: self.board_version,
             description: described.as_ref().map(|(head, _)| head.clone()),
             description_cut: described.and_then(|(_, cut)| cut),
@@ -11034,7 +11084,7 @@ impl Daemon {
             // view of another leaves it out (T-916).
             crowned: self.board.is_crowned(id).then_some(true),
             watched: false,
-            crown: self.board.is_crowned(id).then(mesimon_core::mcp::crown_view),
+            crown: None,
             under_crown: None,
             background: self.agent_background(id),
             state: self.agent_state_view(id),

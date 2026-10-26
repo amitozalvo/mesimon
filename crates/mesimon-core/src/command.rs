@@ -1032,8 +1032,12 @@ pub enum Command {
     // (`AgentCreateTicket` mints one and returns its KEY, never an id, and
     // nothing here accepts a key back.)
     // ------------------------------------------------------------------
-    /// The caller's own ticket, as `get_ticket` renders it.
-    AgentGetTicket,
+    /// The caller's own brief. `full` also repeats the crown's rules;
+    /// otherwise they arrive only while the context is owed them (T-1031).
+    AgentGetTicket {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        full: bool,
+    },
     AgentReadShell {
         shell: uuid::Uuid,
         #[serde(default)]
@@ -1051,6 +1055,9 @@ pub enum Command {
     /// parses on the wire.
     AgentReadTicket {
         key: String,
+        /// Includes the brief, board vocabulary and field explanations (T-1031).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        full: bool,
         /// The plan its agent stopped on, whole (T-991): `needs_you.plan`
         /// is otherwise its head.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1599,7 +1606,7 @@ impl Command {
             | ReadNotes { .. }
             | TicketSessions { .. }
             | ArchivedTickets
-            | AgentGetTicket
+            | AgentGetTicket { .. }
             | AgentReadTicket { .. }
             | AgentReadAttachment { .. }
             | ReadAttachment { .. }
@@ -2275,6 +2282,17 @@ pub enum Response {
         #[serde(default)]
         note: Option<ulid::Ulid>,
     },
+    /// An agent's note write includes the revision stamp after the write.
+    AgentNoteWritten {
+        note: Option<ulid::Ulid>,
+        seen: String,
+    },
+    /// The fields changed by a crown edit, and the resulting ticket stamp.
+    AgentTicketUpdated {
+        key: String,
+        seen: String,
+        change: AgentTicketChange,
+    },
     /// AgentMoveTicket's receipt: where the ticket actually ended up.
     AgentMoved {
         column: String,
@@ -2505,6 +2523,41 @@ pub struct ShellOutput {
     pub text: String,
 }
 
+/// A focused crown receipt. The MCP renderer places these fields beside key/seen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentTicketChange {
+    Rename { title: String },
+    Workspace { workspace: String },
+    Archive { archived: bool },
+    Sleep { state: Option<AgentStateView> },
+    Watch { watched: bool },
+    ShellClose { shell: uuid::Uuid, close_requested: bool },
+}
+
+impl AgentTicketView {
+    /// Routine crown reads retain ticket facts; the brief, vocabulary and
+    /// explanations remain available through `full: true` (T-1031).
+    pub fn compact(&mut self) {
+        self.description = None;
+        self.description_cut = None;
+        self.key_about = None;
+        self.allowed_columns = None;
+        self.column_descriptions.clear();
+        self.allowed_tags = None;
+        self.shells_about.clear();
+        self.prs_about = None;
+        self.context_about = None;
+        self.cost_about = None;
+        if let Some(init) = &mut self.worktree_init {
+            init.about.clear();
+        }
+        if let Some(summary) = &mut self.summary {
+            summary.about.clear();
+        }
+    }
+}
+
 /// The caller's own ticket, as an agent sees it.
 ///
 /// A hand-written projection, not `Ticket` with fields skipped: a projection
@@ -2592,8 +2645,8 @@ pub struct AgentTicketView {
     /// Where `move_ticket` will accept a move to, right now. This is why
     /// `to_column` needs no schema enum: the valid set travels as transient
     /// result data instead of permanent context.
-    #[serde(default)]
-    pub allowed_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_columns: Option<Vec<String>>,
     /// What each column is for, in the user's words (T-467), keyed by column
     /// name; a column with no description is absent. Beside
     /// `allowed_columns` because a move is where a column's meaning matters.
@@ -2613,14 +2666,14 @@ pub struct AgentTicketView {
     /// `tag_ticket` accept. Same reasoning as `allowed_columns`: transient
     /// result data, not a schema enum that would put the user's words into
     /// every request.
-    #[serde(default)]
-    pub allowed_tags: Vec<AgentTagView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tags: Option<Vec<AgentTagView>>,
     #[serde(default)]
     pub board_version: u64,
     /// The first note's body — the ticket's description — whole up to
     /// `mcp::DESCRIPTION_MAX_BYTES`, and past it its head ending in `…`,
     /// with `description_cut` saying so.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// That the description above is a head and not the whole (T-896): how
     /// long the whole is, how much of it is here, and that `read_note` on
@@ -2654,9 +2707,9 @@ pub struct AgentTicketView {
     /// and off the wire while false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub watched: bool,
-    /// On the crowned ticket only (T-537): how the board wakes its agent
-    /// (`mcp::CROWN_WAKES`), so a crown learns it on its first read and not
-    /// from a monitor of its own. Absent everywhere else.
+    /// On the crowned ticket only: the rules once per crown context, or
+    /// on an explicit `full` read (T-1031). Other first calls carry them
+    /// in `Response::CrownRules`. Absent from routine repeat reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crown: Option<String>,
     /// On a worker's own read, where the board's crown started it (T-599):
@@ -3132,6 +3185,7 @@ pub struct AgentMergeView {
 pub struct AgentWorktreeInitView {
     pub script: String,
     pub present: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub about: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
@@ -3144,6 +3198,7 @@ pub struct AgentWorktreeInitView {
 /// the convention is learned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSummaryView {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub about: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<AgentSummaryRow>,
@@ -4375,11 +4430,11 @@ mod tests {
             prs: vec![],
             worktree_init: None,
             worktree_error: None,
-            allowed_columns: vec![],
+            allowed_columns: Some(vec![]),
             column_descriptions: Default::default(),
             automove: AgentAutomoveView::default(),
             tags: vec![],
-            allowed_tags: vec![],
+            allowed_tags: Some(vec![]),
             board_version: 1,
             description: None,
             description_cut: None,

@@ -502,7 +502,10 @@ fn restart_recovers_working_from_a_board_tool_call() {
         SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
         "nothing but the call may lift it"
     );
-    let _ = c.send(mesimon_core::Principal::Agent { session: sid }, Command::AgentGetTicket);
+    let _ = c.send(
+        mesimon_core::Principal::Agent { session: sid },
+        Command::AgentGetTicket { full: false },
+    );
     assert_eq!(rec(&mut c).state, SessionState::Running, "the call is the turn speaking");
 
     let _ = c.request(Command::KillSession { id: sid });

@@ -205,14 +205,14 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
     assert!(!rec.argv.iter().any(|a| a == "--allowedTools"), "{:?}", rec.argv);
     assert_eq!(launch_tools(&tmux_sock, &rec), None, "off hands no tier on either road");
-    match c.send(Principal::Agent { session: s_off }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: s_off }, Command::AgentGetTicket { full: false }) {
         Response::Err { message } => assert!(message.contains("off"), "{message}"),
         other => panic!("off admits nothing: {other:?}"),
     }
 
     // ---- the board switch still ANDs ---------------------------------------------
     assert!(matches!(c.request(Command::SetMcpTools { on: false }), Response::Ok));
-    match c.send(Principal::Agent { session: s_full }, Command::AgentGetTicket) {
+    match c.send(Principal::Agent { session: s_full }, Command::AgentGetTicket { full: false }) {
         Response::Err { message } => assert!(message.contains("off"), "{message}"),
         other => panic!("the board switch off refuses everything: {other:?}"),
     }

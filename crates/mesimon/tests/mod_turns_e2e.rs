@@ -438,7 +438,7 @@ fn a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod() {
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> AgentTicketView {
     match c.send(
         Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), plan: false },
+        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
     ) {
         Response::AgentTicket { ticket } => ticket,
         other => panic!("read {key}: {other:?}"),
