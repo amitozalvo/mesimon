@@ -53,6 +53,12 @@ TIERS = (
 )
 DEFAULT_TIER = "coder"
 CROWN_TITLE = "Crown"
+# The person's standing words on the crown's ticket (T-1038): how a user
+# tells their crown to reach them, in their own voice. mesimon's text says
+# nothing of it.
+CROWN_WORDS = ("I work from the board, not from your pane: when you need an answer or a "
+               "decision from me, raise your hand on this ticket and say what you need. "
+               "Everything else, carry on without me.")
 README = """# ledger
 
 A personal expense tracker for the command line.
@@ -202,6 +208,10 @@ class Demo:
         holder = self.start_holder()
         crown = w.create_ticket("TODO", CROWN_TITLE)
         w.request({"cmd": "set_ticket_tier", "id": crown, "tier": ids["crown"]})
+        w.write_note(crown, CROWN_WORDS)
+        # On the shared checkout, so Claude Code's folder-trust dialog never comes
+        # (the repository is already trusted).
+        w.set_workspace(crown, "shared_checkout")
         w.crown(crown)
         key = next(t["short_key"] for t in w.board()["tickets"] if t["id"] == crown)
         cols = [c["name"] for c in w.board()["columns"]]
@@ -220,7 +230,8 @@ class Demo:
                    "crown": crown, "crown_key": key, "crown_session": sid, "laid_ms": now_ms(),
                    "lay_seconds": round(took), "feed_off": read_feed(self.paths)[1],
                    "log_off": os.path.getsize(self.paths.daemon_log), "rows_seen": 0,
-                   "said": [], "trusted": [{"at_ms": now_ms(), "key": key}] if self.trusted_crown else []})
+                   "said": [], "crown_words": CROWN_WORDS, "crown_workspace": "shared_checkout",
+                   "trusted": [{"at_ms": now_ms(), "key": key}] if self.trusted_crown else []})
         say(f"\n  laid in {took:.0f} s ∙ the crown waits for words" if sid
             else f"\n  laid in {took:.0f} s ∙ the crown has not ended its first turn")
         say(f"  watch it: cd {self.repo} && {binary}")
