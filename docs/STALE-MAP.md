@@ -37576,3 +37576,21 @@ ran the following; no CI result is claimed (T-1030).
   the first attributed launch prompt binds a receipt that initially saw no seat to its
   actual session. Both STALE-MAP records and both added e2e cases are retained. Validation
   above predates this rebase; the requested post-rebase runs are recorded below.
+- **Post-rebase validation on `dd24e118`.** Rerun at the person's request after integrating
+  T-1035's `23fc41ffd7495712540dc66e35c9680886631a7f`: `cargo ut` **2,739 passed,
+  10 ignored**; `cargo build --workspace` passed; `crown_e2e`, `crown_reads_e2e`, `mcp_e2e`
+  and `crown_hold_e2e` together **119/119**, no skips, including the inherited sort and
+  replaced-seat assertions, audit clean. SE1 ran once in this post-rebase round with crown
+  `claude-opus-5-5`, Claude Code 2.1.310: **7/7**, the start stamp accepted with zero
+  intervening reads, `first` then `fig`; `--reset` parked its agents and stopped its daemon
+  and private tmux. One full `cargo nextest run --workspace --no-fail-fast`, `NO_COLOR`
+  unset: **3,129 successful results, 11 ignored, one LEAK warning** in
+  `approve_bridge::a_phone_s_answer_is_printed_as_the_dialog_s_decision` (output pipes still
+  held after the test exited). The same command's mod-road pass was **390/390**, one helper
+  ignored, with no leak; the final fixture audit was clean (**826 owners**). The runner
+  stamped `dd24e118`. The only extra diagnostic rerun was that single `approve_bridge` test:
+  **1/1**, no leak, audit clean. Neither that test nor its implementation changed here;
+  the original leak warning remains part of this run's record, not a clean first pass.
+  The full post-rebase gate was not repeated. Final formatting and diff checks passed.
+  The configured skips have the same measurement/helper/live-network reasons listed above;
+  CI remains off by T-1030. This validation note changes no tested product code.
