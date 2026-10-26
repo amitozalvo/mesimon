@@ -37166,3 +37166,9 @@ running. When a box draws is the pane's, and nothing records it.
   filed: T-1034 to T-1039. The crown serialised every overlapping pair rather than run both
   under the train, so the train's own rebase ask was not reached; and it hands REVIEW → DONE to
   the person (T-1037).
+- **Episode 2** (main at 3f34dc31, after T-1031's compact crown replies, 32 min, same lines):
+  196/216. The crown's `get_ticket` on other tickets read 727 to 1,014 B where episode 1's read
+  3,499 to 5,960 B, its `sleep_agent` replies 111 B where they were 3.6 to 5.4 KB, its context
+  ended at 126k where it ended at 171k; one wake per merge (episode 1: 1.10); the train's own
+  rebase ask was reached. One episode each, so these are described, not claimed as an effect.
+  `measure` prints the figures and `reset` keeps an episode's record under `demo-episodes/`.
