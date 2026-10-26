@@ -539,6 +539,13 @@ enum Msg {
     AgentSampled(u64, Box<crownsample::SampleRead>),
 }
 
+/// The stamp a crown receipt handed back for its target (T-1035), beside
+/// the target's words as the receipt saw them (`Daemon::words_token`).
+struct Receipt {
+    stamp: String,
+    words: String,
+}
+
 pub struct Daemon {
     paths: Paths,
     board: Board,
@@ -906,6 +913,19 @@ pub struct Daemon {
     /// (T-783), by the receiving ticket, for the card's line under its
     /// title. In memory, like the touches: the transcript is the record.
     crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
+    /// The last stamp a crown receipt handed back for each ticket (T-1035),
+    /// kept with the ticket's words as the receipt saw them. A write's own
+    /// consequences — the seat it started, woke or wrote to moving through
+    /// its states, the board's automatic moves that follow — leave that
+    /// stamp good (`receipt_holds`); a note, a title, a tag, a move by
+    /// hand, a raised hand or a hold since make it stale. In memory, like
+    /// the touches: a restart asks for a fresh read.
+    receipts: HashMap<ulid::Ulid, Receipt>,
+    /// How many times each ticket was moved or reordered by someone — a
+    /// person, an agent, a peer, never a rule (T-1035): what a receipt's
+    /// words count in place of the column, so a rule's move after the
+    /// crown's write does not stale its stamp and a person's does.
+    moved_by_hand: HashMap<ulid::Ulid, u64>,
     /// The crown's asks to each ticket's agent (T-568, T-938), by the
     /// ticket they were for, oldest first: the latest is the record the
     /// ask's receipt and the crown's `get_ticket` on it (`asked`) both read,
@@ -1978,6 +1998,8 @@ impl Daemon {
             agent_replay: HashMap::new(),
             crown_touches: HashMap::new(),
             crown_said: HashMap::new(),
+            receipts: HashMap::new(),
+            moved_by_hand: HashMap::new(),
             crown_asks: Tracked::default(),
             links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
             board_touches: Vec::new(),
@@ -8403,7 +8425,7 @@ impl Daemon {
                 Response::AgentAsked {
                     key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
                     replaced,
-                    seen: Some(self.seen_token(target)),
+                    seen: Some(self.receipt_seen(target)),
                     held_for_person,
                     held_because,
                     road: Some(road),
@@ -8459,7 +8481,7 @@ impl Daemon {
                             outcome: "awaiting_delivery".into(),
                             reason: None,
                             answer: String::new(),
-                            seen: Some(self.seen_token(target)),
+                            seen: Some(self.receipt_seen(target)),
                         }
                     }
                     Err(message) => Response::Err { message },
@@ -8501,7 +8523,7 @@ impl Daemon {
                             key,
                             outcome: "awaiting_delivery".into(),
                             reason: None,
-                            seen: Some(self.seen_token(target)),
+                            seen: Some(self.receipt_seen(target)),
                         }
                     }
                     Err(message) => Response::Err { message },
@@ -8540,7 +8562,7 @@ impl Daemon {
                             key,
                             outcome: "awaiting_delivery".into(),
                             reason: None,
-                            seen: Some(self.seen_token(target)),
+                            seen: Some(self.receipt_seen(target)),
                         }
                     }
                     Err(message) => Response::Err { message },
@@ -8835,7 +8857,7 @@ impl Daemon {
                     Response::Merge { outcome: MergeOutcome::Merged, detail, .. } => {
                         self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "merged");
                         let notice = self.notice_after_merge(target, &by);
-                        self.crown_touched(ticket, target, "merged");
+                        let seen = self.crown_touched(ticket, target, "merged");
                         Response::AgentMerged {
                             key: self
                                 .board
@@ -8844,7 +8866,7 @@ impl Daemon {
                                 .unwrap_or(key),
                             detail,
                             notice: notice.to_string(),
-                            seen: Some(self.seen_token(target)),
+                            seen,
                         }
                     }
                     Response::Merge { outcome: MergeOutcome::NeedsRebase, detail, .. } => {
@@ -9220,36 +9242,89 @@ impl Daemon {
         if let Some(t) = self.board.ticket(id) {
             t.column.hash(&mut h);
             t.order.hash(&mut h);
-            t.title.hash(&mut h);
-            for r in &t.tags {
-                r.group.hash(&mut h);
-                r.name.hash(&mut h);
-            }
-            for n in &t.notes {
-                n.id.to_string().hash(&mut h);
-                n.rev.hash(&mut h);
-            }
-            t.workspace_strategy().word().hash(&mut h);
-            t.is_archived().hash(&mut h);
-            t.raised.as_ref().map(|r| r.reason.as_str()).hash(&mut h);
-            // The train hold and whose it is (T-919): a person's `t` after
-            // the crown's read makes the crown's next edit stale.
-            self.train_hold_word(id).hash(&mut h);
-            // The hand the crown was told of (T-922), by its words and the
-            // moment of its telling: a second hand told inside the same
-            // turn leaves everything above as the first read saw it, and
-            // an answer to the first must not pass for one to the second.
-            // The same words told again are another hand.
-            if let Some(told) = self.crown_hands.get(&id) {
-                told.reason.hash(&mut h);
-                told.told_ms.hash(&mut h);
-            }
+            self.hash_words(id, &mut h);
             if let Some(s) = self.board.live_agent(id) {
                 s.state_word().hash(&mut h);
                 s.state_changed_at.hash(&mut h);
             }
         }
         format!("{:016x}", h.finish())
+    }
+
+    /// The stamp's other half (T-1035): what only a person or another
+    /// principal changes, with how many times someone moved the ticket by
+    /// hand in place of where it sits, and nothing of what its agent is
+    /// doing. A receipt keeps this beside the stamp it hands back, so the
+    /// write's own consequences — the seat it set in motion, the board's
+    /// rules moving the card after it — leave the stamp good and anyone's
+    /// edit makes it stale.
+    fn words_token(&self, id: ulid::Ulid) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if self.board.ticket(id).is_some() {
+            self.hash_words(id, &mut h);
+            self.moved_by_hand.get(&id).copied().unwrap_or_default().hash(&mut h);
+        }
+        format!("{:016x}", h.finish())
+    }
+
+    /// What both stamps hash of a ticket's words: the title, the tags, the
+    /// notes by id and revision, the workspace, the archive, the raised
+    /// hand, the train hold and the hand the crown was told of.
+    fn hash_words(&self, id: ulid::Ulid, h: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        if let Some(t) = self.board.ticket(id) {
+            t.title.hash(h);
+            for r in &t.tags {
+                r.group.hash(h);
+                r.name.hash(h);
+            }
+            for n in &t.notes {
+                n.id.to_string().hash(h);
+                n.rev.hash(h);
+            }
+            t.workspace_strategy().word().hash(h);
+            t.is_archived().hash(h);
+            t.raised.as_ref().map(|r| r.reason.as_str()).hash(h);
+            // The train hold and whose it is (T-919): a person's `t` after
+            // the crown's read makes the crown's next edit stale.
+            self.train_hold_word(id).hash(h);
+            // The hand the crown was told of (T-922), by its words and the
+            // moment of its telling: a second hand told inside the same
+            // turn leaves everything above as the first read saw it, and
+            // an answer to the first must not pass for one to the second.
+            // The same words told again are another hand.
+            if let Some(told) = self.crown_hands.get(&id) {
+                told.reason.hash(h);
+                told.told_ms.hash(h);
+            }
+        }
+    }
+
+    /// A receipt's stamp still holds for `id` (T-1035): it is the last one
+    /// a receipt handed back for the ticket, and nothing a person or
+    /// another principal writes has changed since. What the crown's own
+    /// write set in motion — its start's worktree cut, launch and first
+    /// prompt, with the board's `on_working` move; its merge's notice turn,
+    /// with the board's `on_merged` move; its ask's turn; its park — is
+    /// not news to the crown, and does not stale it.
+    fn receipt_holds(&self, id: ulid::Ulid, seen: &str) -> bool {
+        self.receipts.get(&id).is_some_and(|r| r.stamp == seen && r.words == self.words_token(id))
+    }
+
+    /// The fresh stamp a crown receipt hands back for `target` (T-1035),
+    /// kept with the ticket's words so the write's own consequences do not
+    /// stale it (`receipt_holds`). Every receipt's stamp comes through
+    /// here; a read's (`get_ticket`) does not, since nothing of the
+    /// crown's is in motion after a read.
+    fn receipt_seen(&mut self, target: ulid::Ulid) -> String {
+        let board = &self.board;
+        self.receipts.retain(|t, _| board.ticket(*t).is_some());
+        self.moved_by_hand.retain(|t, _| board.ticket(*t).is_some());
+        let stamp = self.seen_token(target);
+        let words = self.words_token(target);
+        self.receipts.insert(target, Receipt { stamp: stamp.clone(), words });
+        stamp
     }
 
     fn check_seen(&self, id: ulid::Ulid, seen: Option<&str>) -> std::result::Result<(), String> {
@@ -9259,7 +9334,7 @@ impl Daemon {
                 "seen is required for {key}: read it with get_ticket first and pass the seen stamp it returns"
             ));
         };
-        if seen != self.seen_token(id) {
+        if seen != self.seen_token(id) && !self.receipt_holds(id, seen) {
             let col = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
             let state = self
                 .agent_state_view(id)
@@ -9312,7 +9387,7 @@ impl Daemon {
             target,
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
         );
-        Some(self.seen_token(target))
+        Some(self.receipt_seen(target))
     }
 
     /// Words went between the crown and `ticket`'s agent (T-783): the card
@@ -11452,6 +11527,7 @@ impl Daemon {
         if from == dest {
             if let Position::Before(_) = pos {
                 self.reorder_within(id, dest, &pos, by)?;
+                self.note_hand_move(id, by);
             }
             return Ok(from);
         }
@@ -11495,6 +11571,7 @@ impl Daemon {
             let _ = store::save_ticket(&self.paths, &t);
         }
         self.moves.record(id, &from, dest, by, turn_of, Instant::now());
+        self.note_hand_move(id, by);
         self.held.moved(id);
         if by.is_human() {
             self.train.hand_touched(id);
@@ -11505,6 +11582,16 @@ impl Daemon {
             self.moves.leave();
         }
         Ok(dest.to_string())
+    }
+
+    /// A move or reorder of `id` that a rule did not make (T-1035): a
+    /// person's, an agent's, a peer's. A receipt's stamp counts these in
+    /// place of the column (`words_token`), so the board's own move after
+    /// the crown's write leaves it good and anyone's makes it stale.
+    fn note_hand_move(&mut self, id: ulid::Ulid, by: &Principal) {
+        if !matches!(by, Principal::Automation { .. }) {
+            *self.moved_by_hand.entry(id).or_default() += 1;
+        }
     }
 
     /// The held lines still standing (T-749): a column rule's until the

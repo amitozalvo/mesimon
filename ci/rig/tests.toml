@@ -163,6 +163,11 @@
 #              naming the steer is not required: the board sees one only
 #              where the steer's turn ended outside the held prompt's
 #              settle; `ci/rig.py::steer_verdict`).
+#              receipt_ask:accepted (T-1035: in the crown's transcript, the
+#              first ask_agent on the ticket carries the seen its own
+#              start_agent receipt returned, no get_ticket of the ticket
+#              between the two, and its result is the ask's receipt, not a
+#              stale refusal; `ci/rig.py::receipt_ask_outcome`),
 #              T-1014: held_between:<n> (from the person's key <n> in the
 #              pane, `pane_keys`, to key <n+1> the card said needs-you and
 #              nothing else), left_after:<n>:<secs>:<source> (the card left
@@ -1909,4 +1914,23 @@ checks = ["road:mod", "started_by_crown", "crown:write_note", "crown:rename_tick
   [[test.steps]]
   crown = "Please look over {key}'s brief, add a note saying what its worker is being asked to do, rename it to CR1 receipt check, and have its own agent carry out that brief in its own worktree. When it finishes, tell me what it answered."
   until = { stops = 1, state = "idle" }
+  wake = true
+
+# T-1035: a receipt's stamp outlives what the write itself set in motion.
+[[test]]
+id = "SE1"
+title = "SE1 · a start's receipt stamp is good for the ask that follows it: do the steps below"
+workspace = "worktree"
+brief = "Count the files under /usr: run the shell command `find /usr -type f 2>/dev/null | wc -l` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
+expect = "the crown starts the worker (A2's brief: run 1 asked for a foreground sleep 90, which Sonnet refused in words, as A2's history records) and, once its turn runs (the worktree cut, the agent launched, its first prompt in, the card pulled to IN PROGRESS by TODO's on_working), asks it words with ask_agent using the seen its start_agent receipt returned, reading the ticket again neither before nor between: the ask is taken on the first call (the start's own consequences do not stale its receipt), the words reach the worker once its turn ends, and it replies first, then fig."
+checks = ["road:mod", "started_by_crown", "crown:start_agent=1", "crown:ask_agent=1", "receipt_ask:accepted", "prompts:2", "replies:first,fig"]
+
+  [[test.steps]]
+  crown = "SE1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: SE1 started."
+  until = { events = ["UserPromptSubmit"], state = "working" }
+  settle = false
+
+  [[test.steps]]
+  crown = "SE1: call ask_agent for {key} with deliver idle, the seen that start_agent's receipt returned (call get_ticket neither before nor after), and the text: Reply with the single word fig and end your turn. Read no file and run no command. Then end your turn with two lines: SE1 asked, followed by accepted or refused as the call answered; and SE1 reason, followed by the refusal's words where it was refused. When the board wakes you for {key}, end your turn with the single line: SE1 seen."
+  until = { stops = 2, state = "idle" }
   wake = true

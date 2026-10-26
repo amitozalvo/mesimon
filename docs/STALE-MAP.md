@@ -37393,3 +37393,84 @@ ran the following; no CI result is claimed (T-1030).
 - `cargo fmt --all -- --check`, `git diff --check`, Python/TOML parsing, and the stub's
   shell syntax and empty commit-status response checks passed. No rendering goldens,
   Linux/release gates or CI were requested or run for this change.
+
+## A crown receipt's stamp outlives what the write itself set in motion (T-1035, 2026-10-26, the demo soak)
+
+- **What was wrong:** two cases of one thing. The demo crown (T-1032, episode 1) started T-9 and
+  at once sent a correction with `ask_agent`, using the `seen` its `start_agent` receipt had
+  returned; refused, "changed since it was read (now in IN PROGRESS, agent working)". On the
+  person's board the same day, `merge_ticket`'s receipt stamp was refused by the `sleep_agent`
+  that followed, three times (T-1014, T-1031, T-1032). `seen_token` hashes the seat's state word
+  and `state_changed_at` beside the column, so a receipt whose write sets a seat in motion — a
+  start's worktree cut, launch and first prompt, then TODO's `on_working`; a merge's notice turn,
+  then the column's `on_merged` (T-1037) — is stale by construction, a few seconds after it is
+  handed back, by consequences the crown itself caused. T-936 gave `AgentStarted` its stamp and
+  recorded the limit ("holds only until the agent's first state change"); the demo measured it
+  as one refused call and one ~4.6 KB re-read on every start an ask follows.
+- **The three roads the brief named, and the one taken.** A stamp computed after the write's
+  synchronous effects is what every receipt already did, and the consequences are asynchronous
+  (the start's move lands on the agent's first prompt, the merge's on the notice turn), so it
+  cannot carry them. A receipt with no stamp saves the refusal and keeps the re-read, which is
+  the cost. **Taken: the check ignores what the crown's own write set in motion, and nothing
+  else.** Every receipt's stamp now comes from `Daemon::receipt_seen`, which hands back the
+  full stamp as before and keeps beside it, per ticket, `Daemon::words_token`: the stamp's
+  other half, what only a person or another principal writes — the title, the tags, the notes
+  by id and revision, the workspace, the archive, the raised hand, the train hold, the hand the
+  crown was told of (T-922), and a count of the ticket's moves by hand. `check_seen` takes a
+  stamp that matches the full token as before, or one that is the last receipt's for that
+  ticket while its words half still matches (`receipt_holds`). Both halves hash the same
+  `hash_words`; the full token adds the column, the order and the seat's state.
+- **A move by hand, not a column.** The words half counts `Daemon::moved_by_hand`, bumped in
+  `place_ticket` (the one mover) for every move or in-column reorder whose principal is not
+  `Automation` — a person's, an agent's own `move_ticket`, a peer's — and never for a rule's
+  (`on_working`, `on_done`, `on_merged`, the train). So a rule's move after the crown's write
+  leaves its receipt good and anyone's move makes it stale, which a column name in the hash
+  could not tell apart. The crown's own `move_ticket` bumps it too and hands back a receipt
+  past the bump, so it loses nothing.
+- **What still refuses, as the brief required:** a person's note edit (the note's `rev`), a
+  person's move or reorder (the count), another principal's write (a worker's note, its
+  `move_ticket`, its raised hand), a person's `t` (the hold word), a hand told to the crown, a
+  rename, a tag, a workspace change, an archive. A read's stamp (`get_ticket`) is as strict as
+  it was: a read grants nothing, since nothing of the crown's is in motion after one, and a
+  worker's turn ending after a read still refuses the crown's write with the ticket's state in
+  words. In memory, like the touches: a restart drops the grants and the counts, and a stamp
+  from before it asks for a fresh read, as the comment on `seen_token` always said.
+- **Its limit, on purpose:** a receipt's stamp does not go stale on the seat alone — a person's
+  prompt to the worker, their `x`, `c` or `k` on it, or the worker's own turn ending after the
+  receipt. Each tool keeps its own gate over the seat (`sleep_agent` idle only and the crown's
+  own, `merge_ticket` not under a working agent, `answer_agent` the dialog's request,
+  `start_agent` the empty or parked seat, `ask_agent` the road by the state it finds), so a
+  stamp that outlives the seat's motion admits no write those gates would refuse. A read's
+  stamp carries the seat as before.
+- **Every receipt goes through it:** `crown_touched` (move, note, rename, workspace, archive,
+  tag, start, park, hold, watch, the merge), the ask's, the answer's and the plan accept's
+  (both the `awaiting_delivery` reply and the settled one in `mesophon.rs`), the plan
+  revise's, the hold's in `crownhold.rs` and the shell close request's. A new receipt that
+  carries `seen` calls `receipt_seen`, never `seen_token` (a rule line in `CLAUDE.md`).
+- **Tests.** `crown_e2e::a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move`:
+  the start parked on the worktree's cut, the launch, the first prompt and `on_working` land
+  (the read's stamp asserted moved), the ask with the start's stamp is taken and the ask's with
+  its own; a person's note makes the start's and the last receipt's stale; a person's move makes
+  the next receipt's stale where the board's own did not.
+  `crown_e2e::a_merge_s_receipt_stamp_outlives_the_notice_turn`: the merge with the notice on,
+  the notice turn run and ended, the merged wake gone (the read's stamp moved), `sleep_agent`
+  with the merge's stamp parks the worker, `start_agent` with the park's wakes it, a person's
+  note makes the wake's stamp stale, a fresh read's parks it again. `mcp_e2e`'s T-1031 block
+  (a person's write refusing four tools on a receipt's stamp) and
+  `crown_hold_e2e::a_hold_and_a_start_take_each_other_s_stamp` (T-936) hold unchanged. Rig
+  `SE1`: the crown starts the worker (a 90 s foreground sleep, ST2's brief), is told once the
+  turn runs, and asks it with the start's receipt stamp, reading nothing between; the verdict's
+  `receipt_ask:accepted` reads the crown's own calls (`ci/rig.py::receipt_ask_outcome`,
+  checked offline on four synthetic transcripts: taken passes; a stale refusal, a re-read
+  before the ask and no ask each fail).
+- **Validation:** `cargo ut` green (1,247). Clippy clean on `mesimon-daemon` and `mesimon`, all
+  targets. `crown_e2e`, `crown_reads_e2e`, `mcp_e2e` and `crown_hold_e2e` together: 106/106 on
+  the first run, no rerun. Rig `SE1` on Sonnet 5.5 workers, the crown on Opus 5.5, Claude Code
+  2.1.310, mod road, run twice: **run 1** had every check of the change green — the crown's
+  `ask_agent` 3.4 s after the worker's first prompt carried the start's receipt stamp, no read
+  between, `queued` — and failed on the worker's brief alone, Sonnet refusing a foreground
+  `sleep 90` in words ("The wait didn't happen") as A2's history records for `sleep 60`; the
+  brief went to A2's `find /usr`, and **run 2 passed 7/7** (the ask 6.2 s after the first prompt,
+  the first turn 35 s, the words sent at its `Stop`, `first` then `fig`, the crown woken
+  `answered`). `ST2`'s brief still asks for the sleep and was not run here. One full
+  `cargo nextest run --workspace` after the rig's reset: **3,116/3,116**, 11 skipped, no rerun.

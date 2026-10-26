@@ -376,7 +376,7 @@ impl Daemon {
             key,
             outcome: outcome.into(),
             reason,
-            seen: Some(self.seen_token(ticket)),
+            seen: Some(self.receipt_seen(ticket)),
         };
         // The receipt goes mid-tick, before the tick's own flush: what it
         // says is on disk first, so a reader of the feed after it finds it.

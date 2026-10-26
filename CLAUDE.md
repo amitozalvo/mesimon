@@ -302,7 +302,9 @@ runtime dir. The shim is untrusted and holds no policy. Tools: `get_ticket`, `li
 takes a ticket id** — the ticket comes from the session binding, so there is no ownership check
 to get wrong. `to_column` is a plain string validated server-side, never an enum, because column
 names are the user's words. `core/src/mcp.rs` holds the definitions, the description lint (no
-second person, no imperatives) and the ≤820-byte cap.
+second person, no imperatives) and the ≤820-byte cap. **A crown receipt's `seen` comes from
+`Daemon::receipt_seen`, never `seen_token`** (T-1035): what the write itself set in motion — the
+seat, the board's rules after it — must not stale its own receipt, while a read's stamp stays strict.
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: a new wire command
 will not compile until someone decides whether an agent may send it. That is the enforcement for

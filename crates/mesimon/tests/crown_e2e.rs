@@ -17382,3 +17382,293 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
         switch(&queue_switch, false);
     }
 }
+
+/// T-1035: a start's receipt stamp outlives what the start itself set in
+/// motion. The demo board's crown started a worker and at once sent it a
+/// correction with the stamp its `start_agent` receipt returned, and the ask
+/// was refused as stale: the worktree's cut, the launch, the first prompt
+/// and TODO's `on_working` had each moved the ticket's stamp, all of them
+/// the start's own consequences. A receipt's stamp now holds through the
+/// seat it set in motion and the board's rules that follow it, and goes
+/// stale on what a person or another principal writes: a note, a move by
+/// hand. A read's stamp is as strict as it was.
+#[test]
+fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_start_stamp",
+        Some(RECORDING_STUB),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_start_stamp");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1035 started, then asked at once");
+    let kw = key_of(&mut c, w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let ask = |c: &mut TestClient, seen: Option<String>, text: &str| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentAskTicket {
+                key: kw.clone(),
+                text: text.into(),
+                seen,
+                plan: false,
+                deliver: Deliver::Idle,
+                expect_secs: None,
+            },
+        )
+    };
+    let taken = |resp: Response| match resp {
+        Response::AgentAsked { seen, .. } => seen.expect("the receipt carries the stamp"),
+        other => panic!("ask_agent: {other:?}"),
+    };
+    let stale = |resp: Response| {
+        let Response::Err { message } = resp else { panic!("not refused: {resp:?}") };
+        assert!(message.contains("changed since it was read"), "{message}");
+    };
+
+    // The start is parked on the worktree's cut: nothing has moved yet, so
+    // the receipt's stamp is the read's.
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let start = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { seen, .. } => seen.expect("the receipt carries the stamp"),
+        other => panic!("start_agent: {other:?}"),
+    };
+    // Everything the start set in motion lands: the worktree is cut, the
+    // agent launches, its first prompt goes, and TODO's on_working pulls
+    // the card to IN PROGRESS. Each moved the ticket's stamp.
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    wait_until(std::time::Duration::from_secs(10), "on_working to pull the card", || {
+        c.board().ticket(w).unwrap().column == "IN PROGRESS"
+    });
+    assert_ne!(
+        read(&mut c, sa, &kw).unwrap().seen.as_deref(),
+        Some(start.as_str()),
+        "the read's stamp moved with the seat and the column"
+    );
+
+    // The ask with the start's stamp is taken: none of that is news to the
+    // crown. The ask's own receipt is good for the call after it.
+    let asked = taken(ask(&mut c, Some(start.clone()), "a correction to the brief"));
+    taken(ask(&mut c, Some(asked), "a second correction"));
+
+    // A person's note since makes every receipt's stamp stale, as it makes
+    // a read's: the start's and the last receipt's both.
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let last = taken(ask(&mut c, fresh, "a third"));
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: w,
+            note: None,
+            text: "a person's note".into(),
+            rev: None
+        }),
+        Response::NoteWritten { .. }
+    ));
+    stale(ask(&mut c, Some(last), "words on an old read"));
+    stale(ask(&mut c, Some(start), "words on an older read"));
+
+    // So does a person's move, by hand, where the board's own did not.
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = taken(ask(&mut c, fresh, "a fourth"));
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
+    stale(ask(&mut c, Some(seen), "words on a read before the move"));
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    taken(ask(&mut c, fresh, "a fifth"));
+}
+
+/// T-1035, the second case: a merge's receipt stamp outlives the merged
+/// notice's turn and the board's `on_merged` move, so the crown's
+/// `sleep_agent` once that turn ends takes it (three refusals on the
+/// person's board on 2026-10-26, each costing a read). The park's receipt
+/// is good for the wake, and a person's note after the wake's receipt
+/// makes that stamp stale as before.
+#[test]
+fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_merge_stamp",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_merge_stamp");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1035 merged, then parked at once");
+    let kw = key_of(&mut c, w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    let start_agent = |c: &mut TestClient, seen: Option<String>| match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentStartTicket {
+            key: kw.clone(),
+            seen,
+            plan: false,
+            tier: None,
+            workspace: Some("worktree".into()),
+            expect_secs: None,
+        },
+    ) {
+        Response::AgentStarted { seen, woken, .. } => {
+            (seen.expect("the receipt carries the stamp"), woken)
+        }
+        other => panic!("start_agent: {other:?}"),
+    };
+    let sleep = |c: &mut TestClient, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: kw.clone(), seen },
+        )
+    };
+    let parked = |resp: Response| match resp {
+        Response::AgentTicketUpdated {
+            seen, change: AgentTicketChange::Sleep { state }, ..
+        } => {
+            assert_eq!(state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+            seen
+        }
+        other => panic!("sleep_agent: {other:?}"),
+    };
+    let stale = |resp: Response| {
+        let Response::Err { message } = resp else { panic!("not refused: {resp:?}") };
+        assert!(message.contains("changed since it was read"), "{message}");
+    };
+
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    assert!(!start_agent(&mut c, fresh).1);
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"mesimon-probe-1035 merged, then parked at once\"");
+    let notice = format!("Your branch {branch} has been merged into main");
+
+    // The worker delivers one commit; the crown takes the wake.
+    commit(&path, "one.txt");
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    assert!(lines_with(&worker)[0].contains("delivered ("), "{:?}", lines_with(&worker));
+    start(&mut c, sa);
+    stop(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
+        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+    });
+
+    // The crown merges, the notice on (the default): the receipt's stamp.
+    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let merged = match c
+        .send(Principal::Agent { session: sa }, Command::AgentMergeTicket { key: kw.clone(), seen })
+    {
+        Response::AgentMerged { notice, seen, .. } => {
+            assert_eq!(notice, "sent");
+            seen.expect("the receipt carries the stamp")
+        }
+        other => panic!("merge_ticket: {other:?}"),
+    };
+    // The notice reaches the worker and its turn runs and ends: the seat
+    // went working and idle, the board moved the card where its column's
+    // on_merged says, and the merged wake went. Each moved the stamp.
+    wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
+        lines_with(&notice).len() == 1
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the merged wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert!(lines_with(&worker)[1].contains("merged"), "{:?}", lines_with(&worker));
+    assert_ne!(
+        read(&mut c, sa, &kw).unwrap().seen.as_deref(),
+        Some(merged.as_str()),
+        "the read's stamp moved with the notice turn and the merge"
+    );
+
+    // The park with the merge's stamp is taken, and the wake with the park's.
+    let park = parked(sleep(&mut c, Some(merged)));
+    let (woken, was_woken) = start_agent(&mut c, Some(park));
+    assert!(was_woken, "the parked worker is woken, not replaced");
+
+    // A person's note after the wake's receipt makes its stamp stale; a
+    // fresh read's parks the worker again once its turn ends.
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: w,
+            note: None,
+            text: "a person's note".into(),
+            rev: None
+        }),
+        Response::NoteWritten { .. }
+    ));
+    stale(sleep(&mut c, Some(woken)));
+    wait_until(std::time::Duration::from_secs(15), "the wake to land", || {
+        c.board().live_agent(w).is_some_and(|s| s.state.has_pane())
+    });
+    start(&mut c, ws);
+    stop(&mut c, ws);
+    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    parked(sleep(&mut c, fresh));
+}

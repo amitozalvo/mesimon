@@ -147,7 +147,7 @@ impl Daemon {
             changed,
             merge: self.merge_state_word(target).is_some().then(|| self.merge_by(target)),
             detail: self.hold_detail(target, &key, held, changed),
-            seen: Some(self.seen_token(target)),
+            seen: Some(self.receipt_seen(target)),
         }
     }
 

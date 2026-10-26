@@ -447,6 +447,64 @@ def second_ask_refusal(rows, key):
     return ok, f"first ask {first}; second answered {said[1][:160]!r}"
 
 
+# The words of `Daemon::check_seen`'s refusal: a stale stamp, not any other
+# refusal.
+STALE_SEEN_MARK = "changed since it was read"
+
+
+def receipt_ask_outcome(rows, key):
+    """(ok, observed) for the crown's first ask_agent on `key` after its
+    start_agent on it (T-1035), from its own calls and results: the ask
+    carries the seen the start's receipt returned, no get_ticket of `key`
+    came between the two, and the ask's answer is its receipt (its `asked`
+    record), not the stale refusal."""
+    results = {}
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                body = b.get("content")
+                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+    start_seen, reads, ask = None, 0, None
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            tool = (b.get("name") or "").rsplit("__", 1)[-1]
+            args = b.get("input") or {}
+            if str(args.get("key", "")).strip() != key:
+                continue
+            if tool == "start_agent" and start_seen is None:
+                try:
+                    start_seen = json.loads(results.get(b.get("id")) or "")["seen"]
+                except (ValueError, KeyError, TypeError):
+                    return False, f"the start's receipt names no seen: {results.get(b.get('id'), '')[:120]!r}"
+            elif tool == "get_ticket" and start_seen is not None and ask is None:
+                reads += 1
+            elif tool == "ask_agent" and start_seen is not None and ask is None:
+                ask = (str(args.get("seen", "")).strip(), results.get(b.get("id")))
+    if start_seen is None:
+        return False, "no start_agent on the ticket with a receipt"
+    if ask is None:
+        return False, "no ask_agent on the ticket after the start"
+    seen, said = ask
+    if said is None:
+        return False, "the ask has no result"
+    if seen != start_seen:
+        return False, f"the ask carried {seen!r}, the start's receipt {start_seen!r}; {reads} read(s) between"
+    try:
+        receipt = json.loads(said)
+        taken = isinstance(receipt, dict) and "asked" in receipt and STALE_SEEN_MARK not in said
+    except ValueError:
+        taken = False
+    stale = STALE_SEEN_MARK in said
+    return taken and reads == 0, (
+        f"the ask carried the start's seen, {reads} read(s) between, "
+        f"answered {'stale' if stale else 'taken' if taken else said[:120]!r}")
+
+
 def plan_read_order(rows, key, word):
     """`plan_read` (T-991, D7): the crown had this request's whole plan before
     it accepted it, read off its transcript in order, record by record and
@@ -3899,6 +3957,12 @@ Reply with the single word ready and end your turn."""
                 crown = self.agent_of(board, self.crown)
                 ok, seen = second_ask_refusal(transcript(crown) if crown else [], key)
                 check(c, ok and arg == "refused_outstanding", seen)
+            elif name == "receipt_ask":
+                # `receipt_ask:accepted` (T-1035): read off the crown's own
+                # calls and results, so a re-read before the ask fails too.
+                crown = self.agent_of(board, self.crown)
+                ok, seen = receipt_ask_outcome(transcript(crown) if crown else [], key)
+                check(c, ok and arg == "accepted", seen)
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
