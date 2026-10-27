@@ -2628,19 +2628,7 @@ impl Daemon {
     /// ahead of any owed since, which fold into them as a second event on
     /// the same worker does. Nothing was told, so nothing is undone.
     pub(super) fn owe_again(&mut self, wakes: Vec<CrownWake>) {
-        let since = std::mem::replace(&mut *self.crown_wakes, wakes);
-        for w in since {
-            if let Some(first) = self.crown_wakes.iter_mut().find(|o| o.worker == w.worker) {
-                first.fold(w.cause, w.from, w.to);
-                first.finished |= w.finished;
-                first.linger = w.linger.or(first.linger);
-                first.late |= w.late;
-                first.unstarted = w.unstarted.or(first.unstarted.take());
-                first.failed = w.failed.or(first.failed.take());
-            } else {
-                self.crown_wakes.push(w);
-            }
-        }
+        restore_wakes(&mut self.crown_wakes, wakes);
     }
 
     /// The crown left, or another ticket took it: whatever it was owed goes
@@ -2768,9 +2756,114 @@ impl Daemon {
     }
 }
 
+/// Put returned wakes before those owed meanwhile, folding each worker's
+/// newer news into its returned wake. Kept separate from delivery so the
+/// complete return fold can be checked without a live Codex box.
+fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
+    let since = std::mem::replace(owed, wakes);
+    for w in since {
+        if let Some(first) = owed.iter_mut().find(|o| o.worker == w.worker) {
+            first.absorb(
+                w.cause,
+                w.from,
+                w.to,
+                Owed {
+                    finished: w.finished,
+                    linger: w.linger,
+                    late: w.late,
+                    ask: w.ask,
+                    overrun: w.overrun,
+                },
+            );
+            first.unstarted = w.unstarted.or(first.unstarted.take());
+            first.failed = w.failed.or(first.failed.take());
+        } else {
+            owed.push(w);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Codex box gives back X's wake after newer news for X was owed.
+    /// The return keeps both snapshots' facts and the queue's order.
+    #[test]
+    fn a_returned_wake_keeps_the_later_ask_and_overrun() {
+        let worker = ulid::Ulid(1);
+        let first_linger = Linger { tasks: 2, minutes: 30 };
+        let mut first = CrownWake::new(
+            worker,
+            WakeCause::Lingering,
+            Some(branch("old", "clean", 0, "TODO")),
+            Some(branch("first", "ahead", 1, "REVIEW")),
+            Owed { linger: Some(first_linger), ..Owed::default() },
+        );
+        first.unstarted = Some("old start failure".into());
+        first.failed = Some(FailedTurn {
+            session: uuid::Uuid::from_u128(1),
+            turn: "old turn".into(),
+            reason: mesimon_core::board::FailReason::Unknown,
+        });
+        let ask = AskSaid { ask: ulid::Ulid(2), said: Said::Taken };
+        let overrun = Overrun { expected_secs: 30, running_secs: 60 };
+        let latest = branch("latest", "ahead", 2, "REVIEW");
+        let mut newer = CrownWake::new(
+            worker,
+            WakeCause::Answered,
+            first.to.clone(),
+            Some(latest.clone()),
+            Owed {
+                finished: true,
+                linger: Some(Linger { tasks: 3, minutes: 45 }),
+                late: true,
+                ask: Some(ask),
+                overrun: Some(overrun),
+            },
+        );
+        newer.unstarted = Some("new start failure".into());
+        let failed = FailedTurn {
+            session: uuid::Uuid::from_u128(2),
+            turn: "new turn".into(),
+            reason: mesimon_core::board::FailReason::Server,
+        };
+        newer.failed = Some(failed.clone());
+        let other = CrownWake::new(ulid::Ulid(3), WakeCause::Raised, None, None, Owed::default());
+        let mut owed = vec![other, newer];
+        restore_wakes(&mut owed, vec![first]);
+
+        assert_eq!(owed.iter().map(|w| w.worker).collect::<Vec<_>>(), vec![worker, ulid::Ulid(3)]);
+        let w = &owed[0];
+        assert_eq!(w.ask, Some(ask), "the later ask survives the box's return");
+        assert_eq!(w.overrun, Some(overrun), "the later overrun survives the box's return");
+        assert_eq!(w.linger, Some(first_linger), "the first lingering snapshot stays");
+        assert!(w.finished && w.late, "both sticky flags survive");
+        assert_eq!(w.cause, WakeCause::Answered);
+        assert_eq!(w.from.as_ref().unwrap().tip, "old");
+        assert_eq!(w.to, Some(latest));
+        assert_eq!(w.unstarted.as_deref(), Some("new start failure"));
+        assert_eq!(w.failed, Some(failed));
+        assert!(w.changed().contains(&format!("ask {}: taken", ask.ask)));
+
+        // Empty newer fields cannot erase facts from the returned wake.
+        // Nonempty ask/overrun fields replace the previous snapshots.
+        let mut newer = CrownWake::new(worker, WakeCause::Finished, None, None, Owed::default());
+        let returned = std::mem::replace(&mut owed, vec![newer.clone()]);
+        restore_wakes(&mut owed, returned);
+        assert_eq!(owed[0].ask, Some(ask));
+        assert_eq!(owed[0].overrun, Some(overrun));
+        assert_eq!(owed[0].unstarted.as_deref(), Some("new start failure"));
+        assert_eq!(owed[0].failed.as_ref().unwrap().turn, "new turn");
+        let next_ask = AskSaid { ask: ulid::Ulid(4), said: Said::Handed };
+        let next_overrun = Overrun { expected_secs: 40, running_secs: 80 };
+        newer.ask = Some(next_ask);
+        newer.overrun = Some(next_overrun);
+        let returned = std::mem::replace(&mut owed, vec![newer]);
+        restore_wakes(&mut owed, returned);
+        assert_eq!(owed[0].ask, Some(next_ask));
+        assert_eq!(owed[0].overrun, Some(next_overrun));
+    }
 
     /// T-938: the turn-end wake says what the end proves and names the ask
     /// it was owed for, as it stood then. A fold keeps the latest owed; a

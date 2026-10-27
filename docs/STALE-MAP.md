@@ -38385,3 +38385,51 @@ add one.
   only for a quote-concatenated `cr""eate`. Codex's `dialog_shown` on `menu_row` would stop
   reading a numbered row with an empty label. `intro::marker_path` on `paths::state_root` would
   stop the intro on a non-UTF-8 `HOME`.
+
+## A returned crown wake keeps the later news (T-1058, 2026-10-27)
+
+**Fixed.** The `owe_again` fold left open by the seventh simplify pass (T-1057)
+now uses `CrownWake::absorb`, through the queue's pure `restore_wakes` helper.
+A wake returned by a Codex box folds in any news owed meanwhile for the same
+worker, including the latest nonempty `ask` and `overrun`. Returned workers stay
+before workers first owed meanwhile. `unstarted` and `failed` keep their existing
+rule: the latest nonempty value wins. No wire or `crown.json` schema change.
+
+**One lingering rule.** Every fold keeps the earliest nonempty `linger`: those
+numbers describe the stretch when its wake was first owed. Retrying delivery is
+not a new observation of that stretch. This follows `absorb`, also used by
+`enter_wake`, `owe_turn_end` and `hold_for_step`, instead of the return path's
+former later-value preference.
+
+**Regression.** A unit test returns a worker's wake while a newer wake for that
+worker carries an ask receipt and an overrun. It checks both survive, the first
+lingering snapshot stays, flags and the work delta fold, failure details retain
+their precedence, and other workers keep their place. Empty newer fields retain
+facts; subsequent nonempty ask and overrun snapshots replace them. The test
+failed on the missing ask before the fix and passed afterward (not a flake).
+
+**Live-rig gap.** No `ci/rig/tests.toml` case or live run claims this return path.
+That table runs a Claude crown on Opus; a bare ask cannot stage a Codex crown's
+unentered composer, hold it while another wake for the same worker becomes owed,
+and return it. The separate native Codex rig has no such box-return case either.
+Exercising the race live needs fixture control of that delivery boundary, beyond
+a bare-ask case. The ticket explicitly leaves acceptance of this gap to the
+person; unit coverage and the existing crown e2es are not a live-model verdict.
+
+**Verification and reruns.** The focused regression failed before the fix and
+passed on its one post-fix rerun. `cargo ut` through the bounded runner first
+failed because the sandbox denied tmux socket creation and `ps` during cleanup;
+its seven retained fixture directories were removed only after verifying their
+recorded processes and sockets were gone and their filesystem identities matched.
+The command-scoped elevated rerun had a clean fixture audit but two unrelated
+`quiet` ANSI-output assertions failed. With `NO_COLOR` unset and
+`TERM=xterm-256color`, all eight `quiet` tests passed, then the full `cargo ut`
+rerun passed (2,769 tests, ten pre-existing ignored entries: timing measurements,
+child entry points and the live-release download). These were environment
+retries, not observed flakes. No test was weakened or skipped to get a pass.
+
+The bounded `cargo test -p mesimon --test crown_e2e` run passed all 110 tests on
+its first run, none ignored, with a clean audit of 108 fixture owners. Full
+nextest was omitted per this ticket's crown-only gate scope.
+Final `cargo clippy --workspace --all-targets -- -D warnings`, rustfmt check and
+`git diff --check` passed.
