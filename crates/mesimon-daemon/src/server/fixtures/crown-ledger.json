@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "crown": "00000000010000000000000001",
+  "wakes": [
+    {
+      "worker": "00000000010000000000000007",
+      "cause": "answered",
+      "finished": false,
+      "late": false
+    }
+  ],
+  "heard": {
+    "00000000010000000000000007": {}
+  },
+  "turns_open": [
+    "00000000010000000000000007"
+  ],
+  "asks": {
+    "00000000010000000000000007": {
+      "crown": "00000000010000000000000001"
+    }
+  },
+  "lingered": [
+    "00000000-0000-0000-0000-000000000005"
+  ],
+  "watched": [
+    "00000000010000000000000009"
+  ],
+  "held": [
+    "0000000001000000000000000B"
+  ],
+  "hands": {
+    "00000000010000000000000007": {
+      "reason": "which key?",
+      "told_ms": 7
+    }
+  },
+  "entering": {
+    "crown": "00000000010000000000000001",
+    "session": "00000000-0000-0000-0000-000000000005",
+    "text": "T-7 finished its turn",
+    "wakes": [],
+    "telling": {
+      "news": ""
+    },
+    "person_came": true,
+    "frame": "01SUBMIT",
+    "pane": "123:%4",
+    "expires_ms": 9
+  },
+  "taken": [
+    {
+      "crown": "00000000010000000000000001",
+      "session": "00000000-0000-0000-0000-000000000005",
+      "text": "T-7 raised its hand",
+      "wakes": [],
+      "telling": {
+        "news": ""
+      },
+      "person_came": false,
+      "frame": "01TAKEN",
+      "pane": "123:%4",
+      "expires_ms": 9
+    }
+  ],
+  "out_asks": {
+    "00000000010000000000000007": [
+      {
+        "id": "0000000001000000000000000C",
+        "crown": "00000000010000000000000001",
+        "session": "00000000-0000-0000-0000-000000000005",
+        "pane": "123:%4",
+        "frame": "01SUBMIT",
+        "submit": true,
+        "own_turn": true,
+        "released": false,
+        "handed": true,
+        "since_ms": 9,
+        "text": "reply with mango"
+      }
+    ]
+  },
+  "expects": {
+    "00000000010000000000000007": {
+      "expect_secs": 60
+    }
+  }
+}

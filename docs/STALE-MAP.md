@@ -38433,3 +38433,21 @@ its first run, none ignored, with a clean audit of 108 fixture owners. Full
 nextest was omitted per this ticket's crown-only gate scope.
 Final `cargo clippy --workspace --all-targets -- -D warnings`, rustfmt check and
 `git diff --check` passed.
+
+## The crown ledger has one tracking list (T-1059)
+
+The seventh simplify pass (T-1057) left the crown ledger's twelve `Tracked` sources listed
+independently in `ledger`, `ledger_dirty` and `mark_ledger_clean`: forgetting the dirty check
+could silently lose a new field at restart. A local `ledger_fields!` macro now generates all
+three methods from one mapping of saved field, tracked source and conversion. Its crowned
+`Ledger` literal is exhaustive, so adding a saved field without that mapping fails to compile.
+The macro keeps the existing daemon fields and their callers in place; grouping them into a
+new state struct would move unrelated wake and ask code for the same guarantee.
+
+The `Ledger` declaration, serde attributes, schema 2, field order, conversions and write path
+stay as they were. A fixture captured before the refactor populates every field and fixes the
+exact saved bytes, including the absence of a trailing newline. Tests read it back, build it
+through the daemon and check each source's dirty mark independently, successful cleaning,
+clean ticks and no-op mutations, barred and failed writes, a changed crown and no crown.
+The existing schema-1 readers and restart e2es keep their contracts. No wire, state schema or
+agent-facing text changes; no rig run is owed.

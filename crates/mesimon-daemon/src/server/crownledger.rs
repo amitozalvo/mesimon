@@ -132,64 +132,51 @@ pub(super) fn load_or_recover(paths: &Paths) -> (Ledger, Vec<Notice>, bool) {
     (ledger.unwrap_or_default(), notices, barred)
 }
 
+// One mapping from saved fields to their tracked source and conversion.
+// Keep the crowned Ledger literal exhaustive: a new saved field must name
+// its tracked source here, so it joins both dirty checking and cleaning.
+macro_rules! ledger_fields {
+    ($this:ident; $($saved:ident: $tracked:ident => $value:expr),+ $(,)?) => {
+        /// Empty while no crown is worn: nothing past the first empty file.
+        fn ledger(&$this) -> Ledger {
+            if $this.board.crown.is_none() {
+                return Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
+            }
+            Ledger {
+                schema_version: CROWN_SCHEMA,
+                crown: $this.board.crown,
+                $($saved: $value,)+
+            }
+        }
+
+        /// A tracked source was reached for writing, or the crown changed hands.
+        fn ledger_dirty(&$this) -> bool {
+            $this.board.crown != $this.crown_written_for
+                $(|| $this.$tracked.is_dirty())+
+        }
+
+        fn mark_ledger_clean(&mut $this) {
+            $this.crown_written_for = $this.board.crown;
+            $($this.$tracked.mark_clean();)+
+        }
+    };
+}
+
 impl Daemon {
-    /// The ledger as it stands; empty while no crown is worn, so a board
-    /// without one writes nothing past the first empty file.
-    fn ledger(&self) -> Ledger {
-        if self.board.crown.is_none() {
-            return Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
-        }
-        Ledger {
-            schema_version: CROWN_SCHEMA,
-            crown: self.board.crown,
-            wakes: self.crown_wakes.to_vec(),
-            heard: self.crown_heard.iter().map(|(w, h)| (*w, h.clone())).collect(),
-            turns_open: self.turns_open.iter().copied().collect(),
-            asks: self.turn_asks.iter().map(|(w, a)| (*w, *a)).collect(),
-            lingered: self.lingered.iter().copied().collect(),
-            watched: self.crown_watched.iter().copied().collect(),
-            held: self.crown_held.iter().copied().collect(),
-            hands: self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
-            entering: (*self.crown_wake_entering).clone(),
-            taken: self.crown_wakes_taken.to_vec(),
-            out_asks: self.kept_crown_asks(),
-            expects: self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
-        }
-    }
-
-    /// Whether the ledger may differ from the last one written: a field it
-    /// is built from was reached for writing (`Tracked`, T-839) or the crown
-    /// changed hands.
-    fn ledger_dirty(&self) -> bool {
-        self.board.crown != self.crown_written_for
-            || self.crown_wakes.is_dirty()
-            || self.crown_heard.is_dirty()
-            || self.turns_open.is_dirty()
-            || self.turn_asks.is_dirty()
-            || self.lingered.is_dirty()
-            || self.crown_watched.is_dirty()
-            || self.crown_held.is_dirty()
-            || self.crown_hands.is_dirty()
-            || self.crown_wake_entering.is_dirty()
-            || self.crown_wakes_taken.is_dirty()
-            || self.crown_asks.is_dirty()
-            || self.crown_expects.is_dirty()
-    }
-
-    fn mark_ledger_clean(&mut self) {
-        self.crown_written_for = self.board.crown;
-        self.crown_wakes.mark_clean();
-        self.crown_heard.mark_clean();
-        self.turns_open.mark_clean();
-        self.turn_asks.mark_clean();
-        self.lingered.mark_clean();
-        self.crown_watched.mark_clean();
-        self.crown_held.mark_clean();
-        self.crown_hands.mark_clean();
-        self.crown_wake_entering.mark_clean();
-        self.crown_wakes_taken.mark_clean();
-        self.crown_asks.mark_clean();
-        self.crown_expects.mark_clean();
+    ledger_fields! {
+        self;
+        wakes: crown_wakes => self.crown_wakes.to_vec(),
+        heard: crown_heard => self.crown_heard.iter().map(|(w, h)| (*w, h.clone())).collect(),
+        turns_open: turns_open => self.turns_open.iter().copied().collect(),
+        asks: turn_asks => self.turn_asks.iter().map(|(w, a)| (*w, *a)).collect(),
+        lingered: lingered => self.lingered.iter().copied().collect(),
+        watched: crown_watched => self.crown_watched.iter().copied().collect(),
+        held: crown_held => self.crown_held.iter().copied().collect(),
+        hands: crown_hands => self.crown_hands.iter().map(|(w, h)| (*w, h.clone())).collect(),
+        entering: crown_wake_entering => (*self.crown_wake_entering).clone(),
+        taken: crown_wakes_taken => self.crown_wakes_taken.to_vec(),
+        out_asks: crown_asks => self.kept_crown_asks(),
+        expects: crown_expects => self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -345,6 +332,94 @@ impl Daemon {
 mod tests {
     use super::*;
 
+    // Captured before T-1059: every saved field populated, in its original order.
+    const SAVED_LEDGER: &str = include_str!("fixtures/crown-ledger.json");
+
+    #[test]
+    fn every_source_is_tracked_and_persistence_keeps_its_write_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = crate::server::queued_person_push_tests::daemon(dir.path());
+        let saved = parse(SAVED_LEDGER).unwrap();
+        d.board.crown = saved.crown;
+        d.crown_wakes = saved.wakes.into();
+        d.crown_heard = saved.heard.into_iter().collect();
+        d.turns_open = saved.turns_open.into_iter().collect();
+        d.turn_asks = saved.asks.into_iter().collect();
+        d.lingered = saved.lingered.into_iter().collect();
+        d.crown_watched = saved.watched.into_iter().collect();
+        d.crown_held = saved.held.into_iter().collect();
+        d.crown_hands = saved.hands.into_iter().collect();
+        d.crown_wake_entering = saved.entering.into();
+        d.crown_wakes_taken = saved.taken.into();
+        d.restore_crown_asks(saved.out_asks);
+        d.crown_expects = saved.expects.into_iter().collect();
+        assert!(d.ledger_dirty());
+        d.persist_crown();
+        let file = d.paths.crown_file();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), SAVED_LEDGER);
+        assert!(!d.ledger_dirty());
+
+        // Give the file a distinct time: even a same-byte rewrite is observable.
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(old).unwrap();
+        let modified = || std::fs::metadata(&file).unwrap().modified().unwrap();
+        d.persist_crown();
+        assert_eq!(modified(), old, "a clean tick writes nothing");
+
+        // Independent of the production mapping: each source alone must dirty
+        // the ledger, and a successful same-byte save must clear its mark.
+        macro_rules! touch_each {
+            ($($field:ident),+ $(,)?) => {$(
+                std::ops::DerefMut::deref_mut(&mut d.$field);
+                assert!(d.ledger_dirty(), stringify!($field));
+                d.persist_crown();
+                assert!(!d.$field.is_dirty(), stringify!($field));
+                assert!(!d.ledger_dirty(), stringify!($field));
+                assert_eq!(modified(), old, "a no-op mutation writes nothing");
+            )+};
+        }
+        touch_each!(
+            crown_wakes,
+            crown_heard,
+            turns_open,
+            turn_asks,
+            lingered,
+            crown_watched,
+            crown_held,
+            crown_hands,
+            crown_wake_entering,
+            crown_wakes_taken,
+            crown_asks,
+            crown_expects,
+        );
+
+        d.crown_watched.clear();
+        d.crown_barred = true;
+        d.persist_crown();
+        assert!(d.ledger_dirty(), "barred writes keep the marks");
+        assert_eq!(modified(), old);
+        d.crown_barred = false;
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        d.persist_crown();
+        assert!(d.ledger_dirty(), "a failed write keeps the marks for the next tick");
+        std::fs::remove_dir(&file).unwrap();
+        d.persist_crown();
+        assert!(!d.ledger_dirty());
+        assert!(parse(&std::fs::read_to_string(&file).unwrap()).unwrap().watched.is_empty());
+
+        d.board.crown = Some(ulid::Ulid::from_parts(1, 2));
+        assert!(d.ledger_dirty(), "changing crowns needs no tracked mutation");
+        d.persist_crown();
+        assert!(!d.ledger_dirty());
+        assert_eq!(parse(&std::fs::read_to_string(&file).unwrap()).unwrap().crown, d.board.crown);
+        d.board.crown = None;
+        assert!(d.ledger_dirty());
+        d.persist_crown();
+        assert!(!d.ledger_dirty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\n  \"schema_version\": 2\n}");
+    }
+
     /// The seam only shortens the window (T-1004): a zero, a value past the
     /// default (which would overflow the clock's sum) or one unreadable is
     /// the default.
@@ -370,6 +445,13 @@ mod tests {
         let w = ulid::Ulid::from_parts(1, 7);
         let mut ledger = Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
         ledger.crown = Some(ulid::Ulid::from_parts(1, 1));
+        ledger.wakes = serde_json::from_str(&format!(
+            r#"[{{"worker":"{w}","cause":"answered","finished":false,"late":false}}]"#
+        ))
+        .unwrap();
+        ledger.heard.insert(w, Heard::default());
+        ledger.lingered.insert(uuid::Uuid::from_u128(5));
+        ledger.expects.insert(w, serde_json::from_str(r#"{"expect_secs":60}"#).unwrap());
         ledger.turns_open.insert(w);
         ledger.asks.insert(w, TurnAsk::Crown(ulid::Ulid::from_parts(1, 1)));
         ledger.watched.insert(ulid::Ulid::from_parts(1, 9));
@@ -418,6 +500,7 @@ mod tests {
             }],
         );
         let text = serde_json::to_string_pretty(&ledger).unwrap();
+        assert_eq!(text, SAVED_LEDGER, "the saved schema, field order and bytes stay fixed");
         let back = parse(&text).unwrap();
         assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
         assert_eq!(back.out_asks, ledger.out_asks, "T-974: the asks out keep their word");
