@@ -5607,14 +5607,12 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // Whose pull requests a ticket carries (T-859): the account's own, or
     // also one someone else opened that the ticket's agent reviewed through
     // the CLI or named in a note's Summary. Board state like Merge into;
-    // inert under main, where no forge is read.
+    // shown only for pull requests, where the board reads the forge.
     MenuItem {
         verb: Verb::ReviewedPrs,
         label: |_| "Reviewed pull requests".into(),
         detail: |c| {
-            if !c.merge_into.pull_requests() {
-                PRS_INERT.into()
-            } else if c.reviewed_prs {
+            if c.reviewed_prs {
                 "a PR the agent reviewed or named in its Summary is the ticket's too ∙ it holds \
                  no merge or gate"
                     .into()
@@ -5622,7 +5620,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "a ticket's PRs are the ones this account opened".into()
             }
         },
-        avail: always,
+        avail: |c| c.merge_into.pull_requests(),
         key: "",
     },
     MenuItem {
@@ -10976,7 +10974,6 @@ mod tests {
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
                     Verb::MergeInto,
-                    Verb::ReviewedPrs,
                     Verb::FetchEvery,
                     Verb::MergeTrain,
                 ],
@@ -11018,7 +11015,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[9..11], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[8..10], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -11759,9 +11756,7 @@ mod tests {
                 ..Default::default()
             })
         };
-        for verb in
-            [Verb::CardPrs, Verb::ColumnArrives, Verb::ColumnRequiresPipeline, Verb::ReviewedPrs]
-        {
+        for verb in [Verb::CardPrs, Verb::ColumnArrives, Verb::ColumnRequiresPipeline] {
             assert_eq!(detail(verb, MergeInto::Main), PRS_INERT, "{verb:?}");
             assert_ne!(detail(verb, MergeInto::PullRequests), PRS_INERT, "{verb:?}");
         }
@@ -11796,6 +11791,7 @@ mod tests {
             notify: true,
             notify_done: true,
             merge_train: true,
+            merge_into: crate::board::MergeInto::PullRequests,
             tab_title: true,
             ..Default::default()
         };

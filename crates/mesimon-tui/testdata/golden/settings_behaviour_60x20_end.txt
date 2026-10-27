@@ -1,12 +1,12 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
+  │ SNOOZE                                               │
   │  Comes back                ● lit    ○ quiet          │
   │  Week starts on            Monday                    │
   │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │
-  │  Reviewed pull requests    ● on                      │
   │                                                      │
   │ REMOTE                                               │
   │  Fetch from the remote     off                       │

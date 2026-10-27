@@ -38124,3 +38124,21 @@ ran the following; no CI result is claimed (T-1030).
   Full nextest, Linux/Docker and manual TUI checks were not run for this
   TUI-only correction; configured ignores remain timing probes, subprocess
   helpers and the live-network check.
+
+### T-1053 follow-up — reviewed pull requests only in the PR workflow
+
+- Settings → Behaviour shows Reviewed pull requests only while Merge into is
+  pull requests. Switching to main hides the row; switching back restores it
+  with its saved value. This replaces the previous visible-but-inert row under
+  main. The stored preference and forge behavior are unchanged.
+- The existing settings regression now changes the merge workflow through
+  Enter, checks the row appears/disappears, and verifies its off choice survives
+  hiding and reopening. Behaviour goldens reflect the shorter main workflow.
+- Validation: TUI golden regeneration passed 1,251 tests with four configured
+  ignores; all four changed goldens were inspected. `cargo ut` passed 2,767
+  tests with ten configured ignores and `forge_e2e` passed all 39 tests, with
+  a clean 48-owner fixture audit. The first unit run exposed the all-settings
+  fixture's main workflow: it now selects pull requests to exercise every row.
+  Formatting and `git diff --check` passed. Full nextest, Linux/Docker and manual
+  TUI checks were not run for this visibility-only change; configured ignores
+  remain timing probes, subprocess helpers and the live-network check.

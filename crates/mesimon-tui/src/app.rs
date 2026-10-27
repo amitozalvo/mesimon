@@ -21000,9 +21000,9 @@ mod tests {
         app.settings_section = keymap::SettingsSection::Behaviour;
         let idx = app.settings_row(Verb::MergeInto);
         assert_eq!(
-            idx + 2,
+            idx + 1,
             app.settings_row(Verb::FetchEvery),
-            "above the reviewed row, then the fetch row"
+            "reviewed pull requests is hidden when merging into main"
         );
         app.mode = Mode::Settings { idx };
         assert_eq!(app.ctx().merge_into, MergeInto::Main, "main by default");
@@ -21047,6 +21047,14 @@ mod tests {
     fn reviewed_prs_setting_toggles_through_board_command() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Behaviour;
+        let offered = |app: &App| {
+            keymap::settings_items(&app.ctx()).iter().any(|m| m.verb == Verb::ReviewedPrs)
+        };
+        assert!(!offered(&app), "hidden when merging into main");
+        let merge = app.settings_row(Verb::MergeInto);
+        app.mode = Mode::Settings { idx: merge };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(offered(&app), "shown after choosing pull requests");
         let idx = app.settings_row(Verb::ReviewedPrs);
         assert_eq!(idx, app.settings_row(Verb::MergeInto) + 1, "under the merge row");
         app.mode = Mode::Settings { idx };
@@ -21055,6 +21063,14 @@ mod tests {
         assert!(!app.board.reviewed_prs && !app.ctx().reviewed_prs);
         assert!(app.status.contains("this account opened"), "{}", app.status);
         assert_eq!(app.mode, Mode::Settings { idx });
+        app.mode = Mode::Settings { idx: merge };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!offered(&app));
+        assert!(!app.board.reviewed_prs, "hiding the row keeps its choice");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(offered(&app));
+        assert!(!app.ctx().reviewed_prs, "showing the row restores its choice");
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::ReviewedPrs) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.board.reviewed_prs && app.ctx().reviewed_prs);
         assert!(app.status.contains("reviewed or named"), "{}", app.status);
