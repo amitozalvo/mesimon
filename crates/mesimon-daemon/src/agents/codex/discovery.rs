@@ -376,14 +376,24 @@ fn scan_paths(
 
 /// Fresh inventory for takeover. The result is only a duplicate-writer guard,
 /// never state evidence and never authority to kill an external process.
-pub fn external_owner(conversation: &str, cwd: &Path, transcript: &Path) -> Ownership {
-    ProcessInventory::read().owner(conversation, cwd, transcript)
+pub fn external_owner(
+    conversation: &str,
+    cwd: &Path,
+    transcript: &Path,
+    own_pane: Option<i32>,
+) -> Ownership {
+    let mut inventory = ProcessInventory::read();
+    if let Some(pane) = own_pane {
+        inventory.exclude_pane(pane);
+    }
+    inventory.owner(conversation, cwd, transcript)
 }
 
 #[derive(Default)]
 struct ProcessInventory {
     complete: bool,
     processes: Vec<Process>,
+    parents: HashMap<i32, i32>,
 }
 
 #[derive(Default)]
@@ -397,23 +407,30 @@ struct Process {
 
 impl ProcessInventory {
     fn read() -> Self {
-        let Some(output) = bounded_output("ps", &["-axo", "pid=,comm="]) else {
+        let Some(output) = bounded_output("ps", &["-axo", "pid=,ppid=,comm="]) else {
             return Self::default();
         };
         let configured = std::env::var_os("MESIMON_CODEX_BIN").map(PathBuf::from);
         let configured_name = configured.as_deref().and_then(Path::file_name);
         let mut processes = Vec::new();
+        let mut parents = HashMap::new();
         for line in output.lines() {
             let line = line.trim();
             let Some((pid, command)) = line.split_once(char::is_whitespace) else { continue };
             let Ok(pid) = pid.parse::<i32>() else { continue };
+            let Some((parent, command)) = command.trim_start().split_once(char::is_whitespace)
+            else {
+                continue;
+            };
+            let Ok(parent) = parent.parse::<i32>() else { continue };
+            parents.insert(pid, parent);
             let name = Path::new(command.trim()).file_name();
             if name.is_some_and(|name| name == "codex" || Some(name) == configured_name) {
                 processes.push(Process { pid, ..Process::default() });
             }
         }
         if processes.is_empty() {
-            return Self { complete: true, processes };
+            return Self { complete: true, processes, parents };
         }
         if processes.len() > 256 {
             return Self::default();
@@ -432,10 +449,33 @@ impl ProcessInventory {
             }
         }
         let Some(files) = bounded_output("lsof", &["-nP", "-a", "-p", &pids, "-F", "pfn"]) else {
-            return Self { complete: false, processes };
+            return Self { complete: false, processes, parents };
         };
         parse_lsof(&files, &mut processes);
-        Self { complete: true, processes }
+        Self { complete: true, processes, parents }
+    }
+
+    /// The native writer is below the runtime and may have a Node launcher
+    /// between them. Keep every parent, not only Codex processes, and remove
+    /// the whole owned tree before looking for any other matching writer.
+    fn exclude_pane(&mut self, pane: i32) {
+        if pane <= 1 || !self.parents.contains_key(&pane) {
+            return;
+        }
+        self.processes.retain(|process| {
+            let mut pid = process.pid;
+            for _ in 0..self.parents.len() {
+                if pid == pane {
+                    return false;
+                }
+                let Some(&parent) = self.parents.get(&pid) else { break };
+                if parent <= 1 || parent == pid {
+                    break;
+                }
+                pid = parent;
+            }
+            true
+        });
     }
 
     fn owner(&self, conversation: &str, cwd: &Path, transcript: &Path) -> Ownership {
@@ -716,7 +756,7 @@ mod tests {
         let cwd = Path::new("/fixture/repo");
         let rollout = Path::new("/fixture/history.jsonl");
         assert_eq!(ProcessInventory::default().owner("opaque", cwd, rollout), Ownership::Unknown);
-        let mut inventory = ProcessInventory { complete: true, processes: vec![] };
+        let mut inventory = ProcessInventory { complete: true, ..ProcessInventory::default() };
         assert_eq!(inventory.owner("opaque", cwd, rollout), Ownership::Clear);
         inventory.processes.push(Process {
             pid: 12,
@@ -748,6 +788,48 @@ mod tests {
         );
         inventory.processes[0].files.push(rollout.into());
         assert_eq!(inventory.owner("opaque", cwd, rollout), Ownership::Live(12));
+    }
+
+    #[test]
+    fn pane_descendants_are_ours_but_another_writer_still_blocks() {
+        let cwd = Path::new("/fixture/repo");
+        let rollout = Path::new("/fixture/history.jsonl");
+        let writer = |pid| Process {
+            pid,
+            args: "codex app-server".into(),
+            cwd: Some(cwd.into()),
+            files: vec![rollout.into()],
+            inspected: true,
+        };
+        let inventory = || ProcessInventory {
+            complete: true,
+            processes: vec![writer(12)],
+            // runtime -> Node launcher -> native app-server
+            parents: [(10, 1), (11, 10), (12, 11), (20, 1)].into(),
+        };
+        let mut owned = inventory();
+        assert_eq!(owned.owner("opaque", cwd, rollout), Ownership::Live(12));
+        owned.exclude_pane(10);
+        assert_eq!(owned.owner("opaque", cwd, rollout), Ownership::Clear);
+
+        let mut shared = inventory();
+        shared.processes.push(writer(20));
+        shared.exclude_pane(10);
+        assert_eq!(shared.owner("opaque", cwd, rollout), Ownership::Live(20));
+
+        for pane in [0, 1, 99] {
+            let mut missing = inventory();
+            missing.exclude_pane(pane);
+            assert_eq!(missing.owner("opaque", cwd, rollout), Ownership::Live(12));
+        }
+        let mut gap = inventory();
+        gap.parents.remove(&11);
+        gap.exclude_pane(10);
+        assert_eq!(gap.owner("opaque", cwd, rollout), Ownership::Live(12));
+        let mut cycle = inventory();
+        cycle.parents.insert(11, 12);
+        cycle.exclude_pane(10);
+        assert_eq!(cycle.owner("opaque", cwd, rollout), Ownership::Live(12));
     }
 
     #[test]

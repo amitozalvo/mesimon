@@ -258,9 +258,14 @@ impl AgentAdapter for Claude {
         history::missing(record, &crate::census::claude_home().join("projects"))
     }
 
-    fn external_owner(&self, record: &SessionRecord) -> Option<ExternalOwner> {
+    fn external_owner(
+        &self,
+        record: &SessionRecord,
+        own_pane: Option<i32>,
+    ) -> Option<ExternalOwner> {
         let identity = record.claude_session_id.unwrap_or(record.id);
         crate::census::running_pid_for(&crate::census::claude_home(), identity)
+            .filter(|pid| Some(*pid) != own_pane)
             .map(|pid| ExternalOwner { pid: Some(pid), label: format!("pid {pid}") })
     }
 

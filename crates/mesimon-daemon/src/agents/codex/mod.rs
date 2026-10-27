@@ -382,11 +382,15 @@ impl AgentAdapter for Codex {
         false
     }
 
-    fn external_owner(&self, record: &mesimon_core::board::SessionRecord) -> Option<ExternalOwner> {
+    fn external_owner(
+        &self,
+        record: &mesimon_core::board::SessionRecord,
+        own_pane: Option<i32>,
+    ) -> Option<ExternalOwner> {
         let identity = record.codex_thread_id.as_deref()?;
         let path =
             record.transcript_path.as_deref().map(Path::new).unwrap_or_else(|| Path::new(""));
-        match discovery::external_owner(identity, Path::new(&record.cwd), path) {
+        match discovery::external_owner(identity, Path::new(&record.cwd), path, own_pane) {
             discovery::Ownership::Live(pid) => {
                 Some(ExternalOwner { pid: Some(pid), label: format!("Codex process {pid}") })
             }

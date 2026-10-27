@@ -38220,3 +38220,26 @@ false failure is retained. This supersedes the earlier live-validation gap.
 The live subject is one real crown with a stub peer, not two model-driven
 crowns. Rust gates were not repeated for this Python receipt-parser fix;
 the earlier unit and two-road board-link results still apply.
+
+
+## Column sleep recognizes Codex's own writer (T-1055, 2026-10-27)
+
+T-1054 reached DONE with its one-minute sleep enabled and a confirmed idle Codex
+session, but never parked. The resume ownership check also guards automatic sleep.
+It found the native app-server holding the rollout and compared that PID only with
+the pane PID: the pane was Mesimon's runtime, with a Node launcher and the native
+writer below it. Its own writer therefore looked like another conversation owner.
+
+The daemon now supplies its live pane to the provider's ownership check. Codex's
+bounded process inventory retains parent links for all processes, including launchers,
+and excludes that pane's descendants before checking for other writers. Another
+matching writer still blocks; missing ancestry does not exempt a process. Claude
+keeps its existing exact-pane exemption. Cleanup and orphan recovery supply no pane
+and continue checking every possible owner. The timer, idle guards and exact-thread
+sleep/wake behavior are unchanged.
+
+The provider auto-sleep regression now puts a native executable holding the rollout
+below its synthetic runtime, verifies that ownership is detectable, and moves the
+sessions into DONE with one-minute sleep enabled. It covers automatic sleep and
+exact-thread wake while held and working sessions stay awake. Inventory unit coverage
+checks an intervening launcher, a second matching writer, absent parents and cycles.

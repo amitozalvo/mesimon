@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json,os,select,signal,sys,time,tty
+import json,os,select,signal,subprocess,sys,time,tty
 from pathlib import Path
 config=json.loads(Path(sys.argv[sys.argv.index('--config')+1]).read_text())
 root=Path(__file__).parent
@@ -29,6 +29,13 @@ def render(screen,cursor):
 print('\x1b[?2004h',end='')
 try: initial=json.loads((root/'initial-screen.json').read_text())
 except FileNotFoundError: initial={}
+history=None; history_owner=None
+if initial.get('history_owner'):
+    # A native executable holding the rollout below this runtime, like the
+    # real app-server. The fixture selects tail as `executable`.
+    history=str(root/(config['session']+'.jsonl'))
+    Path(history).write_text('{}\n')
+    history_owner=subprocess.Popen([config['executable'],'-f',history],stdout=subprocess.DEVNULL)
 render(initial.get('screen','Synthetic provider fixture\r\n› \r\nanything the user wants'),initial.get('cursor',[2,1]))
 def plan_option(key,default):
     return instruction.get(key,initial.get(key,default))
@@ -52,7 +59,7 @@ while not stopping:
     if instruction.get('publish',True):
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
                'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,
-               'state':state,'observation_hold':instruction.get('hold',False),'history_path':None,'stopped':False,
+               'state':state,'observation_hold':instruction.get('hold',False),'history_path':history,'stopped':False,
                'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release'),
                'steers':steers,
                'request':instruction.get('request'),'plan':instruction.get('plan'),'plan_key':instruction.get('plan_key'),
@@ -108,6 +115,8 @@ while not stopping:
                     turn='synthetic-turn-'+str(submits);state={'state':'running'};sequence+=1
                 (root/(config['session']+'.submits')).write_text(str(submits))
 time.sleep(min(3,max(0,instruction.get("stop_delay",0))))
+if history_owner:
+    history_owner.terminate(); history_owner.wait(timeout=5)
 if not instruction.get("stop_ack",True): os._exit(9)
 value.update(stopped=True,sequence=sequence+1,heartbeat_ms=time.time_ns()//1000000)
 temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(value));temporary.replace(path)

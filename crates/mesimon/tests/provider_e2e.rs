@@ -283,10 +283,17 @@ fn column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread(
     let Some(h) = Fixture::boot_configured(
         "codexautosleep",
         false,
-        &[("MESIMON_INACTIVITY_PARK_TICKS", "1"), ("MESIMON_INACTIVITY_MINUTE_MS", "3000")],
+        &[
+            ("MESIMON_INACTIVITY_PARK_TICKS", "1"),
+            ("MESIMON_INACTIVITY_MINUTE_MS", "3000"),
+            ("MESIMON_CODEX_BIN", "/usr/bin/tail"),
+        ],
     ) else {
         return;
     };
+    // T-1055: the real native app-server holds the rollout below the pane's
+    // runtime. A snapshot-only fixture missed the resulting ownership veto.
+    std::fs::write(h.owner.dir.join("initial-screen.json"), r#"{"history_owner":true}"#).unwrap();
     let mut c = h.client();
     select(&mut c, AgentProvider::Codex);
     let mut ids = Vec::new();
@@ -304,13 +311,28 @@ fn column_autosleep_parks_codex_only_when_observed_quiet_and_resumes_its_thread(
         session(&mut c, held).observation_hold
     });
     let thread = session(&mut c, quiet).codex_thread_id.unwrap();
+    let rec = session(&mut c, quiet);
+    let owner = std::process::Command::new("lsof")
+        .args(["-t", rec.transcript_path.as_deref().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        owner.status.success() && !owner.stdout.is_empty(),
+        "the fixture must expose a live native transcript owner"
+    );
     std::thread::sleep(Duration::from_secs(4));
     assert!(session(&mut c, quiet).state.has_pane(), "timer defaults off");
-    for column in c.board().columns {
-        let mut settings = column.settings;
-        settings.sleep_after_minutes = 1;
+    let mut settings = c.board().column("DONE").unwrap().settings.clone();
+    settings.sleep_after_minutes = 1;
+    settings.requires_merge = false;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "DONE".into(), settings }),
+        Response::Ok
+    ));
+    for id in [quiet, held, working] {
+        let ticket = session(&mut c, id).ticket;
         assert!(matches!(
-            c.request(Command::SetColumnSettings { name: column.name, settings }),
+            c.request(Command::MoveTicket { id: ticket, column: "DONE".into(), before: None }),
             Response::Ok
         ));
     }

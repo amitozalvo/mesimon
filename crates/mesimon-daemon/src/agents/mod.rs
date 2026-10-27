@@ -330,10 +330,13 @@ pub trait AgentAdapter {
     fn conversation_key(&self, record: &SessionRecord) -> Option<String>;
     fn history_missing(&self, record: &SessionRecord) -> bool;
     /// Who else holds this record's conversation right now; no state
-    /// mutation. The pid is what lets `resume_guard` tell the daemon's OWN
-    /// previous pane, still going down after a sleep's SIGTERM, from a
-    /// process somewhere else (T-381).
-    fn external_owner(&self, record: &SessionRecord) -> Option<ExternalOwner>;
+    /// mutation. Exclude the live pane supplied by the daemon, including a
+    /// provider's supervised children (T-1055). Cleanup checks pass no pane.
+    fn external_owner(
+        &self,
+        record: &SessionRecord,
+        own_pane: Option<i32>,
+    ) -> Option<ExternalOwner>;
     /// A pane title as a session row shows it; adapters trim their own
     /// decorations off `pane_title`'s.
     fn normalize_title(&self, title: &str) -> String {

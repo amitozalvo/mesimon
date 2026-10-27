@@ -7423,8 +7423,8 @@ impl Daemon {
 
     /// The pid of the record's own pane while tmux lists it alive and not
     /// dead — `None` for a dead, remain-on-exit pane and for no pane at all.
-    /// The pane's process IS the agent's (`mesimon exec` execs), so this is
-    /// the pid a `~/.claude/sessions` file would name for it.
+    /// Claude runs in that process (`mesimon exec` execs); Codex's pane is
+    /// its runtime, with the native writer below it (T-1055).
     fn own_pane_pid(&self, rec: &SessionRecord) -> Option<i32> {
         let sid16 = rec.sid16();
         self.backend
@@ -20137,21 +20137,14 @@ impl Daemon {
             });
         }
         if !confirm {
-            if let Some(owner) = adapter.external_owner(rec) {
-                // The daemon's OWN previous pane, still going down after the
-                // sleep's SIGTERM, keeps its pid file live for as long as its
-                // exit hooks run — and `x x` (sleep, wake) lands inside that.
-                // That process is not "elsewhere": the wake's kill-session
-                // finishes what the sleep began, and its exit frames are
-                // stragglers `straggler_death` drops (T-381). Read as
-                // elsewhere, the refusal made the user confirm a kill of
-                // their own session on every visit to the ticket.
-                let own = owner.pid.is_some() && owner.pid == self.own_pane_pid(rec);
-                if !own {
-                    return Some(Response::NeedsConfirm {
-                        message: format!("running elsewhere ({owner}) — resuming would interleave transcripts; resume again to override"),
-                    });
-                }
+            // Our own pane is not "elsewhere", including while its exit
+            // hooks finish after sleep (T-381). Codex's writer is a child
+            // of the runtime in that pane (T-1055); the adapter excludes
+            // that tree and still checks for any other matching writer.
+            if let Some(owner) = adapter.external_owner(rec, self.own_pane_pid(rec)) {
+                return Some(Response::NeedsConfirm {
+                    message: format!("running elsewhere ({owner}) — resuming would interleave transcripts; resume again to override"),
+                });
             }
         }
         None
@@ -20195,7 +20188,7 @@ impl Daemon {
             owner_record.codex_thread_id = Some(identity.clone());
         }
         if let Some(owner) = crate::agents::adapter(rec.kind)
-            .and_then(|adapter| adapter.external_owner(&owner_record))
+            .and_then(|adapter| adapter.external_owner(&owner_record, None))
         {
             return Err(format!(
                 "Codex is still stopping; known conversation owner remains ({owner})"
@@ -21005,7 +20998,7 @@ impl Daemon {
                             crate::agents::codex::recovery_endpoint_absent(&tmux_sock)?;
                         }
                         if let Some(owner) = crate::agents::adapter(rec.kind)
-                            .and_then(|adapter| adapter.external_owner(&rec))
+                            .and_then(|adapter| adapter.external_owner(&rec, None))
                         {
                             return Err(format!("known conversation owner remains ({owner})"));
                         }
