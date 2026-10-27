@@ -1262,7 +1262,9 @@ def board_exchange(rows, kind, evidence):
         ok = result["is_error"] and "not open" in result["text"]
         return ok, f"closed board receipt: {result['text'][:160]}"
     try:
-        receipt = json.loads(result["text"])
+        # The first crown receipt can carry the board's rules after its
+        # JSON (T-930). Judge that first object, not the trailing prose.
+        receipt, _ = json.JSONDecoder().raw_decode(result["text"].lstrip())
     except (ValueError, TypeError):
         receipt = None
     if result["is_error"] or not isinstance(receipt, dict) or not (

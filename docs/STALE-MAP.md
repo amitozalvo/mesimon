@@ -38196,3 +38196,27 @@ denials and then `permission_connection_stays_duplex_until_process_cancellation`
 that test passed in nextest and the final unit run. The sandbox-failed
 fixtures were checked for remaining processes/sockets and their owned dirs
 removed; the failed audit was retained, not relabeled as a pass.
+
+
+### T-1054 live follow-up — all three crown cases pass
+
+The requested live run used Claude Code 2.1.311, `claude-opus-5-5` at high
+effort, on the mod road. X2 (unsolicited peer ask answered through the board)
+and X3 (closed board refused, hand raised) passed on the first run,
+`20261027-120349`. X1 delivered both ways and repeated the fresh reference,
+but its verdict rejected the first tool receipt: the JSON was followed by
+the crown rules, which `json.loads` treated as extra data.
+
+`board_exchange` now reads the leading JSON object, preserving its checks
+of success, board, crown, road and reply classification. The trailing rules
+are not a receipt. A regression accepts this real shape and still rejects
+an invalid first receipt followed by valid-looking JSON. All 55 offline
+rig tests and `git diff --check` pass. Only X1 was rerun, preserving quota;
+it passed in run `20261027-120627`, including actual peer-pane delivery,
+attribution, both receipts, the fresh reference and no local implementation.
+The run tables remain under `target/rig/verdicts-<run>.md`; the original
+false failure is retained. This supersedes the earlier live-validation gap.
+
+The live subject is one real crown with a stub peer, not two model-driven
+crowns. Rust gates were not repeated for this Python receipt-parser fix;
+the earlier unit and two-road board-link results still apply.

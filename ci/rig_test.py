@@ -105,6 +105,16 @@ class BoardExchangeTests(unittest.TestCase):
         evidence["delivered"] = ""
         self.assertFalse(self.judge(rows, evidence))
 
+    def test_the_first_receipt_may_be_followed_by_the_crowns_rules(self):
+        rows, evidence, _, result = self.fixture()
+        block = result["message"]["content"][0]
+        receipt = block["content"]
+        block["content"] = "\n" + receipt + "\nThe board's rules for this session's crown:\nRead {state}."
+        self.assertTrue(self.judge(rows, evidence))
+        # A later valid-looking object cannot rescue a malformed receipt.
+        block["content"] = "refused\n" + receipt
+        self.assertFalse(self.judge(rows, evidence))
+
     def test_stale_or_unattributed_or_duplicate_incoming_words_fail(self):
         for bad in ("old reference", "Release live; fresh-peer-reference", "duplicate"):
             with self.subTest(bad=bad):
