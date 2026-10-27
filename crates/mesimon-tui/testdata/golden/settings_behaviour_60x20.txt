@@ -10,10 +10,10 @@
   │  Comes back                ● lit    ○ quiet          │
   │  Week starts on            Monday                    │
   │                                                      │
-  │ TICKETS                                              │
-  │  Worktrees                 ○ off                     │
-  │                                                      │
   │ MERGE                                                │
+  │  Merge into                ● main   ○ pull requests  │
+  │  Reviewed pull requests    ● on                      │
+  │                                                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

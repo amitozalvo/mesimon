@@ -11,18 +11,18 @@
       │▎ Behaviour           Comes back                ● lit    ○ quiet                                          │
       │                      Week starts on            Monday                                                    │
       │  Agents                                                                                                  │
-      │                     TICKETS                                                                              │
-      │  Crown               Worktrees                 ○ off                                                     │
+      │                     MERGE                                                                                │
+      │  Crown               Merge into                ● main   ○ pull requests                                  │
+      │                      Reviewed pull requests    ● on                                                      │
+      │  Terminal                                                                                                │
+      │                     REMOTE                                                                               │
+      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
       │                                                                                                          │
-      │  Terminal           MERGE                                                                                │
-      │                      Merge into                ● main   ○ pull requests                                  │
-      │  Usage               Reviewed pull requests    ● on                                                      │
-      │                                                                                                          │
-      │  About              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
-      │                                                                                                          │
-      │                     AUTO MERGE                                                                           │
+      │  About              AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                                      │
+      │                      Tells the agent           ● on                                                      │
+      │                                                                                                          │
+      │                                                                                                          │
       │                                                                                                          │
       │                     the machine sleeps on its own clock, agents or not                                   │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯

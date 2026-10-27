@@ -38073,3 +38073,31 @@ ran the following; no CI result is claimed (T-1030).
   under `MESIMON_TEST_ROAD=mod` (**1/1**, 19.70 s); each audit was clean with two
   owners. These reruns establish the failures were not reproduced in isolation,
   not a green full run. Formatting and `git diff --check` passed.
+
+### T-1053 — workspace choices together in column settings
+
+- The column's Workspace row now displays its effective board default when the
+  column has no override. The context previously supplied `board default` to a
+  two-choice value, which fell back to the first choice, `worktree`, even when
+  the saved value was the shared checkout. Enter could save the other choice
+  without visibly moving the selection.
+- Column settings groups Workspace and Board default under New tickets; the
+  Worktrees switch in Settings → Behaviour is removed. Both rows name worktree
+  and shared checkout, and Workspace's detail distinguishes following the
+  default from overriding it. The board default affects all inheriting columns;
+  the column choice still toggles between the two effective answers, clearing
+  its override when it returns to the board default. Existing tickets keep
+  their stamped workspace. Persistence and the wire commands are unchanged.
+- Regression checks cover both board defaults, explicit column choices and
+  inheritance, repeated Enter presses, the saved choice and displayed value,
+  changing the default from the column dialog, and both rows' mouse actions.
+  Dialog goldens cover the consolidated controls and shorter Behaviour page.
+- Validation: `cargo ut` passed 2,767 tests with ten configured ignores;
+  `column_e2e` and `setup_e2e` passed all three tests. Both bounded runs had
+  clean fixture audits. The TUI golden regeneration passed 1,251 tests with
+  four configured ignores, and every changed golden was inspected; the wide
+  Behaviour page now fits without its obsolete scrolled-end golden. The first
+  sandboxed TUI run failed four socket/macOS applet checks; the scoped elevated
+  rerun passed. Formatting and `git diff --check` passed. Configured ignores are
+  timing probes, subprocess helpers and a live-network check. Full nextest,
+  Linux/Docker and manual TUI checks were not run for this TUI-only change.

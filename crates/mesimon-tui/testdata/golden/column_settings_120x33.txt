@@ -8,7 +8,8 @@
                   │                                                                                  │
                   │ NEW TICKETS                                                                      │
                   │  Filed here              ● on                                                    │
-                  │  Workspace               ● worktree   ○ shared checkout                          │
+                  │  Workspace               ○ worktree   ● shared checkout                          │
+                  │  Board default           ○ worktree   ● shared checkout                          │
                   │                                                                                  │
                   │ COMING IN                                                                        │
                   │  Moves in when           nothing                                                 │

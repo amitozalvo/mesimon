@@ -610,7 +610,7 @@ pub enum Verb {
     ReleaseChannel,
     /// Setup's `s` (T-816): leave this question on its default and go on.
     SetupSkip,
-    /// Settings › Behaviour › Workspace (T-816): where a new ticket works
+    /// Column settings › Board default: where a new ticket works
     /// when its column and its composer leave it alone.
     BoardWorkspace,
     // ---- sessions ----
@@ -1203,7 +1203,6 @@ impl SettingsSection {
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::FetchEvery
-            | Verb::BoardWorkspace
             | Verb::MergeInto
             | Verb::ReviewedPrs
             | Verb::SnoozeQuiet
@@ -5590,21 +5589,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
-    // Where a new ticket works (T-816): Setup's answer, and the column's
-    // Workspace row reads it where the column says nothing.
-    MenuItem {
-        verb: Verb::BoardWorkspace,
-        label: |_| "Worktrees".into(),
-        detail: |c| {
-            if c.board_worktree {
-                "each new ticket gets a branch and a folder of its own".into()
-            } else {
-                "new tickets work in this checkout, one agent writing at a time".into()
-            }
-        },
-        avail: always,
-        key: "",
-    },
     // One workflow per board (T-810): a worktree branch lands in main by
     // the train and m, or through its pull request, merged on the forge.
     // Board state like the agent tools, in `columns.toml`.
@@ -6265,9 +6249,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::EditorChoice,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
-            // Where a new ticket works, then the workflow before the two
-            // rows that serve it: the fetch and the train.
-            Verb::BoardWorkspace,
+            // The workflow before the rows that serve it: fetch and train.
             Verb::MergeInto,
             Verb::ReviewedPrs,
             Verb::FetchEvery,
@@ -6332,7 +6314,6 @@ pub fn settings_heading(verb: Verb) -> Option<&'static str> {
         Verb::NotifyWords => Some("BANNER"),
         Verb::NotifySoundNeedsYou => Some("SOUND"),
         Verb::SnoozeQuiet => Some("SNOOZE"),
-        Verb::BoardWorkspace => Some("TICKETS"),
         Verb::MergeInto => Some("MERGE"),
         Verb::FetchEvery => Some("REMOTE"),
         Verb::MergeTrain => Some("AUTO MERGE"),
@@ -6426,7 +6407,10 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
         Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
         Verb::ReviewedPrs => Value::Switch(c.reviewed_prs),
-        Verb::BoardWorkspace => Value::Switch(c.board_worktree),
+        Verb::BoardWorkspace => choice(
+            &["worktree", "shared checkout"],
+            if c.board_worktree { "worktree" } else { "shared checkout" },
+        ),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
         Verb::CrownContext => Value::Switch(c.crown_context),
@@ -6666,7 +6650,20 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnWorkspace,
         label: |_| "Workspace".into(),
-        detail: |_| "the composer starts here ∙ shift+tab still changes it".into(),
+        detail: |c| {
+            if c.col_workspace_word.is_empty() {
+                "follows the board default ∙ new tickets only".into()
+            } else {
+                "overrides the board default ∙ new tickets only".into()
+            }
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::BoardWorkspace,
+        label: |_| "Board default".into(),
+        detail: |_| "new tickets in every column without a workspace override".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -6838,7 +6835,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
 pub fn column_group(verb: Verb) -> Option<&'static str> {
     Some(match verb {
         Verb::ColumnCollapse | Verb::SortColumn => "LOOK",
-        Verb::ColumnRefusesNew | Verb::ColumnWorkspace => "NEW TICKETS",
+        Verb::ColumnRefusesNew | Verb::ColumnWorkspace | Verb::BoardWorkspace => "NEW TICKETS",
         Verb::ColumnArrives
         | Verb::ColumnRequiresMerge
         | Verb::ColumnRequiresPipeline
@@ -10378,7 +10375,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 15);
+        assert_eq!(column_items(&other).len(), 16);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
@@ -10998,7 +10995,6 @@ mod tests {
                     Verb::EditorChoice,
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
-                    Verb::BoardWorkspace,
                     Verb::MergeInto,
                     Verb::ReviewedPrs,
                     Verb::FetchEvery,
@@ -11042,7 +11038,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[10..12], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(on[9..11], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }

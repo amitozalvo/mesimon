@@ -1,8 +1,8 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
-  │ TICKETS                                              │
-  │  Worktrees                 ○ off                     │
+  │  Comes back                ● lit    ○ quiet          │
+  │  Week starts on            Monday                    │
   │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │

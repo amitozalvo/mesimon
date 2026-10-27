@@ -7528,7 +7528,7 @@ impl App {
             col_sort_word,
             col_collapse_word: cs.collapse().word(),
             col_workspace_word: match cs.workspace {
-                None => "board default",
+                None => "",
                 Some(WorkspaceStrategy::Worktree) => "worktree",
                 Some(WorkspaceStrategy::SharedCheckout | WorkspaceStrategy::AdoptExisting) => {
                     "shared checkout"
@@ -9989,7 +9989,7 @@ impl App {
                     Response::Err { message } => self.status = message,
                     _ => {
                         self.refresh_soon()?;
-                        self.status = format!("new tickets work in a {}", workspace.word());
+                        self.status = format!("board default: {}", workspace.word());
                     }
                 }
             }
@@ -16569,6 +16569,11 @@ pub(crate) mod test_support {
                     self.board.crown_mode = mode;
                     Ok(Response::Ok)
                 }
+                Command::SetBoardWorkspace { workspace } => {
+                    self.board.workspace =
+                        (workspace != WorkspaceStrategy::SharedCheckout).then_some(workspace);
+                    Ok(Response::Ok)
+                }
                 Command::SetMergeInto { into } => {
                     self.board.merge_into = into;
                     Ok(Response::Ok)
@@ -21816,6 +21821,83 @@ mod tests {
             assert_eq!(spawns.len(), 1, "{gesture}: {sent:?}");
             assert!(spawns[0].contains("kind: Codex"), "{gesture}: {spawns:?}");
         }
+    }
+
+    /// T-1053: an inherited shared checkout used to paint as a worktree,
+    /// so Enter saved the other answer without visibly moving the choice.
+    #[test]
+    fn column_workspace_enter_displays_the_saved_choice_and_inheritance() {
+        use WorkspaceStrategy::{SharedCheckout, Worktree};
+        for default in [None, Some(SharedCheckout), Some(Worktree)] {
+            for column in [None, Some(SharedCheckout), Some(Worktree)] {
+                let mut board = board_three_columns();
+                board.workspace = default;
+                board.columns[0].settings.workspace = column;
+                let (mut app, sent) = App::for_test_logged(board, theme(), false);
+                press(&mut app, 'k');
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                let row = keymap::column_items(&app.ctx())
+                    .iter()
+                    .position(|m| m.verb == Verb::ColumnWorkspace)
+                    .unwrap();
+                if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+                    *idx = row;
+                }
+                let initial = column.or(default).unwrap_or(SharedCheckout);
+                let opposite = if initial == Worktree { SharedCheckout } else { Worktree };
+                for expected in [initial, opposite, initial] {
+                    let ctx = app.ctx();
+                    assert_eq!(
+                        keymap::value(Verb::ColumnWorkspace, &ctx),
+                        Some(keymap::Value::Choice {
+                            options: &["worktree", "shared checkout"],
+                            at: usize::from(expected == SharedCheckout),
+                        }),
+                        "default {default:?}, column {column:?}"
+                    );
+                    let settings = &app.board.column("todo").unwrap().settings;
+                    assert_eq!(settings.workspace.or(default).unwrap_or(SharedCheckout), expected);
+                    let item = keymap::column_items(&ctx)[row];
+                    assert_eq!(
+                        (item.detail)(&ctx).starts_with("follows"),
+                        settings.workspace.is_none()
+                    );
+                    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                }
+                assert_eq!(
+                    sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(),
+                    3
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn board_workspace_is_changed_beside_the_column_choice() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.settings_section = keymap::SettingsSection::Behaviour;
+        assert!(!keymap::settings_items(&app.ctx()).iter().any(|m| m.verb == Verb::BoardWorkspace));
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let row = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::BoardWorkspace)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = row;
+        }
+        for expected in [Some(WorkspaceStrategy::Worktree), None] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            app.refresh().unwrap();
+            assert_eq!(app.board.workspace, expected);
+            let ctx = app.ctx();
+            assert_eq!(
+                keymap::value(Verb::ColumnWorkspace, &ctx),
+                keymap::value(Verb::BoardWorkspace, &ctx)
+            );
+            assert!(app.board.column("todo").unwrap().settings.workspace.is_none());
+        }
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetBoardWorkspace")).count(), 2);
     }
 
     #[test]

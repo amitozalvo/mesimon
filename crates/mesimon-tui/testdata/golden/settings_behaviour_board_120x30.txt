@@ -2,27 +2,27 @@
 
    TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               Snake while idle          ○ off                                            machine  │
-      │                      Mouse                     ● on                                             machine  │
-   Key│  Appearance          Editor                    auto                                             machine  │
-      │                                                                                                          │
-      │  Notifications      SNOOZE                                                                               │
-      │                      Comes back                ● lit    ○ quiet                               inherited  │
-      │▎ Behaviour           Week starts on            Monday                                           machine  │
-      │                                                                                                          │
-      │  Agents             TICKETS                                                                              │
-      │                      Worktrees                 ○ off                                                     │
-      │  Crown                                                                                                   │
+   Dec│  Theme               Keep this machine awake   ○ off                                          inherited  │
+      │                      Snake while idle          ○ off                                            machine  │
+   Key│  Appearance          Mouse                     ● on                                             machine  │
+      │                      Editor                    auto                                             machine  │
+      │  Notifications                                                                                           │
+      │                     SNOOZE                                                                               │
+      │▎ Behaviour           Comes back                ● lit    ○ quiet                               inherited  │
+      │                      Week starts on            Monday                                           machine  │
+      │  Agents                                                                                                  │
       │                     MERGE                                                                                │
-      │  Terminal            Merge into                ● main   ○ pull requests                                  │
+      │  Crown               Merge into                ● main   ○ pull requests                                  │
       │                      Reviewed pull requests    ● on                                                      │
-      │  Usage                                                                                                   │
+      │  Terminal                                                                                                │
       │                     REMOTE                                                                               │
-      │  About               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
+      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
       │                                                                                                          │
-      │                     AUTO MERGE                                                                           │
+      │  About              AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                            set here  │
       │                      Tells the agent           ● on                                           inherited  │
+      │                                                                                                          │
+      │                                                                                                          │
       │                                                                                                          │
       │                     machine: on ∙ merges quiet REVIEW branches, asks idle agents to rebase ∙ arming… ∙ ~ │
       ╰──────────────────────────────────────────────────── jk select ∙ enter change ∙ b machine ∙ esc sections ─╯
