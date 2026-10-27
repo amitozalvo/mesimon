@@ -1233,12 +1233,79 @@ class Phone:
 
 
 PEER_NAME = "rig-peer"
+
+
+def board_exchange(rows, kind, evidence):
+    """X1–X3: judge the actual call, receipt and words at both ends.
+
+    A feed entry alone also records a refusal, and a queued receipt does
+    not prove delivery. The nonce comes only from the peer's prompt, never
+    the crown's brief. Exactly one call rules out retries and reply loops.
+    """
+    if kind not in ("ask", "reply", "closed"):
+        return False, f"unknown exchange: {kind}"
+    inputs = tool_inputs(rows)
+    local_work = [n for n, _ in inputs if n in ("Write", "Edit", "NotebookEdit", "Agent", "Task",
+                  "mcp__mesimon__start_agent", "mcp__mesimon__ask_agent", "mcp__mesimon__create_ticket")]
+    if local_work:
+        return False, f"work started here instead of the peer: {', '.join(local_work)}"
+    calls = [(i, r) for (n, i), (_, r) in zip(inputs, tool_calls(rows))
+             if n == "mcp__mesimon__ask_board"]
+    if len(calls) != 1:
+        return False, f"{len(calls)} ask_board calls; expected one"
+    args, result = calls[0]
+    if not args.get("board") or args["board"] not in (PEER_NAME, evidence.get("path")):
+        return False, f"wrong destination: {args.get('board')!r}"
+    if not result:
+        return False, "ask_board has no result"
+    if kind == "closed":
+        ok = result["is_error"] and "not open" in result["text"]
+        return ok, f"closed board receipt: {result['text'][:160]}"
+    try:
+        receipt = json.loads(result["text"])
+    except (ValueError, TypeError):
+        receipt = None
+    if result["is_error"] or not isinstance(receipt, dict) or not (
+            receipt.get("board") == PEER_NAME and receipt.get("road") == "queued"
+            and receipt.get("crown") == evidence.get("crown")
+            and receipt.get("reply") is (kind == "reply")):
+        return False, f"wrong receipt: {result['text'][:200]}"
+    sent = args.get("text", "")
+    delivered = evidence.get("delivered", "")
+    if not sent or sent not in delivered:
+        return False, "the crown's exact words never reached the peer's pane"
+    incoming = evidence.get("incoming", "")
+    prompts = user_prompts(rows)
+    if not incoming or sum(incoming in p for p in prompts) != 1:
+        return False, "the peer's attributed prompt did not arrive exactly once"
+    peer_receipt = evidence.get("receipt", {})
+    if not (peer_receipt.get("board") == evidence.get("local_board")
+            and peer_receipt.get("crown") == evidence.get("local_key")
+            and peer_receipt.get("road") == "queued"
+            and peer_receipt.get("reply") is (kind == "ask")):
+        return False, f"wrong peer receipt: {peer_receipt}"
+    nonce = evidence.get("nonce")
+    if not nonce:
+        return False, "no fresh peer reference"
+    if kind == "ask":
+        header = f"The crown of the {evidence['local_board']} board ({evidence['local_key']} "
+        good = header in delivered and f"ask_board board={evidence['local_board']} replies" in delivered
+        good &= "0.1.0-beta.2" in sent and "/version" in sent
+        good &= nonce in last_reply(rows)
+    else:
+        good = f"The crown of the {evidence['local_board']} board replied: {sent}" in delivered
+        good &= nonce in sent
+    return good, (f"one {'reply' if kind == 'reply' else 'ask'}, queued and delivered; "
+                  f"peer reference {nonce}, attribution/content {'match' if good else 'differ'}")
+
+
 # A shell that stands in for Claude on the peer board: it paints Claude's
 # composer (the daemon pastes only into one) and keeps every line pasted.
 PEER_STUB = (
     "#!/bin/sh\n"
-    "printf '\\033[999;1H\\033[3A────────────────────\\n❯ \\n────────────────────\\n"
-    "  ? for shortcuts\\033[H'\n"
+    "printf '\\033]0;✳ Claude Code\\007\\033[999;1H\\033[3A────────────────────"
+    "\\033[999;1H\\033[2A❯ \\033[999;1H\\033[1A────────────────────"
+    "\\033[999;1H  ? for shortcuts\\033[H'\n"
     "stty -icanon 2>/dev/null\n"
     "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
 )
@@ -1275,14 +1342,35 @@ class Peer:
         log = open(self.paths.daemon_log, "ab")
         env = terminal_env({"MESIMON_DETACHED": "1", "MESIMON_CLAUDE_BIN": self.stub,
                             "MESIMON_CLAUDE_ROAD": "hooks", **rig.seams})
-        subprocess.Popen([rig.bin, "daemon", "--repo", self.repo], stdin=subprocess.DEVNULL,
-                         stdout=log, stderr=log, env=env, start_new_session=True, cwd=self.repo)
+        self.process = subprocess.Popen([rig.bin, "daemon", "--repo", self.repo], stdin=subprocess.DEVNULL,
+                                        stdout=log, stderr=log, env=env, start_new_session=True, cwd=self.repo)
         log.close()
         self.wire = Wire(self.paths.orch_sock, client="rig-peer", connect_for=30)
         self.feed_mark = len(feed_all(self.paths))
         self.ticket = self.wire.create_ticket("TODO", "Relay release")
         self.wire.set_workspace(self.ticket, "shared_checkout")
         self.session = self.wire.spawn(self.ticket, "claude", submit_prompt=False)["id"]
+        # Like boardlink_e2e's one_turn: the stand-in has no real engine to
+        # emit hooks. A queued peer ask drains only after a proven idle.
+        # Its title/composer above match common::COMPOSER (T-1002/T-1019),
+        # so the startup probe cannot mistake it for an unanswered modal.
+        try:
+            for event, body, state in (("UserPromptSubmit", {"prompt": "ready"}, "working"),
+                                       ("Stop", {"stop_hook_active": False}, "idle")):
+                subprocess.run([rig.bin, "hook", "--sock", os.path.join(self.paths.rt_dir, "hook.sock"),
+                                "--session", self.session, "--event", event],
+                               input=json.dumps(body), text=True, capture_output=True, check=True, timeout=10)
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    rec = next((s for s in self.wire.board()["sessions"] if s["id"] == self.session), None)
+                    if rec and word_of(rec["state"]) == state:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise WireError(f"the peer stub never became {state}")
+        except (WireError, OSError, subprocess.SubprocessError):
+            self.stop()
+            raise
         self.wire.crown(self.ticket)
         self.crown_key = next(t["short_key"] for t in self.wire.board()["tickets"]
                               if t["id"] == self.ticket)
@@ -1297,6 +1385,14 @@ class Peer:
         """The peer board's feed since it was laid: the commands."""
         return [l.get("cmd") for l in feed_all(self.paths)[self.feed_mark:]
                 if l.get("kind") == "board"]
+
+    def received(self):
+        """Words actually read by the peer's stub, not just accepted by its daemon."""
+        try:
+            with open(self.got) as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
 
     def reply(self, board, text):
         """The peer's crown speaks to the rig's crown: `ask_board`, an ask
@@ -1321,6 +1417,12 @@ class Peer:
         deadline = time.time() + 15
         while os.path.exists(self.paths.orch_sock) and time.time() < deadline:
             time.sleep(0.1)
+        self.wire.close()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            self.process.wait(timeout=5)
         tmux = os.environ.get("MESIMON_TMUX_BIN") or (
             os.path.join(self.rig.repo, "target/debug/mesimon-tmux")
             if os.path.exists(os.path.join(self.rig.repo, "target/debug/mesimon-tmux")) else "tmux")
@@ -1799,7 +1901,8 @@ class Rig:
                 lines.append(f"- the crown is told: “{said}”")
             else:
                 lines.append(f"- the rig: `{step['rig']}`")
-        lines += ["", "**Checks.** " + ", ".join(f"`{c}`" for c in test["checks"])]
+        if not test.get("blind"):
+            lines += ["", "**Checks.** " + ", ".join(f"`{c}`" for c in test["checks"])]
         return "\n".join(lines)
 
     def crown_brief(self, tests):
@@ -1889,6 +1992,26 @@ Reply with the single word ready and end your turn."""
         if self.quiet_since is None:
             self.quiet_since = time.time()
         return time.time() - self.quiet_since >= quiet
+
+    def peer_delivery(self, record):
+        """Do not manufacture a reply to words the peer never received."""
+        crown = self.agent_of(self.board(), self.crown)
+        rows = [r for r in (transcript(crown) if crown else [])
+                if (row_ms(r) or 0) >= record["t0_ms"]]
+        sent = [i.get("text") for n, i in tool_inputs(rows) if n == "mcp__mesimon__ask_board"]
+        if len(sent) != 1 or not sent[0]:
+            record["failures"].append(f"expected one crown ask before peer delivery, got {len(sent)}")
+            return False
+
+        def landed():
+            got = self.peer.received()
+            return got if sent[0] in got else None
+
+        delivered = self.wait_for("the crown's words in the peer's pane", landed, 30, self.watch)
+        record["peer"]["delivered"] = delivered or ""
+        if not delivered:
+            record["failures"].append("the peer never read the crown's words")
+        return bool(delivered)
 
     def watch(self):
         """Read the feed and the board, and print what changed: the rig's
@@ -2627,6 +2750,8 @@ Reply with the single word ready and end your turn."""
             # X1 (T-733): a second board on this machine, crowned by a stub,
             # linked with this one as a person links it.
             self.peer = Peer(self)
+            record["peer"] = {"path": self.peer.repo, "crown": self.peer.crown_key,
+                              "local_board": os.path.basename(self.repo), "local_key": self.crown_key}
             self.log(f"the peer board {PEER_NAME} is up, crowned by {self.peer.crown_key}, "
                      f"and linked with this board")
             return True
@@ -2636,10 +2761,15 @@ Reply with the single word ready and end your turn."""
             # ask template alone, and the step ends when its turn on them
             # ended.
             sent_ms = int(time.time() * 1000)
+            nonce = ulid()
             words = step.get("text", "which release is tagged on your board? answer with the "
                                      "version, or that you cannot tell, and end your turn")
+            words += f" Include reference {nonce} in your answer."
+            record["peer"].update(nonce=nonce, incoming=(
+                f'The crown of the {PEER_NAME} board ({self.peer.crown_key} "Relay release") asks: {words}'))
             try:
                 r = self.peer.reply(os.path.basename(self.repo), words)
+                record["peer"]["receipt"] = r
                 self.log(f"the peer's crown asked: {r.get('road')}")
             except WireError as e:
                 record["failures"].append(f"the peer's ask: {e}")
@@ -2647,6 +2777,8 @@ Reply with the single word ready and end your turn."""
             if not self.wait_for("crown", lambda: self.crown_settled(after_ms=sent_ms, quiet=0),
                                  STEP_TIMEOUT, self.watch):
                 record["failures"].append("the crown did not settle on the peer's ask")
+                return False
+            if not self.peer_delivery(record):
                 return False
             self.peer_fed = self.peer.fed()
             self.closed()
@@ -2661,10 +2793,16 @@ Reply with the single word ready and end your turn."""
             # X1: the peer's crown answers with ask_board; the words reach
             # this board's crown as its next prompt, and the step ends when
             # its turn on them ended. Then the peer goes, and the link.
+            if not self.peer_delivery(record):
+                return False
             sent_ms = int(time.time() * 1000)
+            nonce = ulid()
             words = step.get("text", "relay 0.1.0-beta.2 is live; /version serves it")
+            words += f" Reference {nonce}."
+            record["peer"].update(nonce=nonce, incoming=f"The crown of the {PEER_NAME} board replied: {words}")
             try:
                 r = self.peer.reply(os.path.basename(self.repo), words)
+                record["peer"]["receipt"] = r
                 self.log(f"the peer's crown replied: {r.get('road')}, read as a reply: {r.get('reply')}")
             except WireError as e:
                 record["failures"].append(f"the peer's reply: {e}")
@@ -3393,7 +3531,7 @@ Reply with the single word ready and end your turn."""
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
             if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
-                                            "crown", "crown_board", "peer_fed", "filed",
+                                            "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
@@ -3503,6 +3641,11 @@ Reply with the single word ready and end your turn."""
                 # The peer board's feed (X1): what its daemon did with the words.
                 fed_peer = self.peer.fed() if self.peer else self.peer_fed
                 check(c, arg in fed_peer, f"{arg}×{fed_peer.count(arg)}")
+            elif name == "board_exchange":
+                crown = self.agent_of(board, self.crown)
+                crown_rows = [r for r in (transcript(crown) if crown else [])
+                              if (row_ms(r) or 0) >= record["t0_ms"]]
+                check(c, *board_exchange(crown_rows, arg, record.get("peer", {})))
             elif name == "crown_hand":
                 # The crown's own hand (T-744), its reason naming `arg`: a
                 # hand is on the crown's ticket, so the feed's line is not

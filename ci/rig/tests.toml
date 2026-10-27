@@ -99,6 +99,11 @@
 #              transcript the overrun line for the ticket arrives, then in
 #              that same turn a sample_agent of its key returns a reading,
 #              not an error, then the reply beginning <prefix>),
+#              board_exchange:<ask|reply|closed> (T-1054: one ask_board,
+#              its actual receipt, attributed prompts and exact peer-pane
+#              delivery; a fresh peer reference survives the round trip,
+#              no local worker, retries or reply loop; closed is refused
+#              specifically as not open),
 #              crown_line:<prefix>:<word> (T-810: the crown's last line
 #              beginning <prefix> holds <word> (a comma list: any of them), or with `!<word>` does not;
 #              `{reply}` is the worker's last reply, T-991), plan_read
@@ -1483,8 +1488,8 @@ title = "X1 · the crown asks a linked board's crown and hears its reply: do the
 blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the test is between the crowns."
-expect = "a second board, rig-peer, is open on this machine and linked with this one (T-733); its crown is a stub. Asked in plain words to have the relay released, naming no tool, the crown reads the linked board off list_board and sends its words with ask_board naming rig-peer, which puts them on that board's crown's card (board_ask_received there), and does the relay's work from nowhere else. The peer's crown answers with ask_board back, and the reply arrives as the crown's next prompt, beginning with the board's name; the crown ends that turn repeating the reply's words."
-checks = ["crown_board:ask_board", "peer_fed:board_ask_received", "crown_line:X1 replied:live"]
+expect = "a second board, rig-peer, is open on this machine and linked with this one (T-733); its crown is a stub. Asked in plain words to have the relay released, naming no tool, the crown sends its words with ask_board naming rig-peer, which puts them on that board's crown's card (board_ask_received there), and does the relay's work from nowhere else. The peer's crown answers with ask_board back, and the reply arrives as the crown's next prompt, beginning with the board's name; the crown ends that turn repeating the reply's words and fresh reference. Both receipts classify ask/reply correctly, the exact outbound words reach the peer pane before it answers, and exactly one ask_board rules out a reply loop; no local implementation or worker is allowed."
+checks = ["crown_board:ask_board", "peer_fed:board_ask_received", "board_exchange:ask", "crown_wrote_nothing:rig-peer,release", "crown_line:X1 replied:live"]
 
   [[test.steps]]
   rig = "peer_board"
@@ -1499,10 +1504,11 @@ checks = ["crown_board:ask_board", "peer_fed:board_ask_received", "crown_line:X1
 [[test]]
 id = "X2"
 title = "X2 · the crown hears a linked board's crown and answers through the road: do the steps below"
+blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the test is between the crowns."
-expect = "a second board, rig-peer, is linked with this one (T-733), and its crown asks this board's crown a question with nothing said to it by the rig: the words arrive as its next prompt through the Board ask template, which names the asking board and that ask_board naming it replies. Told only that, the crown answers with ask_board naming rig-peer, in its own words, and does not answer in its pane alone; the peer board's daemon takes the answer (board_ask_received there)."
-checks = ["crown_board:ask_board", "peer_fed:board_ask_received"]
+expect = "a second board, rig-peer, is linked with this one (T-733), and its crown asks this board's crown a question with nothing said to it by the rig: the words arrive as its next prompt through the Board ask template, which names the asking board and that ask_board naming it replies. Told only that, the crown answers with ask_board naming rig-peer, in its own words, and does not answer in its pane alone; the peer board's pane receives the answer with the fresh reference. Both receipts classify ask/reply correctly, the reply names the right crown, and exactly one ask_board rules out retries or a reply loop. The test is blind, including its acceptance checks; no local implementation or worker is allowed."
+checks = ["crown_board:ask_board", "peer_fed:board_ask_received", "board_exchange:reply", "crown_wrote_nothing:rig-peer,release"]
 
   [[test.steps]]
   rig = "peer_board"
@@ -1516,8 +1522,8 @@ title = "X3 · a linked board that is not open: do the steps below"
 blind = true
 workspace = "worktree"
 brief = "Nothing starts on this ticket: the test is between the crowns."
-expect = "the linked board rig-peer is closed (its daemon stopped, the link kept). Asked in plain words to have the relay released, the crown's ask_board is refused in words saying the board is not open and that it opens when mesimon runs in its folder (T-733); the crown does not do the relay's work from here and does not keep trying: it raises its hand on its own ticket naming rig-peer, since opening a board is the person's (T-862), and ends its turn."
-checks = ["crown_board:ask_board", "crown_hand:rig-peer"]
+expect = "the linked board rig-peer is closed (its daemon stopped, the link kept). Asked in plain words to have the relay released, the crown's ask_board is refused in words saying the board is not open and that it opens when mesimon runs in its folder (T-733); the crown does not do the relay's work from here and does not keep trying: it raises its hand on its own ticket naming rig-peer, since opening a board is the person's (T-862), and ends its turn. Its single ask_board must actually return the not-open error; no local implementation or worker is allowed."
+checks = ["crown_board:ask_board", "board_exchange:closed", "crown_wrote_nothing:rig-peer,release", "crown_hand:rig-peer"]
 
   [[test.steps]]
   rig = "peer_board"

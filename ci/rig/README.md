@@ -1,5 +1,50 @@
 # Real agent verification
 
+## Linked crowns
+
+`python3 -B ci/rig.py --only X` selects the Claude crown communication cases.
+They use one real crown and a linked board with a stub crown; the peer costs
+no model tokens. They do not claim coverage of two models reasoning together.
+
+- **X1:** a request for the other board's work reaches its crown's pane;
+  its reply arrives as an attributed prompt and the crown reports the answer.
+- **X2:** an unsolicited request arrives from the peer. The board's own
+  prompt supplies the return route; the rig's brief does not name the tool.
+  The crown's answer must reach the peer through `ask_board`.
+- **X3:** a closed linked board returns the actual `not open` refusal and
+  the crown raises its hand for the person.
+
+Each case requires exactly one `ask_board` call and forbids starting the
+peer's work locally. X1/X2 check both receipts' ask/reply classification,
+the destination crown, attributed prompts and actual peer-pane delivery.
+A fresh reference supplied only by the peer must survive the answer, so
+an old answer or a receipt alone cannot pass. A second call fails, including
+an acknowledgement that starts a reply loop. X1 waits for delivery before
+the stub answers. Blind test cards omit acceptance checks as well as expected
+behavior, so reading the card cannot supply the intended tool choice.
+
+No-model checks:
+
+```sh
+python3 -B -m unittest ci/rig_test.py
+cargo build -p mesimon
+python3 -B ci/test-run.py -- python3 -B ci/rig_peer_test.py
+python3 -B ci/test-run.py -- cargo test -p mesimon --test boardlink_e2e
+```
+
+`rig_peer_test.py` exercises the rig's actual peer fixture against another
+shell stub in a disposable HOME. The peer paints the current composer and
+title and emits a completed turn before it is linked: merely queueing a
+message to a stub stuck at startup is not delivery. Both daemons, their private
+tmux servers and fixture directories belong to the cleanup supervisor.
+
+`boardlink_e2e` also covers authorization, supervised holding, queue acknowledgement,
+missing crowns and unlinking with two real daemons and stub sessions. These
+checks exercise transport and the rig's verdicts; a live `--only X` run is
+still needed to measure the model's choices on a particular build.
+
+## Native Codex rig
+
 `python3 -B ci/rig.py` runs the Claude crown/worker rig. Codex has a separate
 native adapter behind the same entry point:
 

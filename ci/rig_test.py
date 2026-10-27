@@ -1,5 +1,6 @@
 """Offline checks of the Claude rig's readiness predicates (A3, T-945),
 ST2's acceptance (T-974) and the trace fixture's cut (T-1014)."""
+import copy
 import importlib.util
 import json
 import os
@@ -55,6 +56,137 @@ class SuiteTests(unittest.TestCase):
                 f.write('[[test]]\nid = "A2"\n\n[[test]]\nid = "B1"\n\n[[test]]\nid = "A2"\n')
             with self.assertRaisesRegex(ValueError, "two tests are named A2"):
                 rig.load_tests(path)
+
+    def test_incoming_board_ask_does_not_teach_the_crown_how_to_reply(self):
+        test = next(t for t in rig.load_tests(Path(__file__).parent / "rig" / "tests.toml")
+                    if t["id"] == "X2")
+        subject = object.__new__(rig.Rig)
+        self.assertTrue(test.get("blind"))
+        brief = subject.crown_brief([{**test, "key": "T-2"}])
+        self.assertNotIn("ask_board", brief)
+        self.assertNotIn(test["expect"], subject.test_card(test))
+        self.assertNotIn("ask_board", subject.test_card(test))
+
+
+class BoardExchangeTests(unittest.TestCase):
+    def fixture(self, kind="ask"):
+        nonce = "fresh-peer-reference"
+        sent = "Cut 0.1.0-beta.2 and report what /version serves." if kind == "ask" else f"Version unknown; {nonce}"
+        peer_text = f"Release live; {nonce}" if kind == "ask" else f"Which release? Reference {nonce}"
+        incoming = (f"The crown of the rig-peer board replied: {peer_text}" if kind == "ask" else
+                    f'The crown of the rig-peer board (T-9 "Relay release") asks: {peer_text}')
+        delivered = (f'The crown of the local board (T-4 "Crown") asks: {sent} ∙ ask_board board=local replies to it'
+                     if kind == "ask" else f"The crown of the local board replied: {sent}")
+        receipt = dict(board="rig-peer", crown="T-9", road="queued", reply=kind == "reply")
+        use = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "ask1", "name": "mcp__mesimon__ask_board",
+             "input": {"board": "rig-peer", "text": sent}}]}}
+        result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "ask1", "content": json.dumps(receipt)}]}}
+        prompt = {"type": "user", "message": {"content": incoming}}
+        reply = {"type": "assistant", "message": {"content": f"X1 replied: {peer_text}"}}
+        rows = [use, result, prompt, reply] if kind == "ask" else [prompt, use, result, reply]
+        evidence = dict(path="/fixture/rig-peer", crown="T-9", local_board="local", local_key="T-4",
+                        nonce=nonce, incoming=incoming, delivered=delivered,
+                        receipt=dict(board="local", crown="T-4", road="queued", reply=kind == "ask"))
+        return rows, evidence, use, result
+
+    def judge(self, rows, evidence, kind="ask"):
+        return rig.board_exchange(rows, kind, evidence)[0]
+
+    def test_both_directions_need_the_actual_delivery_and_correlated_receipts(self):
+        for kind in ("ask", "reply"):
+            with self.subTest(kind=kind):
+                rows, evidence, _, _ = self.fixture(kind)
+                self.assertTrue(self.judge(rows, evidence, kind))
+
+    def test_a_queued_receipt_without_delivery_fails(self):
+        rows, evidence, _, _ = self.fixture()
+        evidence["delivered"] = ""
+        self.assertFalse(self.judge(rows, evidence))
+
+    def test_stale_or_unattributed_or_duplicate_incoming_words_fail(self):
+        for bad in ("old reference", "Release live; fresh-peer-reference", "duplicate"):
+            with self.subTest(bad=bad):
+                rows, evidence, _, _ = self.fixture()
+                if bad == "duplicate":
+                    rows.insert(3, copy.deepcopy(rows[2]))
+                else:
+                    rows[2]["message"]["content"] = bad
+                self.assertFalse(self.judge(rows, evidence))
+
+    def test_a_reply_must_reach_the_person_with_the_fresh_reference(self):
+        rows, evidence, _, _ = self.fixture()
+        rows[-1]["message"]["content"] = "X1 replied: live"
+        self.assertFalse(self.judge(rows, evidence))
+
+    def test_incoming_request_must_be_answered_through_the_board_with_its_reference(self):
+        rows, evidence, use, _ = self.fixture("reply")
+        use["message"]["content"][0]["input"]["text"] = "Version unknown"
+        evidence["delivered"] = "The crown of the local board replied: Version unknown"
+        self.assertFalse(self.judge(rows, evidence, "reply"))
+        self.assertFalse(self.judge([rows[0], rows[-1]], evidence, "reply"), "pane-only reply")
+
+    def test_ask_and_reply_templates_are_not_interchangeable(self):
+        for kind in ("ask", "reply"):
+            rows, evidence, _, _ = self.fixture(kind)
+            evidence["delivered"] = evidence["delivered"].replace("replied:", "asks:") if kind == "reply" \
+                else evidence["delivered"].replace("local board (T-4", "other board (T-4")
+            self.assertFalse(self.judge(rows, evidence, kind))
+
+    def test_refused_missing_malformed_wrong_crown_or_wrong_reply_receipts_fail(self):
+        rows, evidence, _, result = self.fixture()
+        block = result["message"]["content"][0]
+        receipt = json.loads(block["content"])
+        for key, value in (("board", "elsewhere"), ("road", "held_for_person"),
+                           ("crown", "T-10"), ("reply", True)):
+            with self.subTest(key=key):
+                block["content"] = json.dumps({**receipt, key: value})
+                self.assertFalse(self.judge(rows, evidence))
+        block["content"] = "not JSON"
+        self.assertFalse(self.judge(rows, evidence))
+        block["content"] = json.dumps(receipt)
+        block["is_error"] = True
+        self.assertFalse(self.judge(rows, evidence))
+        self.assertFalse(self.judge([rows[0], *rows[2:]], evidence))
+
+    def test_the_peer_must_recognize_the_reply_too(self):
+        for key, value in (("reply", False), ("board", "other"), ("crown", "T-10"),
+                           ("road", "held_for_person")):
+            with self.subTest(key=key):
+                rows, evidence, _, _ = self.fixture()
+                evidence["receipt"][key] = value
+                self.assertFalse(self.judge(rows, evidence))
+
+    def test_a_retry_or_reply_loop_fails_but_duplicate_transcript_blocks_do_not(self):
+        rows, evidence, use, result = self.fixture()
+        self.assertTrue(self.judge([*rows, use, result], evidence))
+        extra = copy.deepcopy(use)
+        extra["message"]["content"][0]["id"] = "ask2"
+        self.assertFalse(self.judge([*rows, extra], evidence))
+
+    def test_the_wrong_destination_fails(self):
+        rows, evidence, use, _ = self.fixture()
+        args = use["message"]["content"][0]["input"]
+        args["board"] = evidence["path"]
+        self.assertTrue(self.judge(rows, evidence), "an unambiguous path is valid too")
+        args["board"] = "other-board"
+        self.assertFalse(self.judge(rows, evidence))
+
+    def test_starting_the_peers_work_locally_fails(self):
+        rows, evidence, use, _ = self.fixture()
+        extra = copy.deepcopy(use)
+        extra["message"]["content"][0].update(id="local", name="mcp__mesimon__start_agent")
+        self.assertFalse(self.judge([*rows, extra], evidence))
+
+    def test_closed_means_the_actual_not_open_refusal(self):
+        rows, evidence, _, result = self.fixture()
+        block = result["message"]["content"][0]
+        for error, text, ok in ((True, "rig-peer is not open", True),
+                                (False, "rig-peer is not open", False),
+                                (True, "rig-peer has no crown", False)):
+            block.update(is_error=error, content=text)
+            self.assertEqual(self.judge(rows, evidence, "closed"), ok)
 
 
 def wake(key):

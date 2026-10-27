@@ -38142,3 +38142,57 @@ ran the following; no CI result is claimed (T-1030).
   Formatting and `git diff --check` passed. Full nextest, Linux/Docker and manual
   TUI checks were not run for this visibility-only change; configured ignores
   remain timing probes, subprocess helpers and the live-network check.
+
+
+## Crown-to-crown rig assertions measure delivery and replies (T-1054, 2026-10-27)
+
+The existing X1–X3 cases cover an outbound ask and reply, an incoming ask,
+and a closed linked board. They retain one real Claude crown and a stub peer,
+not two models. Their old feed-presence assertions could accept queued words
+without proving that the peer read them; X2 also disclosed its expected
+`ask_board` choice in the crown brief.
+
+- X2 is blind. Blind test cards now omit the acceptance-check list as well
+  as expected behavior; otherwise a card read disclosed the tool choice.
+- `board_exchange` requires one call to the correct board, its successful
+  queued receipt and destination crown, and both sides' ask/reply classification.
+  The peer's captured input must contain the exact words and attribution.
+  X1 waits for that delivery before the stub supplies its reply.
+- A fresh reference supplied only by the peer must arrive in the attributed
+  prompt and survive the crown's answer: to the person in X1, back through
+  `ask_board` to the peer in X2. Missing, stale or duplicate incoming prompts,
+  pane-only answers, retries and reply loops fail. Starting local work also
+  fails, using tool evidence and the existing checkout-write check.
+- X3 checks the actual `not open` error as well as the crown's hand; a failed
+  call for some other reason no longer passes as a closed-board test.
+- Offline regression cases exercise false positives as well as successful
+  exchanges. `ci/rig/README.md` separates this evidence from live model behavior.
+- A no-model smoke run exposed the old peer stub stuck at startup, with its
+  ask queued but unread. Its composer now uses the current title and cursor
+  painting, and a hook-reported turn establishes idle before linking, as in
+  `boardlink_e2e`. `ci/rig_peer_test.py` keeps that regression with two shell
+  stubs under the fixture supervisor in an isolated HOME. The peer's process
+  is retained and reaped, and its wire is closed on shutdown.
+
+The live X run was cancelled before any Claude session started, and its
+fixture was reset, to preserve the requested weekly quota. The strengthened
+cases have not been measured on a real Claude crown in this ticket; a later
+`python3 -B ci/rig.py --only X` remains the model-behavior check.
+
+Validation: 54 offline rig tests and the saved no-model peer fixture test
+passed; the latter had a clean two-owner cleanup audit. `cargo ut` passed
+2,767 tests with ten configured ignores after removing the inherited
+`NO_COLOR=1`; its nine-owner audit was clean. `boardlink_e2e` passed on the
+hook road in nextest and on the mod road in a targeted bounded run (three
+owners, clean). `git diff --check` passed.
+
+The one full nextest run is **incomplete**: 2,597 passed, two TUI color-output
+assertions failed under `NO_COLOR=1`, eleven were skipped and 570 were not
+run after fail-fast; its 428-owner audit was clean. Both failed assertions
+passed in the corrected unit run. Its automatic full mod-road pass did not
+run. The configured ignores cover timing probes, subprocess helpers and the
+live release-channel check. Earlier unit attempts hit sandbox tmux/cleanup
+denials and then `permission_connection_stays_duplex_until_process_cancellation`;
+that test passed in nextest and the final unit run. The sandbox-failed
+fixtures were checked for remaining processes/sockets and their owned dirs
+removed; the failed audit was retained, not relabeled as a pass.
