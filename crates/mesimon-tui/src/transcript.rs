@@ -45,7 +45,10 @@ pub(crate) struct Message {
     /// message's name for good, which a page put on top re-keys nothing of.
     pub key: (u64, usize),
     pub kind: RowKind,
-    pub text: String,
+    /// Its row in the held rows, whose `text` it is (`Transcript::text`):
+    /// a message is rebuilt with every page that lands, so it names its
+    /// words rather than copying them.
+    row: usize,
     pub ms: Option<u64>,
     /// How many tool calls followed it, and their tools' names in order,
     /// once each.
@@ -69,7 +72,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
     let mut nth = 0;
     let mut last_at = None;
-    for row in rows {
+    for (i, row) in rows.iter().enumerate() {
         nth = if last_at == Some(row.at) { nth + 1 } else { 0 };
         last_at = Some(row.at);
         if row.kind == RowKind::Tool {
@@ -85,7 +88,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
         out.push(Message {
             key: (row.at, nth),
             kind: row.kind,
-            text: row.text.clone(),
+            row: i,
             ms: row.ms,
             steps: 0,
             tools: Vec::new(),
@@ -209,7 +212,7 @@ impl Transcript {
         let path = mesimon_daemon::agents::transcript_file(rec.kind, &record);
         let stat = stat_of(&path);
         let page = read(rec.kind, &path, Ask::default(), None)?;
-        if messages(&page.rows).is_empty() {
+        if page.rows.iter().all(|r| r.kind == RowKind::Tool) {
             return None;
         }
         let mut t = Transcript {
@@ -297,6 +300,11 @@ impl Transcript {
 
     pub(crate) fn message(&self) -> Option<&Message> {
         self.messages.get(self.idx)
+    }
+
+    /// A message's words, whole up to `ROW_MAX`.
+    pub(crate) fn text(&self, m: &Message) -> &str {
+        &self.rows[m.row].text
     }
 
     /// Messages that came after the newest one the reader has been on.
@@ -509,7 +517,7 @@ pub(crate) mod tests {
     }
 
     fn texts(t: &Transcript) -> Vec<&str> {
-        t.messages().iter().map(|m| m.text.as_str()).collect()
+        t.messages().iter().map(|m| t.text(m)).collect()
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -528,7 +536,7 @@ pub(crate) mod tests {
         let rec = rec(&path);
         let mut t = Transcript::open(&rec).expect("a conversation");
         assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 2, 0));
-        assert_eq!(t.message().map(|m| m.text.as_str()), Some("found it"));
+        assert_eq!(t.message().map(|m| t.text(m)), Some("found it"));
         // The agent says more: the reader stays where they are.
         append(&path, "a", "fixed");
         settle(&mut t, &rec, |t| t.messages().len() == 3);
@@ -557,7 +565,7 @@ pub(crate) mod tests {
         let long = "word ".repeat(4096);
         std::fs::write(&path, lines(&[("user", "plan it"), ("a", &long)])).unwrap();
         let t = Transcript::open(&rec(&path)).expect("a conversation");
-        assert_eq!(t.message().map(|m| m.text.len()), Some(long.trim_end().len()));
+        assert_eq!(t.message().map(|m| t.text(m).len()), Some(long.trim_end().len()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -599,7 +607,7 @@ pub(crate) mod tests {
         assert!(t.message().is_none() && t.unseen() == 0);
         std::fs::write(&path, lines(&[("user", "again")])).unwrap();
         settle(&mut t, &rec, |t| t.messages().len() == 1);
-        assert_eq!(t.message().map(|m| m.text.as_str()), Some("again"));
+        assert_eq!(t.message().map(|m| t.text(m)), Some("again"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

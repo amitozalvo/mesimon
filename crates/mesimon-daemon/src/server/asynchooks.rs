@@ -165,7 +165,7 @@ impl Daemon {
             .collect();
         let mut changed = false;
         for id in expired {
-            let ticket = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket);
+            let ticket = self.board.session(id).map(|r| r.ticket);
             self.feed.board_outcome(
                 "automation",
                 "async_hook_cap",
@@ -198,7 +198,7 @@ impl Daemon {
             if at < pending.stopped {
                 continue;
             }
-            let Some(rec) = self.board.sessions.iter().find(|r| r.id == *id) else { continue };
+            let Some(rec) = self.board.session(*id) else { continue };
             let pane = facts.and_then(|fs| fs.iter().find(|f| f.session_name == rec.sid16()));
             let missing = match pane {
                 Some(p) if p.pane_dead => Some("pane is dead"),
@@ -272,7 +272,7 @@ impl Daemon {
         }
         for (id, missing) in ready {
             if let Some(why) = missing {
-                let ticket = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket);
+                let ticket = self.board.session(id).map(|r| r.ticket);
                 self.feed.board_outcome("automation", "async_hook_unobserved", ticket, why);
                 self.async_hooks.known.remove(&id);
             }

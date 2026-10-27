@@ -1183,9 +1183,8 @@ pub(super) fn render(
         // Peek rows: the latest assistant reply, wrapped inside the card's
         // interior. Two rows (T-829): the gist, with the transcript one
         // focus away.
-        if let Some(text) = peek.and_then(|pk| pk.text.as_deref()) {
-            let words = crate::peek::card_words(text);
-            for row in crate::peek::wrap(&words, t_cells.saturating_sub(2), PEEK_ROWS) {
+        if let Some(words) = peek.and_then(|pk| pk.card.as_deref()) {
+            for row in crate::peek::wrap(words, t_cells.saturating_sub(2), PEEK_ROWS) {
                 push(vec![Span::styled(format!("  {row}"), dim)]);
             }
         }
@@ -1445,10 +1444,6 @@ pub(super) fn is_waiting(sessions: &[&SessionRecord]) -> bool {
         (mesimon_core::attention::is_attention(&s.state)
             && matches!(s.confidence, Confidence::High | Confidence::Medium)
             && !matches!(s.state, SessionState::Sleeping))
-            || (s.kind == SessionKind::Bash
-                && s.state.has_pane()
-                && s.shell_close_request
-                    .as_ref()
-                    .is_some_and(|q| q.expires_ms > mesimon_core::clock::now_ms()))
+            || s.close_asked(mesimon_core::clock::now_ms()).is_some()
     })
 }

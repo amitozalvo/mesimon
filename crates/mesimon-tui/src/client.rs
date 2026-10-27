@@ -683,11 +683,13 @@ fn connect_or_spawn(repo_root: &Path, sock: &Path, budget: Duration) -> Result<U
 /// still for thirty seconds while one shuts down — is the board's own
 /// client's business, not a background thread's.
 fn open_existing(repo_root: &Path) -> Result<Conn> {
-    let paths = Paths::for_repo(repo_root)?;
-    let sock = paths.orch_sock();
-    let stream =
-        UnixStream::connect(&sock).with_context(|| format!("no daemon on {}", sock.display()))?;
-    handshake(stream)
+    handshake(connect_existing(repo_root)?)
+}
+
+/// The listening daemon's socket, dialled, or why not.
+fn connect_existing(repo_root: &Path) -> Result<UnixStream> {
+    let sock = Paths::for_repo(repo_root)?.orch_sock();
+    UnixStream::connect(&sock).with_context(|| format!("no daemon on {}", sock.display()))
 }
 
 fn open(repo_root: &Path) -> Result<Conn> {
@@ -702,11 +704,7 @@ fn open(repo_root: &Path) -> Result<Conn> {
 /// does — and a subscriber nobody drains would grow its event channel by
 /// one entry per push for the board's whole life.
 fn open_lane(repo_root: &Path) -> Result<Conn> {
-    let paths = Paths::for_repo(repo_root)?;
-    let sock = paths.orch_sock();
-    let stream =
-        UnixStream::connect(&sock).with_context(|| format!("no daemon on {}", sock.display()))?;
-    hello(stream, PROTOCOL_VERSION)
+    hello(connect_existing(repo_root)?, PROTOCOL_VERSION)
 }
 
 /// One snapshot on the lane: the kept connection, or a fresh one when there

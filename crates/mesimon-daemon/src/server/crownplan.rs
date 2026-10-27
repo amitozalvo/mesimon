@@ -172,13 +172,21 @@ impl Daemon {
         id: uuid::Uuid,
         reply: Sender<ClientReply>,
     ) -> Option<Sender<ClientReply>> {
-        match self.crown_plans.get_mut(&id) {
-            Some(plan) if plan.reply.is_none() => {
-                plan.reply = Some(reply);
-                None
-            }
-            _ => Some(reply),
-        }
+        park_in(self.crown_plans.get_mut(&id).map(|p| &mut p.reply), reply)
+    }
+
+    /// A parked reply sent at last: the feed flushed first, so what it says
+    /// is on disk before a reader of it looks, and the crown's rules ride it
+    /// (T-930).
+    pub(super) fn send_parked(
+        &mut self,
+        reply: Sender<ClientReply>,
+        session: uuid::Uuid,
+        response: Response,
+    ) {
+        let _ = self.feed.flush();
+        let (response, told) = self.with_crown_rules(session, response);
+        let _ = reply.send(ClientReply { response, delivered: None, told });
     }
 
     /// Whether the crown's press may still go (T-582): what allowed it at
@@ -186,16 +194,8 @@ impl Daemon {
     /// claude the crown started on that ticket at its plan, and the crown's
     /// `Mutate` on it.
     fn crown_plan_allowed(&self, plan: &CrownPlan, id: uuid::Uuid) -> bool {
-        let by = Principal::Agent { session: plan.session };
-        self.board.is_crowned(plan.crown)
-            && self.board.crown_mode.answers()
-            && self.board.live_agent(plan.ticket).is_some_and(|rec| {
-                rec.id == id
-                    && rec.started_by.is_some()
-                    && rec.kind.is_agent()
-                    && rec.state == SessionState::RequiresAction { reason: Reason::Plan }
-            })
-            && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: plan.ticket }).denied()
+        self.crown_may_answer(plan.crown, plan.session, plan.ticket, id, Reason::Plan)
+            .is_some_and(|rec| rec.kind.is_agent())
     }
 
     /// Press every crown accept whose worker's checkout is quiet (T-582),
@@ -378,12 +378,24 @@ impl Daemon {
             reason,
             seen: Some(self.receipt_seen(ticket, None)),
         };
-        // The receipt goes mid-tick, before the tick's own flush: what it
-        // says is on disk first, so a reader of the feed after it finds it.
-        let _ = self.feed.flush();
-        // The reply the crown reads is this one, not the call's own (T-930).
-        let (response, told) = self.with_crown_rules(session, response);
-        let _ = reply.send(ClientReply { response, delivered: None, told });
+        // The receipt goes mid-tick, before the tick's own flush. The reply
+        // the crown reads is this one, not the call's own (T-930).
+        self.send_parked(reply, session, response);
+    }
+}
+
+/// A call's reply parked in `slot` while its slot is empty; handed back,
+/// to be sent now, when there is no slot or it is taken.
+pub(super) fn park_in(
+    slot: Option<&mut Option<Sender<ClientReply>>>,
+    reply: Sender<ClientReply>,
+) -> Option<Sender<ClientReply>> {
+    match slot {
+        Some(slot) if slot.is_none() => {
+            *slot = Some(reply);
+            None
+        }
+        _ => Some(reply),
     }
 }
 

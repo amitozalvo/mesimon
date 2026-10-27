@@ -246,49 +246,43 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         // question moment — a generic Permission here would clobber the
         // sharper reason PreToolUse just set (dogfood 2026-08-30: plan
         // dialogs read as `permission`, never `plan`).
-        "PermissionRequest" => match frame.payload.get("tool_name").and_then(Value::as_str) {
-            Some("AskUserQuestion") => {
-                Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
-            }
-            Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
-            _ => Some(Signal::PermissionRequest),
+        "PermissionRequest" => match interaction_tool(frame) {
+            Some(tool) => Some(Signal::PreToolUse { tool }),
+            None => Some(Signal::PermissionRequest),
         },
         "PermissionDenied" => Some(Signal::PermissionDenied),
-        "PreToolUse" => match frame.payload.get("tool_name").and_then(Value::as_str) {
-            Some("AskUserQuestion") => {
-                Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
-            }
-            Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
+        "PreToolUse" => match interaction_tool(frame) {
+            Some(tool) => Some(Signal::PreToolUse { tool }),
             // Any other call is the session working — and, while a plan or
             // question is held, the only frame a human's refusal leaves
             // (T-447: "No, keep planning" fires no hook of its own).
-            _ => Some(Signal::ToolStarted { nested: has_agent_id(frame) }),
+            None => Some(Signal::ToolStarted { nested: has_agent_id(frame) }),
         },
         // Broad since dogfood 2026-08-30 (an ACCEPTED permission stayed
         // needs-you until end of turn): the interaction pair keeps its sharp
         // signal; any other completion is the generic permission-accept path
         // — there is no "permission answered" event (11 §11.7.3), a tool
         // finishing is the only proof the dialog resolved.
-        "PostToolUse" => match frame.payload.get("tool_name").and_then(Value::as_str) {
-            Some("AskUserQuestion") => {
-                Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion })
-            }
-            Some("ExitPlanMode") => Some(Signal::PostToolUse { tool: AttentionTool::ExitPlanMode }),
-            // A message to a teammate wakes it, so it is working again
-            // whatever it last reported (T-135). `to` is the addressee.
-            Some("SendMessage") => match frame
-                .payload
-                .get("tool_input")
-                .and_then(|i| i.get("to"))
-                .and_then(Value::as_str)
+        "PostToolUse" => {
+            match (interaction_tool(frame), frame.payload.get("tool_name").and_then(Value::as_str))
             {
-                Some(name) => Some(Signal::TeammateMessaged { name: name.to_string() }),
-                None => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
-            },
-            // `agent_id` marks a subagent's or teammate's tool, not the
-            // session's own (measured 2026-09-01).
-            _ => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
-        },
+                (Some(tool), _) => Some(Signal::PostToolUse { tool }),
+                // A message to a teammate wakes it, so it is working again
+                // whatever it last reported (T-135). `to` is the addressee.
+                (None, Some("SendMessage")) => match frame
+                    .payload
+                    .get("tool_input")
+                    .and_then(|i| i.get("to"))
+                    .and_then(Value::as_str)
+                {
+                    Some(name) => Some(Signal::TeammateMessaged { name: name.to_string() }),
+                    None => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
+                },
+                // `agent_id` marks a subagent's or teammate's tool, not the
+                // session's own (measured 2026-09-01).
+                _ => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
+            }
+        }
         // One registration, no matcher — discriminate here (11 §11.2.3: the
         // documented matcher list is shorter than the shipping enum).
         "Notification" => Some(Signal::Notification {
@@ -318,6 +312,12 @@ fn background_tasks(frame: &HookFrame) -> impl Iterator<Item = &Value> {
         .and_then(Value::as_array)
         .into_iter()
         .flat_map(|a| a.iter())
+}
+
+/// The interaction tool (a plan or a question) the frame's `tool_name`
+/// names, if it names one.
+fn interaction_tool(frame: &HookFrame) -> Option<AttentionTool> {
+    frame.payload.get("tool_name").and_then(Value::as_str).and_then(AttentionTool::from_name)
 }
 
 fn has_agent_id(frame: &HookFrame) -> bool {

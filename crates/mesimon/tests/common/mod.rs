@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Board, SessionState};
 use mesimon_core::command::{
-    Command, Envelope, Event, ExternalItem, GraceItem, Pending, RepoGit, Resources, Response,
-    WorktreeItem,
+    AgentTicketView, Command, CrownTouch, Deliver, Envelope, Event, ExternalItem, GraceItem,
+    Pending, RepoGit, Resources, Response, WorktreeItem,
 };
 use mesimon_core::diff::FileEntry;
 use mesimon_core::Principal;
@@ -357,6 +357,90 @@ impl TestClient {
             Response::Spawned { id, .. } => id,
             other => panic!("spawn: {other:?}"),
         }
+    }
+
+    /// `id`'s short key, the name an agent's keyed tools take.
+    pub fn key_of(&mut self, id: ulid::Ulid) -> String {
+        self.board().ticket(id).unwrap().short_key.clone()
+    }
+
+    /// `session`'s `get_ticket` of `key` (not full), or the refusal's words.
+    pub fn agent_read(
+        &mut self,
+        session: uuid::Uuid,
+        key: &str,
+    ) -> Result<AgentTicketView, String> {
+        match self.send(
+            Principal::Agent { session },
+            Command::AgentReadTicket { key: key.into(), full: false, plan: false },
+        ) {
+            Response::AgentTicket { ticket } => Ok(ticket),
+            Response::Err { message } => Err(message),
+            other => panic!("read {key}: {other:?}"),
+        }
+    }
+
+    /// The crown's `start_agent` on `key` in `workspace`, judged against a
+    /// fresh read's stamp: no plan, no tier, no expectation.
+    pub fn crown_start(&mut self, crown: uuid::Uuid, key: &str, workspace: &str) -> Response {
+        let v = self.agent_read(crown, key).unwrap();
+        self.send(
+            Principal::Agent { session: crown },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen: v.seen,
+                plan: false,
+                tier: None,
+                workspace: Some(workspace.into()),
+                expect_secs: None,
+            },
+        )
+    }
+
+    /// The crown's `ask_agent` on `key`, judged against a fresh read's stamp.
+    pub fn crown_ask(
+        &mut self,
+        crown: uuid::Uuid,
+        key: &str,
+        text: &str,
+        deliver: Deliver,
+        expect_secs: Option<u64>,
+    ) -> Response {
+        let v = self.agent_read(crown, key).unwrap();
+        self.send(
+            Principal::Agent { session: crown },
+            Command::AgentAskTicket {
+                key: key.into(),
+                text: text.into(),
+                seen: v.seen,
+                plan: false,
+                deliver,
+                expect_secs,
+            },
+        )
+    }
+
+    /// The cards the crown's writes touched, as the snapshot carries them.
+    pub fn crown_touches(&mut self) -> Vec<CrownTouch> {
+        match self.request(Command::Snapshot) {
+            Response::Board { crown_touches, .. } => crown_touches,
+            other => panic!("snapshot: {other:?}"),
+        }
+    }
+
+    /// A person's prompt to `ticket`'s agent, every option off.
+    pub fn prompt(&mut self, ticket: ulid::Ulid, text: &str) -> Response {
+        self.request(Command::PromptSession {
+            ticket,
+            text: text.into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: Vec::new(),
+        })
     }
 
     /// A fresh snapshot's board.
@@ -804,6 +888,21 @@ while True:
     draw()
 "#;
 
+/// A claude stub that appends every line it reads to `got.txt` beside it,
+/// so a test reads what reached the pane ([`Harness::got`]).
+pub const RECORDING_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+
+/// [`RECORDING_STUB`] that also appends to one file per ticket
+/// (`got-<MESIMON_TICKET>.txt`), so a count of what reached one pane reads
+/// that pane alone (T-937).
+pub const RECORDING_STUB_PER_TICKET: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
+                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
+                              printf '%s\\n' \"$line\" \
+                              >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
+
 /// A shell stub for Claude that paints [`COMPOSER`] before its own body.
 /// A stub in another language is left as written: it paints its own, or
 /// takes no launch road that needs one.
@@ -911,11 +1010,32 @@ impl Harness {
     /// One turn of `sid`, by its hooks: a prompt, `running`, a `Stop`,
     /// and back to idle (T-875).
     pub fn one_turn(&self, c: &mut TestClient, sid: uuid::Uuid) {
+        self.prompt_turn(c, sid);
+        self.end_turn(c, sid);
+    }
+
+    /// A turn's first half: `UserPromptSubmit`, then running.
+    pub fn prompt_turn(&self, c: &mut TestClient, sid: uuid::Uuid) {
         let hook_sock = self.paths.hook_sock();
         hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
         c.await_state(sid, "running", |s| *s == SessionState::Running);
+    }
+
+    /// A turn's second half: `Stop`, then idle.
+    pub fn end_turn(&self, c: &mut TestClient, sid: uuid::Uuid) {
+        let hook_sock = self.paths.hook_sock();
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
+
+    /// The board's feed so far.
+    pub fn feed(&self) -> String {
+        std::fs::read_to_string(self.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
+    }
+
+    /// Every line a [`RECORDING_STUB`] read so far.
+    pub fn got(&self) -> String {
+        std::fs::read_to_string(self.dir.join("got.txt")).unwrap_or_default()
     }
 
     pub fn client(&self, name: &str) -> TestClient {
@@ -964,6 +1084,37 @@ pub fn init_repo(dir: &Path, file: &str, body: &str) {
     std::fs::write(dir.join(file), body).unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "-qm", "init"]);
+}
+
+/// One commit in `repo` touching `file`; the new HEAD, short.
+pub fn commit(repo: &Path, file: &str) -> String {
+    std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
+    git(repo, &["add", file]);
+    git(repo, &["commit", "-qm", file]);
+    git(repo, &["rev-parse", "--short=7", "HEAD"]).trim().to_string()
+}
+
+// ------------------------------------------------------------- time
+
+/// Now, in milliseconds past the epoch.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.fffZ` for `ms` past the epoch, as Claude Code stamps
+/// a transcript record.
+pub fn iso_ms(ms: u64) -> String {
+    let t = mesimon_core::usage::utc_of(ms / 1000);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        t.year + 1900,
+        t.mon + 1,
+        t.mday,
+        t.hour,
+        t.min,
+        t.sec,
+        ms % 1000
+    )
 }
 
 /// The snapshot's git clause.

@@ -811,9 +811,10 @@ impl TmuxBackend {
         Ok((text.to_owned(), alternate == "1", alternate != "1" && history > 200))
     }
 
-    /// Exact client presence; malformed activity timestamps cannot look detached.
+    /// Exact client presence: a client whose activity reads malformed is
+    /// still a client (`client_activities`), so it cannot look detached.
     pub fn has_clients(&self, pane: &str) -> Result<bool> {
-        Ok(!self.run(&["list-clients", "-t", pane, "-F", "#{client_name}"])?.trim().is_empty())
+        Ok(!self.client_activities(pane)?.is_empty())
     }
 
     /// `#{client_activity}` of every client on `target`, epoch seconds, one

@@ -1571,12 +1571,16 @@ pub const COMPOSER_NOT_FOUND: &str =
 /// brief's tail with no word to anyone. The `Result` is the whole
 /// enforcement — no caller can forget the refusal, as one forgot the cap.
 pub fn sanitize_prompt(raw: &str) -> Result<Option<String>, String> {
-    use crate::text::{nonblank, scrub_lines};
-    let clean = scrub_lines(raw);
+    bounded(crate::text::scrub_lines(raw), "prompt")
+}
+
+/// Scrubbed words held to `PROMPT_MAX_BYTES`: refused in words past it,
+/// `None` when blank.
+pub(crate) fn bounded(clean: String, what: &str) -> Result<Option<String>, String> {
     if clean.len() > PROMPT_MAX_BYTES {
-        return Err(too_long_words("prompt", clean.len()));
+        return Err(too_long_words(what, clean.len()));
     }
-    Ok(nonblank(&clean))
+    Ok(crate::text::nonblank(&clean))
 }
 
 /// What the daemon must know about a command before running it: the D32c
@@ -3493,15 +3497,6 @@ pub enum AskWake {
     WhenSent,
 }
 
-impl AskWake {
-    pub fn word(self) -> &'static str {
-        match self {
-            AskWake::Woken => "woken",
-            AskWake::WhenSent => "when_sent",
-        }
-    }
-}
-
 /// What a `start_agent` sends its agent (T-920), read by the daemon at the
 /// start: a start submits the ticket's own first prompt, a wake nothing of
 /// its own, and words an ask already parked for it go as they would have.
@@ -3519,17 +3514,6 @@ pub enum StartPrompt {
     Queued,
     /// Words of an ask wait on its card for a person's send.
     HeldForPerson,
-}
-
-impl StartPrompt {
-    pub fn word(self) -> &'static str {
-        match self {
-            StartPrompt::Brief => "brief",
-            StartPrompt::None => "none",
-            StartPrompt::Queued => "queued",
-            StartPrompt::HeldForPerson => "held_for_person",
-        }
-    }
 }
 
 /// One thing mesimon owes a ticket and will do on its own clock — the
@@ -4194,8 +4178,13 @@ mod tests {
     #[test]
     fn a_start_prompt_is_its_own_word_and_absent_from_an_older_daemon() {
         use super::StartPrompt::*;
-        for p in [Brief, None, Queued, HeldForPerson] {
-            assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.word()));
+        for (p, w) in [
+            (Brief, "brief"),
+            (None, "none"),
+            (Queued, "queued"),
+            (HeldForPerson, "held_for_person"),
+        ] {
+            assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{w}\""));
         }
         let old: super::Response = serde_json::from_str(
             r#"{"resp":"agent_started","key":"T-1","session_started":true,"woken":true}"#,

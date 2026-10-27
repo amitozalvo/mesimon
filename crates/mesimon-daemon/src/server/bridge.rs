@@ -505,7 +505,7 @@ impl Daemon {
     /// Whether a Claude pane shows its composer (`composer::read`).
     fn composer_shown(&self, id: uuid::Uuid) -> bool {
         use crate::agents::claude::composer::{self, Composer};
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let Some(rec) = self.board.session(id) else { return false };
         self.backend
             .capture_input_screen(&rec.sid16())
             .is_ok_and(|screen| composer::read(&screen) != Composer::Absent)
@@ -514,7 +514,7 @@ impl Daemon {
     /// End a silent mod launch and launch it again: on the hook set alone
     /// for a mod that never came up, native for one that is deaf (T-658).
     fn relaunch_on_hooks(&mut self, id: uuid::Uuid, silence: Silence, now: u64) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let Some(rec) = self.board.session(id) else { return false };
         let ticket = rec.ticket;
         let prior = rec.state.clone();
         let pending_submit = rec.pending_submit;
@@ -571,23 +571,7 @@ impl Daemon {
                     // A composed spawn types nothing; a plain one typed the
                     // title for the person to edit, and a fresh pane gets it
                     // again (typed, never submitted).
-                    None if fresh && !conversed => {
-                        // Never one beginning with `!` (T-876): the box
-                        // would run it as a shell command.
-                        let title = self
-                            .board
-                            .ticket(ticket)
-                            .map(|t| t.title.trim().to_string())
-                            .filter(|t| !t.is_empty() && !mesimon_core::board::shell_title(t));
-                        let sid16 =
-                            self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
-                        if let (Some(title), Some(sid16)) = (title, sid16) {
-                            // The new pane's box holds it (T-961).
-                            if self.backend.send_text(&sid16, &format!("{title} ")).is_ok() {
-                                self.title_typed(id, &title);
-                            }
-                        }
-                    }
+                    None if fresh && !conversed => self.type_title(id, ticket),
                     None => {}
                 }
                 self.feed.board_outcome(
@@ -670,8 +654,7 @@ impl Daemon {
     /// waiting. Returns the frame's id.
     pub(super) fn mod_enqueue(&mut self, session: uuid::Uuid, command: ModCommand) -> String {
         let id = ulid::Ulid::new().to_string();
-        let pane =
-            self.board.sessions.iter().find(|s| s.id == session).and_then(|s| s.pane_key.clone());
+        let pane = self.board.session(session).and_then(|s| s.pane_key.clone());
         let frame = ModFrame { id: id.clone(), command };
         let queue = self.modroad.outbox.entry(session).or_default();
         queue.push_back(Queued { frame, pane });
@@ -704,7 +687,7 @@ impl Daemon {
         pane: Option<String>,
         speaks: Vec<String>,
     ) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Response::Err { message: "unknown session".into() };
         };
         if !rec.state.has_pane() {
@@ -754,7 +737,7 @@ impl Daemon {
     /// Whether the session's mod is up: its bridge has polled from the
     /// record's own pane (T-575), whatever it speaks.
     pub(super) fn mod_bridged(&self, session: uuid::Uuid) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return false;
         };
         rec.road == Road::Mod
@@ -779,7 +762,7 @@ impl Daemon {
     /// the person may be typing in. Past the wait the mod is not coming, and
     /// the paste road is the road, as for launch words.
     pub(super) fn bridge_awaited(&self, session: uuid::Uuid, now: u64) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return false;
         };
         let from = self.modroad.awaited.get(&session).copied().unwrap_or(self.modroad.born);
@@ -795,7 +778,7 @@ impl Daemon {
     /// Every turn road asks this before it leaves the paste road and the
     /// screen: a mod that never came up, or an older one, keeps them.
     pub(super) fn mod_speaks(&self, session: uuid::Uuid, kind: &str) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return false;
         };
         rec.road == Road::Mod
@@ -819,7 +802,7 @@ impl Daemon {
     /// `ModPing` from a person (or the harness): queue a ping and park the
     /// reply until the pong.
     pub(super) fn mod_ping(&mut self, session: uuid::Uuid) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Response::Err { message: "unknown session".into() };
         };
         if rec.road != Road::Mod {
@@ -871,7 +854,7 @@ impl Daemon {
             return;
         }
         let Ok(session) = frame.session.parse::<uuid::Uuid>() else { return };
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else { return };
+        let Some(rec) = self.board.session(session) else { return };
         if rec.road != Road::Mod {
             return;
         }
@@ -919,7 +902,7 @@ impl Daemon {
     /// record an earlier build launched keeps its hook set, and the tail
     /// counts it). A count with no transcript to fence is left to the tail.
     fn on_mod_usage(&mut self, session: uuid::Uuid, frame: &HookFrame) {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else { return };
+        let Some(rec) = self.board.session(session) else { return };
         let (ticket, by_mod, path) = (rec.ticket, rec.frames_by_mod(), rec.transcript_path.clone());
         let now = now_ms();
         let quota = frame.payload.get("rateLimits").is_some_and(|l| self.usage.merge_mod(l, now));
@@ -1000,7 +983,7 @@ impl Daemon {
             .copied()
             .collect();
         for session in sessions {
-            let rec = self.board.sessions.iter().find(|s| s.id == session);
+            let rec = self.board.session(session);
             let pane = rec.filter(|r| r.state.has_pane()).map(|r| r.pane_key.clone());
             match pane {
                 None => {

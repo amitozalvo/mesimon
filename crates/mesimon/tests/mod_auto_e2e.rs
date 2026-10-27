@@ -55,15 +55,7 @@ fn launch(h: &Harness) -> mesimon_core::board::SessionRecord {
         tier: None,
     });
     let ticket = c.board().tickets[0].id;
-    let id = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let id = c.spawn_claude(ticket);
     c.board().sessions.into_iter().find(|s| s.id == id).expect("the record")
 }
 
@@ -139,15 +131,7 @@ fn probe_json(h: &Harness) -> Option<serde_json::Value> {
 }
 
 fn ticket_with_brief(c: &mut TestClient, title: &str, brief: &str) -> ulid::Ulid {
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let ticket = c.create_ticket(title);
     assert!(matches!(
         c.request(Command::WriteNote { ticket, note: None, text: brief.into(), rev: None }),
         Response::NoteWritten { .. }
@@ -593,18 +577,6 @@ fn boot_on_a_person_s_path(name: &str) -> Option<(Harness, std::path::PathBuf)> 
     Some((h, barrier))
 }
 
-fn new_ticket(c: &mut TestClient, title: &str) -> ulid::Ulid {
-    match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    }
-}
-
 fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> Response {
     c.request(Command::SpawnSession {
         ticket,
@@ -631,7 +603,7 @@ fn agents_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<mesimon_core::board:
 fn a_launch_before_the_fresh_capture_takes_the_mod_on_the_last_one() {
     let Some((h, barrier)) = boot_on_a_person_s_path("mod-auto-env-seed") else { return };
     let mut c = h.client("env-seed");
-    let woken = new_ticket(&mut c, "woken");
+    let woken = c.create_ticket("woken");
     assert!(matches!(spawn(&mut c, woken), Response::Spawned { .. }));
     let sid = agents_of(&mut c, woken)[0].id;
     std::fs::write(h.dir.join("exit-now"), "").unwrap();
@@ -643,7 +615,7 @@ fn a_launch_before_the_fresh_capture_takes_the_mod_on_the_last_one() {
     std::fs::write(&barrier, "").unwrap();
     h.restart();
     let mut c = h.client("env-seed-2");
-    let started = new_ticket(&mut c, "started");
+    let started = c.create_ticket("started");
     let resp = spawn(&mut c, started);
     assert!(matches!(resp, Response::Spawned { .. }), "the start launches at once: {resp:?}");
     let resp = c.request(Command::ResumeSession { id: sid, confirm: false });
@@ -677,7 +649,7 @@ fn with_no_last_capture_a_launch_before_the_capture_takes_the_hook_set_and_says_
     let env_file = h.paths.shell_env_file();
     h.restart_after(|| std::fs::remove_file(&env_file).unwrap());
     let mut c = h.client("env-none");
-    let ticket = new_ticket(&mut c, "started");
+    let ticket = c.create_ticket("started");
     assert!(matches!(spawn(&mut c, ticket), Response::Spawned { .. }));
     let recs = agents_of(&mut c, ticket);
     assert_eq!(recs.len(), 1, "{recs:?}");
@@ -712,24 +684,8 @@ impl Relaunch {
             std::fs::write(h.dir.join("nopaint"), "").unwrap();
         }
         let mut c = h.client(name);
-        let ticket = match c.request(Command::CreateTicket {
-            column: "TODO".into(),
-            title: title.into(),
-            workspace: None,
-            tier: None,
-        }) {
-            Response::Created { id, .. } => id,
-            other => panic!("create: {other:?}"),
-        };
-        let sid = match c.request(Command::SpawnSession {
-            ticket,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false,
-        }) {
-            Response::Spawned { id, .. } => id,
-            other => panic!("spawn: {other:?}"),
-        };
+        let ticket = c.create_ticket(title);
+        let sid = c.spawn_claude(ticket);
         assert_eq!(record(&mut c, sid).road, Road::Mod);
         Some(Relaunch { h, c, ticket, sid })
     }
@@ -780,17 +736,7 @@ impl Relaunch {
     }
 
     fn prompt(&mut self, text: &str) {
-        let resp = self.c.request(Command::PromptSession {
-            ticket: self.ticket,
-            text: text.into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        });
+        let resp = self.c.prompt(self.ticket, text);
         assert!(matches!(resp, Response::Ok), "{resp:?}");
         let h = &self.h;
         wait_until(Duration::from_secs(5), "the words waiting for the box", || {

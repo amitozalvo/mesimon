@@ -615,18 +615,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         .iter()
         .filter(|(start, end, waiting)| *waiting && (*start < content_start || *end > content_end))
         .count();
-    let overflow_arrow = |up| match (theme.glyph_tier(), up) {
-        (crate::glyphs::Tier::Ascii, true) => '^',
-        (crate::glyphs::Tier::Ascii, false) => 'v',
-        (_, true) => '↑',
-        (_, false) => '↓',
-    };
     let overflow_line = |count: usize, up: bool| {
-        let arrow = overflow_arrow(up);
-        let direction = if up { "above" } else { "below" };
         Line::from(vec![
             Span::raw(" ".repeat(ctx.bar + 1)),
-            Span::styled(format!("{arrow} {count} {direction}"), theme.dim2()),
+            Span::styled(crate::glyphs::overflow_cue(theme.glyph_tier(), count, up), theme.dim2()),
         ])
     };
 
@@ -683,10 +675,16 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // A tall cursor card may need the cue rows. Keep its hidden counts
         // in the header in that case, without sacrificing the input field.
         if above > 0 && top.is_none() {
-            right.push(Span::styled(format!("{}{above} ", overflow_arrow(true)), quiet));
+            right.push(Span::styled(
+                format!("{}{above} ", crate::glyphs::ahead_mark(theme.glyph_tier())),
+                quiet,
+            ));
         }
         if below > 0 && bottom.is_none() {
-            right.push(Span::styled(format!("{}{below} ", overflow_arrow(false)), quiet));
+            right.push(Span::styled(
+                format!("{}{below} ", crate::glyphs::behind_mark(theme.glyph_tier())),
+                quiet,
+            ));
         }
         right.push(Span::styled(format!("{count}"), quiet));
     }

@@ -22,7 +22,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionRecord, SessionState};
-use mesimon_core::command::{AgentTicketView, Command, Response};
+use mesimon_core::command::{Command, Response};
 use mesimon_core::road::Road;
 use mesimon_core::Principal;
 use serde_json::json;
@@ -51,20 +51,12 @@ fn brief() -> String {
     text
 }
 
-fn feed(h: &Harness) -> String {
-    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
-}
-
 /// A feed line holding every needle: the feed is flushed on the tick.
 fn wait_feed(h: &Harness, needles: &[&str]) {
     let what = format!("a feed line with {needles:?}");
     wait_until(Duration::from_secs(5), &what, || {
-        feed(h).lines().any(|l| needles.iter().all(|n| l.contains(n)))
+        h.feed().lines().any(|l| needles.iter().all(|n| l.contains(n)))
     });
-}
-
-fn got(h: &Harness) -> String {
-    std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default()
 }
 
 /// Every frame the session's stand-in mod read, of `kind`.
@@ -156,12 +148,12 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
 
     // Nothing reaches a pane being born, on this road too: the words wait
     // for the pane's SessionStart as well as the mod.
-    assert!(got(&h).is_empty(), "nothing before SessionStart: {:?}", got(&h));
+    assert!(h.got().is_empty(), "nothing before SessionStart: {:?}", h.got());
     assert!(frames(&h, sid, "submit").is_empty());
     let t0 = Instant::now();
     session_start(&hook_sock, sid);
     wait_until(Duration::from_secs(5), "the brief at the stub", || {
-        got(&h).contains("mesimon-mod-576 the last line")
+        h.got().contains("mesimon-mod-576 the last line")
     });
     let took = t0.elapsed();
     // One submit, the title over the description, every byte: no title was
@@ -173,7 +165,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     // would have waited it out (30 s) and failed.
     assert!(took < Duration::from_secs(4), "no composer wait: {took:?}");
     wait_feed(&h, &["\"cmd\":\"prompt_by_mod\""]);
-    assert!(!feed(&h).contains("prompt_submit_not_ready"));
+    assert!(!h.feed().contains("prompt_submit_not_ready"));
     let rec = record(&mut c, sid);
     assert!(rec.ticket_read, "the brief went in with the first prompt");
     assert!(rec.pending_submit, "owed until UserPromptSubmit");
@@ -190,7 +182,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
         Response::Ok
     ));
     wait_until(Duration::from_secs(5), "the live prompt at the stub", || {
-        got(&h).contains("mesimon-probe-575 one more turn")
+        h.got().contains("mesimon-probe-575 one more turn")
     });
     let submits = frames(&h, sid, "submit");
     assert_eq!(submits.len(), 2);
@@ -199,7 +191,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     assert!(!record(&mut c, sid).pending_submit);
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     wait_until(Duration::from_secs(5), "the second ack", || {
-        feed(&h).matches("\"cmd\":\"prompt_submitted\"").count() == 2
+        h.feed().matches("\"cmd\":\"prompt_submitted\"").count() == 2
     });
 
     // A slash command is for the prompt box, which the engine will not take
@@ -208,7 +200,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     c.await_state(sid, "idle again", |s| matches!(s, SessionState::Idle { .. }));
     assert!(matches!(prompt(&mut c, ticket, "/mesimon-probe-cmd now", false), Response::Ok));
     wait_until(Duration::from_secs(5), "the command typed into the pane", || {
-        got(&h).contains("/mesimon-probe-cmd now")
+        h.got().contains("/mesimon-probe-cmd now")
     });
     assert_eq!(frames(&h, sid, "submit").len(), 2, "no submit for a command");
 
@@ -219,7 +211,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     // says `paste_unacked` as it does for the slash command above.
     assert!(matches!(prompt(&mut c, ticket, "!echo mesimon-probe-876", false), Response::Ok));
     wait_until(Duration::from_secs(5), "the shell line typed into the pane", || {
-        got(&h).contains("!echo mesimon-probe-876")
+        h.got().contains("!echo mesimon-probe-876")
     });
     assert_eq!(frames(&h, sid, "submit").len(), 2, "no submit for a shell line");
     wait_feed(&h, &["\"cmd\":\"shell_sent\""]);
@@ -241,9 +233,9 @@ fn a_mod_that_never_comes_up_leaves_the_words_to_the_paste_road() {
     // The bridge wait runs out, and the words go the way an older Claude Code
     // takes them: into the composer, the title first, since none was typed.
     wait_until(Duration::from_secs(8), "the paste road's delivery", || {
-        got(&h).contains("mesimon-silent-1 by paste")
+        h.got().contains("mesimon-silent-1 by paste")
     });
-    let lines: Vec<String> = got(&h).lines().map(str::to_string).collect();
+    let lines: Vec<String> = h.got().lines().map(str::to_string).collect();
     let title = lines.iter().position(|l| l.trim() == "silent me").expect("the title line");
     let body = lines.iter().position(|l| l.contains("mesimon-silent-1")).expect("the brief");
     assert!(title < body, "{lines:?}");
@@ -257,7 +249,7 @@ fn a_mod_that_never_comes_up_leaves_the_words_to_the_paste_road() {
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     assert!(matches!(prompt(&mut c, ticket, "mesimon-silent-2 pasted", false), Response::Ok));
     wait_until(Duration::from_secs(5), "the pasted prompt", || {
-        got(&h).contains("mesimon-silent-2 pasted")
+        h.got().contains("mesimon-silent-2 pasted")
     });
     let _ = c.request(Command::KillSession { id: sid });
 }
@@ -277,7 +269,7 @@ fn a_mod_launch_with_no_session_start_is_given_its_words_by_paste() {
     assert_eq!(record(&mut c, sid).road, Road::Mod);
     // No SessionStart, from either road.
     wait_until(Duration::from_secs(12), "the rescued delivery", || {
-        got(&h).contains("mesimon-nostart-1 by paste")
+        h.got().contains("mesimon-nostart-1 by paste")
     });
     wait_feed(&h, &["\"cmd\":\"mod_silent\""]);
     assert!(frames(&h, sid, "submit").is_empty());
@@ -297,10 +289,10 @@ fn an_older_mod_that_speaks_no_submit_is_pasted_to() {
     wait_bridge(&h, sid);
     session_start(&hook_sock, sid);
     wait_until(Duration::from_secs(8), "the paste road's delivery", || {
-        got(&h).contains("mesimon-old-1 by paste")
+        h.got().contains("mesimon-old-1 by paste")
     });
     assert!(frames(&h, sid, "submit").is_empty(), "a mod that cannot read a submit gets none");
-    assert!(!feed(&h).contains("\"cmd\":\"prompt_by_mod\""));
+    assert!(!h.feed().contains("\"cmd\":\"prompt_by_mod\""));
     // Its ping still crosses the road.
     match c.request(Command::ModPing { session: sid }) {
         Response::ModPonged { .. } => {}
@@ -326,13 +318,13 @@ fn a_submit_the_mod_refuses_is_kept_unsent_and_its_resend_goes_down_the_mod() {
     assert!(rec.unsent.as_ref().unwrap().brief, "the brief, for the card's `brief not sent`");
     assert!(!rec.pending_submit);
     wait_feed(&h, &["\"cmd\":\"prompt_submit_refused\"", "\"outcome\":\"dropped\""]);
-    assert!(got(&h).is_empty(), "nothing reached the stub");
+    assert!(h.got().is_empty(), "nothing reached the stub");
 
     // The person's resend goes down the mod again, title and brief, whole.
     std::fs::remove_file(h.dir.join("mod-drop-submit")).unwrap();
     assert!(matches!(prompt(&mut c, ticket, "", true), Response::Ok));
     wait_until(Duration::from_secs(5), "the resent brief", || {
-        got(&h).contains("mesimon-drop-1 resent whole")
+        h.got().contains("mesimon-drop-1 resent whole")
     });
     let submits = frames(&h, sid, "submit");
     assert_eq!(submits.len(), 2);
@@ -424,7 +416,7 @@ fn a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod() {
     assert!(matches!(queued, Response::Ok | Response::Queued { .. }), "{queued:?}");
     // Idle, and no bridge yet: nothing is typed into the pane.
     std::thread::sleep(Duration::from_millis(1000));
-    assert!(!got(&h).contains("mesimon-late-1"), "pasted before the bridge: {}", got(&h));
+    assert!(!h.got().contains("mesimon-late-1"), "pasted before the bridge: {}", h.got());
     wait_bridge(&h, sid);
     wait_until(Duration::from_secs(5), "the ask down the mod", || {
         frames(&h, sid, "submit")
@@ -433,16 +425,6 @@ fn a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod() {
     });
     wait_feed(&h, &["\"cmd\":\"prompt_by_mod\""]);
     let _ = c.request(Command::KillSession { id: sid });
-}
-
-fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> AgentTicketView {
-    match c.send(
-        Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket,
-        other => panic!("read {key}: {other:?}"),
-    }
 }
 
 /// The crown answers its worker's questions down the worker's mod (T-576):
@@ -471,21 +453,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     let sa = spawn(&mut c, a, false);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
-    let v = read(&mut c, sa, &kw);
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("shared_checkout".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     wait_bridge(&h, ws);
     hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
@@ -506,7 +474,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
         .to_string()
     };
     let answer = |c: &mut TestClient, request: &str| {
-        let v = read(c, sa, &kw);
+        let v = c.agent_read(sa, &kw).unwrap();
         let cmd = Command::AgentAnswerTicket {
             key: kw.clone(),
             seen: v.seen,
@@ -551,7 +519,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     assert_eq!(pane_keys(&mut c), screen, "no key reached the pane");
     // No PostToolUse was sent: the mod's report moved the card.
     c.await_state(ws, "running on the answer", |s| *s == SessionState::Running);
-    assert!(read(&mut c, sa, &kw).needs_you.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().needs_you.is_none());
 
     // ---- the person answers in the pane first: theirs wins -----------------
     std::fs::write(h.dir.join(format!("mod-person-answered-{ws}")), "").unwrap();
@@ -576,7 +544,7 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &question("toolu_m3"));
     c.await_state(ws, "asking a third time", asking);
     assert_eq!(
-        read(&mut c, sa, &kw).needs_you.and_then(|n| n.request).as_deref(),
+        c.agent_read(sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref(),
         Some("toolu_m3")
     );
     hook_send_road(
@@ -589,9 +557,9 @@ fn the_crown_answers_down_the_worker_s_mod_and_the_person_first_wins() {
         Some("mod"),
     );
     wait_until(Duration::from_secs(5), "the dismissal", || {
-        read(&mut c, sa, &kw).needs_you.and_then(|n| n.request).is_none()
+        c.agent_read(sa, &kw).unwrap().needs_you.and_then(|n| n.request).is_none()
     });
-    let v = read(&mut c, sa, &kw);
+    let v = c.agent_read(sa, &kw).unwrap();
     let refused = c.send(
         Principal::Agent { session: sa },
         Command::AgentAnswerTicket {
@@ -634,12 +602,12 @@ fn a_submit_held_after_a_stop_is_pasted_into_the_empty_box() {
     assert!(matches!(prompt(&mut c, ticket, "mesimon-894 held words", false), Response::Ok));
     wait_feed(&h, &["\"cmd\":\"prompt_pasted_after_refusal\""]);
     wait_until(Duration::from_secs(8), "the words by paste", || {
-        got(&h).contains("mesimon-894 held words")
+        h.got().contains("mesimon-894 held words")
     });
     assert_eq!(frames(&h, sid, "submit").len(), 1, "one submit, then the paste");
     let rec = record(&mut c, sid);
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
-    assert!(!feed(&h).contains("\"cmd\":\"prompt_submit_refused\""));
+    assert!(!h.feed().contains("\"cmd\":\"prompt_submit_refused\""));
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
     wait_feed(&h, &["\"cmd\":\"prompt_submitted\""]);
     let _ = c.request(Command::KillSession { id: sid });
@@ -667,7 +635,7 @@ fn a_submit_held_after_a_stop_with_no_empty_box_is_kept_unsent() {
     assert_eq!(record(&mut c, sid).unsent.unwrap().text, "mesimon-894 kept words");
     wait_feed(&h, &["\"cmd\":\"prompt_submit_refused\""]);
     std::thread::sleep(Duration::from_millis(500));
-    assert!(!got(&h).contains("mesimon-894 kept words"), "nothing pasted");
-    assert!(!feed(&h).contains("prompt_pasted_after_refusal"));
+    assert!(!h.got().contains("mesimon-894 kept words"), "nothing pasted");
+    assert!(!h.feed().contains("prompt_pasted_after_refusal"));
     let _ = c.request(Command::KillSession { id: sid });
 }

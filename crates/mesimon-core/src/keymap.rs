@@ -1899,6 +1899,15 @@ pub struct Ctx {
     pub mesophon: bool,
 }
 
+impl Ctx {
+    /// The terminal can spell Shift+Enter: the kitty probe answered, or it
+    /// sends Escape + Return. The off-floor clause every `ShiftEnter`
+    /// binding is gated on; the Ctrl+Shift chords stay on `rich_keys`.
+    pub fn shift_enter(&self) -> bool {
+        self.rich_keys || self.legacy_shift_enter
+    }
+}
+
 /// The four `_word` fields are the hint's text when the verb is live, and
 /// empty by default; the hint supplies the plain word then.
 fn or<'a>(word: &'a str, fallback: &'a str) -> &'a str {
@@ -2446,10 +2455,7 @@ static BOARD: &[Binding] = &[
         // on the atom: every seat in the column, at every stage of its own
         // (T-405) — so a column offers the key wherever it has a ticket,
         // and only a column with none offers nothing.
-        avail: |c| {
-            (c.has_ticket || (c.col_header && c.col_live > 0))
-                && (c.rich_keys || c.legacy_shift_enter)
-        },
+        avail: |c| (c.has_ticket || (c.col_header && c.col_live > 0)) && c.shift_enter(),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -3286,7 +3292,7 @@ static TICKET: &[Binding] = &[
         // The ShiftEnter clause, as on the board: where the terminal spells
         // this as a plain Enter the key must be inert AND unhinted, or the
         // press would act on the rail row instead of opening a field.
-        avail: |c| c.has_ticket && (c.rich_keys || c.legacy_shift_enter),
+        avail: |c| c.has_ticket && c.shift_enter(),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -7312,7 +7318,7 @@ static SUMMARY: &[Binding] = &[
         verb: Verb::SummaryAsk,
         show: "shift+enter",
         hint: |_| "ask agent",
-        avail: |c| c.rich_keys || c.legacy_shift_enter,
+        avail: |c| c.shift_enter(),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: false,
@@ -7539,7 +7545,7 @@ static INPUT: &[Binding] = &[
                 "save + ask agent"
             }
         },
-        avail: |c| (c.composing || c.prompting) && (c.rich_keys || c.legacy_shift_enter),
+        avail: |c| (c.composing || c.prompting) && c.shift_enter(),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -8222,7 +8228,7 @@ static EDITOR: &[Binding] = &[
         verb: Verb::EditorNewline,
         show: "shift+enter",
         hint: |_| "",
-        avail: |c| c.editing && (c.rich_keys || c.legacy_shift_enter),
+        avail: |c| c.editing && c.shift_enter(),
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,

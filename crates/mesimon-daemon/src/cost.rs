@@ -350,14 +350,16 @@ impl Ledger {
             .collect()
     }
 
-    /// Fold a pass back in. True when anything moved. A line past its
-    /// conversation's fence goes to the check, never the hours; the fence is
-    /// the ledger's, which a mod's report may have set while the pass ran.
+    /// `apply_named`'s first half, for the tests.
+    #[cfg(test)]
     pub fn apply(&mut self, done: Vec<Done>) -> bool {
         self.apply_named(done).0
     }
 
-    /// `apply`, and the tickets whose named pull requests grew (T-895): a
+    /// Fold a pass back in. True when anything moved. A line past its
+    /// conversation's fence goes to the check, never the hours; the fence is
+    /// the ledger's, which a mod's report may have set while the pass ran.
+    /// With it, the tickets whose named pull requests grew (T-895): a
     /// `pr create` result or an act the pass read, which the forge is asked
     /// about at once.
     pub fn apply_named(&mut self, done: Vec<Done>) -> (bool, Vec<ulid::Ulid>) {
@@ -374,20 +376,13 @@ impl Ledger {
                 t.conversations.insert(d.path, cursor.clone());
                 moved = true;
             }
-            for url in d.pr_urls {
-                if keep_named(&mut t.pr_urls, url) {
-                    moved = true;
-                    if !named.contains(&d.ticket) {
-                        named.push(d.ticket);
-                    }
-                }
-            }
-            for entry in d.pr_acted {
-                if keep_named(&mut t.pr_acted, entry) {
-                    moved = true;
-                    if !named.contains(&d.ticket) {
-                        named.push(d.ticket);
-                    }
+            // Every one kept, so `|` and never `||`.
+            let grew = d.pr_urls.into_iter().fold(false, |g, u| keep_named(&mut t.pr_urls, u) | g)
+                | d.pr_acted.into_iter().fold(false, |g, e| keep_named(&mut t.pr_acted, e) | g);
+            if grew {
+                moved = true;
+                if !named.contains(&d.ticket) {
+                    named.push(d.ticket);
                 }
             }
             for (at_ms, model, tokens) in d.added {
@@ -695,19 +690,10 @@ fn compacted(fill: &mut Option<Fill>) {
 /// nothing counted. `model` is the Codex model the cursor last read, which
 /// a `turn_context` in the searched lines replaces.
 fn last_reading(path: &str, end: u64, codex: bool, model: &Option<String>) -> Option<Fill> {
-    let start = end.saturating_sub(FILL_TAIL);
-    let mut file = std::fs::File::open(path).ok()?;
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = Vec::new();
-    file.take(end - start).read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines = text.lines();
-    if start > 0 {
-        lines.next(); // the tail of a line the search began inside
-    }
+    let text = crate::tail::window_text(Path::new(path), end, FILL_TAIL)?;
     let mut model = model.clone().unwrap_or_else(|| "codex".into());
     let mut fill = None;
-    for line in lines {
+    for line in text.lines() {
         if codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => model = m,

@@ -11,35 +11,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::SessionState;
-use mesimon_core::command::{AgentTicketView, Command, PendingAction, Response};
+use mesimon_core::command::{Command, PendingAction, Response};
 use mesimon_core::Principal;
 
 mod common;
 use common::*;
 
-/// Each line the stub reads is appended to one file beside it, so the
-/// crown's sentences and the workers' words are all there.
-const RECORDING_STUB: &str =
-    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
-
-fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
-    c.board().ticket(id).unwrap().short_key.clone()
-}
-
-fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
-    match c.send(
-        Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => Ok(ticket),
-        Response::Err { message } => Err(message),
-        other => panic!("read {key}: {other:?}"),
-    }
-}
-
 fn told(c: &mut TestClient, crown: uuid::Uuid, key: &str) -> Option<String> {
-    read(c, crown, key).unwrap().told_hand.map(|h| h.reason)
+    c.agent_read(crown, key).unwrap().told_hand.map(|h| h.reason)
 }
 
 fn raise(c: &mut TestClient, session: uuid::Uuid, reason: &str) {
@@ -59,7 +38,6 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("told_hand");
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> usize {
@@ -69,14 +47,8 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
             .filter(|l| l.contains(needle))
             .count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let wakes = |c: &mut TestClient, t: ulid::Ulid| -> usize {
         pending_of(c, Some(t)).into_iter().filter(|p| p.action == PendingAction::CrownWake).count()
     };
@@ -84,24 +56,12 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-81 worker");
     let b = c.create_ticket("mesimon-probe-82 a person's");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -125,7 +85,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     wait_until(std::time::Duration::from_secs(5), "the told hand to come down", || {
         !c.board().ticket(w).unwrap().hand_raised()
     });
-    let view = read(&mut c, sa, &kw).unwrap();
+    let view = c.agent_read(sa, &kw).unwrap();
     assert_eq!(view.told_hand.as_ref().map(|h| h.reason.as_str()), Some(first), "{view:?}");
     assert!(view.told_hand.as_ref().unwrap().told_secs.is_some());
     let state = view.state.expect("the worker's state");
@@ -134,7 +94,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert!(c.board().raised_tickets().is_empty(), "nothing counts a told hand");
 
     // ---- 2. only the crown reads it ---------------------------------------
-    let refused = read(&mut c, sb, &kw).expect_err("another agent's keyed read is refused");
+    let refused = c.agent_read(sb, &kw).expect_err("another agent's keyed read is refused");
     assert!(!refused.contains("mesimon-secret-81"), "{refused}");
     match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
@@ -142,8 +102,8 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
         }
         other => panic!("the worker's own read: {other:?}"),
     }
-    let ka = key_of(&mut c, a);
-    let own = read(&mut c, sa, &ka).unwrap();
+    let ka = c.key_of(a);
+    let own = c.agent_read(sa, &ka).unwrap();
     assert_eq!(own.told_hand, None, "the crown's own ticket keeps none");
 
     // ---- 3. a restart between the wake and the read keeps it --------------
@@ -154,15 +114,14 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert_eq!(told(&mut c, sa, &kw).as_deref(), Some(first), "read back from crown.json");
     assert!(!c.board().ticket(w).unwrap().hand_raised(), "and the hand stays down");
     // The restart left both agents' state to their next hooks.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     assert_eq!(told(&mut c, sa, &kw).as_deref(), Some(first), "the crown's own turn keeps it");
 
     // ---- 4. a new hand overtakes it, and its telling replaces it ----------
     start(&mut c, sa);
     let second = "mesimon-secret-82 prod, then: may I rotate the key?";
     raise(&mut c, ws, second);
-    let view = read(&mut c, sa, &kw).unwrap();
+    let view = c.agent_read(sa, &kw).unwrap();
     assert_eq!(view.state.and_then(|s| s.raised).as_deref(), Some(second), "the hand is up");
     assert_eq!(view.told_hand, None, "the told reason gave way to the new hand");
     stop(&mut c, sa);
@@ -192,8 +151,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert_eq!(told(&mut c, sa, &kw), None, "the person dealt with it");
 
     // ---- 7. a new crown has heard nothing ---------------------------------
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     raise(&mut c, ws, "mesimon-secret-84 last one");
     wait_until(std::time::Duration::from_secs(10), "the fourth hand's telling", || {
         told(&mut c, sa, &kw).is_some()
@@ -229,7 +187,6 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("told_stamp");
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> usize {
@@ -239,30 +196,13 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
             .filter(|l| l.contains(needle))
             .count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let start_agent = |c: &mut TestClient, crown: uuid::Uuid, key: &str, workspace: &str| {
-        let v = read(c, crown, key).unwrap();
-        match c.send(
-            Principal::Agent { session: crown },
-            Command::AgentStartTicket {
-                key: key.into(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some(workspace.into()),
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentStarted { .. } => {}
-            other => panic!("start_agent {key}: {other:?}"),
-        }
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
+    let start_agent = |c: &mut TestClient, crown: uuid::Uuid, key: &str, workspace: &str| match c
+        .crown_start(crown, key, workspace)
+    {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent {key}: {other:?}"),
     };
     let ask = |c: &mut TestClient, crown: uuid::Uuid, key: &str, seen: Option<String>| {
         c.send(
@@ -281,12 +221,11 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-85 worker");
     let w2 = c.create_ticket("mesimon-probe-87 worker");
-    let (kw, kw2) = (key_of(&mut c, w), key_of(&mut c, w2));
+    let (kw, kw2) = (c.key_of(w), c.key_of(w2));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     start_agent(&mut c, sa, &kw, "shared_checkout");
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     start_agent(&mut c, sa, &kw2, "worktree");
@@ -313,7 +252,7 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
     let first = "mesimon-secret-85 staging or prod?";
     raise(&mut c, ws, first);
     told_of(&mut c, 1);
-    let read_a = read(&mut c, sa, &kw).unwrap();
+    let read_a = c.agent_read(sa, &kw).unwrap();
     assert_eq!(read_a.told_hand.as_ref().map(|t| t.reason.as_str()), Some(first));
     let second = "mesimon-secret-86 and which region?";
     raise(&mut c, ws, second);
@@ -332,7 +271,7 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
         }
         other => panic!("an ask on the first hand's stamp: {other:?}"),
     }
-    let read_b = read(&mut c, sa, &kw).unwrap();
+    let read_b = c.agent_read(sa, &kw).unwrap();
     assert_ne!(read_b.seen, read_a.seen, "the second told hand is another stamp");
     match ask(&mut c, sa, &kw, read_b.seen.clone()) {
         Response::AgentAsked { .. } => {}
@@ -340,12 +279,12 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
     }
     // The stamp holds still while nothing changes: elapsed time is not in it.
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    assert_eq!(read(&mut c, sa, &kw).unwrap().seen, read_b.seen);
+    assert_eq!(c.agent_read(sa, &kw).unwrap().seen, read_b.seen);
 
     // ---- 3. the same words told again are another hand --------------------
     raise(&mut c, ws, second);
     told_of(&mut c, 3);
-    let again = read(&mut c, sa, &kw).unwrap();
+    let again = c.agent_read(sa, &kw).unwrap();
     assert_eq!(again.told_hand.map(|t| t.reason).as_deref(), Some(second));
     assert_ne!(again.seen, read_b.seen, "a new telling of the same words is a new stamp");
 
@@ -385,33 +324,6 @@ fn an_answer_read_against_one_told_hand_is_refused_for_the_next() {
     });
 }
 
-/// `YYYY-MM-DDTHH:MM:SS.fffZ` for an epoch ms, as Claude Code stamps a
-/// transcript record (`adopt::iso_ms` reads it back).
-fn iso(ms: u64) -> String {
-    let (days, rem) = (ms / 86_400_000, ms % 86_400_000);
-    // civil_from_days (Hinnant): proleptic Gregorian, 1970-01-01 = day 0.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3_600_000,
-        rem % 3_600_000 / 60_000,
-        rem % 60_000 / 1000,
-        rem % 1000
-    )
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
-}
-
 /// A turn begun while no daemon listened answered the told hand too (T-922):
 /// its `UserPromptSubmit` is lost, and the recovered turn comes back at Low,
 /// which takes no hand down. The restart reads the worker's transcript for
@@ -438,35 +350,16 @@ fn a_prompt_while_the_daemon_was_down_takes_the_told_hand() {
             .filter(|l| l.contains(needle))
             .count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-88 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -475,7 +368,7 @@ fn a_prompt_while_the_daemon_was_down_takes_the_told_hand() {
     let line = |kind: &str, at: u64, content: &str| {
         format!(
             r#"{{"uuid":"u{at}{kind}","type":"user","timestamp":"{}","message":{{"content":{content}}}}}"#,
-            iso(at)
+            iso_ms(at)
         ) + "\n"
     };
     std::fs::write(&transcript, line("p", now_ms(), r#""the brief""#)).unwrap();

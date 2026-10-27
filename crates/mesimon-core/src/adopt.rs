@@ -140,6 +140,25 @@ pub enum TailTool {
     ExitPlanMode,
 }
 
+impl TailTool {
+    /// The tool's name as a transcript's `tool_use` block and a hook's
+    /// `tool_name` spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            TailTool::AskUserQuestion => "AskUserQuestion",
+            TailTool::ExitPlanMode => "ExitPlanMode",
+        }
+    }
+
+    /// The dialog the tool stops a seat on.
+    pub fn reason(self) -> crate::board::Reason {
+        match self {
+            TailTool::AskUserQuestion => crate::board::Reason::Question,
+            TailTool::ExitPlanMode => crate::board::Reason::Plan,
+        }
+    }
+}
+
 /// Display text is independent of lifecycle: final replies and tool calls can
 /// both carry text. Callers must not use preview selection as a state detector.
 ///

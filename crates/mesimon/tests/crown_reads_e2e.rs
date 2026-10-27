@@ -19,16 +19,6 @@ use serde_json::json;
 mod common;
 use common::*;
 
-const RECORDING_STUB: &str =
-    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
-                              printf '%s\\n' \"$line\" \
-                              >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
-
-fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
-    c.board().ticket(id).unwrap().short_key.clone()
-}
-
 fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> AgentTicketView {
     match c.send(
         Principal::Agent { session },
@@ -74,7 +64,7 @@ fn turn_read(h: &Harness, sid: uuid::Uuid, transcript: &std::path::Path) {
 fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     let Some(h) = Harness::boot_with_env(
         "crown_reads",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -84,7 +74,7 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("a long worker");
     let n = c.create_ticket("a worker with no transcript");
-    let (kw, kn) = (key_of(&mut c, w), key_of(&mut c, n));
+    let (kw, kn) = (c.key_of(w), c.key_of(n));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     let sw = c.spawn_claude(w);
@@ -178,7 +168,7 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
     );
     append(&crown_transcript, &reply("k1", 400_000));
     turn_read(&h, sa, &crown_transcript);
-    let ka = key_of(&mut c, a);
+    let ka = c.key_of(a);
     let mut worker = Shim::start(&h.paths.orch_sock(), sw);
     worker.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     worker.notify("notifications/initialized");
@@ -235,30 +225,20 @@ fn the_crown_reads_a_worker_s_context_and_cost_behind_their_switches() {
 fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
     let Some(h) = Harness::boot_with_env(
         "crown_slash",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_slash");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-969 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     let v = read(&mut c, sa, &kw);
     assert!(matches!(
         c.send(
@@ -278,10 +258,8 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
     let ws = c.board().live_agent(w).unwrap().id;
     assert_eq!(c.board().ticket(w).unwrap().workspace_strategy(), WorkspaceStrategy::Worktree);
     std::thread::sleep(Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, sa);
     if test_road() == "mod" {
         let pid = h.dir.join(format!("mod-bridge-{ws}.pid"));
         wait_until(Duration::from_secs(10), "W's mod bridge", || pid.exists());
@@ -314,8 +292,7 @@ fn the_crown_s_slash_command_is_typed_into_a_claude_worker_s_box() {
     });
     // Words after it take the road's own way: the mod's `submit` on the
     // mod road, which the command never was.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let v = read(&mut c, sa, &kw);
     match c.send(
         Principal::Agent { session: sa },
@@ -373,24 +350,14 @@ fn the_crown_s_slash_command_is_pasted_and_entered_in_a_codex_worker_s_box() {
     h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
     h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
     h.restart();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_slash_codex");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-969 codex worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     assert!(matches!(
         c.request(Command::SetAgentProvider {
             provider: mesimon_core::board::AgentProvider::Codex

@@ -31,7 +31,7 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
 
 use crate::app::App;
-use crate::theme::{Flavor, Profile, Theme};
+use crate::theme::Theme;
 
 pub(crate) use lessons::{Lesson, LESSONS};
 use toy::{Shared, Toy, World};
@@ -82,22 +82,18 @@ pub(crate) struct Tour {
     pub caption: &'static str,
     /// The board's flavor, color profile and terminal rendering capabilities:
     /// the practice board uses the same rendering choices.
-    theme: (Flavor, Profile, bool, bool),
+    theme: Theme,
     prefs: crate::prefs::Prefs,
     /// Where the practice board is drawn before it is laid on the dialog.
     pub(crate) canvas: RefCell<Option<Terminal<TestBackend>>>,
 }
 
 impl Tour {
-    pub fn new(
-        theme: (Flavor, Profile, bool, bool),
-        prefs: crate::prefs::Prefs,
-        idx: usize,
-    ) -> Result<Self> {
+    pub fn new(theme: &Theme, prefs: crate::prefs::Prefs, idx: usize) -> Result<Self> {
         let world = Rc::new(RefCell::new(World::new()));
         let sandbox = Box::new(App::practice(
             Box::new(Toy(world.clone())),
-            Theme::new(theme.0, theme.1).with_underline_colors(theme.2).with_block_gaps(theme.3),
+            theme.variant(theme.flavor),
             &prefs,
         )?);
         let mut tour = Self {
@@ -108,7 +104,7 @@ impl Tour {
             trying: false,
             done: Vec::new(),
             caption: "",
-            theme,
+            theme: theme.variant(theme.flavor),
             prefs,
             canvas: RefCell::new(None),
         };
@@ -138,9 +134,7 @@ impl Tour {
         *self.world.borrow_mut() = world;
         *self.sandbox = App::practice(
             Box::new(Toy(self.world.clone())),
-            Theme::new(self.theme.0, self.theme.1)
-                .with_underline_colors(self.theme.2)
-                .with_block_gaps(self.theme.3),
+            self.theme.variant(self.theme.flavor),
             &self.prefs,
         )?;
         Ok(())
@@ -298,10 +292,17 @@ impl Tour {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{Flavor, Profile};
 
     fn tour(idx: usize) -> Tour {
-        Tour::new((Flavor::Graphite, Profile::TrueColor, true, false), Default::default(), idx)
-            .expect("tour")
+        Tour::new(
+            &Theme::new(Flavor::Graphite, Profile::TrueColor)
+                .with_underline_colors(true)
+                .with_block_gaps(false),
+            Default::default(),
+            idx,
+        )
+        .expect("tour")
     }
 
     #[test]

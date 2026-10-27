@@ -3,6 +3,7 @@ use super::*;
 use crate::team::control_io::{self, Event as NetEvent};
 use mesimon_core::attention::AttentionTool;
 use mesimon_core::mesophon::{self as api, Answer, Info, LocalAction, Reply};
+use mesimon_core::text::squeeze;
 use mesimon_team::{
     control::{self, Channel, Wire},
     crypto::{BoardId, DeviceId, DevicePublic, ObjectId},
@@ -19,12 +20,18 @@ use std::{
 /// A plan or question call a seat's hooks named that no closing hook has
 /// been heard for (T-988): its tool, its print, what it draws if it can be
 /// drawn, and the prompts heard when it was named, its fence (round 4).
+#[derive(Clone)]
 pub(super) struct OpenCall {
     call: String,
     tool: AttentionTool,
     print: String,
     content: Option<api::DialogContent>,
     heard: u64,
+}
+
+/// The prompts heard on `id` so far: what a dialog's fence is counted in.
+pub(super) fn prompts_now(heard: &HashMap<uuid::Uuid, u64>, id: uuid::Uuid) -> u64 {
+    heard.get(&id).copied().unwrap_or(0)
 }
 
 /// What an interaction's answer says of the dialog the seat is held on,
@@ -155,6 +162,31 @@ struct DialogDelivery {
     /// alone, since a dialog the mod closed fires no `PostToolUse`, and one
     /// that does fire was the person's.
     by_mod: Option<String>,
+}
+impl DialogDelivery {
+    /// A delivery about to take its first step, within `walk_budget`'s
+    /// `(max_steps, walk)`.
+    fn new(
+        by: Deliverer,
+        ticket: ulid::Ulid,
+        request: String,
+        answer: DeliveryAnswer,
+        (max_steps, walk): (u8, Duration),
+    ) -> Self {
+        DialogDelivery {
+            by,
+            ticket,
+            request,
+            answer,
+            deadline: Instant::now() + walk,
+            next: Instant::now(),
+            steps: 0,
+            max_steps,
+            walk: Walk::default(),
+            confirm: None,
+            by_mod: None,
+        }
+    }
 }
 /// What a delivery answers (T-873).
 enum DeliveryAnswer {
@@ -1196,7 +1228,9 @@ impl Daemon {
             self.control.dialogs.remove(&id);
         }
         // The open calls (T-988) live only while the record holds one.
-        if self.board.sessions.iter().any(|s| s.id == id && s.dialog_call.is_none()) {
+        if self.dialog_open.contains_key(&id)
+            && self.board.sessions.iter().any(|s| s.id == id && s.dialog_call.is_none())
+        {
             self.dialog_open.remove(&id);
         }
         if !matches!(frame.event.as_str(), "PreToolUse" | "PermissionRequest") {
@@ -1241,14 +1275,11 @@ impl Daemon {
                         if open.len() == 16 {
                             open.remove(0);
                         }
-                        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+                        let heard = prompts_now(&self.prompts_heard, id);
                         open.push(OpenCall {
                             call: call.clone(),
-                            tool: if tool == "ExitPlanMode" {
-                                AttentionTool::ExitPlanMode
-                            } else {
-                                AttentionTool::AskUserQuestion
-                            },
+                            tool: AttentionTool::from_name(tool)
+                                .unwrap_or(AttentionTool::AskUserQuestion),
                             print: print.clone(),
                             content: content.clone(),
                             heard,
@@ -1259,17 +1290,18 @@ impl Daemon {
             // The prompts heard when it was named (round 4): an Esc read for
             // it after another is heard ended an earlier turn.
             if let Some(call) = &call {
-                if self.dialog_heard.get(&id).is_none_or(|(named, _)| named != call) {
-                    let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
-                    self.dialog_heard.insert(id, (call.clone(), heard));
-                }
+                self.name_dialog(id, call);
             }
-            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                if !repeat && (rec.dialog_call != call || rec.dialog_print != print) {
-                    rec.dialog_call = call;
-                    rec.dialog_print = print;
-                    self.persist_sessions();
-                }
+            // Found on a shared read first: a `&mut` through `Tracked` marks
+            // `sessions.json` whether or not anything moved.
+            let at = self.board.sessions.iter().position(|s| {
+                s.id == id && !repeat && (s.dialog_call != call || s.dialog_print != print)
+            });
+            if let Some(at) = at {
+                let rec = &mut self.board.sessions[at];
+                rec.dialog_call = call;
+                rec.dialog_print = print;
+                self.persist_sessions();
             }
         }
         let Some(content) = content else { return };
@@ -1339,7 +1371,7 @@ impl Daemon {
         let held = rec.dialog_call.clone()?;
         let path = rec.transcript_path.clone()?;
         let ticket = rec.ticket;
-        let now = self.prompts_heard.get(&id).copied().unwrap_or(0);
+        let now = prompts_now(&self.prompts_heard, id);
         let open = self.dialog_open.get(&id)?;
         let unspoken: Vec<&OpenCall> = open.iter().filter(|o| o.heard >= now).collect();
         let candidates: Vec<&str> = if held == call {
@@ -1349,12 +1381,7 @@ impl Daemon {
         };
         let read =
             crate::agents::claude::tail::siblings(std::path::Path::new(&path), call, &candidates)?;
-        let pick = |c: &str| {
-            unspoken
-                .iter()
-                .find(|o| o.call == c)
-                .map(|o| (o.call.clone(), o.tool, o.print.clone(), o.content.clone(), o.heard))
-        };
+        let pick = |c: &str| unspoken.iter().find(|o| o.call == c).map(|o| (*o).clone());
         let stands = if held == call {
             read.open.last().and_then(|c| pick(c))
         } else if read.open.contains(&held) {
@@ -1365,7 +1392,7 @@ impl Daemon {
         } else {
             None
         };
-        let (next, tool, print, content, heard) = stands?;
+        let OpenCall { call: next, tool, print, content, heard } = stands?;
         // A stated end settling (a `Stop` heard before this late completion)
         // wins: the dialog is neither re-pointed nor drawn again (round 2).
         let ending = self.machines.get(&id).and_then(|m| m.view().pending).is_some_and(|p| {
@@ -1376,12 +1403,16 @@ impl Daemon {
             return Some(Answered::Nothing);
         }
         self.dialog_heard.insert(id, (next.clone(), heard));
-        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            if rec.dialog_call.as_ref() != Some(&next) {
-                rec.dialog_call = Some(next.clone());
-                rec.dialog_print = Some(print);
-                self.persist_sessions();
-            }
+        let at = self
+            .board
+            .sessions
+            .iter()
+            .position(|s| s.id == id && s.dialog_call.as_ref() != Some(&next));
+        if let Some(at) = at {
+            let rec = &mut self.board.sessions[at];
+            rec.dialog_call = Some(next.clone());
+            rec.dialog_print = Some(print);
+            self.persist_sessions();
         }
         // Drawn for the board as its own hook would have been.
         let projected = self.control.dialogs.get(&id).is_some_and(|d| d.request == next);
@@ -1390,6 +1421,15 @@ impl Daemon {
         }
         self.feed.board("automation", "sibling_dialog_stands", Some(ticket));
         Some(Answered::Stands(tool))
+    }
+
+    /// Note `call` as the dialog `id` is held on, with the prompts heard
+    /// when it was named (round 4), unless it is already the one noted.
+    fn name_dialog(&mut self, id: uuid::Uuid, call: &str) {
+        if self.dialog_heard.get(&id).is_none_or(|(named, _)| named != call) {
+            let heard = prompts_now(&self.prompts_heard, id);
+            self.dialog_heard.insert(id, (call.to_string(), heard));
+        }
     }
 
     /// `content` drawn for the board as `id`'s dialog under `request`.
@@ -1416,10 +1456,7 @@ impl Daemon {
             });
         // A dialog projected with no call id of its own is noted under the
         // request it was given (round 4).
-        if self.dialog_heard.get(&id).is_none_or(|(named, _)| *named != request) {
-            let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
-            self.dialog_heard.insert(id, (request.clone(), heard));
-        }
+        self.name_dialog(id, &request);
         self.control.dialogs.insert(id, api::Dialog { request, content });
         self.control_changed();
         if let Some((ticket, cause)) = restop {
@@ -1514,12 +1551,10 @@ impl Daemon {
             if named.as_ref().is_some_and(|named| *named != open.id) {
                 continue;
             }
-            use mesimon_core::adopt::TailTool;
-            let tool = match (open.tool, reason) {
-                (TailTool::ExitPlanMode, Reason::Plan) => "ExitPlanMode",
-                (TailTool::AskUserQuestion, Reason::Question) => "AskUserQuestion",
-                _ => continue,
-            };
+            if open.tool.reason() != reason {
+                continue;
+            }
+            let tool = open.tool.name();
             if open.id.len() > 256 {
                 continue;
             }
@@ -1621,21 +1656,126 @@ impl Daemon {
         };
         self.control.dialog_deliveries.insert(
             id,
-            DialogDelivery {
-                by: Deliverer::Phone { grant, device, command },
+            DialogDelivery::new(
+                Deliverer::Phone { grant, device, command },
                 ticket,
-                request: request.into(),
-                answer: DeliveryAnswer::Dialog(response),
-                deadline: Instant::now() + walk,
-                next: Instant::now(),
-                steps: 0,
-                max_steps,
-                walk: Walk::default(),
-                confirm: None,
-                by_mod: None,
-            },
+                request.into(),
+                DeliveryAnswer::Dialog(response),
+                (max_steps, walk),
+            ),
         );
         Reply::delivery("awaiting_delivery")
+    }
+
+    /// A delivery whose last key is in (T-567): settled by its edge, its
+    /// standing or its window, else put back to look again.
+    fn control_confirm_delivery(
+        &mut self,
+        id: uuid::Uuid,
+        mut pending: DialogDelivery,
+        until: Instant,
+    ) {
+        if let DeliveryAnswer::Approval { .. } = pending.answer {
+            if self.delivery_standing(id, &pending).is_none() {
+                self.control_settle_dialog(id, pending, "answered", None, "");
+            } else if Instant::now() >= until {
+                self.control_settle_dialog(id, pending, "input_sent", None, "");
+            } else {
+                pending.next = Instant::now() + Duration::from_millis(250);
+                self.control.dialog_deliveries.insert(id, pending);
+            }
+            return;
+        }
+        // A plan sent back (T-943) claims only that its Enter went
+        // and the dialog left: any edge that ends it the refusal way
+        // (the next tool call, the mod's `declined`), the projection
+        // dropped, or at the window's end a screen without it. An
+        // Esc or an error leaves it alike, so nothing says the words
+        // were read; an accept that ended it is not this answer.
+        if let DeliveryAnswer::Revise { .. } = pending.answer {
+            let edge = self.control_dialog_edge(id, &pending.request);
+            let standing = self.delivery_standing(id, &pending).is_some();
+            // What the window's end saw, if it looked: `Some(None)`
+            // is a capture that failed, no observation at all.
+            let mut seen: Option<Option<String>> = None;
+            let due = Instant::now() >= until;
+            let settled = revise_settled(edge, standing, due, || {
+                let read = self.dialog_capture(id);
+                seen = Some(read.clone());
+                read
+            });
+            match settled {
+                Some((status, reason)) => {
+                    let reason = reason.map(str::to_string);
+                    // Only a screen read that found the composer
+                    // shows the dialog gone (T-955); any other read
+                    // keeps the projection, as a failed one does.
+                    let left = status == "input_sent" && matches!(seen, Some(Some(_)));
+                    let screen = match &seen {
+                        Some(read) if left => read.as_deref(),
+                        Some(_) => None,
+                        None => Some(""),
+                    };
+                    self.control_settle_seen(id, pending, status, reason, screen);
+                    if left {
+                        self.sent_back_left(id);
+                    }
+                }
+                None => {
+                    pending.next = Instant::now() + Duration::from_millis(250);
+                    self.control.dialog_deliveries.insert(id, pending);
+                }
+            }
+            return;
+        }
+        let edge = self.control_dialog_edge(id, &pending.request);
+        let reject = matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Reject));
+        // An answer the mod carries (T-576) is confirmed by the mod's
+        // own report alone: the engine's `PostToolUse`, or a refusal,
+        // is the person's answer winning the race in the pane.
+        if pending.by_mod.is_some() {
+            match edge {
+                Some(DialogEdge::ModAnswered) => {
+                    self.control_settle_dialog(id, pending, "answered", None, "")
+                }
+                Some(DialogEdge::Answered | DialogEdge::Dismissed) => {
+                    let reason = Some("a_person_answered".into());
+                    self.control_settle_dialog(id, pending, "unknown", reason, "")
+                }
+                None if Instant::now() >= until => {
+                    self.control_settle_dialog(id, pending, "input_sent", None, "")
+                }
+                None => {
+                    pending.next = Instant::now() + Duration::from_millis(100);
+                    self.control.dialog_deliveries.insert(id, pending);
+                }
+            }
+            return;
+        }
+        // A trust dialog's leave has no hook of its own on Codex, and
+        // on Claude `SessionStart` may follow the composer by a beat
+        // (T-844): the seat moving off the dialog is the answer taken.
+        let trust_taken = self.trust_dialog(id).is_some() && !self.dialog_waiting(id);
+        match edge {
+            Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
+                self.control_settle_dialog(id, pending, "answered", None, "")
+            }
+            None if trust_taken => self.control_settle_dialog(id, pending, "answered", None, ""),
+            Some(DialogEdge::Dismissed) if reject => {
+                self.control_settle_dialog(id, pending, "answered", None, "")
+            }
+            Some(DialogEdge::Dismissed) => {
+                self.control_settle_dialog(id, pending, "input_sent", None, "")
+            }
+            None if Instant::now() >= until => {
+                let screen = self.dialog_screen(id);
+                self.control_settle_dialog(id, pending, "input_sent", None, &screen);
+            }
+            None => {
+                pending.next = Instant::now() + Duration::from_millis(250);
+                self.control.dialog_deliveries.insert(id, pending);
+            }
+        }
     }
 
     /// Walk each queued dialog answer one key per pass (T-567), and a Codex
@@ -1659,110 +1799,7 @@ impl Daemon {
         for id in ready {
             let Some(mut pending) = self.control.dialog_deliveries.remove(&id) else { continue };
             if let Some(until) = pending.confirm {
-                if let DeliveryAnswer::Approval { .. } = pending.answer {
-                    if self.delivery_standing(id, &pending).is_none() {
-                        self.control_settle_dialog(id, pending, "answered", None, "");
-                    } else if Instant::now() >= until {
-                        self.control_settle_dialog(id, pending, "input_sent", None, "");
-                    } else {
-                        pending.next = Instant::now() + Duration::from_millis(250);
-                        self.control.dialog_deliveries.insert(id, pending);
-                    }
-                    continue;
-                }
-                // A plan sent back (T-943) claims only that its Enter went
-                // and the dialog left: any edge that ends it the refusal way
-                // (the next tool call, the mod's `declined`), the projection
-                // dropped, or at the window's end a screen without it. An
-                // Esc or an error leaves it alike, so nothing says the words
-                // were read; an accept that ended it is not this answer.
-                if let DeliveryAnswer::Revise { .. } = pending.answer {
-                    let edge = self.control_dialog_edge(id, &pending.request);
-                    let standing = self.delivery_standing(id, &pending).is_some();
-                    // What the window's end saw, if it looked: `Some(None)`
-                    // is a capture that failed, no observation at all.
-                    let mut seen: Option<Option<String>> = None;
-                    let due = Instant::now() >= until;
-                    let settled = revise_settled(edge, standing, due, || {
-                        let read = self.dialog_capture(id);
-                        seen = Some(read.clone());
-                        read
-                    });
-                    match settled {
-                        Some((status, reason)) => {
-                            let reason = reason.map(str::to_string);
-                            // Only a screen read that found the composer
-                            // shows the dialog gone (T-955); any other read
-                            // keeps the projection, as a failed one does.
-                            let left = status == "input_sent" && matches!(seen, Some(Some(_)));
-                            let screen = match &seen {
-                                Some(read) if left => read.as_deref(),
-                                Some(_) => None,
-                                None => Some(""),
-                            };
-                            self.control_settle_seen(id, pending, status, reason, screen);
-                            if left {
-                                self.sent_back_left(id);
-                            }
-                        }
-                        None => {
-                            pending.next = Instant::now() + Duration::from_millis(250);
-                            self.control.dialog_deliveries.insert(id, pending);
-                        }
-                    }
-                    continue;
-                }
-                let edge = self.control_dialog_edge(id, &pending.request);
-                let reject =
-                    matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Reject));
-                // An answer the mod carries (T-576) is confirmed by the mod's
-                // own report alone: the engine's `PostToolUse`, or a refusal,
-                // is the person's answer winning the race in the pane.
-                if pending.by_mod.is_some() {
-                    match edge {
-                        Some(DialogEdge::ModAnswered) => {
-                            self.control_settle_dialog(id, pending, "answered", None, "")
-                        }
-                        Some(DialogEdge::Answered | DialogEdge::Dismissed) => {
-                            let reason = Some("a_person_answered".into());
-                            self.control_settle_dialog(id, pending, "unknown", reason, "")
-                        }
-                        None if Instant::now() >= until => {
-                            self.control_settle_dialog(id, pending, "input_sent", None, "")
-                        }
-                        None => {
-                            pending.next = Instant::now() + Duration::from_millis(100);
-                            self.control.dialog_deliveries.insert(id, pending);
-                        }
-                    }
-                    continue;
-                }
-                // A trust dialog's leave has no hook of its own on Codex, and
-                // on Claude `SessionStart` may follow the composer by a beat
-                // (T-844): the seat moving off the dialog is the answer taken.
-                let trust_taken = self.trust_dialog(id).is_some() && !self.dialog_waiting(id);
-                match edge {
-                    Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
-                        self.control_settle_dialog(id, pending, "answered", None, "")
-                    }
-                    None if trust_taken => {
-                        self.control_settle_dialog(id, pending, "answered", None, "")
-                    }
-                    Some(DialogEdge::Dismissed) if reject => {
-                        self.control_settle_dialog(id, pending, "answered", None, "")
-                    }
-                    Some(DialogEdge::Dismissed) => {
-                        self.control_settle_dialog(id, pending, "input_sent", None, "")
-                    }
-                    None if Instant::now() >= until => {
-                        let screen = self.dialog_screen(id);
-                        self.control_settle_dialog(id, pending, "input_sent", None, &screen);
-                    }
-                    None => {
-                        pending.next = Instant::now() + Duration::from_millis(250);
-                        self.control.dialog_deliveries.insert(id, pending);
-                    }
-                }
+                self.control_confirm_delivery(id, pending, until);
                 continue;
             }
             // Why a plan sent back may not take its next key (T-943).
@@ -1876,7 +1913,7 @@ impl Daemon {
                 Ok(arrow @ (DialogStep::Up | DialogStep::Down)),
             ) = (&pending.answer, &step)
             {
-                pending.walk.at = plan_cursor(&screen).map(|at| match arrow {
+                pending.walk.at = crate::plan_dialog::plan_cursor(&screen).map(|at| match arrow {
                     DialogStep::Up => at.saturating_sub(1),
                     _ => at + 1,
                 });
@@ -2096,7 +2133,7 @@ impl Daemon {
             // where the empty row's label no longer shows.
             let drawn = match (&pending.answer, screen) {
                 (DeliveryAnswer::Revise { .. }, None) => true,
-                (DeliveryAnswer::Revise { .. }, Some(screen)) => plan_dialog_drawn(screen),
+                (DeliveryAnswer::Revise { .. }, Some(screen)) => crate::plan_dialog::drawn(screen),
                 (_, screen) => dialog_shape_for(kind, dialog, screen.unwrap_or_default()),
             };
             if waiting && drawn {
@@ -2180,10 +2217,7 @@ impl Daemon {
                 if let Some(reply) = reply {
                     // Mid-tick, before the tick's own flush (T-582): the
                     // feed line the receipt speaks for is on disk first.
-                    let _ = self.feed.flush();
-                    // The reply the crown reads is this one (T-930).
-                    let (response, told) = self.with_crown_rules(session, response);
-                    let _ = reply.send(ClientReply { response, delivered: None, told });
+                    self.send_parked(reply, session, response);
                 }
             }
         }
@@ -2279,19 +2313,13 @@ impl Daemon {
         }
         self.control.dialog_deliveries.insert(
             id,
-            DialogDelivery {
-                by: Deliverer::Crown { crown, session, answer, reply: None, prior: None },
-                ticket: target,
-                request: request.into(),
-                answer: DeliveryAnswer::Dialog(response),
-                deadline: Instant::now() + walk,
-                next: Instant::now(),
-                steps: 0,
-                max_steps,
-                walk: Walk::default(),
-                confirm: None,
-                by_mod: None,
-            },
+            DialogDelivery::new(
+                Deliverer::Crown { crown, session, answer, reply: None, prior: None },
+                target,
+                request.into(),
+                DeliveryAnswer::Dialog(response),
+                (max_steps, walk),
+            ),
         );
         Ok(id)
     }
@@ -2304,13 +2332,11 @@ impl Daemon {
         id: uuid::Uuid,
         reply: Sender<ClientReply>,
     ) -> Option<Sender<ClientReply>> {
-        match self.control.dialog_deliveries.get_mut(&id).map(|d| &mut d.by) {
-            Some(Deliverer::Crown { reply: slot @ None, .. }) => {
-                *slot = Some(reply);
-                None
-            }
-            _ => Some(reply),
-        }
+        let slot = match self.control.dialog_deliveries.get_mut(&id).map(|d| &mut d.by) {
+            Some(Deliverer::Crown { reply, .. }) => Some(reply),
+            _ => None,
+        };
+        super::crownplan::park_in(slot, reply)
     }
 
     /// The crown's plan sent back with words (T-943), past the accept's
@@ -2346,28 +2372,15 @@ impl Daemon {
         if self.control_input_in_flight(id) {
             return Err(format!("words for {key}'s agent are on their way; its plan waits"));
         }
-        let (max_steps, walk) = ONE_WALK;
         self.control.dialog_deliveries.insert(
             id,
-            DialogDelivery {
-                by: Deliverer::Crown {
-                    crown,
-                    session,
-                    answer: text.clone(),
-                    reply: None,
-                    prior: None,
-                },
-                ticket: target,
-                request: request.into(),
-                answer: DeliveryAnswer::Revise { text, pane },
-                deadline: Instant::now() + walk,
-                next: Instant::now(),
-                steps: 0,
-                max_steps,
-                walk: Walk::default(),
-                confirm: None,
-                by_mod: None,
-            },
+            DialogDelivery::new(
+                Deliverer::Crown { crown, session, answer: text.clone(), reply: None, prior: None },
+                target,
+                request.into(),
+                DeliveryAnswer::Revise { text, pane },
+                ONE_WALK,
+            ),
         );
         Ok(id)
     }
@@ -2390,20 +2403,10 @@ impl Daemon {
         id: uuid::Uuid,
         pane: &Option<String>,
     ) -> Option<&'static str> {
-        let by = Principal::Agent { session };
-        let rec = self.board.live_agent(ticket).filter(|rec| {
-            rec.id == id
-                && rec.started_by.is_some()
-                && rec.kind == SessionKind::Claude
-                && rec.state.has_pane()
-                && rec.state == SessionState::RequiresAction { reason: Reason::Plan }
-                && &rec.pane_key == pane
+        let rec = self.crown_may_answer(crown, session, ticket, id, Reason::Plan).filter(|rec| {
+            rec.kind == SessionKind::Claude && rec.state.has_pane() && &rec.pane_key == pane
         });
-        let Some(rec) = rec.filter(|_| {
-            self.board.is_crowned(crown)
-                && self.board.crown_mode.answers()
-                && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket }).denied()
-        }) else {
+        let Some(rec) = rec else {
             return Some("state_changed");
         };
         if self.person_at_pane(&rec.sid16()) {
@@ -2424,15 +2427,31 @@ impl Daemon {
         ticket: ulid::Ulid,
         id: uuid::Uuid,
     ) -> bool {
+        self.crown_may_answer(crown, session, ticket, id, Reason::Question).is_some()
+    }
+
+    /// The seat `id` while the crown may still answer its `reason` dialog:
+    /// the crown on its ticket, the board's switch, an agent the crown
+    /// started on that ticket, standing at that dialog, and the crown's
+    /// `Mutate` on it.
+    pub(super) fn crown_may_answer(
+        &self,
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        ticket: ulid::Ulid,
+        id: uuid::Uuid,
+        reason: Reason,
+    ) -> Option<&SessionRecord> {
         let by = Principal::Agent { session };
-        self.board.is_crowned(crown)
+        let allowed = self.board.is_crowned(crown)
             && self.board.crown_mode.answers()
-            && self.board.live_agent(ticket).is_some_and(|rec| {
-                rec.id == id
-                    && rec.started_by.is_some()
-                    && rec.state == SessionState::RequiresAction { reason: Reason::Question }
-            })
-            && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket }).denied()
+            && !authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket }).denied();
+        self.board.live_agent(ticket).filter(|rec| {
+            allowed
+                && rec.id == id
+                && rec.started_by.is_some()
+                && rec.state == SessionState::RequiresAction { reason }
+        })
     }
 
     /// Everyone sees the crown's answer (T-569), once its keys went in and
@@ -2746,24 +2765,15 @@ impl Daemon {
             let Some(device) = self.control.peers.get(peer).map(|p| p.device) else {
                 return Reply::Rejected { message: "session changed".into() };
             };
-            let (max_steps, walk) = ONE_WALK;
             self.control.dialog_deliveries.insert(
                 id,
-                DialogDelivery {
-                    by: Deliverer::Phone { grant, device, command },
+                DialogDelivery::new(
+                    Deliverer::Phone { grant, device, command },
                     ticket,
-                    request: request.into(),
-                    answer: DeliveryAnswer::Approval {
-                        allow: decision == api::PermissionDecision::Allow,
-                    },
-                    deadline: Instant::now() + walk,
-                    next: Instant::now(),
-                    steps: 0,
-                    max_steps,
-                    walk: Walk::default(),
-                    confirm: None,
-                    by_mod: None,
-                },
+                    request.into(),
+                    DeliveryAnswer::Approval { allow: decision == api::PermissionDecision::Allow },
+                    ONE_WALK,
+                ),
             );
             return Reply::delivery("awaiting_delivery");
         }
@@ -3599,6 +3609,27 @@ impl Daemon {
         answer
     }
 
+    /// Words already going into the pane `id`: a launch's parked words, a
+    /// steer, or a submit owed. A phone's prompt is not put beside them.
+    fn prompt_going_in(&self, id: uuid::Uuid) -> bool {
+        self.parked(id)
+            || self.steering(id)
+            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
+    }
+
+    /// Whose queued ask a new prompt for `ticket` replaces, for its receipt
+    /// (T-568): the asking crown's key, `held`, or `you`.
+    fn queued_replaced(&self, ticket: ulid::Ulid) -> Option<api::Replaced> {
+        self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
+            by: q
+                .by
+                .and_then(|c| self.board.ticket(c))
+                .map(|c| c.short_key.clone())
+                .or_else(|| q.held.map(|_| "held".into()))
+                .unwrap_or_else(|| "you".into()),
+        })
+    }
+
     /// The gates and the park for one mailed prompt, the words not yet sent.
     fn control_mail_prompt(
         &mut self,
@@ -3627,20 +3658,10 @@ impl Daemon {
         };
         // As the live Queue: words already going into the pane are not
         // replaced by a letter.
-        if self.parked(id)
-            || self.steering(id)
-            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
-        {
+        if self.prompt_going_in(id) {
             return reject("a prompt is already going in to this agent");
         }
-        let replaced = self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
-            by: q
-                .by
-                .and_then(|c| self.board.ticket(c))
-                .map(|c| c.short_key.clone())
-                .or_else(|| q.held.map(|_| "held".into()))
-                .unwrap_or_else(|| "you".into()),
-        });
+        let replaced = self.queued_replaced(ticket);
         self.forget_queued(ticket, "queued_ask_replaced", "mesophon", "person");
         if let Err(message) =
             self.park_ask(ticket, QueuedSeat::Pane(id), text, super::Asker::Person, false, false)
@@ -4193,19 +4214,13 @@ impl Daemon {
         let (max_steps, walk) = walk_budget(dialog);
         self.control.dialog_deliveries.insert(
             id,
-            DialogDelivery {
-                by: Deliverer::Board,
+            DialogDelivery::new(
+                Deliverer::Board,
                 ticket,
                 request,
-                answer: DeliveryAnswer::Dialog(api::DialogAnswer::Accept),
-                deadline: Instant::now() + walk,
-                next: Instant::now(),
-                steps: 0,
-                max_steps,
-                walk: Walk::default(),
-                confirm: None,
-                by_mod: None,
-            },
+                DeliveryAnswer::Dialog(api::DialogAnswer::Accept),
+                (max_steps, walk),
+            ),
         );
         self.feed.board("local", "trust_accept", Some(ticket));
         Response::Ok
@@ -4400,10 +4415,7 @@ impl Daemon {
         let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
             return Reply::Rejected { message: "invalid ticket".into() };
         };
-        if self.parked(id)
-            || self.steering(id)
-            || self.board.sessions.iter().any(|s| s.id == id && s.pending_submit)
-        {
+        if self.prompt_going_in(id) {
             return Reply::Rejected {
                 message: "a prompt is already waiting for this session".into(),
             };
@@ -4432,14 +4444,7 @@ impl Daemon {
         // The ticket has one queued ask, and this prompt takes its place:
         // whose it was is said on the receipt (T-568), never dropped
         // silently. The crown's own `get_ticket` says so too.
-        let replaced = self.queued.iter().find(|q| q.ticket == ticket).map(|q| api::Replaced {
-            by: q
-                .by
-                .and_then(|c| self.board.ticket(c))
-                .map(|c| c.short_key.clone())
-                .or_else(|| q.held.map(|_| "held".into()))
-                .unwrap_or_else(|| "you".into()),
-        });
+        let replaced = self.queued_replaced(ticket);
         let pending =
             Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None };
         let reply = if queued {
@@ -4998,20 +5003,17 @@ fn projected_shell(
     foregrounds: &HashMap<uuid::Uuid, String>,
     ticket: ulid::Ulid,
 ) -> Option<api::Shell> {
-    let terminal = terminals.get(&Some(ticket));
-    let shells: Vec<&SessionRecord> = board
+    // `Some(busy)` once a terminal or a shell is found.
+    let mut busy = terminals.get(&Some(ticket)).map(Option::is_some);
+    let shells = board
         .sessions
         .iter()
-        .filter(|s| s.ticket == ticket && s.kind == SessionKind::Bash && s.state.has_pane())
-        .collect();
-    if terminal.is_none() && shells.is_empty() {
-        return None;
+        .filter(|s| s.ticket == ticket && s.kind == SessionKind::Bash && s.state.has_pane());
+    for s in shells {
+        let running = s.state == SessionState::Running && foregrounds.contains_key(&s.id);
+        busy = Some(busy.unwrap_or(false) || running);
     }
-    let busy = terminal.is_some_and(Option::is_some)
-        || shells
-            .iter()
-            .any(|s| s.state == SessionState::Running && foregrounds.contains_key(&s.id));
-    Some(api::Shell { busy })
+    busy.map(|busy| api::Shell { busy })
 }
 
 /// The crown's latest edit of a ticket for a phone (T-623), while it is
@@ -5403,12 +5405,6 @@ fn dialog_plan(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<Pla
     }
 }
 
-/// Text with every whitespace run removed: a label Claude Code wrapped, at a
-/// space or inside a word, reads the same once its rows are joined.
-fn squeeze(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
 /// A line without the `│` Claude Code draws down the left of a question
 /// that wraps (measured on 2.1.287, T-571: one question or a batch alike).
 fn unbarred(line: &str) -> &str {
@@ -5433,10 +5429,7 @@ fn dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
                 && screen.contains("Esctocancel")
         }
         api::DialogContent::Plan { .. } => {
-            let screen = squeeze(screen);
-            screen.contains("Wouldyouliketoproceed?")
-                && screen.contains("Yes,manuallyapproveedits")
-                && screen.contains("TellClaudewhattochange")
+            crate::plan_dialog::drawn(screen) && squeeze(screen).contains("TellClaudewhattochange")
         }
         api::DialogContent::Trust { .. } => crate::trust_dialog::read_text(screen).is_some(),
     }
@@ -5898,114 +5891,6 @@ fn dialog_step(
     Ok(toward(current, target, DialogStep::Submit))
 }
 
-/// The plan dialog's feedback row as Claude Code draws it (measured on
-/// 2.1.310, T-943): `N. Tell Claude what to change` while its field is
-/// empty, the field's words in that place once typed or pasted, and under it
-/// the hint `shift+tab to approve with this feedback` and the `ctrl+g to
-/// edit in <editor> · <plan file>` line, which `dialog_rows` joins onto it.
-const FEEDBACK_ROW: &str = "Tell Claude what to change";
-const APPROVE_HINT: &str = "shift+tab to approve with this feedback";
-const EDITOR_LINE: &str = "ctrl+g to edit in ";
-
-/// One row of the plan dialog's menu as the walk reads it (T-943): whether
-/// the cursor is on it, and its field, squeezed.
-struct MenuRow {
-    selected: bool,
-    field: String,
-}
-
-/// The plan dialog's menu, parsed for the walk alone (T-943), as one extent:
-/// it begins after the line that completes the dialog's question (`Would you
-/// like to proceed?`, wrapped or not), and its rows are the numbered lines
-/// after it, numbered 1, 2, 3 … with no skip and no restart. A numbered line
-/// out of that order (a later `1.` among them) and a second question after
-/// the first are a person's draft the walk cannot tell from the menu: `None`,
-/// and the walk stops. A row's field is its numbered line and every line
-/// under it to the next row, and the last row's runs to the end of the
-/// screen, through blank and box-drawing lines, since a person's draft in the
-/// native field may hold any of them. No footer is cut: 2.1.310 draws none,
-/// and a line that merely holds `Enter to select` is the field's. From the
-/// end of the last row come off trailing blank lines, then the editor line
-/// (`ctrl+g to edit in <editor> · <file>`) with the approve hint line
-/// directly above it when it is there, never the row's own first line. The
-/// approve hint without its editor line under it is the field's. Whatever
-/// is left is the field, compared whole. The cursor is read from the same
-/// rows.
-fn plan_menu(screen: &str) -> Option<Vec<MenuRow>> {
-    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
-    let question = squeeze("Would you like to proceed?");
-    let mut said = String::new();
-    let asked = lines.iter().position(|line| {
-        said.push_str(&squeeze(line));
-        said.contains(&question)
-    })?;
-    let after: String = lines[asked + 1..].iter().map(|line| squeeze(line)).collect();
-    if after.contains(&question) {
-        return None;
-    }
-    let mut rows: Vec<(bool, Vec<&str>)> = Vec::new();
-    for line in &lines[asked + 1..] {
-        match numbered(line) {
-            Some((selected, number, label)) if number == rows.len() + 1 => {
-                rows.push((selected, vec![label]))
-            }
-            Some(_) => return None,
-            None => {
-                if let Some((_, block)) = rows.last_mut() {
-                    block.push(line);
-                }
-            }
-        }
-    }
-    let last = rows.len().checked_sub(1)?;
-    for (at, (_, block)) in rows.iter_mut().enumerate() {
-        while block.len() > 1 && block.last().is_some_and(|l| l.is_empty()) {
-            block.pop();
-        }
-        if at != last {
-            continue;
-        }
-        // The pair, or nothing: the approve hint is the hint only directly
-        // above the editor line it is drawn with; alone, it is the field's.
-        if block.len() > 2
-            && block.last().is_some_and(|l| editor_line(l))
-            && block[block.len() - 2] == APPROVE_HINT
-        {
-            block.truncate(block.len() - 2);
-        } else if block.len() > 1 && block.last().is_some_and(|l| editor_line(l)) {
-            block.pop();
-        }
-    }
-    Some(
-        rows.into_iter()
-            .map(|(selected, block)| MenuRow { selected, field: squeeze(&block.concat()) })
-            .collect(),
-    )
-}
-
-/// The one row the cursor is on, or none of the measured shape.
-fn menu_cursor(rows: &[MenuRow]) -> Result<usize, Miss> {
-    let mut selected = rows.iter().enumerate().filter(|(_, r)| r.selected);
-    match (selected.next(), selected.next()) {
-        (Some((at, _)), None) => Ok(at),
-        _ => Err(Miss::ShapeUnrecognised),
-    }
-}
-
-/// The editor line under the plan dialog, as measured on 2.1.310:
-/// `ctrl+g to edit in Nvim · ~/.claude/plans/<name>.md`.
-fn editor_line(line: &str) -> bool {
-    line.strip_prefix(EDITOR_LINE).is_some_and(|rest| rest.contains(" · "))
-}
-
-/// Whether `screen` draws Claude Code's plan dialog, its feedback field
-/// empty or not (T-943): the question and the manual accept row, which every
-/// measured version shows.
-fn plan_dialog_drawn(screen: &str) -> bool {
-    let screen = squeeze(screen);
-    screen.contains("Wouldyouliketoproceed?") && screen.contains("Yes,manuallyapproveedits")
-}
-
 /// What a plan sent back settles as once its Enter went (T-943), or `None`
 /// while it waits: an edge the refusal way, or the projection dropped, is
 /// the dialog gone (`input_sent`); an accept that ended it is not this
@@ -6030,7 +5915,9 @@ fn revise_settled(
         None if !due => None,
         None => match capture() {
             None => Some(("unknown", Some("pane_unreachable"))),
-            Some(screen) if plan_dialog_drawn(&screen) => Some(("unknown", Some("dialog_stands"))),
+            Some(screen) if crate::plan_dialog::drawn(&screen) => {
+                Some(("unknown", Some("dialog_stands")))
+            }
             Some(screen) if composer_drawn(&screen) => Some(("input_sent", None)),
             Some(_) => Some(("unknown", Some("shape_unrecognised"))),
         },
@@ -6044,11 +5931,6 @@ fn composer_drawn(screen: &str) -> bool {
     use crate::agents::claude::composer::{self, Composer};
     let lines = screen.lines().map(str::to_string).collect();
     composer::read(&mesimon_backend_tmux::InputScreen { lines, cursor: None }) != Composer::Absent
-}
-
-/// The plan dialog's cursor row on `screen`, if it shows exactly one.
-fn plan_cursor(screen: &str) -> Option<usize> {
-    plan_menu(screen).and_then(|rows| menu_cursor(&rows).ok())
 }
 
 /// One key of a plan sent back with words (T-943), read off the screen
@@ -6066,13 +5948,15 @@ fn revise_step(
     screen: &str,
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
-    if !matches!(dialog.content, api::DialogContent::Plan { .. }) || !plan_dialog_drawn(screen) {
+    if !matches!(dialog.content, api::DialogContent::Plan { .. })
+        || !crate::plan_dialog::drawn(screen)
+    {
         return Err(Miss::ShapeUnrecognised);
     }
-    let rows = plan_menu(screen).ok_or(Miss::ShapeUnrecognised)?;
-    let current = menu_cursor(&rows)?;
+    let rows = crate::plan_dialog::plan_menu(screen).ok_or(Miss::ShapeUnrecognised)?;
+    let current = crate::plan_dialog::menu_cursor(&rows).ok_or(Miss::ShapeUnrecognised)?;
     let fields: Vec<&String> = rows.iter().map(|r| &r.field).collect();
-    let label = squeeze(FEEDBACK_ROW);
+    let label = squeeze(crate::plan_dialog::FEEDBACK_ROW);
     let Some(&row) = walk.pasted.first() else {
         if walk.at.is_some_and(|at| at != current) {
             return Err(Miss::CursorMoved);
@@ -8763,7 +8647,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         let paste = plan_screen(empty, 2).replacen("❯ 3. my notes", "  3. my notes", 1);
         let walk = Walk { at: Some(2), ..Walk::default() };
         assert_eq!(revise_step(&d, "Use echo", &paste, &walk), Err(Miss::ShapeUnrecognised));
-        assert_eq!(plan_cursor(&paste), None, "no arrow is aimed by the draft's cursor");
+        assert_eq!(
+            crate::plan_dialog::plan_cursor(&paste),
+            None,
+            "no arrow is aimed by the draft's cursor"
+        );
         let again = plan_screen("Use echo\n Would you like to proceed?\n ❯ 1. Yes", 2);
         assert_eq!(revise_step(&d, "Use echo", &again, &pasted), Err(Miss::ShapeUnrecognised));
         // The plan's own numbered steps above the question are no rows.

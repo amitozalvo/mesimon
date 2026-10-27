@@ -80,14 +80,12 @@ pub struct Fill {
 /// (`anthropic.`) and a Vertex date (`@…`) are read through, as `cost::price`
 /// reads them.
 pub fn claude_window(model: &str, one_m: bool) -> Option<u64> {
-    let base = model.strip_suffix(FAST).unwrap_or(model);
-    let base = base.strip_prefix("anthropic.").unwrap_or(base);
-    let base = base.split('@').next().unwrap_or(base);
-    let mut table: Vec<&(&str, u64, u64)> = CLAUDE_WINDOWS.iter().collect();
-    table.sort_by_key(|(id, ..)| std::cmp::Reverse(id.len()));
-    table
-        .into_iter()
-        .find(|(id, ..)| crate::cost::matches_id(base, id))
+    let base = crate::cost::claude_base(model.strip_suffix(FAST).unwrap_or(model));
+    // The longest id that matches; the first of equals, as a sort would.
+    CLAUDE_WINDOWS
+        .iter()
+        .filter(|(id, ..)| crate::cost::matches_id(base, id))
+        .min_by_key(|(id, ..)| std::cmp::Reverse(id.len()))
         .map(|&(_, window, wide)| if one_m { wide } else { window })
 }
 

@@ -19,7 +19,7 @@ use common::*;
 
 use std::time::Duration;
 
-use mesimon_core::board::{SessionKind, SessionRecord, SessionState, StopReason};
+use mesimon_core::board::{SessionRecord, SessionState, StopReason};
 use mesimon_core::command::{Command, Response};
 
 /// A stand-in for Claude Code's pane (T-894): it reads its input into
@@ -58,32 +58,10 @@ fn session_of(h: &Harness) -> String {
     std::fs::read_to_string(h.dir.join("session")).unwrap()
 }
 
-fn feed(h: &Harness) -> String {
-    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
-}
-
-fn got(h: &Harness) -> String {
-    std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default()
-}
-
 /// Board a ticket, start its claude and bring it up at its prompt.
 fn seat(h: &Harness, c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let ticket = c.create_ticket(title);
+    let sid = c.spawn_claude(ticket);
     std::fs::write(h.dir.join("session"), sid.to_string()).unwrap();
     wait_composer(h, sid);
     (ticket, sid)
@@ -270,11 +248,11 @@ fn a_compaction_is_painted_and_moves_nothing() {
         "an ask at a compacting seat queues"
     );
     std::thread::sleep(Duration::from_millis(1_200));
-    assert!(!got(&h).contains(words), "nothing goes into a compaction");
+    assert!(!h.got().contains(words), "nothing goes into a compaction");
     assert_eq!(pending_of(&mut c, Some(ticket)).len(), 1, "the ask waits");
     post(&h, "manual");
     wait_until(Duration::from_secs(8), "the ask goes once the window closes", || {
-        got(&h).contains(words)
+        h.got().contains(words)
     });
 
     // A vetoed compaction fires `PreCompact` alone (nothing to compact):
@@ -318,7 +296,7 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
     wait_until(Duration::from_secs(8), "the command typed and entered", || {
         // The stub's line holds the plain start's prefilled title too: a
         // stub draws no box, so the composer the daemon reads stays empty.
-        got(&h).lines().any(|l| l.trim_end().ends_with("/compact"))
+        h.got().lines().any(|l| l.trim_end().ends_with("/compact"))
     });
     wait_until(Duration::from_secs(5), "the command's line in the feed", || {
         feed_count(&h, "command_sent", ticket) == 1
@@ -333,11 +311,11 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
     // The ack took the command and nothing else: the follow-up waits out
     // the window, and goes when it closes.
     std::thread::sleep(Duration::from_millis(600));
-    assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", feed(&h));
+    assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", h.feed());
     assert_eq!(pending_of(&mut c, Some(ticket)).len(), 1, "the follow-up waits");
-    assert!(!got(&h).contains(words));
+    assert!(!h.got().contains(words));
     post(&h, "manual");
     wait_until(Duration::from_secs(8), "the follow-up goes once the window closes", || {
-        got(&h).contains(words)
+        h.got().contains(words)
     });
 }

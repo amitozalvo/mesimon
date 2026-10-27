@@ -178,9 +178,7 @@ pub(crate) fn set_tty_log(path: Option<PathBuf>) {
 pub(crate) fn log(line: &str) {
     let Some(Some(path)) = TTY_LOG.get() else { return };
     use std::io::Write;
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
+    let ms = mesimon_core::clock::now_ms();
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{ms} {} {line}", std::process::id());
     }

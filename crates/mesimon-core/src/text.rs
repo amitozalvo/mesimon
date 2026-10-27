@@ -109,14 +109,20 @@ pub fn clip_words(s: &str, max: usize) -> String {
     format!("{}…", head[..cut].trim_end())
 }
 
-/// Trimmed, or `None` when nothing is left — there is no such thing as a
-/// blank tag or an empty prompt.
 /// `s` as one word to a POSIX shell: single-quoted, a quote inside spelled
 /// `'\''`. For a command line a person is shown or a shell is handed.
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// `s` with every whitespace character taken out: how words read off a
+/// screen are compared, where a wrap's join cannot say where a blank was.
+pub fn squeeze(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Trimmed, or `None` when nothing is left — there is no such thing as a
+/// blank tag or an empty prompt.
 pub fn nonblank(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_string())

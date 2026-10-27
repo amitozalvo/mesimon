@@ -1331,9 +1331,6 @@ pub enum ToolCall {
     },
 }
 
-/// An optional string argument, trimmed: absent, null or blank is `None`;
-/// any other shape is an error the model can read. The keyed tools (T-411)
-/// take their `key`, `before` and `seen` through this.
 /// An optional boolean argument: absent or null is `false`, anything but a
 /// boolean is refused by name (the `restore` rule, shared since T-434).
 fn flag(args: &Value, name: &str) -> Result<bool, String> {
@@ -1371,6 +1368,9 @@ fn expect_secs(args: &Value) -> Result<Option<u64>, String> {
     }
 }
 
+/// An optional string argument, trimmed: absent, null or blank is `None`;
+/// any other shape is an error the model can read. The keyed tools (T-411)
+/// take their `key`, `before` and `seen` through this.
 fn opt_word(args: &Value, name: &str) -> Result<Option<String>, String> {
     match args.get(name) {
         None | Some(Value::Null) => Ok(None),
@@ -1382,6 +1382,26 @@ fn opt_word(args: &Value, name: &str) -> Result<Option<String>, String> {
 /// A required string argument, trimmed and non-empty.
 fn word(args: &Value, name: &str) -> Result<String, String> {
     opt_word(args, name)?.ok_or_else(|| format!("{name} is required"))
+}
+
+/// An optional string argument untrimmed, as given; `at` names where it
+/// sits (`answers[n].`, or empty on the call).
+fn opt_text(args: &Value, name: &str, at: &str) -> Result<Option<String>, String> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(t)) => Ok(Some(t.clone())),
+        Some(other) => Err(format!("{at}{name} must be a string, not {other}")),
+    }
+}
+
+/// The shell a shell tool names, by id.
+fn shell_id(args: &Value, tool: &str) -> Result<uuid::Uuid, String> {
+    Ok(args
+        .get("shell")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool} requires shell"))?
+        .parse()
+        .map_err(|_| "not a shell id")?)
 }
 
 /// The `text` a tool carries, untrimmed: words typed on for an agent or a
@@ -1406,12 +1426,7 @@ fn one_answer(args: &Value, at: &str) -> Result<(Option<usize>, Option<String>),
                 .ok_or_else(|| format!("{at}index must be a whole number, not {v}"))?,
         ),
     };
-    let text = match args.get("text") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(t)) => Some(t.clone()),
-        Some(other) => return Err(format!("{at}text must be a string, not {other}")),
-    };
-    Ok((index, text))
+    Ok((index, opt_text(args, "text", at)?))
 }
 
 /// One of `answer_agent`'s `answers` (T-571): exactly one of `index`,
@@ -1576,11 +1591,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             key: word(args, "key")?,
             seen: word(args, "seen")?,
             request: word(args, "request")?,
-            change: match args.get("change") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(s)) => Some(s.clone()),
-                Some(other) => return Err(format!("change must be a string, not {other}")),
-            },
+            change: opt_text(args, "change", "")?,
         }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
             attachment: args
@@ -1592,21 +1603,11 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             key: opt_word(args, "key")?,
         }),
         "read_shell" => Ok(ToolCall::ReadShell {
-            shell: args
-                .get("shell")
-                .and_then(Value::as_str)
-                .ok_or("read_shell requires shell")?
-                .parse()
-                .map_err(|_| "not a shell id")?,
+            shell: shell_id(args, "read_shell")?,
             key: args.get("key").and_then(Value::as_str).map(str::to_owned),
         }),
         "request_close_shell" => Ok(ToolCall::RequestCloseShell {
-            shell: args
-                .get("shell")
-                .and_then(Value::as_str)
-                .ok_or("request_close_shell requires shell")?
-                .parse()
-                .map_err(|_| "not a shell id")?,
+            shell: shell_id(args, "request_close_shell")?,
             key: args
                 .get("key")
                 .and_then(Value::as_str)

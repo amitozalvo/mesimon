@@ -400,6 +400,13 @@ pub(crate) fn behind_mark(tier: Tier) -> char {
     }
 }
 
+/// What a scrolled list leaves out, as a board column and the notes rail
+/// say it: `↑ 3 above`, `↓ 2 below`.
+pub(crate) fn overflow_cue(tier: Tier, count: usize, up: bool) -> String {
+    let (arrow, word) = if up { (ahead_mark(tier), "above") } else { (behind_mark(tier), "below") };
+    format!("{arrow} {count} {word}")
+}
+
 /// A branch whose work has landed: the thin check `✓` U+2713 the card's
 /// worktree mark has always worn, and the ticket page's per-leg clause
 /// since T-368; the ASCII tier reads `+`.
@@ -600,13 +607,8 @@ pub(crate) fn card_glyph(
         |s: &&&SessionRecord| matches!(s.confidence, Confidence::High | Confidence::Medium);
     // Plan approval gets its own mark, but only when it is the whole story —
     // any other pending reason (permission ranks above plan) keeps the bang.
-    let mut has_attn = sessions.iter().any(|s| {
-        s.kind == SessionKind::Bash
-            && s.state.has_pane()
-            && s.shell_close_request
-                .as_ref()
-                .is_some_and(|q| q.expires_ms > mesimon_core::clock::now_ms())
-    });
+    let now = mesimon_core::clock::now_ms();
+    let mut has_attn = sessions.iter().any(|s| s.close_asked(now).is_some());
     let mut all_plan = !has_attn;
     for s in sessions.iter().filter(usable) {
         if let SessionState::RequiresAction { reason } = display_state(s) {

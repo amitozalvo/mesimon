@@ -194,6 +194,17 @@ pub enum AttentionTool {
     ExitPlanMode,
 }
 
+impl AttentionTool {
+    /// The interaction tool a hook's `tool_name` names, if it names one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "AskUserQuestion" => Some(AttentionTool::AskUserQuestion),
+            "ExitPlanMode" => Some(AttentionTool::ExitPlanMode),
+            _ => None,
+        }
+    }
+}
+
 /// What the observe-tier transcript tail saw (09 §4.4). Always applied at
 /// `Confidence::Low` — Tier-0 evidence never enters the attention queue and
 /// never lights the saturated colour.

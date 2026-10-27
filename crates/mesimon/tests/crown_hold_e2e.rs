@@ -11,48 +11,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mesimon_core::board::{CrownMode, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AgentTicketView, Command, CrownTouch, Deliver, Response};
+use mesimon_core::command::{Command, Deliver, Response};
 use mesimon_core::Principal;
 use serde_json::json;
 
 mod common;
 use common::*;
-
-fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
-    c.board().ticket(id).unwrap().short_key.clone()
-}
-
-fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
-    match c.send(
-        Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => Ok(ticket),
-        Response::Err { message } => Err(message),
-        other => panic!("read {key}: {other:?}"),
-    }
-}
-
-fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
-    match c.request(Command::Snapshot) {
-        Response::Board { crown_touches, .. } => crown_touches,
-        other => panic!("snapshot: {other:?}"),
-    }
-}
-
-/// A claude stub that writes every line it is given to `got.txt` beside
-/// it, so a test reads what reached the pane: the crown's wakes, a
-/// worker's asks, the train's rebase ask.
-const RECORDING_STUB: &str =
-    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
-
-/// One commit in `repo` touching `file`.
-fn commit(repo: &std::path::Path, file: &str) {
-    std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
-    git(repo, &["add", file]);
-    git(repo, &["commit", "-qm", file]);
-}
 
 /// What `hold_ticket` answered: `(held, by, changed, detail)`, or the
 /// refusal's words.
@@ -80,7 +44,7 @@ fn hold(
 
 /// `hold` with a fresh read's stamp.
 fn hold_now(c: &mut TestClient, session: uuid::Uuid, key: &str, on: bool) -> Held {
-    let seen = read(c, session, key).unwrap().seen;
+    let seen = c.agent_read(session, key).unwrap().seen;
     hold(c, session, key, on, seen)
 }
 
@@ -110,7 +74,6 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_hold");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
@@ -125,18 +88,12 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
     let feed_count = |needle: &str| -> usize {
         std::fs::read_to_string(&feed_path).unwrap_or_default().matches(needle).count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-919 held for review");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -144,18 +101,17 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 1. held before the worker starts: on the flag, on every read ----
-    assert_eq!(read(&mut c, sa, &kw).unwrap().held, None);
+    assert_eq!(c.agent_read(sa, &kw).unwrap().held, None);
     let (held, by, changed, detail) = hold_now(&mut c, sa, &kw, true).unwrap();
     assert!(held && changed, "{detail}");
     assert_eq!(by, "crown");
     assert!(detail.contains("out of the merge train"), "{detail}");
     assert!(flag(&mut c, w), "the person's own flag carries the hold");
-    assert_eq!(read(&mut c, sa, &kw).unwrap().held.as_deref(), Some("crown"));
-    assert!(touches(&mut c).iter().any(|t| t.ticket == w && t.action == "held"));
+    assert_eq!(c.agent_read(sa, &kw).unwrap().held.as_deref(), Some("crown"));
+    assert!(c.crown_touches().iter().any(|t| t.ticket == w && t.action == "held"));
     // The feed is flushed on the daemon's clock.
     wait_until(std::time::Duration::from_secs(5), "the hold in the feed", || {
         feed_count("\"hold_ticket\"") == 1
@@ -165,18 +121,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
     assert!(held && !changed);
     assert_eq!(by, "crown");
 
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -185,7 +130,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     // This connection arms the train and keeps it armed.
     assert!(matches!(
@@ -204,14 +149,13 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
 
     // ---- 2. delivered while held: the crown hears it now, nothing merges --
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).iter().any(|l| l.contains(" delivered ("))
     });
     let delivered = lines_with(&worker).pop().unwrap();
     assert!(delivered.contains("merge: crown"), "the merge waits on the crown: {delivered}");
-    let view = read(&mut c, sa, &kw).unwrap();
+    let view = c.agent_read(sa, &kw).unwrap();
     assert_eq!(view.held.as_deref(), Some("crown"));
     let merge = view.merge.expect("a branch has a merger");
     assert_eq!(merge.by, "crown");
@@ -226,28 +170,22 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
         "not held for a train that will not take it"
     );
     assert_eq!(feed_count("\"hold_ticket\""), 1, "the second hold changed nothing");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 3. the base moves: no rebase ask; the crown's correction lands ---
     commit(&h.repo, "base1.txt");
     wait_until(std::time::Duration::from_secs(10), "the flags to read it behind", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("needs_rebase")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("needs_rebase")
     });
     std::thread::sleep(std::time::Duration::from_millis(3000));
     assert!(lines_with("Rebase your current branch").is_empty(), "the train asked a held rebase");
     assert_eq!(feed_count("merge_train_rebase_asked"), 0);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: "mesimon-probe-919 rebase and fix the review note".into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
+    match c.crown_ask(
+        sa,
+        &kw,
+        "mesimon-probe-919 rebase and fix the review note",
+        Deliver::Idle,
+        None,
     ) {
         Response::AgentAsked { .. } => {}
         other => panic!("ask_agent: {other:?}"),
@@ -265,12 +203,11 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
         lines_with(&worker).len() >= 2
     });
     wait_until(std::time::Duration::from_secs(10), "the flags to read it ahead", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
     std::thread::sleep(std::time::Duration::from_millis(3000));
     assert!(!merged(), "the train merged a held branch after its correction");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 4. approved: returned, and the train takes it by its own gates ---
     let (held, by, changed, detail) = hold_now(&mut c, sa, &kw, false).unwrap();
@@ -278,8 +215,8 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
     assert!(by.is_empty());
     assert!(detail.contains("nothing merges it now"), "{detail}");
     assert!(!flag(&mut c, w));
-    assert_eq!(read(&mut c, sa, &kw).unwrap().held, None);
-    assert!(touches(&mut c).iter().any(|t| t.ticket == w && t.action == "returned"));
+    assert_eq!(c.agent_read(sa, &kw).unwrap().held, None);
+    assert!(c.crown_touches().iter().any(|t| t.ticket == w && t.action == "returned"));
     wait_until(std::time::Duration::from_secs(5), "the return in the feed", || {
         feed_count("\"return_ticket\"") == 1
     });
@@ -293,7 +230,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
 
     // ---- 5. merged: a hold takes back no merge ----------------------------
     wait_until(std::time::Duration::from_secs(10), "the flags to read it merged", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("merged")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("merged")
     });
     let refused = hold_now(&mut c, sa, &kw, true).unwrap_err();
     assert!(refused.contains("already merged"), "{refused}");
@@ -333,11 +270,11 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     };
 
     let a = c.create_ticket("coordinate");
-    let ka = key_of(&mut c, a);
+    let ka = c.key_of(a);
     let p = worktree(&mut c, "a person's hold");
-    let kp = key_of(&mut c, p);
+    let kp = c.key_of(p);
     let q = worktree(&mut c, "the crown's hold");
-    let kq = key_of(&mut c, q);
+    let kq = c.key_of(q);
     let s = c.create_ticket("in the checkout");
     assert!(matches!(
         c.request(Command::SetWorkspace {
@@ -346,14 +283,14 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
         }),
         Response::Ok
     ));
-    let ks = key_of(&mut c, s);
+    let ks = c.key_of(s);
     let sa = c.spawn_claude(a);
     // A worker in the checkout: a claude on a worktree ticket waits for its cut.
     let sp = c.spawn_claude(s);
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     // ---- 1. no crown yet: an agent reaching for another ticket is refused -
-    let seen = read(&mut c, sp, &ks).unwrap().seen;
+    let seen = c.agent_read(sp, &ks).unwrap().seen;
     let refused = hold(&mut c, sp, &kq, true, seen).unwrap_err();
     assert!(refused.contains("crown"), "{refused}");
     assert!(!flag(&mut c, q), "a refused caller moved nothing");
@@ -378,13 +315,13 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     assert!(!flag(&mut c, q));
 
     // ---- 3. a person's `t` after the crown's read makes the write stale --
-    let stale = read(&mut c, sa, &kp).unwrap().seen;
+    let stale = c.agent_read(sa, &kp).unwrap().seen;
     assert!(matches!(c.request(Command::SetManualMerge { id: p, on: true }), Response::Ok));
     let refused = hold(&mut c, sa, &kp, false, stale).unwrap_err();
     assert!(refused.contains("changed since it was read"), "{refused}");
     assert!(flag(&mut c, p), "a stale return moved nothing");
     // Read fresh: the person's hold, which the crown does not return.
-    assert_eq!(read(&mut c, sa, &kp).unwrap().held.as_deref(), Some("person"));
+    assert_eq!(c.agent_read(sa, &kp).unwrap().held.as_deref(), Some("person"));
     let refused = hold_now(&mut c, sa, &kp, false).unwrap_err();
     assert!(refused.contains("by a person"), "{refused}");
     assert!(flag(&mut c, p));
@@ -392,7 +329,7 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     let (held, by, changed, _) = hold_now(&mut c, sa, &kp, true).unwrap();
     assert!(held && !changed);
     assert_eq!(by, "person");
-    assert_eq!(read(&mut c, sa, &kp).unwrap().held.as_deref(), Some("person"));
+    assert_eq!(c.agent_read(sa, &kp).unwrap().held.as_deref(), Some("person"));
     assert_eq!(feed_count("\"hold_ticket\""), 0);
 
     // ---- 4. a person's `t` on the crown's hold ends it or makes it theirs -
@@ -400,12 +337,12 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     assert!(held && changed);
     assert_eq!(by, "crown");
     assert!(matches!(c.request(Command::SetManualMerge { id: q, on: false }), Response::Ok));
-    assert_eq!(read(&mut c, sa, &kq).unwrap().held, None);
+    assert_eq!(c.agent_read(sa, &kq).unwrap().held, None);
     let (_, by, changed, _) = hold_now(&mut c, sa, &kq, true).unwrap();
     assert!(changed);
     assert_eq!(by, "crown");
     assert!(matches!(c.request(Command::SetManualMerge { id: q, on: true }), Response::Ok));
-    assert_eq!(read(&mut c, sa, &kq).unwrap().held.as_deref(), Some("person"));
+    assert_eq!(c.agent_read(sa, &kq).unwrap().held.as_deref(), Some("person"));
     let refused = hold_now(&mut c, sa, &kq, false).unwrap_err();
     assert!(refused.contains("by a person"), "{refused}");
     assert!(matches!(c.request(Command::SetManualMerge { id: q, on: false }), Response::Ok));
@@ -441,10 +378,10 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     assert!(flag(&mut c, q), "the flag is on the ticket");
     assert!(flag(&mut c, p), "and the person's too");
     wait_until(std::time::Duration::from_secs(10), "the crown's seat back", || {
-        read(&mut c, sa, &kq).is_ok()
+        c.agent_read(sa, &kq).is_ok()
     });
-    assert_eq!(read(&mut c, sa, &kq).unwrap().held.as_deref(), Some("crown"));
-    assert_eq!(read(&mut c, sa, &kp).unwrap().held.as_deref(), Some("person"));
+    assert_eq!(c.agent_read(sa, &kq).unwrap().held.as_deref(), Some("crown"));
+    assert_eq!(c.agent_read(sa, &kp).unwrap().held.as_deref(), Some("person"));
     let (held, _, changed, _) = hold_now(&mut c, sa, &kq, false).unwrap();
     assert!(!held && changed, "the crown returns its own hold after a restart");
     assert!(!flag(&mut c, q));
@@ -453,7 +390,7 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
     let mut shim = Shim::start(&h.paths.orch_sock(), sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
-    let seen = read(&mut c, sa, &kq).unwrap().seen.unwrap();
+    let seen = c.agent_read(sa, &kq).unwrap().seen.unwrap();
     for bad in
         [json!({ "key": kq, "seen": seen }), json!({ "key": kq, "seen": seen, "action": "toggle" })]
     {
@@ -486,7 +423,7 @@ fn the_hold_is_the_crowns_and_a_persons_t_stays_the_persons() {
         feed_count("\"hold_kept\"") == 1
     });
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    assert_eq!(read(&mut c, sa, &kq).unwrap().held.as_deref(), Some("person"));
+    assert_eq!(c.agent_read(sa, &kq).unwrap().held.as_deref(), Some("person"));
     let refused = hold_now(&mut c, sa, &kq, false).unwrap_err();
     assert!(refused.contains("by a person"), "{refused}");
 }
@@ -510,7 +447,6 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_hold_rebase");
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> Vec<String> {
@@ -521,18 +457,12 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
             .map(str::to_string)
             .collect()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-919 held mid-rebase");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -540,20 +470,8 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -562,7 +480,7 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
@@ -580,8 +498,7 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
     // The base moves first, so the delivery is behind it and the train asks.
     commit(&h.repo, "base1.txt");
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let ask = format!("Rebase your current branch {branch} onto main");
     wait_until(std::time::Duration::from_secs(15), "the train's rebase ask", || {
         !lines_with(&ask).is_empty()
@@ -596,7 +513,7 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
     git(&path, &["rebase", "-q", "main"]);
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the flags to read it ahead", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert!(!merged(), "the train merged after the rebase turn of a held ticket");
@@ -629,7 +546,6 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_handover");
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> Vec<String> {
@@ -640,23 +556,19 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
             .map(str::to_string)
             .collect()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let woke_by = |c: &mut TestClient, crown: ulid::Ulid, worker: ulid::Ulid| {
-        touches(c).iter().any(|t| t.ticket == crown && t.action == "woke" && t.from == Some(worker))
+        c.crown_touches()
+            .iter()
+            .any(|t| t.ticket == crown && t.action == "woke" && t.from == Some(worker))
     };
 
     let a = c.create_ticket("the first crown");
     let b = c.create_ticket("the second crown");
     let w = c.create_ticket("mesimon-probe-927 started by the first crown");
     let p = c.create_ticket("mesimon-probe-927 a person's own");
-    let (kw, kp) = (key_of(&mut c, w), key_of(&mut c, p));
+    let (kw, kp) = (c.key_of(w), c.key_of(p));
     for id in [w, p] {
         assert!(matches!(
             c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
@@ -667,22 +579,10 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
     let sb = c.spawn_claude(b);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 1. the first crown starts a worker; a person starts their own ---
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -712,8 +612,7 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
 
     // ---- 2. the person moves the crown; the new one holds the person's ---
     assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
-    start(&mut c, sb);
-    stop(&mut c, sb);
+    h.one_turn(&mut c, sb);
     match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => assert_eq!(
             ticket.under_crown.as_deref(),
@@ -736,7 +635,7 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
     // ---- 3. a restart in between --------------------------------------------
     h.restart();
     let mut c = h.client("crown_handover_2");
-    assert_eq!(read(&mut c, sb, &kp).unwrap().held.as_deref(), Some("crown"));
+    assert_eq!(c.agent_read(sb, &kp).unwrap().held.as_deref(), Some("crown"));
     assert!(
         c.board().sessions.iter().all(|s| s.ticket != p || s.started_by.is_none()),
         "the handover made no person's agent the crown's"
@@ -750,14 +649,12 @@ fn a_new_crown_hears_the_old_crown_s_workers_and_the_tickets_it_holds() {
         lines_with(&worker_w).iter().any(|l| l.contains(" delivered ("))
     });
     assert!(woke_by(&mut c, b, w), "the crown worn now was woken");
-    start(&mut c, sb);
-    stop(&mut c, sb);
+    h.one_turn(&mut c, sb);
 
     // ---- 5. the held person's agent delivers: the crown hears it too -------
     let worker_p = format!("{kp} \"mesimon-probe-927 a person's own\"");
     commit(&p_path, "p.txt");
-    start(&mut c, sp);
-    stop(&mut c, sp);
+    h.one_turn(&mut c, sp);
     wait_until(std::time::Duration::from_secs(15), "the held ticket's wake", || {
         lines_with(&worker_p).iter().any(|l| l.contains(" delivered ("))
     });
@@ -787,7 +684,6 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_unheard_merge");
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| -> Vec<String> {
@@ -798,18 +694,10 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
             .map(str::to_string)
             .collect()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
 
     let a = c.create_ticket("coordinate");
     let p = c.create_ticket("mesimon-probe-936 a person's own");
-    let kp = key_of(&mut c, p);
+    let kp = c.key_of(p);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: p, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -817,8 +705,7 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     assert!(matches!(
         c.request(Command::SpawnSession {
             ticket: p,
@@ -841,29 +728,27 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
     assert!(held && by == "crown");
     commit(&path, "p.txt");
     wait_until(std::time::Duration::from_secs(15), "the flags to read it ahead", || {
-        read(&mut c, sa, &kp).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kp).unwrap().merge_state.as_deref() == Some("ahead")
     });
-    start(&mut c, sp);
-    stop(&mut c, sp);
+    h.one_turn(&mut c, sp);
     wait_until(std::time::Duration::from_secs(15), "the held delivery's wake", || {
         lines_with(&format!("{worker}delivered")).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 2. the person's `t` takes the hold; they merge it by hand ---------
     assert!(matches!(c.request(Command::SetManualMerge { id: p, on: true }), Response::Ok));
-    assert_eq!(read(&mut c, sa, &kp).unwrap().held.as_deref(), Some("person"));
-    let branch = read(&mut c, sa, &kp).unwrap().branch.expect("a branch");
+    assert_eq!(c.agent_read(sa, &kp).unwrap().held.as_deref(), Some("person"));
+    let branch = c.agent_read(sa, &kp).unwrap().branch.expect("a branch");
     git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
     wait_until(std::time::Duration::from_secs(15), "the flags to read it merged", || {
-        read(&mut c, sa, &kp).unwrap().merge_state.as_deref() == Some("merged")
+        c.agent_read(sa, &kp).unwrap().merge_state.as_deref() == Some("merged")
     });
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(lines_with(&format!("{worker}merged")).is_empty(), "not the crown's to hear");
 
     // ---- 3. watched again, a restart, a turn: nothing merged is news -------
-    let v = read(&mut c, sa, &kp).unwrap();
+    let v = c.agent_read(sa, &kp).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -874,10 +759,8 @@ fn a_merge_the_crown_did_not_hear_is_not_news_later() {
     drop(c);
     h.restart();
     let mut c = h.client("crown_unheard_merge_2");
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    start(&mut c, sp);
-    stop(&mut c, sp);
+    h.one_turn(&mut c, sa);
+    h.one_turn(&mut c, sp);
     wait_until(std::time::Duration::from_secs(15), "the watched turn's wake", || {
         lines_with(&worker).len() >= 2
     });
@@ -909,7 +792,7 @@ fn a_hold_and_a_start_take_each_other_s_stamp() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 started, then held");
     let v = c.create_ticket("mesimon-probe-936 held, then started");
-    let (kw, kv) = (key_of(&mut c, w), key_of(&mut c, v));
+    let (kw, kv) = (c.key_of(w), c.key_of(v));
     // Filed with its workspace, as the crown files.
     assert!(matches!(
         c.request(Command::SetWorkspace { id: v, workspace: Some(WorkspaceStrategy::Worktree) }),
@@ -937,14 +820,14 @@ fn a_hold_and_a_start_take_each_other_s_stamp() {
     };
 
     // Started, then held with the start's stamp.
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let seen = start(&mut c, &kw, seen);
     assert!(seen.is_some(), "the receipt carries the stamp");
     let (held, by, changed, _) = hold(&mut c, sa, &kw, true, seen).unwrap();
     assert!(held && changed && by == "crown");
 
     // Held, then started with the hold's stamp.
-    let seen = read(&mut c, sa, &kv).unwrap().seen;
+    let seen = c.agent_read(sa, &kv).unwrap().seen;
     let seen = match c.send(
         Principal::Agent { session: sa },
         Command::AgentHoldTicket { key: kv.clone(), hold: true, seen },

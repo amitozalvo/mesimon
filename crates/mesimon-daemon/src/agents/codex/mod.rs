@@ -48,14 +48,18 @@ pub fn preview_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
 pub fn input_ready(screen: &mesimon_backend_tmux::InputScreen) -> bool {
     let Some((x, y)) = screen.cursor else { return false };
     let Some(above) = screen.lines.get(..=y) else { return false };
-    let Some(prompt) = above.iter().rposition(|line| {
-        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
-    }) else {
-        return false;
-    };
+    let Some(prompt) = prompt_row(above) else { return false };
     // Wrapped/multiline input keeps the composer's two-column indentation.
     // Nothing below the cursor (including any status line) participates.
     x >= 2 && above[prompt + 1..].iter().all(|line| line.is_empty() || line.starts_with("  "))
+}
+
+/// The last composer prompt row (`›` alone or before a space) in `above`,
+/// the screen's rows down to the cursor's.
+fn prompt_row(above: &[String]) -> Option<usize> {
+    above.iter().rposition(|line| {
+        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
+    })
 }
 
 /// An `input_ready` composer whose cursor has left the start of its prompt
@@ -77,9 +81,7 @@ pub fn composer_text(screen: &mesimon_backend_tmux::InputScreen) -> Option<Strin
     }
     let (_, y) = screen.cursor?;
     let above = screen.lines.get(..=y)?;
-    let prompt = above.iter().rposition(|line| {
-        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
-    })?;
+    let prompt = prompt_row(above)?;
     let rows = above[prompt..].iter().enumerate().map(|(i, line)| {
         if i == 0 {
             line.strip_prefix('›').unwrap_or(line)
@@ -97,9 +99,10 @@ pub fn composer_text(screen: &mesimon_backend_tmux::InputScreen) -> Option<Strin
 /// was drawn, a word more or less is a person's edit.
 pub fn composer_shows(screen: &mesimon_backend_tmux::InputScreen, ours: &str) -> bool {
     let Some(text) = composer_text(screen) else { return false };
-    let bare = |s: &str| s.split_whitespace().collect::<String>();
-    let text = bare(&text);
-    text == bare(ours) || text == bare(&format!("[Pasted Content {} chars]", ours.chars().count()))
+    use mesimon_core::text::squeeze;
+    let text = squeeze(&text);
+    text == squeeze(ours)
+        || text == squeeze(&format!("[Pasted Content {} chars]", ours.chars().count()))
 }
 
 /// A Codex dialog stands in the box's place (T-907): the pane's last `›`

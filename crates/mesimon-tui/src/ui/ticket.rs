@@ -1064,7 +1064,7 @@ fn draw_preview(
                 let budget = (area.height as usize).saturating_sub(lines.len());
                 let width = (area.width as usize).saturating_sub(4);
                 let key = note_key(meta);
-                let rows = rendered(app, key, width, text, Newline::of_note(meta));
+                let rows = rendered(app, key, width, || text, Newline::of_note(meta));
                 // Enter in the summary dialog (T-696) asked for one of this
                 // note's lines: the rows above it are what the text before
                 // the line renders to at this width, so that is the window's
@@ -1110,7 +1110,7 @@ fn draw_preview(
             // reply must not open the next one halfway down.
             let key = session.map(|s| doc_key(s, Some(text)));
             let rows = match key {
-                Some(key) => rendered(app, key, width, text, Newline::Space),
+                Some(key) => rendered(app, key, width, || text, Newline::Space),
                 None => {
                     std::rc::Rc::new(crate::rich::render_all(text, width, theme, Newline::Space))
                 }
@@ -1545,11 +1545,12 @@ fn note_key(meta: &NoteMeta) -> u64 {
 /// window of it. Keyed the way the page scroll is (`doc_key` / `note_key`).
 /// `newline` is not in the cache key: it follows from the document (a
 /// reply's is `Space`, a note's is its author's), and the key names that.
-pub(super) fn rendered(
+/// `text` is asked only on a miss.
+pub(super) fn rendered<T: AsRef<str>>(
     app: &App,
     key: u64,
     width: usize,
-    text: &str,
+    text: impl FnOnce() -> T,
     newline: Newline,
 ) -> Rc<Vec<Line<'static>>> {
     let flavor = app.theme.flavor;
@@ -1559,7 +1560,7 @@ pub(super) fn rendered(
             return Rc::clone(&c.rows);
         }
     }
-    let rows = Rc::new(crate::rich::render_all(text, width, &app.theme, newline));
+    let rows = Rc::new(crate::rich::render_all(text().as_ref(), width, &app.theme, newline));
     *slot = Some(RichCache { key, width, flavor, rows: Rc::clone(&rows) });
     rows
 }
@@ -1730,12 +1731,10 @@ fn draw_rail(
             if s.observe_only() {
                 badges.push("external");
             }
-            if s.kind == SessionKind::Bash && s.state.has_pane() {
-                if s.shell_close_request.as_ref().is_some_and(|q| q.expires_ms > now) {
-                    badges.push("crown asks to close");
-                } else if s.shell_shared {
-                    badges.push("agent + crown can read");
-                }
+            if s.close_asked(now).is_some() {
+                badges.push("crown asks to close");
+            } else if s.kind == SessionKind::Bash && s.state.has_pane() && s.shell_shared {
+                badges.push("agent + crown can read");
             }
             if matches!(s.state, SessionState::Exited { .. }) {
                 badges.push("enter resumes");
@@ -1859,14 +1858,8 @@ fn draw_rail(
         let cut = rows >= 2 && top + rows < total;
         let end = (top + if cut { rows - 1 } else { rows }).min(total);
         let cue = |count: usize, up: bool| {
-            let arrow = match (tier, up) {
-                (glyphs::Tier::Ascii, true) => '^',
-                (glyphs::Tier::Ascii, false) => 'v',
-                (_, true) => '↑',
-                (_, false) => '↓',
-            };
-            let word = if up { "above" } else { "below" };
-            Line::from(Span::styled(format!(" {arrow} {count} {word}"), theme.dim2()))
+            let words = glyphs::overflow_cue(tier, count, up);
+            Line::from(Span::styled(format!(" {words}"), theme.dim2()))
         };
         lines.push(if top > 0 { cue(top, true) } else { Line::default() });
         for (j, n) in notes.iter().enumerate().take(end).skip(top) {

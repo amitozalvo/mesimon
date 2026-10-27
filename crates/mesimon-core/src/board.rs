@@ -733,6 +733,16 @@ impl SessionRecord {
         }
     }
 
+    /// The crown's unexpired ask to close this shell, on a Bash seat that
+    /// still has its pane: the card's bang, the badge and the board's
+    /// needs-you read it.
+    pub fn close_asked(&self, now: u64) -> Option<&ShellCloseRequest> {
+        if self.kind != SessionKind::Bash || !self.state.has_pane() {
+            return None;
+        }
+        self.shell_close_request.as_ref().filter(|q| q.expires_ms > now)
+    }
+
     /// The state written, and the held call (`dialog_call`, T-957 round 10)
     /// let go whenever the record is not on a plan or a question: every
     /// departure, a park, a death or a supervisor's loss as much as the
@@ -1579,13 +1589,29 @@ impl ColumnSettings {
         self.collapsed_when_empty = c == Collapse::WhenEmpty;
     }
 
+    /// The three move rules in the one order every reader keeps: the word a
+    /// person reads, the field's name, and the column it names.
+    pub fn moves(&self) -> [(&'static str, &'static str, &Option<String>); 3] {
+        [
+            ("working", "on_working", &self.on_working),
+            ("done", "on_done", &self.on_done),
+            ("merged", "on_merged", &self.on_merged),
+        ]
+    }
+
+    fn moves_mut(&mut self) -> [(&'static str, &mut Option<String>); 3] {
+        [
+            ("on_working", &mut self.on_working),
+            ("on_done", &mut self.on_done),
+            ("on_merged", &mut self.on_merged),
+        ]
+    }
+
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
         self.arrives_on != Arrival::Nothing
-            || self.on_working.is_some()
-            || self.on_done.is_some()
-            || self.on_merged.is_some()
+            || self.moves().iter().any(|(_, _, c)| c.is_some())
             || self.train != TrainReach::Off
             || self.sleep_after_minutes > 0
     }
@@ -1626,14 +1652,10 @@ impl ColumnSettings {
         if self.agent_tools != AgentTools::Full {
             out.push(format!("agent tools: {}", self.agent_tools.word()));
         }
-        if let Some(c) = &self.on_working {
-            out.push(format!("working → {c}"));
-        }
-        if let Some(c) = &self.on_done {
-            out.push(format!("done → {c}"));
-        }
-        if let Some(c) = &self.on_merged {
-            out.push(format!("merged → {c}"));
+        for (word, _, c) in self.moves() {
+            if let Some(c) = c {
+                out.push(format!("{word} → {c}"));
+            }
         }
         if self.requires_merge {
             out.push("entry needs a merged branch".into());
@@ -1947,7 +1969,7 @@ pub fn sanitize_title(raw: &str) -> String {
 /// `sanitize_title` removes a format hazard and turns a tab into a blank,
 /// so `\u{200B}!rm` stored is `!rm`, and ` !rm` stored is typed as `!rm`.
 pub fn shell_title(stored: &str) -> bool {
-    stored.trim_start().starts_with('!')
+    crate::road::is_shell(stored.trim_start())
 }
 
 /// The longest a note may be, in bytes. A note is a markdown file the
@@ -2901,17 +2923,10 @@ impl Board {
             out.push((d, "default_column"));
         }
         for c in self.columns.iter_mut() {
-            if c.settings.on_working.as_ref().is_some_and(|n| !names.contains(n)) {
-                c.settings.on_working = None;
-                out.push((c.name.clone(), "on_working"));
-            }
-            if c.settings.on_done.as_ref().is_some_and(|n| !names.contains(n)) {
-                c.settings.on_done = None;
-                out.push((c.name.clone(), "on_done"));
-            }
-            if c.settings.on_merged.as_ref().is_some_and(|n| !names.contains(n)) {
-                c.settings.on_merged = None;
-                out.push((c.name.clone(), "on_merged"));
+            for (field, target) in c.settings.moves_mut() {
+                if target.take_if(|n| !names.contains(n)).is_some() {
+                    out.push((c.name.clone(), field));
+                }
             }
         }
         out
@@ -3045,14 +3060,10 @@ impl Board {
             if c.name == from {
                 c.name = to.to_string();
             }
-            if c.settings.on_working.as_deref() == Some(from) {
-                c.settings.on_working = Some(to.to_string());
-            }
-            if c.settings.on_done.as_deref() == Some(from) {
-                c.settings.on_done = Some(to.to_string());
-            }
-            if c.settings.on_merged.as_deref() == Some(from) {
-                c.settings.on_merged = Some(to.to_string());
+            for (_, target) in c.settings.moves_mut() {
+                if target.as_deref() == Some(from) {
+                    *target = Some(to.to_string());
+                }
             }
         }
         if self.default_column.as_deref() == Some(from) {
@@ -3130,9 +3141,7 @@ impl Board {
         if self.column(name).is_none() {
             return Err(format!("no such column: {name}"));
         }
-        for (field, target) in
-            [("working", &s.on_working), ("done", &s.on_done), ("merged", &s.on_merged)]
-        {
+        for (field, _, target) in s.moves() {
             if let Some(t) = target {
                 if t == name {
                     return Err(format!("when {field}: a column cannot move a ticket to itself"));
@@ -3521,6 +3530,30 @@ impl Board {
         changed
     }
 
+    /// `id` already sits where a move to `column` above `before` (or at its
+    /// foot) would put it: removed and put back at the same index, which
+    /// needs no new order and changes nothing (the ghost dropped where it
+    /// was picked up). A `before` not in the column means the foot.
+    pub fn sits_before(&self, column: &str, id: ulid::Ulid, before: Option<ulid::Ulid>) -> bool {
+        let siblings = self.column_tickets(column);
+        let at = siblings.iter().position(|t| t.id == id);
+        let others: Vec<ulid::Ulid> = siblings.iter().map(|t| t.id).filter(|t| *t != id).collect();
+        let want = before.and_then(|b| others.iter().position(|t| *t == b));
+        at == Some(want.unwrap_or(others.len()))
+    }
+
+    /// The fractional order `id` takes in `column` above `before`, or at
+    /// its foot when `before` is none or not there.
+    pub fn order_before(&self, column: &str, id: ulid::Ulid, before: Option<ulid::Ulid>) -> String {
+        let others: Vec<&Ticket> =
+            self.column_tickets(column).into_iter().filter(|t| t.id != id).collect();
+        let between = crate::fracindex::between;
+        match before.and_then(|b| others.iter().position(|t| t.id == b)) {
+            Some(i) => between(if i == 0 { "" } else { &others[i - 1].order }, &others[i].order),
+            None => between(others.last().map(|t| t.order.as_str()).unwrap_or(""), ""),
+        }
+    }
+
     /// Tickets of one column, sorted by fractional order (ties by id for stability).
     /// Archived tickets stay in `tickets` (the ticket page needs them in the
     /// snapshot) but never surface here — this is the board's one chokepoint.
@@ -3595,14 +3628,7 @@ impl Board {
             .chain(
                 self.sessions
                     .iter()
-                    .filter(|s| {
-                        s.kind == SessionKind::Bash
-                            && s.state.has_pane()
-                            && s.shell_close_request.as_ref().is_some_and(|q| {
-                                q.expires_ms > now
-                                    && self.crown_holder().map(|t| t.id) == Some(q.crown)
-                            })
-                    })
+                    .filter(|s| s.close_asked(now).is_some_and(|q| self.is_crowned(q.crown)))
                     .map(|s| s.ticket),
             )
             .collect()
@@ -3644,6 +3670,11 @@ impl Board {
     /// hides one it would take.
     pub fn send_now_seat(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
         self.pane_target(ticket).filter(|s| s.kind.provider().is_some_and(|p| p.has_send_now()))
+    }
+
+    /// The record of session `id`, in any state.
+    pub fn session(&self, id: uuid::Uuid) -> Option<&SessionRecord> {
+        self.sessions.iter().find(|s| s.id == id)
     }
 
     /// The agent a ticket already holds, parked or not — `is_live`, so a

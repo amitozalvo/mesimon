@@ -304,9 +304,7 @@ fn render(resp: Response) -> Value {
                 json!({ "column": column, "board_version": board_version, "replayed": replayed });
             // A keyed move (T-411) hands back the target's fresh stamp so the
             // next edit needs no second read; an own-ticket move carries none.
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The workspace the ticket was filed with (T-583), so a crown that
@@ -323,9 +321,7 @@ fn render(resp: Response) -> Value {
         Response::AgentTagged { tags, replaced, board_version, seen } => {
             let mut body =
                 json!({ "tags": tags, "replaced": replaced, "board_version": board_version });
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The words as the board KEPT them: scrubbed and capped, so a line
@@ -368,9 +364,7 @@ fn render(resp: Response) -> Value {
                 "budget_left": budget_left,
                 "wakes": mcp::CROWN_RULES_AT
             });
-            if let Some(about) = budget_about {
-                body["budget_about"] = json!(about);
-            }
+            put(&mut body, "budget_about", budget_about);
             if !tier.is_empty() {
                 body["tier"] = json!(tier);
             }
@@ -378,12 +372,10 @@ fn render(resp: Response) -> Value {
                 body["workspace"] = json!(workspace);
             }
             if let Some(prompt) = prompt {
-                body["prompt"] = json!(prompt.word());
+                body["prompt"] = json!(prompt);
                 body["prompt_about"] = json!(start_prompt_about(&key, prompt, session_started));
             }
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The crown's merge (T-613): the branch landed, in the merge's own
@@ -392,9 +384,7 @@ fn render(resp: Response) -> Value {
         Response::AgentMerged { key, detail, notice, seen } => {
             let mut body =
                 json!({ "key": key, "outcome": "merged", "detail": detail, "notice": notice });
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The crown's train hold (T-919): the state the ticket is in now, in
@@ -416,12 +406,8 @@ fn render(resp: Response) -> Value {
             if held {
                 body["held"] = json!(by);
             }
-            if let Some(merge) = merge {
-                body["merge"] = json!(merge);
-            }
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "merge", merge);
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The crown's ask (T-413): held on the card until a person sends it,
@@ -470,14 +456,10 @@ fn render(resp: Response) -> Value {
                 Some(asked) => body["asked"] = json!(asked),
                 None => body["road"] = json!(AskRoad::of(road, held_for_person).word()),
             }
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
-            if let Some(why) = held_because {
-                body["held_because"] = json!(why);
-            }
+            put(&mut body, "seen", seen);
+            put(&mut body, "held_because", held_because);
             if let Some(wake) = wake {
-                body["wake"] = json!(wake.word());
+                body["wake"] = json!(wake);
                 body["wake_about"] = json!(match wake {
                     AskWake::Woken => format!(
                         "{key}'s agent was asleep, and these words woke it in its conversation: \
@@ -503,12 +485,8 @@ fn render(resp: Response) -> Value {
                 "answer": answer,
                 "persons_questions": mcp::PERSONS_QUESTIONS,
             });
-            if let Some(why) = reason {
-                body["reason"] = json!(why);
-            }
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "reason", reason);
+            put(&mut body, "seen", seen);
             text(&body)
         }
         // The crown's plan accept (T-582), once its press settled:
@@ -524,12 +502,8 @@ fn render(resp: Response) -> Value {
                 "outcome": outcome,
                 "persons_plans": mcp::PERSONS_PLANS,
             });
-            if let Some(why) = reason {
-                body["reason"] = json!(why);
-            }
-            if let Some(seen) = seen {
-                body["seen"] = json!(seen);
-            }
+            put(&mut body, "reason", reason);
+            put(&mut body, "seen", seen);
             text(&body)
         }
 
@@ -596,6 +570,13 @@ fn ask(sock: &std::path::Path, env: &Envelope) -> Result<Response, String> {
         Fault::Closed => "mesimon daemon closed the connection without answering".into(),
         Fault::Unreadable(e) => format!("unreadable daemon response: {e}"),
     })
+}
+
+/// `body[key]` set when `v` is present, left out when not.
+fn put<T: serde::Serialize>(body: &mut Value, key: &str, v: Option<T>) {
+    if let Some(v) = v {
+        body[key] = json!(v);
+    }
 }
 
 fn text<T: serde::Serialize>(v: &T) -> Value {

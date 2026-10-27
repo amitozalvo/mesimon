@@ -21,6 +21,8 @@
 pub const NOT_RECOGNISED: &str = "plan dialog not recognised ∙ enter to attach";
 pub const NOT_AT_DEFAULT: &str = "plan dialog is not at its default ∙ enter to attach";
 
+use mesimon_core::text::squeeze;
+
 /// A row of a native menu, Claude Code's or Codex's: whether the cursor
 /// marker (`❯`, Codex's `›`) is on it, its `N.` number if it carries one,
 /// and its label with both stripped. The one parse of a menu row; the
@@ -99,6 +101,119 @@ pub fn codex_at_default(screen: &mesimon_backend_tmux::InputScreen) -> Result<()
         [one] if one.contains("Yes, implement this plan") => Ok(()),
         _ => Err(NOT_AT_DEFAULT),
     }
+}
+
+/// The plan dialog's feedback row as Claude Code draws it (measured on
+/// 2.1.310, T-943): `N. Tell Claude what to change` while its field is
+/// empty, the field's words in that place once typed or pasted, and under it
+/// the hint `shift+tab to approve with this feedback` and the `ctrl+g to
+/// edit in <editor> · <plan file>` line, which `dialog_rows` joins onto it.
+pub(crate) const FEEDBACK_ROW: &str = "Tell Claude what to change";
+const APPROVE_HINT: &str = "shift+tab to approve with this feedback";
+const EDITOR_LINE: &str = "ctrl+g to edit in ";
+
+/// One row of the plan dialog's menu as the walk reads it (T-943): whether
+/// the cursor is on it, and its field, squeezed.
+pub(crate) struct MenuRow {
+    pub(crate) selected: bool,
+    pub(crate) field: String,
+}
+
+/// The plan dialog's menu, parsed for the walk alone (T-943), as one extent:
+/// it begins after the line that completes the dialog's question (`Would you
+/// like to proceed?`, wrapped or not), and its rows are the numbered lines
+/// after it, numbered 1, 2, 3 … with no skip and no restart. A numbered line
+/// out of that order (a later `1.` among them) and a second question after
+/// the first are a person's draft the walk cannot tell from the menu: `None`,
+/// and the walk stops. A row's field is its numbered line and every line
+/// under it to the next row, and the last row's runs to the end of the
+/// screen, through blank and box-drawing lines, since a person's draft in the
+/// native field may hold any of them. No footer is cut: 2.1.310 draws none,
+/// and a line that merely holds `Enter to select` is the field's. From the
+/// end of the last row come off trailing blank lines, then the editor line
+/// (`ctrl+g to edit in <editor> · <file>`) with the approve hint line
+/// directly above it when it is there, never the row's own first line. The
+/// approve hint without its editor line under it is the field's. Whatever
+/// is left is the field, compared whole. The cursor is read from the same
+/// rows.
+pub(crate) fn plan_menu(screen: &str) -> Option<Vec<MenuRow>> {
+    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+    let question = squeeze("Would you like to proceed?");
+    let mut said = String::new();
+    let asked = lines.iter().position(|line| {
+        said.push_str(&squeeze(line));
+        said.contains(&question)
+    })?;
+    let after: String = lines[asked + 1..].iter().map(|line| squeeze(line)).collect();
+    if after.contains(&question) {
+        return None;
+    }
+    let mut rows: Vec<(bool, Vec<&str>)> = Vec::new();
+    for line in &lines[asked + 1..] {
+        match menu_row(line) {
+            (selected, Some(number), label) if number == rows.len() + 1 => {
+                rows.push((selected, vec![label]))
+            }
+            (_, Some(_), _) => return None,
+            (_, None, _) => {
+                if let Some((_, block)) = rows.last_mut() {
+                    block.push(line);
+                }
+            }
+        }
+    }
+    let last = rows.len().checked_sub(1)?;
+    for (at, (_, block)) in rows.iter_mut().enumerate() {
+        while block.len() > 1 && block.last().is_some_and(|l| l.is_empty()) {
+            block.pop();
+        }
+        if at != last {
+            continue;
+        }
+        // The pair, or nothing: the approve hint is the hint only directly
+        // above the editor line it is drawn with; alone, it is the field's.
+        if block.len() > 2
+            && block.last().is_some_and(|l| editor_line(l))
+            && block[block.len() - 2] == APPROVE_HINT
+        {
+            block.truncate(block.len() - 2);
+        } else if block.len() > 1 && block.last().is_some_and(|l| editor_line(l)) {
+            block.pop();
+        }
+    }
+    Some(
+        rows.into_iter()
+            .map(|(selected, block)| MenuRow { selected, field: squeeze(&block.concat()) })
+            .collect(),
+    )
+}
+
+/// The one row the cursor is on, or `None`: none of the measured shape.
+pub(crate) fn menu_cursor(rows: &[MenuRow]) -> Option<usize> {
+    let mut selected = rows.iter().enumerate().filter(|(_, r)| r.selected);
+    match (selected.next(), selected.next()) {
+        (Some((at, _)), None) => Some(at),
+        _ => None,
+    }
+}
+
+/// The editor line under the plan dialog, as measured on 2.1.310:
+/// `ctrl+g to edit in Nvim · ~/.claude/plans/<name>.md`.
+fn editor_line(line: &str) -> bool {
+    line.strip_prefix(EDITOR_LINE).is_some_and(|rest| rest.contains(" · "))
+}
+
+/// Whether `screen` draws Claude Code's plan dialog, its feedback field
+/// empty or not (T-943): the question and the manual accept row, which every
+/// measured version shows.
+pub(crate) fn drawn(screen: &str) -> bool {
+    let screen = squeeze(screen);
+    screen.contains("Wouldyouliketoproceed?") && screen.contains("Yes,manuallyapproveedits")
+}
+
+/// The plan dialog's cursor row on `screen`, if it shows exactly one.
+pub(crate) fn plan_cursor(screen: &str) -> Option<usize> {
+    plan_menu(screen).and_then(|rows| menu_cursor(&rows))
 }
 
 #[cfg(test)]

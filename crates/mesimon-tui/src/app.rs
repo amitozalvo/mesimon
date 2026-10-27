@@ -682,20 +682,10 @@ fn lay_move(board: &mut Board, ticket: ulid::Ulid, column: &str, before: Option<
         return;
     }
     let Some(card) = board.ticket(ticket).filter(|t| !t.is_archived()) else { return };
-    let home = card.column == column;
-    let siblings = board.column_tickets(column);
-    let at = siblings.iter().position(|t| t.id == ticket);
-    let others: Vec<(ulid::Ulid, String)> =
-        siblings.iter().filter(|t| t.id != ticket).map(|t| (t.id, t.order.clone())).collect();
-    let want = before.and_then(|b| others.iter().position(|(id, _)| *id == b));
-    if home && at == Some(want.unwrap_or(others.len())) {
+    if card.column == column && board.sits_before(column, ticket, before) {
         return;
     }
-    let between = mesimon_core::fracindex::between;
-    let order = match want {
-        Some(i) => between(if i == 0 { "" } else { &others[i - 1].1 }, &others[i].1),
-        None => between(others.last().map(|(_, o)| o.as_str()).unwrap_or(""), ""),
-    };
+    let order = board.order_before(column, ticket, before);
     if let Some(t) = board.ticket_mut(ticket) {
         t.column = column.to_string();
         t.order = order;
@@ -2593,15 +2583,9 @@ impl App {
         {
             return;
         }
-        let theme = (
-            self.theme.flavor,
-            self.theme.profile,
-            self.theme.underline_colors,
-            self.theme.block_gaps,
-        );
         let repos = self.git.repos.len();
         match crate::setup::Setup::new(
-            theme,
+            &self.theme,
             self.prefs.clone(),
             self.repo_root.clone(),
             repos,
@@ -2666,13 +2650,7 @@ impl App {
 
     /// Open the guided tour (T-763) on its first lesson, or say why not.
     fn open_tour(&mut self) {
-        let theme = (
-            self.theme.flavor,
-            self.theme.profile,
-            self.theme.underline_colors,
-            self.theme.block_gaps,
-        );
-        match crate::tour::Tour::new(theme, self.prefs.clone(), 0) {
+        match crate::tour::Tour::new(&self.theme, self.prefs.clone(), 0) {
             Ok(t) => {
                 self.tour = Some(Box::new(t));
                 self.mode = Mode::Tour;
@@ -3179,19 +3157,12 @@ impl App {
             }
             let Some((seq, rx)) = self.snapshot_rx.take() else { return Ok(false) };
             let left = deadline.saturating_duration_since(Instant::now());
-            let got = match rx.recv_timeout(left) {
-                Ok(got) => got.and_then(snapshot_of),
-                Err(RecvTimeoutError::Timeout) => {
-                    // The ask stays out: `pump` lands it when it comes, and
-                    // asks once more then.
-                    self.snapshot_rx = Some((seq, rx));
-                    self.snapshot_wanted = true;
-                    self.status = "daemon slow ∙ the board is behind ∙ nothing sent".into();
-                    return Ok(false);
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    Err(anyhow::anyhow!("snapshot request lost"))
-                }
+            let Some(got) = self.wait_snapshot(seq, rx, left) else {
+                // The ask stays out: `pump` lands it when it comes, and
+                // asks once more then.
+                self.snapshot_wanted = true;
+                self.status = "daemon slow ∙ the board is behind ∙ nothing sent".into();
+                return Ok(false);
             };
             let failed = got.is_err();
             // Absorbed now, reconciled by the next `pump`: the reconcile
@@ -3228,6 +3199,29 @@ impl App {
             return Ok(true);
         }
         self.catch_up()
+    }
+
+    /// A board switch's key (Settings): read the switch off a board caught
+    /// up, send its flip, and say the new state in `on` or `off`'s words.
+    fn flip_board_switch(
+        &mut self,
+        read: fn(&Board) -> bool,
+        command: fn(bool) -> Command,
+        on_words: &str,
+        off_words: &str,
+    ) -> Result<()> {
+        if !self.catch_up()? {
+            return Ok(());
+        }
+        let on = !read(&self.board);
+        match self.client.request(command(on))? {
+            Response::Err { message } => self.status = message,
+            _ => {
+                self.refresh_soon()?;
+                self.status = if on { on_words } else { off_words }.into();
+            }
+        }
+        Ok(())
     }
 
     /// A change the daemon took, on this frame's board (T-910, T-911), and
@@ -3300,15 +3294,28 @@ impl App {
     /// follows brings, is dropped — when it comes.
     fn settle_snapshot(&mut self) -> Result<()> {
         let Some((seq, rx)) = self.snapshot_rx.take() else { return Ok(()) };
-        let got = match rx.recv_timeout(self.catch_up_wait) {
-            Ok(got) => got.and_then(snapshot_of),
+        let Some(got) = self.wait_snapshot(seq, rx, self.catch_up_wait) else { return Ok(()) };
+        self.land_snapshot(seq, got)
+    }
+
+    /// The ask `seq` on `rx`, waited for at most `wait`; `None` when the
+    /// wait ran out, and the ask is put back in flight.
+    fn wait_snapshot(
+        &mut self,
+        seq: u64,
+        rx: Receiver<Result<Response>>,
+        wait: Duration,
+    ) -> Option<Result<Snapshot>> {
+        match rx.recv_timeout(wait) {
+            Ok(got) => Some(got.and_then(snapshot_of)),
             Err(RecvTimeoutError::Timeout) => {
                 self.snapshot_rx = Some((seq, rx));
-                return Ok(());
+                None
             }
-            Err(RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!("snapshot request lost")),
-        };
-        self.land_snapshot(seq, got)
+            Err(RecvTimeoutError::Disconnected) => {
+                Some(Err(anyhow::anyhow!("snapshot request lost")))
+            }
+        }
     }
 
     /// Is a snapshot out on the lane?
@@ -5120,7 +5127,7 @@ impl App {
         }
         let e = self.spoke.get(&ticket)?;
         let peek = self.peek_cache.peek_for(e.kind, &e.path)?;
-        let words = crate::text::one_line(&crate::peek::card_words(peek.text.as_deref()?));
+        let words = crate::text::one_line(peek.card.as_deref()?);
         // The draw's read can be ahead of the scan that starts the reveal's
         // clock (T-725): words the entry has not stamped yet are a reveal
         // not begun, nothing written, never the settled ink.
@@ -6681,22 +6688,7 @@ impl App {
     /// queued ask held for a person at its pane (T-966) comes the same way,
     /// `queued` over its reason.
     pub(crate) fn card_owed(&self, ticket: ulid::Ulid) -> (Option<String>, Option<String>) {
-        use mesimon_core::command::PendingAction as A;
-        let row = self.pending_row(ticket).map(|row| {
-            let split = match self.pending_of(ticket) {
-                Some(p) if p.action == A::CrownWake => p
-                    .held
-                    .as_deref()
-                    .filter(|why| held_for_a_client(why))
-                    .map(|why| ("crown wakes", why)),
-                Some(p) if p.action == A::Ask => p.person.as_deref().map(|why| ("queued", why)),
-                _ => None,
-            };
-            match split {
-                Some((lead, why)) if row == format!("{lead} ∙ {why}") => format!("{lead}\n{why}"),
-                _ => row,
-            }
-        });
+        let row = self.owed_words(ticket, true);
         let ships = !self.ticket_trust_ready(ticket)
             && self.unsent_of(ticket).is_none()
             && self.tier_owed_row(ticket).is_none()
@@ -6723,6 +6715,13 @@ impl App {
     /// reopens, and a closed door with no sign is a ticket that silently
     /// never merges.
     pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        self.owed_words(ticket, false)
+    }
+
+    /// `pending_row`'s words; `split` puts a newline in place of ` ∙ `
+    /// between a held ask's or held wake's subject and its reason, where
+    /// `card_owed` lets the card break them.
+    fn owed_words(&self, ticket: ulid::Ulid, split: bool) -> Option<String> {
         // The agent stands on its folder trust dialog (T-844): nothing
         // starts until the folder is trusted, and the row asks the question
         // the dialog asks, the accept key beside it (`w confirm`). The
@@ -6812,14 +6811,16 @@ impl App {
         // box holding it for its Enter) —
         // outranks its turn, which a person's leaving does not end.
         if let (A::CrownWake, Some(why)) = (p.action, p.held.as_deref()) {
-            return Some(format!("crown wakes ∙ {why}"));
+            let sep = if split && held_for_a_client(why) { "\n" } else { " ∙ " };
+            return Some(format!("crown wakes{sep}{why}"));
         }
         // A queued ask held for a person at its pane (T-966): the daemon's
         // word for why — `leave or 10m idle`, `idle unknown ∙ leave`, `after
         // your draft` — sent only while they alone hold it, so a busy
         // checkout still reads `after T-3`.
         if let (A::Ask, false, Some(why)) = (p.action, p.in_flight, p.person.as_deref()) {
-            return Some(format!("queued ∙ {why}"));
+            let sep = if split { "\n" } else { " ∙ " };
+            return Some(format!("queued{sep}{why}"));
         }
         Some(match (p.action, after) {
             (A::Ask, _) if p.in_flight => "queued ∙ sending".into(),
@@ -8927,140 +8928,58 @@ impl App {
                     }
                 }
             }
-            Verb::CrownArchives => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_archives;
-                match self.client.request(Command::SetCrownArchives { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Who takes a card off the board (T-590).
-                        self.status = if on {
-                            "crown archives on ∙ it may archive and restore tickets".into()
-                        } else {
-                            "crown archives off ∙ it may not archive or restore tickets".into()
-                        };
-                    }
-                }
-            }
-            Verb::ReviewedPrs => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.reviewed_prs;
-                match self.client.request(Command::SetReviewedPrs { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Whose pull requests a ticket carries (T-859).
-                        self.status = if on {
-                            "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
-                             Summary is the ticket's too"
-                                .into()
-                        } else {
-                            "reviewed pull requests off ∙ a ticket's PRs are the ones this \
-                             account opened"
-                                .into()
-                        };
-                    }
-                }
-            }
-            Verb::CrownWatches => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_watches;
-                match self.client.request(Command::SetCrownWatches { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Whose tickets wake the crown (T-712).
-                        self.status = if on {
-                            "crown watches on ∙ a ticket it watches wakes it as its own workers do"
-                                .into()
-                        } else {
-                            "crown watches off ∙ it hears only of the agents it started".into()
-                        };
-                    }
-                }
-            }
-            Verb::CrownContext => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_context;
-                match self.client.request(Command::SetCrownContext { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // What its get_ticket carries (T-969).
-                        self.status = if on {
-                            "crown reads context on ∙ its get_ticket says how full an agent's \
-                             context is"
-                                .into()
-                        } else {
-                            "crown reads context off".into()
-                        };
-                    }
-                }
-            }
-            Verb::CrownCost => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_cost;
-                match self.client.request(Command::SetCrownCost { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        self.status = if on {
-                            "crown reads cost on ∙ its get_ticket says what a ticket has cost"
-                                .into()
-                        } else {
-                            "crown reads cost off".into()
-                        };
-                    }
-                }
-            }
-            Verb::CrownSamples => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.crown_samples;
-                match self.client.request(Command::SetCrownSamples { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        self.status = if on {
-                            "crown samples on ∙ sample_agent reads an agent it started".into()
-                        } else {
-                            "crown samples off ∙ sample_agent is refused".into()
-                        };
-                    }
-                }
-            }
-            Verb::McpTools => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let on = !self.board.mcp_tools;
-                match self.client.request(Command::SetMcpTools { on })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        // Says the reach, not just the state: a user who
-                        // turns the tools off and watches a running agent go
-                        // on using them has been told wrong.
-                        self.status = if on {
-                            "agent tools on ∙ new sessions and wakes get them".into()
-                        } else {
-                            "agent tools off ∙ new sessions and wakes lose them".into()
-                        };
-                    }
-                }
-            }
+            // Who takes a card off the board (T-590).
+            Verb::CrownArchives => self.flip_board_switch(
+                |b| b.crown_archives,
+                |on| Command::SetCrownArchives { on },
+                "crown archives on ∙ it may archive and restore tickets",
+                "crown archives off ∙ it may not archive or restore tickets",
+            )?,
+            // Whose pull requests a ticket carries (T-859).
+            Verb::ReviewedPrs => self.flip_board_switch(
+                |b| b.reviewed_prs,
+                |on| Command::SetReviewedPrs { on },
+                "reviewed pull requests on ∙ a PR the agent reviewed or named in its \
+                 Summary is the ticket's too",
+                "reviewed pull requests off ∙ a ticket's PRs are the ones this \
+                 account opened",
+            )?,
+            // Whose tickets wake the crown (T-712).
+            Verb::CrownWatches => self.flip_board_switch(
+                |b| b.crown_watches,
+                |on| Command::SetCrownWatches { on },
+                "crown watches on ∙ a ticket it watches wakes it as its own workers do",
+                "crown watches off ∙ it hears only of the agents it started",
+            )?,
+            // What its get_ticket carries (T-969).
+            Verb::CrownContext => self.flip_board_switch(
+                |b| b.crown_context,
+                |on| Command::SetCrownContext { on },
+                "crown reads context on ∙ its get_ticket says how full an agent's \
+                 context is",
+                "crown reads context off",
+            )?,
+            Verb::CrownCost => self.flip_board_switch(
+                |b| b.crown_cost,
+                |on| Command::SetCrownCost { on },
+                "crown reads cost on ∙ its get_ticket says what a ticket has cost",
+                "crown reads cost off",
+            )?,
+            Verb::CrownSamples => self.flip_board_switch(
+                |b| b.crown_samples,
+                |on| Command::SetCrownSamples { on },
+                "crown samples on ∙ sample_agent reads an agent it started",
+                "crown samples off ∙ sample_agent is refused",
+            )?,
+            // Says the reach, not just the state: a user who turns the tools
+            // off and watches a running agent go on using them has been told
+            // wrong.
+            Verb::McpTools => self.flip_board_switch(
+                |b| b.mcp_tools,
+                |on| Command::SetMcpTools { on },
+                "agent tools on ∙ new sessions and wakes get them",
+                "agent tools off ∙ new sessions and wakes lose them",
+            )?,
             // The brief's switch, from Settings (T-224): board state like the
             // tools, so it goes to the daemon and comes back on the snapshot.
             // Off is one keypress; ON goes through the dialog, so the words
@@ -9823,9 +9742,11 @@ impl App {
                     Mode::PullRequests { .. } => self.pr_cursor().map(|p| p.url.clone()),
                     // The message whole, as the transcript holds it (T-921).
                     Mode::Transcript { .. } => {
-                        let text = self.open_transcript_view().and_then(|t| t.message());
-                        if let Some(m) = text {
-                            self.status = self.copy("message", &m.text.clone());
+                        let text = self
+                            .open_transcript_view()
+                            .and_then(|t| t.message().map(|m| t.text(m).to_string()));
+                        if let Some(text) = text {
+                            self.status = self.copy("message", &text);
                         }
                         None
                     }
@@ -17042,7 +16963,9 @@ mod tests {
         assert!(!tour.sandbox.theme.underline_colors);
         assert!(tour.sandbox.theme.block_gaps);
         let setup = crate::setup::Setup::new(
-            (Flavor::Graphite, Profile::TrueColor, false, true),
+            &Theme::new(Flavor::Graphite, Profile::TrueColor)
+                .with_underline_colors(false)
+                .with_block_gaps(true),
             Default::default(),
             "/practice".into(),
             1,

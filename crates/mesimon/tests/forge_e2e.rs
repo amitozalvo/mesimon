@@ -142,13 +142,7 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
 
 /// A worktree ticket with a spawned agent, its branch as it was cut.
 fn cut(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
+    let id = c.create_ticket(title);
     assert!(matches!(
         c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -488,22 +482,8 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     turn(&mut c, pr_sid, &opened);
 
     // The ticket with no PR, on the checkout: nothing to pass.
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "plain".into(),
-        workspace: None,
-        tier: None,
-    });
-    let plain = c.board().tickets.iter().find(|t| t.title == "plain").unwrap().id;
-    let plain_sid = match c.request(Command::SpawnSession {
-        ticket: plain,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let plain = c.create_ticket("plain");
+    let plain_sid = c.spawn_claude(plain);
     let quiet = h.dir.join("plain.jsonl");
     std::fs::write(&quiet, "{\"type\":\"user\",\"message\":{\"content\":\"go\"}}\n").unwrap();
     turn(&mut c, plain_sid, &quiet);
@@ -587,22 +567,8 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     // the forge says there is no such PR (deleted since): the address is
     // owed no further read, and the held line goes with nothing bound.
     write(&stub_dir.join("view.45.json"), "gone");
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "aside".into(),
-        workspace: None,
-        tier: None,
-    });
-    let aside = c.board().tickets.iter().find(|t| t.title == "aside").unwrap().id;
-    let aside_sid = match c.request(Command::SpawnSession {
-        ticket: aside,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let aside = c.create_ticket("aside");
+    let aside_sid = c.spawn_claude(aside);
     let created = h.dir.join("aside.jsonl");
     std::fs::write(
         &created,
@@ -754,13 +720,7 @@ fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
 
     // A ticket on the checkout whose note's Summary names PR 46: a fact
     // the forge reads, by itself.
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "summary".into(),
-        workspace: None,
-        tier: None,
-    });
-    let summary = c.board().tickets.iter().find(|t| t.title == "summary").unwrap().id;
+    let summary = c.create_ticket("summary");
     match c.request(Command::WriteNote {
         ticket: summary,
         note: None,
@@ -789,11 +749,6 @@ fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
     });
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
-
-/// The crown's stub: each line it reads is appended to `got.txt` beside it.
-const RECORDING_STUB: &str =
-    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
 
 /// An open PR as `gh pr list --json` prints it, with the checks, the
 /// mergeability and the review decision the test names.
@@ -875,50 +830,17 @@ fn the_crown_hears_the_forges_edges() {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
-    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
 
     // The crown, idle, and a worker it started on a worktree.
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "forge worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = match c.request(Command::SpawnSession {
-        ticket: a,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket.seen,
-        other => panic!("read: {other:?}"),
-    };
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -1161,13 +1083,7 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
     through_prs(&mut c);
     // The PR is on the forge before the ticket's first pass: bound by the
     // branch mesimon will cut.
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "keep".into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == "keep").unwrap().id;
+    let id = c.create_ticket("keep");
     let key = c.board().ticket(id).unwrap().short_key.clone();
     let branch = mesimon_core::workspace::branch_name(&key, "keep");
     write(&prs_file, &pr_json(&branch, "0000", "OPEN", None, Some("test-linux")));
@@ -1462,50 +1378,17 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
-    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
 
     // The crown, and a worker it starts on a worktree of the workspace.
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "lab worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = match c.request(Command::SpawnSession {
-        ticket: a,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket.seen,
-        other => panic!("read: {other:?}"),
-    };
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -1696,49 +1579,16 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
-    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
 
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "two repos");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = match c.request(Command::SpawnSession {
-        ticket: a,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     turn(&mut c, sa);
-    let seen = match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket.seen,
-        other => panic!("read: {other:?}"),
-    };
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -2091,15 +1941,7 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
     }
     let mut c = h.client("forge_two");
     through_prs(&mut c);
-    let id = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "two repos".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let id = c.create_ticket("two repos");
     assert!(matches!(
         c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -2421,48 +2263,15 @@ struct Crowned {
 
 fn crowned(h: &Harness, c: &mut TestClient) -> Crowned {
     let got = h.dir.join("got.txt");
-    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
     let a = create(c, "coordinate");
     let w = create(c, "forge worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = match c.request(Command::SpawnSession {
-        ticket: a,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     h.one_turn(c, sa);
-    let seen = match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: kw.clone(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket.seen,
-        other => panic!("read: {other:?}"),
-    };
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4234,26 +4043,10 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
             .map(str::to_string)
             .collect()
     };
-    let create = |c: &mut TestClient, title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
     // The crown, idle.
     let a = create(&mut c, "coordinate");
-    let sa = match c.request(Command::SpawnSession {
-        ticket: a,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(Duration::from_millis(500));
     h.one_turn(&mut c, sa);
@@ -4559,15 +4352,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // ---- a Summary address is read within the burst's floor -------------
-    let b = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "named".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let b = c.create_ticket("named");
     let kb = c.board().ticket(b).unwrap().short_key.clone();
     let _ = std::fs::remove_file(&log);
     let written = std::time::Instant::now();
@@ -4619,25 +4404,9 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     // ---- a checkout ticket's `pr create` that printed no URL owes nothing --
     // (the review's stuck read): no read names the ticket, so none is owed,
     // none is asked, and the crown's wake for its turn is not held for one.
-    let plain = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "plain".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
+    let plain = c.create_ticket("plain");
     let kp = c.board().ticket(plain).unwrap().short_key.clone();
-    let ps = match c.request(Command::SpawnSession {
-        ticket: plain,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
+    let ps = c.spawn_claude(plain);
     std::thread::sleep(Duration::from_millis(500));
     h.one_turn(&mut c, ps);
     // The crown watches it (T-712), so its turns' ends are the crown's.

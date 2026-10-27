@@ -202,6 +202,7 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
         return None;
     }
     let roots: HashSet<_> = facts.iter().filter(|f| !f.pane_dead).map(|f| f.pane_pid).collect();
+    let birth = birth_reader();
     let mut rows = Vec::new();
     for row in mesimon_core::board::parse_ps_rows(&String::from_utf8_lossy(&out.stdout)) {
         if !roots.contains(&row.pid) && !roots.contains(&row.ppid) {
@@ -210,7 +211,7 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
         // Whole-second etime cannot distinguish infrastructure born just
         // before a prompt from a hook born during the turn. An unreadable
         // birth leaves this sample unknown, never an empty tree.
-        let Some((born_ms, pgid)) = process_birth_ms(row.pid) else {
+        let Some((born_ms, pgid)) = birth(row.pid) else {
             // Exiting between ps and the birth read is positive absence,
             // not a broken reader: it must retain the rewake grace.
             // SAFETY: signal zero only checks whether this PID exists.
@@ -224,6 +225,20 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
         rows.push(HookProcess { pid: row.pid, ppid: row.ppid, pgid, born_ms, argv: row.comm });
     }
     Some(rows)
+}
+
+/// A process's birth (epoch ms) and process group, by pid.
+#[cfg(target_os = "macos")]
+fn birth_reader() -> impl Fn(i32) -> Option<(u64, i32)> {
+    process_birth_ms
+}
+
+/// A process's birth (epoch ms) and process group, by pid: the boot clock
+/// read once a sample, not once a process.
+#[cfg(target_os = "linux")]
+fn birth_reader() -> impl Fn(i32) -> Option<(u64, i32)> {
+    let clock = boot_clock();
+    move |pid| process_birth_ms(pid, clock.as_ref()?)
 }
 
 #[cfg(target_os = "macos")]
@@ -246,12 +261,16 @@ fn process_birth_ms(pid: i32) -> Option<(u64, i32)> {
     ))
 }
 
+/// When the machine booted (epoch ms) and its clock ticks a second: what
+/// `/proc/<pid>/stat`'s start time is counted from and in.
 #[cfg(target_os = "linux")]
-fn process_birth_ms(pid: i32) -> Option<(u64, i32)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, fields) = stat.rsplit_once(')')?;
-    let pgid = fields.split_whitespace().nth(2)?.parse::<i32>().ok()?;
-    let ticks = fields.split_whitespace().nth(19)?.parse::<u64>().ok()?;
+struct BootClock {
+    boot_ms: u64,
+    hz: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn boot_clock() -> Option<BootClock> {
     let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
     let uptime = uptime.split_whitespace().next()?.parse::<f64>().ok()?;
     // SAFETY: sysconf reads a constant system clock rate and takes no pointers.
@@ -259,9 +278,17 @@ fn process_birth_ms(pid: i32) -> Option<(u64, i32)> {
     if hz <= 0 {
         return None;
     }
-    let now =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
-    Some((now.saturating_sub((uptime * 1000.0) as u64) + ticks * 1000 / hz as u64, pgid))
+    let now = mesimon_core::clock::now_ms();
+    Some(BootClock { boot_ms: now.saturating_sub((uptime * 1000.0) as u64), hz: hz as u64 })
+}
+
+#[cfg(target_os = "linux")]
+fn process_birth_ms(pid: i32, clock: &BootClock) -> Option<(u64, i32)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(')')?;
+    let pgid = fields.split_whitespace().nth(2)?.parse::<i32>().ok()?;
+    let ticks = fields.split_whitespace().nth(19)?.parse::<u64>().ok()?;
+    Some((clock.boot_ms + ticks * 1000 / clock.hz, pgid))
 }
 
 #[cfg(test)]

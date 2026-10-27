@@ -29,6 +29,7 @@
 //! gets, since no hook fires for one (T-707).
 
 use mesimon_backend_tmux::InputScreen;
+use mesimon_core::text::squeeze;
 
 /// What the screen shows of the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,31 +111,46 @@ pub fn compacting(screen: &InputScreen) -> bool {
         }
         // Whitespace is ignored on both sides (T-894 re-review): a pane
         // wraps at a word or mid-word, and a join cannot tell which.
-        let mut joined: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+        let mut joined = squeeze(rest);
         for next in &lines[r + 1..=bottom] {
             if next.trim().starts_with('⎿') {
                 break;
             }
-            joined.extend(next.chars().filter(|c| !c.is_whitespace()));
+            joined.push_str(&squeeze(next));
         }
-        let want: String = COMPACTING_LINE.chars().filter(|c| !c.is_whitespace()).collect();
-        joined.starts_with(&want)
+        joined.starts_with(&squeeze(COMPACTING_LINE))
     })
 }
 
 /// The row of the composer's top rule: the same composer `read` finds.
 fn composer_top(lines: &[String]) -> Option<usize> {
+    locate(lines).map(|b| b.row - 1)
+}
+
+/// The composer on a screen: its `❯` (or `!`) row, the input after the
+/// glyph on it, the rows its input wrapped onto, and the column the glyph
+/// is drawn at.
+struct Located<'a> {
+    row: usize,
+    rest: &'a str,
+    wrapped: &'a [String],
+    indent: usize,
+}
+
+/// The bottom-most `❯` (or, in bash mode, `!`) row with a rule directly
+/// above it and a rule somewhere below it.
+fn locate(lines: &[String]) -> Option<Located<'_>> {
     for (row, line) in lines.iter().enumerate().rev() {
         let body = line.trim_start();
-        if body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)).is_none() {
+        let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
             continue;
-        }
+        };
         if row == 0 || !is_rule(&lines[row - 1]) {
             continue;
         }
-        if lines[row + 1..].iter().any(|l| is_rule(l)) {
-            return Some(row - 1);
-        }
+        let Some(bottom) = lines[row + 1..].iter().position(|l| is_rule(l)) else { continue };
+        let wrapped = &lines[row + 1..row + 1 + bottom];
+        return Some(Located { row, rest, wrapped, indent: line.len() - body.len() });
     }
     None
 }
@@ -148,30 +164,21 @@ fn is_rule(line: &str) -> bool {
 /// bash mode, `!`) row with a rule directly above it and a rule somewhere
 /// below it.
 pub fn read(screen: &InputScreen) -> Composer {
-    let lines = &screen.lines;
-    for (row, line) in lines.iter().enumerate().rev() {
-        let body = line.trim_start();
-        let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
-            continue;
-        };
-        if row == 0 || !is_rule(&lines[row - 1]) {
-            continue;
-        }
-        let Some(bottom) = lines[row + 1..].iter().position(|l| is_rule(l)) else { continue };
-        let wrapped = &lines[row + 1..row + 1 + bottom];
-        let wrapped_text = wrapped.iter().any(|l| !l.trim().is_empty());
-        if rest.trim().is_empty() && !wrapped_text {
-            return Composer::Empty;
-        }
-        // The input starts after `❯ ` (both one cell). A cursor parked there
-        // with nothing wrapped below is sitting in front of a placeholder.
-        let start = (line.len() - body.len()) + 2;
-        if !wrapped_text && screen.cursor == Some((start, row)) {
-            return Composer::Empty;
-        }
-        return Composer::Holding;
+    locate(&screen.lines).map_or(Composer::Absent, |b| classify(screen, &b))
+}
+
+/// What the located composer `b` holds.
+fn classify(screen: &InputScreen, b: &Located) -> Composer {
+    let wrapped_text = b.wrapped.iter().any(|l| !l.trim().is_empty());
+    if b.rest.trim().is_empty() && !wrapped_text {
+        return Composer::Empty;
     }
-    Composer::Absent
+    // The input starts after `❯ ` (both one cell). A cursor parked there
+    // with nothing wrapped below is sitting in front of a placeholder.
+    if !wrapped_text && screen.cursor == Some((b.indent + 2, b.row)) {
+        return Composer::Empty;
+    }
+    Composer::Holding
 }
 
 /// Whether the composer holds `words` and nothing else (T-987): the title
@@ -179,21 +186,13 @@ pub fn read(screen: &InputScreen) -> Composer {
 /// Whitespace is ignored on both sides, as a wrap's join cannot say where
 /// a space was.
 pub fn holds_only(screen: &InputScreen, words: &str) -> bool {
-    if read(screen) != Composer::Holding {
+    let Some(b) = locate(&screen.lines) else { return false };
+    if classify(screen, &b) != Composer::Holding {
         return false;
     }
-    let Some(top) = composer_top(&screen.lines) else { return false };
-    let row = top + 1;
-    let lines = &screen.lines;
-    let body = lines[row].trim_start();
-    let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
-        return false;
-    };
-    let Some(bottom) = lines[row + 1..].iter().position(|l| is_rule(l)) else { return false };
-    let held =
-        std::iter::once(rest).chain(lines[row + 1..row + 1 + bottom].iter().map(String::as_str));
-    let held: String = held.flat_map(str::chars).filter(|c| !c.is_whitespace()).collect();
-    let want: String = words.chars().filter(|c| !c.is_whitespace()).collect();
+    let held: String =
+        std::iter::once(b.rest).chain(b.wrapped.iter().map(String::as_str)).map(squeeze).collect();
+    let want = squeeze(words);
     !want.is_empty() && held == want
 }
 

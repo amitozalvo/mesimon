@@ -307,6 +307,29 @@ impl Daemon {
         self.crown_asks.get_mut(&target)?.last_mut()
     }
 
+    /// The one ask `keep` picks, with its ticket: read first, so a miss
+    /// leaves the ledger unmarked.
+    fn crown_ask_find_mut(
+        &mut self,
+        keep: impl Fn(&CrownAsk) -> bool,
+    ) -> Option<(ulid::Ulid, &mut CrownAsk)> {
+        let target = self.all_crown_asks().find(|(_, a)| keep(a)).map(|(t, _)| t)?;
+        let a = self.crown_asks.get_mut(&target)?.iter_mut().find(|a| keep(a))?;
+        Some((target, a))
+    }
+
+    /// The record `ask` fences, or with `None` the ticket's latest.
+    fn crown_ask_pick(
+        &mut self,
+        target: ulid::Ulid,
+        ask: Option<ulid::Ulid>,
+    ) -> Option<&mut CrownAsk> {
+        match ask {
+            Some(id) => self.crown_ask_mut(target, id),
+            None => self.crown_ask_latest(target),
+        }
+    }
+
     /// Every ask the board holds, with its ticket.
     fn all_crown_asks(&self) -> impl Iterator<Item = (ulid::Ulid, &CrownAsk)> {
         self.crown_asks.iter().flat_map(|(t, list)| list.iter().map(move |a| (*t, a)))
@@ -357,12 +380,7 @@ impl Daemon {
         // frame is dispatched there (`crown_ask_framed`), or for a paste at
         // the first edge of its own that names it (`bind_pane`), never the
         // pane it slept in.
-        let pane = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == session && s.state.has_pane())
-            .and_then(|s| s.pane_key.clone());
+        let pane = self.pane_of(session);
         let Some(ask) = self.crown_ask_latest(target).filter(|a| a.stage == Stage::Queued) else {
             return;
         };
@@ -457,21 +475,15 @@ impl Daemon {
     /// mod's to wait on, into a stopped agent's box as a turn of its own.
     /// Its release and settle rules are the paste's from here.
     pub(super) fn crown_ask_repasted(&mut self, session: uuid::Uuid, ask: ulid::Ulid) {
-        let Some(a) = self
-            .crown_asks
-            .values_mut()
-            .flatten()
-            .find(|a| a.id == ask && a.stage == Stage::Sent && a.session == Some(session))
-        else {
+        let Some((target, a)) = self.crown_ask_find_mut(|a| {
+            a.id == ask && a.stage == Stage::Sent && a.session == Some(session)
+        }) else {
             return;
         };
         a.frame = None;
         a.submit = false;
         a.own_turn = true;
-        let target = self.all_crown_asks().find(|(_, a)| a.id == ask).map(|(t, _)| t);
-        if let Some(target) = target {
-            self.expect_dispatched(target, ask, session, None);
-        }
+        self.expect_dispatched(target, ask, session, None);
     }
 
     /// The mod reports `frame` removed from Claude Code's queue before it
@@ -596,21 +608,12 @@ impl Daemon {
     /// of its own (round 3: bound at dispatch, never by a later report).
     pub(super) fn crown_ask_framed(&mut self, session: uuid::Uuid, ask: ulid::Ulid, frame: String) {
         let pane = self.pane_of(session);
-        let mut target = None;
-        let found = self
-            .crown_asks
-            .iter_mut()
-            .find_map(|(t, list)| list.iter_mut().find(|a| a.id == ask).map(|a| (*t, a)));
-        if let Some((t, a)) = found {
-            a.frame = Some(frame.clone());
-            a.submit = true;
-            a.own_turn = true;
-            a.pane = pane;
-            target = Some(t);
-        }
-        if let Some(target) = target {
-            self.expect_dispatched(target, ask, session, Some(frame));
-        }
+        let Some((target, a)) = self.crown_ask_find_mut(|a| a.id == ask) else { return };
+        a.frame = Some(frame.clone());
+        a.submit = true;
+        a.own_turn = true;
+        a.pane = pane;
+        self.expect_dispatched(target, ask, session, Some(frame));
     }
 
     /// Whether a mod report from `session` about `frame` is a crown ask's,
@@ -656,11 +659,7 @@ impl Daemon {
         by: &'static str,
         why: &str,
     ) -> bool {
-        let a = match ask {
-            Some(id) => self.crown_ask_mut(target, id),
-            None => self.crown_ask_latest(target),
-        };
-        let Some(a) = a else { return false };
+        let Some(a) = self.crown_ask_pick(target, ask) else { return false };
         if !matches!(a.stage, Stage::Queued | Stage::Sent) {
             return false;
         }
@@ -676,11 +675,7 @@ impl Daemon {
         ask: Option<ulid::Ulid>,
         why: &str,
     ) -> bool {
-        let a = match ask {
-            Some(id) => self.crown_ask_mut(target, id),
-            None => self.crown_ask_latest(target),
-        };
-        let Some(a) = a else { return false };
+        let Some(a) = self.crown_ask_pick(target, ask) else { return false };
         if !matches!(a.stage, Stage::Queued | Stage::Sent | Stage::Handed) {
             return false;
         }
@@ -702,6 +697,10 @@ impl Daemon {
         worker: ulid::Ulid,
         asked: Option<TurnAsk>,
     ) -> Option<TurnAsk> {
+        // Read first: a ticket the crown never asked leaves the ledger unmarked.
+        if !self.crown_asks.contains_key(&worker) {
+            return asked;
+        }
         let now = now_ms();
         let seat = self.board.live_agent(worker).map(|s| (s.id, s.pane_key.clone()));
         let Some(list) = self.crown_asks.get_mut(&worker) else { return asked };
@@ -772,7 +771,7 @@ impl Daemon {
         // that settles it is the look's (T-974).
         let gone: Vec<(ulid::Ulid, ulid::Ulid, &'static str)> = self
             .all_crown_asks()
-            .filter(|(t, _)| !self.crown_recheck.contains_key(t))
+            .filter(|(t, a)| a.blocks() && !self.crown_recheck.contains_key(t))
             .filter_map(|(t, a)| {
                 let live = self.board.live_agent(t).filter(|s| s.state.has_pane());
                 let owed =

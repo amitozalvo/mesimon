@@ -119,8 +119,7 @@ pub fn price(model: &str) -> Option<Price> {
     {
         Price { input, read, output, write_5m: input * 1.25, write_1h: input * 1.25 }
     } else {
-        let base = base.strip_prefix("anthropic.").unwrap_or(base);
-        let base = base.split('@').next().unwrap_or(base);
+        let base = claude_base(base);
         PRICES.iter().find(|(id, _)| matches_id(base, id)).map(|(_, price)| *price)?
     };
     let k = if fast { 2.0 } else { 1.0 };
@@ -136,6 +135,13 @@ pub fn price(model: &str) -> Option<Price> {
 /// `id` exactly, or `id` followed by a `-` and more (a version or a date);
 /// `claude-opus-4` matches `claude-opus-4-20250514` but `claude-opus-5`
 /// does not match `claude-opus-5-5` (the longer id sorts first and wins).
+/// A Claude model id read through its platform's spelling: a Bedrock
+/// `anthropic.` prefix and a Vertex `@date` suffix are dropped.
+pub(crate) fn claude_base(model: &str) -> &str {
+    let base = model.strip_prefix("anthropic.").unwrap_or(model);
+    base.split('@').next().unwrap_or(base)
+}
+
 pub(crate) fn matches_id(model: &str, id: &str) -> bool {
     model == id || model.strip_prefix(id).is_some_and(|rest| rest.starts_with('-'))
 }

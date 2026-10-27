@@ -19,9 +19,10 @@
 //!   record as parsed (a line that is not JSON is kept as a string).
 
 use crate::ingest::HookFrame;
+use crate::tail::TailCursor;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::time::Duration;
@@ -63,8 +64,7 @@ impl Recorder {
 
 struct Tail {
     session: String,
-    offset: u64,
-    partial: Vec<u8>,
+    cursor: TailCursor,
 }
 
 struct Out {
@@ -93,41 +93,21 @@ impl Out {
         let path = PathBuf::from(path);
         // Lines from before the frame named the file are not this
         // recording's: a resume's transcript already holds its past.
-        let offset = std::fs::metadata(&path).map_or(0, |m| m.len());
-        self.tails.entry(path).or_insert_with(|| Tail {
+        self.tails.entry(path.clone()).or_insert_with(|| Tail {
             session: frame.session.clone(),
-            offset,
-            partial: Vec::new(),
+            cursor: TailCursor::at_end(path, mesimon_core::clock::now_ms()),
         });
     }
 
     fn tail_all(&mut self) {
         let mut lines = Vec::new();
-        for (path, tail) in &mut self.tails {
-            let Ok(mut f) = std::fs::File::open(path) else { continue };
-            let len = f.metadata().map_or(0, |m| m.len());
-            if len < tail.offset {
-                tail.offset = 0;
-                tail.partial.clear();
-            }
-            if len == tail.offset || f.seek(SeekFrom::Start(tail.offset)).is_err() {
-                continue;
-            }
-            let mut bytes = Vec::new();
-            let Ok(n) = f.read_to_end(&mut bytes) else { continue };
-            tail.offset += n as u64;
-            tail.partial.extend_from_slice(&bytes);
-            while let Some(nl) = tail.partial.iter().position(|b| *b == b'\n') {
-                let raw: Vec<u8> = tail.partial.drain(..=nl).collect();
-                let text = String::from_utf8_lossy(&raw[..raw.len() - 1]).into_owned();
-                if text.trim().is_empty() {
-                    continue;
-                }
+        let at_ms = mesimon_core::clock::now_ms();
+        for tail in self.tails.values_mut() {
+            for text in tail.cursor.poll(at_ms) {
                 let line = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
                 lines.push((tail.session.clone(), line));
             }
         }
-        let at_ms = mesimon_core::clock::now_ms();
         for (session, line) in lines {
             self.write(&json!({"at_ms": at_ms, "kind": "transcript", "session": session,
                 "line": line}));

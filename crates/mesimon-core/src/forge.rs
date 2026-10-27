@@ -1516,6 +1516,11 @@ const SWITCH_FLAGS: &[&str] = &[
     "--recurse-submodules",
 ];
 
+/// `w` names the binary `name`, bare or by a path (`/opt/bin/gh`).
+fn is_bin(w: &str, name: &str) -> bool {
+    w.strip_suffix(name).is_some_and(|p| p.is_empty() || p.ends_with('/'))
+}
+
 /// A shell command that acts on a PR (T-859): `gh pr <verb> …` or `glab mr
 /// <verb> …` with a verb of `GH_ACTS` / `GLAB_ACTS`, anywhere in the line,
 /// and the PR it is about as the ledger keeps it: the URL the command
@@ -1529,7 +1534,6 @@ const SWITCH_FLAGS: &[&str] = &[
 /// repository is not the ticket's. `None` for any other command.
 pub fn pr_act(command: &str) -> Option<String> {
     let words = shell_words(command);
-    let is_bin = |w: &str, name: &str| w == name || w.ends_with(&format!("/{name}"));
     let at = words.windows(3).position(|w| {
         (is_bin(&w[0], "gh") && w[1] == "pr" && GH_ACTS.contains(&w[2].as_str()))
             || (is_bin(&w[0], "glab") && w[1] == "mr" && GLAB_ACTS.contains(&w[2].as_str()))
@@ -1692,7 +1696,6 @@ pub fn acted_url(entry: &str, repo: &Remote) -> Option<String> {
 /// nothing either.
 pub fn is_pr_create(command: &str) -> bool {
     let words = shell_words(command);
-    let is_bin = |w: &str, name: &str| w == name || w.ends_with(&format!("/{name}"));
     words.windows(3).enumerate().any(|(at, w)| {
         let create = (is_bin(&w[0], "gh") && w[1] == "pr" && w[2] == "create")
             || (is_bin(&w[0], "glab") && w[1] == "mr" && w[2] == "create");

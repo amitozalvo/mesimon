@@ -20,7 +20,7 @@ impl Daemon {
         self.board
             .sessions
             .iter()
-            .filter(|r| r.ticket == ticket && r.kind == SessionKind::Bash && r.state.has_pane())
+            .filter(|r| agent_shell(r, ticket))
             .map(|r| AgentShellView {
                 shell: r.id,
                 shared: r.shell_shared,
@@ -31,6 +31,11 @@ impl Daemon {
                     .is_some_and(|q| q.expires_ms > now_ms()),
             })
             .collect()
+    }
+
+    /// How many `agent_shells` the ticket has, with no view built.
+    pub(super) fn agent_shell_count(&self, ticket: ulid::Ulid) -> usize {
+        self.board.sessions.iter().filter(|r| agent_shell(r, ticket)).count()
     }
 
     /// Validate kind, ownership and the pane generation before any capture or close.
@@ -51,11 +56,7 @@ impl Daemon {
         if !shell_key_matches(rec.pane_key.as_deref(), &key) {
             return Err("shell changed; read the ticket again".into());
         }
-        let pane = key
-            .split_once(':')
-            .map(|(_, pane)| pane.to_owned())
-            .filter(|pane| pane.starts_with('%'))
-            .ok_or("shell identity is unavailable")?;
+        let pane = pane_of_key(&key).ok_or("shell identity is unavailable")?.to_owned();
         Ok((key, pane))
     }
 
@@ -95,7 +96,7 @@ impl Daemon {
     }
 
     pub(super) fn local_shell_capture(&self, id: uuid::Uuid) -> Response {
-        let Some(ticket) = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket) else {
+        let Some(ticket) = self.board.session(id).map(|r| r.ticket) else {
             return Response::Err { message: "no live shell".into() };
         };
         self.capture_shell_output(ticket, id).map_or_else(
@@ -112,11 +113,7 @@ impl Daemon {
             }
             let name = format!("={}:0.0", terminal_name(Some(ticket)));
             let key = self.backend.pane_key(&name).map_err(|_| "terminal is unavailable")?;
-            let pane = key
-                .split_once(':')
-                .map(|(_, pane)| pane)
-                .filter(|pane| pane.starts_with('%'))
-                .ok_or("terminal identity is unavailable")?;
+            let pane = pane_of_key(&key).ok_or("terminal identity is unavailable")?;
             let (raw, _, omitted) = self.backend.capture_shell(pane).map_err(|e| e.to_string())?;
             if self.backend.pane_key(&name).ok().as_ref() != Some(&key) {
                 return Err("terminal changed during capture; try again".into());
@@ -217,7 +214,7 @@ impl Daemon {
             Ok(p) => p,
             Err(message) => return Response::Err { message },
         };
-        let Some(rec) = self.board.sessions.iter().find(|r| r.id == shell) else {
+        let Some(rec) = self.board.session(shell) else {
             return no_such_ticket();
         };
         if let Err(message) = self.shell_close_ready(rec) {
@@ -322,10 +319,18 @@ fn bounded_output(raw: &str) -> (String, bool) {
     (tail[from..].to_owned(), truncated)
 }
 
+/// A shell's jobs could not be read, so its close is the person's.
+pub(super) const JOBS_UNKNOWN: &str =
+    "could not inspect shell jobs; open the shell and exit it yourself";
+
+/// The `%pane` of a `pane_key` (`<server pid>:%<n>`).
+fn pane_of_key(key: &str) -> Option<&str> {
+    key.split_once(':').map(|(_, pane)| pane).filter(|pane| pane.starts_with('%'))
+}
+
 /// Only pgrep's explicit no-match result proves an empty child list.
 pub(super) fn parse_children(status: Option<i32>, bytes: &[u8]) -> Result<Vec<String>, String> {
-    let unknown =
-        || "could not inspect shell jobs; open the shell and exit it yourself".to_string();
+    let unknown = || JOBS_UNKNOWN.to_string();
     let text = std::str::from_utf8(bytes).map_err(|_| unknown())?;
     if status == Some(1) && text.trim().is_empty() {
         return Ok(Vec::new());
@@ -346,6 +351,11 @@ pub(super) fn parse_children(status: Option<i32>, bytes: &[u8]) -> Result<Vec<St
                 .ok_or_else(unknown)
         })
         .collect()
+}
+
+/// A shell of `ticket`'s that an agent may name: a Bash seat with its pane.
+fn agent_shell(r: &mesimon_core::board::SessionRecord, ticket: ulid::Ulid) -> bool {
+    r.ticket == ticket && r.kind == SessionKind::Bash && r.state.has_pane()
 }
 
 #[cfg(test)]

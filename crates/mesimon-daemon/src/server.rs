@@ -237,6 +237,18 @@ const BOX_UNKNOWN_WORD: &str = "box unknown ∙ leave";
 const COMPOSER_NOT_OURS: &str = "composer holds text other than the typed title";
 /// A box read at the edge as no composer, or a screen that could not be read.
 const COMPOSER_UNREAD: &str = "composer could not be read";
+/// A crown ask whose `fill` or `submit` the mod answered in a word this
+/// build does not read.
+const FILL_UNREAD: &str = "its mod reported the fill in a word the board does not read";
+const SUBMIT_UNREAD: &str = "its mod reported the words in a word the board does not read";
+
+/// A crown ask's words refused by Claude Code at the mod's `submit`, with
+/// what it said, cut.
+fn submit_refused(outcome: &str, said: Option<&str>) -> String {
+    let said = said.map(|s| format!(" ({})", mesimon_core::text::cap_bytes(s, 120)));
+    format!("its Claude Code refused the prompt: {outcome}{}", said.unwrap_or_default())
+}
+
 /// No composer on the sample yet: still painting, not held.
 const BOX_NOT_READY: &str = "no composer yet";
 /// The tail `paste_at` puts on a refusal before any key.
@@ -1394,7 +1406,7 @@ pub fn run(paths: Paths) -> Result<()> {
         .filter_map(|e| {
             let (seat, cwd) = match e.seat {
                 crate::askqueue::PersistedSeat::Wake { session } => {
-                    let rec = board.sessions.iter().find(|s| s.id == session)?;
+                    let rec = board.session(session)?;
                     (QueuedSeat::Wake(session), rec.cwd.clone())
                 }
                 crate::askqueue::PersistedSeat::Start { provider } => {
@@ -2374,6 +2386,11 @@ struct Ack {
 }
 
 impl Ack {
+    /// The crown's wake, whoever's road carried it.
+    fn is_crown_wake(self) -> bool {
+        self.word == Ack::CROWN_WAKE.word
+    }
+
     /// The user's words reached the agent: the composed spawn, the ask at a
     /// sleeping claude, the `p` prompt, a note's nudge, a manual merge
     /// request. Every launch road takes this one whatever its caller says
@@ -2535,31 +2552,11 @@ impl Owed {
     /// A launch entry: words parked for a pane on its way, an Enter owed.
     fn launch(ticket: ulid::Ulid, parked: Parked, ack: Ack) -> Self {
         Owed {
-            receipt_id: ulid::Ulid::new(),
-            ticket,
             parked: Some(parked),
             presses: SUBMIT_ATTEMPTS,
-            next_press: None,
             expires: None,
-            ready_by: None,
-            sent: None,
-            clear_first: false,
-            mod_road: false,
-            bridge_by: None,
-            frame: None,
-            taken: false,
-            fill: false,
-            ack,
-            asked: None,
-            ask: None,
-            steer: None,
-            screen_after: now_ms(),
             sent_at: None,
-            screen_acked: false,
-            typed: None,
-            held: false,
-            cleared: false,
-            clears_draft: false,
+            ..Owed::pasted(ticket, ack, now_ms())
         }
     }
 
@@ -3822,7 +3819,7 @@ impl Daemon {
             }
         }
         for id in expired {
-            self.forget_crown_rules(Some(id));
+            self.crown_rules.forget(Some(id));
         }
         for (id, change) in fired {
             changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
@@ -4090,7 +4087,7 @@ impl Daemon {
     /// never projected (a record a restart found held on it) counts from
     /// the daemon's start.
     fn spoken_since(&self, id: uuid::Uuid, call: &str) -> bool {
-        let heard = self.prompts_heard.get(&id).copied().unwrap_or(0);
+        let heard = mesophon::prompts_now(&self.prompts_heard, id);
         let projected = match self.dialog_heard.get(&id) {
             Some((request, at)) if request == call => *at,
             _ => 0,
@@ -4101,7 +4098,7 @@ impl Daemon {
     /// One sample into a record's recovery adapter, and each observation it
     /// makes into the machine, authorized as `agent_recovery`.
     fn feed_recovery(&mut self, id: uuid::Uuid, sample: RecoverySample, now: u64) -> bool {
-        let Some(record) = self.board.sessions.iter().find(|record| record.id == id) else {
+        let Some(record) = self.board.session(id) else {
             return false;
         };
         let Some(recovery) = self.recovery.get_mut(&id) else { return false };
@@ -4112,7 +4109,7 @@ impl Daemon {
             // its state claims wait: dropping the whole sample would lose
             // dialog results and leave the next turn on an old cursor.
             if self.async_stop_pending(id) {
-                let ticket = self.board.sessions.iter().find(|r| r.id == id).map(|r| r.ticket);
+                let ticket = self.board.session(id).map(|r| r.ticket);
                 self.feed.board_outcome(
                     "automation",
                     "async_hook_recovery_held",
@@ -4152,7 +4149,7 @@ impl Daemon {
                 .as_ref()
                 .is_some_and(|call| held_call.as_ref().is_some_and(|r| r != call))
             {
-                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                let ticket = self.board.session(id).map(|s| s.ticket);
                 self.feed.board("automation", "tail_end_of_another_dialog", ticket);
                 continue;
             }
@@ -4164,7 +4161,7 @@ impl Daemon {
                 && observation.signal
                     == (Signal::TranscriptHint { kind: attention::TailHint::AbortedMidStream });
             if unscoped && owned_dialog && held_call.is_some() {
-                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                let ticket = self.board.session(id).map(|s| s.ticket);
                 self.feed.board("automation", "tail_abort_beside_a_dialog", ticket);
                 continue;
             }
@@ -4178,7 +4175,7 @@ impl Daemon {
                 _ => false,
             };
             if stale {
-                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                let ticket = self.board.session(id).map(|s| s.ticket);
                 self.feed.board("automation", "tail_interrupt_before_prompt", ticket);
                 continue;
             }
@@ -4211,7 +4208,7 @@ impl Daemon {
     /// is one small fork the tick already makes twice a second, and paying a
     /// second `DiffCtx` to move it off would buy nothing.
     fn pane_tail(&self, session: uuid::Uuid, lines: u16) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|r| r.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Response::Err { message: "no such session".into() };
         };
         if !rec.state.has_pane() {
@@ -4262,7 +4259,7 @@ impl Daemon {
         let Some(Focus::Session(id)) = self.focus_held() else {
             return Response::FocusQuiet { quiet_ms: None };
         };
-        let Some(rec) = self.board.sessions.iter().find(|r| r.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             return Response::FocusQuiet { quiet_ms: None };
         };
         let secs = self.backend.client_quiet_secs(&rec.sid16()).ok().flatten();
@@ -4413,7 +4410,7 @@ impl Daemon {
             self.crown_wake_entering.as_ref().filter(|e| !e.person_came).map(|e| e.session)
         {
             let pasted = self.owed.get(&id).is_some_and(|o| o.sent_at.is_some());
-            let sid = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16());
+            let sid = self.board.session(id).map(|s| s.sid16());
             if pasted && sid.is_some_and(|sid| attached.contains(&sid)) {
                 if let Some(e) = self.crown_wake_entering.as_mut() {
                     e.person_came = true;
@@ -4599,7 +4596,7 @@ impl Daemon {
             .map(|r| r.id)
             .collect();
         for id in &paned {
-            let Some(rec) = self.board.sessions.iter().find(|s| s.id == *id) else { continue };
+            let Some(rec) = self.board.session(*id) else { continue };
             if let Err(why) = self.sleep_eligible(rec, now, false).and_then(|_| {
                 mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
                     .map_err(str::to_owned)
@@ -4988,12 +4985,10 @@ impl Daemon {
         let orphans: Vec<_> = stopped
             .into_iter()
             .filter(|id| {
-                self.board.sessions.iter().find(|session| session.id == *id).is_some_and(
-                    |session| {
-                        self.board.ticket(session.ticket).is_none()
-                            && !self.grace.contains_key(&session.ticket)
-                    },
-                )
+                self.board.session(*id).is_some_and(|session| {
+                    self.board.ticket(session.ticket).is_none()
+                        && !self.grace.contains_key(&session.ticket)
+                })
             })
             .collect();
         if !orphans.is_empty() {
@@ -5205,8 +5200,7 @@ impl Daemon {
                 // The hook review stays the pane's.
                 if reason == mesimon_core::board::Reason::Trust {
                     if crate::trust_dialog::read(screen).is_some() {
-                        let cwd =
-                            self.board.sessions.iter().find(|s| s.id == id).map(|s| s.cwd.clone());
+                        let cwd = self.board.session(id).map(|s| s.cwd.clone());
                         dirty |= self.control_offer_trust(id, cwd);
                     } else {
                         dirty |= self.control_drop_trust(id);
@@ -5316,7 +5310,7 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
+            let Some(rec) = self.board.session(id) else { continue };
             let sid = rec.sid16();
             let ticket = rec.ticket;
             let pending_prefill = rec.pending_prefill;
@@ -5560,7 +5554,7 @@ impl Daemon {
             && mesimon_core::road::RELAYED_EVENTS.contains(&frame.event.as_str())
             && self
                 .resolve_session(&frame.session)
-                .and_then(|id| self.board.sessions.iter().find(|s| s.id == id))
+                .and_then(|id| self.board.session(id))
                 .is_some_and(|rec| {
                     rec.frames_by_mod() && !(rec.native && frame.event == "PermissionRequest")
                 })
@@ -5581,7 +5575,7 @@ impl Daemon {
                 .or(frame.reason.as_deref())
                 != Some("resume")
         {
-            self.forget_crown_rules(Some(id));
+            self.crown_rules.forget(Some(id));
         }
         // D32c invariant 2: the hook-driven path passes the chokepoint too.
         //
@@ -5606,7 +5600,7 @@ impl Daemon {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(mesimon_core::forge::is_pr_create)
         {
-            if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+            if let Some(t) = self.board.session(id).map(|s| s.ticket) {
                 self.pr_created(t);
             }
         }
@@ -5702,12 +5696,16 @@ impl Daemon {
                 _ => {}
             }
             if matches!(sig, Signal::UserPromptSubmit) {
-                let board = &self.board;
-                self.prompts_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
-                self.dialog_heard.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
-                self.dialog_open.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
+                // Read by a live seat's id alone, so a gone seat's rows are
+                // pruned when a new seat first prompts, not on every prompt.
+                if !self.prompts_heard.contains_key(&id) {
+                    let board = &self.board;
+                    self.prompts_heard.retain(|s, _| board.session(*s).is_some());
+                    self.dialog_heard.retain(|s, _| board.session(*s).is_some());
+                    self.dialog_open.retain(|s, _| board.session(*s).is_some());
+                }
                 *self.prompts_heard.entry(id).or_default() += 1;
-                if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+                if let Some(t) = self.board.session(id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
                     // Our own paste's ack — the owed Enter paid, by us or by
                     // the user typing their own — or the user talking to the
@@ -5771,7 +5769,7 @@ impl Daemon {
             // Harvest done (status came in the frame) — remove the dead pane
             // remain-on-exit was holding (docs/19 §1 lifecycle).
             if matches!(sig, Signal::PaneDied { .. }) {
-                if let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) {
+                if let Some(rec) = self.board.session(id) {
                     let _ = self.backend.kill_session(&rec.sid16());
                 }
             }
@@ -5812,7 +5810,7 @@ impl Daemon {
     /// gets a fresh identity on the next plan. Content is sanitized and capped
     /// by write_note, and the feed records metadata only.
     fn record_plan(&mut self, session: uuid::Uuid, plan: String) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return false;
         };
         let ticket = rec.ticket;
@@ -5934,7 +5932,7 @@ impl Daemon {
     /// owed entry: every failure of that road puts it back. Anything else
     /// keeps the card's mark and the seat's resend, as a failed start does.
     fn resend_after_restart(&mut self, id: uuid::Uuid) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let Some(rec) = self.board.session(id) else { return false };
         if rec.kind == SessionKind::Codex {
             return self.repark_codex_after_restart(id);
         }
@@ -6084,7 +6082,7 @@ impl Daemon {
     /// gone (`history_missing`, which also looks where a conversation that
     /// moved with its cwd went): the reading a blank ask acts on.
     fn unprompted(&self, id: uuid::Uuid) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
+        let Some(rec) = self.board.session(id) else { return false };
         self.unprompted_hint(rec)
             && crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec))
     }
@@ -6108,9 +6106,7 @@ impl Daemon {
                 // seen holding text, clears it there too.
                 if self.mod_speaks(id, "submit") {
                     use crate::agents::claude::composer::{self, Composer};
-                    if let Some(sid) =
-                        self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16())
-                    {
+                    if let Some(sid) = self.board.session(id).map(|s| s.sid16()) {
                         let holding = self
                             .backend
                             .capture_input_screen(&sid)
@@ -6169,8 +6165,8 @@ impl Daemon {
         let frame = self.mod_enqueue(id, ModCommand::Submit { text });
         // A crown wake parked on a launch goes down as this frame (T-936):
         // from here it is that frame's to settle, by seat and pane.
-        if ack.word == Ack::CROWN_WAKE.word {
-            let pane = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.pane_key.clone());
+        if ack.is_crown_wake() {
+            let pane = self.board.session(id).map(|s| s.pane_key.clone());
             if let Some(e) =
                 self.crown_wake_entering.as_mut().filter(|e| e.session == id && e.parked)
             {
@@ -6231,18 +6227,14 @@ impl Daemon {
                     fid,
                     "its mod filled the words after the board stopped waiting",
                 ),
-                _ => self.crown_ask_unread(
-                    id,
-                    fid,
-                    "its mod reported the fill in a word the board does not read",
-                ),
+                _ => self.crown_ask_unread(id, fid, FILL_UNREAD),
             };
             if changed {
                 self.persist_and_notify();
             }
             return;
         }
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
+        let Some(rec) = self.board.session(id) else { return };
         let sid = rec.sid16();
         if outcome == "filled" {
             self.mod_taken(id, fid);
@@ -6304,11 +6296,7 @@ impl Daemon {
             if outcome == "refused" {
                 self.crown_ask_refused(id, fid, why);
             } else {
-                self.crown_ask_unread(
-                    id,
-                    fid,
-                    "its mod reported the fill in a word the board does not read",
-                );
+                self.crown_ask_unread(id, fid, FILL_UNREAD);
             }
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = false;
@@ -6511,7 +6499,7 @@ impl Daemon {
                 None => _ = self.wake_not_entered(id),
             }
             self.crown_submit_refused.insert(id);
-            let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+            let ticket = self.board.session(id).map(|s| s.ticket);
             self.feed.board_outcome("daemon", "crown_wake_refused", ticket, outcome);
             self.persist_and_notify();
             return;
@@ -6553,20 +6541,10 @@ impl Daemon {
             // and pane, and a report the board cannot read leaves it
             // unknown, never a newer delivery's.
             let changed = match outcome {
-                "dropped" | "rejected" => self.crown_ask_refused(
-                    id,
-                    fid,
-                    &format!(
-                        "its Claude Code refused the prompt: {outcome}{}",
-                        said.map(|s| format!(" ({})", mesimon_core::text::cap_bytes(s, 120)))
-                            .unwrap_or_default()
-                    ),
-                ),
-                _ => self.crown_ask_unread(
-                    id,
-                    fid,
-                    "its mod reported the words in a word the board does not read",
-                ),
+                "dropped" | "rejected" => {
+                    self.crown_ask_refused(id, fid, &submit_refused(outcome, said))
+                }
+                _ => self.crown_ask_unread(id, fid, SUBMIT_UNREAD),
             };
             if changed {
                 self.persist_and_notify();
@@ -6660,21 +6638,9 @@ impl Daemon {
         // never silently.
         self.mark_unsent(id, owed.sent);
         if refused {
-            self.crown_ask_refused(
-                id,
-                fid,
-                &format!(
-                    "its Claude Code refused the prompt: {outcome}{}",
-                    said.map(|s| format!(" ({})", mesimon_core::text::cap_bytes(s, 120)))
-                        .unwrap_or_default()
-                ),
-            );
+            self.crown_ask_refused(id, fid, &submit_refused(outcome, said));
         } else {
-            self.crown_ask_unread(
-                id,
-                fid,
-                "its mod reported the words in a word the board does not read",
-            );
+            self.crown_ask_unread(id, fid, SUBMIT_UNREAD);
         }
         self.feed.board_outcome("daemon", "prompt_submit_refused", Some(ticket), outcome);
         self.persist_and_notify();
@@ -6768,7 +6734,7 @@ impl Daemon {
             // no prompt says it went, or that it did not, and the feed says
             // nothing of it here. A wake parked on a launch has this, the
             // launch's own receipt, for its delivery edge.
-            let wake = owed.ack.word == Ack::CROWN_WAKE.word;
+            let wake = owed.ack.is_crown_wake();
             let entering = self.crown_wake_entering.as_ref().filter(|e| e.session == id);
             let (submitted, parked) =
                 entering.map_or((false, false), |e| (e.frame.is_some(), e.parked));
@@ -6842,7 +6808,7 @@ impl Daemon {
         owed.next_press = Some(now + SUBMIT_RETRY_MS);
         owed.ready_by = Some(now + composer_wait_ms());
         if owed.parked.is_none() {
-            if let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) {
+            if let Some(rec) = self.board.session(id) {
                 let _ = self.backend.send_enter(&rec.sid16());
             }
         }
@@ -6867,7 +6833,7 @@ impl Daemon {
             .owed
             .iter()
             .filter(|(_, o)| o.next_press.is_none() && o.presses > 0 && o.parked.is_some())
-            .filter_map(|(id, _)| self.board.sessions.iter().find(|s| s.id == *id))
+            .filter_map(|(id, _)| self.board.session(*id))
             .filter(|r| {
                 r.kind == SessionKind::Claude
                     && r.frames_by_mod()
@@ -6905,7 +6871,7 @@ impl Daemon {
                 o.parked.is_some()
                     && (!o.mod_road || o.bridge_by.is_some_and(|by| by <= now + 1_000))
             })
-            .filter_map(|(id, _)| self.board.sessions.iter().find(|s| s.id == *id))
+            .filter_map(|(id, _)| self.board.session(*id))
             .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane());
         for r in due {
             self.pane_due.screen(&r.sid16());
@@ -6975,7 +6941,7 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.compacting = false;
             }
-            self.forget_crown_rules(Some(id));
+            self.crown_rules.forget(Some(id));
             self.feed.board("daemon", "compaction_ended_on_screen", Some(ticket));
             changed = true;
         }
@@ -7050,7 +7016,7 @@ impl Daemon {
             .iter()
             .filter(|(_, o)| o.screen_acked && o.parked.is_none())
             .filter_map(|(id, o)| {
-                let rec = self.board.sessions.iter().find(|s| s.id == *id)?;
+                let rec = self.board.session(*id)?;
                 Some((*id, rec.sid16(), o.screen_after + SHELL_RENDER_MS))
             })
             .collect();
@@ -7075,7 +7041,7 @@ impl Daemon {
                 changed |= self.press_steer(id, now);
                 continue;
             }
-            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            let Some(rec) = self.board.session(id) else {
                 self.owed.remove(&id);
                 continue;
             };
@@ -7109,7 +7075,7 @@ impl Daemon {
                     owed.as_ref().is_some_and(|o| o.screen_acked && o.parked.is_none());
                 // A crown wake is owed again instead (T-936, `lose_entering`),
                 // never kept as a second copy.
-                let wake = owed.as_ref().is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                let wake = owed.as_ref().is_some_and(|o| o.ack.is_crown_wake());
                 let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A Claude seat stopped by a startup modal still has a pane
                 // to resend into once the dialog is answered (T-570). A
@@ -7175,7 +7141,7 @@ impl Daemon {
                 // pane's clients and box together, on its landing (T-918),
                 // into a box that sample shows empty. No key from the launch,
                 // no clear, no Enter.
-                let wake = self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                let wake = self.crown_wake_owed(id);
                 if wake && matches!(composer, Composer::Holding | Composer::Empty) {
                     self.drop_owed(id);
                     self.wake_not_entered(id);
@@ -7237,7 +7203,7 @@ impl Daemon {
                 match held {
                     Some(_) if ready_by <= now => {
                         let words = owed.parked.take();
-                        let wake = owed.ack.word == Ack::CROWN_WAKE.word;
+                        let wake = owed.ack.is_crown_wake();
                         self.drop_owed(id);
                         // A crown wake is owed again instead (T-936,
                         // `lose_entering`), never kept as a second copy.
@@ -7299,8 +7265,7 @@ impl Daemon {
                     // key, its prompt waited for one window; one that failed
                     // keeps it owed and untold for the live pane's road, with
                     // no unsent copy and no retry key.
-                    let wake =
-                        self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                    let wake = self.crown_wake_owed(id);
                     if wake {
                         if pasted && !text.is_empty() {
                             self.wake_entered(id);
@@ -7345,7 +7310,7 @@ impl Daemon {
             if left <= 1 {
                 let owed = self.drop_owed(id);
                 // A crown wake's words are never kept as unsent (T-936).
-                let wake = owed.as_ref().is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word);
+                let wake = owed.as_ref().is_some_and(|o| o.ack.is_crown_wake());
                 let command = owed.as_ref().is_some_and(|o| o.screen_acked) || wake;
                 let words = owed.and_then(|o| o.sent.or(o.parked));
                 // A shell line's or command's presses ran out with the box
@@ -7382,7 +7347,7 @@ impl Daemon {
         sig: &Signal,
         frame_pane: Option<&str>,
     ) -> Option<(String, String)> {
-        let rec = self.board.sessions.iter().find(|s| s.id == id)?;
+        let rec = self.board.session(id)?;
         let death = match sig {
             Signal::PaneDied { .. } => true,
             Signal::SessionEnd { kind } => {
@@ -7414,9 +7379,15 @@ impl Daemon {
         if !crownexpect::speaks_for_seat(frame.pane.as_deref(), rec.pane_key.as_deref()) {
             return;
         }
-        let board = &self.board;
-        self.prompt_ids.retain(|s, _| board.sessions.iter().any(|r| r.id == *s));
-        self.prompt_ids.insert(id, pid.to_string());
+        // Gone seats are pruned when a new one arrives, not on every frame:
+        // the map is read by a live seat's id alone.
+        if !self.prompt_ids.contains_key(&id) {
+            let board = &self.board;
+            self.prompt_ids.retain(|s, _| board.session(*s).is_some());
+        }
+        if self.prompt_ids.get(&id).is_none_or(|had| had != pid) {
+            self.prompt_ids.insert(id, pid.to_string());
+        }
         self.frame_prompt = Some((id, pid.to_string()));
         self.expect_heard(id, pid);
     }
@@ -7813,16 +7784,22 @@ impl Daemon {
         (Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }, told)
     }
 
-    /// A context the crown's rules may not be in (T-930, `crownrules`).
-    fn forget_crown_rules(&mut self, session: Option<uuid::Uuid>) {
-        self.crown_rules.forget(session);
+    /// The crown comes off its ticket, to another or to none: its owed
+    /// wakes go, its train holds stand as the person's, its sends wait, its
+    /// shell close asks are revoked and its rules are said again to the next.
+    fn crown_leaves(&mut self) {
+        self.drop_crown_wakes();
+        self.release_crown_holds();
+        self.hold_crown_sends();
+        self.revoke_shell_close_requests();
+        self.crown_rules.forget(None);
     }
 
     fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
         if !mcp::agent_allows(&cmd) {
             return Response::Err { message: "not available to an agent session".into() };
         }
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Response::Err { message: "unknown session".into() };
         };
         // Observe-only adopted records have no argv of ours and were never
@@ -8046,8 +8023,7 @@ impl Daemon {
             Command::AgentReadShell { shell, key } => {
                 let response = self.agent_read_shell(session, ticket, shell, key);
                 if logged {
-                    let target =
-                        self.board.sessions.iter().find(|s| s.id == shell).map(|s| s.ticket);
+                    let target = self.board.session(shell).map(|s| s.ticket);
                     self.feed.shell_read(
                         session,
                         shell,
@@ -8098,9 +8074,7 @@ impl Daemon {
                 let resp = self.write_note(target, note, text, None, &by);
                 if let Response::NoteWritten { note } = resp {
                     self.feed.board(by.actor(), "write_note", Some(target));
-                    let seen = self
-                        .crown_touched(ticket, target, "note", write)
-                        .unwrap_or_else(|| self.seen_token(target));
+                    let seen = self.touched_seen(ticket, target, "note", write);
                     if keyed {
                         Response::AgentNoteWritten { note, seen }
                     } else {
@@ -8143,9 +8117,7 @@ impl Daemon {
                     return err;
                 }
                 self.feed.board(by.actor(), "rename_ticket", Some(target));
-                let seen = self
-                    .crown_touched(ticket, target, "renamed", write)
-                    .unwrap_or_else(|| self.seen_token(target));
+                let seen = self.touched_seen(ticket, target, "renamed", write);
                 Response::AgentTicketUpdated {
                     key,
                     seen,
@@ -8172,9 +8144,7 @@ impl Daemon {
                     return err;
                 }
                 self.feed.board(by.actor(), "set_workspace", Some(target));
-                let seen = self
-                    .crown_touched(ticket, target, "workspace", write)
-                    .unwrap_or_else(|| self.seen_token(target));
+                let seen = self.touched_seen(ticket, target, "workspace", write);
                 Response::AgentTicketUpdated {
                     key,
                     seen,
@@ -8222,9 +8192,7 @@ impl Daemon {
                     if restore { "unarchive_ticket" } else { "archive_ticket" },
                     Some(target),
                 );
-                let seen = self
-                    .crown_touched(ticket, target, word, write)
-                    .unwrap_or_else(|| self.seen_token(target));
+                let seen = self.touched_seen(ticket, target, word, write);
                 Response::AgentTicketUpdated {
                     key,
                     seen,
@@ -8813,9 +8781,7 @@ impl Daemon {
                 }
                 self.persist_sessions();
                 self.feed.board(by.actor(), "sleep_agent", Some(target));
-                let seen = self
-                    .crown_touched(ticket, target, "parked", write)
-                    .unwrap_or_else(|| self.seen_token(target));
+                let seen = self.touched_seen(ticket, target, "parked", write);
                 self.broadcast();
                 Response::AgentTicketUpdated {
                     key,
@@ -8882,9 +8848,7 @@ impl Daemon {
                 self.persist_crown();
                 let cmd = if unwatch { "unwatch_ticket" } else { "watch_ticket" };
                 self.feed.board(by.actor(), cmd, Some(target));
-                let seen = self
-                    .crown_touched(ticket, target, word, write)
-                    .unwrap_or_else(|| self.seen_token(target));
+                let seen = self.touched_seen(ticket, target, word, write);
                 // The watch flips no board field, so nothing else tells the
                 // TUI to take a snapshot and strike the bolt (T-719).
                 self.broadcast();
@@ -9175,7 +9139,7 @@ impl Daemon {
         }
         if let QueuedSeat::Wake(id) = seat {
             let checkout = self.paths.repo_root.to_string_lossy();
-            let on_checkout = self.board.sessions.iter().find(|s| s.id == *id).is_some_and(|rec| {
+            let on_checkout = self.board.session(*id).is_some_and(|rec| {
                 crown::runs_in(rec, &checkout) == WorkspaceStrategy::SharedCheckout
             });
             if on_checkout {
@@ -9453,6 +9417,18 @@ impl Daemon {
         Some(self.receipt_seen(target, Some(write)))
     }
 
+    /// `crown_touched`'s stamp, or the target's own on an own-ticket call:
+    /// the `seen` a keyed tool's answer always carries.
+    fn touched_seen(
+        &mut self,
+        own: ulid::Ulid,
+        target: ulid::Ulid,
+        action: &str,
+        write: crownreceipt::Write,
+    ) -> String {
+        self.crown_touched(own, target, action, write).unwrap_or_else(|| self.seen_token(target))
+    }
+
     /// A card touch without a reply. In particular, delivering a queued
     /// ask must not replace the stamp its caller already holds (T-1042).
     fn crown_mark(&mut self, own: ulid::Ulid, target: ulid::Ulid, action: &str) {
@@ -9527,11 +9503,7 @@ impl Daemon {
         // one's words go nowhere on their own (T-550); its train holds stand
         // as the person's (T-919). The workers it started are the new
         // crown's from here (T-927): their next news wakes it.
-        self.drop_crown_wakes();
-        self.release_crown_holds();
-        self.hold_crown_sends();
-        self.revoke_shell_close_requests();
-        self.forget_crown_rules(None);
+        self.crown_leaves();
         self.board.crown = Some(id);
         self.persist_columns();
         self.broadcast();
@@ -9545,11 +9517,7 @@ impl Daemon {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        self.drop_crown_wakes();
-        self.release_crown_holds();
-        self.hold_crown_sends();
-        self.revoke_shell_close_requests();
-        self.forget_crown_rules(None);
+        self.crown_leaves();
         self.board.crown = None;
         self.persist_columns();
         self.broadcast();
@@ -9573,11 +9541,7 @@ impl Daemon {
             self.crown_held.remove(&id);
         }
         if self.board.crown == Some(id) {
-            self.drop_crown_wakes();
-            self.release_crown_holds();
-            self.hold_crown_sends();
-            self.revoke_shell_close_requests();
-            self.forget_crown_rules(None);
+            self.crown_leaves();
             self.board.crown = None;
             self.persist_columns();
             self.feed.board("automation", "uncrown", Some(id));
@@ -9660,22 +9624,12 @@ impl Daemon {
     /// person's resend spent its clear, whatever it holds (`as_is`, T-570).
     /// Anything else, a screen unread included, holds them. `None` to type.
     fn launch_refusal(&self, sid: &str, typed: Option<&str>, as_is: bool) -> Option<&'static str> {
-        use crate::agents::claude::composer::{self, Composer};
-        if self.clients_at_pane(sid) == PaneClients::Here {
-            return Some(A_PERSON_ATTACHED);
-        }
-        let Ok(screen) = self.backend.capture_input_screen(sid) else {
-            return Some(COMPOSER_UNREAD);
-        };
-        match composer::read(&screen) {
-            Composer::Empty => None,
-            Composer::Holding
-                if as_is || typed.is_some_and(|t| composer::holds_only(&screen, t)) =>
-            {
-                None
-            }
-            Composer::Holding => Some(COMPOSER_NOT_OURS),
-            Composer::Absent => Some(COMPOSER_UNREAD),
+        // The recovery's read of the same edge; only other text in the box
+        // is taken as it is.
+        match self.recovery_clear(sid, typed) {
+            Ok(_) => None,
+            Err(COMPOSER_NOT_OURS) if as_is => None,
+            Err(why) => Some(why),
         }
     }
 
@@ -9732,7 +9686,7 @@ impl Daemon {
             SessionKind::Codex => {
                 crate::agents::codex::composer_holds_text(screen)
                     && !self.owed.get(&id).is_some_and(|o| {
-                        o.ack.word == Ack::CROWN_WAKE.word
+                        o.ack.is_crown_wake()
                             && o.sent.as_ref().is_some_and(|w| {
                                 crate::agents::codex::composer_shows(screen, &w.text)
                             })
@@ -9781,7 +9735,7 @@ impl Daemon {
 
     /// Words owed this session are the crown's wake (T-918).
     fn crown_wake_owed(&self, id: uuid::Uuid) -> bool {
-        self.owed.get(&id).is_some_and(|o| o.ack.word == Ack::CROWN_WAKE.word)
+        self.owed.get(&id).is_some_and(|o| o.ack.is_crown_wake())
     }
 
     /// What a Codex crown's box says about the wake pasted into it, at its
@@ -9897,7 +9851,7 @@ impl Daemon {
         // next read, and a draft's box is sampled at all.
         if let QueuedSeat::Pane(id) = self.seat_of(crown) {
             if self.person_hold(id).is_some() {
-                if let Some(sid) = self.board.sessions.iter().find(|s| s.id == id) {
+                if let Some(sid) = self.board.session(id) {
                     let sid = sid.sid16();
                     self.want_person(&sid);
                 }
@@ -9918,8 +9872,7 @@ impl Daemon {
         // sample's own reads.
         // A wake by the mod's `submit` reads nothing of the box (T-931).
         if matches!(seat, QueuedSeat::Pane(_)) && !self.crown_wake_by_submit(id) {
-            let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16())
-            else {
+            let Some(sid) = self.board.session(id).map(|s| s.sid16()) else {
                 return false;
             };
             if landed.is_none() || self.person_read_at(&sid) != landed {
@@ -9961,7 +9914,7 @@ impl Daemon {
         // paste and its Enter) delivers it once the seat takes words. Its
         // stop and its tier's wake (`drain_tier_switches`) come first.
         if launch && self.session_kind(id) == SessionKind::Codex {
-            let rec = self.board.sessions.iter().find(|s| s.id == id);
+            let rec = self.board.session(id);
             if rec.is_some_and(|s| s.codex_stopping || s.tier_wake) {
                 return lost;
             }
@@ -9972,39 +9925,21 @@ impl Daemon {
             };
             if let Response::Err { message } = resp {
                 eprintln!("mesimon: crown wake's seat could not come up: {message}");
-                let at =
-                    self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
-                self.crown_wake_failed_on = at.map(|at| (id, at));
-                self.feed.board("automation", "crown_wake_failed", Some(crown));
+                self.crown_wake_failed(crown, id);
             }
             return true;
         }
-        match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
+        // What the entering wake waits on: its frame, its pane, when it
+        // lapses, and whether it rides a launch.
+        let waits = match self.deliver(crown, seat, text.clone(), Ack::CROWN_WAKE, false, false) {
             // Kept owed (T-936): a failed delivery tells nothing, and goes
             // again once the seat moves.
             Response::Err { message } => {
                 eprintln!("mesimon: crown wake failed: {message}");
-                let at =
-                    self.board.sessions.iter().find(|s| s.id == id).map(|s| s.state_changed_at);
-                self.crown_wake_failed_on = at.map(|at| (id, at));
-                self.feed.board("automation", "crown_wake_failed", Some(crown));
+                self.crown_wake_failed(crown, id);
+                return true;
             }
-            Response::Spawned { .. } | Response::Provisioning if launch => {
-                let wakes = std::mem::take(&mut *self.crown_wakes);
-                let entering = crownwake::Entering {
-                    crown,
-                    session: id,
-                    text,
-                    wakes,
-                    telling,
-                    person_came: false,
-                    frame: None,
-                    pane: None,
-                    expires_ms: None,
-                    parked: true,
-                };
-                *self.crown_wake_entering = Some(entering);
-            }
+            Response::Spawned { .. } | Response::Provisioning if launch => (None, None, None, true),
             // A Codex box takes the words and its Enter comes later, held
             // for a person (`drive_codex_inputs`): the crown has heard
             // nothing until it goes.
@@ -10012,47 +9947,44 @@ impl Daemon {
                 && self.session_kind(id) == SessionKind::Codex
                 && self.crown_wake_owed(id) =>
             {
-                let wakes = std::mem::take(&mut *self.crown_wakes);
-                let entering = crownwake::Entering {
-                    crown,
-                    session: id,
-                    text,
-                    wakes,
-                    telling,
-                    person_came: false,
-                    frame: None,
-                    pane: None,
-                    expires_ms: None,
-                    parked: false,
-                };
-                *self.crown_wake_entering = Some(entering);
+                (None, None, None, false)
             }
             // Down a Claude crown's mod as a `submit` (T-936): the crown has
             // heard nothing until that frame's `entered` (`on_mod_submit`).
             _ if pane && self.owed.get(&id).is_some_and(|o| o.frame.is_some()) => {
                 let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
-                let at = self.board.sessions.iter().find(|s| s.id == id);
-                let wakes = std::mem::take(&mut *self.crown_wakes);
-                let entering = crownwake::Entering {
-                    crown,
-                    session: id,
-                    text,
-                    wakes,
-                    telling,
-                    person_came: false,
-                    frame,
-                    pane: at.and_then(|s| s.pane_key.clone()),
-                    expires_ms: Some(now_ms() + INFLIGHT_MS),
-                    parked: false,
-                };
-                *self.crown_wake_entering = Some(entering);
+                let pane = self.board.session(id).and_then(|s| s.pane_key.clone());
+                (frame, pane, Some(now_ms() + INFLIGHT_MS), false)
             }
             _ => {
                 self.crown_wakes.clear();
                 self.told(crown, telling);
+                return true;
             }
-        }
+        };
+        let (frame, pane, expires_ms, parked) = waits;
+        let wakes = std::mem::take(&mut *self.crown_wakes);
+        *self.crown_wake_entering = Some(crownwake::Entering {
+            crown,
+            session: id,
+            text,
+            wakes,
+            telling,
+            person_came: false,
+            frame,
+            pane,
+            expires_ms,
+            parked,
+        });
         true
+    }
+
+    /// A crown wake that could not be delivered stays owed and goes again
+    /// once its seat moves (T-936).
+    fn crown_wake_failed(&mut self, crown: ulid::Ulid, id: uuid::Uuid) {
+        let at = self.board.session(id).map(|s| s.state_changed_at);
+        self.crown_wake_failed_on = at.map(|at| (id, at));
+        self.feed.board("automation", "crown_wake_failed", Some(crown));
     }
 
     /// The wake a Codex crown's box holds was entered: by the board's
@@ -10217,7 +10149,7 @@ impl Daemon {
     /// seat, frame and pane, as a crown ask's is (T-938). A report delayed
     /// from a pane since replaced is no one's.
     fn submitted_wake(&self, id: uuid::Uuid, frame: &str) -> bool {
-        let rec = self.board.sessions.iter().find(|s| s.id == id);
+        let rec = self.board.session(id);
         self.crown_wake_entering
             .as_ref()
             .is_some_and(|e| crownwake::submitted_fence(e, rec, id, frame))
@@ -10246,7 +10178,7 @@ impl Daemon {
     /// The taken wake this mod report is for (T-990), fenced as an untaken
     /// one is: seat, frame and the live pane it went to.
     fn taken_wake(&self, id: uuid::Uuid, frame: &str) -> Option<usize> {
-        let rec = self.board.sessions.iter().find(|s| s.id == id);
+        let rec = self.board.session(id);
         self.crown_wakes_taken.iter().position(|e| crownwake::submitted_fence(e, rec, id, frame))
     }
 
@@ -11444,13 +11376,14 @@ impl Daemon {
     fn agent_board_view(&self, own: ulid::Ulid) -> AgentBoardView {
         let columns: Vec<String> =
             self.board.sorted_columns().into_iter().map(|c| c.name.clone()).collect();
+        let crowned = self.board.is_crowned(own);
         let tickets = columns
             .iter()
             .flat_map(|name| {
                 self.board.column_tickets(name).into_iter().map(|t| AgentTicketRow {
-                    shells: (t.id == own || self.board.crown_holder().map(|c| c.id) == Some(own))
+                    shells: (t.id == own || crowned)
                         .then(|| {
-                            self.agent_shells(t.id).len()
+                            self.agent_shell_count(t.id)
                                 + usize::from(self.terminals.contains_key(&Some(t.id)))
                         })
                         .filter(|count| *count > 0),
@@ -11722,19 +11655,14 @@ impl Daemon {
         {
             return Err(format!("denied: {reason}"));
         }
-        let siblings: Vec<ulid::Ulid> =
-            self.board.column_tickets(column).iter().map(|t| t.id).collect();
-        let at = siblings.iter().position(|t| *t == id);
-        let others: Vec<ulid::Ulid> = siblings.into_iter().filter(|t| *t != id).collect();
-        // Removing the card and reinserting it at `want` in what is left puts
-        // it back at index `want` — so `want == at` is the ghost dropped where
-        // it was picked up. Minting a fresh index for that would only lengthen
-        // the fractional key and broadcast a board that did not change.
-        let want = match pos {
-            Position::Before(Some(b)) => others.iter().position(|t| t == b).unwrap_or(others.len()),
-            _ => others.len(),
+        // A card dropped where it was picked up: minting a fresh index for
+        // that would only lengthen the fractional key and broadcast a board
+        // that did not change.
+        let before = match pos {
+            Position::Before(b) => *b,
+            Position::Top => None,
         };
-        if at == Some(want) {
+        if self.board.sits_before(column, id, before) {
             return Ok(());
         }
         let order = self.order_within(column, id, pos);
@@ -11749,27 +11677,15 @@ impl Daemon {
 
     /// The fractional index a ticket takes in its destination column.
     fn order_within(&self, dest: &str, id: ulid::Ulid, pos: &Position) -> String {
-        let siblings = self.board.column_tickets(dest);
-        let siblings: Vec<&Ticket> = siblings.into_iter().filter(|t| t.id != id).collect();
-        let append = || {
-            fracindex::between(&siblings.last().map(|t| t.order.clone()).unwrap_or_default(), "")
-        };
         match pos {
             // Automatic moves land at the TOP: the move is fresh news (just
             // started, just finished), so it outranks what was already there.
-            Position::Top => fracindex::between(
-                "",
-                &siblings.first().map(|t| t.order.clone()).unwrap_or_default(),
-            ),
-            Position::Before(None) => append(),
-            Position::Before(Some(b)) => match siblings.iter().position(|t| t.id == *b) {
-                Some(i) => {
-                    let hi = siblings[i].order.clone();
-                    let lo = if i == 0 { String::new() } else { siblings[i - 1].order.clone() };
-                    fracindex::between(&lo, &hi)
-                }
-                None => append(),
-            },
+            Position::Top => {
+                let siblings = self.board.column_tickets(dest);
+                let first = siblings.into_iter().find(|t| t.id != id);
+                fracindex::between("", first.map(|t| t.order.as_str()).unwrap_or(""))
+            }
+            Position::Before(b) => self.board.order_before(dest, id, *b),
         }
     }
 
@@ -14099,6 +14015,13 @@ impl Daemon {
         self.paste_at(ticket, text, ack, false)
     }
 
+    /// `paste_at` refused before any key reached the pane: a queue road
+    /// keeps the entry it took (`refused_for_person`), and the feed says why.
+    fn refuse_before_keys(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, outcome: &str) {
+        self.refused_for_person = Some(id);
+        self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), outcome);
+    }
+
     /// `paste_to_ticket`, or with `immediately` (T-601) Claude Code's
     /// send-now over the words: a WORKING Claude agent reads them at once,
     /// its running tool call moved to the background, where a plain send
@@ -14132,8 +14055,7 @@ impl Daemon {
         // pane: the words stay with whoever sent them, a queue road keeps its
         // entry, and the parked words keep theirs and their receipt.
         if self.parked(id) {
-            self.refused_for_person = Some(id);
-            self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), PROMPT_WAITING);
+            self.refuse_before_keys(id, ticket, PROMPT_WAITING);
             return Err(PROMPT_WAITING.into());
         }
         let immediately = immediately && !self.session_idle(id);
@@ -14162,13 +14084,7 @@ impl Daemon {
                 // Refused before any key, as for a person at the pane: a
                 // queue road keeps the ask this send took (T-961 round 3).
                 _ if self.young_seat(id) => {
-                    self.refused_for_person = Some(id);
-                    self.feed.board_outcome(
-                        "daemon",
-                        "prompt_not_sent",
-                        Some(ticket),
-                        BOX_NOT_DRAWN,
-                    );
+                    self.refuse_before_keys(id, ticket, BOX_NOT_DRAWN);
                     return Err(format!("{BOX_NOT_DRAWN} ∙ {what} runs only from an empty box"));
                 }
                 _ => {}
@@ -14222,13 +14138,7 @@ impl Daemon {
             }
             let refused = clients.refusal(|| read);
             if let Some(why) = refused {
-                self.refused_for_person = Some(id);
-                self.feed.board_outcome(
-                    "daemon",
-                    "prompt_not_sent",
-                    Some(ticket),
-                    A_PERSON_ATTACHED,
-                );
+                self.refuse_before_keys(id, ticket, A_PERSON_ATTACHED);
                 return Err(format!("{why}{NOT_SENT}"));
             }
         }
@@ -14306,8 +14216,7 @@ impl Daemon {
         // wake's, T-603): a box holding exactly that is the board's, and
         // the words go after it, as the composed spawn's brief does (T-987).
         // A resume typed none, and a rename since changes nothing typed.
-        owed.typed =
-            self.board.sessions.iter().find(|s| s.id == id).and_then(|s| s.typed_title.clone());
+        owed.typed = self.board.session(id).and_then(|s| s.typed_title.clone());
         self.owed.insert(id, owed);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
@@ -14368,7 +14277,7 @@ impl Daemon {
         ack: Ack,
         plan: bool,
     ) -> Result<(), String> {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
         if rec.pending_submit || self.owed.contains_key(&id) {
@@ -14402,7 +14311,7 @@ impl Daemon {
         ack: Ack,
         from: u64,
     ) -> Result<(), String> {
-        let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()) else {
+        let Some(sid) = self.board.session(id).map(|s| s.sid16()) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
         // A few reads at the key, never one (T-907): a frame Codex is mid-way
@@ -14456,7 +14365,7 @@ impl Daemon {
     /// answer it for the person. A sampled screen from after the paste
     /// (`want_codex_inputs`) showing the box empty spares that read.
     fn press_steer(&mut self, id: uuid::Uuid, now: u64) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             self.owed.remove(&id);
             return false;
         };
@@ -15516,12 +15425,10 @@ impl Daemon {
         // there is a session, else the shared root a spawn would resolve to
         // (`resolve_spawn_cwd`, a pure read for this strategy).
         let cwd = match &seat {
-            QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => {
-                match self.board.sessions.iter().find(|s| s.id == *id) {
-                    Some(rec) => rec.cwd.clone(),
-                    None => return Err("no such session".into()),
-                }
-            }
+            QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => match self.board.session(*id) {
+                Some(rec) => rec.cwd.clone(),
+                None => return Err("no such session".into()),
+            },
             QueuedSeat::Start(_) => self.paths.repo_root.display().to_string(),
         };
         // The PTY budget is deliberately NOT consulted here: a start that
@@ -15822,7 +15729,7 @@ impl Daemon {
     /// `attention::on_question`): stated so, or stated so last and demoted
     /// by nothing but the stale clock.
     fn session_asking(&self, id: uuid::Uuid) -> bool {
-        self.board.sessions.iter().find(|s| s.id == id).is_some_and(|s| self.rec_asking(s))
+        self.board.session(id).is_some_and(|s| self.rec_asking(s))
     }
 
     /// Does this pane's agent wait on a person — a dialog up, or a question
@@ -16017,7 +15924,7 @@ impl Daemon {
                 QueuedSeat::Pane(id) => self.typed_under_a_person(id, q).then_some(id),
                 _ => None,
             })
-            .filter_map(|id| self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()))
+            .filter_map(|id| self.board.session(id).map(|s| s.sid16()))
             .collect();
         for sid in held {
             self.want_person(&sid);
@@ -16375,7 +16282,7 @@ impl Daemon {
     /// its own (the crown's, T-582): the checks, the screen, the Enter, the
     /// deadline. `Ok` is the ticket pressed for.
     fn press_plan(&mut self, session: uuid::Uuid) -> Result<ulid::Ulid, &'static str> {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Err("no such session");
         };
         if rec.state != (SessionState::RequiresAction { reason: Reason::Plan }) {
@@ -16502,7 +16409,7 @@ impl Daemon {
                 changed |= self.send_after_accept(id);
             } else if now >= deadline {
                 self.plan_accept.remove(&id);
-                let ticket = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket);
+                let ticket = self.board.session(id).map(|s| s.ticket);
                 self.feed.board("automation", "plan_accept_unconfirmed", ticket);
                 // The words stay, as an ordinary ask: they wait for idle.
                 if let Some(q) = self
@@ -16569,7 +16476,7 @@ impl Daemon {
         // The refusal read the pane afresh; the drain waits for a sample as
         // fresh (T-997), and asks for one.
         if let QueuedSeat::Pane(id) = entry.seat {
-            if let Some(sid) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.sid16()) {
+            if let Some(sid) = self.board.session(id).map(|s| s.sid16()) {
                 self.person_refused_at.insert(sid.clone(), now_ms());
                 self.want_person(&sid);
             }
@@ -16710,19 +16617,25 @@ impl Daemon {
         else {
             return;
         };
-        // A title that begins with `!` is not typed (T-876): the box would
-        // run it, and the start that typed it was refused for the same.
-        let Some(title) = self
+        let (id, ticket) = (rec.id, rec.ticket);
+        self.type_title(id, ticket);
+    }
+
+    /// The ticket's title typed into session `id`'s box, never submitted,
+    /// for the person to edit (T-603, T-961). Never one beginning with `!`
+    /// (T-876): the box would run it, and the start that typed it was
+    /// refused for the same.
+    fn type_title(&mut self, id: uuid::Uuid, ticket: ulid::Ulid) {
+        let title = self
             .board
-            .ticket(rec.ticket)
-            .map(|t| t.title.trim())
-            .filter(|t| !t.is_empty() && !mesimon_core::board::shell_title(t))
-        else {
-            return;
-        };
-        let (id, title) = (rec.id, title.to_string());
-        if self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok() {
-            self.title_typed(id, &title);
+            .ticket(ticket)
+            .map(|t| t.title.trim().to_string())
+            .filter(|t| !t.is_empty() && !mesimon_core::board::shell_title(t));
+        let sid16 = self.board.session(id).map(|s| s.sid16());
+        if let (Some(title), Some(sid16)) = (title, sid16) {
+            if self.backend.send_text(&sid16, &format!("{title} ")).is_ok() {
+                self.title_typed(id, &title);
+            }
         }
     }
 
@@ -16981,7 +16894,7 @@ impl Daemon {
             .map(|s| (s.id, s.kind))
             .collect();
         for (sid, kind) in &awake {
-            let Some(rec) = self.board.sessions.iter().find(|s| s.id == *sid) else { continue };
+            let Some(rec) = self.board.session(*sid) else { continue };
             if let Err(why) = self.sleep_eligible(rec, now, false).and_then(|_| {
                 mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
                     .map_err(str::to_owned)
@@ -17103,7 +17016,7 @@ impl Daemon {
     /// the agent and not the card. False for a session that is not on the
     /// board, as for a ticket with no hand up.
     fn lower_hand_of(&mut self, session: uuid::Uuid) -> bool {
-        match self.board.sessions.iter().find(|s| s.id == session).map(|s| s.ticket) {
+        match self.board.session(session).map(|s| s.ticket) {
             Some(ticket) => self.lower_hand_on(ticket),
             None => false,
         }
@@ -19861,7 +19774,7 @@ impl Daemon {
         // Whether this is the ticket's agent seat, read before the kill
         // changes it (T-936): a shell, or an old corpse dismissed beside its
         // replacement, holds no turn of the agent's.
-        let seat = self.board.sessions.iter().find(|s| s.id == id).is_some_and(|rec| {
+        let seat = self.board.session(id).is_some_and(|rec| {
             self.board.live_agent(rec.ticket).is_some_and(|agent| agent.id == id)
         });
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
@@ -20221,7 +20134,7 @@ impl Daemon {
         human_resume: bool,
         plan: bool,
     ) -> Response {
-        let Some(mut rec) = self.board.sessions.iter().find(|s| s.id == id).cloned() else {
+        let Some(mut rec) = self.board.session(id).cloned() else {
             return Response::Err { message: "no such session".into() };
         };
         if !rec.kind.is_agent() {
@@ -20542,8 +20455,7 @@ impl Daemon {
         let mut changed = false;
         for (id, timeout, rule) in candidates {
             let by = Principal::Automation { rule: rule.into() };
-            let rec =
-                self.board.sessions.iter().find(|rec| rec.id == id).expect("candidate exists");
+            let rec = self.board.session(id).expect("candidate exists");
             if !matches!(
                 authorize(&by, &Action::Mutate, &Resource::Session { id }),
                 Decision::Allow
@@ -20606,9 +20518,7 @@ impl Daemon {
             let pane_pid = self
                 .backend
                 .snapshot()
-                .map_err(|_| {
-                    "could not inspect shell jobs; open the shell and exit it yourself".to_string()
-                })?
+                .map_err(|_| shells::JOBS_UNKNOWN.to_string())?
                 .into_iter()
                 .find(|p| p.session_name == rec.sid16())
                 .map(|p| p.pane_pid);
@@ -20629,7 +20539,7 @@ impl Daemon {
         park: Park,
     ) -> std::result::Result<(), String> {
         let now = now_ms();
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             return Err("no such session".into());
         };
         if park == Park::Automatic {
@@ -20676,7 +20586,7 @@ impl Daemon {
         // The user parked the claude an ask was waiting for: a queued ask
         // needs an awake pane, and waking it later against their gesture is
         // not what they asked for.
-        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+        if let Some(t) = self.board.session(id).map(|s| s.ticket) {
             self.forget_queued(t, "queued_ask_dropped", "local", "board");
         }
         Ok(())
@@ -20734,7 +20644,7 @@ impl Daemon {
         // no turn ended (a Codex seat's lost observation reads as working)
         // read as a finished turn at the next restart. Its next turn opens
         // on its own edge into work.
-        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+        if let Some(t) = self.board.session(id).map(|s| s.ticket) {
             if self.turns_open.contains(&t) {
                 self.turns_open.remove(&t);
             }
@@ -20772,7 +20682,7 @@ impl Daemon {
     /// the SessionEnd that follows pane-died), so the park cannot be flipped
     /// back into a corpse by its own echo.
     fn park_on_exit(&mut self, id: uuid::Uuid) -> bool {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             return false;
         };
         if !rec.kind.is_agent()
@@ -20794,7 +20704,7 @@ impl Daemon {
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.
         self.reaping.insert(sid, Instant::now() + REAP_GRACE);
-        let snapshot = self.board.sessions.iter().find(|s| s.id == id).cloned();
+        let snapshot = self.board.session(id).cloned();
         if let Some(s) = snapshot {
             self.feed.session_state(
                 &s,
@@ -20806,7 +20716,7 @@ impl Daemon {
     }
 
     fn wake_session(&mut self, id: uuid::Uuid) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        let Some(rec) = self.board.session(id) else {
             return Response::Err { message: "no such session".into() };
         };
         if !matches!(rec.state, SessionState::Sleeping) {
@@ -21032,7 +20942,7 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
+            let Some(rec) = self.board.session(id) else { continue };
             let still_stuck = rec.kind == SessionKind::Codex
                 && rec.codex_stopping
                 && !rec.state.has_pane()
@@ -21116,7 +21026,7 @@ impl Daemon {
                 return Response::Err { message: "another session is focused".into() };
             }
         }
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+        let Some(rec) = self.board.session(session) else {
             return Response::Err { message: "no such session".into() };
         };
         if matches!(rec.state, SessionState::Sleeping) {
@@ -21179,7 +21089,7 @@ impl Daemon {
             32,
         );
         let title = focused
-            .and_then(|f| self.board.sessions.iter().find(|s| s.id == f))
+            .and_then(|f| self.board.session(f))
             .map(|s| s.ticket)
             .or(terminal_ticket)
             .and_then(|t| self.board.ticket(t))
@@ -21727,10 +21637,10 @@ fn shell_children_idle(children: Result<Vec<String>, String>) -> Result<(), Stri
 
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.
 fn live_children(pid: i32) -> std::result::Result<Vec<String>, String> {
-    let out =
-        std::process::Command::new("pgrep").args(["-lP", &pid.to_string()]).output().map_err(
-            |_| "could not inspect shell jobs; open the shell and exit it yourself".to_string(),
-        )?;
+    let out = std::process::Command::new("pgrep")
+        .args(["-lP", &pid.to_string()])
+        .output()
+        .map_err(|_| shells::JOBS_UNKNOWN.to_string())?;
     shells::parse_children(out.status.code(), &out.stdout)
 }
 

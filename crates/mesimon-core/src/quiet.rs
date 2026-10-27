@@ -246,7 +246,7 @@ pub fn working_tickets_by(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{Confidence, Provenance, Reason, StopReason};
+    use crate::board::{Reason, StopReason};
 
     /// The kind × state clause the daemon's gate and the TUI's `z` share:
     /// an agent sleeps only idle, a shell only running, and the refusal
@@ -357,62 +357,7 @@ mod tests {
         cwd: &str,
         state: SessionState,
     ) -> SessionRecord {
-        SessionRecord {
-            id: uuid::Uuid::new_v4(),
-            kind,
-            ticket,
-            argv: vec![],
-            cwd: cwd.into(),
-            state,
-            waiting_since: None,
-            state_changed_at: None,
-            transcript_path: None,
-            detail: None,
-            title: None,
-            started_by: None,
-            foreground: None,
-            shell_shared: false,
-            shell_close_request: None,
-            confidence: Confidence::High,
-            provenance: Provenance::Spawned,
-            claude_session_id: None,
-            pane_key: None,
-            launched_at: None,
-            typed_title: None,
-            road: crate::road::Road::Hooks,
-            native: false,
-            codex_thread_id: None,
-            codex_generation: None,
-            codex_observed_seq: 0,
-            codex_pending_seq: None,
-            codex_turn_id: None,
-            codex_failed_turn: None,
-            agent_preview_path: None,
-            agent_plan_key: None,
-            observation_hold: kind == SessionKind::Codex,
-            pending_submit: false,
-            pending_prefill: false,
-            codex_submit_sent: false,
-            codex_stopping: false,
-            codex_plan_dialog_seen: false,
-            codex_plan_dismissed_turn: None,
-            codex_plan_owed: false,
-            idle_teammates: vec![],
-            background_tasks: Default::default(),
-            plan_note: None,
-            dialog_call: None,
-            dialog_print: None,
-            ticket_read: false,
-            tier: String::new(),
-            tier_owed: false,
-            tier_wake: false,
-            unsent: None,
-            tasks_running: None,
-            tasks_since: None,
-            hook_wait: None,
-            unprompted: false,
-            compacting: false,
-        }
+        SessionRecord::new(uuid::Uuid::new_v4(), kind, ticket, vec![], cwd.into(), state)
     }
 
     fn board_with(sessions: Vec<SessionRecord>) -> Board {

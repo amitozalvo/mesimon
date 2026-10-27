@@ -17,7 +17,7 @@ use common::*;
 
 use std::time::Duration;
 
-use mesimon_core::board::{Reason, SessionKind, SessionState};
+use mesimon_core::board::{Reason, SessionState};
 use mesimon_core::command::{Command, Response};
 
 /// Claude Code's dialog as the pane shows it, then every line read echoed
@@ -50,24 +50,8 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
     let presses =
         || text().lines().filter(|l| matches!(*l, "got:" | "got:planned " | "got:planned")).count();
 
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "planned".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let ticket = c.create_ticket("planned");
+    let sid = c.spawn_claude(ticket);
     let session = sid.to_string();
     let plan = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##;
     let start = |c: &mut TestClient| {
@@ -168,20 +152,7 @@ fn the_board_accepts_a_plan_with_one_enter_and_the_words_ride_the_approval() {
     // (3) A pane at `Plan` showing no dialog the daemon recognises: the
     // flag is given up after its tries, the feed says so, and the words
     // stay queued the way an unflagged ask does — behind the `≡`.
-    assert!(matches!(
-        c.request(Command::PromptSession {
-            ticket,
-            text: "clear".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }),
-        Response::Ok
-    ));
+    assert!(matches!(c.prompt(ticket, "clear"), Response::Ok));
     wait_until(Duration::from_secs(5), "the screen to clear", || text().contains("got:clear"));
     start(&mut c);
     stop(&mut c);
@@ -241,15 +212,7 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
     let mut c = h.client("planq");
     let text = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
 
-    let mut make = |title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
+    let mut make = |title: &str| c.create_ticket(title);
     let (ta, tb) = (make("planA"), make("planB"));
     let board = c.board();
     let key = |t: ulid::Ulid| board.ticket(t).unwrap().short_key.clone();
@@ -267,15 +230,7 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
             })
             .count()
     };
-    let spawn = |c: &mut TestClient, ticket| match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let spawn = |c: &mut TestClient, ticket| c.spawn_claude(ticket);
     let (sa, sb) = (spawn(&mut c, ta), spawn(&mut c, tb));
     let plan = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan"}}"##;
     let start = |c: &mut TestClient, sid: uuid::Uuid| {
@@ -421,24 +376,8 @@ impl Bed {
             &[("MESIMON_PANE_QUIET_MS", "600000")],
         )?;
         let mut c = h.client(name);
-        let ticket = match c.request(Command::CreateTicket {
-            column: "TODO".into(),
-            title: "refused".into(),
-            workspace: None,
-            tier: None,
-        }) {
-            Response::Created { id, .. } => id,
-            other => panic!("{other:?}"),
-        };
-        let sid = match c.request(Command::SpawnSession {
-            ticket,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false,
-        }) {
-            Response::Spawned { id, .. } => id,
-            other => panic!("spawn failed: {other:?}"),
-        };
+        let ticket = c.create_ticket("refused");
+        let sid = c.spawn_claude(ticket);
         let transcript = h.dir.join(format!("{name}.jsonl"));
         let bed = Bed { h, c, ticket, sid, transcript };
         bed.append(serde_json::json!({"uuid": "p", "type": "user", "message": {"content": "go"}}));
@@ -533,7 +472,7 @@ impl Bed {
 
     /// The interrupt record an Esc writes.
     fn esc() -> serde_json::Value {
-        serde_json::json!({"uuid": "esc", "type": "user", "timestamp": now_iso(),
+        serde_json::json!({"uuid": "esc", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}})
     }
@@ -591,7 +530,7 @@ impl Bed {
 
     fn result_of(id: &str, error: bool, text: &str) -> serde_json::Value {
         serde_json::json!({"uuid": format!("r-{id}"), "type": "user",
-            "timestamp": now_iso(), "message": {"content": [{"type": "tool_result",
+            "timestamp": trace::iso_now(), "message": {"content": [{"type": "tool_result",
                 "tool_use_id": id, "is_error": error, "content": text}]}})
     }
 
@@ -620,37 +559,6 @@ impl Bed {
     fn departures(&self) -> Vec<serde_json::Value> {
         self.decisions().into_iter().filter(|v| v["source"] == "dialog_result").collect()
     }
-}
-
-/// Now, as Claude Code stamps a transcript record.
-fn now_iso() -> String {
-    iso_ago(0)
-}
-
-/// `ms` milliseconds before now, as Claude Code stamps a transcript record.
-fn iso_ago(ago: u64) -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-        as u64
-        - ago;
-    let (secs, milli) = (ms / 1000, ms % 1000);
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    // Civil from days (Howard Hinnant's algorithm), UTC.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{milli:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
 }
 
 /// T-447 (2026-09-23): a person's refusal of a plan or a question in the
@@ -952,24 +860,8 @@ fn words_riding_an_approval_wait_for_a_person_to_leave() {
     let feed = || std::fs::read_to_string(&feed_path).unwrap_or_default();
     let presses =
         || text().lines().filter(|l| matches!(*l, "got:" | "got:planned " | "got:planned")).count();
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "planned".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let ticket = c.create_ticket("planned");
+    let sid = c.spawn_claude(ticket);
     let session = sid.to_string();
     let pane = sid.simple().to_string()[..16].to_string();
     let tmux_sock = h.paths.tmux_sock();
@@ -1050,13 +942,13 @@ fn an_esc_then_a_prompt_at_once_leaves_the_new_turn_running() {
     let esc = |b: &Bed, id: &str| {
         b.result(id, true, STOP);
         b.append(serde_json::json!({"uuid": format!("abort-{id}"), "type": "user",
-            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+            "timestamp": trace::iso_now(), "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}}));
         b.append(serde_json::json!({"uuid": format!("close-{id}"), "type": "system",
-            "subtype": "turn_duration", "durationMs": 1, "timestamp": now_iso()}));
+            "subtype": "turn_duration", "durationMs": 1, "timestamp": trace::iso_now()}));
     };
     let prompt_line = |b: &Bed| {
-        b.append(serde_json::json!({"uuid": "next", "type": "user", "timestamp": now_iso(),
+        b.append(serde_json::json!({"uuid": "next", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": "Do it another way."}}));
     };
     // Whether the dialog's own decision (the last `PreToolUse`'s) left the
@@ -1147,12 +1039,12 @@ fn an_esc_and_a_prompt_before_a_fresh_cursor_s_first_read_leave_the_new_turn_run
             "The user doesn't want to proceed with this tool use. STOP what you are doing.",
         );
         b.append(serde_json::json!({"uuid": "abort-f", "type": "user",
-            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+            "timestamp": trace::iso_now(), "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}}));
         b.hook("UserPromptSubmit", r#"{"prompt":"again"}"#);
         std::thread::sleep(Duration::from_millis(2500));
         b.append(serde_json::json!({"uuid": "next-f", "type": "user",
-            "timestamp": now_iso(), "message": {"content": "again"}}));
+            "timestamp": trace::iso_now(), "message": {"content": "again"}}));
         std::thread::sleep(Duration::from_millis(2500));
         let pinned = b.decisions().iter().any(|d| {
             d["source"] == "PreToolUse"
@@ -1200,7 +1092,7 @@ fn a_prompt_heard_late_keeps_its_own_turn_s_esc() {
         b.stop_on("ExitPlanMode", "toolu_late");
         let line = |v: serde_json::Value, ago: u64| {
             let mut v = v;
-            v["timestamp"] = serde_json::json!(iso_ago(ago));
+            v["timestamp"] = serde_json::json!(iso_ms(now_ms() - ago));
             b.append(v);
         };
         line(
@@ -1247,8 +1139,10 @@ fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
         // The first "go": its line (the bed's first) and its hook.
         b.start();
         if between {
-            b.append(serde_json::json!({"uuid": "other", "type": "user", "timestamp": now_iso(),
-                "message": {"content": "something else"}}));
+            b.append(
+                serde_json::json!({"uuid": "other", "type": "user", "timestamp": trace::iso_now(),
+                "message": {"content": "something else"}}),
+            );
             b.hook("UserPromptSubmit", r#"{"prompt":"something else"}"#);
         }
         if pinned {
@@ -1265,14 +1159,18 @@ fn a_repeated_prompt_heard_before_its_line_leaves_the_new_turn_running() {
         b.call("ExitPlanMode", "toolu_r");
         b.stop_on("ExitPlanMode", "toolu_r");
         b.result("toolu_r", true, STOP);
-        b.append(serde_json::json!({"uuid": "abort-r", "type": "user", "timestamp": now_iso(),
+        b.append(
+            serde_json::json!({"uuid": "abort-r", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": [{"type": "text",
-                "text": "[Request interrupted by user for tool use]"}]}}));
+                "text": "[Request interrupted by user for tool use]"}]}}),
+        );
         // "go" again: its hook first, its line 2.5 s later.
         b.hook("UserPromptSubmit", r#"{"prompt":"go"}"#);
         std::thread::sleep(Duration::from_millis(2500));
-        b.append(serde_json::json!({"uuid": "go-again", "type": "user", "timestamp": now_iso(),
-            "message": {"content": "go"}}));
+        b.append(
+            serde_json::json!({"uuid": "go-again", "type": "user", "timestamp": trace::iso_now(),
+            "message": {"content": "go"}}),
+        );
         std::thread::sleep(Duration::from_millis(2500));
         let armed = b.decisions().into_iter().rev().find(|d| d["source"] == "PreToolUse");
         let armed = armed.is_some_and(|d| {
@@ -1325,7 +1223,7 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
         b.stop_on("ExitPlanMode", "toolu_a");
         b.result("toolu_a", true, STOP);
         let interrupt = serde_json::json!({"uuid": "abort-a", "type": "user",
-            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+            "timestamp": trace::iso_now(), "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}});
         b.append(interrupt.clone());
         if replayed {
@@ -1335,8 +1233,10 @@ fn an_old_plan_s_esc_leaves_a_newer_dialog_standing() {
         b.hook("UserPromptSubmit", r#"{"prompt":"Plan it again."}"#);
         b.stop_on(tool, "toolu_b");
         std::thread::sleep(Duration::from_millis(2500));
-        b.append(serde_json::json!({"uuid": "next-b", "type": "user", "timestamp": now_iso(),
-            "message": {"content": "Plan it again."}}));
+        b.append(
+            serde_json::json!({"uuid": "next-b", "type": "user", "timestamp": trace::iso_now(),
+            "message": {"content": "Plan it again."}}),
+        );
         b.call(tool, "toolu_b");
         std::thread::sleep(Duration::from_millis(2500));
         let pinned = b.decisions().iter().any(|d| {
@@ -1399,7 +1299,7 @@ fn an_old_interrupt_replayed_in_a_later_read_leaves_a_newer_dialog_standing() {
             });
         };
         let interrupt = serde_json::json!({"uuid": "abort-a", "type": "user",
-            "timestamp": now_iso(), "message": {"content": [{"type": "text",
+            "timestamp": trace::iso_now(), "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}});
         let result = Bed::result_of("toolu_a", true, STOP);
         if split {
@@ -1518,9 +1418,11 @@ fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
             std::thread::sleep(Duration::from_millis(2500));
         }
         b.result("toolu_b", true, STOP);
-        b.append(serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+        b.append(
+            serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": [{"type": "text",
-                "text": "[Request interrupted by user for tool use]"}]}}));
+                "text": "[Request interrupted by user for tool use]"}]}}),
+        );
         b.c.await_state(b.sid, "off the question its own Esc ended", |s| *s == interrupted);
         let needs = match b.c.send(
             mesimon_core::Principal::Agent { session: b.sid },
@@ -1570,7 +1472,7 @@ fn a_question_too_big_to_draw_still_ends_on_its_own_result() {
         "B stands"
     );
     b.result("toolu_b", true, STOP);
-    b.append(serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+    b.append(serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": trace::iso_now(),
         "message": {"content": [{"type": "text",
             "text": "[Request interrupted by user for tool use]"}]}}));
     b.c.await_state(b.sid, "off the question B's own Esc ended", |s| *s == interrupted);
@@ -1596,7 +1498,7 @@ fn an_id_less_permission_request_keeps_a_call_only_as_a_repeat() {
         b.append_all(&[
             Bed::result_of(id, true, STOP),
             serde_json::json!({"uuid": format!("esc-{id}"), "type": "user",
-                "timestamp": now_iso(), "message": {"content": [{"type": "text",
+                "timestamp": trace::iso_now(), "message": {"content": [{"type": "text",
                     "text": "[Request interrupted by user for tool use]"}]}}),
         ]);
     };
@@ -1720,7 +1622,7 @@ fn a_question_too_big_to_draw_keeps_its_call_through_an_id_less_repeat() {
         serde_json::json!({"uuid": "c-b", "type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "toolu_b", "name": "AskUserQuestion", "input": input}]}}),
         Bed::result_of("toolu_b", true, STOP),
-        serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": now_iso(),
+        serde_json::json!({"uuid": "esc-b", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}}),
     ]);
@@ -1812,7 +1714,7 @@ fn a_dialog_rebuilt_for_an_older_record_keeps_its_request_through_a_repeat() {
         assert_eq!(request.as_deref(), Some("toolu_a"), "the repeat keeps A's request");
         b.append_all(&[
             Bed::result_of("toolu_a", true, STOP),
-            serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": now_iso(),
+            serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": trace::iso_now(),
                 "message": {"content": [{"type": "text",
                     "text": "[Request interrupted by user for tool use]"}]}}),
         ]);
@@ -1859,7 +1761,7 @@ fn a_same_print_repeat_inside_a_prompt_s_settle_keeps_the_newer_dialog() {
     // A's result and Esc, in one write.
     b.append_all(&[
         Bed::result_of("toolu_a", true, STOP),
-        serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": now_iso(),
+        serde_json::json!({"uuid": "esc-a", "type": "user", "timestamp": trace::iso_now(),
             "message": {"content": [{"type": "text",
                 "text": "[Request interrupted by user for tool use]"}]}}),
     ]);
@@ -1907,7 +1809,7 @@ fn an_esc_inside_an_accept_s_settle_rests_interrupted() {
         b.hook("PostToolUse", &accept.to_string());
         b.append_all(&[
             Bed::result_of("toolu_ok", false, "User has approved your plan."),
-            serde_json::json!({"uuid": "esc-ok", "type": "user", "timestamp": now_iso(),
+            serde_json::json!({"uuid": "esc-ok", "type": "user", "timestamp": trace::iso_now(),
                 "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
         ]);
         b.c.await_state(b.sid, "interrupted by the Esc after the accept", |s| *s == interrupted);

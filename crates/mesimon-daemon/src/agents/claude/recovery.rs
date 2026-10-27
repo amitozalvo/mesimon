@@ -62,6 +62,17 @@ pub(super) struct ClaudeRecovery {
     calls_read: Option<(Option<u64>, Option<String>)>,
 }
 
+/// Add `call` to the calls read (T-988) unless it is there: bounded, as a
+/// held spell names a message's few, by dropping the oldest.
+fn note_call(calls: &mut Vec<(String, Option<String>)>, call: (String, Option<String>)) {
+    if !calls.iter().any(|(c, _)| *c == call.0) {
+        if calls.len() == 16 {
+            calls.remove(0);
+        }
+        calls.push(call);
+    }
+}
+
 /// The calls in `calls` read under the held call's message id, the held
 /// call aside (T-988): none when the held call's own line was not read.
 fn siblings_of<'a>(
@@ -503,26 +514,17 @@ impl ClaudeRecovery {
             if self.calls_read.as_ref() != Some(&look) {
                 self.calls_read = Some(look);
                 for call in tail::message_calls(&path, held) {
-                    if !self.calls.iter().any(|(c, _)| *c == call.0) {
-                        if self.calls.len() == 16 {
-                            self.calls.remove(0);
-                        }
-                        self.calls.push(call);
-                    }
+                    note_call(&mut self.calls, call);
                 }
             }
         }
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let event = classify_tail_record(&value);
             let mut attributed = false;
-            if let Some((tool, id)) = tail::dialog_call(&value) {
-                if !self.calls.iter().any(|(c, _)| c == id) {
-                    if self.calls.len() == 16 {
-                        self.calls.remove(0);
-                    }
-                    let message = value["message"]["id"].as_str().map(String::from);
-                    self.calls.push((id.to_string(), message));
-                }
+            if let Some((tool, id)) = tail::dialog_call_as(&value, &event) {
+                let message = value["message"]["id"].as_str().map(String::from);
+                note_call(&mut self.calls, (id.to_string(), message));
                 self.dialog = Some((tool, id.to_string()));
                 self.ended = None;
                 answered = None;
@@ -550,14 +552,12 @@ impl ClaudeRecovery {
             {
                 // A sibling's result (T-988): it leaves `ended` to the held
                 // call's end, for the interrupt after them.
-            } else if tail::speaks(&value) {
+            } else if tail::speaks_as(&value, &event) {
                 let ended = self.ended.take();
                 // Only an interrupt right after a result is that dialog's
                 // end; a repeat of it finds `ended` already taken and leaves
                 // the end it read standing (round 8).
-                if let Some(call) =
-                    ended.filter(|_| classify_tail_record(&value) == TailEvent::Aborted)
-                {
+                if let Some(call) = ended.filter(|_| event == TailEvent::Aborted) {
                     attributed = true;
                     answered = Some((call, true));
                 }
@@ -570,7 +570,7 @@ impl ClaudeRecovery {
                 answered = answered.filter(|(_, interrupted)| !interrupted);
                 hints.retain(|(kind, _, _)| *kind != TailHint::AbortedMidStream);
             }
-            match classify_tail_record(&value) {
+            match event {
                 TailEvent::Aborted if attributed && abort_only => {
                     owned.extend(
                         value.get("uuid").and_then(serde_json::Value::as_str).map(String::from),

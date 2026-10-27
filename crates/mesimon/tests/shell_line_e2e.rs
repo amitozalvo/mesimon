@@ -31,16 +31,7 @@ use mesimon_core::command::{Command, Response};
 /// Claude's composer ahead of it, and what the tty echoes of a paste lands
 /// at the top of the pane, never in the box, so the box reads empty once
 /// the line is read — the receipt a real shell line leaves.
-const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                    printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
-
-fn feed(h: &Harness) -> String {
-    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl")).unwrap_or_default()
-}
-
-fn got(h: &Harness) -> String {
-    std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default()
-}
+const STUB: &str = RECORDING_STUB;
 
 /// Every frame the session's stand-in mod read, of `kind` — none off the
 /// mod pass, where no stand-in runs.
@@ -53,23 +44,9 @@ fn frames(h: &Harness, sid: uuid::Uuid, kind: &str) -> usize {
         .count()
 }
 
-fn prompt(c: &mut TestClient, ticket: ulid::Ulid, text: &str) -> Response {
-    c.request(Command::PromptSession {
-        ticket,
-        text: text.into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    })
-}
-
 fn wait_line(h: &Harness, needle: &str) {
     let what = format!("the stub to read {needle:?}");
-    wait_until(Duration::from_secs(15), &what, || got(h).contains(needle));
+    wait_until(Duration::from_secs(15), &what, || h.got().contains(needle));
 }
 
 fn wait_feed(h: &Harness, cmd: &str, ticket: ulid::Ulid, n: usize) {
@@ -82,22 +59,8 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
     let Some(h) = Harness::boot("shell-line", Some(STUB)) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("shell-line");
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "run it".into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let ticket = c.create_ticket("run it");
+    let sid = c.spawn_claude(ticket);
     let sid_s = sid.to_string();
     wait_composer(&h, sid);
     hook_send_with(&hook_sock, &sid_s, "SessionStart", Some("startup"), "{}");
@@ -113,13 +76,13 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
 
     // The ask field's `!echo …`: typed into the pane, whole, and submitted
     // — one line at the stub, the Enter separate from the paste.
-    assert!(matches!(prompt(&mut c, ticket, "!echo mesimon-876-one"), Response::Ok));
+    assert!(matches!(c.prompt(ticket, "!echo mesimon-876-one"), Response::Ok));
     wait_line(&h, "!echo mesimon-876-one");
     assert_eq!(
-        got(&h).lines().filter(|l| l.contains("mesimon-876-one")).count(),
+        h.got().lines().filter(|l| l.contains("mesimon-876-one")).count(),
         1,
         "one paste, one Enter: {:?}",
-        got(&h)
+        h.got()
     );
     assert_eq!(frames(&h, sid, "submit"), submits_before, "a shell line is never a mod submit");
     wait_feed(&h, "shell_sent", ticket, 1);
@@ -131,7 +94,7 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
     let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
     assert!(!rec.pending_submit);
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
-    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", feed(&h));
+    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", h.feed());
 
     // The same from Remote Control's road is `paste_to_ticket` too; the
     // board's queued ask takes it on the next idle. Queued here at an idle
@@ -154,7 +117,7 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
     assert_eq!(frames(&h, sid, "submit"), submits_before);
     wait_feed(&h, "shell_sent", ticket, 2);
     wait_feed(&h, "queued_ask_delivered", ticket, 1);
-    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", feed(&h));
+    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", h.feed());
 
     // A shell line to a PARKED agent wakes it, and the line waits for the
     // pane's `SessionStart` and its composer, as any launch's words do.
@@ -162,7 +125,7 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
     // and the seat never reads `not sent`.
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
     c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
-    match prompt(&mut c, ticket, "!echo mesimon-876-wake") {
+    match c.prompt(ticket, "!echo mesimon-876-wake") {
         Response::Spawned { id, .. } => assert_eq!(id, sid, "the wake re-enters the record"),
         other => panic!("a shell line at a sleeping claude wakes it: {other:?}"),
     }
@@ -175,11 +138,11 @@ fn a_shell_line_is_pasted_and_acked_off_the_screen_on_every_road() {
     let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
     assert!(!rec.pending_submit, "the screen's ack ended the presses");
     assert!(rec.unsent.is_none(), "a shell line in the box is never kept unsent: {:?}", rec.unsent);
-    assert_eq!(feed_count(&h, "prompt_submit_gave_up", ticket), 0, "{}", feed(&h));
-    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", feed(&h));
+    assert_eq!(feed_count(&h, "prompt_submit_gave_up", ticket), 0, "{}", h.feed());
+    assert_eq!(feed_count(&h, "paste_unacked", ticket), 0, "{}", h.feed());
     // Exactly one line per send reached the pane: the owed presses after
     // the paste were Enters into an empty box, and the ack stopped them.
-    assert_eq!(got(&h).lines().filter(|l| l.contains("mesimon-876-wake")).count(), 1);
+    assert_eq!(h.got().lines().filter(|l| l.contains("mesimon-876-wake")).count(), 1);
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
@@ -200,22 +163,8 @@ fn a_shell_line_into_a_box_holding_a_draft_is_refused() {
     let Some(h) = Harness::boot_bare("shell-draft", Some(DRAFT), &[]) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("shell-draft");
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "draft".into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let ticket = c.create_ticket("draft");
+    let sid = c.spawn_claude(ticket);
     hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), "{}");
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     // The stub's composer is on screen before anything is sent at it.
@@ -228,17 +177,17 @@ fn a_shell_line_into_a_box_holding_a_draft_is_refused() {
             .map(|o| String::from_utf8_lossy(&o.stdout).contains("a draft the person"))
             .unwrap_or(false)
     });
-    match prompt(&mut c, ticket, "!echo mesimon-876-draft") {
+    match c.prompt(ticket, "!echo mesimon-876-draft") {
         Response::Err { message } => {
             assert!(message.contains("holds text"), "{message}");
         }
         other => panic!("a shell line into a draft must be refused: {other:?}"),
     }
     std::thread::sleep(Duration::from_millis(800));
-    assert!(got(&h).is_empty(), "nothing was pasted: {:?}", got(&h));
+    assert!(h.got().is_empty(), "nothing was pasted: {:?}", h.got());
     assert_eq!(feed_count(&h, "shell_sent", ticket), 0);
     // A prompt is not held to it: words ride a draft as they always have.
-    assert!(matches!(prompt(&mut c, ticket, "mesimon-876-words"), Response::Ok));
+    assert!(matches!(c.prompt(ticket, "mesimon-876-words"), Response::Ok));
     wait_line(&h, "mesimon-876-words");
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
 }
@@ -255,28 +204,10 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
     let Some(h) = Harness::boot("shell-agent", Some(STUB)) else { return };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("shell-agent");
-    let mut ticket = |title: &str| match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
-    let a = ticket("the crown");
-    let b = ticket("the worker");
-    let spawn = |c: &mut TestClient, t: ulid::Ulid| match c.request(Command::SpawnSession {
-        ticket: t,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn: {other:?}"),
-    };
-    let sa = spawn(&mut c, a);
-    let sb = spawn(&mut c, b);
+    let a = c.create_ticket("the crown");
+    let b = c.create_ticket("the worker");
+    let sa = c.spawn_claude(a);
+    let sb = c.spawn_claude(b);
     for s in [sa, sb] {
         wait_composer(&h, s);
         hook_send_with(&hook_sock, &s.to_string(), "SessionStart", Some("startup"), "{}");
@@ -289,7 +220,7 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
         }
     }
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    let kb = c.board().ticket(b).unwrap().short_key.clone();
+    let kb = c.key_of(b);
     let seen = match c.send(
         Principal::Agent { session: sa },
         Command::AgentReadTicket { key: kb.clone(), full: false, plan: false },
@@ -334,7 +265,7 @@ fn an_agent_s_shell_line_and_shell_title_are_refused() {
         other => panic!("a person's queued shell line: {other:?}"),
     }
     wait_line(&h, "!echo mesimon-876-person");
-    assert!(!got(&h).contains("mesimon-876-crown"), "{:?}", got(&h));
+    assert!(!h.got().contains("mesimon-876-crown"), "{:?}", h.got());
     // The feed line is the ack, read off the screen a sample after the
     // Enter, so it can trail the stub's read.
     wait_feed(&h, "shell_sent", b, 1);

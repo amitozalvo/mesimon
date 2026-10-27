@@ -29,8 +29,7 @@ use mesimon_core::board::{
     WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentTicketChange, AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver,
-    PendingAction, Response, StartPrompt,
+    AgentTicketChange, AskRoad, AskWake, Command, Deliver, PendingAction, Response, StartPrompt,
 };
 use mesimon_core::Principal;
 use serde_json::json;
@@ -49,34 +48,12 @@ fn ask_ends(head: &str) -> [String; 2] {
     ]
 }
 
-fn key_of(c: &mut TestClient, id: ulid::Ulid) -> String {
-    c.board().ticket(id).unwrap().short_key.clone()
-}
-
-fn read(c: &mut TestClient, session: uuid::Uuid, key: &str) -> Result<AgentTicketView, String> {
-    match c.send(
-        Principal::Agent { session },
-        Command::AgentReadTicket { key: key.into(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => Ok(ticket),
-        Response::Err { message } => Err(message),
-        other => panic!("read {key}: {other:?}"),
-    }
-}
-
 /// The words the board shows under `ticket`'s title from the crown (T-783).
 fn said_on(c: &mut TestClient, ticket: ulid::Ulid) -> Option<String> {
     match c.request(Command::Snapshot) {
         Response::Board { crown_said, .. } => {
             crown_said.into_iter().find(|s| s.ticket == ticket).map(|s| s.words)
         }
-        other => panic!("snapshot: {other:?}"),
-    }
-}
-
-fn touches(c: &mut TestClient) -> Vec<CrownTouch> {
-    match c.request(Command::Snapshot) {
-        Response::Board { crown_touches, .. } => crown_touches,
         other => panic!("snapshot: {other:?}"),
     }
 }
@@ -103,12 +80,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let a = c.create_ticket("triage the board");
     let b = c.create_ticket("fix the thing");
     let d = c.create_ticket("later");
-    let (ka, kb, kd) = (key_of(&mut c, a), key_of(&mut c, b), key_of(&mut c, d));
+    let (ka, kb, kd) = (c.key_of(a), c.key_of(b), c.key_of(d));
     let sa = c.spawn_claude(a);
     let sb = c.spawn_claude(b);
 
     // ---- uncrowned: another ticket is refused, and the refusal teaches ----
-    let refusal = read(&mut c, sa, &kb).expect_err("no crown yet");
+    let refusal = c.agent_read(sa, &kb).expect_err("no crown yet");
     for word in ["crown", "^o", "raise_hand", &ka] {
         assert!(refusal.contains(word), "the refusal names {word}: {refusal}");
     }
@@ -127,12 +104,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("an uncrowned move of another ticket: {other:?}"),
     }
     // A session may always address its OWN ticket by key, crown or not.
-    let own = read(&mut c, sa, &ka).expect("own key");
+    let own = c.agent_read(sa, &ka).expect("own key");
     assert_eq!(own.crowned, Some(false), "its own read says it either way");
     assert!(own.crown.is_none(), "an uncrowned ticket carries no wake words");
     assert!(own.seen.is_some(), "every read carries a stamp");
     // An unknown key is an answer, not a crown question.
-    let unknown = read(&mut c, sa, "T-999").expect_err("no such ticket");
+    let unknown = c.agent_read(sa, "T-999").expect_err("no such ticket");
     assert!(unknown.contains("no such ticket"), "{unknown}");
 
     // ---- the crown is the person's to give ---------------------------------
@@ -173,7 +150,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
             other => panic!("{what}: {other:?}"),
         }
     }
-    let own = read(&mut c, sa, &ka).unwrap();
+    let own = c.agent_read(sa, &ka).unwrap();
     assert_eq!(own.crowned, Some(true), "get_ticket says the caller wears it");
     // T-916: what the crown is for, then (T-537) how the board wakes it, so
     // it arms no monitor of its own.
@@ -191,7 +168,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
 
     // ---- read another ticket: the card's words and a stamp ------------------
-    let view = read(&mut c, sa, &kb).expect("crowned");
+    let view = c.agent_read(sa, &kb).expect("crowned");
     // T-916: another ticket's view says nothing of a crown, which a Codex
     // crown took for its own `false`.
     assert_eq!(view.crowned, None);
@@ -229,14 +206,14 @@ fn the_crown_lets_one_agent_edit_the_others() {
     };
     assert_ne!(fresh, seen, "the ticket changed, so the stamp did");
     assert_eq!(c.board().ticket(b).unwrap().column, "IN PROGRESS");
-    let t = touches(&mut c);
+    let t = c.crown_touches();
     assert_eq!(t.len(), 1, "the board is told what the crown touched: {t:?}");
     assert_eq!(t[0].ticket, b);
     assert_eq!(t[0].action, "moved");
     assert_eq!(t[0].from, Some(a), "the touch names whose agent did it: the bolt's start");
 
     // ---- position is priority: `before` lands above a named ticket ----------
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentMoveTicket {
@@ -282,7 +259,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("a reused stamp: {other:?}"),
     }
     assert_eq!(c.board().ticket(b).unwrap().title, "again");
-    assert_eq!(touches(&mut c).iter().find(|t| t.ticket == b).unwrap().action, "renamed");
+    assert_eq!(c.crown_touches().iter().find(|t| t.ticket == b).unwrap().action, "renamed");
 
     // ---- a note and a tag on another ticket ---------------------------------
     let note = match c.send(
@@ -328,7 +305,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(c.board().ticket(b).unwrap().tags[0].name, "BUG");
 
     // ---- workspace: a pending ticket only ------------------------------------
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSetWorkspace { key: kd.clone(), workspace: "worktree".into(), seen: dv.seen },
@@ -338,7 +315,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         } => assert_eq!(workspace, "worktree"),
         other => panic!("set_workspace: {other:?}"),
     }
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSetWorkspace { key: kb.clone(), workspace: "worktree".into(), seen: bv.seen },
@@ -346,7 +323,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Err { message } => assert!(message.contains("locked"), "{message}"),
         other => panic!("a ticket with a pane keeps its workspace: {other:?}"),
     }
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSetWorkspace {
@@ -365,7 +342,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // Off on a fresh board: archive and restore alike are refused in words
     // naming the row, before anything changes and with no feed line.
     assert!(!c.board().crown_archives, "off by default");
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     for (restore, says) in [
         (false, format!("move {kd} to DONE instead, or a person archives")),
         (true, format!("a person restores {kd}")),
@@ -383,7 +360,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert!(!c.is_archived(d));
     assert_eq!(c.board().ticket(d).unwrap().column, "IN PROGRESS");
-    assert_eq!(read(&mut c, sa, &kd).unwrap().seen, dv.seen, "nothing changed");
+    assert_eq!(c.agent_read(sa, &kd).unwrap().seen, dv.seen, "nothing changed");
     // A person turns the row on; the board and doctor read it on.
     assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
     assert!(c.board().crown_archives);
@@ -392,7 +369,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(file.contains("crown_archives = true"), "{file}");
 
     // ---- archive is the reversible spelling of delete -------------------------
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kb.clone(), restore: false, seen: bv.seen },
@@ -408,7 +385,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // And `sleep_agent` itself refuses a person's agent by provenance,
     // whatever its state.
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kb.clone(), seen: bv.seen },
@@ -420,7 +397,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("sleeping a person's agent: {other:?}"),
     }
     assert!(c.board().live_agent(b).unwrap().state.has_pane(), "B's agent is untouched");
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kd.clone(), restore: false, seen: dv.seen },
@@ -430,7 +407,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert!(c.is_archived(d));
     // An archived ticket still reads, and refuses every edit but the restore.
-    let dv = read(&mut c, sa, &kd).expect("an archived ticket still reads");
+    let dv = c.agent_read(sa, &kd).expect("an archived ticket still reads");
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentRenameTicket { key: kd.clone(), title: "x".into(), seen: dv.seen.clone() },
@@ -466,7 +443,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(crown_lines("archive_ticket"), 1, "the refused calls left no line");
     // Turned off mid-session, the next call is refused at once.
     assert!(matches!(c.request(Command::SetCrownArchives { on: false }), Response::Ok));
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kd.clone(), restore: false, seen: dv.seen },
@@ -491,7 +468,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let e1 = c.create_ticket("first start");
     let e2 = c.create_ticket("second start");
     let e3 = c.create_ticket("third start");
-    let (k1, k2, k3) = (key_of(&mut c, e1), key_of(&mut c, e2), key_of(&mut c, e3));
+    let (k1, k2, k3) = (c.key_of(e1), c.key_of(e2), c.key_of(e3));
     let start_in = |c: &mut TestClient, key: &str, seen: Option<String>, workspace: &str| {
         c.send(
             Principal::Agent { session: sa },
@@ -509,7 +486,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         |c: &mut TestClient, key: &str, seen: Option<String>| start_in(c, key, seen, "worktree");
     // Refused: a ticket that already holds a seat, the crown's own ticket,
     // and a start without the stamp.
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match start(&mut c, &kb, bv.seen) {
         Response::Err { message } => assert!(message.contains("already has an agent"), "{message}"),
         other => panic!("a start on a seated ticket: {other:?}"),
@@ -525,7 +502,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // T-583: the workspace is the crown's to name, in one of two words, and
     // the shared checkout is refused while another ticket's agent works
     // there (B, a person's; the crown's own A coordinates and holds none).
-    let v1 = read(&mut c, sa, &k1).unwrap();
+    let v1 = c.agent_read(sa, &k1).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -604,7 +581,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         started.state
     );
     assert!(started.pending_submit, "Shift+Enter's road: the title is submitted, not typed");
-    assert_eq!(touches(&mut c).iter().find(|t| t.ticket == e1).unwrap().action, "started");
+    assert_eq!(c.crown_touches().iter().find(|t| t.ticket == e1).unwrap().action, "started");
     let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
     assert!(sessions.contains("\"started_by\""), "persisted, so a restart keeps the count");
     // T-908: the crown's own worker reaching for another ticket reads that
@@ -620,7 +597,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         other => panic!("a worker reading another ticket's note: {other:?}"),
     }
     // A second start on the same ticket is refused by the seat.
-    let v1 = read(&mut c, sa, &k1).unwrap();
+    let v1 = c.agent_read(sa, &k1).unwrap();
     match start(&mut c, &k1, v1.seen) {
         Response::Err { message } => assert!(message.contains("already has an agent"), "{message}"),
         other => panic!("a second start on E1: {other:?}"),
@@ -632,7 +609,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert_eq!(c.board().crown, Some(a), "A still wears it");
     // The cap: the third start is refused with the number and the holders.
-    let v2 = read(&mut c, sa, &k2).unwrap();
+    let v2 = c.agent_read(sa, &k2).unwrap();
     match start(&mut c, &k2, v2.seen) {
         Response::AgentStarted { budget_left, budget_about, .. } => {
             assert_eq!(budget_left, 0);
@@ -649,7 +626,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         }
         other => panic!("the second start: {other:?}"),
     }
-    let v3 = read(&mut c, sa, &k3).unwrap();
+    let v3 = c.agent_read(sa, &k3).unwrap();
     match start(&mut c, &k3, v3.seen) {
         Response::Err { message } => {
             for word in ["2 of 2", &k1, &k2] {
@@ -666,7 +643,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let s2 = c.board().live_agent(e2).unwrap().id;
     let _ = c.request(Command::KillSession { id: s2 });
     assert!(c.board().live_agent(e2).is_none(), "E2's seat is free");
-    let v3 = read(&mut c, sa, &k3).unwrap();
+    let v3 = c.agent_read(sa, &k3).unwrap();
     match start(&mut c, &k3, v3.seen) {
         Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
         other => panic!("the start after a seat freed: {other:?}"),
@@ -679,12 +656,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
         c.board().live_agent(e3).is_some()
     });
     let e5 = c.create_ticket("parked start");
-    let k5 = key_of(&mut c, e5);
+    let k5 = c.key_of(e5);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: e5, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let v5 = read(&mut c, sa, &k5).unwrap();
+    let v5 = c.agent_read(sa, &k5).unwrap();
     match start(&mut c, &k5, v5.seen) {
         Response::AgentStarted { session_started, budget_left, .. } => {
             assert!(!session_started, "parked on the cut, not running yet");
@@ -699,7 +676,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A ticket with a worktree starts there: the other word is refused in
     // words naming what it has, before the budget is asked. E2's agent
     // exited; its worktree stands.
-    let v2 = read(&mut c, sa, &k2).unwrap();
+    let v2 = c.agent_read(sa, &k2).unwrap();
     match start_in(&mut c, &k2, v2.seen, "shared_checkout") {
         Response::Err { message } => assert_eq!(
             message,
@@ -717,8 +694,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A budget of zero turns the road off, in words.
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 0 }), Response::Ok));
     let e4 = c.create_ticket("never started");
-    let k4 = key_of(&mut c, e4);
-    let v4 = read(&mut c, sa, &k4).unwrap();
+    let k4 = c.key_of(e4);
+    let v4 = c.agent_read(sa, &k4).unwrap();
     match start(&mut c, &k4, v4.seen) {
         Response::Err { message } => assert!(message.contains("budget is 0"), "{message}"),
         other => panic!("a start at budget 0: {other:?}"),
@@ -744,7 +721,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         };
     // Refused: an uncrowned session, the crown's own ticket, no stamp, a
     // ticket with no agent to receive the words, and blank words.
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match ask(&mut c, sb, &ka, "mesimon-probe-61 never", None) {
         Response::Err { message } => assert!(message.contains("crown"), "{message}"),
         other => panic!("an uncrowned ask: {other:?}"),
@@ -757,7 +734,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         Response::Err { message } => assert!(message.contains("seen is required"), "{message}"),
         other => panic!("an ask without the stamp: {other:?}"),
     }
-    let dv = read(&mut c, sa, &kd).unwrap();
+    let dv = c.agent_read(sa, &kd).unwrap();
     match ask(&mut c, sa, &kd, "mesimon-probe-61 never", dv.seen) {
         Response::Err { message } => assert!(message.contains("start_agent"), "{message}"),
         other => panic!("an ask at an empty seat: {other:?}"),
@@ -796,7 +773,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(p[0].by.as_deref(), Some(ka.as_str()), "the card names the author");
     assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-62 commit it"));
     assert!(p[0].waits_on.is_empty(), "it waits on a person, not the checkout: {p:?}");
-    assert_eq!(touches(&mut c).iter().find(|t| t.ticket == b).unwrap().action, "asked");
+    assert_eq!(c.crown_touches().iter().find(|t| t.ticket == b).unwrap().action, "asked");
     // The drain runs on the tick and at every settle; a held ask is not its.
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(!landed("mesimon-probe-62"), "held words must not reach the pane on their own");
@@ -814,7 +791,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // T-568: the crown reads that its words were dropped, and by whom; the
     // worker reading its own ticket reads nothing of the crown's.
     let dropped = |c: &mut TestClient| {
-        read(c, sa, &kb).unwrap().asked.map(|a| (a.status, a.by, a.since_secs.is_some()))
+        c.agent_read(sa, &kb).unwrap().asked.map(|a| (a.status, a.by, a.since_secs.is_some()))
     };
     assert_eq!(dropped(&mut c), Some(("dropped".into(), "person".into(), true)));
     match c.send(Principal::Agent { session: sb }, Command::AgentGetTicket { full: false }) {
@@ -823,7 +800,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     // The crown's next ask supersedes it; a person's words queued over that
     // ask drop it again, and say so.
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match ask(&mut c, sa, &kb, "mesimon-probe-63b once more", bv.seen) {
         Response::AgentAsked { held_for_person, .. } => assert!(held_for_person),
         other => panic!("the re-ask: {other:?}"),
@@ -847,7 +824,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert_eq!(dropped(&mut c), Some(("dropped".into(), "person".into(), true)));
     if pending_of(&mut c, Some(b)).iter().any(|p| p.by.is_none() && !p.in_flight) {
-        let bv = read(&mut c, sa, &kb).unwrap();
+        let bv = c.agent_read(sa, &kb).unwrap();
         match ask(&mut c, sa, &kb, "mesimon-probe-65 over it", bv.seen) {
             Response::Err { message } => assert!(message.contains("person's ask"), "{message}"),
             other => panic!("the crown over a person's ask: {other:?}"),
@@ -858,7 +835,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         pending_of(&mut c, Some(b)).is_empty()
     });
     // The person's send is the one road to the pane.
-    let bv = read(&mut c, sa, &kb).unwrap();
+    let bv = c.agent_read(sa, &kb).unwrap();
     match ask(&mut c, sa, &kb, "mesimon-probe-66 now go", bv.seen) {
         Response::AgentAsked { replaced, .. } => assert!(!replaced),
         other => panic!("the third ask: {other:?}"),
@@ -936,7 +913,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
         c.board().ticket(crowned_filing).unwrap().workspace,
         Some(WorkspaceStrategy::Worktree)
     );
-    let touch = touches(&mut c).into_iter().find(|t| t.ticket == crowned_filing);
+    let touch = c.crown_touches().into_iter().find(|t| t.ticket == crowned_filing);
     let touch = touch.expect("the crown's filing is a touch");
     assert_eq!((touch.action.as_str(), touch.from), ("created", Some(a)));
 
@@ -976,10 +953,10 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // ---- uncrown, and the crown leaves with its ticket ------------------------
     assert!(matches!(c.request(Command::Uncrown), Response::Ok));
     assert!(c.board().crown.is_none());
-    assert!(read(&mut c, sa, &kb).is_err(), "uncrowned again");
+    assert!(c.agent_read(sa, &kb).is_err(), "uncrowned again");
     // Any agent may file a ticket; only the crown's filing is a touch.
     let plain_filing = filed(&mut c, "filed uncrowned", None);
-    assert!(!touches(&mut c).iter().any(|t| t.ticket == plain_filing), "not the crown's");
+    assert!(!c.crown_touches().iter().any(|t| t.ticket == plain_filing), "not the crown's");
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // Persisted with the board's scalars.
     let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
@@ -987,7 +964,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A second crown displaces the first.
     assert!(matches!(c.request(Command::CrownTicket { id: d }), Response::Ok));
     assert_eq!(c.board().crown, Some(d));
-    assert!(read(&mut c, sa, &kb).is_err(), "A no longer wears it");
+    assert!(c.agent_read(sa, &kb).is_err(), "A no longer wears it");
     // Deleting the holder takes the crown with it.
     assert!(matches!(
         c.request(Command::DeleteTicket { id: d, discard_worktree: false }),
@@ -1018,22 +995,45 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(!file.contains("crown ="), "{file}");
 }
 
-/// The stub every wake test runs: each line it reads is appended to one file
-/// beside it, so the crown's sentences and the workers' words are all there,
-/// and to one per ticket (`got-<key>.txt`), so a count of what reached one
-/// pane reads that pane alone (T-937).
-const RECORDING_STUB: &str =
-    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
-                              printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; \
-                              printf '%s\\n' \"$line\" \
-                              >> \"$(dirname \"$0\")/got-${MESIMON_TICKET:-none}.txt\"; done\n";
+/// `a`'s claude, crowned and walked through one turn to idle: the stub
+/// emits no `SessionStart`, so it sits at `Spawning` until then.
+fn crown_idle(h: &Harness, c: &mut TestClient, a: ulid::Ulid) -> uuid::Uuid {
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    h.one_turn(c, sa);
+    sa
+}
 
-/// One commit in `repo` touching `file`; the new HEAD, short.
-fn commit(repo: &std::path::Path, file: &str) -> String {
-    std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
-    git(repo, &["add", file]);
-    git(repo, &["commit", "-qm", file]);
-    git(repo, &["rev-parse", "--short=7", "HEAD"]).trim().to_string()
+/// A mod-road seat up: its bridge polled, then its `SessionStart`.
+fn mod_up(h: &Harness, sid: uuid::Uuid) {
+    let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
+    wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
+    hook_send_with(
+        &h.paths.hook_sock(),
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
+    );
+}
+
+/// The lines a recording stub appended to `got` that hold `needle`.
+fn lines_in(got: &std::path::Path, needle: &str) -> Vec<String> {
+    std::fs::read_to_string(got)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The crown wakes owed on `t`.
+fn wake_rows(c: &mut TestClient, t: ulid::Ulid) -> Vec<mesimon_core::command::Pending> {
+    pending_of(c, Some(t))
+        .into_iter()
+        .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
+        .collect()
 }
 
 /// The board wakes the crown (T-414) on what happened to a ticket, not on
@@ -1050,7 +1050,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // on its own clock; the hooks are the only voice here.
     let Some(h) = Harness::boot_with_env(
         "crown_wake",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -1061,27 +1061,9 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let mut c = h.client("crown_wake");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> usize {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .count()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
-        pending_of(c, Some(t))
-            .into_iter()
-            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle).len();
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     // The probe of a turn's end runs off the writer; give it time to land
     // before asserting that nothing did.
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -1097,29 +1079,13 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-71 worker");
-    let (ka, kw1) = (key_of(&mut c, a), key_of(&mut c, w1));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let (ka, kw1) = (c.key_of(a), c.key_of(w1));
     // The stub emits no `SessionStart`, so the crown sits at `Spawning` —
     // WORKING — until a turn is walked through it.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let sa = crown_idle(&h, &mut c, a);
 
-    let start_in = |c: &mut TestClient, key: &str, workspace: &str| {
-        let v = read(c, sa, key).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: key.into(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some(workspace.into()),
-                expect_secs: None,
-            },
-        )
-    };
+    let start_in =
+        |c: &mut TestClient, key: &str, workspace: &str| c.crown_start(sa, key, workspace);
     match start_in(&mut c, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, workspace, .. } => {
             assert_eq!(workspace, "shared_checkout")
@@ -1145,8 +1111,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // one sentence, mesimon's template over the worker's key and title and
     // what changed, in the crown's pane. A checkout's HEAD is not named:
     // the turn did not move it.
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let finished1 = format!("{kw1} \"mesimon-probe-71 worker\" finished its turn");
     wait_until(std::time::Duration::from_secs(10), "the finish to land on the crown", || {
         lines_with(&finished1) == 1
@@ -1159,15 +1124,14 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(lines_with(&sentence), 1, "{}", std::fs::read_to_string(&got).unwrap());
     received(&mut c, a);
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
         Some("woke"),
         "the crown's card lights"
     );
     wait_until(std::time::Duration::from_secs(5), "the finished feed line", || {
         crown_wake_fed("finished")
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // The same idle re-entered with no turn between is no second finish: a
     // `/clear`'s `SessionStart` in the living pane, then a `Stop`.
@@ -1183,8 +1147,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // A commit, then the turn ends: it delivered. The column is what the
     // finish already said, so only the commit is news.
     let h1 = commit(&h.repo, "w1.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered1 = format!("{kw1} \"mesimon-probe-71 worker\" delivered");
     wait_until(std::time::Duration::from_secs(10), "the wake to land on the crown", || {
         lines_with(&delivered1) == 1
@@ -1203,22 +1166,19 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert!(!feed.contains("mesimon-probe-71"), "the feed never carries the words:\n{feed}");
     assert!(feed.contains("\"crown_wake_sent\""), "{feed}");
     // The crown takes its turn on it (the paste's ack).
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // A second `Stop` on an idle worker is no edge; a whole second turn at
     // the same HEAD delivers nothing — once per delivery — and finished.
     hook_send(&hook_sock, &ws1.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     settle();
     assert_eq!(lines_with(&finished1), 1, "a second Stop is no edge");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let again =
         format!("{finished1} (nothing new to merge) ∙ get_ticket key={kw1} for state and notes");
     wait_until(std::time::Duration::from_secs(10), "the second finish", || lines_with(&again) == 1);
     assert_eq!(lines_with(&delivered1), 1, "a second idle with nothing new delivers nothing");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- words queued on the worker: pending, so its turn end is silent ---
     // A person's ask queued at W1's pane while it works goes when the turn
@@ -1246,18 +1206,16 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     settle();
     assert_eq!(lines_with(&finished1), 2, "a turn with words queued behind it is silent");
     assert!(wake_rows(&mut c, a).is_empty());
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     wait_until(std::time::Duration::from_secs(10), "the queued turn's finish", || {
         lines_with(&finished1) == 3
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- two deliveries while the crown works: one row, one sentence ------
     start(&mut c, sa);
     let w2 = c.create_ticket("mesimon-probe-72 worker");
-    let kw2 = key_of(&mut c, w2);
+    let kw2 = c.key_of(w2);
     // T-583: a second crown worker on the checkout W1 holds is refused, by
     // name; W2 works in a worktree of its own instead.
     match start_in(&mut c, &kw2, "shared_checkout") {
@@ -1281,14 +1239,12 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_ne!(tree2, h.repo, "W2 runs in its worktree");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let h2 = commit(&h.repo, "w1b.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     wait_until(std::time::Duration::from_secs(5), "W1's delivery to be owed", || {
         wake_rows(&mut c, a).len() == 1
     });
     commit(&tree2, "w2.txt");
-    start(&mut c, ws2);
-    stop(&mut c, ws2);
+    h.one_turn(&mut c, ws2);
     let column2 = c.board().ticket(w2).unwrap().column.clone();
     // W1's column is what the crown last heard, so only the commit is news;
     // W2 has told the crown nothing yet, and its branch says it in its merge
@@ -1349,7 +1305,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert!(!c.board().ticket(w1).unwrap().hand_raised(), "the hand the crown was told of is down");
     // …and the reason is the crown's to read where the sentence sent it
     // (T-922): `told_hand` on its keyed `get_ticket`.
-    let told = read(&mut c, sa, &kw1).unwrap().told_hand.map(|h| h.reason);
+    let told = c.agent_read(sa, &kw1).unwrap().told_hand.map(|h| h.reason);
     assert_eq!(told.as_deref(), Some("mesimon-secret-73 need the sandbox key"));
 
     // ---- a person's ask on the crown goes first; the wake follows ----------
@@ -1369,8 +1325,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         other => panic!("queue a person's ask: {other:?}"),
     }
     commit(&h.repo, "w1c.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     wait_until(std::time::Duration::from_secs(5), "W1's delivery to be owed", || {
         wake_rows(&mut c, a).len() == 1
     });
@@ -1385,8 +1340,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].waits_on, vec![ka.clone()]);
     // The crown takes the person's turn (the ack) and ends it: now the wake.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the wake after the person's ask", || {
         lines_with(&delivered1) == before + 1
     });
@@ -1406,13 +1360,13 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
             Command::AgentSleepTicket { key: key.into(), seen },
         )
     };
-    let va = read(&mut c, sa, &ka).unwrap();
+    let va = c.agent_read(sa, &ka).unwrap();
     match sleep(&mut c, &ka, va.seen) {
         Response::Err { message } => assert!(message.contains("own ticket"), "{message}"),
         other => panic!("sleeping the crown's own ticket: {other:?}"),
     }
     start(&mut c, ws2);
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     match sleep(&mut c, &kw2, v2.seen) {
         Response::Err { message } => {
             assert!(message.contains("still awake"), "{message}");
@@ -1420,7 +1374,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         }
         other => panic!("sleeping a working worker: {other:?}"),
     }
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kw2.clone(), restore: false, seen: v2.seen },
@@ -1466,7 +1420,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         }
         other => panic!("a start past the budget: {other:?}"),
     }
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     match sleep(&mut c, &kw2, v2.seen) {
         Response::AgentTicketUpdated {
             key, change: AgentTicketChange::Sleep { state }, ..
@@ -1480,7 +1434,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(rec.state, SessionState::Sleeping, "parked, not killed");
     assert_eq!(rec.started_by, Some(a), "provenance survives the park");
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
         Some("parked"),
         "the card lights"
     );
@@ -1495,7 +1449,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     });
     let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
     assert!(sessions.contains("\"sleeping\""), "the park is persisted: {sessions}");
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     match sleep(&mut c, &kw2, v2.seen) {
         Response::Err { message } => assert!(message.contains("already asleep"), "{message}"),
         other => panic!("sleeping a parked worker: {other:?}"),
@@ -1531,12 +1485,11 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     assert_eq!(woke.started_by, Some(a), "still the crown's");
     assert_eq!(std::path::PathBuf::from(&woke.cwd), tree2, "in its worktree");
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w2).map(|t| t.action.as_str()),
         Some("woken"),
     );
-    start(&mut c, ws2);
-    stop(&mut c, ws2);
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    h.one_turn(&mut c, ws2);
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     assert!(
         matches!(sleep(&mut c, &kw2, v2.seen), Response::AgentTicketUpdated { .. }),
         "parked again"
@@ -1552,7 +1505,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         c.board().live_agent(w3).is_some()
     });
     assert_eq!(c.board().live_agent(w3).unwrap().started_by, Some(a));
-    let v2 = read(&mut c, sa, &kw2).unwrap();
+    let v2 = c.agent_read(sa, &kw2).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentArchiveTicket { key: kw2.clone(), restore: false, seen: v2.seen },
@@ -1570,8 +1523,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // ---- uncrown drops what was owed; an uncrowned board owes nothing -----
     start(&mut c, sa);
     commit(&h.repo, "w1d.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     wait_until(std::time::Duration::from_secs(5), "W1's delivery to be owed", || {
         wake_rows(&mut c, a).len() == 1
     });
@@ -1583,8 +1535,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let before = lines_with(&delivered1);
     stop(&mut c, sa);
     commit(&h.repo, "w1e.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     settle();
     assert!(wake_rows(&mut c, a).is_empty(), "an uncrowned board queues nothing");
     assert_eq!(lines_with(&delivered1), before, "nothing lands on an uncrowned board");
@@ -1594,7 +1545,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
 /// Code's does: what a person types there is a draft the screen shows
 /// (`composer::read` reads it `Holding`), and each line read is recorded,
 /// then the box painted empty again.
-const BOX_STUB: &str =
+const PAINTED_BOX_STUB: &str =
     "#!/bin/sh\nstty -icanon 2>/dev/null\npaint() { printf '\\033[2J\\033[999;1H\\033[3A\
                         ────────────────────\\n❯ \\n────────────────────\\n  ? for shortcuts\
                         \\033[999;1H\\033[2A\\033[3G'; }\npaint\ncat | while IFS= read -r line; do \
@@ -1616,7 +1567,7 @@ const WHEN_YOU_LEAVE: &str = "leave or 10m idle";
 fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     let Some(h) = Harness::boot_bare(
         "crown_attended",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -1626,55 +1577,19 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_attended");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> usize {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .count()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
-        pending_of(c, Some(t))
-            .into_iter()
-            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle).len();
     let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
         wake_rows(c, t).first().and_then(|p| p.held.clone())
     };
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-91 worker");
-    let (ka, kw1) = (key_of(&mut c, a), key_of(&mut c, w1));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    let (ka, kw1) = (c.key_of(a), c.key_of(w1));
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -1694,25 +1609,12 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     });
 
     // A person comes into the crown's pane: a tmux client on its session.
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
 
     // W1 delivers while the person is in there: the crown is idle and
     // would take the words, and the wake waits for the person instead.
     let h1 = commit(&h.repo, "w1.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered = format!("{kw1} \"mesimon-probe-91 worker\" delivered (commit {h1}");
     wait_until(std::time::Duration::from_secs(10), "the wake row to wait on the person", || {
         wake_rows(&mut c, a).first().is_some_and(|p| {
@@ -1754,7 +1656,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     assert_eq!(lines_with("half a thought"), 1, "never joined to the wake: {lines}");
     assert!(wake_rows(&mut c, a).is_empty(), "delivered, so nothing is owed");
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == a).map(|t| t.action.as_str()),
         Some("woke"),
         "the crown's card lit when the wake was owed"
     );
@@ -1829,10 +1731,6 @@ fn renew_activity(tmux_sock: &std::path::Path, session: &str, client: &str) -> u
     now
 }
 
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
-}
-
 /// T-945: a client attached to the crown's pane holds its wake only while
 /// tmux has recorded activity from it inside the bound (`5 s` here, ten
 /// minutes by default). The row names the bound; a key from either of two
@@ -1844,7 +1742,7 @@ fn epoch_ms() -> u64 {
 fn an_attached_client_holds_the_crown_wake_only_while_active() {
     let Some(h) = Harness::boot_bare(
         "crown_idle_client",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -1861,14 +1759,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     let got = h.dir.join("got.txt");
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
     let lines_with = |needle: &str| read_got().lines().filter(|l| l.contains(needle)).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
         pending_of(c, Some(t))
             .into_iter()
@@ -1884,24 +1775,9 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-945 worker");
-    let kw1 = key_of(&mut c, w1);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    let kw1 = c.key_of(w1);
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -1946,10 +1822,10 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     // Past the first stamp's bound and short of the renewed one's: held.
     let first_expiry = (first + 1) * 1000 + bound;
     let renewed_expiry = (renewed + 1) * 1000 + bound;
-    while epoch_ms() < first_expiry + 1000 {
+    while now_ms() < first_expiry + 1000 {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    assert!(epoch_ms() + 500 < renewed_expiry, "the window is still open");
+    assert!(now_ms() + 500 < renewed_expiry, "the window is still open");
     assert_eq!(lines_with(&delivered), 0, "held past the first bound: {}", read_got());
     assert_eq!(held(&mut c, a).as_deref(), Some(WHEN_YOU_LEAVE_5S), "renewed");
 
@@ -1957,7 +1833,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     wait_until(std::time::Duration::from_secs(15), "the wake past the bound", || {
         lines_with(&delivered) == 1
     });
-    let at = epoch_ms();
+    let at = now_ms();
     assert!(at + 1000 >= renewed_expiry, "not before the bound: {at} < {renewed_expiry}");
     assert_eq!(session_activity(&tmux_sock, &crown), renewed, "no input since the key");
     assert_eq!(
@@ -1973,8 +1849,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         "both clients still attached"
     );
     // The crown's turn on it.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "nothing owed", || !owed(&mut c, a));
 
     // A draft left in the box (typed as the board types, which tmux records
@@ -1985,8 +1860,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         .unwrap()
         .success());
     let h2 = commit(&h.repo, "w2.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered2 = format!("{kw1} \"mesimon-probe-945 worker\" delivered (commit {h2}");
     wait_until(std::time::Duration::from_secs(10), "the draft holds the wake", || {
         held(&mut c, a).as_deref() == Some("after your draft")
@@ -2009,7 +1883,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     let _ = two.wait();
 }
 
-/// `BOX_STUB`, with two things more for T-966: each line read is also
+/// `PAINTED_BOX_STUB`, with two things more for T-966: each line read is also
 /// written to `got-at.txt` after an epoch ms taken once the line was read
 /// and recorded (a receiver's stamp, later than the read and the paste it
 /// dates, never earlier), and a line `@absent` paints a screen with no
@@ -2055,7 +1929,6 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let mut c = h.client("crown_ask_idle_client");
@@ -2080,19 +1953,13 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
             .filter(|l| l.contains(&format!("\"cmd\":\"{cmd}\"")))
             .count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let bound: u64 = IDLE_MS.parse().unwrap();
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-966 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -2123,20 +1990,8 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(10), "the crown's title out of its box", || {
         read_got().lines().any(|l| l.trim() == "coordinate")
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -2147,7 +2002,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(10), "W's launch words out of its box", || {
         lines_with("mesimon-probe-966 worker") > 0
     });
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.expect("the crown's ask");
     let person = |c: &mut TestClient| -> Option<String> {
         pending_of(c, Some(w))
             .into_iter()
@@ -2168,20 +2023,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
         }
         panic!("no push brought `{word}`; the row reads {:?}", person(c));
     };
-    let ask = |c: &mut TestClient, text: &str| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: None,
-            },
-        )
-    };
+    let ask = |c: &mut TestClient, text: &str| c.crown_ask(sa, &kw, text, Deliver::Idle, None);
     // W's stop wakes the crown, in the same checkout: the crown takes that
     // wake and goes idle, so nothing but the person holds W's ask.
     let w_stops = |c: &mut TestClient| {
@@ -2210,7 +2052,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
         person(&mut c).as_deref() == Some(WHEN_YOU_LEAVE_5S)
     });
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    assert!(epoch_ms() + 500 < renewed_expiry, "the window is still open");
+    assert!(now_ms() + 500 < renewed_expiry, "the window is still open");
     assert_eq!(lines_with("mesimon-probe-966a"), 0, "held while active: {}", read_got());
     assert_eq!(asked(&mut c).status, "queued");
     assert_eq!(read_got().lines().filter(|l| l.contains("F12")).count(), 0, "no key in the box");
@@ -2304,7 +2146,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
 fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     let Some(h) = Harness::boot_bare(
         "crown_mod_attended",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -2315,59 +2157,22 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     };
     std::fs::write(h.dir.join("mod-submit-aside"), "").unwrap();
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_mod_attended");
     let got = h.dir.join("got.txt");
     let submitted = h.dir.join("submitted.txt");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
-    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
-        pending_of(c, Some(t))
-            .into_iter()
-            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
-            .collect()
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-931 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -2377,19 +2182,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
 
     // A person in the crown's pane, half a prompt in its box.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
         .status()
@@ -2400,8 +2193,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     // W1 delivers: the wake goes down the crown's mod at once, the person
     // still there and their draft still in the box.
     let h1 = commit(&h.repo, "w1.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered = format!("{kw1} \"mesimon-probe-931 worker\" delivered (commit {h1}");
     let t0 = std::time::Instant::now();
     let mut held = Vec::new();
@@ -2446,7 +2238,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
 fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     let Some(h) = Harness::boot_bare(
         "crown_mod_refused",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -2456,52 +2248,21 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_mod_refused");
     let got = h.dir.join("got.txt");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -2512,25 +2273,12 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     // A person in the crown's pane, its box empty; the crown's mod refuses
     // a submit as Claude Code does after their Esc.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
     std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
 
     // W1 delivers: the submit is refused, and nothing is pasted under them.
     let h1 = commit(&h.repo, "w1.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered = format!("{kw1} \"mesimon-probe-936 worker\" delivered (commit {h1}");
     let feed = h.paths.state_dir.join("activity.jsonl");
     wait_until(std::time::Duration::from_secs(10), "the refused wake owed again", || {
@@ -2580,7 +2328,7 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
 fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
     let Some(h) = Harness::boot_bare(
         "crown_mod_refused_idle",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -2591,30 +2339,11 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_mod_refused_idle");
     let got = h.dir.join("got.txt");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
         pending_of(c, Some(t))
             .into_iter()
@@ -2624,25 +2353,13 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-945 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -2663,8 +2380,7 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
     let (mut client, _) = attach_client(&tmux_sock, &crown);
     std::fs::write(h.dir.join("mod-stopped-submit"), "").unwrap();
     let h1 = commit(&h.repo, "w1.txt");
-    start(&mut c, ws1);
-    stop(&mut c, ws1);
+    h.one_turn(&mut c, ws1);
     let delivered = format!("{kw1} \"mesimon-probe-945 worker\" delivered (commit {h1}");
     let feed = h.paths.state_dir.join("activity.jsonl");
     wait_until(std::time::Duration::from_secs(10), "the refused wake owed again", || {
@@ -2725,7 +2441,7 @@ fn attach_listed(tmux_sock: &std::path::Path, session: &str) -> bool {
 fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let Some(h) = Harness::boot_bare(
         "crown_mod_esc",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "1500"),
@@ -2740,70 +2456,25 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let mut c = h.client("crown_mod_esc");
     let got = h.dir.join("got.txt");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let end_turn = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
     let stop = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| *s == end_turn);
     };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
-    let wake_rows = |c: &mut TestClient, t: ulid::Ulid| -> Vec<mesimon_core::command::Pending> {
-        pending_of(c, Some(t))
-            .into_iter()
-            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
-            .collect()
-    };
-    let attach = |crown: &str| {
-        let client = tmux(&tmux_sock)
-            .args(["-C", "attach", "-t", crown])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("a control-mode tmux client");
-        wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-            tmux(&tmux_sock)
-                .args(["list-clients", "-t", crown, "-F", "#{client_name}"])
-                .output()
-                .is_ok_and(|o| !o.stdout.is_empty())
-        });
-        client
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
+    let attach = |crown: &str| person_attaches(&tmux_sock, crown);
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw1.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw1}: {other:?}"),
     }
@@ -2945,17 +2616,8 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
     h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
     h.restart();
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_codex_box");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
     let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
         pending_of(c, Some(t))
             .into_iter()
@@ -3008,7 +2670,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-918 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetAgentProvider {
             provider: mesimon_core::board::AgentProvider::Codex
@@ -3060,18 +2722,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         }
         n
     };
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -3091,8 +2742,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     };
 
     // ---- ordinary: nobody there; the Enter waits for the paste to show -----
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == 1);
     let wake1 = pastes().into_iter().find(|t| t.contains(&finished)).unwrap();
     let before = enters();
@@ -3117,8 +2767,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("a control-mode tmux client");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE)
     });
@@ -3155,19 +2804,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     // ---- a person who comes in between the paste and its Enter ------------
     let wake2 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(1).unwrap();
     let before = enters();
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &sa.simple().to_string()[..16]])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &sa.simple().to_string()[..16], "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &sa.simple().to_string()[..16]);
     draw(sa, &wake2, idle.clone());
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(enters(), before, "no Enter while a person is in the pane");
@@ -3201,8 +2838,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         sa,
         json!({"state": idle, "screen": "Synthetic provider fixture\r\n  starting\r\n", "cursor": null}),
     );
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(20), "the parked crown woken", || {
         c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
     });
@@ -3242,30 +2878,8 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     let told = || {
         std::fs::read_to_string(&feed).unwrap_or_default().matches("\"crown_wake_sent\"").count()
     };
-    let attach = || {
-        let client = tmux(&tmux_sock)
-            .args(["-C", "attach", "-t", &sa.simple().to_string()[..16]])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("a control-mode tmux client");
-        wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-            tmux(&tmux_sock)
-                .args([
-                    "list-clients",
-                    "-t",
-                    &sa.simple().to_string()[..16],
-                    "-F",
-                    "#{client_name}",
-                ])
-                .output()
-                .is_ok_and(|o| !o.stdout.is_empty())
-        });
-        client
-    };
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    let attach = || person_attaches(&tmux_sock, &sa.simple().to_string()[..16]);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the fourth wake pasted", || {
         wakes(&pastes()) == 4
     });
@@ -3342,8 +2956,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
                "cursor": null}),
     );
     let (n, said) = (wakes(&pastes()), told());
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the wake owed, its paste waiting", || {
         held(&mut c, a).as_deref() == Some("sending")
     });
@@ -3355,8 +2968,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     delivered_again(&mut c, &mut client, n);
 
     // ---- after the paste, a person clears the box and sends their own -----
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let n = wakes(&pastes()) + 1;
     wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
     let said = told();
@@ -3371,8 +2983,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     delivered_again(&mut c, &mut client, n);
 
     // ---- a restart while the Enter waits on a person ----------------------
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let n = wakes(&pastes()) + 1;
     wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
     let wake6 = last_wake();
@@ -3441,8 +3052,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         let rec = crown_rec(&mut c);
         rec.tier_wake && rec.state == SessionState::Sleeping
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     std::thread::sleep(std::time::Duration::from_millis(500));
     let rows = pending_of(&mut c, Some(a));
     assert!(
@@ -3474,8 +3084,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     crown_turn_ends(&mut c);
 
     // ---- the crown taken off while its Enter waits: nothing is pressed ----
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let n = wakes(&pastes()) + 1;
     wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == n);
     let mut client = attach();
@@ -3527,17 +3136,8 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     h.set_env("MESIMON_CODEX_BIN", h.dir.join("must-not-launch-real-codex"));
     h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
     h.restart();
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_codex_idle");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
     let held = |c: &mut TestClient, t: ulid::Ulid| -> Option<String> {
         pending_of(c, Some(t))
             .into_iter()
@@ -3585,7 +3185,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-945 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetAgentProvider {
             provider: mesimon_core::board::AgentProvider::Codex
@@ -3637,18 +3237,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     let told = || {
         std::fs::read_to_string(&feed).unwrap_or_default().matches("\"crown_wake_sent\"").count()
     };
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -3661,8 +3250,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     let (mut client, _) = attach_client(&tmux_sock, &crown);
 
     // ---- the client fresh: held; idle past the bound: pasted, still in ----
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the row names the bound", || {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE_5S)
     });
@@ -3684,8 +3272,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     });
 
     // ---- the pasted words changed with a client there: theirs ---------------
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(15), "the second wake pasted", || wakes() == 2);
     let (before, said, len) = (enters(), told(), bytes().len());
     draw(sa, &format!("{} and my own words", last_wake()), idle.clone());
@@ -3805,35 +3392,21 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
 fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     let Some(h) = Harness::boot_with_env(
         "crown_landing",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_landing");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-81 landing");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -3847,22 +3420,10 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // The crown starts the worker; its worktree is cut first.
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -3877,8 +3438,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     // ---- 1. the delivery: work on the branch, and main moved past it -------
     commit(&path, "work.txt");
     commit(&h.repo, "elsewhere.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
@@ -3892,22 +3452,10 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         )),
         "{delivered}"
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 2. the crown asks for the rebase; a person sends it ----------------
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: "mesimon-probe-82 rebase onto main".into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, "mesimon-probe-82 rebase onto main", Deliver::Idle, None) {
         Response::AgentAsked { .. } => {}
         other => panic!("ask_agent: {other:?}"),
     }
@@ -3940,8 +3488,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         );
     }
     assert!(answer.ends_with(&format!("∙ get_ticket key={kw} for state and notes")), "{answer}");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 3. the person merges: the board tells the crown's worker in the
     //         same step (T-613), and the crown hears the landing once, when
@@ -3959,8 +3506,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     });
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(lines_with(&worker).len(), 2, "held while the notice is on its way");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
         lines_with(&worker).len() == 3
     });
@@ -3972,8 +3518,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
              get_ticket key={kw} for state and notes"
         )
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     std::thread::sleep(std::time::Duration::from_millis(2000));
     assert_eq!(
         lines_with(&worker).len(),
@@ -3984,8 +3529,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     // And one more turn after it, with nothing new and nothing pending: the
     // worker finished (T-591), and what to do with a merged worker is the
     // crown's to decide.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
         lines_with(&worker).len() == 4
     });
@@ -4001,8 +3545,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
         .collect();
     assert!(owed.is_empty(), "{owed:?}");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 4. new work is a new delivery; a person's rebase ask is a step ----
     // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037). From
@@ -4021,14 +3564,12 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         Response::Ok
     ));
     commit(&path, "more.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
         lines_with(&worker).len() == 5
     });
     assert!(lines_with(&worker)[4].starts_with(&format!("{worker} delivered")));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     commit(&h.repo, "elsewhere-again.txt");
     assert!(matches!(
         c.request(Command::MergeToAgent {
@@ -4058,7 +3599,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     // person's, by DONE's offer or an archive.
     assert!(!c.board().crown_archives);
     let to_done = |c: &mut TestClient| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         c.send(
             Principal::Agent { session: sa },
             Command::AgentMoveTicket {
@@ -4088,7 +3629,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     assert_eq!(t.column, "DONE");
     assert!(!t.is_archived(), "on the board until a person archives it");
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
         Some("moved")
     );
     assert!(path.exists(), "the crown reclaims nothing");
@@ -4104,7 +3645,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     // The flags every second rather than every ten.
     let Some(h) = Harness::boot_with_env(
         "crown_merge",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -4114,51 +3655,22 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_merge");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-91 merged by hand");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4167,26 +3679,24 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-91 merged by hand\"");
     let wait_ahead = |c: &mut TestClient| {
         wait_until(
             std::time::Duration::from_secs(10),
             "the flags to read the branch ahead",
-            || read(c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead"),
+            || c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead"),
         );
     };
 
     // ---- 1. the delivery, heard -------------------------------------------
     commit(&path, "work.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_ahead(&mut c);
 
     // ---- 2. merged in a terminal: one line, the merge ---------------------
@@ -4210,8 +3720,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
             })
         })
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     // More refreshes at `merged`: silent.
     std::thread::sleep(std::time::Duration::from_millis(2500));
     assert_eq!(
@@ -4222,20 +3731,17 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     );
     // A turn that leaves it there is no second merge; with nothing pending
     // it finished (T-591).
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
         lines_with(&worker).len() == 3
     });
     assert!(lines_with(&worker)[2].starts_with(&format!("{worker} finished its turn")));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 3. delivered and merged while the crown works: one line ----------
     start(&mut c, sa);
     commit(&path, "more.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let owed = |c: &mut TestClient| -> Vec<Option<String>> {
         pending_of(c, Some(a))
             .into_iter()
@@ -4275,7 +3781,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
 fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     let Some(h) = Harness::boot_with_env(
         "crown_restart",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -4285,50 +3791,19 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_restart");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-92 merged while down");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4337,21 +3812,19 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-92 merged while down\"");
 
     // ---- 1. the delivery, heard -------------------------------------------
     commit(&path, "work.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
     drop(c);
 
@@ -4371,8 +3844,7 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
              for state and notes"
         )
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     // More refreshes at `merged`, the flags' first reading among them:
     // silent.
     std::thread::sleep(std::time::Duration::from_millis(2500));
@@ -4419,7 +3891,7 @@ fn owed_across_a_restart(name: &str, took: bool) {
     // is up at once.
     let stub = format!(
         "#!/bin/sh\n[ -e \"$(dirname \"$0\")/slow\" ] && sleep 4\n{COMPOSER}{}",
-        RECORDING_STUB.trim_start_matches("#!/bin/sh\n")
+        RECORDING_STUB_PER_TICKET.trim_start_matches("#!/bin/sh\n")
     );
     let Some(h) = Harness::boot_bare(
         name,
@@ -4437,19 +3909,12 @@ fn owed_across_a_restart(name: &str, took: bool) {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client(name);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
 
     let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-722 owed across a restart";
     let w = c.create_ticket(title);
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -4459,18 +3924,7 @@ fn owed_across_a_restart(name: &str, took: bool) {
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
 
     std::fs::write(h.dir.join("slow"), "").unwrap();
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4541,7 +3995,7 @@ fn owed_across_a_restart(name: &str, took: bool) {
 fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     let Some(h) = Harness::boot_with_env(
         "crown_think",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -4554,19 +4008,12 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_think");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
 
     let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-731 thinking across a restart";
     let w = c.create_ticket(title);
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -4574,18 +4021,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4683,7 +4119,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
 fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     let Some(h) = Harness::boot_with_env(
         "crown_midturn",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -4696,19 +4132,12 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_midturn");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
 
     let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-756 mid-turn across a restart";
     let w = c.create_ticket(title);
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -4716,18 +4145,7 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4802,7 +4220,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     // The flags (and the train) every second rather than every ten.
     let Some(h) = Harness::boot_with_env(
         "crown_unknown",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -4812,51 +4230,21 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_unknown");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let feed_count = |needle: &str| -> usize {
         std::fs::read_to_string(&feed_path).unwrap_or_default().matches(needle).count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-776 unknown across a restart";
     let w = c.create_ticket(title);
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -4865,7 +4253,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
@@ -4878,8 +4266,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     git(&h.repo, &["add", "base1.txt"]);
     git(&h.repo, &["commit", "-qm", "base1"]);
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let ask = format!("Rebase your current branch {branch} onto main");
     wait_until(std::time::Duration::from_secs(15), "the train's rebase ask", || {
         !lines_with(&ask).is_empty()
@@ -4907,8 +4294,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
 
     // ---- 3. the turn ends still behind: that is the delivery, once ---------
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
@@ -4994,7 +4380,7 @@ enum After {
 fn merge_notice_across_a_restart(name: &str, after: After) {
     let Some(h) = Harness::boot_with_env(
         name,
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -5009,44 +4395,16 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     let mut c = h.client(name);
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let title = "mesimon-probe-1004 merge notice across a restart";
     let w = c.create_ticket(title);
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -5055,7 +4413,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"{title}\"");
     let notice = format!("Your branch {branch} has been merged into main");
@@ -5078,17 +4436,15 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
 
     // ---- 1. delivered, then merged by the crown: the notice goes ----------
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     match c
         .send(Principal::Agent { session: sa }, Command::AgentMergeTicket { key: kw.clone(), seen })
     {
@@ -5152,8 +4508,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         assert!(!said[1].contains("finished"), "{said:?}");
         assert!(said[1].contains("after a restart"), "{said:?}");
         // ---- 5. the turn goes on and ends: finished, once -----------------
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        h.one_turn(&mut c, sa);
         hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         stop(&mut c, ws);
@@ -5239,8 +4594,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     );
 
     // ---- 4. the turn's end, its own or the next prompt's: finished, once ---
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     if after == After::NextPrompt {
         start(&mut c, ws);
     }
@@ -5268,7 +4622,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
 fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let Some(h) = Harness::boot_with_env(
         "crown_sends",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -5279,17 +4633,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     let touch_on = |c: &mut TestClient, t: ulid::Ulid| {
-        touches(c).into_iter().find(|x| x.ticket == t).map(|x| x.action)
+        c.crown_touches().into_iter().find(|x| x.ticket == t).map(|x| x.action)
     };
 
     let a = c.create_ticket("coordinate");
@@ -5297,8 +4645,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let w = c.create_ticket("mesimon-probe-91 worker");
     let w2 = c.create_ticket("second worker");
     let w3 = c.create_ticket("third worker");
-    let (kp, kw, kw2, kw3) =
-        (key_of(&mut c, p), key_of(&mut c, w), key_of(&mut c, w2), key_of(&mut c, w3));
+    let (kp, kw, kw2, kw3) = (c.key_of(p), c.key_of(w), c.key_of(w2), c.key_of(w3));
     let sa = c.spawn_claude(a);
     // The person's own agent works in a worktree, so the crown's W may take
     // the checkout beside the crown (T-583: a start there is refused while
@@ -5325,54 +4672,28 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     // what makes it idle, and an idle checkout is what the queue waits for.
     std::thread::sleep(std::time::Duration::from_millis(500));
     for s in [sa, sp] {
-        start(&mut c, s);
-        stop(&mut c, s);
+        h.one_turn(&mut c, s);
     }
-    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
-        let v = read(c, sa, key).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: key.into(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some(workspace.into()),
-                expect_secs: None,
-            },
-        )
-    };
+    let start_agent =
+        |c: &mut TestClient, key: &str, workspace: &str| c.crown_start(sa, key, workspace);
     assert!(matches!(start_agent(&mut c, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     // W's first turn left nothing new: it finished (T-591). The crown takes
     // that turn, so its pane no longer holds the checkout W shares.
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-91 worker\" finished its turn"))
     });
     assert!(!landed(&format!("{kp} \"the person's own\"")), "a person's agent wakes nobody");
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let ask_as = |c: &mut TestClient, key: &str, text: &str, deliver: Deliver| {
-        let v = read(c, sa, key).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: key.into(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentAsked { held_for_person, held_because, wake, .. } => {
-                (held_for_person, held_because.unwrap_or_default(), wake)
-            }
-            other => panic!("ask_agent {key}: {other:?}"),
+    h.one_turn(&mut c, sa);
+    let ask_as = |c: &mut TestClient, key: &str, text: &str, deliver: Deliver| match c
+        .crown_ask(sa, key, text, deliver, None)
+    {
+        Response::AgentAsked { held_for_person, held_because, wake, .. } => {
+            (held_for_person, held_because.unwrap_or_default(), wake)
         }
+        other => panic!("ask_agent {key}: {other:?}"),
     };
     let ask = |c: &mut TestClient, key: &str, text: &str| {
         let (held, why, _) = ask_as(c, key, text, Deliver::Idle);
@@ -5428,7 +4749,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-94 then push");
     assert!(!held && why.is_empty(), "{why}");
     let r = row(&mut c, w).expect("queued on W's card");
-    assert!(r.sends && r.by.as_deref() == Some(key_of(&mut c, a).as_str()), "{r:?}");
+    assert!(r.sends && r.by.as_deref() == Some(c.key_of(a).as_str()), "{r:?}");
     assert_eq!(r.waits_on, vec![kw.clone()], "it waits on W's own turn: {r:?}");
     assert_eq!(touch_on(&mut c, w).as_deref(), Some("asked"));
     settle();
@@ -5446,13 +4767,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         })
     });
     // The turn that takes them is the crown's answer, as after a `^y`.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the answer's wake on the crown", || {
         ask_ends(&format!("{kw} \"mesimon-probe-91 worker\"")).iter().any(|l| landed(l))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- an idle worker takes them at once ----------------------------------
     let (held, _) = ask(&mut c, &kw, "mesimon-probe-95 at once");
@@ -5461,10 +4780,8 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         landed("mesimon-probe-95 at once")
     });
     assert!(row(&mut c, w).is_none(), "nothing left waiting");
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, sa);
 
     // ---- a worker on its question: the crown's words wait behind it ---------
     // The friend's board: asked while W waits on a person's answer, the
@@ -5476,18 +4793,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     start(&mut c, ws);
     hook_send(&hook_sock, &ws.to_string(), "PreToolUse", question);
     c.await_state(ws, "asking", SessionState::question_stop);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: "mesimon-probe-90 over the question".into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, "mesimon-probe-90 over the question", Deliver::Idle, None) {
         Response::Err { message } => assert!(message.contains("asking a question"), "{message}"),
         other => panic!("ask_agent over a standing question: {other:?}"),
     }
@@ -5512,13 +4818,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     wait_until(std::time::Duration::from_secs(10), "the held words, sent by hand", || {
         landed("mesimon-probe-90 after the answer")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, sa);
 
     // ---- a parked worker: the wake is a budget seat -------------------------
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -5542,13 +4846,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     });
     let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws2);
-    stop(&mut c, ws2);
+    h.one_turn(&mut c, ws2);
     wait_until(std::time::Duration::from_secs(10), "W2's finish on the crown", || {
         landed(&format!("{kw2} \"second worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-96 wake for this", Deliver::Idle);
     assert!(held && why.contains("budget is spent") && why.contains(&kw2), "{why}");
     // T-880: the receipt says the words are W's wake, a person's send away.
@@ -5563,7 +4865,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     // Words that would wake W onto a checkout another ticket's agent holds
     // wait for a person (T-583), as a start there would be refused.
     let q = c.create_ticket("the person's on the checkout");
-    let kq = key_of(&mut c, q);
+    let kq = c.key_of(q);
     let sq = c.spawn_claude(q);
     let (held, why) = ask(&mut c, &kw, "mesimon-probe-96b wake onto a held checkout");
     assert!(held && why.contains("parked on the shared checkout"), "{why}");
@@ -5598,12 +4900,11 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     wait_until(std::time::Duration::from_secs(15), "the parked words to land", || {
         landed("mesimon-probe-97 wake for this")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
 
     // ---- words sent now to a parked worker are its wake (T-880) -------------
     // The receipt says the agent woke, so the crown calls no start_agent.
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -5624,8 +4925,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     wait_until(std::time::Duration::from_secs(15), "the waking words to land", || {
         landed("mesimon-probe-97b woken by words")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
 
     // ---- supervised again, or the crown leaving, holds what had not gone ----
     start(&mut c, ws);
@@ -5673,7 +4973,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
 fn the_crown_sends_now_into_a_working_turn() {
     let Some(h) = Harness::boot_with_env(
         "crown_now",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -5685,14 +4985,8 @@ fn the_crown_sends_now_into_a_working_turn() {
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| read_got().contains(probe);
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     // The feed is flushed on the writer's clock, so a line is waited for.
     let feed_has = |cmd: &str, outcome: Option<&str>| {
@@ -5709,7 +5003,7 @@ fn the_crown_sends_now_into_a_working_turn() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-81 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -5717,38 +5011,24 @@ fn the_crown_sends_now_into_a_working_turn() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-81 worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     // An ask past the note cap is refused in words that say the count, the
     // limit and where the rest goes (T-896), never cut: a 10 KiB ask is
     // ordinary and queues as any other.
     {
         use mesimon_core::command::PROMPT_MAX_BYTES;
-        let v = read(&mut c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         let long = "x".repeat(PROMPT_MAX_BYTES + 1);
         match c.send(
             Principal::Agent { session: sa },
@@ -5791,29 +5071,16 @@ fn the_crown_sends_now_into_a_working_turn() {
             landed(&ten_kib)
         });
         hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
             ask_ends(&format!("{kw} \"mesimon-probe-81 worker\"")).iter().any(|l| landed(l))
         });
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        h.one_turn(&mut c, sa);
     }
     let answered = ask_ends(&format!("{kw} \"mesimon-probe-81 worker\""));
     let answers = || answered.iter().map(|l| read_got().matches(l.as_str()).count()).sum::<usize>();
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        )
+        c.crown_ask(sa, &kw, text, deliver, None)
     };
     let road_of = |r: Response| match r {
         Response::AgentAsked { held_for_person, road, .. } => (held_for_person, road.unwrap()),
@@ -5847,7 +5114,7 @@ fn the_crown_sends_now_into_a_working_turn() {
     feed_has("ask_agent", Some("sent_now"));
     feed_has("ask_agent_sent", None);
     assert_eq!(
-        touches(&mut c).into_iter().find(|t| t.ticket == w).map(|t| t.action).as_deref(),
+        c.crown_touches().into_iter().find(|t| t.ticket == w).map(|t| t.action).as_deref(),
         Some("sent")
     );
     // The ack, then the turn's end: the crown's answer.
@@ -5869,8 +5136,7 @@ fn the_crown_sends_now_into_a_working_turn() {
     wait_until(std::time::Duration::from_secs(10), "the queued words at W's idle", || {
         landed("mesimon-probe-83 later")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     answer_heard(&mut c, before);
 
     // ---- now at a dialog: refused, nothing parked ---------------------------
@@ -5911,7 +5177,7 @@ fn the_crown_sends_now_into_a_working_turn() {
         std::fs::read_to_string(&feed_path)
             .is_ok_and(|f| f.contains("\"paste_unacked\"") || f.contains("\"submit_unacked\""))
     });
-    let word = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.map(|a| a.status);
+    let word = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.map(|a| a.status);
     if test_road() == "mod" {
         assert_eq!(word(&mut c).as_deref(), Some("handed"));
         stop(&mut c, ws);
@@ -5968,7 +5234,7 @@ fn the_crown_sends_now_into_a_working_turn() {
 fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
     let Some(h) = Harness::boot_with_env(
         "crown_ask_failed",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -5978,18 +5244,11 @@ fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
     let mut c = h.client("crown_ask_failed");
     let got = h.dir.join("got.txt");
     let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let mod_road = test_road() == "mod";
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-9401 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -5997,49 +5256,23 @@ fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-9401 worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let word = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.map(|a| a.status);
-    let ask = |c: &mut TestClient, text: &str| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentAsked { asked: Some(a), .. } => a,
-            other => panic!("ask_agent {text:?}: {other:?}"),
-        }
+    h.one_turn(&mut c, sa);
+    let word = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.map(|a| a.status);
+    let ask = |c: &mut TestClient, text: &str| match c.crown_ask(sa, &kw, text, Deliver::Idle, None)
+    {
+        Response::AgentAsked { asked: Some(a), .. } => a,
+        other => panic!("ask_agent {text:?}: {other:?}"),
     };
 
     let first = ask(&mut c, "mesimon-probe-9402 then the API fails");
@@ -6093,7 +5326,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     let _ = std::fs::remove_file(&fail_enter);
     let Some(h) = Harness::boot_with_env(
         "crown_ask_words",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -6109,14 +5342,8 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| read_got().contains(probe);
     let copies = |probe: &str| read_got().matches(probe).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     let mod_road = test_road() == "mod";
     let switch = |name: &str, on: bool| {
@@ -6130,7 +5357,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-938 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -6138,20 +5365,8 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -6173,28 +5388,16 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         start(c, sa);
         stop(c, sa);
     };
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-938 worker\" finished its turn"))
     });
     crown_takes(&mut c);
 
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked;
     let word = |c: &mut TestClient| asked(c).map(|a| a.status);
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        )
+        c.crown_ask(sa, &kw, text, deliver, None)
     };
     let receipt = |r: Response| match r {
         Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
@@ -6238,8 +5441,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         settle();
         assert_eq!(word(&mut c).as_deref(), Some("sent"));
         refused(ask(&mut c, "mesimon-probe-9382 again", Deliver::Now), &first.ask);
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         crown_takes(&mut c);
         settle();
         assert_eq!(word(&mut c).as_deref(), Some("sent"), "an unrelated prompt hands nothing");
@@ -6248,8 +5450,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(10), "the mod's entered", || {
             word(&mut c).as_deref() == Some("handed")
         });
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wake_for(&first.ask, "taken");
         assert_eq!(word(&mut c).as_deref(), Some("taken"));
         switch("mod-hold-entered", false);
@@ -6276,17 +5477,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(5), "the crown's words", || {
             landed("mesimon-probe-9383 raced")
         });
-        match c.request(Command::PromptSession {
-            ticket: w,
-            text: "mesimon-probe-9384 the person's".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }) {
+        match c.prompt(w, "mesimon-probe-9384 the person's") {
             Response::Ok | Response::Queued { .. } => {}
             other => panic!("the person's prompt: {other:?}"),
         }
@@ -6327,14 +5518,12 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(10), "the mod's entered", || {
             word(&mut c).as_deref() == Some("handed")
         });
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wake_for(&out.ask, "taken");
         switch("mod-release", false);
     }
     switch("mod-hold-entered", false);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- a restart: an ask a turn carried comes back at its word (T-974) --------
     start(&mut c, ws);
@@ -6364,8 +5553,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     // The turn's end settles it across the restart and wakes the crown.
     stop(&mut c, ws);
     wake_for(&carried.ask, if mod_road { "taken" } else { "sent" });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     let again = receipt(ask(&mut c, "mesimon-probe-9388 after", Deliver::Idle));
     assert_ne!(again.ask, carried.ask);
 
@@ -6375,8 +5563,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(10), "the idle ask's turn", || {
             landed("mesimon-probe-9388")
         });
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         crown_takes(&mut c);
         switch("mod-draft", true);
         start(&mut c, ws);
@@ -6433,8 +5620,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         assert_eq!((dropped.ask.as_str(), dropped.by.as_str()), (late.ask.as_str(), "agent"));
         switch("mod-hold-entered", false);
         switch("mod-release", false);
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         crown_takes(&mut c);
 
         // ---- a prompt's mark, then a late confirmed refusal (round 2, B) ----
@@ -6493,8 +5679,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
             Response::Spawned { .. } => {}
             other => panic!("the wake: {other:?}"),
         }
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         crown_takes(&mut c);
         settle();
         let gone = asked(&mut c).unwrap();
@@ -6510,8 +5695,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(25), "the next ask entered", || {
             word(&mut c).as_deref() == Some("handed")
         });
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wake_for(&next.ask, "taken");
         crown_takes(&mut c);
 
@@ -6532,8 +5716,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         switch("mod-stopped-submit", false);
         assert_eq!(word(&mut c).as_deref(), Some("sent"));
         refused(ask(&mut c, "mesimon-probe-9396 again", Deliver::Now), &pasted.ask);
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wake_for(&pasted.ask, "sent");
         crown_takes(&mut c);
         let after = receipt(ask(&mut c, "mesimon-probe-9397 next", Deliver::Idle));
@@ -6542,8 +5725,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         wait_until(std::time::Duration::from_secs(25), "the next ask entered", || {
             word(&mut c).as_deref() == Some("handed")
         });
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         wake_for(&after.ask, "taken");
         crown_takes(&mut c);
 
@@ -6572,7 +5754,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         // wake made, bound there at the dispatch. An `entered` for that frame
         // while the seat has no pane, or once a new pane replaced it, hands
         // nothing, and the tick resolves the ask, so nothing blocks for good.
-        let v = read(&mut c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         match c.send(
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -6657,20 +5839,14 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| read_got().contains(probe);
     let sent_now = |probe: &str| read_got().contains(&format!("{probe}\u{18}\u{13}"));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     let mod_road = test_road() == "mod";
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-974 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -6678,47 +5854,22 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-974 worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked;
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        )
+        c.crown_ask(sa, &kw, text, deliver, None)
     };
     let receipt = |r: Response| match r {
         Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
@@ -6806,8 +5957,7 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     let first_word = if mod_road { "taken" } else { "sent" };
     assert_eq!(after.earlier[0].status, first_word, "{after:?}");
     assert!(!landed("mesimon-probe-9743"), "a refused ask sent nothing");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- a restart between the ask going out and its turn's end -------------
     let carried = first_ask(&mut c, "mesimon-probe-9744 before a restart");
@@ -6832,10 +5982,8 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     wait_until(std::time::Duration::from_secs(25), "the idle ask's words", || {
         landed("mesimon-probe-9746")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, sa);
 
     // ---- a restart while the worker stands at a dialog (round 1) -------------
     // A dialog is mid-turn: the restart's look at it answers nothing, the
@@ -6882,10 +6030,8 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     wait_until(std::time::Duration::from_secs(10), "the idle ask handed", || {
         asked(&mut c).is_some_and(|v| v.ask == after.ask && v.status == "handed")
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, sa);
     let switch = |name: &str, on: bool| {
         let f = h.dir.join(name);
         if on {
@@ -6959,14 +6105,8 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     let landed = |probe: &str| read_got().contains(probe);
     // The send-now keys right after the words, and no Enter between.
     let sent_now = |probe: &str| read_got().contains(&format!("{probe}\u{18}\u{13}"));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let feed_has = |actor: &str, cmd: &str, outcome: Option<&str>| {
         wait_until(std::time::Duration::from_secs(5), &format!("the {cmd} feed line"), || {
             std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
@@ -6981,7 +6121,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-71 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -6989,47 +6129,22 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-71 worker\" finished its turn"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     let answered = ask_ends(&format!("{kw} \"mesimon-probe-71 worker\""));
     let answers = || answered.iter().map(|l| read_got().matches(l.as_str()).count()).sum::<usize>();
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        )
+        c.crown_ask(sa, &kw, text, deliver, None)
     };
     let road_of = |r: Response| match r {
         Response::AgentAsked { held_for_person, road, .. } => (held_for_person, road.unwrap()),
@@ -7057,8 +6172,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     wait_until(std::time::Duration::from_secs(20), "the answer's wake on the crown", || {
         answers() > before
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- immediately at a dialog: refused, nothing sent ---------------------
     start(&mut c, ws);
@@ -7128,7 +6242,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     // ---- a person has W's pane open: no key of the board's goes in (T-958) ---
     let sid = ws.simple().to_string()[..16].to_string();
     let tmux_sock = h.paths.tmux_sock();
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.expect("the crown's ask");
     let client = person_attaches(&tmux_sock, &sid);
     if test_road() == "mod" {
         // The mod fills the words, and the send-now over them is a key:
@@ -7155,17 +6269,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         person_leaves(&tmux_sock, &sid, client);
     } else {
         // A person's own send straight to the pane is refused, not typed.
-        match c.request(Command::PromptSession {
-            ticket: w,
-            text: "mesimon-probe-77 by hand".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }) {
+        match c.prompt(w, "mesimon-probe-77 by hand") {
             Response::Err { message } => {
                 assert!(message.contains("a person has its pane open"), "{message}");
                 assert!(message.contains("were not sent"), "{message}");
@@ -7186,17 +6290,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         // A person's direct send now, ahead of that queued ask, is refused
         // before any key: nothing was said ahead of it, so the ask stays
         // queued and its record with it (round 2).
-        match c.request(Command::PromptSession {
-            ticket: w,
-            text: "mesimon-probe-79 ahead".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }) {
+        match c.prompt(w, "mesimon-probe-79 ahead") {
             Response::Err { message } => assert!(message.contains("were not sent"), "{message}"),
             other => panic!("a send ahead of the queue: {other:?}"),
         }
@@ -7239,8 +6333,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             "nor W's column send"
         );
         // The turn those words started ends, and the next one runs.
-        start(&mut c, ws);
-        stop(&mut c, ws);
+        h.one_turn(&mut c, ws);
         start(&mut c, ws);
         // A person who opens the pane just before an ask drains: W idle,
         // the crown's `idle` ask drains in the same writer turn it is made
@@ -7275,8 +6368,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             wait_until(std::time::Duration::from_secs(10), "the crown's wake", || {
                 wakes_sent() > woken
             });
-            start(&mut c, sa);
-            stop(&mut c, sa);
+            h.one_turn(&mut c, sa);
             let before = kept();
             let client = person_attaches(&tmux_sock, &sid);
             let _ = ask(&mut c, &probe, Deliver::Idle);
@@ -7324,24 +6416,17 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
     // Every mod on this board speaks `submit` and not `fill`.
     std::fs::write(h.dir.join("mod-speaks"), "ping,submit,answer").unwrap();
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_submit_only");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let copies =
         |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().matches(probe).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-958 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -7349,20 +6434,8 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -7370,21 +6443,10 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
     let sid = ws.simple().to_string()[..16].to_string();
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("the crown's ask");
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.expect("the crown's ask");
 
     let client = person_attaches(&tmux_sock, &sid);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: "mesimon-probe-9581 kept".into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Immediately,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, "mesimon-probe-9581 kept", Deliver::Immediately, None) {
         Response::Err { message } => {
             assert!(message.contains("a person has its pane open"), "{message}");
             assert!(message.contains("stay queued"), "{message}");
@@ -7426,7 +6488,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     // The flags (and the train) every second rather than every ten.
     let Some(h) = Harness::boot_with_env(
         "crown_train",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -7436,54 +6498,25 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_train");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let feed_count = |needle: &str| -> usize {
         std::fs::read_to_string(&feed_path).unwrap_or_default().matches(needle).count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-92 on the train");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -7492,7 +6525,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     // This connection arms the train and keeps it armed.
     assert!(matches!(
@@ -7511,8 +6544,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
 
     // ---- 1. delivered and merged by the train: one line, at the merge -----
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(15), "the train to merge it", merged);
     wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
         lines_with(&worker).len() == 1
@@ -7525,8 +6557,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         "the delivery was held for the merge: {lines:?}"
     );
     assert_eq!(feed_count("\"crown_wake_deferred\""), 1);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037),
     // which the train does not reach: the person brings it back for more.
     assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
@@ -7540,8 +6571,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     git(&h.repo, &["add", "base1.txt"]);
     git(&h.repo, &["commit", "-qm", "base1"]);
     commit(&path, "two.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let ask = format!("Rebase your current branch {branch} onto main");
     wait_until(std::time::Duration::from_secs(15), "the train's rebase ask", || {
         !lines_with(&ask).is_empty()
@@ -7553,8 +6583,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         feed_count("\"crown_wake_deferred\"") == 2
     });
     // The agent takes the ask and ends its turn still behind.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the give-up's wake", || {
         lines_with(&worker).len() == 2
     });
@@ -7563,8 +6592,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         lines[1].starts_with(&format!("{worker} delivered (merge_state merged → needs_rebase")),
         "{lines:?}"
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 3. the checkout refuses the merge: the crown hears ---------------
     // In the way: the fast-forward would write this file, and git will not
@@ -7605,7 +6633,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     // The flags (and the train) every second rather than every ten.
     let Some(h) = Harness::boot_with_env(
         "crown_notice",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -7615,51 +6643,22 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_notice");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-96 notified");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -7668,7 +6667,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-96 notified\"");
     let merged = || {
@@ -7708,8 +6707,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     // ---- 1. a delivery held for the train, landed with its notice ---------
     train(&mut c, true);
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     let line = land(&mut c, 1, 0);
     assert!(
         line.contains(&format!(
@@ -7720,8 +6718,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert_eq!(feed.matches("\"crown_wake_deferred\"").count(), 1, "the train's hold");
     assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "the notice's");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 2. a delivery heard, then merged with its notice -----------------
     // The first merge closed the card in DONE (REVIEW's `on_merged`,
@@ -7734,14 +6731,12 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     ));
     train(&mut c, false);
     commit(&path, "two.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 2
     });
     assert!(lines_with(&worker)[1].starts_with(&format!("{worker} delivered (")));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     train(&mut c, true);
     let line = land(&mut c, 2, 2);
     assert_eq!(
@@ -7763,7 +6758,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
 
     // ---- 3. the crown's close-out, on the wake ----------------------------
     start(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert_eq!(v.state.as_ref().map(|s| s.state.as_str()), Some("idle"), "finished entirely");
     match c.send(
         Principal::Agent { session: sa },
@@ -7774,7 +6769,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         }
         other => panic!("sleep_agent on the wake: {other:?}"),
     }
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentMoveTicket {
@@ -7806,7 +6801,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
 fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     let Some(h) = Harness::boot_with_env(
         "crown_question",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -7815,31 +6810,19 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     let mut c = h.client("crown_question");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("the worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     let sw = c.spawn_claude(w);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     hook_send(&hook_sock, &sw.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sw, "running", |s| *s == SessionState::Running);
-    let ask = |c: &mut TestClient, text: &str| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: None,
-            },
-        )
+    let ask = |c: &mut TestClient, text: &str| c.crown_ask(sa, &kw, text, Deliver::Idle, None);
+    let asked_touch = |c: &mut TestClient| {
+        c.crown_touches().into_iter().any(|t| t.ticket == w && t.action == "asked")
     };
-    let asked_touch =
-        |c: &mut TestClient| touches(c).into_iter().any(|t| t.ticket == w && t.action == "asked");
     // A working agent is at no stop.
-    assert!(read(&mut c, sa, &kw).unwrap().needs_you.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().needs_you.is_none());
 
     // ---- one question: the reason, the words, the options, the request ----
     let one = json!({
@@ -7857,7 +6840,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     });
     hook_send(&hook_sock, &sw.to_string(), "PreToolUse", &one.to_string());
     c.await_state(sw, "asking", |s| matches!(s, SessionState::RequiresAction { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert_eq!(v.state.as_ref().map(|s| s.state.as_str()), Some("needs-you"));
     let needs = v.needs_you.expect("a question stop says what it is");
     assert_eq!(needs.reason, "question");
@@ -7912,10 +6895,10 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     });
     hook_send(&hook_sock, &sw.to_string(), "PermissionRequest", &two.to_string());
     wait_until(std::time::Duration::from_secs(5), "the second dialog", || {
-        read(&mut c, sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
+        c.agent_read(sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
             == Some("toolu_q2")
     });
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.unwrap();
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.unwrap();
     assert_eq!(needs.answerable, Some(true), "{needs:?}");
     let listed: Vec<_> = needs
         .questions
@@ -7927,7 +6910,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     // ---- answered: the field is gone and the crown's words go through -------
     hook_send(&hook_sock, &sw.to_string(), "PostToolUse", &two.to_string());
     c.await_state(sw, "running again", |s| *s == SessionState::Running);
-    assert!(read(&mut c, sa, &kw).unwrap().needs_you.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().needs_you.is_none());
     match ask(&mut c, "mesimon-probe-566 after the answer") {
         Response::AgentAsked { .. } => {}
         other => panic!("ask_agent after the answer: {other:?}"),
@@ -7969,14 +6952,8 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let typed = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| typed().contains(probe);
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     let asking = |s: &SessionState| {
         *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
@@ -8001,30 +6978,15 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     let a = c.create_ticket("coordinate");
     let p = c.create_ticket("the person's own");
     let w = c.create_ticket("mesimon-probe-569 worker");
-    let (ka, kp, kw) = (key_of(&mut c, a), key_of(&mut c, p), key_of(&mut c, w));
+    let (ka, kp, kw) = (c.key_of(a), c.key_of(p), c.key_of(w));
     let sa = c.spawn_claude(a);
     let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     for s in [sa, sp] {
-        start(&mut c, s);
-        stop(&mut c, s);
+        h.one_turn(&mut c, s);
     }
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     // T-583: P, a person's agent, holds the checkout, so W works in a
     // worktree of its own.
     wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
@@ -8034,7 +6996,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
     let answer_cmd = |c: &mut TestClient, key: &str, request: &str, index, text: Option<&str>| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         Command::AgentAnswerTicket {
             key: key.into(),
             seen: v.seen,
@@ -8113,7 +7075,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     assert!(!typed().contains("Which auth provider"), "the question's words never ride a wake");
     start(&mut c, sa);
     c.await_state(ws, "still asking past its siblings", asking);
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the question");
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the question");
     assert_eq!(needs.request.as_deref(), Some("toolu_a2"), "the words outlive the batch");
     assert_eq!(needs.questions[0].text, "Which auth provider?");
 
@@ -8173,7 +7135,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
         other => panic!("answer_agent: {other:?}"),
     }
     assert!(
-        touches(&mut c).iter().any(|t| t.ticket == w && t.action == "answered"),
+        c.crown_touches().iter().any(|t| t.ticket == w && t.action == "answered"),
         "♛ answered on the card"
     );
     assert_eq!(said_on(&mut c, w).as_deref(), Some("Okta"), "and the answer under its title");
@@ -8200,8 +7162,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     wait_until(std::time::Duration::from_secs(10), "the answer's turn waking the crown", || {
         landed(&format!("{kw} \"mesimon-probe-569 worker\" ended its turn after your ask went in"))
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- a plan is a person's ---------------------------------------------
     start(&mut c, ws);
@@ -8270,13 +7231,10 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     init_repo(&h.repo, "a.txt", "hello\n");
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_batch");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-571 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -8284,21 +7242,7 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("shared_checkout".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
@@ -8334,7 +7278,7 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     });
 
     // ---- get_ticket lists every question -------------------------------------
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the batch");
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the batch");
     assert_eq!(needs.request.as_deref(), Some("toolu_b1"));
     assert_eq!(needs.answerable, Some(true));
     let listed: Vec<_> = needs
@@ -8356,7 +7300,7 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
     let typed = || std::fs::read_to_string(&keys).unwrap_or_default();
     let before = typed();
     let answer = |c: &mut TestClient, index: Option<usize>, answers: Option<Vec<Q>>| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         Command::AgentAnswerTicket {
             key: kw.clone(),
             seen: v.seen,
@@ -8465,13 +7409,10 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
     let hook_sock = h.paths.hook_sock();
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("crown_answer_held");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-958 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -8479,21 +7420,7 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("shared_checkout".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     let sid = ws.simple().to_string()[..16].to_string();
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -8525,7 +7452,7 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
     let answered = h.dir.join(format!("answered-{kw}.json"));
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let call = |c: &mut TestClient| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         let cmd = Command::AgentAnswerTicket {
             key: kw.clone(),
             seen: v.seen,
@@ -8634,14 +7561,8 @@ fn the_crown_accepts_a_plan_by_default() {
     let typed = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| typed().contains(probe);
     let feed = || std::fs::read_to_string(&feed_path).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let at_plan = |s: &SessionState| *s == SessionState::RequiresAction { reason: Reason::Plan };
     let frame = |request: &str| {
         json!({ "tool_name": "ExitPlanMode", "tool_use_id": request, "tool_input": { "plan": plan } })
@@ -8667,19 +7588,18 @@ fn the_crown_accepts_a_plan_by_default() {
     let a = c.create_ticket("coordinate");
     let p = c.create_ticket("the person's own");
     let w = c.create_ticket("mesimon-probe-582 worker");
-    let (ka, kp, kw) = (key_of(&mut c, a), key_of(&mut c, p), key_of(&mut c, w));
+    let (ka, kp, kw) = (c.key_of(a), c.key_of(p), c.key_of(w));
     let sa = c.spawn_claude(a);
     let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     for s in [sa, sp] {
-        start(&mut c, s);
-        stop(&mut c, s);
+        h.one_turn(&mut c, s);
     }
 
     // ---- on by default: no person switched anything ----------------------
     assert!(c.board().crown_mode.answers(), "a fresh board lets the crown answer and accept");
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -8703,7 +7623,7 @@ fn the_crown_accepts_a_plan_by_default() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, ws);
     let accept_cmd = |c: &mut TestClient, key: &str, request: &str| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         Command::AgentAcceptPlan { key: key.into(), seen: v.seen, request: request.into() }
     };
     let refused = |c: &mut TestClient, key: &str, request: &str| {
@@ -8734,7 +7654,7 @@ fn the_crown_accepts_a_plan_by_default() {
     stop(&mut c, sp);
 
     // ---- the crown's worker stops on a plan: the crown wakes, not its words --
-    let notes_before = read(&mut c, sa, &kw).unwrap().notes.len();
+    let notes_before = c.agent_read(sa, &kw).unwrap().notes.len();
     assert_eq!(notes_before, 0, "a title-only ticket");
     show_plan(&mut c, &kw, ws, "toolu_w1");
     let wake = format!("{kw} \"mesimon-probe-582 worker\" stops on a plan");
@@ -8743,7 +7663,7 @@ fn the_crown_accepts_a_plan_by_default() {
     });
     assert!(!typed().contains("Read the code"), "the plan's words never ride a wake");
     start(&mut c, sa);
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the plan");
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the plan");
     assert_eq!(needs.reason, "plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
     // T-991: the head, marked cut, and the plan's size; with `plan`, the
@@ -8763,7 +7683,7 @@ fn the_crown_accepts_a_plan_by_default() {
     assert_eq!(whole.plan.as_deref(), Some(plan), "the markdown whole, the frame kept");
     assert_eq!(whole.plan_bytes, None, "nothing cut");
     assert_eq!(whole.request.as_deref(), Some("toolu_w1"));
-    assert_eq!(read(&mut c, sa, &kw).unwrap().notes.len(), notes_before, "no note for a plan");
+    assert_eq!(c.agent_read(sa, &kw).unwrap().notes.len(), notes_before, "no note for a plan");
 
     // ---- refusals in words, none typing a key or writing a feed line --------
     let keys = h.dir.join(format!("keys-{kw}"));
@@ -8781,7 +7701,7 @@ fn the_crown_accepts_a_plan_by_default() {
         Response::Err { message } => assert!(message.contains("changed since it was read")),
         other => panic!("a stale stamp: {other:?}"),
     }
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     let answer = Command::AgentAnswerTicket {
         key: kw.clone(),
         seen: v.seen.clone(),
@@ -8842,7 +7762,7 @@ fn the_crown_accepts_a_plan_by_default() {
         other => panic!("accept_plan: {other:?}"),
     }
     assert!(
-        touches(&mut c).iter().any(|t| t.ticket == w && t.action == "accepted plan"),
+        c.crown_touches().iter().any(|t| t.ticket == w && t.action == "accepted plan"),
         "♛ accepted plan on the card"
     );
     assert!(
@@ -8945,14 +7865,14 @@ impl PlanBed {
         let mut c = h.client(name);
         let a = c.create_ticket("coordinate");
         let w = c.create_ticket("mesimon-probe-943 worker");
-        let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+        let (ka, kw) = (c.key_of(a), c.key_of(w));
         let sa = c.spawn_claude(a);
         assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
         std::thread::sleep(std::time::Duration::from_millis(500));
         let mut bed = PlanBed { h, c, w, ka, kw, sa, ws: uuid::Uuid::nil() };
         bed.start(sa);
         bed.stop(sa);
-        let v = read(&mut bed.c, sa, &bed.kw).unwrap();
+        let v = bed.c.agent_read(sa, &bed.kw).unwrap();
         assert!(matches!(
             bed.c.send(
                 Principal::Agent { session: sa },
@@ -9094,7 +8014,7 @@ impl PlanBed {
     }
 
     fn revise_cmd(&mut self, key: &str, request: &str, text: &str) -> Command {
-        let v = read(&mut self.c, self.sa, key).unwrap();
+        let v = self.c.agent_read(self.sa, key).unwrap();
         Command::AgentRevisePlan {
             key: key.into(),
             seen: v.seen,
@@ -9206,7 +8126,7 @@ fn the_crown_sends_a_plan_back_with_words() {
     b.hook("PreToolUse", "Edit", "toolu_edit");
     assert_eq!(revised(receipt), ("input_sent".to_string(), None));
     assert!(
-        touches(&mut b.c).iter().any(|t| t.ticket == w && t.action == "sent plan back"),
+        b.c.crown_touches().iter().any(|t| t.ticket == w && t.action == "sent plan back"),
         "♛ sent plan back on the card"
     );
     assert!(
@@ -9229,7 +8149,7 @@ fn the_crown_sends_a_plan_back_with_words() {
         b.typed().matches(&wake).count() == 2
     });
     b.start(b.sa);
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the next plan");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the next plan");
     assert_eq!(needs.reason, "plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
 
@@ -9289,7 +8209,7 @@ fn the_crown_sends_a_plan_back_with_words() {
 
     // ---- a person's agent replanning in place wakes nobody through it -------
     let p = b.c.create_ticket("the person's own");
-    let kp = key_of(&mut b.c, p);
+    let kp = b.c.key_of(p);
     let sp = b.c.spawn_claude(p);
     std::thread::sleep(std::time::Duration::from_millis(500));
     let send = |event: &str, request: &str| {
@@ -9303,7 +8223,7 @@ fn the_crown_sends_a_plan_back_with_words() {
     send("PreToolUse", "toolu_p2");
     // The replan judged: the dialog the board holds for P is the new one.
     wait_until(std::time::Duration::from_secs(10), "P's replan read", || {
-        read(&mut b.c, b.sa, &kp)
+        b.c.agent_read(b.sa, &kp)
             .ok()
             .and_then(|v| v.needs_you)
             .is_some_and(|n| n.request.as_deref() == Some("toolu_p2"))
@@ -9328,7 +8248,7 @@ fn the_crown_sends_a_plan_back_with_words() {
     assert_eq!(owed(&b, p), 0, "no wake owed for the person's ticket");
 
     b.start(b.sa);
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the replanned plan");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the replanned plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w3"));
 }
 
@@ -9395,10 +8315,10 @@ fn a_new_plan_while_its_wake_is_owed_is_one_wake_then_the_current_request() {
     assert!(wakes.is_empty(), "the two plans' obligations fold into one: {wakes:?}");
     assert_eq!(sent(&b), before + 1);
     assert_eq!(b.typed().matches(&wake).count(), 1);
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the new plan");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the new plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
     // The new request is the one an accept takes; the old one is refused.
-    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    let v = b.c.agent_read(b.sa, &kw).unwrap();
     let stale = Command::AgentAcceptPlan {
         key: kw.clone(),
         seen: v.seen.clone(),
@@ -9435,7 +8355,7 @@ fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
     let Some(mut b) = PlanBed::boot("crown_revise_ask") else { return };
     let (kw, ws) = (b.kw.clone(), b.ws);
     let ask = |b: &mut PlanBed, text: &str| {
-        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        let v = b.c.agent_read(b.sa, &kw).unwrap();
         b.c.send(
             Principal::Agent { session: b.sa },
             Command::AgentAskTicket {
@@ -9459,10 +8379,10 @@ fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
     };
     b.show_plan("toolu_w1");
     wait_until(std::time::Duration::from_secs(10), "the plan on the card", || {
-        read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_some()
+        b.c.agent_read(b.sa, &kw).unwrap().needs_you.is_some()
     });
     at_dialog(ask(&mut b, "mesimon-probe-9431 at the plan"));
-    assert!(read(&mut b.c, b.sa, &kw).unwrap().asked.is_none(), "a refused ask leaves no record");
+    assert!(b.c.agent_read(b.sa, &kw).unwrap().asked.is_none(), "a refused ask leaves no record");
     let receipt = b.call("toolu_w1", "Use echo in Bash instead of the Write tool.");
     let changed = b.changed();
     wait_until(std::time::Duration::from_secs(10), "the plan sent back", || changed.exists());
@@ -9474,12 +8394,12 @@ fn a_refused_ask_and_a_plan_sent_back_are_not_the_outstanding_ask() {
     b.hook("PreToolUse", "ExitPlanMode", "toolu_w2");
     assert_eq!(revised(receipt), ("input_sent".to_string(), None));
     wait_until(std::time::Duration::from_secs(10), "the new plan on the card", || {
-        read(&mut b.c, b.sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
+        b.c.agent_read(b.sa, &kw).unwrap().needs_you.and_then(|n| n.request).as_deref()
             == Some("toolu_w2")
     });
     at_dialog(ask(&mut b, "mesimon-probe-9432 at the new plan"));
-    assert!(read(&mut b.c, b.sa, &kw).unwrap().asked.is_none(), "the plan sent back is no ask");
-    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    assert!(b.c.agent_read(b.sa, &kw).unwrap().asked.is_none(), "the plan sent back is no ask");
+    let v = b.c.agent_read(b.sa, &kw).unwrap();
     let accepted = b.h.dir.join(format!("accepted-{kw}"));
     let accept =
         Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_w2".into() };
@@ -9562,7 +8482,7 @@ fn a_new_plan_while_the_old_wake_is_entering_outlives_its_settle() {
         b.typed().matches(&wake).count() == 2
     });
     assert_eq!(submits(&b), 2, "a frame of its own");
-    let needs = read(&mut b.c, sa, &kw).unwrap().needs_you.expect("the new plan");
+    let needs = b.c.agent_read(sa, &kw).unwrap().needs_you.expect("the new plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
     for name in [&hold, &release] {
         let _ = std::fs::remove_file(name);
@@ -9606,7 +8526,7 @@ fn a_plan_sent_back_whose_replan_fails_reads_two_lines_that_agree() {
     wait_until(std::time::Duration::from_secs(10), "the failed turn's wake", || {
         b.typed().contains(&failed)
     });
-    let view = read(&mut b.c, sa, &kw).unwrap();
+    let view = b.c.agent_read(sa, &kw).unwrap();
     let state = view.state.expect("W's state");
     assert_eq!((state.state.as_str(), state.failed.as_deref()), ("failed", Some("server error")));
     assert!(view.needs_you.is_none(), "no plan stands");
@@ -9701,7 +8621,7 @@ fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
     let (outcome, _) = revised(receipt);
     assert_eq!(outcome, "unknown");
     assert_eq!(enters(&b), e0, "no Enter into the plan that replaced it");
-    let needs = read(&mut b.c, b.sa, &b.kw.clone()).unwrap().needs_you.expect("the new plan");
+    let needs = b.c.agent_read(b.sa, &b.kw.clone()).unwrap().needs_you.expect("the new plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w6"));
     b.clear("toolu_r5");
 
@@ -9738,7 +8658,7 @@ fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
     let outcome = revised(receipt);
     rename("msmn-e2e-hidden", &sid);
     assert_eq!(outcome, ("unknown".to_string(), Some("pane_unreachable".to_string())));
-    let needs = read(&mut b.c, b.sa, &b.kw.clone()).unwrap().needs_you.expect("still on its plan");
+    let needs = b.c.agent_read(b.sa, &b.kw.clone()).unwrap().needs_you.expect("still on its plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w8"), "the same request");
     assert_eq!(needs.plan.as_deref(), Some(BED_PLAN), "the same plan");
     // The field holds the crown's words now: the next walk stops on them,
@@ -9789,13 +8709,13 @@ fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
     wait_until(std::time::Duration::from_secs(10), "the sibling's end ingested", || {
         ended(&b) > seen
     });
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the plan stands");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the plan stands");
     assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
     assert_eq!(needs.plan.as_deref(), Some(BED_PLAN));
     assert_eq!(state(&mut b), Some(at_plan.clone()));
     assert!(!receipt.is_finished(), "no departure receipt on a sibling's end");
     assert_eq!(revised(receipt), ("unknown".to_string(), Some("dialog_stands".to_string())));
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the plan still stands");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the plan still stands");
     assert_eq!(needs.request.as_deref(), Some("toolu_w1"));
     assert_eq!(state(&mut b), Some(at_plan.clone()));
     // The person ends the turn and starts the next.
@@ -9816,11 +8736,11 @@ fn a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it() {
     b.c.await_state(b.ws, "running once the screen shows the composer", |s| {
         *s == SessionState::Running
     });
-    assert!(read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
+    assert!(b.c.agent_read(b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
     b.hook("PostToolUse", "Bash", "toolu_s2");
 
     // ---- the crown's words are admitted, not refused as at a plan -----------
-    let v = read(&mut b.c, b.sa, &kw).unwrap();
+    let v = b.c.agent_read(b.sa, &kw).unwrap();
     match b.c.send(
         Principal::Agent { session: b.sa },
         Command::AgentAskTicket {
@@ -9853,7 +8773,7 @@ fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
     let (kw, ws) = (b.kw.clone(), b.ws);
     let transcript = b.transcribe();
     let ask = |b: &mut PlanBed, text: &str| {
-        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        let v = b.c.agent_read(b.sa, &kw).unwrap();
         assert!(v.needs_you.is_none(), "no plan stands: {:?}", v.needs_you);
         match b.c.send(
             Principal::Agent { session: b.sa },
@@ -9917,7 +8837,7 @@ fn a_plan_a_person_sends_back_in_the_pane_leaves_needs_you() {
     assert!(pinned.is_some_and(|until| until > esc["at_ms"].as_u64().unwrap()), "pinned: {esc}");
     // At rest off the plan, the seat takes the words queued after the first
     // refusal: they reach its composer.
-    assert!(read(&mut b.c, b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
+    assert!(b.c.agent_read(b.sa, &kw).unwrap().needs_you.is_none(), "no plan stands");
     wait_until(std::time::Duration::from_secs(10), "the queued ask typed into W", || {
         b.typed().contains("mesimon-probe-957 after words")
     });
@@ -9987,7 +8907,7 @@ fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
         wait_until(std::time::Duration::from_secs(10), "the plan's leave", || leaves(&b) > before);
         let off = if esc { interrupted.clone() } else { SessionState::Running };
         b.c.await_state(ws, "off the plan its result on disk ended", |s| *s == off);
-        let v = read(&mut b.c, b.sa, &kw).unwrap();
+        let v = b.c.agent_read(b.sa, &kw).unwrap();
         assert!(v.needs_you.is_none(), "no plan stands (esc: {esc}): {:?}", v.needs_you);
         match b.c.send(
             Principal::Agent { session: b.sa },
@@ -10100,7 +9020,7 @@ fn a_replan_inside_a_sent_back_plan_s_leave_keeps_it_and_wakes_once() {
         );
     assert!(!left_plan, "no committed leave: {}", b.feed());
     b.start(b.sa);
-    let needs = read(&mut b.c, b.sa, &kw).unwrap().needs_you.expect("the new plan");
+    let needs = b.c.agent_read(b.sa, &kw).unwrap().needs_you.expect("the new plan");
     assert_eq!(needs.request.as_deref(), Some("toolu_w2"));
     assert_eq!(b.typed().matches(&wake).count(), 2, "one wake for the new plan");
     assert_eq!(owed(&b), before + 1, "one wake owed for it: {}", b.feed());
@@ -10129,14 +9049,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     init_repo(&h.repo, "a.txt", "hello\n");
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_redialog");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let pane = |c: &mut TestClient, sid: uuid::Uuid| match c
         .request(Command::PaneTail { session: sid, lines: 60 })
     {
@@ -10156,13 +9069,9 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-933 worker");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -10223,7 +9132,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         let frame = json!({ "tool_name": tool, "tool_use_id": id, "tool_input": input });
         hook_send(&hook_sock, &ws.to_string(), "PreToolUse", &frame.to_string());
         c.await_state(ws, "on its dialog", |s| *s == SessionState::RequiresAction { reason });
-        let needs = read(c, sa, &kw).unwrap().needs_you.expect("the dialog");
+        let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the dialog");
         assert_eq!(needs.request.as_deref(), Some(id), "the hook stream's dialog");
     };
     let edge = |tool: &str, id: &str, input: &serde_json::Value| {
@@ -10233,7 +9142,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         let mut c = h.client(name);
         let mut needs = None;
         wait_until(std::time::Duration::from_secs(10), "the dialog rebuilt", || {
-            needs = read(&mut c, sa, &kw).unwrap().needs_you;
+            needs = c.agent_read(sa, &kw).unwrap().needs_you;
             needs.as_ref().is_some_and(|n| n.request.is_some())
         });
         (c, needs.unwrap())
@@ -10248,7 +9157,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     assert_eq!(needs.request.as_deref(), Some("toolu_r1"), "the transcript's call id");
     assert_eq!(needs.plan.as_deref(), Some(PLAN), "the markdown, lines kept");
     let accepted = h.dir.join(format!("accepted-{kw}"));
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     let cmd =
         Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_r1".into() };
     let sock = h.paths.orch_sock();
@@ -10281,7 +9190,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     assert_eq!(needs.reason, "question");
     assert_eq!(needs.request.as_deref(), Some("toolu_r2"));
     assert_eq!(needs.questions[0].text, "Which auth provider?");
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     let cmd = Command::AgentAnswerTicket {
         key: kw.clone(),
         seen: v.seen,
@@ -10317,12 +9226,12 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     h.restart_after(|| append(&[result("toolu_r3")]));
     let mut c = h.client("crown_redialog_4");
     std::thread::sleep(std::time::Duration::from_millis(2000));
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you;
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you;
     assert!(
         needs.as_ref().is_none_or(|n| n.request.is_none() && n.plan.is_none()),
         "an answered plan is gone: {needs:?}"
     );
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     let cmd =
         Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_r3".into() };
     match c.send(Principal::Agent { session: sa }, cmd) {
@@ -10359,7 +9268,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         start(&mut c, ws);
         let input = json!({ "plan": plan });
         stop_on(&mut c, "ExitPlanMode", id, &input);
-        let first = read(&mut c, sa, &kw).unwrap().needs_you.expect("the plan");
+        let first = c.agent_read(sa, &kw).unwrap().needs_you.expect("the plan");
         let first_whole = whole_of(&mut c);
         drop(c);
         h.restart();
@@ -10392,7 +9301,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         // The 26 KiB plan, read whole, is accepted on the road section 1's took.
         let accepted = h.dir.join(format!("accepted-{kw}"));
         let _ = std::fs::remove_file(&accepted);
-        let v = read(&mut c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         let cmd = Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: id.into() };
         let sock = h.paths.orch_sock();
         let receipt = std::thread::spawn(move || {
@@ -10456,7 +9365,7 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("split the writer");
     let p = c.create_ticket("a person's own");
-    let (kw, kp) = (key_of(&mut c, w), key_of(&mut c, p));
+    let (kw, kp) = (c.key_of(w), c.key_of(p));
     let sa = c.spawn_claude(a);
     let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
@@ -10520,7 +9429,7 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
     let f = c.board().ticket_by_key(&kf).unwrap().id;
     assert_eq!(c.board().ticket(f).unwrap().tier.as_deref(), Some("01QUICK"));
     let start = |c: &mut TestClient, key: &str, pick: Option<&str>| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         c.send(
             Principal::Agent { session: sa },
             Command::AgentStartTicket {
@@ -10597,7 +9506,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     use mesimon_core::board::StopReason;
     let Some(h) = Harness::boot_with_env(
         "crown_linger",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -10610,14 +9519,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_linger");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let send = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&hook_sock, &sid.to_string(), event, body);
     };
@@ -10647,7 +9549,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-94 waits in the background");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -10663,18 +9565,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -10692,13 +9583,13 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         }
         other => panic!("the worker's get_ticket: {other:?}"),
     }
-    assert!(read(&mut c, sa, &kw).unwrap().under_crown.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().under_crown.is_none());
 
     // ---- 1. a person's queued prompt lands while the tasks run -------------
     send(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     leave_tasks(&mut c, ws);
-    let view = read(&mut c, sa, &kw).unwrap().background.expect("background on get_ticket");
+    let view = c.agent_read(sa, &kw).unwrap().background.expect("background on get_ticket");
     assert_eq!(view.tasks, 3);
     let rec = c.board().live_agent(w).cloned().unwrap();
     assert_eq!(rec.tasks_running, Some(3), "the card's count");
@@ -10724,18 +9615,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     leave_tasks(&mut c, ws);
 
     // ---- 2. the crown's ask lands; its answer, tasks running, wakes it ------
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: "mesimon-probe-94 crown: are you done".into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, "mesimon-probe-94 crown: are you done", Deliver::Idle, None) {
         Response::AgentAsked { held_for_person: false, .. } => {}
         other => panic!("ask_agent: {other:?}"),
     }
@@ -10774,7 +9654,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         mesimon_core::train::Seat::Busy,
         "never merged under a worker that may be mid-work"
     );
-    let view = read(&mut c, sa, &kw).unwrap().background.expect("still background");
+    let view = c.agent_read(sa, &kw).unwrap().background.expect("still background");
     assert!(view.since_secs.is_some_and(|s| s >= 6), "{view:?}");
 }
 
@@ -10793,7 +9673,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     const LINGER: u64 = 8_000;
     let Some(h) = Harness::boot_with_env(
         "crown_linger_demoted",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -10808,13 +9688,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     let mut c = h.client("crown_linger_demoted");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> usize {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .count()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle).len();
     let send = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&hook_sock, &sid.to_string(), event, body);
     };
@@ -10823,7 +9697,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-944 runs one command");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -10835,18 +9709,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -10908,7 +9771,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     assert!(rec.state_changed_at.is_some_and(|at| at >= parked + PARK_STALE), "{rec:?}");
     assert_eq!(rec.tasks_since, Some(parked), "the demote keeps the stretch's stamp");
     assert_eq!(rec.tasks_running, Some(1), "the card still counts the command");
-    let view = read(&mut c, sa, &kw).unwrap().background.expect("background on get_ticket");
+    let view = c.agent_read(sa, &kw).unwrap().background.expect("background on get_ticket");
     assert_eq!(view.tasks, 1);
     assert!(view.since_secs.is_some_and(|s| s >= PARK_STALE / 1000), "{view:?}");
 
@@ -10967,7 +9830,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
 fn the_crown_merges_where_the_train_will_not() {
     let Some(h) = Harness::boot_with_env(
         "crown_merges",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -10977,40 +9840,22 @@ fn the_crown_merges_where_the_train_will_not() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_merges");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-97 merged by the crown");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
+    let sa = crown_idle(&h, &mut c, a);
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(v.merge.is_none(), "no branch yet, so nobody is named to merge it");
     match c.send(
         Principal::Agent { session: sa },
@@ -11031,7 +9876,7 @@ fn the_crown_merges_where_the_train_will_not() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-97 merged by the crown\"");
     let merged = || {
@@ -11055,7 +9900,7 @@ fn the_crown_merges_where_the_train_will_not() {
         }
     };
     let who = |c: &mut TestClient, key: &str| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         let m = v.merge.expect("a worktree ticket says who merges it");
         (m.by, m.why, v.seen)
     };
@@ -11063,7 +9908,7 @@ fn the_crown_merges_where_the_train_will_not() {
         wait_until(
             std::time::Duration::from_secs(10),
             &format!("the flags to read the branch {word}"),
-            || read(c, sa, &kw).unwrap().merge_state.as_deref() == Some(word),
+            || c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some(word),
         );
     };
     let notice = format!("Your branch {branch} has been merged into main");
@@ -11072,15 +9917,14 @@ fn the_crown_merges_where_the_train_will_not() {
     let (by, why, seen) = who(&mut c, &kw);
     assert_eq!((by.as_str(), why.as_str()), ("crown", "the train is off"));
     refused(merge(&mut c, &kw, seen), &[&kw, "no commits to merge"]);
-    let own = read(&mut c, sa, &ka).unwrap();
+    let own = c.agent_read(sa, &ka).unwrap();
     refused(merge(&mut c, &ka, own.seen), &["this session's own ticket"]);
     // The worker reads who merges on its own ticket too.
-    let mine = read(&mut c, ws, &kw).unwrap();
+    let mine = c.agent_read(ws, &kw).unwrap();
     assert_eq!(mine.merge.map(|m| m.by).as_deref(), Some("crown"));
     // A turn with nothing new: the card lands in REVIEW, the train's column,
     // and the crown hears the finish (T-591).
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
         lines_with(&worker).len() == 1
     });
@@ -11092,8 +9936,7 @@ fn the_crown_merges_where_the_train_will_not() {
         lines_with(&worker)[0]
     );
     assert_eq!(c.board().ticket(w).unwrap().column, "REVIEW");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 2. who merges, by the board's state ------------------------------
     // Armed, the train has nothing to take yet (no commits), so nothing
@@ -11143,8 +9986,7 @@ fn the_crown_merges_where_the_train_will_not() {
     // the merge, no board open.
     std::fs::write(h.paths.prefs_file(), r#"{"merge_train_notice": false}"#).unwrap();
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 2
     });
@@ -11155,8 +9997,7 @@ fn the_crown_merges_where_the_train_will_not() {
              get_ticket key={kw} for state and notes"
         )
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 4. behind its base: the rebase word ------------------------------
     std::fs::write(h.repo.join("base1.txt"), "base\n").unwrap();
@@ -11176,8 +10017,7 @@ fn the_crown_merges_where_the_train_will_not() {
     let line = lines_with(&worker)[2].clone();
     assert!(line.starts_with(&format!("{worker} delivered (")), "{line}");
     assert!(line.contains("merge: crown"), "{line}");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_state(&mut c, "ahead");
 
     // ---- 5. the crown merges, pref off: no notice, the wake at once -------
@@ -11205,7 +10045,7 @@ fn the_crown_merges_where_the_train_will_not() {
     }
     assert!(merged());
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
         Some("merged"),
         "the card lights ♛ merged"
     );
@@ -11231,19 +10071,16 @@ fn the_crown_merges_where_the_train_will_not() {
     assert!(lines_with(&notice).is_empty(), "the pref is off: no notice");
     let (_, _, seen) = who(&mut c, &kw);
     refused(merge(&mut c, &kw, seen), &[&kw, "already merged"]);
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 6. pref on (the default): the notice goes, the wake waits for it -
     std::fs::remove_file(h.paths.prefs_file()).unwrap();
     commit(&path, "two.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
         lines_with(&worker).len() == 5
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_state(&mut c, "ahead");
     let (_, _, seen) = who(&mut c, &kw);
     match merge(&mut c, &kw, seen) {
@@ -11286,7 +10123,7 @@ fn the_crown_merges_where_the_train_will_not() {
 fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     let Some(h) = Harness::boot_with_env(
         "crown_hand_merge",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -11296,54 +10133,25 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_hand_merge");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-98 told by the board");
     let p = c.create_ticket("mesimon-probe-99 a person's own");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     for id in [w, p] {
         assert!(matches!(
             c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
             Response::Ok
         ));
     }
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let sa = crown_idle(&h, &mut c, a);
     // W: the crown's worker. P: the person's own, spawned by hand.
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -11387,13 +10195,11 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
 
     // ---- 1. the crown's worker delivers; the person presses m -------------
     commit(&path_w, "work.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_ahead(&mut c, w);
     match c.request(Command::MergeTicket { id: w }) {
         Response::Merge {
@@ -11474,7 +10280,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
 fn the_crown_watches_a_ticket_a_person_started() {
     let Some(h) = Harness::boot_with_env(
         "crown_watch",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -11488,14 +10294,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     let mut c = h.client("crown_watch");
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let feed_has = |cmd: &str, ticket: ulid::Ulid| {
         std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
             feed.lines().any(|l| {
@@ -11504,30 +10303,20 @@ fn the_crown_watches_a_ticket_a_person_started() {
             })
         })
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     // The probe of a turn's end and the flags' sample run off the writer;
     // give both time to land before asserting that nothing did.
     let settle = || std::thread::sleep(std::time::Duration::from_millis(2500));
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-93 watched");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let sa = crown_idle(&h, &mut c, a);
     // W: the person's own, spawned by hand.
     assert!(matches!(
         c.request(Command::SpawnSession {
@@ -11548,7 +10337,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-93 watched\"");
     let watch = |c: &mut TestClient, key: &str, unwatch: bool| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         c.send(
             Principal::Agent { session: sa },
             Command::AgentWatchTicket { key: key.into(), unwatch, seen: v.seen },
@@ -11561,8 +10350,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
 
     // ---- 1. unwatched, a person's worker wakes nobody (T-527) ---------------
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     settle();
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
 
@@ -11577,8 +10365,8 @@ fn the_crown_watches_a_ticket_a_person_started() {
         Response::Err { message } => assert_eq!(message, off_words),
         other => panic!("a watch while the row is off: {other:?}"),
     }
-    assert!(!read(&mut c, sa, &kw).unwrap().watched);
-    assert!(touches(&mut c).iter().all(|t| t.ticket != w), "no touch for a refusal");
+    assert!(!c.agent_read(sa, &kw).unwrap().watched);
+    assert!(c.crown_touches().iter().all(|t| t.ticket != w), "no touch for a refusal");
 
     // ---- 3. on: the crown's own ticket is refused, so is an unwatch of a
     // ticket not watched; the watch lands, reads back, and is in the ledger
@@ -11610,9 +10398,9 @@ fn the_crown_watches_a_ticket_a_person_started() {
         sub.next_event(std::time::Duration::from_secs(5)).is_some(),
         "the watch broadcasts BoardChanged"
     );
-    assert!(read(&mut c, sa, &kw).unwrap().watched, "the keyed read says so");
+    assert!(c.agent_read(sa, &kw).unwrap().watched, "the keyed read says so");
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
         Some("watched"),
         "the card lights"
     );
@@ -11628,8 +10416,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
 
     // ---- 4. a delivery the crown never heard of: delivered -----------------
     commit(&path, "two.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
@@ -11638,12 +10425,10 @@ fn the_crown_watches_a_ticket_a_person_started() {
     let line = lines_with(&worker).remove(0);
     assert!(line.contains(&format!("{worker} delivered (merge_state ahead, merge: ")), "{line}");
     assert!(line.ends_with(&format!("∙ get_ticket key={kw} for state and notes")), "{line}");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 5. a turn with nothing new: finished (T-591) ----------------------
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
         lines_with(&worker).len() == 2
     });
@@ -11652,8 +10437,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
         "{:?}",
         lines_with(&worker)
     );
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 6. its hand goes up: raised, the reason never on the line ---------
     match c.send(
@@ -11671,10 +10455,9 @@ fn the_crown_watches_a_ticket_a_person_started() {
     assert!(!c.board().ticket(w).unwrap().hand_raised(), "told, the hand is down (T-861)");
     // A watched ticket's reason is the crown's to read as a started one's
     // (T-922).
-    let told = read(&mut c, sa, &kw).unwrap().told_hand.map(|h| h.reason);
+    let told = c.agent_read(sa, &kw).unwrap().told_hand.map(|h| h.reason);
     assert_eq!(told.as_deref(), Some("mesimon-probe-94 the reason"));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 7. merged in a terminal: one merged line, and the watch ends ------
     wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
@@ -11694,12 +10477,10 @@ fn the_crown_watches_a_ticket_a_person_started() {
     wait_until(std::time::Duration::from_secs(5), "the watch's end in the feed", || {
         feed_has("watch_ended", w)
     });
-    assert!(!read(&mut c, sa, &kw).unwrap().watched, "the merge ended the watch");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    assert!(!c.agent_read(sa, &kw).unwrap().watched, "the merge ended the watch");
+    h.one_turn(&mut c, sa);
     // A turn after the merge, unwatched: silent.
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     settle();
     assert_eq!(lines_with(&worker).len(), 4, "{:?}", lines_with(&worker));
 
@@ -11712,21 +10493,20 @@ fn the_crown_watches_a_ticket_a_person_started() {
         other => panic!("unwatch: {other:?}"),
     }
     assert_eq!(
-        touches(&mut c).iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
+        c.crown_touches().iter().find(|t| t.ticket == w).map(|t| t.action.as_str()),
         Some("unwatched")
     );
     wait_until(std::time::Duration::from_secs(5), "the unwatch's feed line", || {
         feed_has("unwatch_ticket", w)
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     settle();
     assert_eq!(lines_with(&worker).len(), 4, "unwatched, so silent");
 
     // ---- 9. the row turned off ends a standing watch -----------------------
     assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
     assert!(matches!(c.request(Command::SetCrownWatches { on: false }), Response::Ok));
-    assert!(!read(&mut c, sa, &kw).unwrap().watched, "off ends every watch");
+    assert!(!c.agent_read(sa, &kw).unwrap().watched, "off ends every watch");
     wait_until(std::time::Duration::from_secs(5), "the drop in the feed", || {
         std::fs::read_to_string(&feed_path)
             .is_ok_and(|feed| feed.contains("\"cmd\":\"crown_watch_dropped\""))
@@ -11738,24 +10518,13 @@ fn the_crown_watches_a_ticket_a_person_started() {
 
     // ---- 10. the crown's words (T-734): held for the person unwatched, -----
     // sent as to a worker it started while watched, held again at the end
-    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentAsked { road, held_because, .. } => {
-                (road.unwrap(), held_because.unwrap_or_default())
-            }
-            other => panic!("ask_agent: {other:?}"),
+    let ask = |c: &mut TestClient, text: &str, deliver: Deliver| match c
+        .crown_ask(sa, &kw, text, deliver, None)
+    {
+        Response::AgentAsked { road, held_because, .. } => {
+            (road.unwrap(), held_because.unwrap_or_default())
         }
+        other => panic!("ask_agent: {other:?}"),
     };
     let row = |c: &mut TestClient| {
         pending_of(c, Some(w)).into_iter().find(|p| p.is_queued_ask() && !p.in_flight)
@@ -11814,7 +10583,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
 fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     let Some(h) = Harness::boot_with_env(
         "crown_unstarted",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -11827,7 +10596,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     let got = h.dir.join("got.txt");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-777 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -11836,18 +10605,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
 
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { session_started: false, .. } => {}
         other => panic!("start_agent {kw}: {other:?}"),
     }
@@ -11866,7 +10624,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     }
     .expect("W's binding");
     assert_eq!((item.status.as_str(), item.detail.as_deref()), ("error", Some(why)));
-    assert_eq!(read(&mut c, sa, &kw).unwrap().worktree_error.as_deref(), Some(why));
+    assert_eq!(c.agent_read(sa, &kw).unwrap().worktree_error.as_deref(), Some(why));
     assert!(c.board().live_agent(w).is_none(), "no agent was started");
 }
 
@@ -11879,7 +10637,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
 fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let Some(h) = Harness::boot_with_env(
         "crown_limit",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -11888,13 +10646,10 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_limit");
     let got = h.dir.join("got.txt");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-802 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -11902,21 +10657,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
 
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
         c.board().live_agent(w).is_some()
     });
@@ -11944,7 +10685,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     wait_until(std::time::Duration::from_secs(10), "the limit's wake on the crown", || {
         std::fs::read_to_string(&got).unwrap_or_default().contains(&wake)
     });
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the limit");
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the limit");
     assert_eq!(needs.reason, "quota");
 
     // The person's prompt runs: the wait is over.
@@ -11971,7 +10712,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     };
     let save = Command::SaveTier { scope: mesimon_core::tier::TierScope::Board, tier: deep };
     assert!(matches!(c.request(save), Response::Ok));
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -11980,7 +10721,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
         other => panic!("sleep_agent over a usage limit: {other:?}"),
     }
     c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -12027,18 +10768,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
 
     // The crown's words, sent once, are what carry it on: one paste into W.
     let probe = "mesimon-probe-920 carry on where the limit stopped you";
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: probe.into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, probe, Deliver::Idle, None) {
         Response::AgentAsked { held_for_person: false, wake: None, .. } => {}
         other => panic!("ask_agent to the woken worker: {other:?}"),
     }
@@ -12057,7 +10787,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     // wake's receipt says the next turn is the person's send, and that send
     // reaches the woken pane: an ask queued for the parked seat follows the
     // record into its new pane rather than dropping as a failed wake.
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -12071,33 +10801,11 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
         Response::Ok
     ));
     let held = "mesimon-probe-921 held for the person";
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: held.into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_ask(sa, &kw, held, Deliver::Idle, None) {
         Response::AgentAsked { held_for_person: true, wake: Some(AskWake::WhenSent), .. } => {}
         other => panic!("a held ask to the parked worker: {other:?}"),
     }
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { woken: true, prompt, .. } => {
             assert_eq!(prompt, Some(StartPrompt::HeldForPerson));
         }
@@ -12130,7 +10838,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
 fn a_failed_turn_wakes_the_crown_once_with_why() {
     let Some(h) = Harness::boot_with_env(
         "crown_failed",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -12139,14 +10847,8 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_failed");
     let got = h.dir.join("got.txt");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let fail = |c: &mut TestClient, sid: uuid::Uuid, class: &str, reason: FailReason| {
         let body = json!({ "error": class, "last_assistant_message": "API Error" }).to_string();
         hook_send_with(&hook_sock, &sid.to_string(), "StopFailure", Some(class), &body);
@@ -12154,27 +10856,9 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
     };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 worker");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W's worktree start to land", || {
         c.board().live_agent(w).is_some()
     });
@@ -12197,10 +10881,9 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
     wait_until(std::time::Duration::from_secs(10), "the failure's wake on the crown", || {
         lines().iter().any(|l| l.contains(&failed_line("server error")))
     });
-    let state = read(&mut c, sa, &kw).unwrap().state.expect("W's state");
+    let state = c.agent_read(sa, &kw).unwrap().state.expect("W's state");
     assert_eq!((state.state.as_str(), state.failed.as_deref()), ("failed", Some("server error")));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     // The same hook again changes nothing.
     fail(&mut c, ws, "server_error", FailReason::Server);
 
@@ -12221,8 +10904,7 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
     let second = lines()[1].clone();
     assert!(second.contains(&failed_line("invalid request")), "{second}");
     assert!(second.contains("after a restart"), "{second}");
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
 
     // ---- 3. a later failure of its own wakes the crown again -----------------
     fail(&mut c, ws, "max_output_tokens", FailReason::MaxOutputTokens);
@@ -12249,7 +10931,7 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
 fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     let Some(h) = Harness::boot_with_env(
         "crown_parked_news",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -12262,51 +10944,25 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_parked_news");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let a = c.create_ticket("the first crown");
     let b = c.create_ticket("the second crown");
     let w1 = c.create_ticket("mesimon-probe-936 merged and parked");
     let w2 = c.create_ticket("mesimon-probe-936 finished and parked");
     let w3 = c.create_ticket("mesimon-probe-936 merged after the handover");
-    let (k1, k2, k3) = (key_of(&mut c, w1), key_of(&mut c, w2), key_of(&mut c, w3));
+    let (k1, k2, k3) = (c.key_of(w1), c.key_of(w2), c.key_of(w3));
     let sa = c.spawn_claude(a);
     let sb = c.spawn_claude(b);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
-        let v = read(c, sa, key).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: key.into(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some(workspace.into()),
-                expect_secs: None,
-            },
-        ) {
+    h.one_turn(&mut c, sa);
+    let start_agent =
+        |c: &mut TestClient, key: &str, workspace: &str| match c.crown_start(sa, key, workspace) {
             Response::AgentStarted { .. } => {}
             other => panic!("start_agent {key}: {other:?}"),
-        }
-    };
+        };
     start_agent(&mut c, &k1, "worktree");
     start_agent(&mut c, &k2, "worktree");
     start_agent(&mut c, &k3, "worktree");
@@ -12332,7 +10988,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
             git(path, &["rebase", "-q", "main"]);
             commit(path, &format!("{key}.txt"));
             wait_until(std::time::Duration::from_secs(15), "the flags to read it ahead", || {
-                read(c, crown, key).unwrap().merge_state.as_deref() == Some("ahead")
+                c.agent_read(crown, key).unwrap().merge_state.as_deref() == Some("ahead")
             });
             start(c, sid);
             stop(c, sid);
@@ -12341,7 +10997,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
             });
             start(c, crown);
             stop(c, crown);
-            let branch = read(c, crown, key).unwrap().branch.expect("a branch");
+            let branch = c.agent_read(crown, key).unwrap().branch.expect("a branch");
             git(&h.repo, &["merge", "--ff-only", "-q", &branch]);
             wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
                 lines_with(&format!("{name}merged")).len() == 1
@@ -12353,13 +11009,11 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     // ---- 1. W1 delivered and merged, told; parked and in DONE --------------
     deliver_and_merge(&mut c, sa, &k1, &p1, ws1, &n1);
     // ---- 2. W2 finished, told; then work no turn's end closed; parked -------
-    start(&mut c, ws2);
-    stop(&mut c, ws2);
+    h.one_turn(&mut c, ws2);
     wait_until(std::time::Duration::from_secs(10), "W2's finish", || {
         lines_with(&format!("{n2}finished its turn")).len() == 1
     });
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     start(&mut c, ws2);
     hook_send(
         &hook_sock,
@@ -12393,8 +11047,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     let mut c = h.client("crown_parked_news_2");
     // A fence the restart's looks come before: the crown's own turn ends.
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     std::thread::sleep(std::time::Duration::from_millis(3000));
     assert_eq!(
         (lines_with(&n1).len(), lines_with(&n2).len()),
@@ -12405,13 +11058,11 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
 
     // ---- 4. a handover and a restart: nothing of either, W3 still heard -----
     assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
-    start(&mut c, sb);
-    stop(&mut c, sb);
+    h.one_turn(&mut c, sb);
     drop(c);
     h.restart();
     let mut c = h.client("crown_parked_news_3");
-    start(&mut c, sb);
-    stop(&mut c, sb);
+    h.one_turn(&mut c, sb);
     deliver_and_merge(&mut c, sb, &k3, &p3, ws3, &n3);
     assert_eq!(
         (lines_with(&n1).len(), lines_with(&n2).len()),
@@ -12433,7 +11084,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
 fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     let Some(h) = Harness::boot_with_env(
         "crown_wake_words",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -12449,14 +11100,8 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     let got = h.dir.join("got.txt");
     let count =
         |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().matches(probe).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let up = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "SessionStart", r#"{"source":"resume"}"#);
         c.await_state(sid, "up after the wake", |s| matches!(s, SessionState::Idle { .. }));
@@ -12466,47 +11111,22 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("checkout worker");
     let w2 = c.create_ticket("worktree worker");
-    let (kw, kw2) = (key_of(&mut c, w), key_of(&mut c, w2));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let start_agent = |c: &mut TestClient, key: &str, workspace: &str| {
-        let v = read(c, sa, key).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: key.into(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some(workspace.into()),
-                expect_secs: None,
-            },
-        )
-    };
-    let ask = |c: &mut TestClient, key: &str, text: &str| {
-        let v = read(c, sa, key).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: key.into(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentAsked { held_for_person, road, wake, .. } => {
-                (held_for_person, road, wake)
-            }
-            other => panic!("ask_agent {key}: {other:?}"),
-        }
+    let (kw, kw2) = (c.key_of(w), c.key_of(w2));
+    let sa = crown_idle(&h, &mut c, a);
+    let start_agent =
+        |c: &mut TestClient, key: &str, workspace: &str| c.crown_start(sa, key, workspace);
+    let ask = |c: &mut TestClient, key: &str, text: &str| match c.crown_ask(
+        sa,
+        key,
+        text,
+        Deliver::Idle,
+        None,
+    ) {
+        Response::AgentAsked { held_for_person, road, wake, .. } => (held_for_person, road, wake),
+        other => panic!("ask_agent {key}: {other:?}"),
     };
     let park = |c: &mut TestClient, key: &str, sid: uuid::Uuid| {
-        let v = read(c, sa, key).unwrap();
+        let v = c.agent_read(sa, key).unwrap();
         match c.send(
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: key.into(), seen: v.seen },
@@ -12524,8 +11144,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     }
     let ws = c.board().live_agent(w).expect("W's seat").id;
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     park(&mut c, &kw, ws);
     // The crown's turn runs on the checkout W shares, so the queue holds W's
     // words: they would wake W, and a wake waits for a quiet checkout.
@@ -12580,8 +11199,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
         wt_of(&mut c, w2).is_some_and(|wt| wt.merged)
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws2);
-    stop(&mut c, ws2);
+    h.one_turn(&mut c, ws2);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds the tree first (T-278).
     let reclaim = |c: &mut TestClient| {
@@ -12671,19 +11289,12 @@ fn the_crown_answers_a_codex_worker_s_question() {
     h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
     h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
     h.restart();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_codex");
     let got = h.dir.join("got.txt");
     let typed = || std::fs::read_to_string(&got).unwrap_or_default();
     let landed = |probe: &str| typed().contains(probe);
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let asking = |s: &SessionState| {
         *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
     };
@@ -12706,33 +11317,15 @@ fn the_crown_answers_a_codex_worker_s_question() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-846 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
+    let sa = crown_idle(&h, &mut c, a);
     assert!(matches!(
         c.request(Command::SetAgentProvider {
             provider: mesimon_core::board::AgentProvider::Codex
         }),
         Response::Ok
     ));
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
         c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
     });
@@ -12764,7 +11357,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
     });
     assert!(!typed().contains("Which auth provider"), "the question's words never ride a wake");
     start(&mut c, sa);
-    let needs = read(&mut c, sa, &kw).unwrap().needs_you.expect("the question");
+    let needs = c.agent_read(sa, &kw).unwrap().needs_you.expect("the question");
     assert_eq!(needs.request.as_deref(), Some("\"q7\""));
     assert_eq!(needs.questions[0].text, "Which auth provider?");
     assert_eq!(needs.questions[0].options, vec!["Okta".to_string(), "Auth0".to_string()]);
@@ -12772,7 +11365,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
 
     // ---- refusals in words: words and batches are a person's on a codex ---
     let answer_cmd = |c: &mut TestClient, index, text: Option<&str>| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         Command::AgentAnswerTicket {
             key: kw.clone(),
             seen: v.seen,
@@ -12819,7 +11412,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
         other => panic!("answer_agent: {other:?}"),
     }
     assert!(
-        touches(&mut c).iter().any(|t| t.ticket == w && t.action == "answered"),
+        c.crown_touches().iter().any(|t| t.ticket == w && t.action == "answered"),
         "♛ answered on the card"
     );
     assert_eq!(said_on(&mut c, w).as_deref(), Some("Okta"));
@@ -12883,7 +11476,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 codex worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let failed_wakes = || -> usize {
         std::fs::read_to_string(&feed)
             .unwrap_or_default()
@@ -12907,21 +11500,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
         Response::Ok
     ));
     let start = |c: &mut TestClient| -> uuid::Uuid {
-        let v = read(c, sa, &kw).unwrap();
-        assert!(matches!(
-            c.send(
-                Principal::Agent { session: sa },
-                Command::AgentStartTicket {
-                    key: kw.clone(),
-                    seen: v.seen,
-                    plan: false,
-                    tier: None,
-                    workspace: Some("worktree".into()),
-                    expect_secs: None,
-                },
-            ),
-            Response::AgentStarted { .. }
-        ));
+        assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
         wait_until(std::time::Duration::from_secs(20), "W's Codex seat", || {
             c.board().live_agent(w).is_some_and(|s| s.kind == SessionKind::Codex)
         });
@@ -13050,7 +11629,7 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
     };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 codex worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let wakes_since = |at: u64| -> Vec<String> {
         std::fs::read_to_string(&feed)
             .unwrap_or_default()
@@ -13076,7 +11655,7 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
         }),
         Response::Ok
     ));
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -13160,44 +11739,22 @@ fn dismissing_an_old_corpse_keeps_the_replacement_s_turn() {
 fn kill_beside_a_running_agent(name: &str, corpse: bool) {
     let Some(h) = Harness::boot_with_env(
         name,
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client(name);
     let got = h.dir.join("got.txt");
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 worker");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
     let start_agent = |c: &mut TestClient| -> uuid::Uuid {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ) {
+        match c.crown_start(sa, &kw, "worktree") {
             Response::AgentStarted { .. } => {}
             other => panic!("start_agent: {other:?}"),
         }
@@ -13266,7 +11823,7 @@ fn a_crown_wake_refused_while_unknown_is_owed_until_it_goes() {
 fn refused_crown_wake(name: &str, restart: bool) {
     let Some(h) = Harness::boot_bare(
         name,
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -13282,28 +11839,15 @@ fn refused_crown_wake(name: &str, restart: bool) {
     let feed = h.paths.state_dir.join("activity.jsonl");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
     let end_turn = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| *s == end_turn);
     };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     // The plain start typed the title into the crown's box (T-961). This
@@ -13326,7 +11870,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
+    let v = c.agent_read(sa, &kw1).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -13483,7 +12027,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
 fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     let Some(h) = Harness::boot_bare(
         "crown_unanswered",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -13493,44 +12037,24 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_unanswered");
     let feed = h.paths.state_dir.join("activity.jsonl");
     let journal = h.paths.state_dir.join("daemon.log");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
     let count = |cmd: &str| read_file(&feed).matches(&format!("\"cmd\":\"{cmd}\"")).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 first");
     let w2 = c.create_ticket("mesimon-probe-936 second");
-    let (k1, k2) = (key_of(&mut c, w1), key_of(&mut c, w2));
+    let (k1, k2) = (c.key_of(w1), c.key_of(w2));
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     let mut seats = Vec::new();
     for (w, k) in [(w1, &k1), (w2, &k2)] {
-        let v = read(&mut c, sa, k).unwrap();
+        let v = c.agent_read(sa, k).unwrap();
         match c.send(
             Principal::Agent { session: sa },
             Command::AgentStartTicket {
@@ -13679,37 +12203,26 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
 fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
     let Some(h) = Harness::boot_with_env(
         "crown_wake_once",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_wake_once");
     let feed = h.paths.state_dir.join("activity.jsonl");
     let journal = h.paths.state_dir.join("daemon.log");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
     let count = |cmd: &str| read_file(&feed).matches(&format!("\"cmd\":\"{cmd}\"")).count();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let mod_road = test_road() == "mod";
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-990 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
+    let sa = crown_idle(&h, &mut c, a);
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -13732,8 +12245,7 @@ fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
     let got_crown = h.dir.join(format!("got-{ka}.txt"));
     let finished = format!("{kw} \"mesimon-probe-990 worker\" finished its turn");
     let copies = || read_file(&got_crown).matches(&finished).count();
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(15), "the finish in the crown's pane", || {
         copies() == 1
     });
@@ -13784,7 +12296,7 @@ fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
 fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
     let Some(h) = Harness::boot_with_env(
         "crown_parked_wake",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -13800,37 +12312,12 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
     let got = h.dir.join("got.txt");
     let feed = h.paths.state_dir.join("activity.jsonl");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 worker");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W's seat", || {
         c.board().live_agent(w).is_some()
     });
@@ -13903,7 +12390,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
 fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
     let Some(h) = Harness::boot_bare(
         "crown_duplicate_receipt",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -13918,35 +12405,16 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
     let feed = h.paths.state_dir.join("activity.jsonl");
     let journal = h.paths.state_dir.join("daemon.log");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
+    h.one_turn(&mut c, sa);
+    let v = c.agent_read(sa, &kw1).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -13973,20 +12441,7 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
 
     // ---- a person's words to the crown, refused, kept unsent ---------------
     std::fs::write(h.dir.join("mod-drop-submit"), "").unwrap();
-    assert!(matches!(
-        c.request(Command::PromptSession {
-            ticket: a,
-            text: "mesimon-probe-936 the person's own words".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }),
-        Response::Ok
-    ));
+    assert!(matches!(c.prompt(a, "mesimon-probe-936 the person's own words"), Response::Ok));
     wait_until(std::time::Duration::from_secs(10), "the person's words kept unsent", || {
         unsent(&mut c).is_some_and(|u| u.text.contains("the person's own words"))
     });
@@ -14042,7 +12497,7 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
 fn a_retired_wake_frame_leaves_the_outbox() {
     let Some(h) = Harness::boot_bare(
         "crown_retired_outbox",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14052,53 +12507,21 @@ fn a_retired_wake_frame_leaves_the_outbox() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_retired_outbox");
     let journal = h.paths.state_dir.join("daemon.log");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw1.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    h.one_turn(&mut c, sa);
+    assert!(matches!(c.crown_start(sa, &kw1, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W1's seat", || {
         c.board().live_agent(w1).is_some()
     });
@@ -14164,7 +12587,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
 fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
     let Some(h) = Harness::boot_with_env(
         "crown_parked_prompt",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14175,42 +12598,17 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_parked_prompt");
     let got = h.dir.join("got.txt");
     let feed = h.paths.state_dir.join("activity.jsonl");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-936 worker");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W's seat", || {
         c.board().live_agent(w).is_some()
     });
@@ -14267,7 +12665,7 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
 fn a_wake_taken_before_a_restart_is_told_once() {
     let Some(h) = Harness::boot_bare(
         "crown_offered_restart",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14277,39 +12675,19 @@ fn a_wake_taken_before_a_restart_is_told_once() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_offered_restart");
     let journal = h.paths.state_dir.join("daemon.log");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-936 worker");
-    let kw1 = key_of(&mut c, w1);
+    let kw1 = c.key_of(w1);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw1).unwrap();
+    h.one_turn(&mut c, sa);
+    let v = c.agent_read(sa, &kw1).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -14397,7 +12775,7 @@ fn a_wake_taken_before_a_restart_is_told_once() {
 fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
     let Some(h) = Harness::boot_bare(
         "crown_nine_taken",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14407,54 +12785,20 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_nine_taken");
     let journal = h.paths.state_dir.join("daemon.log");
     let got = h.dir.join("got.txt");
     let read_file = |p: &std::path::Path| std::fs::read_to_string(p).unwrap_or_default();
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let up = |sid: uuid::Uuid| {
-        let pid = h.dir.join(format!("mod-bridge-{sid}.pid"));
-        wait_until(std::time::Duration::from_secs(10), "the mod's bridge", || pid.exists());
-        hook_send_with(
-            &hook_sock,
-            &sid.to_string(),
-            "SessionStart",
-            Some("startup"),
-            r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
-        );
-    };
+    let up = |sid: uuid::Uuid| mod_up(&h, sid);
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-990 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    h.one_turn(&mut c, sa);
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
         c.board().live_agent(w).is_some()
     });
@@ -14491,8 +12835,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
             taken().len() > before
         });
         // The crown's prompt for it clears its owed entry, and its turn ends.
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        h.one_turn(&mut c, sa);
     }
     let frames = taken();
     assert!(frames.len() >= 9, "nine taken: {frames:?}");
@@ -14554,27 +12897,13 @@ fn crown_woken_with_its_wake_parked(
     init_repo(&h.repo, "a.txt", "hello\n");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket(&format!("mesimon-probe-936 {name}"));
-    let kw = key_of(c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(c, sa);
     stop(c, sa);
-    let v = read(c, sa, &kw).unwrap();
-    assert!(matches!(
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentStartTicket {
-                key: kw.clone(),
-                seen: v.seen,
-                plan: false,
-                tier: None,
-                workspace: Some("worktree".into()),
-                expect_secs: None,
-            },
-        ),
-        Response::AgentStarted { .. }
-    ));
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W's seat", || {
         c.board().live_agent(w).is_some()
     });
@@ -14606,7 +12935,7 @@ fn crown_woken_with_its_wake_parked(
 fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
     let Some(h) = Harness::boot_with_env(
         "crown_launch_person",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14636,19 +12965,7 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
             .and_then(|p| p.held)
     };
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
     // The pane comes up: its words would go now.
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
@@ -14680,7 +12997,7 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
 fn no_retry_enter_follows_a_wake_s_own_paste() {
     let Some(h) = Harness::boot_bare(
         "crown_launch_retry",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14698,12 +13015,7 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
     let feed = h.paths.state_dir.join("activity.jsonl");
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
     let typed = || read_got().lines().filter(|l| l.contains(&line)).count();
-    let wake_rows = |c: &mut TestClient| -> Vec<mesimon_core::command::Pending> {
-        pending_of(c, Some(a))
-            .into_iter()
-            .filter(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
-            .collect()
-    };
+    let wake_rows = |c: &mut TestClient| self::wake_rows(c, a);
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     wait_until(std::time::Duration::from_secs(15), "the wake's paste and Enter", || typed() == 1);
     wait_until(std::time::Duration::from_secs(5), "told at its paste", || {
@@ -14751,7 +13063,7 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
 fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
     let Some(h) = Harness::boot_bare(
         "crown_launch_modal",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14803,7 +13115,7 @@ fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
 fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
     let Some(h) = Harness::boot_bare(
         "crown_launch_draft",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14830,19 +13142,7 @@ fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     // The box drawn empty, then a person's draft, typed while attached.
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
         .status()
@@ -14890,7 +13190,7 @@ fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
 fn an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back() {
     let Some(h) = Harness::boot_bare(
         "crown_launch_idle",
-        Some(BOX_STUB),
+        Some(PAINTED_BOX_STUB),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -14953,7 +13253,7 @@ fn an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back() {
     let _ = client.wait();
 }
 
-/// A Claude stub whose screen the test sets: `BOX_STUB`'s empty composer,
+/// A Claude stub whose screen the test sets: `PAINTED_BOX_STUB`'s empty composer,
 /// or, while a `blank` file stands beside it, a screen with no composer on
 /// it at all. Every line it is given goes to `got.txt`. Bash, for `read
 /// -t`: Ubuntu's `/bin/sh` is dash, which refuses the flag (T-1019).
@@ -15005,19 +13305,7 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
             .and_then(|p| p.held)
     };
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
-    let mut client = tmux(&tmux_sock)
-        .args(["-C", "attach", "-t", &crown])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("a control-mode tmux client");
-    wait_until(std::time::Duration::from_secs(10), "the client on the crown's session", || {
-        tmux(&tmux_sock)
-            .args(["list-clients", "-t", &crown, "-F", "#{client_name}"])
-            .output()
-            .is_ok_and(|o| !o.stdout.is_empty())
-    });
+    let mut client = person_attaches(&tmux_sock, &crown);
     // The launch hands the wake back; the person in the pane holds it.
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
@@ -15067,7 +13355,7 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
 fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     let Some(h) = Harness::boot_with_env(
         "crown_overrun",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -15076,14 +13364,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_overrun");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let send = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&hook_sock, &sid.to_string(), event, body);
     };
@@ -15097,7 +13378,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 runs long");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -15112,7 +13393,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     crown_turn(&mut c, sa);
 
     // ---- 1. the start's launch turn runs past its 3 s ----------------------
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -15142,7 +13423,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     });
     let line = lines_with(&overrun).remove(0);
     assert!(line.contains(", past the 3 s it expected"), "{line}");
-    let o = read(&mut c, sa, &kw).unwrap().overrun.expect("overrun on get_ticket");
+    let o = c.agent_read(sa, &kw).unwrap().overrun.expect("overrun on get_ticket");
     assert_eq!(o.expected_secs, 3);
     assert!(o.running_secs >= 3, "{o:?}");
     crown_turn(&mut c, sa);
@@ -15151,7 +13432,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     std::thread::sleep(std::time::Duration::from_millis(4500));
     assert_eq!(lines_with(&overrun).len(), 1, "one wake per expectation");
     assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "nothing stopped");
-    let o = read(&mut c, sa, &kw).unwrap().overrun.expect("still past it");
+    let o = c.agent_read(sa, &kw).unwrap().overrun.expect("still past it");
     assert!(o.running_secs >= 7, "{o:?}");
 
     // ---- 3. the turn ends: overrun gone ------------------------------------
@@ -15162,28 +13443,21 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
         !lines_with(&finished).is_empty()
     });
     crown_turn(&mut c, sa);
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none(), "the turn ended");
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none(), "the turn ended");
 
     // ---- 4. the crown's next ask arms the next expectation -----------------
     let answered = |lines_with: &dyn Fn(&str) -> Vec<String>| {
         ask_ends(&worker).iter().map(|l| lines_with(l).len()).sum::<usize>()
     };
-    let ask = |c: &mut TestClient, text: &str, expect_secs: u64| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: Some(expect_secs),
-            },
-        ) {
-            Response::AgentAsked { held_for_person: false, .. } => {}
-            other => panic!("ask_agent: {other:?}"),
-        }
+    let ask = |c: &mut TestClient, text: &str, expect_secs: u64| match c.crown_ask(
+        sa,
+        &kw,
+        text,
+        Deliver::Idle,
+        Some(expect_secs),
+    ) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
     };
     ask(&mut c, "mesimon-probe-973 ask one", 3);
     wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
@@ -15218,7 +13492,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     crown_turn(&mut c, sa);
     std::thread::sleep(std::time::Duration::from_millis(4500));
     assert_eq!(lines_with(&overrun).len(), 2, "a turn inside its expectation is no overrun");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 }
 
 /// `sample_agent`, the crown's way in (T-973).
@@ -15244,7 +13518,7 @@ fn sample(
 fn the_crown_samples_an_agent_it_started() {
     let Some(h) = Harness::boot_with_env(
         "crown_sample",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -15258,7 +13532,7 @@ fn the_crown_samples_an_agent_it_started() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 sampled");
     let p = c.create_ticket("mesimon-probe-973 a person's");
-    let (ka, kw, kp) = (key_of(&mut c, a), key_of(&mut c, w), key_of(&mut c, p));
+    let (ka, kw, kp) = (c.key_of(a), c.key_of(w), c.key_of(p));
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -15271,18 +13545,7 @@ fn the_crown_samples_an_agent_it_started() {
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
     assert!(sample(&mut c, sa, &kw).unwrap_err().contains("has no agent"));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -15372,7 +13635,7 @@ fn the_crown_samples_an_agent_it_started() {
 fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
     let Some(h) = Harness::boot_with_env(
         "crown_sample_fence",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -15390,7 +13653,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
     };
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 fenced");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -15402,18 +13665,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -15497,21 +13749,6 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
     assert_ne!(pane(&mut c), before, "the same session, another pane");
 }
 
-/// An ISO stamp for a fabricated transcript record, `ms` past the epoch.
-fn stamp(ms: u64) -> String {
-    let t = mesimon_core::usage::utc_of(ms / 1000);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        t.year + 1900,
-        t.mon + 1,
-        t.mday,
-        t.hour,
-        t.min,
-        t.sec,
-        ms % 1000
-    )
-}
-
 /// T-983 (after T-973's rounds 1 to 3): a begun expectation outlives a
 /// restart only by its turn's own prompt id, found again in the worker's
 /// transcript: the turn still running under it is timed from its begin, once,
@@ -15580,7 +13817,7 @@ fn expectation_restart(name: &str, part: Part) {
     let entered = part == Part::Entered;
     let Some(h) = Harness::boot_with_env(
         name,
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -15589,14 +13826,7 @@ fn expectation_restart(name: &str, part: Part) {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client(name);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let send = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&hook_sock, &sid.to_string(), event, body);
     };
@@ -15617,7 +13847,7 @@ fn expectation_restart(name: &str, part: Part) {
     };
     let transcript = h.dir.join("restart.jsonl");
     let record = |kind: &str, at: u64, extra: serde_json::Value| {
-        let mut r = json!({"uuid": format!("{kind}-{at}"), "type": kind, "timestamp": stamp(at)});
+        let mut r = json!({"uuid": format!("{kind}-{at}"), "type": kind, "timestamp": iso_ms(at)});
         r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         let mut f =
             std::fs::OpenOptions::new().create(true).append(true).open(&transcript).unwrap();
@@ -15657,7 +13887,7 @@ fn expectation_restart(name: &str, part: Part) {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 restarts");
     let b = c.create_ticket("mesimon-probe-973 another crown");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -15670,18 +13900,7 @@ fn expectation_restart(name: &str, part: Part) {
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
     crown_turn(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -15742,7 +13961,7 @@ fn expectation_restart(name: &str, part: Part) {
         r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
         transcript.display()
     );
-    let t0 = epoch_ms();
+    let t0 = now_ms();
     prompt(t0 - 60_000, "P0");
     close(t0 - 30_000);
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
@@ -15764,22 +13983,15 @@ fn expectation_restart(name: &str, part: Part) {
     });
     crown_turn(&mut c, sa);
     let overrun = format!("{worker} has run its turn ");
-    let ask_by = |c: &mut TestClient, text: &str, secs: u64, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: Some(secs),
-            },
-        ) {
-            Response::AgentAsked { held_for_person: false, .. } => {}
-            other => panic!("ask_agent: {other:?}"),
-        }
+    let ask_by = |c: &mut TestClient, text: &str, secs: u64, deliver: Deliver| match c.crown_ask(
+        sa,
+        &kw,
+        text,
+        deliver,
+        Some(secs),
+    ) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
     };
     let ask = |c: &mut TestClient, text: &str, secs: u64| ask_by(c, text, secs, Deliver::Idle);
     // Back from a restart, the worker's next frame says it works, under the
@@ -15794,7 +14006,7 @@ fn expectation_restart(name: &str, part: Part) {
     let tidy = |c: &mut TestClient, pid: &str| {
         under(ws, "Stop", pid, json!({"stop_hook_active": false}));
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
-        close(epoch_ms());
+        close(now_ms());
         std::thread::sleep(std::time::Duration::from_millis(2000));
         if matches!(
             c.board().live_agent(a).map(|r| r.state.clone()),
@@ -15836,7 +14048,7 @@ fn expectation_restart(name: &str, part: Part) {
         under(ws, "UserPromptSubmit", "RB", json!({"prompt": "a person's words"}));
         gone("A retired by B's id");
         assert_eq!(lines_with(&overrun).len(), 0, "B is not timed for A");
-        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         tidy(&mut c, "RB");
 
         // ---- R1b. the late receipt (mod): the `entered` before the prompt ---
@@ -15867,7 +14079,7 @@ fn expectation_restart(name: &str, part: Part) {
         wait_until(std::time::Duration::from_secs(10), "R2's words", || {
             !lines_with("mesimon-probe-983 retire restart").is_empty()
         });
-        prompt(epoch_ms(), "RC");
+        prompt(now_ms(), "RC");
         under(ws, "UserPromptSubmit", "RC", json!({"prompt": "mesimon-probe-983 retire restart"}));
         c.await_state(ws, "A running", |s| *s == SessionState::Running);
         release();
@@ -15898,7 +14110,7 @@ fn expectation_restart(name: &str, part: Part) {
         });
         send(ws, "UserPromptSubmit", r#"{"prompt":"mesimon-probe-983 idless"}"#);
         c.await_state(ws, "running", |s| *s == SessionState::Running);
-        let begun = epoch_ms();
+        let begun = now_ms();
         release();
         begun_unbound();
         let permission = json!({"tool_name": "Bash", "tool_input": {"command": "true"}});
@@ -15914,7 +14126,7 @@ fn expectation_restart(name: &str, part: Part) {
         wait_until(std::time::Duration::from_secs(25), "the bound turn's overrun", || {
             lines_with(&overrun).len() == 1
         });
-        assert!(epoch_ms() >= begun + 8_000, "timed from the begin before the restart");
+        assert!(now_ms() >= begun + 8_000, "timed from the begin before the restart");
         assert!(lines_with(&overrun)[0].contains("after a restart"), "{:?}", lines_with(&overrun));
         return;
     }
@@ -15974,7 +14186,7 @@ fn expectation_restart(name: &str, part: Part) {
                 });
             }
             let (pa, pb) = (format!("UA{restart}"), format!("UB{restart}"));
-            prompt(epoch_ms(), &pa);
+            prompt(now_ms(), &pa);
             under(ws, "UserPromptSubmit", &pa, json!({"prompt": "A"}));
             c.await_state(ws, "A running", |s| *s == SessionState::Running);
             wait_until(std::time::Duration::from_secs(15), "A's id heard alone", || {
@@ -15982,13 +14194,13 @@ fn expectation_restart(name: &str, part: Part) {
             });
             under(ws, "Stop", &pa, json!({"stop_hook_active": false}));
             c.await_state(ws, "A idle", |s| matches!(s, SessionState::Idle { .. }));
-            close(epoch_ms());
-            prompt(epoch_ms(), &pb);
+            close(now_ms());
+            prompt(now_ms(), &pb);
             under(ws, "UserPromptSubmit", &pb, json!({"prompt": "a person's words"}));
             c.await_state(ws, "B running", |s| *s == SessionState::Running);
             release();
             gone(&format!("A's report begins nothing in B ({restart})"));
-            assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+            assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
             tidy(&mut c, &pb);
         }
 
@@ -15997,7 +14209,7 @@ fn expectation_restart(name: &str, part: Part) {
         // submit held to R's end, and a second restart takes the owed
         // entry, so only the report could begin A. R's id and A's are both
         // new: ambiguous, and A does not begin.
-        prompt(epoch_ms(), "UR");
+        prompt(now_ms(), "UR");
         under(ws, "UserPromptSubmit", "UR", json!({"prompt": "a long one"}));
         c.await_state(ws, "R running", |s| *s == SessionState::Running);
         drop(c);
@@ -16010,8 +14222,8 @@ fn expectation_restart(name: &str, part: Part) {
         under(ws, "PostToolUse", "UR", json!({"tool_name": "Read", "tool_response": {}}));
         under(ws, "Stop", "UR", json!({"stop_hook_active": false}));
         c.await_state(ws, "R idle", |s| matches!(s, SessionState::Idle { .. }));
-        close(epoch_ms());
-        prompt(epoch_ms(), "UA");
+        close(now_ms());
+        prompt(now_ms(), "UA");
         under(ws, "UserPromptSubmit", "UA", json!({"prompt": "mesimon-probe-983 unheard R"}));
         c.await_state(ws, "A running", |s| *s == SessionState::Running);
         wait_until(std::time::Duration::from_secs(15), "both ids new", || {
@@ -16032,7 +14244,7 @@ fn expectation_restart(name: &str, part: Part) {
         });
         under(ws, "UserPromptSubmit", "Z", json!({"prompt": "mesimon-probe-973 zero"}));
         c.await_state(ws, "running", |s| *s == SessionState::Running);
-        let begun = epoch_ms();
+        let begun = now_ms();
         prompt(begun, "Z");
         drop(c);
         h.restart();
@@ -16041,14 +14253,14 @@ fn expectation_restart(name: &str, part: Part) {
         wait_until(std::time::Duration::from_secs(25), "the restored turn's overrun", || {
             lines_with(&overrun).len() == 1
         });
-        assert!(epoch_ms() >= begun + 6_000, "timed from the begin before the restart");
+        assert!(now_ms() >= begun + 6_000, "timed from the begin before the restart");
         assert_eq!(
             lines_with(&overrun).iter().filter(|l| l.contains("after a restart")).count(),
             1,
             "{:?}",
             lines_with(&overrun)
         );
-        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+        assert!(c.agent_read(sa, &kw).unwrap().overrun.is_some());
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert_eq!(lines_with(&overrun).len(), 1, "once");
         tidy(&mut c, "Z");
@@ -16062,12 +14274,12 @@ fn expectation_restart(name: &str, part: Part) {
         wait_until(std::time::Duration::from_secs(10), "the first ask's words", || {
             !lines_with("mesimon-probe-973 one").is_empty()
         });
-        prompt(epoch_ms(), "A");
+        prompt(now_ms(), "A");
         under(ws, "UserPromptSubmit", "A", json!({"prompt": "mesimon-probe-973 one"}));
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         drop(c);
         h.restart_after(|| {
-            let now = epoch_ms();
+            let now = now_ms();
             close(now);
             prompt(now + 1, "B");
             record(
@@ -16081,7 +14293,7 @@ fn expectation_restart(name: &str, part: Part) {
         after_restart(&mut c, "B");
         std::thread::sleep(std::time::Duration::from_millis(6_000));
         assert_eq!(lines_with(&overrun).len(), base, "B's turn is not A's");
-        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         tidy(&mut c, "B");
 
         // ---- 2. begun, then a restart before its prompt's record is written ----
@@ -16099,11 +14311,11 @@ fn expectation_restart(name: &str, part: Part) {
         // The socket is up before the ledger is read; the writer answers only
         // after it, so a snapshot dates the record past the restore.
         let _ = c.board();
-        prompt(epoch_ms(), "C");
+        prompt(now_ms(), "C");
         after_restart(&mut c, "C");
         std::thread::sleep(std::time::Duration::from_millis(6_000));
         assert_eq!(lines_with(&overrun).len(), base, "a turn not found is not kept");
-        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         tidy(&mut c, "C");
     }
 
@@ -16121,7 +14333,7 @@ fn expectation_restart(name: &str, part: Part) {
         c = h.client("crown_overrun_restart_5");
         send(sa, "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sa, "the crown idle again", |s| matches!(s, SessionState::Idle { .. }));
-        prompt(epoch_ms(), "T3");
+        prompt(now_ms(), "T3");
         under(ws, "UserPromptSubmit", "T3", json!({"prompt": "mesimon-probe-973 three"}));
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         switch("mod-release", true);
@@ -16129,7 +14341,7 @@ fn expectation_restart(name: &str, part: Part) {
         // Read where it stands, not by its wake: a wake still owed takes
         // the overrun into its own line (the higher cause).
         wait_until(std::time::Duration::from_secs(25), "the overrun of the held submit", || {
-            read(&mut c, sa, &kw).unwrap().overrun.is_some()
+            c.agent_read(sa, &kw).unwrap().overrun.is_some()
         });
         crown_turn(&mut c, sa);
         switch("mod-hold-entered", false);
@@ -16157,20 +14369,20 @@ fn expectation_restart(name: &str, part: Part) {
                 });
             }
             let (pa, pb) = (format!("LA{restart}"), format!("LB{restart}"));
-            prompt(epoch_ms(), &pa);
+            prompt(now_ms(), &pa);
             under(ws, "UserPromptSubmit", &pa, json!({"prompt": words}));
             c.await_state(ws, "A running", |s| *s == SessionState::Running);
             under(ws, "Stop", &pa, json!({"stop_hook_active": false}));
             c.await_state(ws, "A idle", |s| matches!(s, SessionState::Idle { .. }));
-            close(epoch_ms());
-            prompt(epoch_ms(), &pb);
+            close(now_ms());
+            prompt(now_ms(), &pb);
             under(ws, "UserPromptSubmit", &pb, json!({"prompt": "a person's words"}));
             c.await_state(ws, "B running", |s| *s == SessionState::Running);
             let n = handled("ModSubmit");
             switch("mod-release", true);
             after("ModSubmit", n);
             gone(&format!("B is not timed for A ({restart})"));
-            assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+            assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
             switch("mod-hold-entered", false);
             switch("mod-release", false);
             tidy(&mut c, &pb);
@@ -16195,10 +14407,10 @@ fn expectation_restart(name: &str, part: Part) {
         assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
         std::thread::sleep(std::time::Duration::from_millis(6000));
         assert_eq!(lines_with(&overrun).len(), base, "the outgoing crown's expectation went");
-        assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+        assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         send(ws, "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
-        close(epoch_ms());
+        close(now_ms());
         std::thread::sleep(std::time::Duration::from_millis(2000));
         if matches!(
             c.board().live_agent(a).map(|r| r.state.clone()),
@@ -16239,25 +14451,10 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     h.set_env("MESIMON_CODEX_HOME", h.dir.join("synthetic-codex-home"));
     h.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
     h.restart();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_codex_expect");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let draws = std::cell::Cell::new(0u32);
     let control = |id: uuid::Uuid, mut value: serde_json::Value| {
         // Each instruction differs from the last, or the runtime skips it.
@@ -16272,19 +14469,15 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-983 codex");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
     assert!(matches!(
         c.request(Command::SetAgentProvider {
             provider: mesimon_core::board::AgentProvider::Codex
         }),
         Response::Ok
     ));
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     assert!(matches!(
         c.send(
             Principal::Agent { session: sa },
@@ -16312,7 +14505,7 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     // ---- 1. the launch turn, its id a frame late, then a restart -----------
     control(ws, json!({"state": running}));
     c.await_state(ws, "the launch turn running", |s| *s == SessionState::Running);
-    let begun = epoch_ms();
+    let begun = now_ms();
     control(ws, json!({"state": running, "turn_id": "launch-turn"}));
     wait_until(std::time::Duration::from_secs(10), "the turn id observed", || {
         c.board()
@@ -16327,33 +14520,21 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     wait_until(std::time::Duration::from_secs(25), "the restored launch turn's overrun", || {
         lines_with(&overrun).len() == 1
     });
-    assert!(epoch_ms() >= begun + 8_000, "timed from the begin before the restart");
+    assert!(now_ms() >= begun + 8_000, "timed from the begin before the restart");
     assert!(lines_with(&overrun)[0].contains("after a restart"), "{:?}", lines_with(&overrun));
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_some());
     control(ws, json!({"state": idle, "turn_id": "launch-turn"}));
     c.await_state(ws, "the launch turn over", |s| matches!(s, SessionState::Idle { .. }));
     wait_until(std::time::Duration::from_secs(10), "overrun gone with its turn", || {
-        read(&mut c, sa, &kw).unwrap().overrun.is_none()
+        c.agent_read(sa, &kw).unwrap().overrun.is_none()
     });
     if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        h.one_turn(&mut c, sa);
     }
 
     // ---- 2. an ask's turn, replaced by another while no daemon listened ----
     let probe = "mesimon-probe-983 replaced";
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: probe.into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: Some(6),
-        },
-    ) {
+    match c.crown_ask(sa, &kw, probe, Deliver::Idle, Some(6)) {
         Response::AgentAsked { held_for_person: false, .. } => {}
         other => panic!("ask_agent: {other:?}"),
     }
@@ -16370,30 +14551,18 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     stop(&mut c, sa);
     std::thread::sleep(std::time::Duration::from_millis(10_000));
     assert_eq!(lines_with(&overrun).len(), 1, "another turn is not the ask's");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
     control(ws, json!({"state": idle, "turn_id": "another-turn"}));
     c.await_state(ws, "the other turn over", |s| matches!(s, SessionState::Idle { .. }));
     if matches!(c.board().live_agent(a).map(|r| r.state.clone()), Some(SessionState::Idle { .. })) {
-        start(&mut c, sa);
-        stop(&mut c, sa);
+        h.one_turn(&mut c, sa);
     }
 
     // ---- 3. verified after a restart, then the runtime names another turn --
     // Round 1: A's end and B's start fell between two polls, so the seat
     // never left `Running`; B's id ends A's expectation, verified or not.
     let probe = "mesimon-probe-983 verified";
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: probe.into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: Some(8),
-        },
-    ) {
+    match c.crown_ask(sa, &kw, probe, Deliver::Idle, Some(8)) {
         Response::AgentAsked { held_for_person: false, .. } => {}
         other => panic!("ask_agent: {other:?}"),
     }
@@ -16413,7 +14582,7 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     control(ws, json!({"state": running, "turn_id": "turn-b"}));
     std::thread::sleep(std::time::Duration::from_millis(10_000));
     assert_eq!(lines_with(&overrun).len(), 1, "B is not timed for A");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 }
 
 /// T-973, round 2: an expectation armed on words a wake carries, while the
@@ -16425,7 +14594,7 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
 fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     let Some(h) = Harness::boot_with_env(
         "crown_overrun_rebuild",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -16450,42 +14619,13 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_overrun_rebuild");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> usize {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .count()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle).len();
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 rebuilt");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -16504,11 +14644,10 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
         wt_of(&mut c, w).is_some_and(|wt| wt.merged)
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds the tree first (T-278).
-    let v = read(&mut c, sa, &kw).unwrap();
+    let v = c.agent_read(sa, &kw).unwrap();
     match c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -16526,18 +14665,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     // ---- the words ride a wake held behind the rebuild ---------------------
     std::fs::write(&hold, "").unwrap();
     let probe = "mesimon-probe-973 behind the rebuild";
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentAskTicket {
-            key: kw.clone(),
-            text: probe.into(),
-            seen: v.seen,
-            plan: false,
-            deliver: Deliver::Idle,
-            expect_secs: Some(3),
-        },
-    ) {
+    match c.crown_ask(sa, &kw, probe, Deliver::Idle, Some(3)) {
         Response::AgentAsked { held_for_person: false, wake, .. } => {
             assert_eq!(wake, Some(AskWake::Woken), "the words woke it, behind the rebuild");
         }
@@ -16549,7 +14677,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     std::thread::sleep(std::time::Duration::from_millis(5000));
     assert!(!c.board().live_agent(w).is_some_and(|s| s.state.has_pane()), "still rebuilding");
     assert_eq!(lines_with(&overrun), 0, "nothing begun, nothing past");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 
     // ---- the tree back, the words in, their turn timed ----------------------
     std::fs::remove_file(&hold).unwrap();
@@ -16573,7 +14701,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     });
     std::thread::sleep(std::time::Duration::from_millis(4000));
     assert_eq!(lines_with(&overrun), 1, "exactly one");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_some());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_some());
 }
 
 /// T-973, round 3: the expectation kept behind a held rebuild is the words
@@ -16587,7 +14715,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
 fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     let Some(h) = Harness::boot_with_env(
         "crown_overrun_rebuild_owned",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -16612,42 +14740,14 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_overrun_rebuild_owned");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> usize {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .count()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle).len();
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-973 owned");
-    let kw = key_of(&mut c, w);
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("worktree".into()),
-            expect_secs: None,
-        },
-    ) {
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -16666,12 +14766,11 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
         wt_of(&mut c, w).is_some_and(|wt| wt.merged)
     });
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds it (T-278); held there by the init script.
     let reclaim = |c: &mut TestClient| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         match c.send(
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -16687,25 +14786,13 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
         assert!(matches!(c.request(Command::UnarchiveTicket { id: w }), Response::Ok));
         std::fs::write(&hold, "").unwrap();
     };
-    let ask = |c: &mut TestClient, text: &str| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: Some(3),
-            },
-        ) {
+    let ask =
+        |c: &mut TestClient, text: &str| match c.crown_ask(sa, &kw, text, Deliver::Idle, Some(3)) {
             Response::AgentAsked { held_for_person: false, wake, .. } => {
                 assert_eq!(wake, Some(AskWake::Woken), "the words woke it, behind the rebuild");
             }
             other => panic!("ask_agent: {other:?}"),
-        }
-    };
+        };
     // The tree back and the agent up, its words in and their turn running.
     let replay = |c: &mut TestClient, words: &str| {
         std::fs::remove_file(&hold).unwrap();
@@ -16733,17 +14820,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     reclaim(&mut c);
     ask(&mut c, "mesimon-probe-973 crown A");
     ms(1500);
-    if let Response::Err { message } = c.request(Command::PromptSession {
-        ticket: w,
-        text: "mesimon-probe-973 person B".into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    if let Response::Err { message } = c.prompt(w, "mesimon-probe-973 person B") {
         panic!("the person's words: {message}");
     }
     ms(2500);
@@ -16751,7 +14828,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     assert_eq!(lines_with("mesimon-probe-973 crown A"), 0, "the crown's words never went in");
     ms(6000);
     assert_eq!(lines_with(&overrun), 0, "B's turn is not A's");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
     stop(&mut c, ws);
 
     // ---- the crown taken off while the rebuild holds ------------------------
@@ -16774,7 +14851,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     ms(8000);
     assert_eq!(lines_with("mesimon-probe-973 crown D"), 0, "nothing went in");
     assert_eq!(lines_with(&overrun), 0, "a failed replay times nothing");
-    assert!(read(&mut c, sa, &kw).unwrap().overrun.is_none());
+    assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 }
 
 /// T-984: a person's prompt into a worker the crown's ask is waking, before
@@ -16796,7 +14873,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
 fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     let Some(h) = Harness::boot_with_env(
         "crown_ask_parked_prompt",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -16818,15 +14895,12 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
         c.await_state(sid, "running", |s| *s == SessionState::Running);
     };
     let start = |c: &mut TestClient, sid: uuid::Uuid| start_with(c, sid, "go");
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-984 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     let head = format!("{kw} \"mesimon-probe-984 worker\"");
     let got_w = h.dir.join(format!("got-{kw}.txt"));
     let in_w = || read_file(&got_w);
@@ -16835,18 +14909,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     start(&mut c, sa);
     stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -16870,26 +14933,14 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     });
     crown_takes(&mut c);
 
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked.expect("an ask on W");
-    let ask = |c: &mut TestClient, text: &str| {
-        let v = read(c, sa, &kw).unwrap();
-        match c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver: Deliver::Idle,
-                expect_secs: None,
-            },
-        ) {
-            Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
-            other => panic!("ask_agent {text}: {other:?}"),
-        }
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.expect("an ask on W");
+    let ask = |c: &mut TestClient, text: &str| match c.crown_ask(sa, &kw, text, Deliver::Idle, None)
+    {
+        Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
+        other => panic!("ask_agent {text}: {other:?}"),
     };
     let park_w = |c: &mut TestClient| {
-        let v = read(c, sa, &kw).unwrap();
+        let v = c.agent_read(sa, &kw).unwrap();
         match c.send(
             Principal::Agent { session: sa },
             Command::AgentSleepTicket { key: kw.clone(), seen: v.seen },
@@ -17021,7 +15072,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
 fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
     let Some(h) = Harness::boot_with_env(
         "crown_ask_esc",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -17045,14 +15096,8 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
             .filter(|l| l.contains(&format!("\"cmd\":\"{cmd}\"")))
             .count()
     };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
     let mod_road = test_road() == "mod";
     let switch = |name: &str, on: bool| {
@@ -17066,7 +15111,7 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-1025 worker");
-    let (ka, kw) = (key_of(&mut c, a), key_of(&mut c, w));
+    let (ka, kw) = (c.key_of(a), c.key_of(w));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     assert!(matches!(
@@ -17074,20 +15119,8 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
         Response::Ok
     ));
     std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    let v = read(&mut c, sa, &kw).unwrap();
-    match c.send(
-        Principal::Agent { session: sa },
-        Command::AgentStartTicket {
-            key: kw.clone(),
-            seen: v.seen,
-            plan: false,
-            tier: None,
-            workspace: Some("shared_checkout".into()),
-            expect_secs: None,
-        },
-    ) {
+    h.one_turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
@@ -17134,8 +15167,7 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
         ))
     };
     std::thread::sleep(std::time::Duration::from_millis(2500));
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-1025 worker\" finished its turn"))
     });
@@ -17152,21 +15184,10 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
     };
     crown_takes(&mut c);
 
-    let asked = |c: &mut TestClient| read(c, sa, &kw).unwrap().asked;
+    let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked;
     let word = |c: &mut TestClient| asked(c).map(|a| a.status);
     let ask = |c: &mut TestClient, text: &str, deliver: Deliver| {
-        let v = read(c, sa, &kw).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentAskTicket {
-                key: kw.clone(),
-                text: text.into(),
-                seen: v.seen,
-                plan: false,
-                deliver,
-                expect_secs: None,
-            },
-        )
+        c.crown_ask(sa, &kw, text, deliver, None)
     };
     let receipt = |r: Response| match r {
         Response::AgentAsked { asked, .. } => asked.expect("the record rides the receipt"),
@@ -17440,7 +15461,7 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
 fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     let Some(h) = Harness::boot_with_env(
         "crown_start_stamp",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -17450,7 +15471,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     let mut c = h.client("crown_start_stamp");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-1035 started, then asked at once");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -17481,7 +15502,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
 
     // The start is parked on the worktree's cut. The receipt covers its
     // launch; a read taken here remains strict (T-1042).
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let start = match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -17510,7 +15531,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
         c.board().ticket(w).unwrap().column == "IN PROGRESS"
     });
     assert_ne!(
-        read(&mut c, sa, &kw).unwrap().seen.as_deref(),
+        c.agent_read(sa, &kw).unwrap().seen.as_deref(),
         Some(start.as_str()),
         "the read's stamp moved with the seat and the column"
     );
@@ -17522,7 +15543,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
 
     // A person's note since makes every receipt's stamp stale, as it makes
     // a read's: the start's and the last receipt's both.
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let last = taken(ask(&mut c, fresh, "a third"));
     assert!(matches!(
         c.request(Command::WriteNote {
@@ -17539,7 +15560,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     // So does a person's move, by hand, where the board's own did not.
     // (A second after the crown's ticket reached REVIEW on its turn's end,
     // for the sort below.)
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let seen = taken(ask(&mut c, fresh, "a fourth"));
     std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(matches!(
@@ -17547,7 +15568,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
         Response::Ok
     ));
     stale(ask(&mut c, Some(seen), "words on a read before the move"));
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     taken(ask(&mut c, fresh, "a fifth"));
 
     // A person's sort that reorders the ticket is a reorder by hand (one
@@ -17556,7 +15577,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     // arrival, goes first under a newest-first sort); and a seat that is
     // not the one the receipt saw — the crown's worker killed, a person's
     // own started in its place — is news. Both make the stamp stale.
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let seen = taken(ask(&mut c, fresh, "a sixth"));
     let order = c.board().ticket(w).unwrap().order.clone();
     assert!(matches!(
@@ -17565,7 +15586,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     ));
     assert_ne!(c.board().ticket(w).unwrap().order, order, "the sort moved the ticket");
     stale(ask(&mut c, Some(seen), "words on a read before the sort"));
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let seen = taken(ask(&mut c, fresh, "a seventh"));
     let _ = c.request(Command::KillSession { id: ws });
     wait_until(std::time::Duration::from_secs(10), "the seat to empty", || {
@@ -17585,7 +15606,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
 fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     let Some(h) = Harness::boot_with_env(
         "crown_merge_stamp",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[
             ("MESIMON_NO_TAG_SEED", "1"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
@@ -17595,38 +15616,18 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("crown_merge_stamp");
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-1035 merged, then parked at once");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
     ));
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    let sa = crown_idle(&h, &mut c, a);
     let start_agent = |c: &mut TestClient, seen: Option<String>| match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -17663,34 +15664,32 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
         assert!(message.contains("changed since it was read"), "{message}");
     };
 
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     assert!(!start_agent(&mut c, fresh).1);
     let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
     wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let branch = read(&mut c, sa, &kw).unwrap().branch.expect("a branch");
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     std::thread::sleep(std::time::Duration::from_millis(500));
     let worker = format!("{kw} \"mesimon-probe-1035 merged, then parked at once\"");
     let notice = format!("Your branch {branch} has been merged into main");
 
     // The worker delivers one commit; the crown takes the wake.
     commit(&path, "one.txt");
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
     assert!(lines_with(&worker)[0].contains("delivered ("), "{:?}", lines_with(&worker));
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
-        read(&mut c, sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
+        c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
 
     // The crown merges, the notice on (the default): the receipt's stamp.
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let merged = match c
         .send(Principal::Agent { session: sa }, Command::AgentMergeTicket { key: kw.clone(), seen })
     {
@@ -17706,14 +15705,13 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
+    h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the merged wake", || {
         lines_with(&worker).len() == 2
     });
     assert!(lines_with(&worker)[1].contains("merged"), "{:?}", lines_with(&worker));
     assert_ne!(
-        read(&mut c, sa, &kw).unwrap().seen.as_deref(),
+        c.agent_read(sa, &kw).unwrap().seen.as_deref(),
         Some(merged.as_str()),
         "the read's stamp moved with the notice turn and the merge"
     );
@@ -17738,9 +15736,8 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     wait_until(std::time::Duration::from_secs(15), "the wake to land", || {
         c.board().live_agent(w).is_some_and(|s| s.state.has_pane())
     });
-    start(&mut c, ws);
-    stop(&mut c, ws);
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    h.one_turn(&mut c, ws);
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     parked(sleep(&mut c, fresh));
 }
 
@@ -17750,7 +15747,7 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
 fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
     let Some(h) = Harness::boot_with_env(
         "parallel_crown_stamp",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -17759,10 +15756,10 @@ fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
     let mut c = h.client("parallel_crown_stamp");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("parallel edits");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let rename = |c: &mut TestClient, seen: Option<String>, title: &str| {
         c.send(
             Principal::Agent { session: sa },
@@ -17788,7 +15785,7 @@ fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
 
     // Notes have no seen parameter, but the pre-note read belongs to this
     // same chain too. Earlier inputs survive the crown's note.
-    let pre_note = read(&mut c, sa, &kw).unwrap().seen;
+    let pre_note = c.agent_read(sa, &kw).unwrap().seen;
     let note = c.send(
         Principal::Agent { session: sa },
         Command::AgentWriteNote {
@@ -17826,7 +15823,7 @@ fn parallel_crown_writes_share_the_stamp_their_own_edits_superseded() {
 fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
     let Some(h) = Harness::boot_with_env(
         "parallel_crown_lifecycle",
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -17835,7 +15832,7 @@ fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
     let mut c = h.client("parallel_crown_lifecycle");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-1050 start and park");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     assert!(matches!(
         c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
         Response::Ok
@@ -17873,7 +15870,7 @@ fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
         );
     };
 
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let held = c.send(
         Principal::Agent { session: sa },
         Command::AgentHoldTicket { key: kw.clone(), hold: true, seen: seen.clone() },
@@ -17906,7 +15903,7 @@ fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
 
     // Reestablish an active chain just as the soak's completed ask had,
     // then read the idle worker afresh before sending the park + move pair.
-    let fresh = read(&mut c, sa, &kw).unwrap().seen;
+    let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let asked = c.send(
         Principal::Agent { session: sa },
         Command::AgentAskTicket {
@@ -17928,7 +15925,7 @@ fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
     c.await_state(ws, "followup running", |s| *s == SessionState::Running);
     hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(ws, "followup idle", |s| matches!(s, SessionState::Idle { .. }));
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let parked = c.send(
         Principal::Agent { session: sa },
         Command::AgentSleepTicket { key: kw.clone(), seen: seen.clone() },
@@ -17948,7 +15945,7 @@ fn receipt_boundary(case: &str) {
     use mesimon_core::board::Reason;
     let Some(h) = Harness::boot_with_env(
         &format!("receipt_{case}"),
-        Some(RECORDING_STUB),
+        Some(RECORDING_STUB_PER_TICKET),
         &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
     ) else {
         return;
@@ -17957,7 +15954,7 @@ fn receipt_boundary(case: &str) {
     let mut c = h.client("receipt_boundary");
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-1042 worker");
-    let kw = key_of(&mut c, w);
+    let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     let hook = |sid: uuid::Uuid, event: &str, body: &str| {
@@ -17967,7 +15964,7 @@ fn receipt_boundary(case: &str) {
     hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     // Keep the crown working: its wakes cannot introduce unrelated pastes.
-    let seen = read(&mut c, sa, &kw).unwrap().seen;
+    let seen = c.agent_read(sa, &kw).unwrap().seen;
     let mut receipt = match c.send(
         Principal::Agent { session: sa },
         Command::AgentStartTicket {
@@ -17987,7 +15984,7 @@ fn receipt_boundary(case: &str) {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    let before_prompt = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    let before_prompt = c.agent_read(sa, &kw).unwrap().seen.unwrap();
     hook(ws, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     let hold = |c: &mut TestClient, seen: String| {
@@ -18002,7 +15999,7 @@ fn receipt_boundary(case: &str) {
     };
     // A read made while a receipt exists cannot borrow its allowance.
     stale(hold(&mut c, before_prompt));
-    let read_running = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    let read_running = c.agent_read(sa, &kw).unwrap().seen.unwrap();
     let stop = |c: &mut TestClient| {
         hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -18109,7 +16106,7 @@ fn receipt_boundary(case: &str) {
             if case.starts_with("person_") {
                 // A receipt minted AFTER reading the dialog must also die
                 // when the person answers it, without a new prompt hook.
-                let fresh = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+                let fresh = c.agent_read(sa, &kw).unwrap().seen.unwrap();
                 receipt = match hold(&mut c, fresh) {
                     Response::AgentHeld { seen: Some(seen), .. } => seen,
                     other => panic!("hold: {other:?}"),
@@ -18147,7 +16144,7 @@ fn receipt_boundary(case: &str) {
         _ => panic!("unknown case {case}"),
     }
     stale(hold(&mut c, receipt));
-    let fresh = read(&mut c, sa, &kw).unwrap().seen.unwrap();
+    let fresh = c.agent_read(sa, &kw).unwrap().seen.unwrap();
     assert!(matches!(hold(&mut c, fresh), Response::AgentHeld { .. }));
 }
 

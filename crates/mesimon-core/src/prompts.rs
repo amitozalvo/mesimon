@@ -252,13 +252,7 @@ impl PromptSet {
 /// cut mid-word would be typed into a box as something else. Stored
 /// sanitized, so the bytes on disk are the bytes the tty receives.
 pub fn sanitize_template(raw: &str) -> Result<Option<String>, String> {
-    use crate::command::{too_long_words, PROMPT_MAX_BYTES};
-    use crate::text::{nonblank, scrub_text};
-    let clean = scrub_text(raw);
-    if clean.len() > PROMPT_MAX_BYTES {
-        return Err(too_long_words("template", clean.len()));
-    }
-    Ok(nonblank(&clean))
+    crate::command::bounded(crate::text::scrub_text(raw), "template")
 }
 
 #[cfg(test)]

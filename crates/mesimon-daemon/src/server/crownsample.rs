@@ -177,13 +177,7 @@ impl Daemon {
         id: u64,
         reply: Sender<ClientReply>,
     ) -> Option<Sender<ClientReply>> {
-        match self.samples.get_mut(&id) {
-            Some(s) if s.reply.is_none() => {
-                s.reply = Some(reply);
-                None
-            }
-            _ => Some(reply),
-        }
+        super::crownplan::park_in(self.samples.get_mut(&id).map(|s| &mut s.reply), reply)
     }
 
     /// The worker's read landed: the facts that live on this thread are read
@@ -251,9 +245,7 @@ impl Daemon {
             }
         };
         let Some(reply) = s.reply else { return };
-        let _ = self.feed.flush();
-        let (response, told) = self.with_crown_rules(s.session, response);
-        let _ = reply.send(ClientReply { response, delivered: None, told });
+        self.send_parked(reply, s.session, response);
     }
 }
 

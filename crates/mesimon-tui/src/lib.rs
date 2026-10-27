@@ -170,8 +170,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let detected = detect::detect(known);
     // The pin outranks the slot; the slot is the ground's.
     let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));
-    let theme = theme::Theme::new(flavor, detected.profile)
-        .for_terminal(std::env::var("TERM_PROGRAM").ok().as_deref());
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    let theme = theme::Theme::new(flavor, detected.profile).for_terminal(term_program.as_deref());
 
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
@@ -236,8 +236,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on extended keys; Escape + Return is supported independently.
     app.rich_keys = kitty_keyboard_supported();
-    app.legacy_shift_enter =
-        std::env::var("TERM_PROGRAM").ok().as_deref() == Some("Apple_Terminal");
+    app.legacy_shift_enter = term_program.as_deref() == Some("Apple_Terminal");
     // The intro (T-869): a machine that never saw it, the installer's or
     // this, sees it here once, before the board's first frame.
     intro::before_board(&mut terminal, &app.theme)?;

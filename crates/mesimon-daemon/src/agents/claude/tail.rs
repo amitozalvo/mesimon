@@ -161,10 +161,8 @@ pub fn aborted_since(path: &Path, since: u64) -> Option<String> {
 /// stops at the first dated record older than `since`; a prompt further
 /// back than the window is not seen, and the hand is kept.
 pub fn prompted_since(path: &Path, since: u64) -> bool {
-    let Some(len) = std::fs::metadata(path).ok().map(|m| m.len()) else { return false };
-    let Some(text) = window_text(path, len, PROMPT_WINDOW) else { return false };
-    let end = text.len();
-    for v in (TailRecords { text, end }) {
+    let Some(records) = tail_records_in(path, PROMPT_WINDOW) else { return false };
+    for v in records {
         let Some(at) = record_ms(&v) else { continue };
         if at < since {
             return false;
@@ -197,14 +195,12 @@ pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
     let mut answered = Vec::new();
     // Once per spell, so as far back as `prompted_since`: a long plan's call
     // is one record past the per-second readers' 64 KiB (T-936).
-    let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, PROMPT_WINDOW)?;
-    let end = text.len();
-    for v in (TailRecords { text, end }) {
-        match classify_tail_record(&v) {
+    for v in tail_records_in(path, PROMPT_WINDOW)? {
+        let event = classify_tail_record(&v);
+        match event {
             TailEvent::Latch | TailEvent::ToolInFlight => continue,
             TailEvent::NeedsHuman { .. } => {
-                let (tool, call) = dialog_block(&v)?;
+                let (tool, call) = dialog_block(&v, &event)?;
                 let id = call["id"].as_str()?;
                 if answered.iter().any(|a| a == id) {
                     return None;
@@ -215,10 +211,7 @@ pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
                 Some("attachment") => continue,
                 Some("system") if !matches!(turn_edge(&v), TurnEdge::Done(_)) => continue,
                 Some("user") if carries_tool_result(&v) => {
-                    let blocks = v["message"]["content"].as_array()?;
-                    answered.extend(
-                        blocks.iter().filter_map(|b| b["tool_use_id"].as_str()).map(String::from),
-                    );
+                    answered.extend(result_ids(&v).map(String::from));
                 }
                 _ => return None,
             },
@@ -231,7 +224,15 @@ pub fn open_dialog(path: &Path) -> Option<OpenDialog> {
 /// The plan or question call `v` makes, if it makes one: the tool and the
 /// call's `tool_use` id, the hook frames' `tool_use_id` (T-957).
 pub fn dialog_call(v: &serde_json::Value) -> Option<(TailTool, &str)> {
-    let (tool, call) = dialog_block(v)?;
+    dialog_call_as(v, &classify_tail_record(v))
+}
+
+/// `dialog_call` for a record already classified as `event`.
+pub fn dialog_call_as<'v>(
+    v: &'v serde_json::Value,
+    event: &TailEvent,
+) -> Option<(TailTool, &'v str)> {
+    let (tool, call) = dialog_block(v, event)?;
     Some((tool, call["id"].as_str()?))
 }
 
@@ -243,16 +244,13 @@ pub fn dialog_call(v: &serde_json::Value) -> Option<(TailTool, &str)> {
 /// its line is under another id, or its result is there. A call the tail does
 /// not show is neither. `None` when `answered`'s own line is not read.
 pub fn siblings(path: &Path, answered: &str, calls: &[&str]) -> Option<Siblings> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, PROMPT_WINDOW)?;
     let mut messages: Vec<(String, String)> = Vec::new();
     let mut results: Vec<String> = Vec::new();
-    for v in (TailRecords { end: text.len(), text }) {
-        if let (Some((_, id)), Some(message)) = (dialog_call(&v), v["message"]["id"].as_str()) {
-            messages.push((id.to_string(), message.to_string()));
+    for v in tail_records_in(path, PROMPT_WINDOW)? {
+        if let Some(call) = call_message(&v) {
+            messages.push(call);
         } else if carries_tool_result(&v) {
-            let blocks = v["message"]["content"].as_array().into_iter().flatten();
-            results.extend(blocks.filter_map(|b| b["tool_use_id"].as_str()).map(String::from));
+            results.extend(result_ids(&v).map(String::from));
         }
     }
     let message_of = |call: &str| messages.iter().find(|(c, _)| c == call).map(|(_, m)| m);
@@ -275,18 +273,29 @@ pub fn siblings(path: &Path, answered: &str, calls: &[&str]) -> Option<Siblings>
 /// minted after the calls' lines seeds its siblings from. Empty when
 /// `call`'s line, or its id, is not on the tail.
 pub fn message_calls(path: &Path, call: &str) -> Vec<(String, Option<String>)> {
-    let Some(len) = std::fs::metadata(path).ok().map(|m| m.len()) else { return Vec::new() };
-    let Some(text) = window_text(path, len, PROMPT_WINDOW) else { return Vec::new() };
-    let mut calls: Vec<(String, String)> = Vec::new();
-    for v in (TailRecords { end: text.len(), text }) {
-        if let (Some((_, id)), Some(message)) = (dialog_call(&v), v["message"]["id"].as_str()) {
-            calls.push((id.to_string(), message.to_string()));
-        }
-    }
+    let Some(records) = tail_records_in(path, PROMPT_WINDOW) else { return Vec::new() };
+    let calls: Vec<(String, String)> = records.filter_map(|v| call_message(&v)).collect();
     let Some(own) = calls.iter().find(|(c, _)| c == call).map(|(_, m)| m.clone()) else {
         return Vec::new();
     };
     calls.into_iter().rev().filter(|(_, m)| *m == own).map(|(c, m)| (c, Some(m))).collect()
+}
+
+/// The plan or question call `v` makes and the message id it is written
+/// under (T-988), when it carries both.
+fn call_message(v: &serde_json::Value) -> Option<(String, String)> {
+    let (_, id) = dialog_call(v)?;
+    Some((id.to_string(), v["message"]["id"].as_str()?.to_string()))
+}
+
+/// The `tool_use_id` of every block of `v`'s message: the calls a
+/// `tool_result` record answers.
+fn result_ids(v: &serde_json::Value) -> impl Iterator<Item = &str> {
+    v["message"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["tool_use_id"].as_str())
 }
 
 /// `siblings`' answer.
@@ -317,8 +326,13 @@ pub fn carries_result_of(v: &serde_json::Value, id: &str) -> bool {
 /// or a `system` row inside a turn (a retry's, a hook's). What lies between
 /// a dialog's result and the record after it (T-957).
 pub fn speaks(v: &serde_json::Value) -> bool {
+    speaks_as(v, &classify_tail_record(v))
+}
+
+/// `speaks` for a record already classified as `event`.
+pub fn speaks_as(v: &serde_json::Value, event: &TailEvent) -> bool {
     match v.get("type").and_then(serde_json::Value::as_str) {
-        _ if classify_tail_record(v) == TailEvent::Latch => false,
+        _ if *event == TailEvent::Latch => false,
         Some("attachment") => false,
         Some("system") => matches!(turn_edge(v), TurnEdge::Done(_)),
         _ => true,
@@ -355,19 +369,17 @@ pub fn closed_dialog(
     since: u64,
     call: Option<&str>,
 ) -> Option<ClosedDialog> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, PROMPT_WINDOW)?;
-    let end = text.len();
     // Each result read so far: its call, its stamp, and what came right
     // after it (`None`: nothing, it is the last word; else the interrupt's
     // `uuid` when it was one).
     let mut results: Vec<(String, Option<u64>, Option<Option<String>>)> = Vec::new();
     let mut newer: Option<Option<String>> = None;
-    for v in (TailRecords { text, end }) {
-        if !speaks(&v) {
+    for v in tail_records_in(path, PROMPT_WINDOW)? {
+        let event = classify_tail_record(&v);
+        if !speaks_as(&v, &event) {
             continue;
         }
-        if let Some((called, id)) = dialog_call(&v) {
+        if let Some((called, id)) = dialog_call_as(&v, &event) {
             if called != tool || call.is_some_and(|held| held != id) {
                 return None;
             }
@@ -383,7 +395,6 @@ pub fn closed_dialog(
             return None;
         }
         if carries_tool_result(&v) {
-            let blocks = v["message"]["content"].as_array()?;
             // The held call's own result, read by its identity: its call's
             // line may lie past the window (round 10).
             if let Some(held) = call.filter(|held| carries_result_of(&v, held)) {
@@ -393,12 +404,12 @@ pub fn closed_dialog(
                     interrupt: newer.flatten(),
                 });
             }
-            for id in blocks.iter().filter_map(|b| b["tool_use_id"].as_str()) {
+            for id in result_ids(&v) {
                 results.push((id.to_string(), record_ms(&v), newer.clone()));
             }
         }
         newer = Some(
-            (classify_tail_record(&v) == TailEvent::Aborted)
+            (event == TailEvent::Aborted)
                 .then(|| v["uuid"].as_str().unwrap_or_default().to_string()),
         );
     }
@@ -407,12 +418,12 @@ pub fn closed_dialog(
 
 /// The interaction tool's `tool_use` block of an assistant record that
 /// calls one (`classify_tail_record`'s `NeedsHuman`).
-fn dialog_block(v: &serde_json::Value) -> Option<(TailTool, &serde_json::Value)> {
-    let TailEvent::NeedsHuman { tool } = classify_tail_record(v) else { return None };
-    let name = match tool {
-        TailTool::AskUserQuestion => "AskUserQuestion",
-        TailTool::ExitPlanMode => "ExitPlanMode",
-    };
+fn dialog_block<'v>(
+    v: &'v serde_json::Value,
+    event: &TailEvent,
+) -> Option<(TailTool, &'v serde_json::Value)> {
+    let TailEvent::NeedsHuman { tool } = *event else { return None };
+    let name = tool.name();
     let call = v["message"]["content"]
         .as_array()?
         .iter()
@@ -563,8 +574,14 @@ pub fn sample(path: &Path) -> Option<TailSample> {
 /// may open mid-record, so the first line of a truncated read is dropped; a
 /// line that is not JSON is skipped (09 §4.3: never resync).
 fn tail_records(path: &Path) -> Option<TailRecords> {
+    tail_records_in(path, 64 * 1024)
+}
+
+/// `tail_records` over the last `window` bytes, for the readers that look
+/// further back than a second's.
+fn tail_records_in(path: &Path, window: u64) -> Option<TailRecords> {
     let len = std::fs::metadata(path).ok()?.len();
-    let text = window_text(path, len, 64 * 1024)?;
+    let text = window_text(path, len, window)?;
     let end = text.len();
     Some(TailRecords { text, end })
 }

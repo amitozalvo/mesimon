@@ -30,15 +30,36 @@
 
 use super::*;
 
+/// Whose train hold a ticket is under.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoldBy {
+    Crown,
+    Person,
+}
+
+impl HoldBy {
+    /// `get_ticket`'s word for it.
+    fn word(self) -> &'static str {
+        match self {
+            HoldBy::Crown => "crown",
+            HoldBy::Person => "person",
+        }
+    }
+}
+
 impl Daemon {
-    /// Whose train hold `id` is under, in `get_ticket`'s word: `crown`,
-    /// `person`, or `None` while the train may take it.
-    pub(super) fn train_hold_word(&self, id: ulid::Ulid) -> Option<&'static str> {
+    /// Whose train hold `id` is under, or `None` while the train may take it.
+    fn train_hold(&self, id: ulid::Ulid) -> Option<HoldBy> {
         let t = self.board.ticket(id)?;
         if !t.manual_merge {
             return None;
         }
-        Some(if self.crown_held.contains(&id) { "crown" } else { "person" })
+        Some(if self.crown_held.contains(&id) { HoldBy::Crown } else { HoldBy::Person })
+    }
+
+    /// `train_hold` in `get_ticket`'s word: `crown`, `person`, or `None`.
+    pub(super) fn train_hold_word(&self, id: ulid::Ulid) -> Option<&'static str> {
+        self.train_hold(id).map(HoldBy::word)
     }
 
     /// A person's `t` (`SetManualMerge`) on `id`: whatever it sets, the hold
@@ -99,7 +120,7 @@ impl Daemon {
             };
         }
         let merged = self.merge_state_word(target).as_deref() == Some("merged");
-        let changed = match (hold, self.train_hold_word(target)) {
+        let changed = match (hold, self.train_hold(target)) {
             (true, _) if merged => {
                 return Response::Err {
                     message: format!(
@@ -109,7 +130,7 @@ impl Daemon {
                 };
             }
             (true, Some(_)) | (false, None) => false,
-            (false, Some("person")) => {
+            (false, Some(HoldBy::Person)) => {
                 return Response::Err {
                     message: format!(
                         "{key} was taken out of the merge train by a person (t on its page), \
@@ -139,11 +160,11 @@ impl Daemon {
             self.feed.board(by.actor(), cmd, Some(target));
             self.crown_mark(own, target, if hold { "held" } else { "returned" });
         }
-        let held = self.train_hold_word(target);
+        let held = self.train_hold(target);
         Response::AgentHeld {
             key: key.clone(),
             held: held.is_some(),
-            by: held.unwrap_or_default().to_string(),
+            by: held.map(HoldBy::word).unwrap_or_default().to_string(),
             changed,
             merge: self.merge_state_word(target).is_some().then(|| self.merge_by(target)),
             detail: self.hold_detail(target, &key, held, changed),
@@ -158,16 +179,16 @@ impl Daemon {
         &self,
         target: ulid::Ulid,
         key: &str,
-        held: Option<&str>,
+        held: Option<HoldBy>,
         changed: bool,
     ) -> String {
         let prs = self.through_prs();
         match held {
-            Some("person") => format!(
+            Some(HoldBy::Person) => format!(
                 "{key} is held out of the merge train by a person (t on its page); the hold \
                  and its return stay the person's"
             ),
-            Some(_) => {
+            Some(HoldBy::Crown) => {
                 let mut s = if changed {
                     format!(
                         "{key} is out of the merge train: the train neither merges its branch \

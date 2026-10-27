@@ -38243,3 +38243,145 @@ below its synthetic runtime, verifies that ownership is detectable, and moves th
 sessions into DONE with one-minute sleep enabled. It covers automatic sleep and
 exact-thread wake while held and working sessions stay awake. Inventory unit coverage
 checks an intervening launcher, a second matching writer, absent parents and cycles.
+
+## The seventh simplify pass (T-952, run as T-1057, 2026-10-27)
+
+Six reviewers over the 341 commits since the sixth pass (`eb10aee5..914fea30`, T-715 to
+T-1055), one per area — `server.rs` and its small modules, the `crown*.rs` files, the rest of
+the daemon, the TUI, core with the shim and the tmux backend, and the e2e tests — each
+reading all four angles (reuse, simplification, efficiency, altitude). Each finding was checked
+against the live code before it was applied; forks applied them by file ownership, the lead
+kept `server.rs`, core and every cross-crate change. Behaviour, the wire, every state file and
+every word an agent, the crown or the phone reads are unchanged; no golden moved.
+
+**Applied, hot paths.**
+- **A hook frame no longer prunes four maps.** `hear_prompt_id` swept `prompt_ids` against
+  every record on every Claude frame, and `UserPromptSubmit` swept `prompts_heard`,
+  `dialog_heard` and `dialog_open` the same way on every prompt (about 640 records on the
+  author's board). They are read by a live seat's id alone, so the sweep now runs when a new
+  seat first lands; an id already holding the same prompt id is not rewritten.
+- **A turn end marks nothing it does not change.** The crown ledger's `turn_ended` removed and
+  re-inserted `turn_asks` on every edge (a `Tracked` mark, so `crown.json` was serialised again
+  on the next tick), and `crown_ask_turn_ended` took `get_mut` before it knew the ticket had
+  asks; both look first. `settle_crown_asks` tests `blocks()` before a sessions scan per kept
+  ask, every tick. Mesophon's `control_observe_dialog` gates its `dialog_open` prune on the key
+  and writes `dialog_call`/`dialog_print` only on a change (the T-867 "marks before the check"
+  shape).
+- **A transcript line is classified once** in the recovery loop and `closed_dialog`
+  (`tail::dialog_call_as`, `speaks_as` take the event), not three times with a `String` each.
+- **The TUI's frame.** The transcript dialog scrubbed each message (up to 256 KiB) every frame
+  only to hit `rich_cache`: `ui::ticket::rendered` takes the text as a closure and scrubs on a
+  miss. A reply's card words (a 4 KiB markdown parse) are worked out once per read (`Peek.card`)
+  instead of per open card per frame. `transcript::Message` holds its row's index, so a tail
+  landing no longer copies the whole conversation into a second list. `card_owed` no longer
+  formats `pending_row`'s words twice to compare and split them (`owed_words(split)`).
+- **Smaller:** `list_board` hoists `is_crowned` out of its per-row closure and counts shells
+  without building their views (`agent_shell_count`); the composer is located once per screen
+  (`composer::locate`), so `holds_only` no longer reads it twice; `is_pr_create` and `pr_act`
+  test a binary's name without a `format!` per word (`forge::is_bin`); `claude_window` takes
+  the longest match without collecting and sorting the table; Linux's `process_birth_ms` reads
+  `/proc/uptime` once per sample, not per row; `projected_shell` folds with no `Vec`.
+
+**Applied, structure.**
+- **`Board::session(id)`** in core replaces 82 hand-written `board.sessions.iter().find(|s|
+  s.id == id)` in `server.rs`, `bridge.rs`, `shells.rs` and `asynchooks.rs` (no `session_mut`:
+  `sessions` is `Tracked`). **`SessionRecord::close_asked(now)`** is the one reading of a crown's
+  unexpired shell close ask, for the card's bang, the badge, the attention test and
+  `needs_you_tickets` (the TUI's `sleep_verb` keeps its own, which has no pane test).
+  **`Board::sits_before` / `order_before`** are the one placement rule for a card dropped above
+  another: the TUI's optimistic `lay_move` re-spelled the daemon's `reorder_within` and
+  `order_within`'s `Before` arm, and a drift would draw a card where it does not land.
+- **The crown's wake.** `CrownWake::new` and `absorb` replace three production literals and
+  eleven test ones, and the two fold sites (`enter_wake`, `owe_turn_end`); `drain_crown_wakes`
+  builds its `Entering` once after the match (three literals); `crown_wake_failed` is the failed
+  stamp written twice; `owe_said` is `hear_unstarted`'s and `hear_failure`'s body;
+  `Ack::is_crown_wake` and `crown_wake_owed` replace twelve `ack.word == Ack::CROWN_WAKE.word`.
+- **The crown's comings and goings.** `crown_leaves` is the five calls `crown`, `uncrown` and
+  `drop_crown_if` each spelled (the `forget_crown_rules` pass-through is gone);
+  `touched_seen` is the `crown_touched(..).unwrap_or_else(seen_token)` tail of six keyed tools;
+  `crown_may_answer` is the crown's answer gate that `crown_answer_allowed`,
+  `crown_revise_held` and `crown_plan_allowed` each spelled; `crownplan::park_in` and
+  `send_parked` are the deferred-reply park and send of the plan, the sample and the phone's
+  control; `crown_ask_find_mut` and `crown_ask_pick` the asks' two lookups; `HoldBy` replaces
+  the `"crown"`/`"person"` strings inside `crownhold.rs` (the word still leaves through
+  `train_hold_word`, so every seen stamp hashes as before).
+- **Paste and launch.** `Owed::launch` is built on `Owed::pasted` (a 27-field literal that took
+  every new field twice); `launch_refusal` is `recovery_clear`'s read with only other text
+  taken as it is; `refuse_before_keys` is `paste_at`'s three refusal prologues; `type_title` is
+  the title retype that `retype_title` and the hook-set relaunch each wrote; `submit_refused`,
+  `FILL_UNREAD` and `SUBMIT_UNREAD` are the crown-facing words `on_mod_submit` and its fill
+  twin wrote twice each, byte for byte.
+- **Mesophon.** `DialogDelivery::new` for five literals; `control_confirm_delivery` takes the
+  confirm phase out of the 307-line `control_deliver_dialogs`; `prompt_going_in` and
+  `queued_replaced` are shared by the mailed and the live prompt roads; `prompts_now`,
+  `name_dialog`, `recovery::note_call`; the plan dialog's screen readers moved to
+  `plan_dialog.rs` beside `menu_row` (`drawn`, `plan_menu`, `menu_cursor` returning `Option`).
+- **Readers.** `tail_records_in(path, window)` under six new tail readers, `result_ids`,
+  `call_message`; `TailTool::{name, reason}` and `AttentionTool::from_name` in core for the
+  hand-written tool names (`hooks.rs` through `interaction_tool`); `text::squeeze` for five
+  copies of "drop every whitespace"; `trace.rs`'s `Tail` is a `TailCursor`; `cost.rs`'s
+  `last_reading` is `window_text`, `Ledger::apply` is test-only, `apply_named`'s two loops fold;
+  Codex's `prompt_row`.
+- **Core and the shim.** `ColumnSettings::moves`/`moves_mut` for the on_working/on_done/
+  on_merged triple at five sites; `Ctx::shift_enter` names the off-floor clause the five
+  Shift+Enter bindings spelled; the shim's `put` for thirteen optional fields; `AskWake` and
+  `StartPrompt` serialise themselves (their hand-typed `word()` is gone); `cost::claude_base`
+  for the Bedrock/Vertex read-through; `command::bounded` under `sanitize_prompt` and
+  `sanitize_template`; `mcp::shell_id`, `opt_text` and `opt_word`'s doc comment back in place;
+  `shell_title` is `road::is_shell`; `has_clients` is `client_activities`.
+- **The TUI.** `flip_board_switch` for seven switch arms; `Setup` and `Tour` keep a `Theme`
+  (`variant`) instead of a four-field tuple; `glyphs::overflow_cue` for the column's and the
+  notes rail's cue; `wait_snapshot` for `catch_up` and `settle_snapshot`;
+  `client::connect_existing`; `osc::log` on `clock::now_ms`; `TERM_PROGRAM` read once in `run`.
+- **Shells.** `agent_shell` is the one predicate of `agent_shells` and its count; `pane_of_key`
+  and `JOBS_UNKNOWN` for the pane-key parse and the jobs message (three copies).
+- `quiet.rs`'s test record is `SessionRecord::new` (a 55-field literal).
+
+**Applied, the e2e tests** (2,756 lines net, most of them `crown_e2e.rs`'s; each migrated test
+checks the same facts with the same waits and sleeps). New in `tests/common/mod.rs`, added
+only, since the relay's tests compile it: `TestClient::{key_of, agent_read, crown_start,
+crown_ask, crown_touches, prompt}`, `Harness::{prompt_turn, end_turn, feed, got}` (`one_turn`
+is the first two), `RECORDING_STUB`, `RECORDING_STUB_PER_TICKET`, `commit`, `now_ms`, `iso_ms`
+(`trace::iso_now` on it). Migrated: 65 read-then-start blocks, 24 read-then-ask blocks, 61
+`start` and 57 `stop` closures (one-liners over the two halves) and 218 back-to-back pairs
+(`one_turn`), 24 crown prologues (`crown_idle`, the 500 ms kept), 10 `up` closures (`mod_up`),
+9 attach-and-wait blocks (`person_attaches`), 28 `lines_with`/`wake_rows` closures, 13
+`PromptSession` literals, the create/spawn pairs of eight files T-875's helpers postdate, four
+ISO formatters and four copies of the recording stub. `crown_e2e`'s own `BOX_STUB`, which
+shadowed `common::BOX_STUB` with another stub, is `PAINTED_BOX_STUB`. Left as they are: the
+stops that await `end_turn`, a stale-`seen` ask, `plan: true` and tiered starts,
+`crown_rules`' and `crown_reads`' reads, `forge_e2e`'s seconds-only `iso_now`, the two `frames`
+(a count and a list), and T-875's list.
+
+**Checked and kept.** `want_compaction_screens` beside `settle_compactions` is the T-857
+want/settle pair every stage keeps, once a second. `doctor`'s six switch records read as
+plainly as one `switch()` would, and rustfmt spreads its tuples. The tier page's model ring is
+built twice per frame on that page alone (a handful of stops), and `ModelStop` as an enum saves
+ten lines for a test rewrite. Moving `turn_open`, `turn_begins`, `guessed` and `rederiving` to
+core moves paths, not callers: only the daemon reads them. `send`/`send_now` and their `_on`
+twins: a shared helper came out longer. `Quiet::new` keeps its own `TERM_PROGRAM` read, since
+the intro calls it too. `sleep_verb`'s close-ask read has no pane test, and `close_asked` would
+add one.
+
+**Found and left open (each a behaviour, wire or design decision):**
+- **`owe_again` drops a later wake's `ask` and `overrun`** (`crownwake.rs`), where every other
+  fold keeps them; calling `absorb` there would carry them, which is likely meant, but it
+  changes what a crown is told.
+- **`refused_for_person` is a side channel**: `paste_at` sets it, three entry points clear it
+  and four queue roads read it back in the same writer turn. A typed
+  `Err(Refusal::BeforeKeys)` threads a new return type through about six roads.
+- **`request_close_shell` reads the shell's pane key twice** (a tmux fork each). Taking it from
+  `shell_close_ready` reorders the refusals a crown reads when the shell is gone or on another
+  ticket.
+- **The crown ledger's twelve `Tracked` fields are listed three times** (`ledger`,
+  `ledger_dirty`, `mark_ledger_clean`); a field missed in `ledger_dirty` is silently never
+  written. A local macro or a `CrownLedgerState` struct.
+- **One `SetBoardSwitch { switch, on }`** would collapse six `SetCrown*`/`SetReviewedPrs`
+  commands and their arms in `agent_allows`, the meta, the TUI and doctor; it renames wire
+  commands.
+- `common::kill_tmux` and `board_and_grace_of` have no caller here, but the relay's tests
+  compile `common/mod.rs`.
+- `is_pr_create` could skip the shell-word parse when the line holds no `create`, which differs
+  only for a quote-concatenated `cr""eate`. Codex's `dialog_shown` on `menu_row` would stop
+  reading a numbered row with an empty label. `intro::marker_path` on `paths::state_root` would
+  stop the intro on a non-UTF-8 `HOME`.

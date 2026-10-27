@@ -122,15 +122,7 @@ fn the_board_trusts_the_workspace_with_the_dialog_s_own_keys_and_the_brief_follo
     let feed_path = h.paths.state_dir.join("activity.jsonl");
     let feed = || std::fs::read_to_string(&feed_path).unwrap_or_default();
     let mut c = h.client("trustok");
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "trust me".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
+    let ticket = c.create_ticket("trust me");
     assert!(matches!(
         c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into(), rev: None }),
         Response::NoteWritten { .. }
@@ -231,15 +223,7 @@ fn the_board_trusts_a_codex_seat_s_folder_and_the_prompt_follows() {
         c.request(Command::SetAgentProvider { provider: AgentProvider::Codex }),
         Response::Ok
     ));
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "mesimon-trust-871 start after the folder".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("{other:?}"),
-    };
+    let ticket = c.create_ticket("mesimon-trust-871 start after the folder");
     let sid = match c.request(Command::SpawnSession {
         ticket,
         kind: SessionKind::Codex,

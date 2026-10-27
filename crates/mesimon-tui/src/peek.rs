@@ -26,7 +26,19 @@ use mesimon_core::board::{SessionKind, SessionRecord};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(crate) use mesimon_daemon::agents::{AgentActivity as Doing, AgentPreview as Peek};
+pub(crate) use mesimon_daemon::agents::AgentActivity as Doing;
+
+/// A transcript's preview as the board draws it: the daemon's
+/// `AgentPreview`, sanitized, with the card's words (`card_words`) worked
+/// out once per read — a card asks per frame, and they are a markdown parse.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Peek {
+    pub text: Option<String>,
+    pub activity: Option<Doing>,
+    pub reply_key: Option<u64>,
+    /// `card_words` of `text`, `None` exactly when `text` is.
+    pub card: Option<String>,
+}
 
 /// Read cache, one entry per transcript path. It was one slot — only the
 /// cursor card peeked — until the spoke mark (T-173) made every paned
@@ -77,7 +89,9 @@ impl PeekCache {
     /// What a practice board's agent says (T-816): the scene's words for
     /// `path`, read in place of a transcript the practice board never has.
     pub(crate) fn stage(&self, path: &str, text: &str) {
-        let peek = Peek { text: Some(sanitize(text)), activity: None, reply_key: None };
+        let text = sanitize(text);
+        let card = Some(card_words(&text));
+        let peek = Peek { text: Some(text), activity: None, reply_key: None, card };
         self.1.borrow_mut().insert(path.to_string(), Rc::new(peek));
     }
 
@@ -109,8 +123,10 @@ impl PeekCache {
         let prior = map.get(path).filter(|e| e.kind == kind).map(|e| &e.read);
         let read = mesimon_daemon::agents::read_preview_after(kind, Path::new(path), prior)?;
         let raw = &read.preview;
+        let text = raw.text.as_deref().map(sanitize);
         let peek = Rc::new(Peek {
-            text: raw.text.as_deref().map(sanitize),
+            card: text.as_deref().map(card_words),
+            text,
             activity: raw.activity.as_ref().map(|d| match d {
                 // A step title is a row, never a block: flatten it here.
                 Doing::Tool(t) => Doing::Tool(crate::text::one_line(&sanitize(t))),
@@ -178,8 +194,9 @@ pub(crate) fn sanitize(s: &str) -> String {
 
 /// A reply as a card draws it (T-893): `rich::plain`'s words, with no
 /// fence, `#`, `**` or backtick spending the two rows the card has. Only the
-/// head is parsed — a card is asked for per frame and shows a sentence or
-/// two, and `CARD_HEAD` bytes of source are far more than two rows of words.
+/// head is parsed — a card shows a sentence or two, and `CARD_HEAD` bytes
+/// of source are far more than two rows of words. Read once per peek
+/// (`Peek::card`).
 pub(crate) fn card_words(text: &str) -> String {
     let mut end = text.len().min(CARD_HEAD);
     while !text.is_char_boundary(end) {

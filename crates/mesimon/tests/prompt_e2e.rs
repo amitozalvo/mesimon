@@ -40,27 +40,13 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("prompt");
 
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "ask me".into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
+    let ticket = c.create_ticket("ask me");
 
     // (Before any agent exists the same command STARTS one — T-294, the last
     // clause of this test, where the seat is empty again for the right
     // reason rather than because nothing has happened yet.)
 
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let sid = c.spawn_claude(ticket);
 
     // The spawn types the ticket TITLE into the box and stops there (zero
     // token injection). Wait for the stub to be reading before prompting, or
@@ -84,35 +70,12 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // Blank in, nothing out: an empty prompt must never press Enter on a turn
     // the user did not write. The title is still sitting unsubmitted in the
     // box, so a stray Enter here would submit somebody else's words.
-    match c.request(Command::PromptSession {
-        ticket,
-        text: "   ".into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    match c.prompt(ticket, "   ") {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
     }
 
-    assert!(matches!(
-        c.request(Command::PromptSession {
-            ticket,
-            text: "mesimon-probe-42 run the tests".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }),
-        Response::Ok
-    ));
+    assert!(matches!(c.prompt(ticket, "mesimon-probe-42 run the tests"), Response::Ok));
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let received = loop {
@@ -144,17 +107,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // bracketed paste from two; claude and codex were measured to keep the
     // lines in one box — `docs/STALE-MAP.md`, T-380.)
     assert!(matches!(
-        c.request(Command::PromptSession {
-            ticket,
-            text: "mesimon-probe-44 first line\r\nmesimon-probe-44 second line".into(),
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-            resend: false,
-            uploads: Vec::new(),
-        }),
+        c.prompt(ticket, "mesimon-probe-44 first line\r\nmesimon-probe-44 second line"),
         Response::Ok
     ));
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -191,17 +144,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 
     let long = format!("mesimon-probe-43 {}", "carry on where you left off ".repeat(90));
     assert!(long.len() > 2048, "{}", long.len());
-    match c.request(Command::PromptSession {
-        ticket,
-        text: long.clone(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    match c.prompt(ticket, &long) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
             assert!(fresh, "a stub has no transcript, so the wake starts fresh");
@@ -253,17 +196,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
         c.board().sessions.iter().all(|s| s.id != sid || !s.state.is_live())
     });
-    match c.request(Command::PromptSession {
-        ticket,
-        text: "   ".into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    match c.prompt(ticket, "   ") {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");
             assert!(
@@ -304,15 +237,7 @@ fn a_blank_ask_at_a_seat_that_never_took_a_prompt_sends_the_brief() {
         tier: None,
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let sid = c.spawn_claude(ticket);
     let sid16: String = sid.simple().to_string().chars().take(16).collect();
     let pane_text = || -> String {
         tmux(&tmux_sock)
@@ -584,17 +509,7 @@ fn a_launch_s_words_wait_for_a_person_s_draft() {
 
     // A person's ask at the sleeping seat: the wake types nothing, so any
     // text in its box is a draft.
-    let ask = |c: &mut TestClient, text: &str| match c.request(Command::PromptSession {
-        ticket,
-        text: text.into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    let ask = |c: &mut TestClient, text: &str| match c.prompt(ticket, text) {
         Response::Spawned { id, .. } => assert_eq!(id, sid),
         other => panic!("an ask at a sleeping claude wakes it: {other:?}"),
     };
@@ -857,13 +772,7 @@ fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
     let hook_sock = h.paths.hook_sock();
     let nopaint = h.dir.join("nopaint");
     let mut c = h.client("prompt-early");
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "early seat".into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
+    let ticket = c.create_ticket("early seat");
     let read = || std::fs::read_to_string(&got).unwrap_or_default();
     let sid16 = |sid: uuid::Uuid| -> String { sid.simple().to_string().chars().take(16).collect() };
     let pane = |sid: uuid::Uuid| -> String {
@@ -898,15 +807,7 @@ fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
     let record = |c: &mut TestClient, sid: uuid::Uuid| {
         c.board().sessions.into_iter().find(|s| s.id == sid).expect("seat")
     };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let sid = c.spawn_claude(ticket);
     // The transcript `SessionStart` names, at the name a wake looks for. While
     // it is absent the conversation never took a prompt and a wake types the
     // title again (T-603); once it exists a wake resumes and types nothing.
@@ -1151,13 +1052,7 @@ fn a_command_refused_for_an_undrawn_box_keeps_the_queued_ask() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("prompt-early-queue");
     let seat = |c: &mut TestClient, title: &str| -> (ulid::Ulid, uuid::Uuid) {
-        let _ = c.request(Command::CreateTicket {
-            column: "TODO".into(),
-            title: title.into(),
-            workspace: None,
-            tier: None,
-        });
-        let ticket = c.board().tickets.iter().find(|t| t.title == title).expect("ticket").id;
+        let ticket = c.create_ticket(title);
         match c.request(Command::SpawnSession {
             ticket,
             kind: SessionKind::Claude,

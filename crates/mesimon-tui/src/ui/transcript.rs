@@ -150,8 +150,13 @@ fn words(
     let bar = if prompt { 2 } else { 0 };
     let newline = if prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
-    let text = crate::peek::sanitize(&m.text);
-    let rows = super::ticket::rendered(app, key, width - bar, &text, newline);
+    let rows = super::ticket::rendered(
+        app,
+        key,
+        width - bar,
+        || crate::peek::sanitize(t.text(m)),
+        newline,
+    );
     let budget = usize::from(body.height.saturating_sub(2));
     let at = t.pager.window(Some(key), rows.len(), budget, false);
     let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
