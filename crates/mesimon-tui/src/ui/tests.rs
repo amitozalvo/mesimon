@@ -1817,8 +1817,8 @@ fn golden_board_header_automated_120() {
 }
 
 /// The column settings dialog over the board (T-117): every row, the
-/// selected row's detail under them, `esc back` in its edge. 33 lines tall
-/// with the board workspace default beside the column choice (T-1053).
+/// selected row's detail under them, `esc back` in its edge. 32 lines tall
+/// with workspace choices belonging only to the column (T-1053).
 #[test]
 fn golden_column_settings_120() {
     let mut app = app_graphite(fixture(false));
@@ -1829,10 +1829,10 @@ fn golden_column_settings_120() {
         ratatui::crossterm::event::KeyModifiers::NONE,
     )
     .unwrap();
-    let lines = render(&app, 120, 33);
+    let lines = render(&app, 120, 32);
     assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
-    golden("column_settings_120x33", &lines);
+    golden("column_settings_120x32", &lines);
 }
 
 /// T-806: on a short screen the column dialog is a window over its rows
@@ -12629,9 +12629,9 @@ fn a_click_picks_a_section_a_row_and_a_theme() {
     assert_eq!(app.theme.flavor, crate::theme::Flavor::Nord, "kept, and worn");
 }
 
-/// The workspace controls share the column dialog and its mouse dispatch.
+/// Workspace is a column choice, reachable by mouse only where filing is allowed.
 #[test]
-fn a_click_changes_the_column_workspace_and_its_board_default() {
+fn a_click_changes_the_column_workspace_where_tickets_can_be_filed() {
     use mesimon_core::board::WorkspaceStrategy;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
@@ -12642,16 +12642,17 @@ fn a_click_changes_the_column_workspace_and_its_board_default() {
     assert_eq!(app.board.columns[0].settings.workspace, Some(WorkspaceStrategy::Worktree));
     let at = spot_of(&render(&app, 120, 33), "Workspace");
     click(&mut app, at);
-    assert_eq!(app.board.columns[0].settings.workspace, None);
+    assert_eq!(app.board.columns[0].settings.workspace, Some(WorkspaceStrategy::SharedCheckout));
     let lines = render(&app, 120, 33);
     assert!(lines.iter().any(|l| l.contains("Workspace") && l.contains("● shared checkout")));
-    click(&mut app, spot_of(&lines, "Board default"));
-    app.refresh().unwrap();
-    assert_eq!(app.board.workspace, Some(WorkspaceStrategy::Worktree));
+    assert!(!lines.iter().any(|l| l.contains("Board default")));
+    click(&mut app, spot_of(&lines, "Filed here"));
     let lines = render(&app, 120, 33);
-    for label in ["Workspace", "Board default"] {
-        assert!(lines.iter().any(|l| l.contains(label) && l.contains("● worktree")));
-    }
+    assert!(!lines.iter().any(|l| l.contains("Workspace")));
+    click(&mut app, spot_of(&lines, "Filed here"));
+    let lines = render(&app, 120, 33);
+    assert!(lines.iter().any(|l| l.contains("Workspace") && l.contains("● shared checkout")));
+    assert_eq!(app.board.workspace, None);
 }
 
 /// The External drawer is the one list a click only walks: its Enter takes

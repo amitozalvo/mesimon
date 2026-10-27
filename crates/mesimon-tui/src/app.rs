@@ -9885,9 +9885,8 @@ impl App {
                     }
                 }
             }
-            // Two answers (T-816): a column that says nothing works where
-            // the board does, so the row steps to the other one and back
-            // to saying nothing.
+            // Preserve the effective legacy default until the person picks
+            // a workspace here; every pick belongs to this column (T-1053).
             Verb::ColumnWorkspace => {
                 if !self.catch_up()? {
                     return Ok(());
@@ -9900,7 +9899,7 @@ impl App {
                     } else {
                         WorkspaceStrategy::Worktree
                     };
-                    s.workspace = (next != board).then_some(next);
+                    s.workspace = Some(next);
                 })?
             }
             Verb::ColumnClaudeMode => self.set_column(|s| s.claude_mode = s.claude_mode.next())?,
@@ -9972,25 +9971,6 @@ impl App {
             Verb::SetupSkip => {
                 if let Some(s) = self.setup.as_mut() {
                     s.skip()?;
-                }
-            }
-            // Where a ticket nothing else chose works (T-816): board state,
-            // to the daemon and back on the snapshot.
-            Verb::BoardWorkspace => {
-                if !self.catch_up()? {
-                    return Ok(());
-                }
-                let workspace = if self.board.workspace == Some(WorkspaceStrategy::Worktree) {
-                    WorkspaceStrategy::SharedCheckout
-                } else {
-                    WorkspaceStrategy::Worktree
-                };
-                match self.client.request(Command::SetBoardWorkspace { workspace })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.refresh_soon()?;
-                        self.status = format!("board default: {}", workspace.word());
-                    }
                 }
             }
             Verb::AdoptObserve => self.adopt_external(false)?,
@@ -16569,11 +16549,6 @@ pub(crate) mod test_support {
                     self.board.crown_mode = mode;
                     Ok(Response::Ok)
                 }
-                Command::SetBoardWorkspace { workspace } => {
-                    self.board.workspace =
-                        (workspace != WorkspaceStrategy::SharedCheckout).then_some(workspace);
-                    Ok(Response::Ok)
-                }
                 Command::SetMergeInto { into } => {
                     self.board.merge_into = into;
                     Ok(Response::Ok)
@@ -21857,11 +21832,6 @@ mod tests {
                     );
                     let settings = &app.board.column("todo").unwrap().settings;
                     assert_eq!(settings.workspace.or(default).unwrap_or(SharedCheckout), expected);
-                    let item = keymap::column_items(&ctx)[row];
-                    assert_eq!(
-                        (item.detail)(&ctx).starts_with("follows"),
-                        settings.workspace.is_none()
-                    );
                     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
                 }
                 assert_eq!(
@@ -21873,31 +21843,25 @@ mod tests {
     }
 
     #[test]
-    fn board_workspace_is_changed_beside_the_column_choice() {
+    fn workspace_setting_follows_whether_the_column_accepts_new_tickets() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        app.settings_section = keymap::SettingsSection::Behaviour;
-        assert!(!keymap::settings_items(&app.ctx()).iter().any(|m| m.verb == Verb::BoardWorkspace));
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let row = keymap::column_items(&app.ctx())
             .iter()
-            .position(|m| m.verb == Verb::BoardWorkspace)
+            .position(|m| m.verb == Verb::ColumnRefusesNew)
             .unwrap();
         if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
             *idx = row;
         }
-        for expected in [Some(WorkspaceStrategy::Worktree), None] {
-            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-            app.refresh().unwrap();
-            assert_eq!(app.board.workspace, expected);
-            let ctx = app.ctx();
+        for accepts in [true, false, true] {
             assert_eq!(
-                keymap::value(Verb::ColumnWorkspace, &ctx),
-                keymap::value(Verb::BoardWorkspace, &ctx)
+                keymap::column_items(&app.ctx()).iter().any(|m| m.verb == Verb::ColumnWorkspace),
+                accepts
             );
-            assert!(app.board.column("todo").unwrap().settings.workspace.is_none());
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         }
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetBoardWorkspace")).count(), 2);
+        assert!(!sent.borrow().iter().any(|r| r.contains("SetBoardWorkspace")));
     }
 
     #[test]

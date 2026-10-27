@@ -38101,3 +38101,26 @@ ran the following; no CI result is claimed (T-1030).
   rerun passed. Formatting and `git diff --check` passed. Configured ignores are
   timing probes, subprocess helpers and a live-network check. Full nextest,
   Linux/Docker and manual TUI checks were not run for this TUI-only change.
+
+### T-1053 follow-up — workspace is only a column setting
+
+- The person's correction removes Board default from column settings as well:
+  Workspace is the only workspace settings row, and appears only when Filed
+  here is on. Switching Filed here off hides Workspace; switching it back on
+  restores the column's saved choice. This supersedes the two-row consolidation
+  above.
+- A workspace pick now saves an explicit per-column value, including shared
+  checkout, rather than clearing the choice when it matches the old board
+  default. Existing inherited values still read correctly until changed; the
+  stored board field and setup/wire compatibility remain unchanged. The row's
+  detail describes new tickets filed here and leaves existing tickets alone.
+- Keyboard and mouse regressions cover hiding/restoring the row and retaining
+  the per-column selection; the removed board action has no settings entry or
+  TUI dispatch arm.
+- Validation: TUI golden regeneration passed 1,251 tests (four configured
+  ignores), `cargo ut` passed 2,767 (ten configured ignores), and `column_e2e`
+  plus `setup_e2e` passed all three tests. Fixture audits were clean. The changed
+  column golden was inspected; formatting and `git diff --check` passed.
+  Full nextest, Linux/Docker and manual TUI checks were not run for this
+  TUI-only correction; configured ignores remain timing probes, subprocess
+  helpers and the live-network check.

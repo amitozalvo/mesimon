@@ -610,9 +610,6 @@ pub enum Verb {
     ReleaseChannel,
     /// Setup's `s` (T-816): leave this question on its default and go on.
     SetupSkip,
-    /// Column settings › Board default: where a new ticket works
-    /// when its column and its composer leave it alone.
-    BoardWorkspace,
     // ---- sessions ----
     Shell,
     /// Shift+Enter on the board: open a one-line field on the selected card
@@ -6407,10 +6404,6 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
         Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
         Verb::ReviewedPrs => Value::Switch(c.reviewed_prs),
-        Verb::BoardWorkspace => choice(
-            &["worktree", "shared checkout"],
-            if c.board_worktree { "worktree" } else { "shared checkout" },
-        ),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
         Verb::CrownContext => Value::Switch(c.crown_context),
@@ -6650,21 +6643,8 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnWorkspace,
         label: |_| "Workspace".into(),
-        detail: |c| {
-            if c.col_workspace_word.is_empty() {
-                "follows the board default ∙ new tickets only".into()
-            } else {
-                "overrides the board default ∙ new tickets only".into()
-            }
-        },
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::BoardWorkspace,
-        label: |_| "Board default".into(),
-        detail: |_| "new tickets in every column without a workspace override".into(),
-        avail: |c| !c.col_new,
+        detail: |_| "new tickets filed here ∙ existing tickets keep their workspace".into(),
+        avail: |c| !c.col_new && !c.col_refuses_new,
         key: "",
     },
     // What the forge saw that lands a ticket here (T-739): a column per
@@ -6835,7 +6815,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
 pub fn column_group(verb: Verb) -> Option<&'static str> {
     Some(match verb {
         Verb::ColumnCollapse | Verb::SortColumn => "LOOK",
-        Verb::ColumnRefusesNew | Verb::ColumnWorkspace | Verb::BoardWorkspace => "NEW TICKETS",
+        Verb::ColumnRefusesNew | Verb::ColumnWorkspace => "NEW TICKETS",
         Verb::ColumnArrives
         | Verb::ColumnRequiresMerge
         | Verb::ColumnRequiresPipeline
@@ -10375,7 +10355,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 16);
+        assert_eq!(column_items(&other).len(), 15);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
