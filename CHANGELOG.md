@@ -10,6 +10,108 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.14 — 2026-10-27
+
+### Added
+
+- **Pick a release channel in `Settings › About › Release channel`.**
+  `Stable` is what the install line and Homebrew give you. `Unstable` gets
+  each build before it reaches stable. Switching back to stable never
+  installs an older build: yours stays until a newer stable release is out.
+  To install from unstable, run
+  `curl -fsSL https://mesimon.dev/install.sh | sh -s -- --channel unstable`.
+  Homebrew installs follow stable.
+- **Press `{` or `}` on a card to read its agent's conversation.** The
+  transcript opens under the card on the newest message. `{` and `}` step
+  through the messages, `j`, `k` and the mouse wheel scroll the one on show,
+  `c` copies it and Esc closes it. Messages that arrive while it is open are
+  counted as new.
+- **A column can move a merged ticket on.** The column dialog's
+  `Branch merged` row names the column a ticket goes to when its branch is
+  merged by the merge train, the crown or `m`. On a new board, REVIEW sends
+  merged tickets to DONE. On an existing board nothing moves until you set
+  the row.
+- **The crown can send a Claude agent's plan back with words.** It types
+  into the plan dialog's `Tell Claude what to change` row, as you would, and
+  the card shows `♛ sent plan back`. It stops without typing more when you
+  are attached to that agent's pane, the field already holds words, or the
+  plan changes. A plan beyond the ticket's brief is still yours to answer.
+- **The crown can hold a ticket out of the merge train to review it.** The
+  train neither merges that ticket nor asks it to rebase until the crown
+  hands it back. Press `t` on the ticket's page to hand it back yourself. The
+  crown never hands back a ticket you held, and under `Crown mode`
+  `supervised` the hand-back is yours.
+- **The crown can read how full an agent's context is and what the agent is
+  doing.** `Settings › Crown › Reads context` (on by default) gives it each
+  agent's context fill. `Settings › Crown › Reads cost` (off by default)
+  gives it the ticket's estimated cost. `Settings › Crown › Samples agents`
+  (on by default) lets it read an agent it started: how long its turn has
+  run, its current and recent tools, its last text and the last rows of its
+  pane. An agent you started is never read.
+- **The crown can say how long it expects an agent's turn to take, and is
+  told once when the turn runs past it.** Nothing is stopped or moved.
+- **Remote Control shows a ticket's open terminal on its card.** The mark
+  spins while a command runs in it.
+
+### Changed
+
+- **A tier's model is picked from a list.** In `Settings › Agents › Tiers`,
+  the Model row steps through `default` and the models your Claude Code or
+  Codex install lists, with `h`, `l` or Enter, and saves at once. Press `i`
+  to type a name the list lacks.
+- **Where new tickets work is set per column.** The column dialog's
+  `Workspace` row shows only while `Filed here` is on. The `Worktrees`
+  switch in `Settings › Behaviour` is gone. Columns keep their current
+  choice, and existing tickets keep their workspace.
+- **`Settings › Behaviour › Reviewed pull requests` shows only while
+  `Merge into` is `pull requests`.** Your choice is kept while the row is
+  hidden.
+- **The board does not type into an agent's pane while you have it open.**
+  The crown's words, a queued prompt and the crown's answers to a dialog
+  wait until you leave the pane. A queued prompt and the crown's wake also go
+  once you have been idle in the pane for ten minutes.
+- **Words the board sends at launch are never sent together with a draft you
+  typed.** They wait until the agent's box is empty, and a prompt you send
+  first replaces them. A prompt sent before a new agent's box is drawn waits
+  for the box instead of being left unsent.
+- **A turn that ends with one of your Claude Code hooks still running shows
+  as background work** until the hook finishes, for up to ten minutes. The
+  ticket does not move and the crown is not told the turn ended until then.
+- **Remote Control's tab bar marks the open tab** with a filled pill and a
+  heavier label.
+
+### Fixed
+
+- **Remote Control no longer stays on `Loading board…` on a large board.**
+  Long plans are shortened, and if cards still have to be left out, the page
+  says how many.
+- **Refusing a plan or a question in the agent's pane clears needs-you at
+  once.** Before, the card stayed at needs-you until the turn ended.
+- **An agent stopped on a plan or a question keeps its dialog after the
+  board restarts**, so the crown can still read and answer it.
+- **Agents keep their mesimon tools after you update the board.** A call
+  that needs the newer tools is refused before it does anything, with words
+  saying to sleep and wake the agent from its card.
+- **A `U` reload no longer types a terminal colour reply into the board.**
+  Before, it could open a rename on a card and fill it with that text.
+- **The ticket page's notes list scrolls.** The sessions and the NOTES
+  heading stay in place, and `↑ N above` and `↓ N below` say what is out of
+  view.
+- **A failed attach no longer blocks every later Enter with
+  `another session is focused`.** Codex agents also start without Codex's
+  own update prompt, which stopped them from connecting.
+- **The Mac stays awake while an agent's background tasks run.** Before,
+  keep-awake let go after ten minutes of a background command.
+- **A column's sleep timer parks an idle Codex agent.** Before, Codex's own
+  process was taken for another owner of the conversation, and the agent
+  stayed awake.
+- **A merged ticket's page no longer shows `auto-merge ∙ off`**, and `t`
+  does nothing there.
+- **`u` no longer undoes an archive from inside a settings dialog**, and the
+  tier page keeps its `i` hint.
+- **On Linux with a tmux older than 3.6, an agent that exits right after it
+  starts is seen as exited.** Before, the board could keep it as alive.
+
 ## v0.1.0-beta.13 — 2026-10-23
 
 ### Added
