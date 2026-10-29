@@ -320,6 +320,28 @@ mod tests {
                 assert!(d.check_seen(id, Some(&filed)).is_err());
             });
         }
+        // The receipt is the crown session's that filed, and it saw no seat.
+        for replaced in [false, true] {
+            with_ticket(|d, id| {
+                let mut crown = d.board.tickets[0].clone();
+                crown.id = ulid::Ulid::new();
+                let mut seat = d.board.sessions.remove(0);
+                let worker = seat.clone();
+                seat.id = uuid::Uuid::new_v4();
+                seat.ticket = crown.id;
+                d.board.crown = Some(crown.id);
+                d.board.tickets.push(crown);
+                d.board.sessions.push(seat);
+                let filed = d.receipt_seen(id, None);
+                assert!(d.check_seen(id, Some(&filed)).is_ok());
+                if replaced {
+                    d.board.sessions[0].id = uuid::Uuid::new_v4();
+                } else {
+                    d.board.sessions.push(worker);
+                }
+                assert!(d.check_seen(id, Some(&filed)).is_err(), "replaced: {replaced}");
+            });
+        }
     }
 
     #[test]

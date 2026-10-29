@@ -65,6 +65,7 @@ fn old_mcp_receipts_remain_readable_and_incompatible_writes_do_not_happen() {
         AgentTicket { ticket: LegacyTicket },
         NoteWritten { note: Option<ulid::Ulid> },
         AgentRaised { reason: String, board_version: u64 },
+        AgentCreated { key: String, column: String, board_version: u64, replayed: bool },
         Err { message: String },
     }
     #[derive(serde::Deserialize, Debug)]
@@ -112,6 +113,24 @@ fn old_mcp_receipts_remain_readable_and_incompatible_writes_do_not_happen() {
     legacy(&renamed);
     assert_eq!(renamed["ticket"]["title"], "legacy rename");
     assert_eq!(renamed["ticket"]["notes"].as_array().unwrap().len(), 1);
+    // T-1072: the crown's filing carries its new stamp beside the fields an
+    // old reader knows, which reads it as it read the answer before.
+    let filed = compatibility_call(
+        &mut c,
+        sid,
+        Command::AgentCreateTicket {
+            title: "legacy filing".into(),
+            column: None,
+            description: None,
+            tags: Vec::new(),
+            idempotency_key: None,
+            tier: None,
+            workspace: Some("worktree".into()),
+        },
+        None,
+    );
+    assert!(matches!(legacy(&filed), LegacyResponse::AgentCreated { replayed: false, .. }));
+    assert!(filed["seen"].as_str().is_some_and(|s| s.starts_with("receipt:")), "{filed}");
 
     // With a contract the daemon cannot speak, the same authorized write
     // is refused before dispatch, not after its result becomes unreadable.
@@ -504,6 +523,8 @@ fn agent_board_tools_tier_and_collisions() {
     );
     assert_eq!(made["column"], "TODO", "no column named means the first column");
     assert_eq!(made["replayed"], false);
+    // T-1072: no keyed tool is a worker's, so its filing carries no stamp.
+    assert!(made.get("seen").is_none(), "a worker's filing: {made}");
     let new_key = made["key"].as_str().unwrap().to_string();
     assert!(new_key.starts_with("T-"), "a key, not an id: {new_key}");
     let board = board_of(c.request(Command::Snapshot));
@@ -523,6 +544,7 @@ fn agent_board_tools_tier_and_collisions() {
     );
     assert_eq!(again["key"], new_key.as_str());
     assert_eq!(again["replayed"], true);
+    assert!(again.get("seen").is_none(), "nor does its replay: {again}");
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(board.tickets.iter().filter(|t| t.title == "found: flaky test").count(), 1);
     // A named column is honoured; a column that is not there is refused, and
@@ -1071,5 +1093,42 @@ fn crown_ticket_reply_sizes() {
         ("start_agent", json!({"key": key, "workspace": "worktree", "seen": written["seen"]})),
     ] {
         assert!(shim.call_err(tool, args).contains("changed since it was read"), "{tool}");
+    }
+
+    // T-1072: the crown's filing, through the shim, hands back the new
+    // ticket's stamp, and the next keyed write takes it with no read. A
+    // retry under the same tool-use id replays that same stamp, and a
+    // person's write stales it, replayed or not, and the write's own.
+    let args = json!({"title": "filed by the crown", "workspace": "worktree"});
+    let filed = shim.call_with_meta("create_ticket", args.clone(), "toolu_file_1072");
+    let filed_key = filed["key"].as_str().unwrap().to_string();
+    let filed_seen = filed["seen"].as_str().unwrap().to_string();
+    assert!(filed_seen.starts_with("receipt:"), "{filed}");
+    assert_ne!(json!(filed_seen), shim.call_ok("get_ticket", json!({"key": filed_key}))["seen"]);
+    let renamed = shim.call_ok(
+        "rename_ticket",
+        json!({"key": filed_key, "title": "filed, renamed", "seen": filed_seen}),
+    );
+    assert_eq!(renamed["title"], "filed, renamed");
+    let again = shim.call_with_meta("create_ticket", args, "toolu_file_1072");
+    assert_eq!(again["key"], filed_key.as_str());
+    assert_eq!(again["replayed"], true);
+    assert_eq!(again["seen"], filed_seen.as_str(), "the first answer's stamp, not a new one");
+    let filed_id = c.board().ticket_by_key(&filed_key).unwrap().id;
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: filed_id,
+            note: None,
+            text: "a person's change".into(),
+            rev: None
+        }),
+        Response::NoteWritten { .. }
+    ));
+    for seen in [json!(filed_seen), renamed["seen"].clone()] {
+        let refused = shim.call_err(
+            "start_agent",
+            json!({"key": filed_key, "workspace": "worktree", "seen": seen}),
+        );
+        assert!(refused.contains("changed since it was read"), "{refused}");
     }
 }

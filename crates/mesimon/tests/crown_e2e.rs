@@ -16558,6 +16558,12 @@ fn a_crown_s_filing_receipt_starts_its_ticket_with_no_read() {
         other => panic!("a worker's create_ticket: {other:?}"),
     }
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    // Its replay after the crowning is the first answer, stampless: the
+    // crowning mints nothing for a filing it did not make.
+    match file(&mut c, "a worker's idea", "w") {
+        Response::AgentCreated { replayed: true, seen, .. } => assert_eq!(seen, None),
+        other => panic!("a replay of the pre-crown filing: {other:?}"),
+    }
 
     // ---- create, then start on the receipt's stamp, nothing read between -
     let (k1, s1) = match file(&mut c, "mesimon-probe-1072 filed and started", "k1") {
