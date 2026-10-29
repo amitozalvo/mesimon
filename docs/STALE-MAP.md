@@ -38886,51 +38886,6 @@ already drives the fallback's two frames through the daemon, on both roads.
   **119/119** on the first run, audit clean. The full suite and the rig were not rerun here;
   the crown runs the final full e2e/forge validation on the combined changes.
 
-## Deployment news across a restart: the forge replays nothing (T-1070, 2026-10-29)
-
-## Deployment news across a restart: intact restored facts make no edge (T-1070, 2026-10-29)
-
-A GitLab board reported a restart wake that said many tickets' earlier deployments again, and
-daily deployment news on CI- or docs-only merge requests. The report's suggested mechanism
-(every deployment credited to the last merged MR) is not what the code does. T-801 credits a
-deployed commit to every merge git proves it carries, so a CI-only MR merged before a deployed
-one is deployed when that containment holds. The reported arrivals fit that policy if the
-containment is proved, but none of them was checked against the reporting board's history.
-What caused the incident remains unresolved.
-
-**Diagnostic result, no fix.** `a_restart_replays_no_deployment_and_says_one_made_while_down`
-(`forge.rs`) exercises the forge's state and helpers directly: two tickets read and deployed by
-ancestry, `ForgeFile::of` → JSON → `State::restore` as a `U` handover does, then a first pass
-built from `merged_reads` and `edge` the way `absorb_forge` uses them. In these tested cases an
-unchanged, intact restored set produces no deployment edge. That holds whether git can answer
-or not (no fetch, and the read's page has moved past the merge commit), after two handovers,
-and when the first read finds no successful deployment and the next finds it again. A
-deployment made while the daemon was down is said once, marked late. A rollback is no edge,
-and the redeploy after it is said again.
-
-The test does not run `Daemon::absorb_forge` itself, the real persistence schedule, PR
-binding, or crown delivery. So it rules out none of the roads below, and it is not a proof that
-restarts never replay.
-
-What can still re-say a deployment, by mechanism, none confirmed on the reporting board:
-- **Real movement:** an older pipeline's manual apply takes newer merges off an environment
-  (git says the deployed commit lacks them), and the next deploy says them again. This is the
-  documented T-801 behaviour.
-- **A merged PR re-entering a ticket's set:** `edge` has no previous reading for it, so every
-  environment it stands in is `reached`. Its feed signature is `merged !N bound` on that
-  ticket. No road that drops a bound PR and binds it again was found. It stays a hypothesis,
-  not a fix.
-- **Facts not intact at restore:** a set or merge-commit fact missing or changed in
-  `forge.json`, or a binding that differs after the restart. The test starts from intact facts
-  and does not cover this.
-- **The crown's ledger, not the forge:** a taken wake (T-990) whose `entered` never arrived is
-  kept in `crown.json` and owed again, with its old words, when its pane goes. The journal says
-  `taken, its pane gone; owed again`, and the feed has no fresh `crown_wake` line for those
-  workers.
-
-The evidence that separates these is the reporting board's journal, feed and state files from
-around the restart, not this repository.
-
 ## A waiting job a read failed to name is the same wait (T-1065, 2026-10-29)
 
 GitLab names a waiting pipeline's job with a second call, the run's `jobs` read
@@ -39022,3 +38977,46 @@ read bare, and by run 9's name when it arrives, so those wakes still reach it
 after the restart. It fails without the fix. No rig case was added: the wake's words are unchanged, the
 change only removes a false wake, and the rig's stub forge is GitHub, which has
 no second call to fail.
+
+## Deployment news across a restart: intact restored facts make no edge (T-1070, 2026-10-29)
+
+A GitLab board reported a restart wake that said many tickets' earlier deployments again, and
+daily deployment news on CI- or docs-only merge requests. The report's suggested mechanism
+(every deployment credited to the last merged MR) is not what the code does. T-801 credits a
+deployed commit to every merge git proves it carries, so a CI-only MR merged before a deployed
+one is deployed when that containment holds. The reported arrivals fit that policy if the
+containment is proved, but none of them was checked against the reporting board's history.
+What caused the incident remains unresolved.
+
+**Diagnostic result, no fix.** `a_restart_replays_no_deployment_and_says_one_made_while_down`
+(`forge.rs`) exercises the forge's state and helpers directly: two tickets read and deployed by
+ancestry, `ForgeFile::of` → JSON → `State::restore` as a `U` handover does, then a first pass
+built from `merged_reads` and `edge` the way `absorb_forge` uses them. In these tested cases an
+unchanged, intact restored set produces no deployment edge. That holds whether git can answer
+or not (no fetch, and the read's page has moved past the merge commit), after two handovers,
+and when the first read finds no successful deployment and the next finds it again. A
+deployment made while the daemon was down is said once, marked late. A rollback is no edge,
+and the redeploy after it is said again.
+
+The test does not run `Daemon::absorb_forge` itself, the real persistence schedule, PR
+binding, or crown delivery. So it rules out none of the roads below, and it is not a proof that
+restarts never replay.
+
+What can still re-say a deployment, by mechanism, none confirmed on the reporting board:
+- **Real movement:** an older pipeline's manual apply takes newer merges off an environment
+  (git says the deployed commit lacks them), and the next deploy says them again. This is the
+  documented T-801 behaviour.
+- **A merged PR re-entering a ticket's set:** `edge` has no previous reading for it, so every
+  environment it stands in is `reached`. Its feed signature is `merged !N bound` on that
+  ticket. No road that drops a bound PR and binds it again was found. It stays a hypothesis,
+  not a fix.
+- **Facts not intact at restore:** a set or merge-commit fact missing or changed in
+  `forge.json`, or a binding that differs after the restart. The test starts from intact facts
+  and does not cover this.
+- **The crown's ledger, not the forge:** a taken wake (T-990) whose `entered` never arrived is
+  kept in `crown.json` and owed again, with its old words, when its pane goes. The journal says
+  `taken, its pane gone; owed again`, and the feed has no fresh `crown_wake` line for those
+  workers.
+
+The evidence that separates these is the reporting board's journal, feed and state files from
+around the restart, not this repository.
