@@ -156,7 +156,9 @@ pub struct HostProbe {
     /// every such host is trouble (T-810): asked again on the backoff, said
     /// on the advisory row and in `ForgeStatus.trouble`, never "no forge".
     /// A GitLab host signed in whose account did not answer is lost too
-    /// (`forge::account_trouble`, T-1067): glab lists by that account.
+    /// (`forge::account_trouble`, T-1067), its `cli` kept: glab lists by
+    /// that account, so nothing lists the host (`reader`) while the host
+    /// is still one a CLI reads, and what it owes still waits for it.
     pub lost: Option<String>,
 }
 
@@ -166,6 +168,12 @@ impl HostProbe {
     /// before one was made.
     pub fn reads_nothing(&self) -> bool {
         self.cli.is_none() && self.lost.is_none()
+    }
+
+    /// The CLI a list goes through: none while the host is lost, a GitLab
+    /// account unknown included (T-1067), so no list is ever unfiltered.
+    pub fn reader(&self) -> Option<&Cli> {
+        self.cli.as_ref().filter(|_| self.lost.is_none())
     }
 
     pub fn stale(&self) -> bool {
@@ -1099,12 +1107,48 @@ fn pr_carries(r: &RepoQuery, pr: &Pr, tip: &str) -> Option<bool> {
 pub fn list_probed(q: &mut Query, answered: &[(String, HostProbe)]) {
     for p in std::mem::take(&mut q.pending) {
         let Some((_, probe)) = answered.iter().find(|(h, _)| *h == p.remote.host) else { continue };
-        let Some(cli) = probe.cli.clone() else { continue };
+        let Some(cli) = probe.reader().cloned() else { continue };
         if q.repos.iter().any(|r| r.remote == p.remote) {
             continue;
         }
         q.repos.push(RepoQuery { remote: p.remote, cli, viewer: probe.viewer.clone(), dir: p.dir });
     }
+}
+
+/// How a pass lists each repository: through its host's kept probe, or,
+/// for a host probed on this same pass, first or again, on the worker once
+/// that probe answers (`pending`, T-752) and with what it found, so a
+/// GitLab account that answers again lists its MRs on that pass (T-1067),
+/// never through the stale probe. A repository whose call failed waits out its
+/// backoff alone (T-800, a rate limit's included), unless the pass is a
+/// burst's (`burst`) for its ticket alone. A host lost, its GitLab account
+/// unknown included, lists nothing (`HostProbe::reader`).
+pub fn split_repos(
+    repos: &[(Remote, PathBuf)],
+    probing: &[ProbeQuery],
+    state: &State,
+    burst: bool,
+) -> (Vec<RepoQuery>, Vec<PendingRepo>) {
+    let mut listed = Vec::new();
+    let mut pending = Vec::new();
+    for (remote, dir) in repos {
+        if !burst && state.backing_off(&remote.key()) {
+            continue;
+        }
+        if probing.iter().any(|p| p.host == remote.host) {
+            pending.push(PendingRepo { remote: remote.clone(), dir: dir.clone() });
+            continue;
+        }
+        let Some(probe) = state.probes.get(&remote.host) else { continue };
+        let Some(cli) = probe.reader() else { continue };
+        listed.push(RepoQuery {
+            remote: remote.clone(),
+            cli: cli.clone(),
+            viewer: probe.viewer.clone(),
+            dir: dir.clone(),
+        });
+    }
+    (listed, pending)
 }
 
 /// Setup's question (T-816): which forge the repository at `dir` is on,
@@ -1115,9 +1159,7 @@ pub fn setup_probe(dir: &Path) -> Option<(Forge, bool)> {
     let out = crate::git::git(dir).args(["remote", "get-url", "origin"]).output().ok()?;
     let remote = forge::Remote::parse(&String::from_utf8_lossy(&out.stdout))?;
     let found: Vec<Cli> = remote.candidates().iter().filter_map(|f| find_cli(*f, None)).collect();
-    // Signed in is the question; the board's own probe also asks glab's
-    // account (T-1067), which setup does not need.
-    if let Some(cli) = found.iter().find(|c| auth_status(c, &remote.host, CALL_TIMEOUT).is_ok()) {
+    if let Some(cli) = probe_host(&remote.host, &found).cli {
         return Some((cli.forge, true));
     }
     let guess = remote
@@ -1144,19 +1186,19 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
             // nothing (T-1067): an account the forge did not name (no
             // network yet after a wake, a 502, an answer with no username)
             // is lost like a sign-in, asked again on the backoff and never
-            // believed for `PROBE_FOR`.
+            // believed for `PROBE_FOR`. The CLI stays named: the host is
+            // still the board's to read, so what it owes still waits.
             Forge::GitLab => match run(&c.bin, &["api", "--hostname", host, "user"], None)
                 .and_then(|answer| viewer_of(&answer))
             {
                 Ok(viewer) => Some(viewer),
                 Err(why) => {
                     let minutes = backoff().as_secs().div_ceil(60).max(1);
-                    let lost = forge::account_trouble(host, &why, minutes);
                     return HostProbe {
-                        cli: None,
+                        cli: Some(c.clone()),
                         at: Instant::now(),
                         viewer: None,
-                        lost: Some(lost),
+                        lost: Some(forge::account_trouble(host, &why, minutes)),
                     };
                 }
             },
@@ -3877,7 +3919,8 @@ mod tests {
 
         // Offline: signed in, the account unknown. Nothing lists the host.
         let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
-        assert_eq!((probe.cli.as_ref(), probe.viewer.as_deref()), (None, None));
+        assert_eq!((probe.cli.as_ref(), probe.viewer.as_deref()), (Some(&glab), None));
+        assert_eq!(probe.reader(), None, "nothing lists through it");
         assert!(!probe.reads_nothing(), "lost, never a board of no forge");
         let words = "gitlab.lab account unknown: glab api user: dial tcp: lookup gitlab.lab: no \
                      such host ∙ asked again in 5 min";
@@ -3913,7 +3956,7 @@ mod tests {
         std::fs::write(&user, r#"{"id":1,"username":"me"}"#).unwrap();
         let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
         assert_eq!((probe.cli.as_ref(), probe.viewer.as_deref()), (Some(&glab), Some("me")));
-        assert_eq!(probe.lost, None);
+        assert_eq!((probe.lost.as_ref(), probe.reader()), (None, Some(&glab)));
         let mut held = probe.clone();
         held.at = Instant::now() - BACKOFF;
         assert!(!held.stale(), "a named account is believed past the backoff");
@@ -3926,6 +3969,131 @@ mod tests {
         s.take_probe("gitlab.lab".into(), probe);
         assert_eq!(s.trouble(), None, "the advisory row clears");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stub CLI in `dir` named `name`: logs its argv to `<name>.log`,
+    /// passes `auth status` unless `<name>.out` exists (then says it is not
+    /// signed in), and answers `api … user` with an account.
+    fn probe_stub(dir: &Path, name: &str) -> PathBuf {
+        let bin = dir.join(name);
+        let (log, out) = (dir.join(format!("{name}.log")), dir.join(format!("{name}.out")));
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$1 $2\" in\n  \"auth status\") [ -f \
+                 '{out}' ] && {{ echo 'not logged in' >&2; exit 1; }}; exit 0 ;;\n  \"api \
+                 --hostname\") echo '{{\"username\":\"me\"}}' ;;\nesac\n",
+                log = log.display(),
+                out = out.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        bin
+    }
+
+    /// What T-1067 keeps as it was: GitHub's probe asks no account (its
+    /// list is `--author @me`); a CLI not signed in is the sign-in's
+    /// trouble with its fix, its account never asked; and the first
+    /// candidate signed in reads the host, in order.
+    #[test]
+    fn a_probe_asks_glab_alone_for_the_account_and_keeps_the_sign_in_and_the_order() {
+        let dir = std::env::temp_dir().join(format!("msmn-forge-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gh = Cli { forge: Forge::GitHub, bin: probe_stub(&dir, "gh") };
+        let glab = Cli { forge: Forge::GitLab, bin: probe_stub(&dir, "glab") };
+        let calls = |name: &str| std::fs::read_to_string(dir.join(format!("{name}.log")));
+        let calls = |name: &str| calls(name).unwrap_or_default();
+
+        // GitHub, signed in: read, no account asked, believed for PROBE_FOR.
+        let probe = probe_host("github.com", std::slice::from_ref(&gh));
+        assert_eq!(
+            (probe.reader(), probe.viewer.as_deref(), probe.lost.as_ref()),
+            (Some(&gh), None, None)
+        );
+        assert!(!calls("gh").contains("user"), "{}", calls("gh"));
+        let mut held = probe.clone();
+        held.at = Instant::now() - BACKOFF;
+        assert!(!held.stale());
+
+        // glab not signed in: the sign-in's words and fix, no account asked.
+        std::fs::write(dir.join("glab.out"), "").unwrap();
+        let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
+        assert_eq!(probe.cli, None);
+        assert_eq!(
+            probe.lost.as_deref(),
+            Some("gitlab.lab sign-in: not logged in (glab auth login --hostname gitlab.lab)")
+        );
+        assert!(!calls("glab").contains("user"), "{}", calls("glab"));
+
+        // In order: glab first, not signed in; gh signed in reads the host.
+        let probe = probe_host("git.lab", &[glab.clone(), gh.clone()]);
+        assert_eq!((probe.reader(), probe.lost.as_ref()), (Some(&gh), None));
+        // glab signed in, its account answering: glab reads it, by name.
+        let _ = std::fs::remove_file(dir.join("glab.out"));
+        let probe = probe_host("git.lab", &[glab.clone(), gh.clone()]);
+        assert_eq!((probe.reader(), probe.viewer.as_deref()), (Some(&glab), Some("me")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pass lists a host probed on it from that probe (T-1067), a kept
+    /// probe's host from the kept probe, a lost host not at all, and a
+    /// repository backing off (a rate limit, T-800, T-895) not at all, a
+    /// burst's pass aside.
+    #[test]
+    fn a_pass_lists_a_reprobed_host_from_the_new_probe_and_keeps_each_backoff() {
+        let remote = |host: &str, path: &str| Remote { host: host.into(), path: path.into() };
+        let gh = Cli { forge: Forge::GitHub, bin: "/bin/gh".into() };
+        let glab = Cli { forge: Forge::GitLab, bin: "/bin/glab".into() };
+        let probe = |cli: &Cli, viewer: Option<&str>, lost: Option<&str>| HostProbe {
+            cli: Some(cli.clone()),
+            at: Instant::now(),
+            viewer: viewer.map(str::to_string),
+            lost: lost.map(str::to_string),
+        };
+        let mut s = State::default();
+        s.probes.insert("github.com".into(), probe(&gh, None, None));
+        // Its account unknown, and stale: probed again on this pass.
+        s.probes.insert("gitlab.lab".into(), probe(&glab, None, Some("account unknown")));
+        // Its account unknown, not yet due again.
+        s.probes.insert("gitlab.down".into(), probe(&glab, None, Some("account unknown")));
+        let repos = vec![
+            (remote("github.com", "o/a"), PathBuf::from("/a")),
+            (remote("github.com", "o/limited"), PathBuf::from("/l")),
+            (remote("gitlab.lab", "g/b"), PathBuf::from("/b")),
+            (remote("gitlab.lab", "g/limited"), PathBuf::from("/m")),
+            (remote("gitlab.down", "g/c"), PathBuf::from("/c")),
+        ];
+        let limited = "rate limited by the forge: HTTP 429".to_string();
+        for key in ["github.com/o/limited", "gitlab.lab/g/limited"] {
+            s.errors.push((key.into(), limited.clone()));
+            s.asked.insert(key.into(), Instant::now());
+        }
+        let probing =
+            vec![ProbeQuery { host: "gitlab.lab".into(), candidates: vec![glab.clone()] }];
+        let keys = |q: &[RepoQuery]| q.iter().map(RepoQuery::key).collect::<Vec<_>>();
+        let pend = |p: &[PendingRepo]| p.iter().map(|p| p.remote.key()).collect::<Vec<_>>();
+
+        let (listed, pending) = split_repos(&repos, &probing, &s, false);
+        assert_eq!(keys(&listed), ["github.com/o/a"], "the kept probe's host, by its CLI");
+        assert_eq!(listed[0].cli, gh);
+        assert_eq!(pend(&pending), ["gitlab.lab/g/b"], "the reprobed host waits for its probe");
+
+        // The probe answers with the account: listed by it on this pass.
+        let mut q = Query { pending, ..Default::default() };
+        list_probed(&mut q, &[("gitlab.lab".into(), probe(&glab, Some("me"), None))]);
+        assert_eq!(keys(&q.repos), ["gitlab.lab/g/b"]);
+        assert_eq!(q.repos[0].viewer.as_deref(), Some("me"));
+
+        // A burst reads its ticket's repositories whatever their backoff.
+        let (listed, pending) = split_repos(&repos, &probing, &s, true);
+        assert_eq!(keys(&listed), ["github.com/o/a", "github.com/o/limited"]);
+        assert_eq!(pend(&pending), ["gitlab.lab/g/b", "gitlab.lab/g/limited"]);
     }
 
     #[test]

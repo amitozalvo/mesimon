@@ -39128,28 +39128,50 @@ repository's own backoff never asked the account again. The toggle cleared the p
 
 **A GitLab sign-in with no account is a lost host.** glab lists by `--author <account>`, and
 a sign-in alone lists nothing, so the probe now treats an account it could not read
-(`viewer_of`: not JSON, no username, an empty one) as T-798's lost sign-in: `cli: None`, asked
-again on `backoff()`, the board's trouble and the advisory row's line, never "no forge".
-Its words are `forge::account_trouble`: `<host> account unknown: glab api user: <why> ∙ asked
-again in <n> min`. The sign-in held, so the line offers no sign-in fix (T-810's lines do).
-Nothing lists the host meanwhile, so there is never an unfiltered list. GitHub's probe asks no
-account (`--author @me`) and is unchanged; setup's question asks `auth status` alone, since a
-wizard does not need the account.
+(`viewer_of`: a failed call, not JSON, no username, an empty one) as T-798's lost sign-in:
+asked again on `backoff()`, the board's trouble and the advisory row's line, never "no
+forge". Its words are `forge::account_trouble`: `<host> account unknown: glab api user:
+<why> ∙ asked again in <n> min`. The sign-in held, so the line offers no sign-in fix (T-810's
+lines do). **The probe keeps its `cli`**: lists go through `HostProbe::reader`, which is none
+while `lost` holds, so nothing lists the host (there is no unfiltered list), while every
+reader of `cli` (`forge_reaches`, `present`, `prs_refusal`'s forge name, setup's "signed in")
+reads it as before. Refuted, in this ticket's first cut: `cli: None` like a lost sign-in. It
+made `forge_reaches` false, so a ticket naming an MR on the host had its owed read dropped
+and entered a `requires_pipeline` column with the pipeline unread; the e2e's negative case
+caught it. GitHub's probe asks no account (`--author @me`) and is unchanged.
 
 **A host probed again lists from that probe on the same pass.** `forge_query` listed a
 re-probed host's repositories from the cached probe, and sent only a never-probed host's to
-the worker's `pending` (T-752). Every repository of a host probed on the pass is now pending,
-listed with what the probe found, so a recovered account is used at once and a stale probe's
-CLI never is. A repository backing off (a rate limit, T-895) stays out of `pending` too.
+the worker's `pending` (T-752). `forge::split_repos` now sends every repository of a host
+probed on the pass to `pending`, listed with what the probe found, so a recovered account is
+used at once and a stale probe's CLI never is. A repository backing off (a rate limit,
+T-895) stays out of both, a burst's pass aside, as before.
+
+**Before → after, for a GitLab host signed in whose `api user` fails:** the probe was
+believed 6 h → asked again on the backoff (5 min); each repository failed locally and backed
+off with `<repo>: signed-in account unknown; glab api user did not answer` on the advisory row
+→ no repository is asked and the row names the host's account; the MRs came back only after
+the probe went stale or the person toggled Merge into → on the first probe that names the
+account, in the same pass. No agent or crown text changes: tool text, `get_ticket`, briefs
+and wakes do not carry the forge's trouble, and the refusal words a move gets
+(`pipeline not read`) are the same.
 
 **Not done:** `doctor`'s forge line still asks `auth status` alone, and does not ask glab's
-account.
+account. The incident itself was not reproduced; this is the mechanism the toggle fits.
 
 Tests: `forge::a_gitlab_account_that_did_not_answer_is_lost_and_asked_again_on_the_backoff`
-(a stub glab: offline, then no username, then the account; the words, no list, the backoff
-against `PROBE_FOR`, the row clearing) and
+(a stub glab: offline, then no username, then the account; the words, no reader, the backoff
+against `PROBE_FOR`, the row clearing),
+`forge::a_probe_asks_glab_alone_for_the_account_and_keeps_the_sign_in_and_the_order`
+(negative: gh asks no account and is believed past the backoff; glab not signed in keeps the
+sign-in words and is asked no account; candidates are taken in order),
+`forge::a_pass_lists_a_reprobed_host_from_the_new_probe_and_keeps_each_backoff` (a kept
+probe's host lists by its CLI, a re-probed host waits for its probe and lists by its account,
+a lost host lists nothing, a rate-limited repository stays out but for a burst) and
 `forge_e2e::a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed` (a ticket
 with a GitLab and a GitHub leg: no `mr list` while the account fails, the GitHub PR bound
-meanwhile, the account asked again on the backoff, then the MR listed `--author me` by the
-same daemon, the row clear, and no further account ask on the backoff). Run against the old
-probe, the e2e fails at its first wait.
+meanwhile, the account asked again on the backoff, a second ticket naming an MR on the host
+refused REVIEW's `requires_pipeline` with `pipeline not read`, then the MR listed
+`--author me` by the same daemon, the row clear, and no further account ask on the backoff).
+Run against the old probe the e2e fails at its first wait; against the refuted `cli: None`,
+at the REVIEW refusal.

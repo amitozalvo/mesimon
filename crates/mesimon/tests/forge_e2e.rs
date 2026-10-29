@@ -4268,6 +4268,28 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
     });
     assert_eq!(mr_lists(), 0, "no list without the account, never an unfiltered one");
     assert!(!prs_of(&mut c).iter().any(|p| p.ticket == id && p.forge == "gitlab"));
+    // The host is still the board's to read: an MR a ticket names on it
+    // holds a column that needs a passed pipeline, never waved through.
+    let (named, _, _, _) = cut(&mut c, "named");
+    match c.request(Command::WriteNote {
+        ticket: named,
+        note: None,
+        text: "## Summary\n- https://gitlab.example.com/lab/forge-api/-/merge_requests/10\n".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { .. } => {}
+        other => panic!("write_note: {other:?}"),
+    }
+    let mut review = c.board().column("REVIEW").unwrap().settings.clone();
+    review.requires_pipeline = true;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
+        Response::Ok
+    ));
+    match c.request(Command::MoveTicket { id: named, column: "REVIEW".into(), before: None }) {
+        Response::Err { message } => assert!(message.contains("pipeline not read"), "{message}"),
+        other => panic!("REVIEW with the account unknown: {other:?}"),
+    }
 
     // The network answers, with no username: still lost, in its own words.
     write(&nameless, "");

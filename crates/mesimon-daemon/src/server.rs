@@ -18903,40 +18903,8 @@ impl Daemon {
         if only.is_none() {
             self.forge.errors.retain(|(k, _)| repos.iter().any(|(r, _)| r.key() == *k));
         }
-        // A repository whose call failed waits out its backoff alone
-        // (T-800); the minute reads the rest. A host probed on this pass,
-        // first or again, has its repositories listed on the worker once
-        // the probe answers (T-752), with what that probe found: a GitLab
-        // account that answers again lists its MRs on that pass (T-1067),
-        // never through the stale probe's.
-        let probing = |remote: &mesimon_core::forge::Remote| {
-            probes.iter().any(|p: &crate::forge::ProbeQuery| p.host == remote.host)
-        };
-        let listed: Vec<&(mesimon_core::forge::Remote, std::path::PathBuf)> = repos
-            .iter()
-            .filter(|(remote, _)| only.is_some() || !self.forge.backing_off(&remote.key()))
-            .collect();
-        let repo_queries: Vec<crate::forge::RepoQuery> = listed
-            .iter()
-            .filter(|(remote, _)| !probing(remote))
-            .filter_map(|(remote, dir)| {
-                let probe = self.forge.probes.get(&remote.host)?;
-                Some(crate::forge::RepoQuery {
-                    remote: remote.clone(),
-                    cli: probe.cli.clone()?,
-                    viewer: probe.viewer.clone(),
-                    dir: dir.clone(),
-                })
-            })
-            .collect();
-        let pending: Vec<crate::forge::PendingRepo> = listed
-            .iter()
-            .filter(|(remote, _)| probing(remote))
-            .map(|(remote, dir)| crate::forge::PendingRepo {
-                remote: remote.clone(),
-                dir: dir.clone(),
-            })
-            .collect();
+        let (repo_queries, pending) =
+            crate::forge::split_repos(&repos, &probes, &self.forge, only.is_some());
         if probes.is_empty() && repo_queries.is_empty() {
             // No forge reads this board: nothing to ask, and no pass to
             // wait for.
