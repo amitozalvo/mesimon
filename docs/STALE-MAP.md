@@ -38885,3 +38885,35 @@ already drives the fallback's two frames through the daemon, on both roads.
   passed; fmt clean; `ci/rig_test.py` 68/68; `crown_e2e` + `mcp_e2e` on the hooks road
   **119/119** on the first run, audit clean. The full suite and the rig were not rerun here;
   the crown runs the final full e2e/forge validation on the combined changes.
+
+## Deployment news across a restart: the forge replays nothing (T-1070, 2026-10-29)
+
+A GitLab board reported a restart wake that said many tickets' earlier deployments again, and
+daily deployment news on CI- or docs-only merge requests. The first mechanism it suggested
+(every deployment credited to the last merged MR) is not the code: T-801 credits a deployed
+commit to every merge git proves it carries. A CI-only MR merged before a deployed one *is*
+deployed, and its arrival is right.
+
+**Diagnostic result, no fix.** `a_restart_replays_no_deployment_and_says_one_made_while_down`
+(`forge.rs`) runs the forge's own restart path: two tickets read and deployed by ancestry,
+`ForgeFile::of` → JSON → `State::restore`, as a `U` handover does, then the first pass on the
+same environments. It says nothing whether git can answer or not (no fetch, and the read's page
+has moved past the merge commit), and nothing after two handovers. A deployment made while the
+daemon was down is said once, marked late. A rollback is no edge, and the redeploy after it is
+said again, as any deployment is. The forge layer cannot turn restored facts into a wake.
+
+What can still re-say a deployment, by mechanism, unproven on the reporting board:
+- **Real movement:** an older pipeline's manual apply takes newer merges off an environment
+  (git says the deployed commit lacks them), and the next deploy says them again. This is the
+  documented T-801 behaviour.
+- **A merged PR re-entering a ticket's set:** `edge` has no previous reading for it, so every
+  environment it stands in is `reached`. Its feed signature is `merged !N bound` on that
+  ticket. No road on this board was found to drop a bound PR and bind it again. It stays a
+  hypothesis, not a fix.
+- **The crown's ledger, not the forge:** a taken wake (T-990) whose `entered` never arrived is
+  kept in `crown.json` and owed again, with its old words, when its pane goes. The journal says
+  `taken, its pane gone; owed again`, and the feed has no fresh `crown_wake` line for those
+  workers. This board's journal holds 154 takes and no such line.
+
+The evidence that separates these is the reporting board's journal and feed at the restart, not
+this repository. The ticket's private notes carry a read-only triage script for it.

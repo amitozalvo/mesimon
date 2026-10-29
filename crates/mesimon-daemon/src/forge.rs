@@ -3178,6 +3178,126 @@ mod tests {
         assert!(s.restored.is_empty());
     }
 
+    /// T-1070: a restart replays no deployment. Two GitLab tickets are read,
+    /// deployed as git proves by ancestry (T-801), saved and restored as a
+    /// `U` handover does; the first pass after, on the same environments,
+    /// says nothing, where git can say and where it cannot. Production
+    /// moving on while no daemon read is said once, late, for the merge it
+    /// newly carries alone; a rollback and its redeploy are said as any are.
+    #[test]
+    fn a_restart_replays_no_deployment_and_says_one_made_while_down() {
+        let merged = |number: u64, oid: &str| {
+            let mut p = pr(number, PrState::Merged, Pipeline::Unknown);
+            p.forge = Forge::GitLab;
+            p.repo = "g/p".into();
+            p.url = format!("https://gitlab.com/g/p/-/merge_requests/{number}");
+            p.merge_oid = oid.into();
+            p.merged_ms = number;
+            p
+        };
+        // !10 (a CI-only change, say) merged before !12 on main; !13 later.
+        let history = |merge: &str, latest: &str| match (merge, latest) {
+            ("m10", "m12" | "m13") | ("m12", "m13") => Some(true),
+            (m, l) if m == l => Some(true),
+            _ => Some(false),
+        };
+        let (a, b) = (ulid::Ulid::new(), ulid::Ulid::new());
+        let envs = ["staging".to_string(), "production".to_string()];
+        // One pass as `absorb_forge` takes it: the list's merged rows, the
+        // merge commits' reads against what the state held, the edge against
+        // the last set, then the sets and the commits' facts kept.
+        let pass = |s: &mut State,
+                    staging: &str,
+                    production: &str,
+                    git: &dyn Fn(&str, &str) -> Option<bool>,
+                    seen: bool|
+         -> Vec<(ulid::Ulid, Vec<String>, bool)> {
+            let q = Query {
+                envs: envs.to_vec(),
+                commit_pipelines: s.commit_pipelines.clone(),
+                deployed: s.deployed.clone(),
+                ..Default::default()
+            };
+            let read = |env: &str, latest: &str| forge::EnvRead {
+                env: env.into(),
+                latest: latest.into(),
+                at_ms: 0,
+                seen: if seen { vec![latest.to_string()] } else { Vec::new() },
+            };
+            let mut out = Vec::new();
+            for (t, list) in [(a, vec![merged(10, "m10")]), (b, vec![merged(12, "m12")])] {
+                let mut set = list;
+                merged_reads(
+                    &mut set,
+                    &q,
+                    0,
+                    |_| Pipeline::Passed,
+                    |_| vec![read("staging", staging), read("production", production)],
+                    |p, latest| git(&p.merge_oid, latest),
+                );
+                for p in &set {
+                    let key = (p.repo.clone(), p.merge_oid.clone());
+                    s.commit_pipelines.insert(key.clone(), p.pipeline.clone());
+                    s.deployed.insert(key, p.deployed.clone());
+                }
+                let late = s.since_restart(t, true);
+                if let Some(old) = s.sets.get(&t) {
+                    let held = s.held.get(&t).cloned().unwrap_or_default();
+                    let e = super::edge(old, &set, &held, true);
+                    if e.any() {
+                        out.push((t, e.news(&set), late));
+                    }
+                }
+                s.opens(t, &set);
+                s.sets.insert(t, set);
+            }
+            out
+        };
+        let restart = |s: &State| {
+            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
+            let mut back = State::default();
+            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+            back
+        };
+        let mut s = State::default();
+        assert!(pass(&mut s, "m10", "", &history, true).is_empty(), "a first read is a baseline");
+        // Staging runs !12's merge commit, production !10's: !10 reaches
+        // production, and !12 staging, which carries !10 by ancestry too.
+        let heard = pass(&mut s, "m12", "m10", &history, true);
+        assert_eq!(
+            heard,
+            [
+                (a, vec!["deployed to production !10".to_string()], false),
+                (b, vec!["deployed to staging !12".to_string()], false),
+            ]
+        );
+        assert!(pass(&mut s, "m12", "m10", &history, true).is_empty(), "said once");
+
+        // Restored, the same environments: nothing, where git can say and
+        // where it cannot (no fetch, and the read's page has moved on).
+        let mut r = restart(&s);
+        assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
+        let mut r = restart(&s);
+        assert!(pass(&mut r, "m12", "m10", &|_, _| None, false).is_empty());
+        // A handover after a handover.
+        let mut r = restart(&restart(&s));
+        assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
+
+        // Production moved on to !13's merge while no daemon read: !12 is
+        // there now, said once and late; !10, there already, is not said.
+        let mut r = restart(&s);
+        let heard = pass(&mut r, "m12", "m13", &history, true);
+        assert_eq!(heard, [(b, vec!["deployed to production !12".to_string()], true)]);
+        assert!(pass(&mut r, "m12", "m13", &history, true).is_empty(), "and once only");
+
+        // A rollback read after the restart takes production off !10; the
+        // redeploy after it is a deployment, said again, outside the window.
+        let mut r = restart(&s);
+        assert!(pass(&mut r, "m12", "old", &history, true).is_empty(), "a loss is no edge");
+        let heard = pass(&mut r, "m12", "m10", &history, true);
+        assert_eq!(heard, [(a, vec!["deployed to production !10".to_string()], false)]);
+    }
+
     /// T-769, finding 3, and T-782: one pass's words in the forge's order
     /// — merged, the pipeline, deployed, waiting: the deployment to staging
     /// ran before the job the pipeline waits on.
