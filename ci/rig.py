@@ -759,8 +759,9 @@ def rules_after_compaction(rows, since_ms):
     """T-1069: (ok, observed) from the crown's transcript since `since_ms`:
     its first compact boundary, the last board tool result before it (the
     rules already told: no `CROWN_RULES_MARK`) and the first after it, which
-    carries them again. With no board result before the boundary the
-    baseline is not shown, and the first after it alone is judged. Only the
+    carries them again. All three are required: with no board result before
+    the boundary, or one carrying the rules, nothing shows the rules were
+    owed again rather than still owed, and the check fails. Only the
     conversation's own rows are read: Claude Code 2.1.312 writes each call
     first into an `api-request-blob` row with no timestamp, which `once`
     would keep in the real row's place."""
@@ -792,7 +793,7 @@ def rules_after_compaction(rows, since_ms):
     said = lambda c: "the rules" if c else "no rules"  # noqa: E731
     seen = (f"last board result before the boundary: {said(before[-1]) if before else 'none'}; "
             f"first after: {said(after[0]) if after else 'none'}")
-    return bool(after and after[0] and not (before and before[-1])), seen
+    return bool(before and not before[-1] and after and after[0]), seen
 
 
 def measures_line(m):

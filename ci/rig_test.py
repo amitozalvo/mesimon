@@ -649,6 +649,13 @@ class CompactionWindowTests(unittest.TestCase):
         ok, seen = rig.rules_after_compaction(rows[:-2] + blob + rows[-2:], 0)
         self.assertTrue(ok, seen)
 
+    def test_no_board_result_before_the_boundary_shows_no_baseline_and_fails(self):
+        rows = self.crown_rows(False, True)
+        at = next(i for i, r in enumerate(rows) if r.get("subtype") == "compact_boundary")
+        ok, seen = rig.rules_after_compaction(rows[at:], 0)
+        self.assertFalse(ok, seen)
+        self.assertIn("before the boundary: none", seen)
+
     def test_no_boundary_fails(self):
         self.assertFalse(rig.rules_after_compaction(self.crown_rows(False, True, boundary=False), 0)[0])
 

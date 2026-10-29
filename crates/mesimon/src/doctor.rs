@@ -970,7 +970,7 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
             return rec(Level::Ok, "claude road", value)
                 .advice(format!("Nothing is needed from you: {road} {advice}"));
         };
-        let unseen = "an automatic compaction is not seen: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards. A /compact typed in the session or sent from the board is still seen, and all of that holds for it.";
+        let unseen = "an automatic compaction is not seen: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards. A /compact typed in the session or sent from the board is still seen: its card shows it, words for the session wait until it ends, auto-park leaves the session alone, and a crown is given the board's rules again afterwards.";
         let (tag, limit) = match compaction {
             NativeCompaction::PassedOver => (
                 "automatic compactions unseen",
@@ -1777,11 +1777,12 @@ mod tests {
             "are not held back until it ends",
             "auto-park may put the session to sleep",
             "a crown is not given the board's rules again",
-            "A /compact typed in the session or sent from the board is still seen",
+            "A /compact typed in the session or sent from the board is still seen: its card shows it, words for the session wait until it ends, auto-park leaves the session alone, and a crown is given the board's rules again afterwards.",
             "No setting in mesimon changes",
         ] {
             assert!(advice.contains(consequence), "{consequence}: {advice}");
         }
+        assert!(!advice.contains("all of that holds"), "no list read both ways: {advice}");
         for cause in ["server error", "server_error", "interrupted"] {
             assert!(!advice.contains(cause), "no word on a failure's cause: {advice}");
         }

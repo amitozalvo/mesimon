@@ -38696,7 +38696,8 @@ last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with 
    what an automatic compaction escapes (the card keeps its state; words for the session, a queued
    prompt or the crown's ask or wake, are not held back, though Claude Code has refused words sent
    into one, T-894; auto-park may sleep the session in the middle of it; a crown is not given the
-   board's rules again), that a typed or board-sent `/compact` is still seen, and that no mesimon
+   board's rules again), that a typed or board-sent `/compact` is still seen, with the controls it keeps named (its card,
+   words held until it ends, auto-park held off, the rules given again), and that no mesimon
    setting changes which events reach a person's plugins. No policy workaround is offered. The
    classic events the native road never uses still raise nothing, and a heard road stays `ok`.
    The first cut said `automatic compactions not shown`, kept `ok`, and certified 2.1.290–2.1.308
@@ -38750,5 +38751,6 @@ compaction words on 2.1.289; `mod_auto_e2e`: the enterprise launch on a 2.1.312 
 launch writes none, and the 2.1.288 deaf relaunch writes none. Rig offline (`ci/rig_test.py`, 65):
 the frames, the hold (a prompt that entered inside the window, one queued outside it, one taken
 twice, a window never closed all fail), and the rules after the crown's compaction (none after, the
-rules on every result, no boundary all fail; a request blob hides nothing). `compact_e2e`'s queued ask
+rules on every result, no board result before the boundary, no boundary all fail; a request blob
+hides nothing). `compact_e2e`'s queued ask
 already drives the fallback's two frames through the daemon, on both roads.
