@@ -885,15 +885,18 @@ def context_read(text):
     return int(tokens.group(1)), int(window.group(1))
 
 
-def archived_quiet(lines, tid, since, archived):
+def archived_quiet(lines, tid, since, until=None):
     """`archived_quiet:<rig step>` (AF1, T-1076), over the feed: from that
     step's start the forge read a pipeline pass on the ticket (a `forge pr`
     line, so the change was seen and not missed), and the board woke the
-    crown with the forge's news for it exactly when the ticket is still on
-    the board. (passed, what was seen)."""
+    crown with the forge's news for it exactly when the ticket stayed on the
+    board. `until`: the ticket was archived from the step's start to then
+    (the step restores it), and only that window is judged. (passed, what
+    was seen)."""
     if since is None:
         return False, "the step never ran"
-    late = [l for l in lines if l.get("at_ms", 0) >= since]
+    archived = until is not None
+    late = [l for l in lines if since <= l.get("at_ms", 0) < (until or float("inf"))]
     read = [l.get("outcome") for l in late if l.get("kind") == "board" and l.get("actor") == "forge"
             and l.get("cmd") == "pr" and l.get("ticket") == tid
             and "pipeline passed" in (l.get("outcome") or "")]
@@ -3768,9 +3771,11 @@ Reply with the single word ready and end your turn."""
             # `--reset` or a person's archive does (the crown never archives
             # here), every PR's pipeline passed on the stub, and a handover
             # onto it, so the first read after it holds both edges `after a
-            # restart` (T-937), as T-1066's F7 run met them. Ends once the
-            # forge has read every pass, the crown's turn on the ticket still
-            # on the board is over, and `hold` seconds of passes more.
+            # restart` (T-937), as T-1066's F7 run met them. Once the forge
+            # has read every pass, the crown's turn on the ticket still on the
+            # board is over and `hold` seconds of passes more have gone, the
+            # ticket is restored, so the board's snapshot carries it again
+            # for the checks; `record["archived"]` keeps the window.
             record.setdefault("step_ms", {})[what] = int(time.time() * 1000)
             tickets = [tid for tid, _, _ in self.test_tickets(test)]
             gone, kept = tickets[-1], tickets[:-1]
@@ -3787,7 +3792,7 @@ Reply with the single word ready and end your turn."""
             except WireError as e:
                 record["failures"].append(f"forge_archived: {e}")
                 return False
-            self.log(f"archived {self.ticket(self.board(), gone)['short_key']}")
+            self.log(f"archived {self.test_tickets(test)[-1][1]}")
             branches = {w["ticket"]: w["branch"] for w in self.snapshot().get("worktrees", [])}
             rows = [(42 + i, branches.get(tid)) for i, tid in enumerate(tickets)]
             if not all(b for _, b in rows):
@@ -3823,6 +3828,12 @@ Reply with the single word ready and end your turn."""
                     return False
             time.sleep(step.get("hold", 10))
             self.watch()
+            record.setdefault("archived", {})[gone] = int(time.time() * 1000)
+            try:
+                self.wire.request({"cmd": "unarchive_ticket", "id": gone})
+            except WireError as e:
+                record["failures"].append(f"forge_archived: the restore: {e}")
+                return False
             return True
         if what == "crown_away":
             # SM1 (T-1064): the crown taken off and put back, as a person's
@@ -4901,8 +4912,7 @@ Reply with the single word ready and end your turn."""
             elif name == "archived_quiet":
                 # `archived_quiet:<rig step>` (AF1, T-1076): see `archived_quiet`.
                 since = record.get("step_ms", {}).get(arg)
-                gone = bool((self.ticket(board, tid) or {}).get("archived"))
-                ok, seen = archived_quiet(lines, tid, since, gone)
+                ok, seen = archived_quiet(lines, tid, since, record.get("archived", {}).get(tid))
                 check(c, ok, seen)
             elif name == "sampled_before":
                 # `sampled_before:<prefix>` (T-973): see `sampled_before`.
@@ -5065,11 +5075,8 @@ Reply with the single word ready and end your turn."""
         if not self.close_out:
             return words
         owed = []
-        board = self.board()
         for test in self.close_out:
-            # A ticket the test archived (AF1) is off the board: no move.
-            keys = [k for tid, k, _ in self.test_tickets(test)
-                    if not (self.ticket(board, tid) or {}).get("archived")]
+            keys = [k for _, k, _ in self.test_tickets(test)]
             each = ", then ".join(f"for {k}" for k in keys)
             owed.append(f"{test['id']} passed; its verdict is a note on {test['key']}: call "
                         f"move_ticket {each} to DONE.")
