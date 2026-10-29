@@ -561,6 +561,7 @@ class ClaudeRigBinaryStampTests(unittest.TestCase):
         cls = self.claude_rig.Rig
         r = cls.__new__(cls)
         r.bin, r.words, r.history, r.feed_lines, r.looks = str(self.bin), {}, {}, [], None
+        r.seams = {}  # no --record: run_test cuts no trace
         r.checkout, r.watch, r.board = (lambda: "clean"), (lambda: None), (lambda: {})
         r.agent_of = lambda board, tid: None
         r.judge = lambda test, mark, record, seconds: {"pass": not record["failures"],
