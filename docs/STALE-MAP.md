@@ -38796,7 +38796,7 @@ already drives the fallback's two frames through the daemon, on both roads.
   fresh read's start taken.
 - **Validation, as run.** `cargo ut` **2,772 passed**, 10 ignored (the configured
   measurements, child entry points and the live-release check). Clippy on the workspace, all
-  targets, `-D warnings`: clean. `cargo fmt --check` clean. `ci/rig_test.py` 59/59 (SF1's
+  targets, `-D warnings`: clean. `cargo fmt --check` clean. `ci/rig_test.py` 57/57 (SF1's
   acceptance on synthetic transcripts: taken passes; a read between, a stale refusal, another
   stamp, no start and a receipt with no stamp each fail). The new e2e passed 1/1 on its first
   run. One full `cargo nextest run --workspace --no-fail-fast` under `ci/test-run.py`, with two
