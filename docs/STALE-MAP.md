@@ -39209,3 +39209,10 @@ having read the new sentence on `get_ticket` (RH1's worker never called it and s
 hand on the refusal, T-908's road). The corrected wording was run again on RH3 and RH4 (results
 below). The wording supplies a missing fact; whether it lowers the habit on the tier where it
 was seen is not measured here.
+
+Corrected wording, `f74b3c9b`, `--only RH3,RH4` (verdicts `target/rig/verdicts-20261029-144114.md`):
+both PASS. RH3: raise_hand×0, woke `delivered`. RH4: a hand naming rh4-key.txt, woke `raised`
+then `finished`, no stand-in. Both workers' transcripts hold the corrected sentence in their
+`get_ticket` result and none of the first wording. The earlier runs are
+`verdicts-20261029-140501.md` (before) and `-140829.md` (first wording), both stamped `2999796a`
+with the change uncommitted.
