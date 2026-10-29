@@ -1552,6 +1552,11 @@ pub struct Flags {
     pub merged_oid: String,
     /// The verdict to remember for the next pass.
     pub seen: Option<ContentSeen>,
+    /// The content question was due and this pass did not answer it
+    /// (T-1064): `merged` is false for want of a scan, not because the work
+    /// is not up there. A squash merged before a restart reads so until the
+    /// budget reaches it, and the first answer is no landing.
+    pub unchecked: bool,
     /// Why this branch could not be read, when it could not (T-754): git's
     /// first line. A leg that failed to sample is never a clean leg; the
     /// ticket page says this beside the branch.
@@ -1834,6 +1839,7 @@ fn compute_flags_on(
             let mut merged_in = String::new();
             let mut merged_oid = String::new();
             let mut seen = None;
+            let mut unchecked = false;
             if !ancestor && !tip.oid.is_empty() && tip.oid != i.base_oid {
                 let scan = Scan {
                     repo,
@@ -1851,7 +1857,10 @@ fn compute_flags_on(
                         seen = Some(verdict);
                     }
                     // Out of budget: carry the old verdict, claim nothing.
-                    None => seen = i.seen.clone(),
+                    None => {
+                        seen = i.seen.clone();
+                        unchecked = true;
+                    }
                 }
             }
             let merged = ancestor || !merged_in.is_empty();
@@ -1864,6 +1873,7 @@ fn compute_flags_on(
                 merged_in,
                 merged_oid,
                 seen,
+                unchecked,
                 trouble,
             }
         })
@@ -2082,6 +2092,9 @@ pub struct RepoFlags {
     pub merged_in: String,
     pub merged_oid: String,
     pub content: Option<ContentSeen>,
+    /// `Flags::unchecked`: unmerged for want of an answer, not by one
+    /// (T-1064). A leg no query reached is unchecked too.
+    pub unchecked: bool,
     /// Why the leg's last sample failed, when it did (T-754): git's words,
     /// or `not sampled` for a leg no query reached. Never a clean leg.
     pub trouble: Option<String>,
@@ -2123,6 +2136,7 @@ impl RepoFlags {
             merged_in: f.merged_in.clone(),
             merged_oid: f.merged_oid.clone(),
             content: f.seen.clone(),
+            unchecked: f.unchecked,
             trouble: f.trouble.clone(),
         }
     }
@@ -2153,6 +2167,7 @@ impl RepoFlags {
     pub fn rebase_on_tip(&mut self) {
         self.base_oid = self.tip.clone();
         self.merged = false;
+        self.unchecked = false;
         self.needs_rebase = self.tip != self.base_tip;
     }
 
@@ -2179,6 +2194,7 @@ impl RepoFlags {
             return false;
         }
         self.merged = true;
+        self.unchecked = false;
         self.needs_rebase = false;
         self.merged_in = merged_in;
         self.merged_oid = merged_oid;
@@ -2216,6 +2232,9 @@ pub struct Aggregate {
     pub counted: String,
     pub merged_in: String,
     pub merged_oid: String,
+    /// Unmerged only for want of an answer (T-1064): every judged leg that
+    /// does not read merged is `unchecked`. No baseline for a landing.
+    pub unchecked: bool,
 }
 
 /// Fold a ticket's legs into one answer. The legs that were TOUCHED judge
@@ -2248,6 +2267,9 @@ pub fn aggregate(legs: &[RepoFlags]) -> Aggregate {
         },
         merged_in: landed.map(|l| l.merged_in.clone()).unwrap_or_default(),
         merged_oid: landed.map(|l| l.merged_oid.clone()).unwrap_or_default(),
+        unchecked: !merged
+            && !judged.is_empty()
+            && judged.iter().filter(|l| !l.merged).all(|l| l.unchecked),
     }
 }
 
@@ -3127,6 +3149,7 @@ mod tests {
                 merged_in: f.merged_in.clone(),
                 merged_oid: f.merged_oid.clone(),
                 content: f.seen.clone(),
+                unchecked: f.unchecked,
                 trouble: None,
             }
         };
@@ -3538,6 +3561,11 @@ mod tests {
             first.flags.iter().any(|f| !f.merged && f.seen.is_none()),
             "and the one it skipped remembers nothing"
         );
+        // Unmerged for want of a scan, and saying so (T-1064): the board
+        // reads no landing off its next pass.
+        for f in &first.flags {
+            assert_eq!(f.unchecked, !f.merged, "{f:?}");
+        }
         // The next pass, carrying what the first learned, finishes the job.
         let inputs: Vec<FlagInput> = inputs
             .into_iter()
@@ -4064,6 +4092,7 @@ mod tests {
             merged_in: String::new(),
             merged_oid: String::new(),
             content: None,
+            unchecked: false,
             trouble: None,
         }
     }
@@ -4194,6 +4223,28 @@ mod tests {
         assert!(aggregate(&[c]).conflict);
     }
 
+    /// Unmerged only for want of a scan (T-1064): every judged leg not read
+    /// merged is unchecked. One leg answered unmerged answers the ticket.
+    #[test]
+    fn aggregate_is_unchecked_only_where_no_leg_answered_unmerged() {
+        let mut api = leg_flags("api", "a0", "a3", 3, false, false);
+        api.unchecked = true;
+        let web_landed = leg_flags("web", "w0", "w1", 0, true, false);
+        let web_stale = leg_flags("web", "w0", "w0", 0, false, true);
+        assert!(aggregate(&[api.clone()]).unchecked);
+        assert!(aggregate(&[api.clone(), web_landed.clone()]).unchecked, "the rest landed");
+        assert!(aggregate(&[api.clone(), web_stale]).unchecked, "an untouched leg is silent");
+        let web_ahead = leg_flags("web", "w0", "w1", 1, false, false);
+        assert!(!aggregate(&[api.clone(), web_ahead]).unchecked, "web answered unmerged");
+        let mut both = web_landed.clone();
+        both.name = "api".into();
+        assert!(!aggregate(&[both, web_landed]).unchecked, "merged is an answer");
+        // A forge's merge answers it, and so does cutting it again at its tip.
+        let mut folded = api.clone();
+        folded.rebase_on_tip();
+        assert!(!folded.unchecked);
+    }
+
     #[test]
     fn workspace_flags_come_back_per_leg() {
         let Some(root) = workspace_scratch("wsflags") else { return };
@@ -4237,6 +4288,7 @@ mod tests {
                     merged_in: f.merged_in.clone(),
                     merged_oid: f.merged_oid.clone(),
                     content: f.seen.clone(),
+                    unchecked: f.unchecked,
                     trouble: None,
                 }
             })

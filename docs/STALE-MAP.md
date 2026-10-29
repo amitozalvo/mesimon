@@ -38451,3 +38451,69 @@ through the daemon and check each source's dirty mark independently, successful 
 clean ticks and no-op mutations, barred and failed writes, a changed crown and no crown.
 The existing schema-1 readers and restart e2es keep their contracts. No wire, state schema or
 agent-facing text changes; no rig run is owed.
+
+## An unscanned squash is no unmerged baseline (T-1064, 2026-10-29)
+
+After a beta.13 → beta.14 handover a crown was told that already merged, parked
+workers had `delivered (merge_state merged, …)`, one at a time over two minutes. The
+private archive cannot prove the whole sequence (it lacks the ledger from before the
+upgrade), but it fits one mechanism, now reproduced end to end in an e2e.
+
+**The mechanism.** `worktree::compute_flags` runs at most two content scans a pass
+(`CONTENT_SCANS_PER_PASS`); a binding over budget carried its old memo and read
+`merged = false`. A restart has no memos, so every squash-merged branch past the first two
+read unmerged for a pass or more, then merged when its scan came. `set_ticket_agg` heard
+that false → true as a landing (T-527), and `merge_verdict` calls a landing the crown has
+no baseline for `Delivered`. A crown switched away and back (`drop_crown_wakes`) has no
+baselines, which is why the workers T-602's restart look already knew stayed silent and
+these did not. The same flap also followed a fetch that staled a merged memo whose
+target moved: true → false → true, a landing again.
+
+**The fix.** `Flags`, `RepoFlags` and `Aggregate` carry `unchecked`: the content question
+was due and this pass did not answer it, so `merged` is false for want of a scan and not by
+a verdict. A leg no query reached (`not sampled`) is unchecked too; a forge fold and
+`rebase_on_tip` answer it. The aggregate is unchecked only where every judged leg that
+is not merged is unchecked: one leg answered unmerged answers the ticket. The daemon
+keeps `wt_answered`, each ticket's merged state as the flags last answered it, and
+`set_ticket_agg` reads the landing against that; an unchecked reading leaves it alone.
+So a squash found after a restart is a first reading (said only where a delivery is owed,
+as T-554 has it), and confirmed unmerged → unchecked → merged is still a landing.
+
+**Unchanged.** The card, the DONE gate, the train and `get_ticket` still read an unchecked
+branch as unmerged until its scan; only the landing edge changed. Work merged while the
+daemon was down is still said by the restart's look (T-602) for a worker the crown heard;
+an owed delivery is still said on a first reading; forge news, sleeping workers, DONE and
+the restart's own wakes are untouched. No wire, state file or agent text changes.
+
+**Not covered.** A restart's look (`Look::Branch`) runs its own `compute_flags` with the
+same budget; a workspace of three or more touched squash-merged legs could still read
+unchecked there and set the look's baseline to unmerged. T-1066's deployment replay
+(T-1070) is a forge-road question this does not answer.
+
+**Tests.** `old_squash_merges_found_again_after_a_restart_are_not_news` (crown_e2e):
+three squash-merged workers (over the budget), each delivery and merge heard once; the
+crown switched away and back, the workers parked, a handover, the crown slept and woken —
+silent each time; then a fresh worker's squash is said `merged (merge_state ahead →
+merged)`. With the daemon change reverted it fails at the handover: the second worker is
+heard again. Units: the budget test asserts `unchecked` on the skipped binding, and
+`aggregate_is_unchecked_only_where_no_leg_answered_unmerged`.
+
+**Live rig: SM1, forge road.** The rig's merge base is `main` (its `origin/HEAD`), which
+no rig test may land a commit on, so a live case cannot squash onto the base and reach the
+git content scan itself; its merges come from the stub forge. SM1 (new rig steps
+`forge_prs`, `forge_merge_all`, `crown_away`, `forge_again`, `crown_rest`; check
+`no_wake_after:<step>`) runs the same story there: three sibling workers deliver, their PRs
+merge at once and wake the crown with each merge; the crown is taken off and put back, the
+daemon hands over on the same forge and reads every branch merged again, and the crown is
+parked and woken. PASS on its first run (2026-10-29, Claude Code 2.1.312, Opus crown,
+Sonnet workers, 222 s): `delivered` then `merged` for each, no wake after the switch, and
+the crown answered `SM1 since: none`. It proves the live crown is not re-told across that
+sequence; the e2e above proves the scan-budget mechanism.
+
+**Verification.** `cargo ut` green; clippy (`-D warnings`) and rustfmt clean; the crown,
+hold, train, worktree, forge, workspace and PR-merge e2e binaries 171/171. The full
+`cargo nextest run --workspace` stopped fail-fast once on
+`crown_reads_e2e::the_crown_s_slash_command_is_pasted_and_entered_in_a_codex_worker_s_box`
+(3/3 alone), and the `--no-fail-fast` rerun was 3173/3174 with
+`crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` red (29.7 s under load, 4/4 alone
+at 20 s; no worktree or merge in it): a different name each run, the known load flakes.

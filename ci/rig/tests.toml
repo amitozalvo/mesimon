@@ -1102,6 +1102,45 @@ checks = ["road:mod", "started_by_crown", "woke:merged", "woke:forge", "crown:as
   rig = "forge_off"
 
 [[test]]
+id = "SM1"
+title = "SM1 · merges the crown heard are not heard again after it came back, a restart and its own sleep: do the steps below"
+siblings = ["SM1 · the second of three merged workers", "SM1 · the third of three merged workers"]
+budget = 3
+workspace = "worktree"
+brief = "Run this one command with the Bash tool and no other: f=$(basename \"$PWD\").txt; echo done > \"$f\"; git add \"$f\"; git commit -qm done. Then reply with the single word done and end your turn. Read no file. If the board or the crown later tells you about a merge, reply with the single word noted and end your turn."
+expect = "three workers (more than the two content scans a flag pass makes) commit and deliver; their PRs merge at once on a stub forge and the board wakes the crown with each merge. The crown is then taken off and put back (what the board told it is forgotten), the daemon hands over on the same forge and reads every branch merged again, and the crown is parked and woken: the board wakes the crown about none of the three after it came back (T-1064), and the crown, asked, names no ticket the board woke it about since."
+checks = ["road:mod", "started_by_crown", "woke:merged", "no_wake_after:crown_away", "crown_line:SM1 since:none"]
+
+  [[test.steps]]
+  crown = "SM1: call start_agent for {key}, then {key2}, then {key3}, each with workspace worktree, no tier and no plan, then end your turn with the single line: SM1 started. Whenever the board wakes you about any of them, end your turn with the single line: SM1 seen, and call no tool."
+  until = { stops = 1, state = "idle", all = true }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_prs"
+
+  [[test.steps]]
+  rig = "forge_merge_all"
+
+  [[test.steps]]
+  rig = "crown_away"
+
+  [[test.steps]]
+  rig = "forge_again"
+  hold = 30
+
+  [[test.steps]]
+  rig = "crown_rest"
+  hold = 20
+
+  [[test.steps]]
+  crown = "SM1: call no tool. End your turn with one line that begins SM1 since: followed by the key of every ticket the board woke you about after your last SM1 seen line, or the word none."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "F6"
 title = "F6 · the crown is refused DONE for a merged ticket whose second pull request is open: do the steps below"
 workspace = "worktree"

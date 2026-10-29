@@ -818,6 +818,12 @@ pub struct Daemon {
     /// rebase ask is recorded against — a workspace ticket's is its legs'
     /// joined, so any leg's base moving is news.
     wt_agg: HashMap<ulid::Ulid, worktree::Aggregate>,
+    /// Each ticket's merged state as the flags last ANSWERED it (T-1064):
+    /// what `set_ticket_agg` reads a landing against. A reading unmerged
+    /// only for want of a content scan (`Aggregate::unchecked`) leaves it
+    /// where it was, so a squash merged long ago and first scanned now is
+    /// a first reading, not a landing.
+    wt_answered: HashMap<ulid::Ulid, bool>,
     /// Each binding's flags PER LEG (T-368), in leg order — the snapshot's
     /// per-repo rows, `ticket_merged`'s content memo (handed back to the
     /// next sample so the patch scan runs only when a tip moved), and what
@@ -1971,6 +1977,7 @@ impl Daemon {
             pending_spawns: Vec::new(),
             pending_resumes: Vec::new(),
             wt_agg: HashMap::new(),
+            wt_answered: HashMap::new(),
             wt_repos: HashMap::new(),
             wt_progress: HashMap::new(),
             wt_init: std::collections::HashSet::new(),
@@ -17816,6 +17823,7 @@ impl Daemon {
             }
             self.worktrees.remove(&ticket);
             self.wt_agg.remove(&ticket);
+            self.wt_answered.remove(&ticket);
             self.wt_repos.remove(&ticket);
             self.wt_progress.remove(&ticket);
             self.wt_fresh.remove(&ticket);
@@ -18530,6 +18538,7 @@ impl Daemon {
         self.wt_gen = self.wt_gen.wrapping_add(1);
         if self.worktrees.is_empty() {
             self.wt_agg.clear();
+            self.wt_answered.clear();
             self.wt_repos.clear();
             self.wt_conflicts.clear();
             self.wt_fresh.clear();
@@ -19336,14 +19345,21 @@ impl Daemon {
     /// already told of, or whose delivery is held for the train (T-554):
     /// the first sample comes a slow bucket after the cut, and a restart,
     /// which forgets what the crown heard, must not re-hear every branch
-    /// merged before it.
+    /// merged before it. A reading unmerged for want of a content scan is
+    /// no reading at all (T-1064): a restart scans its squash-merged
+    /// branches a couple a pass, and the unscanned ones read unmerged until
+    /// their turn.
     fn set_ticket_agg(&mut self, t: ulid::Ulid, legs: &[worktree::RepoFlags]) -> bool {
         let a = worktree::aggregate(legs);
-        let was = self.wt_agg.get(&t).map(|w| w.merged);
-        let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
-        if a.merged && self.board.crown.is_some() && (was == Some(false) || (was.is_none() && owed))
-        {
-            self.crown_landed.push(t);
+        if !a.unchecked {
+            let was = self.wt_answered.insert(t, a.merged);
+            let owed = self.crown_heard.get(&t).is_some_and(|h| h.awaits_merge());
+            if a.merged
+                && self.board.crown.is_some()
+                && (was == Some(false) || (was.is_none() && owed))
+            {
+                self.crown_landed.push(t);
+            }
         }
         let changed = self.wt_agg.get(&t) != Some(&a);
         self.wt_agg.insert(t, a);
@@ -19685,6 +19701,7 @@ impl Daemon {
                             base: leg.base.clone(),
                             base_oid: leg.base_oid.clone(),
                             trouble: Some("not sampled".into()),
+                            unchecked: true,
                             ..Default::default()
                         }),
                     }

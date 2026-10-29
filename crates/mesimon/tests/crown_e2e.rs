@@ -3865,6 +3865,155 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     assert!(c.board().ticket(w).is_some());
 }
 
+/// Merges the crown already heard are not heard again when a restart
+/// finds them anew (T-1064). The crown heard three workers delivered and
+/// squash-merged, then left and came back (which forgets what it heard),
+/// the workers were parked, and the daemon handed over. The new daemon has
+/// no content memos, scans two squashes a pass, and the one it reached
+/// second read unmerged until then: that first answer was heard as a
+/// landing, and the crown was told of an old merge as a fresh delivery.
+/// Nor is a crown's sleep and wake news. A genuinely new merge still is.
+#[test]
+fn old_squash_merges_found_again_after_a_restart_are_not_news() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_stale",
+        Some(RECORDING_STUB_PER_TICKET),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("crown_stale");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+
+    let a = c.create_ticket("coordinate");
+    let b = c.create_ticket("another crown");
+    let sa = crown_idle(&h, &mut c, a);
+    let start = |c: &mut TestClient, title: &str| {
+        let w = c.create_ticket(title);
+        let kw = c.key_of(w);
+        assert!(matches!(
+            c.request(Command::SetWorkspace {
+                id: w,
+                workspace: Some(WorkspaceStrategy::Worktree)
+            }),
+            Response::Ok
+        ));
+        match c.crown_start(sa, &kw, "worktree") {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent: {other:?}"),
+        }
+        let path = std::path::PathBuf::from(wait_attached(c, w).path.expect("a path"));
+        wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+            c.board().live_agent(w).is_some()
+        });
+        let ws = c.board().live_agent(w).unwrap().id;
+        let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        (w, kw.clone(), ws, path, branch, format!("{kw} \"{title}\""))
+    };
+    let squash = |branch: &str| {
+        git(&h.repo, &["merge", "--squash", "-q", branch]);
+        git(&h.repo, &["commit", "-qm", &format!("{branch} (squash)")]);
+    };
+    let merge_state = |c: &mut TestClient, kw: &str| c.agent_read(sa, kw).unwrap().merge_state;
+
+    // ---- 1. three deliveries, three squash merges, each heard once --------
+    // More than `CONTENT_SCANS_PER_PASS` (2), so a restart's first pass
+    // cannot answer every one of them.
+    let mut workers = Vec::new();
+    for n in 1..=3 {
+        let (w, kw, ws, path, branch, worker) =
+            start(&mut c, &format!("mesimon-probe-106{n} old squash"));
+        commit(&path, &format!("work{n}.txt"));
+        h.one_turn(&mut c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+            lines_with(&worker).len() == 1
+        });
+        h.one_turn(&mut c, sa);
+        wait_until(std::time::Duration::from_secs(10), "the branch ahead", || {
+            merge_state(&mut c, &kw).as_deref() == Some("ahead")
+        });
+        squash(&branch);
+        wait_until(std::time::Duration::from_secs(15), "the squash's wake", || {
+            lines_with(&worker).len() == 2
+        });
+        assert!(lines_with(&worker)[1].contains("merged"), "{}", read_got());
+        h.one_turn(&mut c, sa);
+        workers.push((w, kw, ws, worker));
+    }
+    // Parked, as merged workers are.
+    for (_, _, ws, _) in &workers {
+        assert!(matches!(c.request(Command::SleepSession { id: *ws }), Response::Ok));
+        c.await_state(*ws, "asleep", |s| *s == SessionState::Sleeping);
+    }
+    let quiet = |c: &mut TestClient, why: &str| {
+        // Several flag passes at one a second, and every branch read merged.
+        std::thread::sleep(std::time::Duration::from_millis(4000));
+        for (_, kw, _, worker) in &workers {
+            wait_until(std::time::Duration::from_secs(10), "the flags to read merged", || {
+                merge_state(c, kw).as_deref() == Some("merged")
+            });
+            assert_eq!(lines_with(worker).len(), 2, "{why}: {worker} heard again:\n{}", read_got());
+        }
+    };
+
+    // ---- 2. the crown leaves and comes back: what it heard is dropped ----
+    assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    quiet(&mut c, "a crown that came back");
+    drop(c);
+
+    // ---- 3. the handover: every memo lost, the scans spread over passes --
+    h.restart();
+    let mut c = h.client("crown_stale_2");
+    quiet(&mut c, "after a restart");
+
+    // ---- 4. the crown slept and woken: still nothing -----------------------
+    assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
+    c.await_state(sa, "asleep", |s| *s == SessionState::Sleeping);
+    match c.request(Command::WakeSession { id: sa }) {
+        Response::Spawned { .. } => {}
+        other => panic!("the crown's wake: {other:?}"),
+    }
+    h.one_turn(&mut c, sa);
+    quiet(&mut c, "after the crown's sleep and wake");
+
+    // ---- 5. a new merge is news ---------------------------------------------
+    let (_, kw, ws, path, branch, worker) = start(&mut c, "mesimon-probe-1064 fresh squash");
+    commit(&path, "fresh.txt");
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the fresh delivery's wake", || {
+        lines_with(&worker).len() == 1
+    });
+    h.one_turn(&mut c, sa);
+    wait_until(std::time::Duration::from_secs(10), "the fresh branch ahead", || {
+        merge_state(&mut c, &kw).as_deref() == Some("ahead")
+    });
+    squash(&branch);
+    wait_until(std::time::Duration::from_secs(15), "the fresh squash's wake", || {
+        lines_with(&worker).len() == 2
+    });
+    assert_eq!(
+        lines_with(&worker)[1],
+        format!(
+            "{worker} merged (merge_state ahead → merged) ∙ get_ticket key={kw} for state and \
+             notes"
+        )
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    assert_eq!(lines_with(&worker).len(), 2, "{}", read_got());
+    for (_, _, _, old) in &workers {
+        assert_eq!(lines_with(old).len(), 2, "{old} heard again:\n{}", read_got());
+    }
+}
+
 /// A restart between a worker's launch and its first prompt (T-722): the
 /// crown started it, its `SessionStart` came, and the daemon went down (a
 /// person's `U`) before the brief was pasted. The new daemon used to call

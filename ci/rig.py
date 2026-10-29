@@ -3287,6 +3287,97 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the daemon would not restart with the stub forge")
                 return False
             return True
+        if what in ("forge_prs", "forge_merge_all"):
+            # SM1 (T-1064): one PR per ticket of the test, 42 up, each on its
+            # own branch at its tip; `forge_prs` opens them on the stub and
+            # restarts the daemon onto it, `forge_merge_all` merges them all
+            # at once and ends at the crown's turn on the last merge's wake.
+            branches = {w["ticket"]: w["branch"] for w in self.snapshot().get("worktrees", [])}
+            rows = [(42 + i, branches.get(tid)) for i, (tid, _, _) in
+                    enumerate(self.test_tickets(test))]
+            if not all(b for _, b in rows):
+                record["failures"].append("a worker has no worktree branch to open a PR from")
+                return False
+            d = self.forge_stub()
+            merged = what == "forge_merge_all"
+            mark = len(self.feed_lines)
+            self.write_prs(d, rows, "MERGED" if merged else "OPEN", "passed" if merged else "running")
+            if not merged:
+                self.wire.set_merge_into("pull_requests")
+                if not self.restart(self.forge_env(d)):
+                    record["failures"].append("the daemon would not restart with the stub forge")
+                    return False
+                bound = self.wait_for("every PR to bind", lambda: {
+                    (p["ticket"], p["number"]) for p in self.snapshot().get("prs", [])} >= {
+                    (tid, n) for (n, _), (tid, _, _) in zip(rows, self.test_tickets(test))},
+                    STEP_TIMEOUT, self.watch)
+                if not bound:
+                    record["failures"].append("the stub forge's PRs never bound to the tickets")
+                return bool(bound)
+            def woken():
+                got = {l.get("worker") for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
+                       and l.get("cause") in ("merged", "delivered")}
+                return all(tid in got for tid, _, _ in self.test_tickets(test))
+            if not self.wait_for("the crown's merge wakes", woken, WAKE_GRACE * 4, self.watch):
+                record["failures"].append("the board never woke the crown for every merge")
+                return False
+            last = max(l.get("at_ms", 0) for l in self.feed_lines[mark:]
+                       if l.get("kind") == "crown_wake")
+            self.quiet_since = None
+            if not self.wait_for("the crown's turn on the merges",
+                                 lambda: self.crown_settled(after_ms=last), STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's turn on the merges never ended")
+                return False
+            return True
+        if what == "crown_away":
+            # SM1 (T-1064): the crown taken off and put back, as a person's
+            # switch away and back does; the board forgets what it told it.
+            record.setdefault("step_ms", {})[what] = int(time.time() * 1000)
+            try:
+                self.wire.request({"cmd": "uncrown"})
+                self.wire.crown(self.crown)
+            except WireError as e:
+                record["failures"].append(f"crown_away: {e}")
+                return False
+            self.log("the crown taken off and put back")
+            return True
+        if what == "forge_again":
+            # SM1 (T-1064): a handover on the same stub forge, then long
+            # enough for the flags to read every merged branch again, the
+            # content scans' budget spread over several passes.
+            d = self.forge_stub()
+            if not self.restart(self.forge_env(d)):
+                record["failures"].append("the daemon would not restart with the stub forge")
+                return False
+            self.restarted = True
+            tids = [tid for tid, _, _ in self.test_tickets(test)]
+            merged = self.wait_for("every branch read merged", lambda: all(
+                any(w["ticket"] == tid and w.get("merged") for w in self.snapshot().get("worktrees", []))
+                for tid in tids), STEP_TIMEOUT, self.watch)
+            if not merged:
+                record["failures"].append("the flags never read every branch merged after the restart")
+                return False
+            time.sleep(step.get("hold", 30))
+            self.watch()
+            return True
+        if what == "crown_rest":
+            # SM1 (T-1064): the crown parked and woken, as `x x` does.
+            crown = self.agent_of(self.board(), self.crown)
+            self.wire.sleep(crown["id"])
+            if not self.wait_for("the crown parked", lambda: word_of(
+                    (self.agent_of(self.board(), self.crown) or {}).get("state")) == "sleeping",
+                    60, self.watch):
+                record["failures"].append("the crown would not park")
+                return False
+            self.wire.wake(crown["id"])
+            if not self.wait_for("the crown idle again", lambda: word_of(
+                    (self.agent_of(self.board(), self.crown) or {}).get("state")) == "idle",
+                    120, self.watch):
+                record["failures"].append("the woken crown never went idle")
+                return False
+            time.sleep(step.get("hold", 15))
+            self.watch()
+            return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone,
             # and the board merges into main again (T-810).
@@ -3369,6 +3460,26 @@ Reply with the single word ready and end your turn."""
             with open(checks, "w") as f:
                 f.write('{"check_runs":[]}')
         return d
+
+    def write_prs(self, d, rows, state, pipeline):
+        """One PR per `(number, branch)` of `rows`, each at its branch's tip
+        (SM1, T-1064): `write_pr`'s shape, many branches."""
+        checks = {"running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
+                  "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]'}[pipeline]
+        prs = []
+        for number, branch in rows:
+            tip = subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
+                                 capture_output=True, text=True).stdout.strip()
+            merge = f'{{"oid":"{tip}"}}' if state == "MERGED" else "null"
+            prs.append(f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
+                       f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
+                       f'"headRefOid":"{tip}","mergeCommit":{merge},"mergeable":"MERGEABLE",'
+                       f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"2026-10-13T06:00:00Z",'
+                       f'"statusCheckRollup":{checks}}}')
+        path = os.path.join(d, "prs.json")
+        with open(path + ".tmp", "w") as f:
+            f.write("[" + ",".join(prs) + "]")
+        os.replace(path + ".tmp", path)
 
     def write_pr(self, d, branch, state, pipeline, later=None, head=None, conflict=False):
         """PR 42 on `branch` at its tip, or at `head` (T-778), in conflict
@@ -3532,7 +3643,7 @@ Reply with the single word ready and end your turn."""
             name, _, arg = c.partition(":")
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
-            if rec is None and name not in ("woke", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
+            if rec is None and name not in ("woke", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing"):
                 check(c, False, "no agent record on the ticket")
@@ -4193,6 +4304,16 @@ Reply with the single word ready and end your turn."""
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
                 check(c, arg in causes, f"wakes {causes}" if causes else "no wake")
+            elif name == "no_wake_after":
+                # `no_wake_after:<rig step>` (SM1, T-1064): no crown wake for
+                # the ticket from that step's start on.
+                since = record.get("step_ms", {}).get(arg)
+                late = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
+                        and l.get("worker") == tid and since is not None
+                        and l.get("at_ms", 0) >= since]
+                check(c, since is not None and not late,
+                      f"no {arg} step ran" if since is None else
+                      f"woken after {arg}: {late}" if late else f"no wake after {arg}")
             elif name == "sampled_before":
                 # `sampled_before:<prefix>` (T-973): see `sampled_before`.
                 crown = self.agent_of(board, self.crown)
