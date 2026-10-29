@@ -449,6 +449,16 @@ pub(super) struct FailedTurn {
     pub(super) reason: mesimon_core::board::FailReason,
 }
 
+/// One ticket's line from a forge pass (`hear_forge`): its words, whether
+/// they were read inside its recovery window (T-937), and whether they say
+/// a PR's merge (T-1071).
+pub(super) struct ForgeNews {
+    pub(super) worker: ulid::Ulid,
+    pub(super) words: String,
+    pub(super) late: bool,
+    pub(super) merged: bool,
+}
+
 /// What rides a wake beside its cause and delta, as `owe_wake` folds it.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Owed {
@@ -457,6 +467,10 @@ pub(super) struct Owed {
     pub(super) late: bool,
     pub(super) ask: Option<AskSaid>,
     pub(super) overrun: Option<Overrun>,
+    /// The wake says a merge (T-1071): the flags' landing, one held for its
+    /// merge step, or the forge's `merged !N`. What ends a watch; the
+    /// branch's standing `merged` does not, nor is it folded.
+    pub(super) merge: bool,
 }
 
 /// What a sentence to the crown tells it (`Daemon::telling`), kept until
@@ -710,7 +724,7 @@ impl CrownWake {
         to: Option<Told>,
         owed: Owed,
     ) -> CrownWake {
-        let Owed { finished, linger, late, ask, overrun } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge: _ } = owed;
         CrownWake {
             worker,
             cause,
@@ -730,7 +744,7 @@ impl CrownWake {
     /// set, a lingering wake's numbers stay the first's, and the latest
     /// ask and overrun win.
     fn absorb(&mut self, cause: WakeCause, from: Option<Told>, to: Option<Told>, owed: Owed) {
-        let Owed { finished, linger, late, ask, overrun } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge: _ } = owed;
         self.fold(cause, from, to);
         self.finished |= finished;
         self.linger = self.linger.or(linger);
@@ -2190,8 +2204,13 @@ impl Daemon {
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(mut wake) = heard.step_over(column) else { continue };
             wake.finished &= !surviving;
-            let held =
-                Owed { finished: wake.finished, late: wake.late, ask: wake.ask, ..Owed::default() };
+            let held = Owed {
+                finished: wake.finished,
+                late: wake.late,
+                ask: wake.ask,
+                merge: true,
+                ..Owed::default()
+            };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
@@ -2263,7 +2282,8 @@ impl Daemon {
                     heard.judged = Some(now.clone());
                     heard.deferred = None;
                     let from = heard.told.replace(now.clone());
-                    self.owe_crown_wake(crown, worker, cause, from, Some(now), false);
+                    let owed = Owed { merge: true, ..Owed::default() };
+                    self.owe_wake(crown, worker, cause, from, Some(now), owed);
                     woke = true;
                 }
                 Due::Hold(_) | Due::Silent => {}
@@ -2380,8 +2400,17 @@ impl Daemon {
         let late = owed.late || self.crown_heard.get(&worker).is_some_and(|h| h.restored);
         let owed = Owed { late, ..owed };
         let ask = owed.ask;
-        let landed =
-            cause == WakeCause::Merged || to.as_ref().is_some_and(|t| t.merge == Some("merged"));
+        // A wake that says a merge (T-1071): one its caller says is, or a
+        // branch reading merged where the crown last heard it unmerged, or
+        // merged at another tip. A branch that stays merged is no merge: a
+        // later PR's news on it said nothing new of the branch, and ended
+        // the watch before that PR's own merge.
+        let merged = |t: &Told| t.merge == Some("merged");
+        let landed = cause == WakeCause::Merged
+            || owed.merge
+            || to.as_ref().is_some_and(|t| {
+                merged(t) && from.as_ref().is_some_and(|f| !merged(f) || f.tip != t.tip)
+            });
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             // A proven end folding into merge news owed ahead of it (T-1004,
             // round 3): the merge was told alone, its turn not seen to end,
@@ -2524,10 +2553,11 @@ impl Daemon {
     /// ticket's recovery window (`late`, `forge::State::restored`, T-937)
     /// says `after a restart`, held for a step or not; the look-based
     /// `restored` of T-602 still adds the same words in `enter_wake`.
-    pub(super) fn hear_forge(&mut self, news: Vec<(ulid::Ulid, String, bool)>) -> bool {
+    /// `merged`: the words say a PR's merge (T-1071), which ends a watch.
+    pub(super) fn hear_forge(&mut self, news: Vec<ForgeNews>) -> bool {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
         let mut woke = false;
-        for (worker, words, late) in news {
+        for ForgeNews { worker, words, late, merged } in news {
             if worker == crown || !self.crown_hears(worker, crown) {
                 continue;
             }
@@ -2560,7 +2590,7 @@ impl Daemon {
                         heard.deferred = None;
                     }
                     let from = heard.told.replace(now.clone());
-                    let owed = Owed { late, ..Owed::default() };
+                    let owed = Owed { late, merge: landing || merged, ..Owed::default() };
                     self.owe_wake(crown, worker, cause, from, Some(now), owed);
                     woke = true;
                 }
@@ -2773,6 +2803,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
                     late: w.late,
                     ask: w.ask,
                     overrun: w.overrun,
+                    merge: false,
                 },
             );
             first.unstarted = w.unstarted.or(first.unstarted.take());
@@ -2820,6 +2851,7 @@ mod tests {
                 late: true,
                 ask: Some(ask),
                 overrun: Some(overrun),
+                merge: false,
             },
         );
         newer.unstarted = Some("new start failure".into());

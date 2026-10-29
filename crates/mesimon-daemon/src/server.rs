@@ -19052,7 +19052,7 @@ impl Daemon {
             self.forge.take_commit(pr);
         }
         let mut changed = false;
-        let mut news: Vec<(ulid::Ulid, String, bool)> = Vec::new();
+        let mut news: Vec<crownwake::ForgeNews> = Vec::new();
         let mut openings: HashMap<ulid::Ulid, String> = HashMap::new();
         let mut arrivals: Vec<(ulid::Ulid, crate::forge::Edge)> = Vec::new();
         // The read found an edge on some ticket (T-811): the board's
@@ -19171,7 +19171,13 @@ impl Daemon {
                 });
                 let words = heard.news(&set);
                 if !words.is_empty() {
-                    news.push((t, words.join(", "), late));
+                    let merged = !heard.landed.is_empty();
+                    news.push(crownwake::ForgeNews {
+                        worker: t,
+                        words: words.join(", "),
+                        late,
+                        merged,
+                    });
                 }
                 // An opening is said on the wake of the turn that opened
                 // it, never on its own (T-773).

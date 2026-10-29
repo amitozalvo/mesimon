@@ -1568,6 +1568,41 @@ mod ledger_tests {
         assert!(admits(&b, Deliver::Immediately), "a watched person's agent");
     }
 
+    /// A watch ends at the merge (T-712), and a branch an earlier PR merged
+    /// is not one (T-1071): a later PR's news on it — its binding, its
+    /// pipeline, an answer — kept the branch `merged` and ended the watch
+    /// before that PR's own merge, which then woke nobody.
+    #[test]
+    fn a_watch_outlives_news_on_a_branch_already_merged() {
+        use super::super::crownwake::{ForgeNews, WakeCause};
+        let mut b = bed("watch-merged");
+        b.d.board.sessions[0].started_by = None;
+        b.d.crown_watched.insert(b.worker);
+        b.d.wt_agg.insert(
+            b.worker,
+            crate::worktree::Aggregate { merged: true, tip: "a".into(), ..Default::default() },
+        );
+        let news = |w: &Bed, words: &str, merged: bool| ForgeNews {
+            worker: w.worker,
+            words: words.into(),
+            late: false,
+            merged,
+        };
+        // Watched afresh: nothing heard of the worker yet, its branch merged.
+        let first = news(&b, "pipeline passed !2", false);
+        b.d.hear_forge(vec![first]);
+        assert!(b.d.crown_watched.contains(&b.worker), "the first line, no merge in it");
+        // Heard at that tip since: an answer and more news keep the watch.
+        b.d.note_crown_wake(b.worker, WakeCause::Answered, None, None);
+        let again = news(&b, "review approved !2", false);
+        b.d.hear_forge(vec![again]);
+        assert!(b.d.crown_watched.contains(&b.worker), "news on a merged branch");
+        // The PR's merge is the line that ends it.
+        let merged = news(&b, "merged !2", true);
+        b.d.hear_forge(vec![merged]);
+        assert!(!b.d.crown_watched.contains(&b.worker), "the merge ends the watch");
+    }
+
     /// A settled record is not kept; a queued one is the queue's.
     #[test]
     fn only_an_ask_out_is_kept() {

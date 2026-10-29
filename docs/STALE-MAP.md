@@ -39020,3 +39020,47 @@ What can still re-say a deployment, by mechanism, none confirmed on the reportin
 
 The evidence that separates these is the reporting board's journal, feed and state files from
 around the restart, not this repository.
+
+## A watch ends at the merge, not at news on a merged branch (T-1071, 2026-10-29)
+
+A crown reported merges on a GitLab board that reached it only through the person or a later
+`get_ticket`, while other merges on the same day were announced. The board's feed for
+October 12–27 was traced merge by merge: every MR merge on a ticket the crown heard by
+provenance was announced at or before its forge line. The losses were all on **watched**
+tickets (T-712) whose binding branch an earlier MR had already merged. Such a person's
+worker opens each later MR from a side branch, so the ticket's aggregate stays `merged`.
+`enter_wake` ended a watch on any wake whose `to` read `merged`: a later MR's `open !N bound`,
+`pipeline passed !N`, an answer, or a delivery each ended the watch the crown had just set. On
+October 18, five MRs on two such tickets merged after their watches had ended this way, and
+none woke the crown. The crown watched again before each one, and each new watch ended at the
+next line again.
+
+The watch now ends only on a wake that says a merge. That is the flags' landing
+(`hear_merges`), one held for its merge step (`hear_stepped`), the forge's `merged !N`
+(`ForgeNews::merged`, set where `heard.landed` kept a label), `WakeCause::Merged`, or a
+branch reading merged where the crown last heard it unmerged or at another tip. A branch that
+stays merged ends nothing. A watch begun on an already-merged branch, with nothing heard of
+the worker yet, is no merge either. The rule is `Owed::merge` plus the transition read off
+`from` and `to`. No words change: `watch_ticket` already says "the watch ends at the merge".
+Hearing (`crown_hears`), wake folding and the forge/flags hand-off are unchanged, so no
+duplicate delivery (T-1036) is added.
+
+**The `absorb_forge` hand-off was checked and not changed.** The forge drops a `merged !N`
+whose PR lands a leg tip and is carried by the flags (`flipping`, `flags_said` or
+`forge_lands_all`), and one that does not land the tip while the flags are flipping. For one
+PR per tip, every drop is said by `hear_merges` on the tick with the same hearing rule. One
+hole remains and is not evidenced: a second PR whose head is the same tip as a PR already
+merged (one branch merged into two targets). `flags_said` holds, the flags do not flip again,
+and neither side says it. The feed has no case of it.
+
+**Also seen, not changed (a person's decision).** On 2026-10-25 a person crowned another
+ticket and crowned the first back a second later. `drop_crown_wakes` cleared the watch on a
+person's ticket without a `watch_ended` line, and its MR merged nine minutes later, unheard.
+That follows the rule that a new crown has heard nothing.
+
+**The October 28 incident is not reconstructed.** That board's state lives on another
+machine; the archive here ends on October 27. A bounded capture for the next occurrence:
+the board's `activity.jsonl` lines for the two tickets and the crown from an hour before
+each merge to an hour after (`pr`, `crown_wake`, `crown_wake_*`, `watch_*`, `crown_ticket`,
+`uncrown`, `start_agent`); `crown.json`; the tickets' entries in `forge.json`; and the crown's
+transcript lines in that window. The feed's `crown_wake` names the cause but not the words.
