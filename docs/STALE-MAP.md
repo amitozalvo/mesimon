@@ -38898,7 +38898,8 @@ deployed, and its arrival is right.
 (`forge.rs`) runs the forge's own restart path: two tickets read and deployed by ancestry,
 `ForgeFile::of` → JSON → `State::restore`, as a `U` handover does, then the first pass on the
 same environments. It says nothing whether git can answer or not (no fetch, and the read's page
-has moved past the merge commit), and nothing after two handovers. A deployment made while the
+has moved past the merge commit), nothing after two handovers, and nothing when the first read
+finds no successful deployment and the next finds it again. A deployment made while the
 daemon was down is said once, marked late. A rollback is no edge, and the redeploy after it is
 said again, as any deployment is. The forge layer cannot turn restored facts into a wake.
 

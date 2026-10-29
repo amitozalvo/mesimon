@@ -3282,6 +3282,13 @@ mod tests {
         // A handover after a handover.
         let mut r = restart(&restart(&s));
         assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
+        // The first read after it finds no successful deployment on
+        // production (a page that answered empty): what was held stands, and
+        // the read that finds it again says nothing.
+        let mut r = restart(&s);
+        assert!(pass(&mut r, "m12", "", &history, false).is_empty());
+        assert!(r.sets[&a][0].deployed.contains(&"production".to_string()), "held, not dropped");
+        assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
 
         // Production moved on to !13's merge while no daemon read: !12 is
         // there now, said once and late; !10, there already, is not said.
