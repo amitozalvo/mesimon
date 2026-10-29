@@ -39286,3 +39286,23 @@ with the change uncommitted.
   feed, hook log and transcript: PASS, same observations. No live rerun. It shows the order
   with the real Claude Code, not the zombie race. `--reset --no-build` parked the session,
   archived the two rig tickets and stopped the rig's daemon and tmux; `AH1.txt` was removed.
+- **AH1's train guard, corrected (2026-10-29 22:07).** The crown's independent AH1 run on
+  `27874754`, in an isolated clone, passed but its artifacts read `merge_train_merged` and
+  `unlanded` PASS: the clone's checkout HEAD stayed `27874754` while its `main` moved to the
+  worker's tip (`94d27f69` over `6524ef12`); the real repository was untouched. Cause, measured in
+  a throwaway repository: the rig board's base is `main` (the worker branch is cut from it), and
+  `worktree::ff_merge`, with the rig's checkout on another branch, updates it by `git push .
+  <branch>:refs/heads/main`. Git refuses that push while another worktree has `main` checked out
+  ("branch is currently checked out"), which is what refused my run's merge in this repository,
+  not the `AH1.txt` blocker; the blocker only stops a base checked out in the rig's own checkout.
+  The clone had `main` checked out nowhere, so the push landed. `unlanded` compares the checkout's
+  HEAD, so it could not see it. HT1's comment makes the same assumption and is left as it is.
+  `findings_first` now also requires the ticket's first train line to be
+  `merge_train_refused:merge`, fails on any `merge_train_merged` line, before or after, and fails
+  when a local branch other than the ticket's own holds the ticket's tip, or the refs cannot be
+  read (`git for-each-ref --contains`), since the snapshot does not name the base. Offline
+  `python3 -B -m unittest ci/rig_test.py`: 75/75, two new cases (a merge in place of the
+  refusal, a refusal followed by a merge, a different refusal; a tip on `main`, no branch, refs
+  unread). My retained 21:26 run, rejudged under this oracle (not a new live run): PASS, train
+  lines `[merge_train_refused:merge]`, no other branch holds `b311ee7e`, and `main`'s reflog has
+  not moved since `3fb26cd2`. No production code changed.

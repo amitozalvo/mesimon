@@ -725,9 +725,26 @@ class FindingsFirstTests(unittest.TestCase):
             {"n": 2, "start_ms": 30_010, "exit_ms": 31_020, "code": 0}]
     ROWS = [{"type": "user", "message": {"content": rig.FINDING_MARK + ": AH1.txt needs a second line"}}]
 
-    def judge(self, lines=None, runs=None, rows=None):
+    def judge(self, lines=None, runs=None, rows=None, landed=()):
         return rig.findings_first(self.feed() if lines is None else lines, self.SID, self.TID,
-                                  self.RUNS if runs is None else runs, self.ROWS if rows is None else rows)
+                                  self.RUNS if runs is None else runs, self.ROWS if rows is None else rows,
+                                  list(landed))
+
+    def test_a_merge_instead_of_the_blockers_refusal_fails(self):
+        refused = self.board("merge_train_refused:merge", 40_000)
+        merged = self.board("merge_train_merged", 40_000)
+        base = [l for l in self.feed() if l is not refused and l.get("cmd") != "merge_train_refused:merge"]
+        for lines in (base + [merged],
+                      self.feed() + [self.board("merge_train_merged", 90_000)],
+                      base + [self.board("merge_train_refused:rebase", 40_000)]):
+            ok, seen = self.judge(lines)
+            self.assertFalse(ok, seen)
+
+    def test_a_tip_held_by_another_branch_or_unread_refs_fails(self):
+        for landed in (["main"], ["no branch"], ["refs unread"]):
+            ok, seen = self.judge(landed=landed)
+            self.assertFalse(ok, seen)
+            self.assertIn("the tip is on", seen)
 
     def test_a_findings_turn_then_one_delivery_and_the_train_passes(self):
         ok, seen = self.judge()

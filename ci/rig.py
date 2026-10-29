@@ -948,15 +948,18 @@ def sampled_before(rows, key, prefix):
 FINDING_MARK = "AH1-REVIEW-FINDING"
 
 
-def findings_first(lines, sid, tid, runs, rows):
+def findings_first(lines, sid, tid, runs, rows, landed):
     """`findings_first` (AH1, T-1075), over the test's feed, the fixture
     hook's own log (`runs`, one dict per invocation: n, start_ms, exit_ms,
-    code) and the worker's transcript: the hook's first run exits 2 after
-    the worker's first Stop; the agent reads its finding; the next turn
-    (its UserPromptSubmit after that exit) ends with a Stop; and only after
-    that Stop does the board wake the crown, `delivered` exactly once, and
-    the merge train take the ticket. The hold must have engaged on the
-    first Stop, and nothing may release it unobserved or at the cap.
+    code), the worker's transcript and `landed`, the local branches other
+    than the ticket's own that hold its tip: the hook's first run exits 2
+    after the worker's first Stop; the agent reads its finding; the next
+    turn (its UserPromptSubmit after that exit) ends with a Stop; and only
+    after that Stop does the board wake the crown, `delivered` exactly
+    once, and the merge train take the ticket, its first word the blocker's
+    refused merge. No train line may say merged, then or later, and no
+    branch may hold the tip. The hold must have engaged on the first Stop,
+    and nothing may release it unobserved or at the cap.
     (passed, what was seen)."""
     findings = next((r for r in runs if r.get("code") == 2), None)
     if not findings:
@@ -987,15 +990,19 @@ def findings_first(lines, sid, tid, runs, rows):
     early = [f"{l.get('cause')} wake" for l in wakes if l["at_ms"] < end] + [
         l["cmd"] for l in train if l["at_ms"] < end]
     delivered = [l for l in wakes if l.get("cause") == "delivered"]
+    merged = [l["cmd"] for l in train if l["cmd"] == "merge_train_merged"]
     seen = (f"Stop, finding exit {rel(exit_ms)}, findings prompt {rel(rewake)}, its Stop {rel(end)}; "
             f"hold {'seen' if held else 'never seen'}; finding "
             f"{'read by the agent' if read else 'not in the transcript'}; wakes "
             f"{[(l.get('cause'), rel(l['at_ms'])) for l in wakes]}; train "
             f"{[(l['cmd'], rel(l['at_ms'])) for l in train[:1]]}"
             + (f"; before the findings turn ended: {early}" if early else "")
-            + (f"; released by {loose}" if loose else ""))
+            + (f"; released by {loose}" if loose else "")
+            + (f"; train said {merged}" if merged else "")
+            + (f"; the tip is on {landed}" if landed else ""))
     ok = (bool(held) and read and not early and not loose and len(delivered) == 1
-          and delivered[0]["at_ms"] > end and bool(train) and train[0]["at_ms"] > end)
+          and delivered[0]["at_ms"] > end and bool(train) and train[0]["at_ms"] > end
+          and train[0]["cmd"] == "merge_train_refused:merge" and not merged and not landed)
     return ok, seen
 
 
@@ -4672,7 +4679,16 @@ Reply with the single word ready and end your turn."""
                         runs = [json.loads(l) for l in f if l.strip()]
                 except (OSError, ValueError):
                     pass
-                ok, seen = findings_first(lines, rec["id"], tid, runs, rows)
+                # Where the train's fast-forward would land is the board's
+                # base, which the snapshot does not name: any local branch
+                # but the ticket's own that holds its tip is a landing.
+                branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
+                               if w["ticket"] == tid), None)
+                held = branch and git(self.repo, "for-each-ref", "--contains", branch,
+                                      "--format=%(refname:short)", "refs/heads")
+                landed = ["no branch"] if not branch else ["refs unread"] if held is None else [
+                    b for b in held.split() if b != branch]
+                ok, seen = findings_first(lines, rec["id"], tid, runs, rows, landed)
                 check(c, ok, seen)
             elif name == "crown_obstacle":
                 # T-930's review (F3): the crown's hands or its last words

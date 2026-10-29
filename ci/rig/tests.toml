@@ -132,7 +132,9 @@
 #              exits 2 after the worker's first Stop, held meanwhile; the
 #              agent reads its marked finding; the next turn's Stop comes
 #              before any crown wake or train line for the ticket; then one
-#              `delivered` wake and the train; no unobserved or cap release),
+#              `delivered` wake and the train, its first word a refused
+#              merge, never `merge_train_merged`; no local branch but the
+#              ticket's holds its tip; no unobserved or cap release),
 #              filed (T-916: the crown started at least one agent since
 #              the test began, and every ticket it started one on was filed
 #              by the crown's session, its agent the crown's and the one
@@ -1723,7 +1725,7 @@ title = "AH1 · a review hook's findings turn comes before the board's delivery:
 workspace = "worktree"
 brief = "Write a file named AH1.txt holding the single line ah1, commit it with git with the message AH1, then reply with the single word done and end your turn. If a review finding arrives after your turn, do what it asks."
 brief_file = "ah1 reviewed"
-expect = "the worker's launch alone carries the rig's own Stop hook with asyncRewake (`--settings` from target/rig/ah1, no person's settings or plugin touched), the merge train is armed and the ticket off the person's hold. The worker commits and stops; the hook outlives that Stop, and the board holds the turn open (async_hook_wait): no crown wake, no train. The hook exits 2 with its marked finding, the agent reads it, adds the line and commits in a findings turn, and only once that turn's Stop is released does the board wake the crown, delivered, once, and the train take the ticket, its fast-forward refused by the rig's blocker so nothing lands here (T-1044, T-1075). A live run cannot place the hook's exit inside a process sample: async_hook_e2e's late-reaping stub and panes.rs's unit test are the race's proof; this is the same order with the real Claude Code."
+expect = "the worker's launch alone carries the rig's own Stop hook with asyncRewake (`--settings` from target/rig/ah1, no person's settings or plugin touched), the merge train is armed and the ticket off the person's hold. The worker commits and stops; the hook outlives that Stop, and the board holds the turn open (async_hook_wait): no crown wake, no train. The hook exits 2 with its marked finding, the agent reads it, adds the line and commits in a findings turn, and only once that turn's Stop is released does the board wake the crown, delivered, once, and the train take the ticket. Its fast-forward into the board's base must be refused: `ff_merge` pushes into a base checked out elsewhere, which git refuses while another worktree has it checked out (the real main checkout), and merges into a base checked out in the rig's own checkout, where the AH1.txt blocker refuses it. No train line may say merged, then or later, and no local branch but the ticket's may hold its tip (T-1044, T-1075). A live run cannot place the hook's exit inside a process sample: async_hook_e2e's late-reaping stub and panes.rs's unit test are the race's proof; this is the same order with the real Claude Code."
 checks = ["road:mod", "started_by_crown", "findings_first", "woke:delivered", "file:AH1.txt", "replies:done,fixed", "unlanded"]
 
   [[test.steps]]
