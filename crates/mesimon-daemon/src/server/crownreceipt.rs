@@ -301,6 +301,27 @@ mod tests {
         }
     }
 
+    /// T-1072: a filing's receipt has no write witness. It passes while the
+    /// ticket stands as filed and is distinct from a read's stamp; any edit
+    /// or seat after it is stale, as a read's would be.
+    #[test]
+    fn a_filing_s_receipt_is_as_strict_as_a_read() {
+        for edit in [false, true] {
+            with_ticket(|d, id| {
+                d.board.sessions.clear();
+                let filed = d.receipt_seen(id, None);
+                assert_ne!(filed, d.seen_token(id));
+                assert!(d.check_seen(id, Some(&filed)).is_ok());
+                if edit {
+                    d.board.ticket_mut(id).unwrap().title = "a person's edit".into();
+                } else {
+                    d.board.ticket_mut(id).unwrap().column = "REVIEW".into();
+                }
+                assert!(d.check_seen(id, Some(&filed)).is_err());
+            });
+        }
+    }
+
     #[test]
     fn an_unstamped_own_write_keeps_only_the_read_it_superseded() {
         with_ticket(|d, id| {

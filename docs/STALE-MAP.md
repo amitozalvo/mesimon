@@ -38754,3 +38754,43 @@ twice, a window never closed all fail), and the rules after the crown's compacti
 rules on every result, no board result before the boundary, no boundary all fail; a request blob
 hides nothing). `compact_e2e`'s queued ask
 already drives the fallback's two frames through the daemon, on both roads.
+
+## create_ticket's receipt carries the new ticket's seen (T-1072, 2026-10-29)
+
+- **The gap (T-1066, item 7).** `create_ticket` answered `key`, `column`, `board_version`,
+  `replayed` and `workspace`, no `seen`; `start_agent` requires one, so a crown filing its own
+  fully specified brief read the ticket back with `get_ticket` only to start it.
+- **Rule.** `Response::AgentCreated` gains `seen: Option<String>` (`serde(default)`, skipped
+  when absent: an older daemon's answer decodes as `None`, and a worker's spells no field). A
+  crowned session's filing mints it with `Daemon::receipt_seen(id, None)`: a `receipt:` stamp
+  distinct from the read hash, as T-1042 requires of every receipt. It has no write witness —
+  the ticket had no stamp before the filing and nothing of the crown's is in motion on it — so
+  it is as strict as a read: inactive, it holds only while the full token is unchanged, so any
+  edit, move, sort or seat after the filing (a person's or anyone's) refuses it with the usual
+  `changed since it was read`. An uncrowned filing gets none: no keyed tool is open to it, and
+  `receipt_owner` is the crown's seat, so a receipt minted there would be the crown's.
+- **Replay.** `AgentReplay::Created` keeps the first answer's stamp and a replay hands back
+  that same stamp, never one minted now: a fresh mint would vouch for a ticket edited since
+  the filing, news the caller has not read. The next keyed write judges the replayed stamp
+  through `check_seen` as it stands, so idempotency stays and the guard is not bypassed. The
+  stamp being the crown's own chain's input, a start that already consumed it keeps it in
+  `superseded` (T-1047) and the replay's copy holds exactly as long as that chain does.
+- **What was not widened.** `move_ticket`'s replay still answers `seen: None` (a forced read);
+  `board_version` stays a board counter, never a ticket stamp; no required `seen` became
+  optional; the DONE and merge gates and every tool's own seat gate are untouched. Note and tag
+  receipts already carried their stamps (T-1047's note-then-move case works with the note's).
+- **Text.** One sentence on `CROWN_ROLE`, where the filing and the start are already described:
+  a keyed tool's receipt, and create_ticket's for the ticket it files, carries that ticket's
+  seen, which the next keyed call takes in place of a read. No tool description changed
+  (`create_ticket` and `start_agent` are at the 820-byte cap). Rig `SF1` is the bare ask:
+  file a briefed ticket and start it, naming no stamp; `create_start:accepted`
+  (`ci/rig.py::create_start_outcome`, offline in `ci/rig_test.py`) reads the crown's own calls.
+- **Tests.** `command.rs`: an older `agent_created` decodes with no `seen`, a new one
+  round-trips, a worker's spells none. `crownreceipt`: a filing's receipt passes as filed,
+  differs from the read hash, and is stale after an edit or a move. `mesimon::mcp`: the render
+  forwards `seen` and omits it when absent (both the hook set's MCP server and the mod's
+  `--call` road render through it). `crown_e2e::a_crown_s_filing_receipt_starts_its_ticket_with_no_read`:
+  an uncrowned filing has no stamp; the crown's filing → replay (same key, same stamp, nothing
+  filed twice) → `start_agent` on that stamp with no read, taken; a second filing, a person's
+  rename, the start refused stale, the replay's stamp equal to the first and refused too, a
+  fresh read's start taken.

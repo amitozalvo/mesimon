@@ -306,7 +306,9 @@ pub const CROWN_ROLE: &str = "This session wears the board's crown: it coordinat
      prompts are this session's brief as much as its ticket's description and notes, so an \
      empty description holds nothing up. create_ticket files a ticket whose description is \
      its agent's brief, and start_agent starts that agent, a session of its own, in the \
-     workspace the crown names; the board wakes this session with what becomes of it.";
+     workspace the crown names; the board wakes this session with what becomes of it. A \
+     keyed tool's receipt, and create_ticket's for the ticket it files, carries that \
+     ticket's seen, which the next keyed call takes in place of a read.";
 
 /// The crown's own `get_ticket` view's `crown`: what it is for, then how
 /// the board wakes it. The first call after a crowning carries it too
@@ -3289,6 +3291,9 @@ mod tests {
             "create_ticket files a ticket whose description is its agent's brief",
             "start_agent starts that agent, a session of its own",
             "the board wakes this session",
+            // T-1072: the receipt-as-seen contract, said once, where the
+            // filing and the start that follows it are.
+            "create_ticket's for the ticket it files, carries that ticket's seen",
         ] {
             assert!(CROWN_ROLE.contains(words), "CROWN_ROLE says {words:?}");
         }

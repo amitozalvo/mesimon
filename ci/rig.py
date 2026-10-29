@@ -533,6 +533,60 @@ def receipt_ask_outcome(rows, key):
         f"answered {'stale' if stale else 'taken' if taken else said[:120]!r}")
 
 
+def create_start_outcome(rows):
+    """(ok, observed) for the crown's first create_ticket and the first
+    start_agent on the key it returned (T-1072): the start carries the seen
+    the create's receipt returned, no get_ticket of that key came between
+    the two, and the start's answer is its receipt, not a refusal."""
+    rows = once(rows)
+    results = {}
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                body = b.get("content")
+                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+    filed, reads, start = None, 0, None
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            tool = (b.get("name") or "").rsplit("__", 1)[-1]
+            args = b.get("input") or {}
+            if tool == "create_ticket" and filed is None:
+                try:
+                    receipt = json.loads(results.get(b.get("id")) or "")
+                    filed = (receipt["key"], receipt["seen"])
+                except (ValueError, KeyError, TypeError):
+                    return False, f"the create's receipt names no key and seen: {results.get(b.get('id'), '')[:120]!r}"
+                continue
+            if filed is None or start is not None or str(args.get("key", "")).strip() != filed[0]:
+                continue
+            if tool == "get_ticket":
+                reads += 1
+            elif tool == "start_agent":
+                start = (str(args.get("seen", "")).strip(), results.get(b.get("id")))
+    if filed is None:
+        return False, "no create_ticket with a receipt"
+    if start is None:
+        return False, f"no start_agent on {filed[0]} after its create"
+    seen, said = start
+    if said is None:
+        return False, "the start has no result"
+    if seen != filed[1]:
+        return False, f"the start carried {seen!r}, the create's receipt {filed[1]!r}; {reads} read(s) between"
+    try:
+        receipt = json.loads(said)
+        taken = isinstance(receipt, dict) and receipt.get("key") == filed[0]
+    except ValueError:
+        taken = False
+    return taken and reads == 0, (
+        f"the start carried the create's seen, {reads} read(s) between, "
+        f"answered {'stale' if STALE_SEEN_MARK in said else 'taken' if taken else said[:120]!r}")
+
+
 def budget_reused(rows, first, second):
     """T-1048: the zero receipt, a successful park, then a successful start;
     no hand. Refused calls remain evidence, but do not satisfy a step."""
@@ -4559,6 +4613,12 @@ Reply with the single word ready and end your turn."""
                 keys = self.keys_of(test)
                 ok, seen = budget_reused(crown_rows, keys["key"], keys["key2"])
                 check(c, ok, seen)
+            elif name == "create_start":
+                # `create_start:accepted` (T-1072): the crown's own calls,
+                # so a read between the filing and the start fails too.
+                crown = self.agent_of(board, self.crown)
+                ok, seen = create_start_outcome(transcript(crown) if crown else [])
+                check(c, ok and arg == "accepted", seen)
             elif name == "receipt_ask":
                 # `receipt_ask:accepted` (T-1035): read off the crown's own
                 # calls and results, so a re-read before the ask fails too.

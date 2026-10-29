@@ -2342,6 +2342,12 @@ pub enum Response {
         /// `get_ticket` spells it.
         #[serde(default)]
         workspace: String,
+        /// The new ticket's `seen` stamp on the crown's filing (T-1072), so
+        /// its `start_agent` needs no read first. A replay hands back the
+        /// first answer's, which the next write's check judges as it stands.
+        /// Absent on a worker's filing and from a daemon before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seen: Option<String>,
     },
     /// AgentTagTicket's receipt: what the ticket wears now, and the tag on
     /// the same axis that was taken off to make room, when there was one.
@@ -4197,6 +4203,34 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// T-1072: a create receipt's `seen` round-trips, a worker's receipt
+    /// spells none, and a daemon from before it sends none.
+    #[test]
+    fn a_create_receipt_s_seen_is_absent_from_an_older_daemon() {
+        let old: super::Response = serde_json::from_str(
+            r#"{"resp":"agent_created","key":"T-1","column":"TODO","board_version":3,"replayed":false,"workspace":"worktree"}"#,
+        )
+        .unwrap();
+        assert!(matches!(old, super::Response::AgentCreated { seen: None, .. }), "{old:?}");
+        let new = super::Response::AgentCreated {
+            key: "T-1".into(),
+            column: "TODO".into(),
+            board_version: 3,
+            replayed: false,
+            workspace: "worktree".into(),
+            seen: Some("receipt:x".into()),
+        };
+        let wire = serde_json::to_string(&new).unwrap();
+        assert!(wire.contains(r#""seen":"receipt:x""#), "{wire}");
+        assert!(matches!(
+            serde_json::from_str(&wire).unwrap(),
+            super::Response::AgentCreated { seen: Some(s), .. } if s == "receipt:x"
+        ));
+        let worker = wire.replace(r#","seen":"receipt:x""#, "");
+        let worker: super::Response = serde_json::from_str(&worker).unwrap();
+        assert!(!serde_json::to_string(&worker).unwrap().contains("seen"));
     }
 
     /// `Pending::action` is the wire word it was as a string (T-248): the

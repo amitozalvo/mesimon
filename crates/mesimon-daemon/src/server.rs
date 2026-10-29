@@ -3204,7 +3204,7 @@ struct AgentFiling {
 #[derive(Debug, Clone)]
 enum AgentReplay {
     Moved { column: String },
-    Created { key: String, column: String, workspace: String },
+    Created { key: String, column: String, workspace: String, seen: Option<String> },
 }
 
 /// How a column gate reads what the forge's sets do not hold (T-838): a
@@ -8961,9 +8961,12 @@ impl Daemon {
                 workspace,
             } => {
                 // Replay first, for the same reason as a move: a retry after
-                // `Connection closed` must not file the same work twice.
+                // `Connection closed` must not file the same work twice. The
+                // stamp is the first answer's, never one minted now (T-1072):
+                // a ticket edited since then is news the caller has not read,
+                // and the next keyed write's `check_seen` refuses it as stale.
                 if let Some(key) = &idempotency_key {
-                    if let Some(AgentReplay::Created { key: short_key, column, workspace }) =
+                    if let Some(AgentReplay::Created { key: short_key, column, workspace, seen }) =
                         self.agent_replay.get(&(session, key.clone()))
                     {
                         return Response::AgentCreated {
@@ -8972,6 +8975,7 @@ impl Daemon {
                             board_version: self.board_version,
                             replayed: true,
                             workspace: workspace.clone(),
+                            seen: seen.clone(),
                         };
                     }
                 }
@@ -8980,7 +8984,7 @@ impl Daemon {
                 let resp = self.agent_create_ticket(&by, ticket, filing);
                 if let (
                     Some(key),
-                    Response::AgentCreated { key: short_key, column, workspace, .. },
+                    Response::AgentCreated { key: short_key, column, workspace, seen, .. },
                 ) = (idempotency_key, &resp)
                 {
                     self.remember_agent_result(
@@ -8990,6 +8994,7 @@ impl Daemon {
                             key: short_key.clone(),
                             column: column.clone(),
                             workspace: workspace.clone(),
+                            seen: seen.clone(),
                         },
                     );
                 }
@@ -10307,9 +10312,16 @@ impl Daemon {
         self.feed.board(by.actor(), "create_ticket", Some(id));
         // The crown's filing is one of its touches (T-544), so the board
         // strikes the new card from the crown's; any other agent's is not.
-        if self.board.is_crowned(from) {
+        // Its receipt carries the new ticket's stamp (T-1072), so the
+        // `start_agent` that follows needs no read. No write witness: the
+        // ticket had no stamp before it, and nothing of the crown's is in
+        // motion on it, so the receipt is as strict as a read's — any edit,
+        // move or seat after it is stale. A worker cannot use a keyed tool,
+        // and a receipt minted for it would be the crown's (`receipt_owner`).
+        let seen = self.board.is_crowned(from).then(|| {
             self.crown_mark(from, id, "created");
-        }
+            self.receipt_seen(id, None)
+        });
         let t = self.board.ticket(id);
         let key = t.map(|t| t.short_key.clone()).unwrap_or_default();
         let workspace =
@@ -10320,6 +10332,7 @@ impl Daemon {
             board_version: self.board_version,
             replayed: false,
             workspace: workspace.to_string(),
+            seen,
         }
     }
 

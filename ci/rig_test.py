@@ -659,6 +659,44 @@ class CompactionWindowTests(unittest.TestCase):
     def test_no_boundary_fails(self):
         self.assertFalse(rig.rules_after_compaction(self.crown_rows(False, True, boundary=False), 0)[0])
 
+class CreateStartTests(unittest.TestCase):
+    """T-1072: SF1's acceptance, off the crown's own calls and results."""
+
+    @staticmethod
+    def use(i, name, args):
+        return {"message": {"content": [
+            {"type": "tool_use", "id": i, "name": "mcp__mesimon__" + name, "input": args}]}}
+
+    @staticmethod
+    def said(i, body):
+        return {"message": {"content": [
+            {"type": "tool_result", "tool_use_id": i, "content": [{"type": "text", "text": body}]}]}}
+
+    def filed(self):
+        return [self.use("c", "create_ticket", {"title": "SF1 child"}),
+                self.said("c", json.dumps({"key": "T-9", "seen": "receipt:a"}))]
+
+    def start(self, seen="receipt:a", body=None):
+        return [self.use("s", "start_agent", {"key": "T-9", "seen": seen}),
+                self.said("s", body or json.dumps({"key": "T-9", "status": "started"}))]
+
+    def test_a_start_on_the_create_s_stamp_with_no_read_passes(self):
+        ok, observed = rig.create_start_outcome(self.filed() + self.start())
+        self.assertTrue(ok, observed)
+
+    def test_a_read_a_stale_refusal_another_stamp_or_no_start_fails(self):
+        read = [self.use("g", "get_ticket", {"key": "T-9"}), self.said("g", "{}")]
+        for rows in (
+            self.filed() + read + self.start(),
+            self.filed() + self.start(body="T-9 changed since it was read (now in TODO)"),
+            self.filed() + self.start(seen="0123abcd"),
+            self.filed(),
+            [self.use("c", "create_ticket", {}), self.said("c", json.dumps({"key": "T-9"}))]
+            + self.start(),
+        ):
+            ok, observed = rig.create_start_outcome(rows)
+            self.assertFalse(ok, observed)
+
 
 if __name__ == "__main__":
     unittest.main()

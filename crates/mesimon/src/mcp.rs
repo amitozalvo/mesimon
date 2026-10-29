@@ -308,14 +308,16 @@ fn render(resp: Response) -> Value {
             text(&body)
         }
         // The workspace the ticket was filed with (T-583), so a crown that
-        // will start it reads its own choice back.
-        Response::AgentCreated { key, column, board_version, replayed, workspace } => {
+        // will start it reads its own choice back, and its stamp (T-1072),
+        // so the start needs no read; a worker's filing carries none.
+        Response::AgentCreated { key, column, board_version, replayed, workspace, seen } => {
             let mut body = json!({
                 "key": key, "column": column, "board_version": board_version, "replayed": replayed
             });
             if !workspace.is_empty() {
                 body["workspace"] = json!(workspace);
             }
+            put(&mut body, "seen", seen);
             text(&body)
         }
         Response::AgentTagged { tags, replaced, board_version, seen } => {
@@ -657,6 +659,7 @@ mod tests {
             board_version: 3,
             replayed: false,
             workspace: "worktree".into(),
+            seen: None,
         });
         assert_eq!(v["isError"], false);
         let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -665,6 +668,18 @@ mod tests {
         assert_eq!(body["replayed"], false);
         // T-583: the receipt echoes the workspace it was filed with.
         assert_eq!(body["workspace"], "worktree");
+        // T-1072: a worker's filing has no stamp to carry, and none is spelled.
+        assert!(body.get("seen").is_none(), "{body}");
+        let v = render(Response::AgentCreated {
+            key: "T-9".into(),
+            column: "TODO".into(),
+            board_version: 3,
+            replayed: true,
+            workspace: "worktree".into(),
+            seen: Some("receipt:01J".into()),
+        });
+        let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["seen"], "receipt:01J", "the crown's filing forwards its stamp");
     }
 
     /// A note body is the text block itself, not JSON with a string in it.

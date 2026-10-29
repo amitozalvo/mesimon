@@ -16505,3 +16505,116 @@ fn a_receipt_stamp_covers_only_its_own_queued_ask() {
 fn an_ask_s_receipt_stamp_expires_on_a_later_person_s_turn() {
     receipt_boundary("ask_then_person");
 }
+
+/// T-1072: the crown's `create_ticket` hands back the new ticket's stamp,
+/// so its `start_agent` needs no read. The stamp is a receipt, strict as a
+/// read's: a person's edit after the filing refuses it as stale. A replay
+/// of the filing hands back the first answer's stamp, never a fresh one,
+/// so a retry after that edit is refused the same way. A worker's filing
+/// (an uncrowned session's) carries none.
+#[test]
+fn a_crown_s_filing_receipt_starts_its_ticket_with_no_read() {
+    let Some(h) = Harness::boot_with_env(
+        "create_seen",
+        Some(RECORDING_STUB_PER_TICKET),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("create_seen");
+    let a = c.create_ticket("coordinate");
+    let sa = c.spawn_claude(a);
+    let file = |c: &mut TestClient, title: &str, idempotency_key: &str| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentCreateTicket {
+                title: title.into(),
+                column: None,
+                description: Some(format!("{title}: the whole brief")),
+                tags: Vec::new(),
+                idempotency_key: Some(idempotency_key.into()),
+                tier: None,
+                workspace: Some("worktree".into()),
+            },
+        )
+    };
+    let start = |c: &mut TestClient, key: &str, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket {
+                key: key.into(),
+                seen,
+                plan: false,
+                tier: None,
+                workspace: Some("worktree".into()),
+                expect_secs: None,
+            },
+        )
+    };
+    // ---- an uncrowned session's filing carries no stamp ------------------
+    match file(&mut c, "a worker's idea", "w") {
+        Response::AgentCreated { seen, .. } => assert_eq!(seen, None, "a worker's filing"),
+        other => panic!("a worker's create_ticket: {other:?}"),
+    }
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+
+    // ---- create, then start on the receipt's stamp, nothing read between -
+    let (k1, s1) = match file(&mut c, "mesimon-probe-1072 filed and started", "k1") {
+        Response::AgentCreated { key, replayed: false, seen: Some(seen), .. } => (key, seen),
+        other => panic!("the crown's create_ticket: {other:?}"),
+    };
+    assert!(s1.starts_with("receipt:"), "a receipt, never a read's hash: {s1}");
+    let t1 = c.board().ticket_by_key(&k1).unwrap().id;
+    match file(&mut c, "mesimon-probe-1072 filed and started", "k1") {
+        Response::AgentCreated { key, replayed: true, seen, .. } => {
+            assert_eq!(key, k1);
+            assert_eq!(seen.as_deref(), Some(s1.as_str()), "the first answer's stamp");
+        }
+        other => panic!("a replayed create_ticket: {other:?}"),
+    }
+    assert_eq!(
+        c.board().tickets.iter().filter(|t| t.title.contains("filed and started")).count(),
+        1,
+        "the replay files nothing"
+    );
+    match start(&mut c, &k1, Some(s1)) {
+        Response::AgentStarted { key, .. } => assert_eq!(key, k1),
+        other => panic!("start_agent on the create receipt's stamp: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(15), "the worktree start to land", || {
+        c.board().live_agent(t1).is_some()
+    });
+
+    // ---- a person's edit after the filing stales its stamp, replay or not -
+    let (k2, s2) = match file(&mut c, "mesimon-probe-1072 edited first", "k2") {
+        Response::AgentCreated { key, seen: Some(seen), .. } => (key, seen),
+        other => panic!("the crown's second create_ticket: {other:?}"),
+    };
+    let t2 = c.board().ticket_by_key(&k2).unwrap().id;
+    assert_ne!(c.agent_read(sa, &k2).unwrap().seen.as_deref(), Some(s2.as_str()));
+    assert!(matches!(
+        c.request(Command::RenameTicket { id: t2, title: "a person's title".into() }),
+        Response::Ok
+    ));
+    let stale =
+        |r: &Response| matches!(r, Response::Err { message } if message.contains("changed since"));
+    let refused = start(&mut c, &k2, Some(s2.clone()));
+    assert!(stale(&refused), "a person's edit after the filing: {refused:?}");
+    let replayed = match file(&mut c, "mesimon-probe-1072 edited first", "k2") {
+        Response::AgentCreated { key, replayed: true, seen: Some(seen), .. } => {
+            assert_eq!(key, k2);
+            seen
+        }
+        other => panic!("a replay after the edit: {other:?}"),
+    };
+    assert_eq!(replayed, s2, "a replay mints nothing that would pass the edit");
+    let refused = start(&mut c, &k2, Some(replayed));
+    assert!(stale(&refused), "the replay's stamp: {refused:?}");
+    assert!(c.board().live_agent(t2).is_none(), "nothing started on a stale stamp");
+    let fresh = c.agent_read(sa, &k2).unwrap().seen;
+    match start(&mut c, &k2, fresh) {
+        Response::AgentStarted { key, .. } => assert_eq!(key, k2),
+        other => panic!("start_agent after a fresh read: {other:?}"),
+    }
+}

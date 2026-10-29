@@ -175,6 +175,11 @@
 #              start_agent receipt returned, no get_ticket of the ticket
 #              between the two, and its result is the ask's receipt, not a
 #              stale refusal; `ci/rig.py::receipt_ask_outcome`),
+#              create_start:accepted (T-1072: in the crown's transcript, the
+#              first start_agent on the key its first create_ticket returned
+#              carries that receipt's seen, no get_ticket of the key between,
+#              and its result is the start's receipt;
+#              `ci/rig.py::create_start_outcome`),
 #              T-1014: held_between:<n> (from the person's key <n> in the
 #              pane, `pane_keys`, to key <n+1> the card said needs-you and
 #              nothing else), left_after:<n>:<secs>:<source> (the card left
@@ -2151,6 +2156,20 @@ checks = ["road:mod", "started_by_crown", "crown:start_agent=1", "crown:ask_agen
   crown = "SE1: call ask_agent for {key} with deliver idle, the seen that start_agent's receipt returned (call get_ticket neither before nor after), and the text: Reply with the single word fig and end your turn. Read no file and run no command. Then end your turn with two lines: SE1 asked, followed by accepted or refused as the call answered; and SE1 reason, followed by the refusal's words where it was refused. When the board wakes you for {key}, end your turn with the single line: SE1 seen."
   until = { stops = 2, state = "idle" }
   wake = true
+
+# T-1072: a bare ask to file and start; create_ticket's receipt carries the
+# new ticket's seen, so the start needs no read (CROWN_ROLE says so once).
+[[test]]
+id = "SF1"
+title = "SF1 · the crown files a ticket and starts it: do the steps below"
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the request goes to the crown."
+expect = "asked to file a fully briefed ticket and start its agent, naming no stamp, the crown calls create_ticket and then start_agent on the key it returned, carrying the seen create_ticket's receipt returned and reading the new ticket with get_ticket neither before nor between: the start is taken on the first call, and the agent it started replies done."
+checks = ["filed", "create_start:accepted"]
+
+  [[test.steps]]
+  crown = "SF1: this test lifts the rig's rules against filing a ticket and starting an agent. File a ticket titled SF1 child, in workspace worktree, with no tier, whose description is: Reply with the single word done and end your turn. Read no file and run no command. Then start its agent in workspace worktree, no tier and no plan, and end your turn with the single line: SF1 started."
+  until = { filed = true, stops = 1, state = "idle" }
 
 # T-1048: the second request names no budget remedy; the receipt supplies it.
 [[test]]
