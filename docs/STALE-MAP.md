@@ -39175,3 +39175,31 @@ refused REVIEW's `requires_pipeline` with `pipeline not read`, then the MR liste
 `--author me` by the same daemon, the row clear, and no further account ask on the backoff).
 Run against the old probe the e2e fails at its first wait; against the refuted `cli: None`,
 at the REVIEW refusal.
+
+## A crown's worker reads what its turn's end tells the crown (T-1068, 2026-10-29)
+
+Crown-started workers were seen raising a hand just before ending a finished turn. Their
+`get_ticket` `under_crown` (`mcp::WORKER_UNDER_CROWN`) said only "Words in the pane reach no one:
+raise_hand on this ticket wakes the crown and lights the card", the one road to the crown it
+named; what the board already reports at a turn's end was on the crown's side alone
+(`CROWN_WAKES`, `start_agent`). The sentence now ends with that board fact, traced from
+`crownwake`'s `verdict` and `due`: a turn's end reaches the crown by itself as one sentence
+naming the ticket and what changed, not the pane's words; new commits as delivered (held to
+the merge where the armed train lands them); a turn the crown's words started as their answer;
+a turn on the board's rebase ask at the merge (a merge step is silent until it is over); any
+other as finished while no words wait for the session and no hand is up (a busy ticket's
+finish is silent). raise_hand's facts stay word for word, last. No wake policy, tool, raise_hand
+description or brief changed; the text only reaches a worker that calls `get_ticket` and is
+one the crown started. A unit test pins each clause, the lint, and the absence of advice
+(`no need`, `only when`, `forwarded`).
+
+Rig, two new cases beside RH1/RH2: **RH3** (a worker told the crown reviews its result commits
+and reports, `not_fed:raise_hand`, `woke:delivered`) and **RH4** (the negative: the file the
+brief names is the person's to place and absent; the worker writes no stand-in, raises its
+hand naming it, `woke:raised`). Measured on Claude Code 2.1.312, workers on Sonnet (low), crown
+on Opus: **before** the change RH3 and RH4 both passed already (no hand on RH3, a hand on
+RH4), so the rig did not reproduce the redundant hand, which was seen on longer briefs on the
+coder tier; **after**, RH1, RH2, RH3, RH4 and WR1 all passed, RH3's, RH4's and WR1's workers
+having read the new sentence on `get_ticket` (RH1's worker never called it and still raised its
+hand on the refusal, T-908's road). The wording supplies a missing fact; whether it lowers the
+habit on the tier where it was seen is not measured here.

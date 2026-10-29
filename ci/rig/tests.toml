@@ -1722,6 +1722,33 @@ checks = ["road:mod", "started_by_crown", "hand:rh2-teal", "woke:raised", "crown
   wake = true
 
 [[test]]
+id = "RH3"
+title = "RH3 · a worker the crown reviews finishes its work: do the steps below"
+workspace = "worktree"
+brief = "Write the single line rh3 into notes/rh3.txt and commit it on this ticket's branch. The crown reviews the result once this is done. Then end your turn with a short report of what you did."
+brief_file = "rh3"
+expect = "a worker the crown started, told the crown reviews its result, commits the file and ends its turn without raising its hand: its get_ticket's under_crown says a turn's end reaches the crown by itself, new commits as delivered (T-1068), and the board wakes the crown, delivered. Before T-1068 under_crown said only that words in the pane reach no one and that raise_hand wakes the crown, and crown-started workers raised a hand to announce a finished turn."
+checks = ["road:mod", "started_by_crown", "file:notes/rh3.txt", "not_fed:raise_hand", "woke:delivered"]
+
+  [[test.steps]]
+  crown = "RH3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH3 started. When the board wakes you for {key}, end your turn with the single line: RH3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "RH4"
+title = "RH4 · a worker the crown reviews needs a file only the person can give: do the steps below"
+workspace = "worktree"
+brief = "Copy the single line in rh4-key.txt at the repository's root, a file the person places there for this ticket, into notes/rh4.txt and commit that file on this ticket's branch. The crown reviews the result once this is done. Then end your turn with a short report of what you did."
+expect = "the file the brief names is not there, and only the person can place it. The worker writes no stand-in, raises its hand on its own ticket naming the missing file, and the board wakes the crown, raised its hand. T-1068's sentence on what a turn's end tells the crown keeps raise_hand's facts (it wakes the crown and lights the card), so a worker blocked on a person's step still raises one (T-908's road, measured beside RH3)."
+checks = ["road:mod", "started_by_crown", "fed:raise_hand", "hand:rh4-key", "woke:raised", "no_file:notes/rh4.txt"]
+
+  [[test.steps]]
+  crown = "RH4: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH4 started. When the board wakes you for {key}, end your turn with the single line: RH4 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
 id = "DL1"
 title = "DL1 · the crown hears work asked for in a person's words: do the steps below"
 blind = true
