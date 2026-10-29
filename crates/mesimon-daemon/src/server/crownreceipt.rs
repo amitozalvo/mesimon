@@ -342,6 +342,18 @@ mod tests {
                 assert!(d.check_seen(id, Some(&filed)).is_err(), "replaced: {replaced}");
             });
         }
+        // A seen-less own write (a note, a tag) supersedes the read token, not
+        // the filing's receipt (T-1047, not widened here): a sibling carrying
+        // the filing's stamp is refused, and the write's own stamp serves.
+        with_ticket(|d, id| {
+            d.board.sessions.clear();
+            let filed = d.receipt_seen(id, None);
+            let write = d.receipt_write(id, None);
+            d.board.ticket_mut(id).unwrap().title = "the crown's own note".into();
+            let noted = d.receipt_seen(id, Some(write));
+            assert!(d.check_seen(id, Some(&filed)).is_err());
+            assert!(d.check_seen(id, Some(&noted)).is_ok());
+        });
     }
 
     #[test]
