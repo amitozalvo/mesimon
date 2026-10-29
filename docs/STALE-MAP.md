@@ -39183,12 +39183,17 @@ Crown-started workers were seen raising a hand just before ending a finished tur
 raise_hand on this ticket wakes the crown and lights the card", the one road to the crown it
 named; what the board already reports at a turn's end was on the crown's side alone
 (`CROWN_WAKES`, `start_agent`). The sentence now ends with that board fact, traced from
-`crownwake`'s `verdict` and `due`: a turn's end reaches the crown by itself as one sentence
-naming the ticket and what changed, not the pane's words; new commits as delivered (held to
-the merge where the armed train lands them); a turn the crown's words started as their answer;
-a turn on the board's rebase ask at the merge (a merge step is silent until it is over); any
-other as finished while no words wait for the session and no hand is up (a busy ticket's
-finish is silent). raise_hand's facts stay word for word, last. No wake policy, tool, raise_hand
+`crownwake`'s `verdict` and `due`: the board tells the crown of a turn's end by itself, in one
+sentence naming the ticket and what changed, not the pane's words; new commits as delivered;
+a turn the crown's words started as their answer; any other as finished, only while nothing
+else is pending (`Pending::busy`, one clause per field: words waiting, another turn running, a
+hand up, a question or plan open, a merge step under way). Where the armed train will land the
+branch, a delivery *or* a finish is told at the merge, or once the train will not take it
+(`Due::Hold`, `hear_deferred`). A turn on the board's rebase ask is silent by itself and only a
+merge after it is told, so a failed rebase promises nothing. The first wording (`769f1f7c`)
+named only queued words and a hand for a finish, put the train's delay on a delivery alone and
+said a rebase turn was heard "at the merge"; the crown's review caught all three. raise_hand's
+facts stay word for word, last. No wake policy, tool, raise_hand
 description or brief changed; the text only reaches a worker that calls `get_ticket` and is
 one the crown started. A unit test pins each clause, the lint, and the absence of advice
 (`no need`, `only when`, `forwarded`).
@@ -39201,5 +39206,6 @@ on Opus: **before** the change RH3 and RH4 both passed already (no hand on RH3, 
 RH4), so the rig did not reproduce the redundant hand, which was seen on longer briefs on the
 coder tier; **after**, RH1, RH2, RH3, RH4 and WR1 all passed, RH3's, RH4's and WR1's workers
 having read the new sentence on `get_ticket` (RH1's worker never called it and still raised its
-hand on the refusal, T-908's road). The wording supplies a missing fact; whether it lowers the
-habit on the tier where it was seen is not measured here.
+hand on the refusal, T-908's road). The corrected wording was run again on RH3 and RH4 (results
+below). The wording supplies a missing fact; whether it lowers the habit on the tier where it
+was seen is not measured here.

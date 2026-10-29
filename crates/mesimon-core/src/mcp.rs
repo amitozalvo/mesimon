@@ -469,20 +469,26 @@ pub const COST_ABOUT: &str = "usd is the board's estimate, not a bill: every tok
 /// What a turn's end tells the crown (T-1068) is `crownwake`'s table seen
 /// from the worker: told only that pane words reach no one and that a hand
 /// wakes the crown, workers under a crown raised one to announce a turn the
-/// board already reports. A merge step's turn is heard at the merge, a hand
-/// up or words queued silence a finish, and the line never carries the pane.
+/// board already reports. A finish is silent while `Pending::busy` holds,
+/// the train holds a delivery or a finish (`Due::Hold`) until the merge or
+/// `hear_deferred`, a merge step's own turn is silent and only a merge after
+/// it is heard (a failed rebase promises none), and the line never carries
+/// the pane.
 pub const WORKER_UNDER_CROWN: &str = "The board's crown, the agent coordinating this board \
      from another ticket, started this session. Under a crown the merge is the board's: the \
      merge train lands a finished branch, else the crown does, and the board asks for its \
      rebase. Where a merge moves the ticket is a column's setting, automove's on_merged \
      where the ticket's column has one. The board reads a background task or monitor still running \
      after a turn as unfinished work: the branch is not merged behind it, and the crown is \
-     told. Words in the pane reach no one. A turn's end reaches the crown by itself, as one \
-     sentence naming the ticket and what changed, not the pane's words: new commits as \
-     delivered (where the merge train lands them, at the merge), a turn the crown's words \
-     started as their answer, a turn on the board's rebase ask at the merge, and any other \
-     turn as finished while no words wait for this session and no hand is up. raise_hand on \
-     this ticket wakes the crown and lights the card.";
+     told. Words in the pane reach no one. The board tells the crown of a turn's end by \
+     itself, in one sentence naming the ticket and what changed, not the pane's words: new \
+     commits as delivered, a turn the crown's words started as their answer, and any other \
+     turn as finished, only while nothing else is pending on this ticket (no words waiting \
+     for this session, no other turn running, no hand up, no question or plan open, no merge \
+     step under way). Where the merge train will land the branch, a delivery or a finish is \
+     told at the merge, or once the train will not take it. A turn on the board's rebase ask \
+     is not told by itself; a merge after it is. raise_hand on this ticket wakes the crown \
+     and lights the card.";
 
 /// Words that turn a description into an instruction. Tool text is injected
 /// into every request; it may describe, and it may not tell the model what to
@@ -3504,18 +3510,28 @@ mod tests {
     /// tells the crown, each case as `crownwake` judges it, and still reads
     /// that raise_hand wakes the crown and lights the card; facts, linted,
     /// and nothing that says the pane is forwarded or when to raise a hand.
+    /// A finish names every field of `crownwake::Pending::busy`, the train
+    /// holds a finish as well as a delivery, and the rebase clause promises
+    /// no merge (review of 769f1f7c).
     #[test]
     fn a_worker_under_a_crown_reads_what_its_turn_end_tells_the_crown() {
         lint_tool_text(WORKER_UNDER_CROWN).unwrap();
         for words in [
             "Words in the pane reach no one.",
-            "A turn's end reaches the crown by itself",
+            "The board tells the crown of a turn's end by itself",
             "not the pane's words",
             "new commits as delivered",
-            "where the merge train lands them, at the merge",
             "a turn the crown's words started as their answer",
-            "a turn on the board's rebase ask at the merge",
-            "as finished while no words wait for this session and no hand is up",
+            "any other turn as finished, only while nothing else is pending on this ticket",
+            // `Pending::busy`, one per field: words, turn, hand, dialog, merge_step.
+            "no words waiting for this session",
+            "no other turn running",
+            "no hand up",
+            "no question or plan open",
+            "no merge step under way",
+            // `Due::Hold`, then `hear_deferred`.
+            "a delivery or a finish is told at the merge, or once the train will not take it",
+            "A turn on the board's rebase ask is not told by itself; a merge after it is.",
             "raise_hand on this ticket wakes the crown and lights the card.",
         ] {
             assert!(WORKER_UNDER_CROWN.contains(words), "{words:?}");
@@ -3523,6 +3539,9 @@ mod tests {
         for advice in ["no need", "unnecessary", "instead of raise_hand", "only when", "forwarded"]
         {
             assert!(!WORKER_UNDER_CROWN.contains(advice), "{advice:?} reads as advice");
+        }
+        for overclaim in ["every turn", "rebase ask at the merge", "pane's words reach"] {
+            assert!(!WORKER_UNDER_CROWN.contains(overclaim), "{overclaim:?} claims too much");
         }
     }
 
