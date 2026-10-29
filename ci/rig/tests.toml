@@ -183,6 +183,12 @@
 #              one_message:<tool>:<n> (<n> calls of <tool> under one message
 #              id), never_in_prompts:<words> (no prompt of the worker's holds
 #              them).
+#              T-1073, over the tickets the crown filed since the test
+#              began: title_words:<n> (each title at most <n> words, the
+#              case's bound), title_never:<w1,...> (no title holds them,
+#              case aside), title_is:<text> (the title is <text> exactly),
+#              title_match:<regex>, described:<w1,...> (each description
+#              holds them, case aside).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -1667,6 +1673,45 @@ checks = ["filed", "crown_wrote_nothing:greet.py,test_greet.py"]
   [[test.steps]]
   crown = "DL1: this test lifts the rig's rules against filing a ticket and starting an agent. The person asks: Have greet.py done on a ticket of its own, by its own agent: a small Python module with a function greet(name) that returns \"Hello, <name>!\", and a unittest for it in test_greet.py. Do what this board's crown does with that request, then end your turn with the single line: DL1 handled."
   until = { filed = true, stops = 1, state = "idle" }
+
+[[test]]
+id = "TT1"
+title = "TT1 · the crown files a person's request: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the request goes to the crown."
+expect = "asked in a person's words to file a detailed request unstarted, naming no title, the crown files one ticket whose title is a short label a person reads on the card, with the detail in its description: this case's bound is ten words, a judgement of this case and not a limit of the board's, and no figure, file name or date of the request is in the title while the description carries them (T-1073)."
+checks = ["title_words:10", "title_never:MM/DD/YYYY,0.00,02:00,test_report.py,29 February,14 October", "described:0.00,YYYY-MM-DD,test_report.py"]
+
+  [[test.steps]]
+  crown = "TT1: this test lifts the rig's rule against filing a ticket. The person asks: Put this on the board, unstarted, for later. The CSV export in report.py drops every row whose amount field is empty, and it writes dates as MM/DD/YYYY although the importer at the other end reads ISO 8601. Keep the empty-amount rows and write their amount as 0.00; write every date as YYYY-MM-DD; quote any field holding a comma or a newline; keep the header row exactly as it is; and add tests in test_report.py for an empty amount, a field with a comma in it, and a date on 29 February. The export runs nightly at 02:00, and three customers have reported missing rows since 14 October. Do what this board's crown does with that request, then end your turn with the single line: TT1 filed."
+  until = { crown_only = true }
+
+[[test]]
+id = "TT2"
+title = "TT2 · the crown files a person's request: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the request goes to the crown."
+expect = "asked in a person's words to file a request unstarted under a long title the person spells out, the crown files it under that title exactly, every word of it, with the detail in the description: a title the person gives is theirs (T-1073)."
+checks = ["title_is:Nightly CSV export in report.py drops empty-amount rows and writes MM/DD/YYYY dates the ISO 8601 importer rejects, three customers affected since 14 October", "described:0.00,test_report.py"]
+
+  [[test.steps]]
+  crown = "TT2: this test lifts the rig's rule against filing a ticket. The person asks: File this unstarted, with exactly this title, between the quotes: \"Nightly CSV export in report.py drops empty-amount rows and writes MM/DD/YYYY dates the ISO 8601 importer rejects, three customers affected since 14 October\". In the description: keep the empty-amount rows and write their amount as 0.00, write dates as YYYY-MM-DD, quote any field holding a comma or a newline, keep the header row as it is, and add tests in test_report.py. Do what this board's crown does with that request, then end your turn with the single line: TT2 filed."
+  until = { crown_only = true }
+
+[[test]]
+id = "TT3"
+title = "TT3 · the crown files a person's request: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the request goes to the crown."
+expect = "asked in a person's words to file a detailed request unstarted, on a board whose titles the person says name the file, then the whole change, then why, the crown files it under a title in that form (file, dash, change, dash, why): a naming style the person gives is theirs, a longer title included (T-1073)."
+checks = ["title_match:^\\S*report\\.py\\s+[—–-]\\s+.+\\s+[—–-]\\s+.+$", "described:0.00,test_report.py"]
+
+  [[test.steps]]
+  crown = "TT3: this test lifts the rig's rule against filing a ticket. The person asks: On this board every ticket's title names the file first, then the whole change, then why, in the form: <file> — <what changes> — <why>. File this one unstarted. The CSV export in report.py drops every row whose amount field is empty, and it writes dates as MM/DD/YYYY although the importer at the other end reads ISO 8601. Keep the empty-amount rows and write their amount as 0.00; write every date as YYYY-MM-DD; quote any field holding a comma or a newline; keep the header row exactly as it is; and add tests in test_report.py for an empty amount, a field with a comma in it, and a date on 29 February. The export runs nightly at 02:00, and three customers have reported missing rows since 14 October. Do what this board's crown does with that request, then end your turn with the single line: TT3 filed."
+  until = { crown_only = true }
 
 [[test]]
 id = "A1"

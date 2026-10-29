@@ -3645,7 +3645,8 @@ Reply with the single word ready and end your turn."""
             # the crown's side alone.
             if rec is None and name not in ("woke", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
-                                            "crown_wrote_nothing"):
+                                            "crown_wrote_nothing", "title_words", "title_never",
+                                            "title_is", "title_match", "described"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -3866,6 +3867,36 @@ Reply with the single word ready and end your turn."""
                     ok = nearest in line and not any(k in line for k in others)
                     check(c, ok, f"read {read}; said {line[:120]!r}" if line
                           else f"read {read}; no line {arg!r}")
+            elif name in ("title_words", "title_never", "title_is", "title_match", "described"):
+                # T-1073: the tickets the crown filed since the test began,
+                # judged by title or description. `title_words:<n>` is this case's
+                # bound in words, not a product's; the others read words, the
+                # exact title, a regex, and the description's words.
+                filed = [self.ticket(board, t) for t in dict.fromkeys(
+                    l.get("ticket") for l in lines if l.get("kind") == "board"
+                    and l.get("actor") == "agent" and l.get("cmd") == "create_ticket")]
+                filed = [t for t in filed if t]
+                words_of = [w for w in arg.split(",") if w]
+                bad = []
+                for t in filed:
+                    tt = t["title"]
+                    if name == "title_words":
+                        ok = len(tt.split()) <= int(arg)
+                    elif name == "title_never":
+                        ok = not any(w.lower() in tt.lower() for w in words_of)
+                    elif name == "title_is":
+                        ok = tt == arg
+                    elif name == "title_match":
+                        ok = re.search(arg, tt) is not None
+                    else:
+                        notes = t.get("notes") or []
+                        body = self.wire.read_note(t["id"], notes[0]["id"]) if notes else ""
+                        ok = all(w.lower() in body.lower() for w in words_of)
+                    if not ok:
+                        bad.append(t)
+                said = "; ".join(f"{t['short_key']} {t['title']!r} ({len(t['title'].split())} words)"
+                                 for t in filed)
+                check(c, bool(filed) and not bad, said or "the crown filed nothing")
             elif name == "filed":
                 # T-916: every ticket the crown started an agent on was filed
                 # by the crown's own session from its ticket, its agent is the

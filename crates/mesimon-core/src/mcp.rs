@@ -734,12 +734,21 @@ pub fn tools() -> Vec<Value> {
             // T-394's filing guidance (what a ticket is, the duplicate check,
             // research in notes, the cost of cleanup): how to decide what to
             // file is the person's; who works it and who deletes it stay.
+            // T-1073's `title` says what the field is for (the line a person
+            // reads on the card; the detail is the description's) and that a
+            // person's own title or naming style is theirs. No length: no
+            // cap, no truncation, no number.
             "description": "Creates a ticket for a session of its own, not this one; \
                             the user chooses tickets. Agents cannot delete tickets.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string" },
+                    "title": {
+                        "type": "string",
+                        "description": "A short line the card shows a person; the detail goes \
+                                        in description. A title or naming style the person \
+                                        gives is theirs, as given.",
+                    },
                     // A plain string, NOT an enum: see the module header.
                     "column": { "type": "string" },
                     "description": { "type": "string" },
@@ -827,7 +836,12 @@ pub fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The ticket's key, from list_board." },
-                    "title": { "type": "string", "description": "The new title, one line." },
+                    // T-1073: as `create_ticket`'s title says.
+                    "title": {
+                        "type": "string",
+                        "description": "The new title, a short line the card shows a person. A \
+                                        title or naming style the person gives is theirs, as given.",
+                    },
                     "seen": { "type": "string", "description": "get_ticket's seen stamp for this ticket." },
                 },
                 "required": ["key", "title", "seen"],
@@ -3635,6 +3649,43 @@ mod tests {
         for words in ["dropped (by a person, the agent's side or the board", "none of them resent"]
         {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+    }
+
+    /// T-1073: a title is described as what the card shows a person, and a
+    /// person's own title or naming style as theirs; nothing caps, counts or
+    /// rewrites it, so a long title the person gives passes whole.
+    #[test]
+    fn a_title_is_the_cards_and_the_persons_style_is_theirs() {
+        let registry = tools();
+        for name in ["create_ticket", "rename_ticket"] {
+            let tool = registry.iter().find(|t| t["name"] == name).unwrap();
+            let title = &tool["inputSchema"]["properties"]["title"];
+            assert_eq!(title["type"], "string");
+            assert!(title.get("maxLength").is_none(), "{name}: no cap");
+            let d = title["description"].as_str().unwrap();
+            for words in
+                ["short line the card shows a person", "naming style the person gives is theirs"]
+            {
+                assert!(d.contains(words), "{name}'s title says {words:?}: {d}");
+            }
+            assert!(!d.chars().any(|c| c.is_ascii_digit()), "{name}: no number in {d:?}");
+            assert_eq!(lint_tool_text(d), Ok(()));
+        }
+        let create = registry.iter().find(|t| t["name"] == "create_ticket").unwrap();
+        let d = create["inputSchema"]["properties"]["title"]["description"].as_str().unwrap();
+        assert!(d.contains("the detail goes in description"), "{d}");
+        let long = "a".repeat(40) + &" word".repeat(60);
+        match parse_tool_call("create_ticket", &json!({ "title": long.clone() })) {
+            Ok(ToolCall::CreateTicket { title, .. }) => assert_eq!(title, long),
+            other => panic!("{other:?}"),
+        }
+        match parse_tool_call(
+            "rename_ticket",
+            &json!({ "key": "T-4", "title": long.clone(), "seen": "a" }),
+        ) {
+            Ok(ToolCall::RenameTicket { title, .. }) => assert_eq!(title, long),
+            other => panic!("{other:?}"),
         }
     }
 

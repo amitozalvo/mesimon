@@ -38571,3 +38571,54 @@ second step (the restart's unchecked pass made an unmerged baseline, then a land
 that step taken out it fails at "rechecked: still merged", a landing `[t]` where the fix has
 none (measured both ways). Run under `cargo ut` with fmt and clippy clean; the full suite was
 not run again for a test and docs.
+
+## A ticket's title is described as the card's line, and a person's title as theirs (T-1073, 2026-10-29)
+
+**The ask, the person's** (the latest-version review): "Crowns should title tickets for humans,
+keep it short and easily readable instead of overly verbose. It should be hinted but requires a
+thought before doing something since it can conflict with wishes of a user." Crown-filed titles on
+the board ran 9 to 20 words, often a whole sentence of cause and effect; the person's ran 3 to 8.
+
+**Reconciled with T-930 and T-932.** Those rules let agent text say what the board does and what is
+the person's, never how to work. A sentence in `CROWN_ROLE` on how to title would be method, and
+would ride every crowned read. So the hint is two field descriptions instead, saying what the field
+is and whose choice wins, in the schema where a title is written:
+- `create_ticket`'s `title` was a bare string. It now reads: "A short line the card shows a person;
+  the detail goes in description. A title or naming style the person gives is theirs, as given."
+- `rename_ticket`'s `title` read "The new title, one line." It now reads: "The new title, a short
+  line the card shows a person. A title or naming style the person gives is theirs, as given."
+
+Both tools are on a worker's list too (`create_ticket`), and the descriptions are as true there.
+`CROWN_ROLE`, `CROWN_WAKES`, the brief and `get_ticket` are unchanged. Nothing caps, counts,
+truncates or rewrites a title; no number is in either description (a unit test says so, and that
+a 60-word title parses whole through both tools). Existing tickets are not renamed.
+`create_ticket` went from 614 to 762 bytes of the 820 cap.
+
+**Rig cases** (`ci/rig/tests.toml`, all `blind`; the ticket's title, card and the crown's brief say
+nothing of titles). Each asks the crown, in a person's words, to file one request unstarted, and
+the new checks read the ticket the crown filed (`title_words`, `title_never`, `title_is`,
+`title_match`, `described`):
+- **TT1:** a detailed request (figures, file names, dates) and no title. The title must be at most
+  ten words, that case's own bound and not the board's, hold none of the request's figures, file
+  names or dates, and the description must hold them.
+- **TT2:** the person gives a 23-word title between quotes. The title must be exactly theirs.
+- **TT3:** the person states the board's naming form, `<file> — <what changes> — <why>`, which is
+  long by nature. The title must take that form.
+
+**Measured** (2026-10-29, Claude Code 2.1.312, crown `claude-opus-5-5` high on `rig-crown`, three
+samples per case per arm fixed before the first run, a fresh crown and `--reset` board for each;
+arm A the text before, arm B after, same rig):
+
+| case | arm A | arm B |
+|---|---|---|
+| TT1 | 3/3 pass; 10, 9, 8 words | 3/3 pass; 9, 7, 9 words |
+| TT2 | 3/3 pass; exact | 3/3 pass; exact |
+| TT3 | 3/3 pass; 66, 73, 83 words | 3/3 pass; 55, 63, 65 words |
+
+No regression: the person's title and the person's form held in every sample of both arms. The
+positive effect is not shown at N=3: a fresh rig crown already titled TT1 in 8 to 10 words before
+the change, and 9.0 to 8.3 words on average is within noise. The long titles on the real board came
+from crowns deep in long sessions, which a one-turn rig crown does not reproduce. Typical titles:
+A `report.py CSV export: keep empty-amount rows, ISO dates, quote fields`; B `CSV export: keep
+empty-amount rows, ISO dates`. The verdicts are `target/rig/verdicts-20261029-165344.md` to
+`-170452.md` (arm A) and `-170652.md` to `-171632.md` (arm B), in this ticket's worktree.
