@@ -280,3 +280,30 @@ with workers on their own tier.
   receipt. The worker's model is in the note beside them. A Codex run's
   manifest carries `models` and `crown_results` (results, bytes, the rules'
   results, failed scripts) beside its token usage.
+
+## Native compaction (T-1069)
+
+`python3 -B ci/rig.py --only CX2,NX1,NX2` measures a typed `/compact` and what the board does
+around its compaction window, on real Claude Code with the real mod, the crown on Opus and its
+workers on Sonnet. NX1 and NX2 put the daemon and every launch, the crown's included, on the native
+road (T-658): `crown_road` with road `native` runs Claude Code through a wrapper whose `auth status`
+says an enterprise account, so the probe's own verdict is classic-off. CX2 is the ordinary mod
+road's baseline.
+
+- **NX2** is that native road as it stands on an unmanaged account: Claude Code still hands the mod
+  `session.compact`, beside the `command.run` fallback. Its frames are `PreCompact`,
+  `SessionStart{compact}`, `PostCompact`, once each.
+- **NX1** is a **simulation** of a seated security default: `passed_over = true` loads a copy of
+  the mod whose `session.compact` hook passes the event on unread, so the shipped `command.run`
+  fallback is all that reports the compaction (`PreCompact`, `PostCompact`). A person's plugin
+  cannot stand in for the real seat (`next.to` loads only in a managed plugin), and the public build
+  ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`; no managed machine is involved, and nothing here
+  proves what a managed machine does beyond what its binary's table says.
+
+Both check that a person's prompt queued once the worker's `PreCompact` came is held until the
+`PostCompact` and taken once after it (`held_by_compaction`, which fails a prompt queued outside the
+window as unexercised), that the worker answers after the compaction, that the crown's own `/compact`
+gives its seat the same frames (`crown_rules_after_compact`: the last board result before the
+boundary carries no rules and the first after it does), and NX1 that doctor's road line warns of
+automatic compactions. An automatic compaction is not measured: it cannot be triggered on purpose,
+and on such a road it reaches neither the mod nor the board.

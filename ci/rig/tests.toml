@@ -189,6 +189,19 @@
 #              case aside), title_is:<text> (the title is <text> exactly),
 #              title_match:<regex>, described:<w1,...> (each description
 #              holds them, case aside).
+#              T-1069: native (the worker launched native, T-658: its record's
+#              `native`, `--plugin-dir` and `--settings` on argv),
+#              compaction_frames:<E1,E2,...> (the worker's compaction frames
+#              since the test began, exactly, in order: PreCompact, a
+#              SessionStart whose reason is compact, PostCompact),
+#              crown_compaction_frames:<E1,...> (the same for the crown's
+#              seat), held_by_compaction:<words> (`queue_in_compaction`'s
+#              words were queued inside the worker's open window and the one
+#              prompt holding them entered at its close or after; queued
+#              outside it fails, as unexercised), crown_rules_after_compact
+#              (in the crown's transcript the last board tool result before
+#              its compact boundary carries no rules and the first after it
+#              carries them again).
 #   siblings   more tickets the test files beside its own ({key2}, {key3}
 #              in a step; {crown} is the rig's crown's own key), each with
 #              the same brief and every check run on
@@ -240,6 +253,17 @@
 #              needs `crown_road` with `barrier = true`). With `--record`
 #              every case's frames and transcript lines are cut into
 #              `target/rig/traces/<id>.jsonl`, an e2e fixture.
+#              T-1069 adds `crown_road` with road `native` (the daemon
+#              again on a wrapper whose `auth status` says an enterprise
+#              account, so the probe is classic-off and every launch native
+#              on the real Claude Code and mod; `passed_over = true` loads a
+#              copy of the mod whose session.compact hook passes the event on
+#              unread, a SIMULATION of a seated security default, never a
+#              managed machine), `queue_in_compaction` (the person's `text`
+#              queued once the worker's PreCompact came; the step ends at the
+#              worker's turn on it and the crown's turn on the wake) and
+#              `crown_compact` (the crown's own /compact; ends at its
+#              PostCompact and an idle crown).
 #              `binary_moved` (T-941) moves the rig daemon's binary's mtime a
 #              second on, bytes untouched, and `binary_back` restores it (DB1); a
 #              crown step with `until = { crown_only = true }` waits on the
@@ -1978,6 +2002,92 @@ checks = ["road:mod", "started_by_crown", "fed:command_sent", "compacted:manual"
   crown = "CX2: call ask_agent for {key} with the text: Reply with the single word after and end your turn. Then end your turn with the single line: CX2 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: CX2 seen again."
   until = { stops = 1, state = "idle" }
   wake = true
+
+# T-1069: a typed /compact on the native road (a classic-off verdict, T-658),
+# with what the board does around the compaction window: words held for it,
+# and the crown's rules owed again after its own. NX1 simulates a seated
+# security default passing session.compact over (the mod's own hook made to
+# pass it on unread, so the shipped fallback, command.run, is all that is
+# left); NX2 is the same native road with session.compact still arriving, as
+# on any unmanaged account. Neither is a managed machine. CX2 is the ordinary
+# mod road's baseline.
+[[test]]
+id = "NX1"
+title = "NX1 · a typed /compact on the native road, session.compact passed over (simulated): do the steps below"
+workspace = "worktree"
+brief = "Read the first 1500 lines of docs/STALE-MAP.md with the Read tool, then reply with the single word done and end your turn. Run no command."
+expect = "on the native road with session.compact passed over (simulated), the crown's ask_agent /compact reaches the worker's box (command_sent) and Claude Code compacts it; the mod's command.run fallback alone relays PreCompact and PostCompact (no SessionStart{compact}); the person's prompt queued inside that window is held until it closes and then taken once, and the worker replies after; the crown's own /compact is the same two frames, and its next board tool result carries the board's rules again; doctor's road line warns that automatic compactions are unseen."
+checks = ["road:mod", "native", "started_by_crown", "doctor:automatic compactions unseen", "fed:command_sent", "compacted:manual", "compaction_frames:PreCompact,PostCompact", "held_by_compaction:Reply with the single word after and end your turn.", "prompt_once:Reply with the single word after and end your turn.", "reply:after", "crown_compaction_frames:PreCompact,PostCompact", "crown_rules_after_compact"]
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "native"
+  passed_over = true
+
+  [[test.steps]]
+  rig = "doctor"
+
+  [[test.steps]]
+  crown = "NX1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: NX1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: NX1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "NX1: call ask_agent for {key} with the text /compact and no other words, deliver idle, then end your turn with the single line: NX1 compacting. When the board next wakes you because {key}'s agent finished, end your turn with the single line: NX1 seen again."
+  until = { events = ["PreCompact"], state = "idle" }
+  settle = false
+
+  [[test.steps]]
+  rig = "queue_in_compaction"
+  text = "Reply with the single word after and end your turn."
+
+  [[test.steps]]
+  rig = "crown_compact"
+
+  [[test.steps]]
+  crown = "NX1: call get_ticket for {key}, then end your turn with the single line: NX1 read."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "mod"
+
+[[test]]
+id = "NX2"
+title = "NX2 · a typed /compact on the native road, session.compact arriving: do the steps below"
+workspace = "worktree"
+brief = "Read the first 1500 lines of docs/STALE-MAP.md with the Read tool, then reply with the single word done and end your turn. Run no command."
+expect = "on the native road where session.compact still reaches the mod (this account seats no security default), a typed /compact is relayed once in the hook set's order, PreCompact, SessionStart{compact}, PostCompact, with no frame twice from the command.run fallback beside it; the person's prompt queued inside the window is held until it closes and taken once; the worker replies after; the crown's own /compact is the same three frames, and its next board tool result carries the board's rules again."
+checks = ["road:mod", "native", "started_by_crown", "fed:command_sent", "compacted:manual", "compaction_frames:PreCompact,SessionStart,PostCompact", "held_by_compaction:Reply with the single word after and end your turn.", "prompt_once:Reply with the single word after and end your turn.", "reply:after", "crown_compaction_frames:PreCompact,SessionStart,PostCompact", "crown_rules_after_compact"]
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "native"
+
+  [[test.steps]]
+  crown = "NX2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: NX2 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: NX2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "NX2: call ask_agent for {key} with the text /compact and no other words, deliver idle, then end your turn with the single line: NX2 compacting. When the board next wakes you because {key}'s agent finished, end your turn with the single line: NX2 seen again."
+  until = { events = ["PreCompact"], state = "idle" }
+  settle = false
+
+  [[test.steps]]
+  rig = "queue_in_compaction"
+  text = "Reply with the single word after and end your turn."
+
+  [[test.steps]]
+  rig = "crown_compact"
+
+  [[test.steps]]
+  crown = "NX2: call get_ticket for {key}, then end your turn with the single line: NX2 read."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "crown_road"
+  road = "mod"
 
 [[test]]
 id = "SA1"

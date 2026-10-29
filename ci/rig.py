@@ -721,6 +721,80 @@ def crown_measures(rows, since_ms):
             "model": model_of(rows)}
 
 
+def compaction_frames(hook_lines):
+    """T-1069: a session's compaction frames as the daemon took them, in
+    order: `PreCompact`, a `SessionStart` whose reason is `compact`, and
+    `PostCompact`."""
+    return [l["event"] for l in hook_lines if l.get("event") in ("PreCompact", "PostCompact")
+            or (l.get("event") == "SessionStart" and l.get("reason") == "compact")]
+
+
+def held_by_compaction(hook_lines, queued_ms, prompts, words):
+    """T-1069: (ok, observed) for words a person queued while the session's
+    compaction window was open: queued after its first `PreCompact` and
+    before the `PostCompact` that closed it, and the one prompt holding them
+    entered at the close or after (a second's slack, as `held`: the hook's
+    exec). `prompts` is `user_prompts(rows, at=True)`. Words queued outside
+    the window prove nothing about the hold and fail."""
+    pre = next((l["at_ms"] for l in hook_lines if l.get("event") == "PreCompact"), None)
+    post = next((l["at_ms"] for l in hook_lines if l.get("event") == "PostCompact"
+                 and pre is not None and l["at_ms"] >= pre), None)
+    if pre is None or post is None:
+        return False, f"no closed window: PreCompact at {pre}, PostCompact at {post}"
+    if queued_ms is None:
+        return False, "nothing was queued"
+    span = f"the window was open {(post - pre) / 1000:.1f} s"
+    if not pre <= queued_ms < post:
+        return False, (f"queued {(queued_ms - pre) / 1000:+.1f} s from its opening, outside it "
+                       f"({span}): the hold was not exercised")
+    entered = [iso_ms(t) for p, t in prompts if words in p]
+    if len(entered) != 1 or entered[0] is None:
+        return False, f"{len(entered)} prompts hold the words; {span}"
+    ok = entered[0] >= post - 1000
+    return ok, (f"queued {(queued_ms - pre) / 1000:.1f} s into the window; {span}; the prompt "
+                f"entered {(entered[0] - post) / 1000:+.1f} s from its close")
+
+
+def rules_after_compaction(rows, since_ms):
+    """T-1069: (ok, observed) from the crown's transcript since `since_ms`:
+    its first compact boundary, the last board tool result before it (the
+    rules already told: no `CROWN_RULES_MARK`) and the first after it, which
+    carries them again. With no board result before the boundary the
+    baseline is not shown, and the first after it alone is judged. Only the
+    conversation's own rows are read: Claude Code 2.1.312 writes each call
+    first into an `api-request-blob` row with no timestamp, which `once`
+    would keep in the real row's place."""
+    names, seq = {}, []
+    rows = [r for r in rows if r.get("type") in ("user", "assistant", "system")]
+    for r in once(rows):
+        if (row_ms(r) or 0) < since_ms:
+            continue
+        if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+            seq.append(("boundary", None))
+            continue
+        content = (r.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use":
+                names[b.get("id")] = b.get("name") or ""
+            elif b.get("type") == "tool_result" and names.get(b.get("tool_use_id"), "").startswith(
+                    "mcp__mesimon__"):
+                body = b.get("content")
+                text = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                seq.append(("result", CROWN_RULES_MARK in text))
+    at = next((i for i, (k, _) in enumerate(seq) if k == "boundary"), None)
+    if at is None:
+        return False, "no compact boundary in the crown's transcript"
+    before = [c for k, c in seq[:at] if k == "result"]
+    after = [c for k, c in seq[at + 1:] if k == "result"]
+    said = lambda c: "the rules" if c else "no rules"  # noqa: E731
+    seen = (f"last board result before the boundary: {said(before[-1]) if before else 'none'}; "
+            f"first after: {said(after[0]) if after else 'none'}")
+    return bool(after and after[0] and not (before and before[-1])), seen
+
+
 def measures_line(m):
     if not m:
         return "no crown transcript"
@@ -1563,6 +1637,48 @@ class Rig:
             if os.path.exists(os.path.join(self.repo, "target/debug/mesimon-tmux")) else "tmux")
         return subprocess.run([tmux, "-S", self.paths.tmux_sock, *args],
                               capture_output=True, text=True)
+
+    def enterprise_claude(self):
+        """T-1069: the real Claude Code, but for `auth status`, which says an
+        enterprise account: the probe's own reason for a native road."""
+        wrapper = os.path.join(self.out, "claude-enterprise")
+        with open(wrapper, "w") as f:
+            f.write("#!/bin/sh\n# The rig's NX tests (T-1069): an enterprise account to the probe.\n"
+                    'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then\n'
+                    "  echo '{\"loggedIn\":true,\"subscriptionType\":\"enterprise\"}'; exit 0\n"
+                    "fi\n"
+                    f'exec "{self.claude}" "$@"\n')
+        os.chmod(wrapper, 0o755)
+        return wrapper
+
+    def passed_over_mod(self):
+        """T-1069's simulation: the laid sources, with the mod's
+        `session.compact` hook passing the event on before it reads it, as a
+        seated security default's `next.to(e, "append")` keeps it from a
+        person's mod. Everything else is the mod as shipped."""
+        src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
+        dst = os.path.join(self.paths.state_dir, "rig", "mod-compact-passed-over")
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        path = os.path.join(dst, "hooks", "register.ts")
+        with open(path) as f:
+            text = f.read()
+        head = "  on('session.compact', async ($, e, next) => {\n"
+        if text.count(head) != 1:
+            die("the mod's session.compact hook moved: the NX simulation cannot be patched in")
+        text = text.replace(head, head + "    if (RIG_PASSED_OVER) return next(e)\n", 1)
+        anchor = "let typedCompact: { closed: boolean } | undefined\n"
+        if anchor not in text:
+            die("the mod's typedCompact moved: the NX simulation's switch cannot be declared")
+        text = text.replace(anchor, anchor + "const RIG_PASSED_OVER = true\n", 1)
+        os.remove(os.path.join(dst, "hooks", "register.test.ts"))
+        with open(path, "w") as f:
+            f.write(text)
+        out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
+        if out.returncode != 0:
+            die(f"the NX simulation's mod does not validate:\n{out.stdout}{out.stderr}")
+        return dst
 
     def drop_mod(self):
         """P4's mod: the laid sources, with the first submit of each session
@@ -2536,20 +2652,40 @@ Reply with the single word ready and end your turn."""
             self.log(f"the person's draft typed into {test['key']}'s box at the launch's edge")
             return True
         if what == "crown_road":
-            # A3 (T-945): the rig's crown on `road` (hooks|mod). The road
+            # A3 (T-945): the rig's crown on `road` (hooks|mod|native). The road
             # is read at each launch, so the daemon restarts with the seam
             # and the crown is parked and woken onto it; `idle_ms` is the
             # bound a client attached to its pane holds a wake for.
             road = step.get("road", "hooks")
             env = {"MESIMON_CLAUDE_ROAD": "hooks"} if road == "hooks" else {}
+            # Back off the native road, the daemon's own probe must land
+            # before the crown is woken: a launch before it takes the hook set.
+            want_probe = "the mod validated" if road == "mod" and self.crown_native else None
+            if road == "native":
+                # T-1069: every launch native, the crown's and its workers',
+                # on the real Claude Code and the real mod. The wrapper says
+                # an enterprise account to the probe's `auth status`, which
+                # is what makes the probe's verdict classic-off; this account
+                # seats no security default, so the classic events still
+                # reach the mod, which ignores them on this road. With
+                # `passed_over`, the mod is a copy whose `session.compact`
+                # hook passes the event on unread: a SIMULATION of a seated
+                # security default's skip (a person's plugin cannot spell
+                # `next.to`), never a managed machine's.
+                env["MESIMON_CLAUDE_BIN"] = self.enterprise_claude()
+                if step.get("passed_over"):
+                    env["MESIMON_MOD_DIR"] = self.passed_over_mod()
+                want_probe = "hook events do not reach the mod"
+            self.crown_native = road == "native"
             if step.get("idle_ms"):
                 env["MESIMON_PERSON_IDLE_MS"] = str(step["idle_ms"])
             if step.get("barrier"):
                 env["MESIMON_TEST_LAUNCH_BARRIER"] = os.path.join(self.out, "barrier")
             # The road is judged by the woken crown's record below, never by
             # `road.json`, which a restarted daemon rewrites only when it
-            # changes its mind.
-            ok = self.restart(env)
+            # changes its mind; a native road waits for the probe's verdict,
+            # which the crown's relaunch reads.
+            ok = self.restart(env, want_probe=want_probe)
             self.restarted = True
             if not ok:
                 record["failures"].append(f"the daemon would not restart for the {road} road")
@@ -2569,12 +2705,15 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown would not park")
                 return False
             self.wire.wake(crown["id"])
+            on_road = "mod" if road == "native" else road
             on = self.wait_for(f"the crown on the {road} road", lambda: (lambda r: r and word_of(
-                r["state"]) == "idle" and r.get("road", "hooks") == road)(
+                r["state"]) == "idle" and r.get("road", "hooks") == on_road
+                and bool(r.get("native")) == (road == "native"))(
                 self.agent_of(self.board(), self.crown)), 120, self.watch)
             if not on:
                 rec = self.agent_of(self.board(), self.crown) or {}
-                record["failures"].append(f"the crown woke on {rec.get('road', 'hooks')}, "
+                record["failures"].append(f"the crown woke on {rec.get('road', 'hooks')}"
+                                          f"{' native' if rec.get('native') else ''}, "
                                           f"{word_of(rec.get('state'))}, not idle on {road}")
                 return False
             # `SessionStart` fires during Claude Code's startup, before its
@@ -2589,6 +2728,77 @@ Reply with the single word ready and end your turn."""
 
             if not self.wait_for("the crown's empty composer", box_empty, 60, self.watch):
                 record["failures"].append("the woken crown never drew an empty composer")
+                return False
+            return True
+        if what == "queue_in_compaction":
+            # T-1069: the person's words queued while the worker's compaction
+            # window is open (its `PreCompact` came, its `PostCompact` has
+            # not): the board holds words against a compacting seat, and they
+            # go once the window closes. The step ends at the worker's turn
+            # on them and the crown's turn on the board's wake for it.
+            rec = self.agent_of(self.board(), test["ticket"])
+            since = record["t0_ms"]
+            frames = lambda: [l for l in self.feed_lines if l.get("kind") == "hook"  # noqa: E731
+                              and of_session(l, rec["id"]) and l.get("at_ms", 0) >= since]
+            if not self.wait_for("the worker's PreCompact", lambda: any(
+                    l["event"] == "PreCompact" for l in frames()), 120, self.watch):
+                record["failures"].append("the worker's compaction never opened")
+                return False
+            closed = any(l["event"] == "PostCompact" for l in frames())
+            try:
+                r = self.wire.prompt(test["ticket"], step["text"], queued=True)
+            except WireError as e:
+                record["failures"].append(f"the person's queued prompt: {e}")
+                return False
+            record["queued_ms"] = int(time.time() * 1000)
+            self.log(f"the person's prompt queued for a compacting {test['key']}"
+                     f"{' (the window had closed already)' if closed else ''}: {r.get('resp')}")
+            post = lambda: next((l["at_ms"] for l in frames() if l["event"] == "PostCompact"), None)  # noqa: E731
+            def answered():
+                at = post()
+                return at is not None and any(l["event"] == "Stop" and l["at_ms"] > at for l in frames()) \
+                    and word_of(self.agent_of(self.board(), test["ticket"])["state"]) == "idle"
+            if not self.wait_for("the worker's turn on the held words", answered, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the worker never took a turn on the queued words")
+                return False
+            stop_at = max(l["at_ms"] for l in frames() if l["event"] == "Stop")
+            wake = self.wait_for("the board's wake for the crown", lambda: next((
+                l for l in self.feed_lines if l.get("kind") == "crown_wake"
+                and l.get("worker") == test["ticket"] and l.get("at_ms", 0) >= stop_at - 500), None),
+                WAKE_GRACE, self.watch)
+            record["wakes"].append(wake.get("cause") if wake else "none came")
+            self.quiet_since = None
+            after = wake["at_ms"] if wake else stop_at
+            if not self.wait_for("crown", lambda: self.crown_settled(
+                    after_ms=after if wake else None, quiet=0 if wake else QUIET),
+                    STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle")
+                return False
+            return True
+        if what == "crown_compact":
+            # T-1069: the crown's own `/compact`, sent as a person's prompt to
+            # its seat (a slash command takes the paste road), and its
+            # compaction window's two frames from its mod. A compaction is no
+            # turn: the step ends at the `PostCompact` and an idle crown.
+            crown = self.agent_of(self.board(), self.crown)
+            mark = len(self.feed_lines)
+            try:
+                self.wire.prompt(self.crown, "/compact", queued=False)
+            except WireError as e:
+                record["failures"].append(f"the crown's /compact: {e}")
+                return False
+            def compacted():
+                mine = [l for l in self.feed_lines[mark:] if l.get("kind") == "hook"
+                        and of_session(l, crown["id"])]
+                rec = self.agent_of(self.board(), self.crown) or {}
+                return any(l["event"] == "PostCompact" for l in mine) and not rec.get("compacting") \
+                    and word_of(rec.get("state")) == "idle"
+            if not self.wait_for("the crown's compaction", compacted, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown's compaction never closed")
+                return False
+            self.quiet_since = None
+            if not self.wait_for("crown", lambda: self.crown_settled(quiet=QUIET), STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not settle after its compaction")
                 return False
             return True
         if what == "person_idles":
@@ -3979,6 +4189,29 @@ Reply with the single word ready and end your turn."""
                           if not again else f"relaunched {len(again)}×")
             elif name == "not_fed":
                 check(c, arg not in fed, f"{arg}×{fed.count(arg)}")
+            elif name == "native":
+                # T-1069: the native road, as the daemon launched it (T-658):
+                # the mod and the one-entry hook set beside it.
+                ok = rec.get("native") is True and "--plugin-dir" in rec["argv"] and "--settings" in rec["argv"]
+                check(c, ok, f"native {rec.get('native')}; --plugin-dir "
+                      f"{'in' if '--plugin-dir' in rec['argv'] else 'not in'} argv, --settings "
+                      f"{'in' if '--settings' in rec['argv'] else 'not in'} argv")
+            elif name == "compaction_frames":
+                got = compaction_frames([l for l in mine if l.get("kind") == "hook"])
+                check(c, got == arg.split(","), " → ".join(got) or "none")
+            elif name == "held_by_compaction":
+                ok, seen = held_by_compaction([l for l in mine if l.get("kind") == "hook"],
+                                              record.get("queued_ms"), user_prompts(rows, at=True), arg)
+                check(c, ok, seen)
+            elif name == "crown_compaction_frames":
+                crown = self.agent_of(board, self.crown)
+                got = compaction_frames([l for l in lines if crown and l.get("kind") == "hook"
+                                         and of_session(l, crown["id"])])
+                check(c, got == arg.split(","), " → ".join(got) or "none")
+            elif name == "crown_rules_after_compact":
+                crown = self.agent_of(board, self.crown)
+                ok, seen = rules_after_compaction(transcript(crown) if crown else [], record["t0_ms"])
+                check(c, ok, seen)
             elif name == "mod_report":
                 event, _, reason = arg.partition(":")
                 seen = [l for l in mine if l.get("kind") == "hook" and l.get("event") == event
@@ -4573,6 +4806,8 @@ Reply with the single word ready and end your turn."""
         self.words, self.current, self.quiet_since, self.restarted = {}, None, None, False
         self.history = {}
         self.on_phone_mod = False
+        # T-1069: whether the last `crown_road` put the daemon on the native road.
+        self.crown_native = False
         self.verdicts = []
         self.close_out, self.closing = [], []
         self.t0 = time.time()

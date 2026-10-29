@@ -569,5 +569,89 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(said["line"]["message"]["id"], "m", "a message id stays: siblings")
 
 
+
+class CompactionWindowTests(unittest.TestCase):
+    """T-1069's verdicts: the compaction frames, words held for an open
+    window, and the crown's rules owed again after its own compaction."""
+
+    @staticmethod
+    def frame(event, at, reason=None):
+        line = {"kind": "hook", "event": event, "at_ms": at, "road": "mod"}
+        if reason:
+            line["reason"] = reason
+        return line
+
+    @staticmethod
+    def iso(ms):
+        import datetime
+        return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def window(self, start=False):
+        lines = [self.frame("SessionStart", 500, "startup"), self.frame("PreCompact", 1_000)]
+        if start:
+            lines.append(self.frame("SessionStart", 9_000, "compact"))
+        return lines + [self.frame("PostCompact", 10_000), self.frame("Stop", 14_000)]
+
+    def test_the_frames_are_the_compactions_own_in_order(self):
+        self.assertEqual(rig.compaction_frames(self.window()), ["PreCompact", "PostCompact"])
+        self.assertEqual(rig.compaction_frames(self.window(start=True)),
+                         ["PreCompact", "SessionStart", "PostCompact"])
+
+    def test_words_queued_inside_the_window_and_entered_after_it_are_held(self):
+        ok, seen = rig.held_by_compaction(self.window(), 4_000, [("after", self.iso(10_200))], "after")
+        self.assertTrue(ok, seen)
+
+    def test_words_that_entered_inside_the_window_were_not_held(self):
+        ok, seen = rig.held_by_compaction(self.window(), 4_000, [("after", self.iso(5_000))], "after")
+        self.assertFalse(ok, seen)
+
+    def test_words_queued_outside_the_window_prove_nothing(self):
+        for queued in (900, 10_000, 12_000, None):
+            ok, seen = rig.held_by_compaction(self.window(), queued, [("after", self.iso(12_500))], "after")
+            self.assertFalse(ok, f"{queued}: {seen}")
+
+    def test_words_taken_twice_or_a_window_never_closed_fail(self):
+        twice = [("after", self.iso(10_200)), ("after", self.iso(11_000))]
+        self.assertFalse(rig.held_by_compaction(self.window(), 4_000, twice, "after")[0])
+        open_only = [self.frame("PreCompact", 1_000)]
+        self.assertFalse(rig.held_by_compaction(open_only, 4_000, [("after", self.iso(10_200))], "after")[0])
+
+    def crown_rows(self, before_rules, after_rules, boundary=True):
+        def call(i, ms, rules):
+            text = (rig.CROWN_RULES_MARK + " …") if rules else "receipt"
+            return [
+                {"type": "assistant", "uuid": f"a{i}", "timestamp": self.iso(ms), "message": {"content": [
+                    {"type": "tool_use", "id": f"t{i}", "name": "mcp__mesimon__get_ticket", "input": {}}]}},
+                {"type": "user", "uuid": f"u{i}", "timestamp": self.iso(ms + 10), "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": f"t{i}", "content": text}]}},
+            ]
+        rows = call(1, 1_000, True) + call(2, 2_000, before_rules)
+        if boundary:
+            rows.append({"type": "system", "subtype": "compact_boundary", "uuid": "b",
+                         "timestamp": self.iso(3_000), "compactMetadata": {"trigger": "manual"}})
+        return rows + call(3, 4_000, after_rules)
+
+    def test_the_rules_ride_again_after_the_crowns_compaction(self):
+        ok, seen = rig.rules_after_compaction(self.crown_rows(False, True), 0)
+        self.assertTrue(ok, seen)
+
+    def test_no_rules_after_the_compaction_fails(self):
+        self.assertFalse(rig.rules_after_compaction(self.crown_rows(False, False), 0)[0])
+
+    def test_rules_on_every_result_show_no_refresh(self):
+        self.assertFalse(rig.rules_after_compaction(self.crown_rows(True, True), 0)[0])
+
+    def test_an_untimestamped_request_blob_does_not_hide_the_call_it_copies(self):
+        # Claude Code 2.1.312 writes each call first into an `api-request-blob`
+        # row with no timestamp, the same tool_use and tool_result ids.
+        rows = self.crown_rows(False, True)
+        blob = [{"type": "api-request-blob", "message": copy.deepcopy(r["message"])} for r in rows[-2:]]
+        ok, seen = rig.rules_after_compaction(rows[:-2] + blob + rows[-2:], 0)
+        self.assertTrue(ok, seen)
+
+    def test_no_boundary_fails(self):
+        self.assertFalse(rig.rules_after_compaction(self.crown_rows(False, True, boundary=False), 0)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
