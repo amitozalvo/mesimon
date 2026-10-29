@@ -3493,6 +3493,37 @@ Reply with the single word ready and end your turn."""
                 return False
             time.sleep(3)
             return True
+        if what == "forge_later_news":
+            # A second PR on the merged ticket (T-1071): it opens running,
+            # which is no news; its pipeline passes, which is the forge's
+            # news on a branch that still reads merged; then it merges, at a
+            # commit the worktree's branch does not hold, so the forge's
+            # wake says it. Each wake ends at the crown's turn on it.
+            d = self.forge_stub()
+            later = {"number": 43, "head": "c0ffee43" * 5, "state": "OPEN"}
+            self.write_pr(d, self.forge_branch, "MERGED", "passed", later=later)
+            bound = self.wait_for("the second PR to bind", lambda: any(
+                p["ticket"] == test["ticket"] and p["number"] == 43
+                for p in self.snapshot().get("prs", [])), STEP_TIMEOUT, self.watch)
+            if not bound:
+                record["failures"].append("the second PR never bound to the ticket")
+                return False
+            for news in (dict(later, pipeline="passed"), dict(later, state="MERGED")):
+                mark = len(self.feed_lines)
+                self.write_pr(d, self.forge_branch, "MERGED", "passed", later=news)
+                wake = self.forge_wake(test, mark)
+                record["wakes"].append(wake.get("cause") if wake else "none came")
+                if not wake:
+                    said = "the merge" if news["state"] == "MERGED" else "the pipeline"
+                    record["failures"].append(f"the board never woke the crown for {said} of #43")
+                    return False
+                self.quiet_since = None
+                if not self.wait_for("the crown's turn on the forge's news",
+                                     lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                                     STEP_TIMEOUT, self.watch):
+                    record["failures"].append("the crown's turn on the forge's news never ended")
+                    return False
+            return True
         if what == "forge_later_open":
             # A second PR opens on the merged ticket (T-774) and stays open:
             # the ticket reads unmerged again, and DONE refuses it.
@@ -3750,8 +3781,9 @@ Reply with the single word ready and end your turn."""
 
     def write_pr(self, d, branch, state, pipeline, later=None, head=None, conflict=False):
         """PR 42 on `branch` at its tip, or at `head` (T-778), in conflict
-        where `conflict` (T-785); `later` (number, head, state) a newer PR
-        on the same branch in front of it (T-757)."""
+        where `conflict` (T-785); `later` (number, head, state, and with
+        `pipeline` its checks, T-1071) a newer PR on the same branch in
+        front of it (T-757)."""
         tip = head or subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
                                      capture_output=True, text=True).stdout.strip()
         rollups = {
@@ -3760,10 +3792,12 @@ Reply with the single word ready and end your turn."""
             "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]',
         }
         rollup = rollups[pipeline]
-        def pr(number, head, state, at):
+        def pr(number, head, state, at, own=None):
             merge = f'{{"oid":"{head}"}}' if state == "MERGED" else "null"
             # The later PR opens running: its opening is no pipeline news.
             checks = rollups["running"] if state == "OPEN" and number != 42 else rollup
+            if own:
+                checks = rollups[own]
             mergeable = "CONFLICTING" if conflict and number == 42 else "MERGEABLE"
             return (f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
                     f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
@@ -3772,7 +3806,8 @@ Reply with the single word ready and end your turn."""
                     f'"statusCheckRollup":{checks}}}')
         prs = [pr(42, tip, state, "2026-10-13T06:00:00Z")]
         if later:
-            prs.insert(0, pr(later["number"], later["head"], later["state"], "2026-10-13T07:00:00Z"))
+            prs.insert(0, pr(later["number"], later["head"], later["state"], "2026-10-13T07:00:00Z",
+                             later.get("pipeline")))
         body = "[" + ",".join(prs) + "]"
         path = os.path.join(d, "prs.json")
         with open(path + ".tmp", "w") as f:
@@ -4219,7 +4254,10 @@ Reply with the single word ready and end your turn."""
                 check(c, not signs, "; ".join(signs) or f"no write of the crown's; {len(calls)} calls, "
                       "checkout as the test found it")
             elif name == "fed":
-                check(c, arg in fed, f"{arg}×{fed.count(arg)}")
+                # `fed:<cmd>=N` (T-1071): exactly N of them, as `crown:`.
+                cmd, _, times = arg.partition("=")
+                n = fed.count(cmd)
+                check(c, n == int(times) if times else n > 0, f"{cmd}×{n}")
             elif name in ("steered", "held_steer"):
                 check(c, *steer_verdict(name, arg, lines, tid, user_prompts(rows)))
             elif name == "board_fed":

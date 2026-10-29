@@ -1276,7 +1276,7 @@ mod tests {
 /// assembles one (a temporary state dir, a tmux socket nothing listens on)
 /// with one working Claude seat on the worker's ticket.
 #[cfg(test)]
-mod ledger_tests {
+pub(in crate::server) mod ledger_tests {
     use super::*;
 
     fn ticket(n: u128, key: &str) -> Ticket {
@@ -1306,15 +1306,17 @@ mod ledger_tests {
         }
     }
 
-    struct Bed {
-        d: Daemon,
-        crown: ulid::Ulid,
-        worker: ulid::Ulid,
+    /// A daemon with a crown on T-1 and a running agent on T-2: the bed
+    /// `crownwake`'s tests drive a watch through too (T-1071).
+    pub(in crate::server) struct Bed {
+        pub(in crate::server) d: Daemon,
+        pub(in crate::server) crown: ulid::Ulid,
+        pub(in crate::server) worker: ulid::Ulid,
         seat: uuid::Uuid,
         _dir: std::path::PathBuf,
     }
 
-    fn bed(name: &str) -> Bed {
+    pub(in crate::server) fn bed(name: &str) -> Bed {
         let dir = std::env::temp_dir().join(format!("msmn-crownask-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = dir.join("repo");

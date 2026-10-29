@@ -39036,12 +39036,26 @@ none woke the crown. The crown watched again before each one, and each new watch
 next line again.
 
 The watch now ends only on a wake that says a merge. That is the flags' landing
-(`hear_merges`), one held for its merge step (`hear_stepped`), the forge's `merged !N`
-(`ForgeNews::merged`, set where `heard.landed` kept a label), `WakeCause::Merged`, or a
-branch reading merged where the crown last heard it unmerged or at another tip. A branch that
-stays merged ends nothing. A watch begun on an already-merged branch, with nothing heard of
-the worker yet, is no merge either. The rule is `Owed::merge` plus the transition read off
-`from` and `to`. No words change: `watch_ticket` already says "the watch ends at the merge".
+(`hear_merges`), the forge's `merged !N` (`ForgeNews::merged`, set where `heard.landed` kept a
+label), `WakeCause::Merged`, a branch reading merged where the crown last heard it unmerged or
+at another tip, or a wake held for its merge step that was one of these. A branch that stays
+merged ends nothing. A watch begun on an already-merged branch, with nothing heard of the
+worker yet, is no merge either. The rule is `Owed::merge` plus the transition read off `from`
+and `to`. No words change: `watch_ticket` already says "the watch ends at the merge".
+
+**A held wake keeps the fact, and only the fact** (crown review, round 1). `hold_for_step`
+holds a delivery as well as a landing. `due` steps a `Delivered` whenever a merge step is in
+flight, so a turn's end or a train-held delivery let go by `hear_deferred` can be held at a
+branch still `ahead`, and a step that failed or was refused leaves it there. The first cut had
+`hear_stepped` set the flag on every held wake, which would have ended a watch on that unmerged
+delivery. `Heard::hold_for_step` now records the fact when it holds: the branch reads merged
+at a tip the crown was not told merged (nothing told counts as not told). The fact rides the
+held `CrownWake` as `merge`, ORed when later events fold into the hold, and `hear_stepped` says
+what was recorded. The field is in `crown.json` as `"merge":true` only when set, so a ledger
+without a held merge is written byte for byte as before (T-1059's fixture). One written before
+the field reads as no merge. A merge held across that upgrade, with nothing told before it,
+then leaves its watch standing until the next merge line or `unwatch`. The step semantics are
+unchanged: what is held, when it is let go, and the line it makes.
 Hearing (`crown_hears`), wake folding and the forge/flags hand-off are unchanged, so no
 duplicate delivery (T-1036) is added.
 
@@ -39079,6 +39093,24 @@ finished turn at the tip already heard merged keeps it. E2e
 `forge_e2e::a_watched_tickets_later_pr_merge_wakes_the_crown` follows the 2026-10-18 shape. A
 watched person's branch merges (one wake, watch ends); the crown watches again; `fix/two` opens
 as #2 and its pipeline passes (one wake, watch stands); #2 merges (`merged #2` said once, watch
-ends); unwatched, #3 merges with no wake. Under the old rule it fails at the watch standing. A
-held landing let go by `hear_stepped` sets the flag too, but no test drives a watched ticket
-through a merge step. No rig run: no words an agent or the crown reads changed.
+ends); unwatched, #3 merges with no wake. Under the old rule it fails at the watch standing.
+The held wake through a merge step, in `crownwake`'s tests on the `crownask` bed:
+- `a_watched_landing_held_for_its_step_ends_the_watch_at_its_release`: held, the watch stands;
+  released, it ends, the wake carries `merge_state ahead → merged`, and a second release says
+  nothing. The same holds with nothing heard before.
+- `an_unmerged_delivery_released_after_its_step_keeps_the_watch`: a delivery left `ahead`, with
+  or without a baseline, and one merged at the tip already told merged, are told and keep the
+  watch.
+- `a_merge_folded_into_a_held_delivery_ends_the_watch`: delivery, merge, delivery.
+- `a_held_landing_keeps_its_merge_across_a_restart`: `"merge":true` written and read back, the
+  restored merge ending the watch, an unmerged one writing no field and keeping it.
+
+The unmerged and restart cases fail with the first cut's unconditional flag.
+
+**The rig.** A change to what the crown does or is woken for owes a rig case whether or not its
+words change; the first note here said otherwise and was wrong. W2 runs beside W1. A person
+starts the agent; the crown watches the ticket; PR 42 merges (the merge wake ends the watch);
+the crown watches again; a later PR 43 opens, its pipeline passes (forge news, the watch
+stands), and it merges (`merged #43`, the watch ends). Its new rig step is `forge_later_news`,
+with a new check form, `fed:<cmd>=N`. Under the old rule the step fails, waiting for #43's merge
+wake.

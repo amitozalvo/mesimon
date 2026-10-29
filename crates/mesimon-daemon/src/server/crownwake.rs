@@ -438,6 +438,11 @@ pub(super) struct CrownWake {
     /// An overrun wake's numbers (T-973), as the turn stood when it was owed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     overrun: Option<Overrun>,
+    /// The wake says a merge (T-1071), as `Owed::merge`: kept on a landing
+    /// held for its merge step, which may also be a delivery whose branch
+    /// the step left unmerged. Written only when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    merge: bool,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -467,9 +472,9 @@ pub(super) struct Owed {
     pub(super) late: bool,
     pub(super) ask: Option<AskSaid>,
     pub(super) overrun: Option<Overrun>,
-    /// The wake says a merge (T-1071): the flags' landing, one held for its
-    /// merge step, or the forge's `merged !N`. What ends a watch; the
-    /// branch's standing `merged` does not, nor is it folded.
+    /// The wake says a merge (T-1071): the flags' landing, the forge's
+    /// `merged !N`, or a landing held for its merge step that was one. What
+    /// ends a watch; the branch's standing `merged` does not.
     pub(super) merge: bool,
 }
 
@@ -724,7 +729,7 @@ impl CrownWake {
         to: Option<Told>,
         owed: Owed,
     ) -> CrownWake {
-        let Owed { finished, linger, late, ask, overrun, merge: _ } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge } = owed;
         CrownWake {
             worker,
             cause,
@@ -737,6 +742,7 @@ impl CrownWake {
             failed: None,
             ask,
             overrun,
+            merge,
         }
     }
 
@@ -744,9 +750,10 @@ impl CrownWake {
     /// set, a lingering wake's numbers stay the first's, and the latest
     /// ask and overrun win.
     fn absorb(&mut self, cause: WakeCause, from: Option<Told>, to: Option<Told>, owed: Owed) {
-        let Owed { finished, linger, late, ask, overrun, merge: _ } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge } = owed;
         self.fold(cause, from, to);
         self.finished |= finished;
+        self.merge |= merge;
         self.linger = self.linger.or(linger);
         self.late |= late;
         self.ask = ask.or(self.ask);
@@ -1280,12 +1287,17 @@ impl Heard {
     ) -> bool {
         self.judged = Some(now.clone());
         self.deferred = None;
+        // A merge (T-1071) where the branch reads merged at a tip the crown
+        // was not told merged: a delivery held while a step runs, its branch
+        // still ahead, is none, and nor is a step that never landed.
+        let merge = now.merge == Some("merged")
+            && !self.told.as_ref().is_some_and(|t| t.merge == Some("merged") && t.tip == now.tip);
         let from = self.told.replace(now.clone());
         if let Some(w) = self.stepped.as_mut() {
-            w.absorb(cause, from, Some(now), Owed { late, ..Owed::default() });
+            w.absorb(cause, from, Some(now), Owed { late, merge, ..Owed::default() });
             return false;
         }
-        let owed = Owed { finished: true, late: self.restored || late, ..Owed::default() };
+        let owed = Owed { finished: true, late: self.restored || late, merge, ..Owed::default() };
         self.stepped = Some(CrownWake::new(worker, cause, from, Some(now), owed));
         true
     }
@@ -2208,7 +2220,7 @@ impl Daemon {
                 finished: wake.finished,
                 late: wake.late,
                 ask: wake.ask,
-                merge: true,
+                merge: wake.merge,
                 ..Owed::default()
             };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
@@ -2803,7 +2815,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
                     late: w.late,
                     ask: w.ask,
                     overrun: w.overrun,
-                    merge: false,
+                    merge: w.merge,
                 },
             );
             first.unstarted = w.unstarted.or(first.unstarted.take());
@@ -4036,6 +4048,128 @@ mod tests {
         assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, landed, false));
         let wake = h.step_over(Some("DONE".into())).expect("held");
         assert!(!wake.changed().iter().any(|w| w == "after a restart"));
+    }
+
+    /// A watched person's ticket (T-712) through a landing held for its
+    /// merge step (T-596), as `hold_for_step` takes it from `hear_merges`,
+    /// `hear_forge`, `hear_deferred` and a turn's end, and `hear_stepped`
+    /// lets it go (T-1071): the bed's agent runs no step, so the release
+    /// is the step's end.
+    fn watched_bed(name: &str, told: Option<Told>) -> crate::server::crownask::ledger_tests::Bed {
+        let mut b = crate::server::crownask::ledger_tests::bed(name);
+        b.d.board.sessions[0].started_by = None;
+        b.d.crown_watched.insert(b.worker);
+        b.d.crown_heard.insert(b.worker, heard(told.clone(), told));
+        b
+    }
+
+    /// The wake owed for the bed's worker, if any.
+    fn owed_for(d: &crate::server::Daemon, worker: ulid::Ulid) -> Option<&CrownWake> {
+        d.crown_wakes.iter().find(|w| w.worker == worker)
+    }
+
+    /// A merge held for its step ends the watch once, at the release, and
+    /// not before it: the crown has not heard it yet.
+    #[test]
+    fn a_watched_landing_held_for_its_step_ends_the_watch_at_its_release() {
+        let mut b = watched_bed("step-merge", Some(branch("aaa", "ahead", 1, "REVIEW")));
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Merged, branch("aaa", "merged", 1, "REVIEW"), false);
+        assert!(b.d.crown_watched.contains(&w), "held: nothing said yet");
+        assert!(owed_for(&b.d, w).is_none());
+        assert!(b.d.hear_stepped());
+        assert!(!b.d.crown_watched.contains(&w), "the merge, said, ends it");
+        let wake = owed_for(&b.d, w).expect("the landing");
+        assert!(wake.merge && wake.changed().contains(&"merge_state ahead → merged".into()));
+        assert!(!b.d.hear_stepped(), "said once");
+        // Nothing heard of the worker before, the step's merge lands it.
+        let mut b = watched_bed("step-merge-fresh", None);
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Delivered, branch("bbb", "merged", 1, "REVIEW"), false);
+        assert!(b.d.hear_stepped());
+        assert!(!b.d.crown_watched.contains(&w), "a delivery the step merged");
+    }
+
+    /// A delivery held while a merge step ran (`due`'s `Step` for
+    /// `Delivered`), whose branch the step left unmerged — a refused or
+    /// failed merge — is told at the release and leaves the watch standing.
+    /// So does one on a branch merged before at the tip the crown heard.
+    #[test]
+    fn an_unmerged_delivery_released_after_its_step_keeps_the_watch() {
+        let mut b = watched_bed("step-ahead", Some(branch("aaa", "ahead", 1, "REVIEW")));
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Delivered, branch("bbb", "ahead", 2, "REVIEW"), false);
+        assert!(b.d.hear_stepped());
+        let wake = owed_for(&b.d, w).expect("the delivery is told");
+        assert!(!wake.merge);
+        assert!(b.d.crown_watched.contains(&w), "no merge, the watch stands");
+        // Nothing heard before, still ahead.
+        let mut b = watched_bed("step-ahead-fresh", None);
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Delivered, branch("bbb", "ahead", 2, "REVIEW"), false);
+        assert!(b.d.hear_stepped());
+        assert!(b.d.crown_watched.contains(&w), "nothing heard, nothing merged");
+        // Merged at the tip the crown was told merged: no merge since.
+        let merged = branch("aaa", "merged", 1, "REVIEW");
+        let mut b = watched_bed("step-same", Some(merged.clone()));
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Delivered, merged, false);
+        assert!(b.d.hear_stepped());
+        assert!(b.d.crown_watched.contains(&w), "merged before, at this tip");
+    }
+
+    /// A merge folded into a held delivery keeps the fact, whichever came
+    /// first, and so does a delivery after it: the step's release is one
+    /// line and ends the watch.
+    #[test]
+    fn a_merge_folded_into_a_held_delivery_ends_the_watch() {
+        let mut b = watched_bed("step-fold", Some(branch("aaa", "ahead", 1, "REVIEW")));
+        let w = b.worker;
+        b.d.hold_for_step(w, WakeCause::Delivered, branch("bbb", "ahead", 2, "REVIEW"), false);
+        b.d.hold_for_step(w, WakeCause::Merged, branch("bbb", "merged", 2, "REVIEW"), false);
+        b.d.hold_for_step(w, WakeCause::Delivered, branch("ccc", "ahead", 1, "REVIEW"), false);
+        assert!(b.d.hear_stepped());
+        assert!(owed_for(&b.d, w).is_some_and(|wake| wake.merge));
+        assert!(!b.d.crown_watched.contains(&w));
+    }
+
+    /// The fact rides `crown.json` (T-1004's held landing, T-1071): a held
+    /// merge read back after a restart ends the watch at its release, a held
+    /// unmerged delivery read back does not, and a held landing written
+    /// before the field reads as none and is written as it was.
+    #[test]
+    fn a_held_landing_keeps_its_merge_across_a_restart() {
+        let mut h = heard(None, Some(branch("aaa", "ahead", 1, "REVIEW")));
+        assert!(h.hold_for_step(
+            ulid::Ulid::nil(),
+            WakeCause::Merged,
+            branch("aaa", "merged", 1, "REVIEW"),
+            false
+        ));
+        let text = serde_json::to_string(&h).unwrap();
+        assert!(text.contains("\"merge\":true"), "{text}");
+        let back = restarted(&h);
+        assert!(back.stepped.as_ref().is_some_and(|w| w.merge));
+        let mut b = watched_bed("step-restart", None);
+        let w = b.worker;
+        b.d.crown_heard.insert(w, back);
+        assert!(b.d.hear_stepped());
+        assert!(!b.d.crown_watched.contains(&w), "the restored merge ends it");
+        // An unmerged delivery: nothing written, nothing read back.
+        let mut h = heard(None, Some(branch("aaa", "ahead", 1, "REVIEW")));
+        assert!(h.hold_for_step(
+            ulid::Ulid::nil(),
+            WakeCause::Delivered,
+            branch("bbb", "ahead", 2, "REVIEW"),
+            false
+        ));
+        let text = serde_json::to_string(&h).unwrap();
+        assert!(!text.contains("\"merge\":true") && !text.contains("\"merge\":false"), "{text}");
+        let mut b = watched_bed("step-restart-ahead", None);
+        let w = b.worker;
+        b.d.crown_heard.insert(w, restarted(&h));
+        assert!(b.d.hear_stepped());
+        assert!(b.d.crown_watched.contains(&w), "the restored delivery keeps it");
     }
 
     /// A worker's ledger as `crown.json` carries it through a restart
