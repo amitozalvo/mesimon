@@ -259,6 +259,15 @@ impl Verdict {
         matches!(self, Verdict::ClassicOff { .. })
     }
 
+    /// Whether this Claude Code passes `session.compact` over a person's mod
+    /// where its security default is seated (T-1069): a native launch on it
+    /// hears a typed `/compact` and no automatic compaction.
+    pub fn passes_compaction_over(&self) -> bool {
+        self.version()
+            .and_then(parse_claude_version)
+            .is_some_and(|v| !mesimon_core::road::hears_auto_compaction(v))
+    }
+
     pub fn version(&self) -> Option<&str> {
         match self {
             Verdict::Passed { version }
@@ -542,6 +551,10 @@ pub struct RoadVerdict {
     /// its first name for the `doctor` of an older build.
     #[serde(default)]
     pub mods_off: bool,
+    /// The launch is native on a Claude Code that passes `session.compact`
+    /// over the mod too (T-1069): an automatic compaction is not seen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_compaction_unseen: bool,
 }
 
 pub fn read_verdict(paths: &Paths) -> Option<RoadVerdict> {
@@ -768,6 +781,21 @@ mod tests {
             serde_json::from_str(r#"{"verdict":"classic_off","version":"2.1.289","seen_at":9}"#)
                 .unwrap();
         assert!(old.line().contains(FOUND_UNSAID), "{}", old.line());
+    }
+
+    /// T-1069: the version a verdict names says whether a native launch on
+    /// it hears an automatic compaction; a verdict with no version, none.
+    #[test]
+    fn a_verdict_says_whether_its_claude_code_passes_compaction_over() {
+        let deaf = |version: &str| Verdict::ClassicOff {
+            version: version.into(),
+            seen_at: 1,
+            found: FOUND_BY_MANAGED.into(),
+        };
+        assert!(!deaf("2.1.289").passes_compaction_over());
+        assert!(deaf("2.1.309").passes_compaction_over());
+        assert!(deaf("2.1.312").passes_compaction_over());
+        assert!(!Verdict::Failed { error: "gone".into() }.passes_compaction_over());
     }
 
     /// T-598: a mods-off verdict is asked again six hours after it was seen,

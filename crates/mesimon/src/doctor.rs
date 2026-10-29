@@ -959,8 +959,17 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     // before 2.1.287, or the mod reports from Claude Code's own events with
     // one hook for permissions (T-658), and the probe asks again by itself.
     if v.mods_off {
+        // What the native road cannot hear (T-1069): Claude Code 2.1.309 and
+        // newer keep compaction from a person's plugins too, and only a typed
+        // `/compact` leaves a trace the mod hears.
+        let compaction = if v.auto_compaction_unseen {
+            value.push_str(" ∙ automatic compactions not shown");
+            "\n\nThis Claude Code also keeps compaction from a person's plugins. A /compact typed in a session shows on its card while it runs; an automatic compaction does not, and the card keeps the state it had until Claude Code is done."
+        } else {
+            ""
+        };
         return rec(Level::Ok, "claude road", value).advice(format!(
-            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). With mods off, the hook set reports each session as it did before 2.1.287. On a Team or Enterprise account the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours. {advice}"
+            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). With mods off, the hook set reports each session as it did before 2.1.287. On a Team or Enterprise account the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours. {advice}{compaction}"
         ));
     }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
@@ -1649,6 +1658,7 @@ mod tests {
                 lay_error: None,
                 fallback: false,
                 mods_off: false,
+                auto_compaction_unseen: false,
             };
             write_verdict(&paths, &verdict);
             super::claude_road(&paths).value
@@ -1689,6 +1699,7 @@ mod tests {
                 lay_error: None,
                 fallback: true,
                 mods_off: true,
+                auto_compaction_unseen: false,
             },
         );
         let r = super::claude_road(&paths);
@@ -1709,6 +1720,7 @@ mod tests {
                 lay_error: None,
                 fallback: true,
                 mods_off: true,
+                auto_compaction_unseen: false,
             },
         );
         let r = super::claude_road(&paths);
@@ -1717,6 +1729,30 @@ mod tests {
         let advice = r.advice.unwrap_or_default();
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         assert!(advice.contains("Team or Enterprise"), "{advice}");
+        assert!(!advice.contains("compaction"), "2.1.289 hears every compaction: {advice}");
+        // T-1069: from 2.1.309 compaction is kept from the mod too. The line
+        // names what is not shown, and still asks nothing.
+        let deaf = "claude 2.1.312: hook events do not reach the mod in this Claude Code (seen 11:44; managed settings on this machine); the plugin reports from its own events, with one hook for permissions";
+        write_verdict(
+            &paths,
+            &RoadVerdict {
+                road: Road::Mod,
+                setting: "auto".into(),
+                source: auto,
+                probe: Some(deaf.into()),
+                lay_error: None,
+                fallback: true,
+                mods_off: true,
+                auto_compaction_unseen: true,
+            },
+        );
+        let r = super::claude_road(&paths);
+        assert_eq!(r.value, format!("mod ∙ {deaf} ∙ automatic compactions not shown"));
+        assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
+        let advice = r.advice.unwrap_or_default();
+        assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
+        assert!(advice.contains("A /compact typed in a session shows on its card"), "{advice}");
+        assert!(advice.contains("an automatic compaction does not"), "{advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -103,6 +103,18 @@ pub fn has_mods(version: (u32, u32, u32)) -> bool {
     version >= MOD_FLOOR
 }
 
+/// The oldest Claude Code measured to pass `session.compact` over a person's
+/// mod where its security default is seated (T-1069): 2.1.309 to 2.1.312
+/// list it with the `classic.*` events, 2.1.289 let it through (T-651), and
+/// the releases between were not read.
+pub const COMPACT_PASSED_OVER_FLOOR: (u32, u32, u32) = (2, 1, 309);
+
+/// Whether a native launch on that version hears an automatic compaction:
+/// a typed `/compact` it hears on every version, by its `command.run`.
+pub fn hears_auto_compaction(version: (u32, u32, u32)) -> bool {
+    version < COMPACT_PASSED_OVER_FLOOR
+}
+
 /// The hook-set events the mod relays, by the names `mesimon hook` sends for
 /// a Claude session: on the mod road (T-577) the frames ingest reads, in
 /// place of the hook set's. Never `PaneDied` (tmux's, the one exit signal
@@ -401,6 +413,17 @@ mod tests {
         // Not a brief: the words as they are, under a title where one leads.
         assert_eq!(launch_words(None, false, Some(&brief), "go"), "go");
         assert_eq!(launch_words(Some("T-9"), false, None, "go"), "T-9go");
+    }
+
+    /// T-1069: 2.1.289 let `session.compact` through to a person's mod;
+    /// 2.1.309 to 2.1.312 pass it over with the classic events.
+    #[test]
+    fn an_automatic_compaction_is_heard_natively_only_below_the_measured_floor() {
+        assert!(hears_auto_compaction((2, 1, 289)));
+        assert!(hears_auto_compaction((2, 1, 308)));
+        assert!(!hears_auto_compaction((2, 1, 309)));
+        assert!(!hears_auto_compaction((2, 1, 312)));
+        assert!(!hears_auto_compaction((2, 2, 0)));
     }
 
     #[test]

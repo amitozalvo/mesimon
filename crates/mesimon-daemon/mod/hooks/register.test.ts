@@ -1213,6 +1213,69 @@ test('native: a compaction is PreCompact, SessionStart{compact} and PostCompact 
   expect(eventsOf(runs).length).toBe(4)
 })
 
+test('native: a typed /compact whose session.compact passes over the mod is PreCompact before and PostCompact after (T-1069)', async ($, on) => {
+  const runs = nativeSession(on)
+  let release = () => {}
+  const held = new Promise<void>(resolve => (release = resolve))
+  on('command.run', async () => {
+    await held
+    return { text: 'Compacted' } as any
+  })
+  const run: any = $.command.run({ command: 'compact', args: '' } as any)
+  // While the compaction runs: the first event reads the variables first.
+  for (let i = 0; i < 100 && runs.length === 0; i++) await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact'])
+  expect(bodyOf(runs[0])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual' })
+  release()
+  expect((await run).text).toBe('Compacted')
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact', 'PostCompact'])
+  expect(bodyOf(runs[1])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual' })
+})
+
+test('native: a typed /compact whose session.compact still comes is relayed once, in the hook set\'s order; a vetoed one is closed by the command (T-1069)', async ($, on) => {
+  const runs = nativeSession(on)
+  let veto = false
+  let release = () => {}
+  on('command.run', async () => {
+    await new Promise<void>(resolve => (release = resolve))
+    return { text: veto ? 'Nothing to compact' : 'Compacted' } as any
+  })
+  on('session.compact', () => (veto ? { skip: 'nothing to compact' } : { messages: MESSAGES, tokensBefore: 35536, tokensAfter: 3780 }) as any)
+  let run: any = $.command.run({ command: 'compact', args: '' } as any)
+  await settle()
+  await $.session.compact({ trigger: 'manual', messages: MESSAGES } as any)
+  release()
+  await run
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact', 'SessionStart', 'PostCompact'])
+  veto = true
+  run = $.command.run({ command: 'compact', args: 'keep the plan' } as any)
+  await settle()
+  await $.session.compact({ trigger: 'manual', messages: MESSAGES } as any)
+  release()
+  await run
+  await settle()
+  expect(eventsOf(runs).slice(3)).toEqual(['PreCompact', 'PostCompact'])
+})
+
+test('a typed /compact off the native road, and any other command, relays nothing', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('command.run', () => ({ text: 'done' }) as any)
+  await $.command.run({ command: 'compact', args: '' } as any)
+  await settle()
+  expect(runs.filter(r => r.argv.includes('PreCompact') || r.argv.includes('PostCompact'))).toEqual([])
+})
+
+test('native: a command other than /compact never reaches the hook', async ($, on) => {
+  const runs = nativeSession(on)
+  on('command.run', () => ({ text: 'done' }) as any)
+  await $.command.run({ command: 'context', args: '' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual([])
+})
+
 test('native: tool.check is not hooked: the verdict beneath passes through and nothing is relayed', async ($, on) => {
   const runs = nativeSession(on)
   on('tool.check', () => ({ decision: 'ask', reason: 'touch needs approval' }) as any)

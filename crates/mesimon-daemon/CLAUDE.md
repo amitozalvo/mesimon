@@ -95,6 +95,12 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
   `claude plugin test` pass all the same; the feed shows `ModUsage` and `ModSubmit` and no
   `SessionStart`. The seating rule is `qjr` in the binary; `allowManagedHooksOnly` and
   `disableAllHooks` are a different thing (the module is not loaded at all).
+  **From 2.1.309 it passes `session.compact` over too** (T-1069; read off 2.1.309–2.1.312's
+  table, `PASSED_OVER_EVENTS`), and `session.append` on its `attachment`, `hook-context` and
+  `compaction` doors; a task notification is door `delivery` and still arrives. A typed
+  `/compact` is `command.run{command: "compact"}`, which resolves after the compaction, and is
+  the native road's one compaction trace. Managed `allowedMcpServers` refuses a person's
+  `$.tool.register`. `CLAUDE_CODE_MANAGED_SETTINGS_PATH` is ignored by the public build.
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **A `$.prompt.submit` made mid-turn resolves only when its words are consumed** (2.1.309,

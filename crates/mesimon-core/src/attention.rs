@@ -40,7 +40,9 @@ pub const PARK_STALE_MS: u64 = 10 * 60 * 1000;
 /// The clock is the only close a veto gets: the hook set fires nothing for
 /// "nothing to compact", and the mod's `session.compact` sees the skip but
 /// speaks the hook set's names alone, so a vetoed `/compact` reads
-/// compacting, and holds off auto-park, for this long.
+/// compacting, and holds off auto-park, for this long. On the native road
+/// a typed `/compact`'s `command.run` closes it when the command ends
+/// (T-1069).
 pub const COMPACT_STALE_MS: u64 = 10 * 60 * 1000;
 /// How long after a `PostCompact` a `SessionStart{compact}` is that same
 /// compaction's, arriving late: the two are relayed on their own and

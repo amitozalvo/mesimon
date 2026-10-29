@@ -38622,3 +38622,81 @@ from crowns deep in long sessions, which a one-turn rig crown does not reproduce
 A `report.py CSV export: keep empty-amount rows, ISO dates, quote fields`; B `CSV export: keep
 empty-amount rows, ISO dates`. The verdicts are `target/rig/verdicts-20261029-165344.md` to
 `-170452.md` (arm A) and `-170652.md` to `-171632.md` (arm B), in this ticket's worktree.
+
+## The native road under a seated security default: what is lost, and `/compact` back (T-1069, 2026-10-29)
+
+A work Mac's Claude Code said of mesimon's mod: "Its hooks on session.compact, classic.SessionStart,
+… classic.PostCompact do not run here: where an organization manages Claude Code, these events pass
+over the plugins you install." An earlier capture there also named `session.append`. The ask was to
+establish which events the native road (T-657, T-658) actually loses before building anything.
+
+**Measured, off the binary** (the security default's own registration table, which is code, read
+in 2.1.309, 2.1.310, 2.1.311 and 2.1.312, identical in all four):
+- *Passed over a person's plugins:* every `classic.*`; `prompt.section`, `prompt.context`,
+  `prompt.attachment`, `prompt.compose`, `skill.prompt`, `attribution.text`, `settings.read`;
+  **`session.compact`** (2.1.289 let it through, T-651; the releases between were not read);
+  `session.append` on its `attachment`, `hook-context` and `compaction` doors (and `tool-message`
+  from the Skill tool, `note` from an organization's plugin); `agent.spawn` of an agent an
+  organization's plugin provides.
+- *Let through:* `session.start`, `session.end`, `session.receive`, `session.measure`, `turn.*`,
+  `tool.call`, `agent.spawn` of a built-in or a person's agent, `command.run`, and `session.append`
+  on every other door. A task notification that joins a running turn is a `queued_command`
+  attachment, door `delivery`, so the T-691 ledger read still arrives.
+- The notice is drawn from `passedOverPatterns`: a registration that is wholly `classic.*` or on
+  that list. Our `session.append` has no door matcher, so 2.1.312 does not name it; the earlier
+  capture was an older release's wording.
+- *Not an event, but a refusal:* managed `allowedMcpServers` (an array) denies a person's
+  `$.tool.register`. Not reached by this ticket; see below.
+
+**Retained evidence** (the work board's archive, 2026-10-12 to 10-27; private, not committed): 62
+native records. Native `PreCompact`/`SessionStart{compact}`/`PostCompact` arrived three times
+(10-13 twice, 10-18) and never after, while a crown seat ran through 10-27. All eight native
+`StopFailure`s landed `failed` with the class read off the tail (T-659), so failure reporting holds
+there. The 10-28 worker that sat `interrupted` for 7,669 s is after the archive. `turn.complete`'s
+reason is `aborted`, `refusal`, `error` or `answer` in 2.1.312, and only `error` is a
+`StopFailure`: an `interrupted` reading means the engine ended that turn as aborted, or sent no end
+and the tail's interrupt record was read at Low. Neither is a passed-over hook. Its cause is not
+proven here.
+
+**A live managed trace was not possible here.** The security default seats on a non-empty policy
+file at the system path, a managed MCP file, or a Team or Enterprise organization. The public build
+ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH` (`--debug`: "not seated: no managed settings and not a
+Team or Enterprise organization (max)"), and writing the system file is modifying managed settings.
+A tracer mod (scratch only) measured the unseated order on 2.1.312 instead: a typed `/compact` is
+`command.run{command, args, origin, presentation}` first, then `session.compact{manual}`,
+`classic.PreCompact`, `SessionStart{compact}`, `classic.PostCompact`, and `command.run` resolves
+last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with no `PostCompact`.
+
+**Decided.**
+1. *A typed `/compact` is the native road's compaction trace.* `on('command.run', { command:
+   'compact' })`, native only: `PreCompact{manual}` before `next`, `PostCompact{manual}` after it
+   (in a `finally`), unless `session.compact` came and relayed its own `PostCompact`
+   (`typedCompact.closed`). Inside a typed one, `session.compact` skips its own `PreCompact`, so an
+   unseated native launch hears each frame once. A vetoed typed `/compact` is now closed by the
+   command at once, not by `COMPACT_STALE_MS`. `SessionStart{compact}` is not built: the window is
+   all the daemon reads off it, and the id does not change. Every other command never reaches
+   the hook (the matcher). Observe-only, `next(e)` returned as it came.
+2. *An automatic compaction has no trace there, and that is said.* `road::COMPACT_PASSED_OVER_FLOOR`
+   (2.1.309, the oldest measured) and `Verdict::passes_compaction_over`; the launch's
+   `RoadVerdict` carries `auto_compaction_unseen` (absent unless true) for a native launch on such
+   a version, and so does the probe's landing on a classic-off verdict. Doctor's `claude road` line
+   adds `∙ automatic compactions not shown` and one paragraph: a typed `/compact` shows on the
+   card, an automatic compaction does not, and the card keeps its state until Claude Code is done.
+   Still `ok` and still "Nothing is needed from you": the person has no switch, and the classic
+   events the native road never uses raise nothing.
+3. *Not built:* reading the pane's screen for `Compacting conversation…` on every native seat each
+   tick (a new per-tick capture per seat, for a card paint), and a native stand-in for
+   `session.append`'s passed-over doors (no mesimon read uses them). Auto-park can still sleep a
+   seat Claude Code is compacting automatically there; the conversation resumes whole, uncompacted.
+4. *Found, not owned here:* the mod's `registerList` swallows a refused `$.tool.register` (it
+   keeps the tool's last state and tries again next turn), so under managed `allowedMcpServers` the
+   board's tools would be missing with nothing said. Not measured on a real policy.
+
+**Tests.** Mod (`claude plugin test`, 58 pass): a typed `/compact` whose `session.compact` passes
+over is `PreCompact` then `PostCompact`, the first while the command runs; one whose
+`session.compact` still comes is relayed once in the hook set's order, and a vetoed one is closed
+by the command; off the native road nothing; another command never reaches the hook. Rust:
+`an_automatic_compaction_is_heard_natively_only_below_the_measured_floor`,
+`a_verdict_says_whether_its_claude_code_passes_compaction_over`, doctor's road line with the 2.1.312
+case; `mod_auto_e2e`'s enterprise launch on a 2.1.312 stub writes `auto_compaction_unseen: true`,
+and the 2.1.288 deaf relaunch writes none.

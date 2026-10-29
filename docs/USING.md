@@ -447,7 +447,9 @@ says which of the two a session got. The mod reports the session's events to the
 its writes to the board's files and serves its board tools. On a Team or Enterprise account,
 Claude Code keeps its hook events from a person's plugins, so the mod there reports the session
 from Claude Code's own events instead, and one hook beside it reports permission requests;
-`mesimon doctor` says so, and nothing is needed from you.
+`mesimon doctor` says so, and nothing is needed from you. Claude Code 2.1.309 and newer keep
+compaction from a person's plugins there too: a `/compact` you type still shows on the card
+while it runs, an automatic compaction does not, and `mesimon doctor` names that as well.
 Through the mod, a session gets its brief and every prompt you send it as your own words, whole,
 without anything typed into its pane, and a question it asks is answered straight in its dialog
 when you answer from Remote Control or the crown does. A session without the mod has its prompts

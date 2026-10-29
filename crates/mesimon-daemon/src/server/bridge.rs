@@ -235,6 +235,8 @@ impl Daemon {
             Road::Mod if native => HookSet::PermissionOnly,
             Road::Mod => HookSet::None,
         };
+        let auto_compaction_unseen = hook_set == HookSet::PermissionOnly
+            && self.modroad.probe.as_ref().is_some_and(|p| p.verdict.passes_compaction_over());
         self.note_road(RoadVerdict {
             road,
             setting: setting.pref.word().into(),
@@ -245,6 +247,7 @@ impl Daemon {
             mods_off: self.modroad.probe.as_ref().is_some_and(Probe::claude_off)
                 && hook_set != HookSet::None
                 && setting.pref == RoadPref::Auto,
+            auto_compaction_unseen,
         });
         Pick { road, folder, hook_set }
     }
@@ -399,6 +402,7 @@ impl Daemon {
         }
         let setting = modroad::read_setting();
         let mods_off = probe.claude_off();
+        let auto_compaction_unseen = probe.verdict.deaf() && probe.verdict.passes_compaction_over();
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {
@@ -409,6 +413,7 @@ impl Daemon {
                 lay_error: self.modroad.lay_error.clone(),
                 fallback: had_passed && !passes,
                 mods_off,
+                auto_compaction_unseen,
             });
         }
     }

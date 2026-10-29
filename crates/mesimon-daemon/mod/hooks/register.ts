@@ -50,10 +50,12 @@
 //  - NATIVE (T-657): under `MESIMON_MOD_NATIVE=1` the classic relays go
 //    silent and the same frames, by the hook set's names and shapes, are
 //    built from the engine's own events (`session.*`, `turn.*`, `tool.call`,
-//    `agent.spawn`), which a Team or Enterprise account's security default
-//    lets through where it keeps every `classic.*` event from a person's
-//    mod (T-650, T-651). One named adapter: the `Stop`'s task list, kept
-//    here from the tool results that start a task and `$.agent.list()`.
+//    `agent.spawn`, a typed `/compact`'s `command.run`), which a Team or
+//    Enterprise account's security default lets through where it keeps
+//    every `classic.*` event from a person's mod (T-650, T-651), and, from
+//    Claude Code 2.1.309, `session.compact` too (T-1069). One named
+//    adapter: the `Stop`'s task list, kept here from the tool results that
+//    start a task and `$.agent.list()`.
 //
 // It holds no policy. Every decision is the daemon's.
 //
@@ -206,14 +208,16 @@ const AGENTS_MAX = 64
 // session id seen (a `/clear` fires no `session.start`: the next turn's id
 // differing from it is the new conversation), the last `session.end`'s
 // reason, the task ledger, the type each spawned agent was given (for its
-// `SubagentStop`), and the questions the board answered, whose `PostToolUse`
-// the `ModAnswer` report already is.
+// `SubagentStop`), the questions the board answered, whose `PostToolUse`
+// the `ModAnswer` report already is, and the `/compact` a person typed that
+// is still running, with whether `session.compact` closed it (T-1069).
 let cwd: string | undefined
 let seenId: string | undefined
 let lastEnd: string | undefined
 const ledger = new Map<string, Row>()
 const spawned = new Map<string, string>()
 const boardAnswered = new Set<string>()
+let typedCompact: { closed: boolean } | undefined
 
 /**
  * The four variables, read at once, and the native road's switch beside
@@ -1105,13 +1109,16 @@ export const register: Register = on => {
   on('session.compact', async ($, e, next) => {
     // The hook set's order (T-651): `PreCompact`, `SessionStart{compact}`,
     // `PostCompact`, the same id throughout. A vetoed compaction fires the
-    // first alone.
+    // first alone. Inside a typed `/compact` its `PreCompact` went up first
+    // (`command.run`, below), and a vetoed one is closed there.
     const trigger = (e as any)?.trigger
     const agent = typeof (e as any)?.agentId === 'string' ? (e as any).agentId : undefined
     const relayed = (await nativeRoad($, 'session.compact')) && COMPACT_TRIGGERS.includes(trigger)
-    if (relayed) void relay($, 'PreCompact', undefined, compactBody('PreCompact', trigger, agent), false)
+    const typed = trigger === 'manual' && !agent ? typedCompact : undefined
+    if (relayed && !typed) void relay($, 'PreCompact', undefined, compactBody('PreCompact', trigger, agent), false)
     const r: any = await next(e)
     if (relayed && r?.skip === undefined) {
+      if (typed) typed.closed = true
       if (!agent) {
         let id: string | undefined
         try {
@@ -1124,6 +1131,27 @@ export const register: Register = on => {
       void relay($, 'PostCompact', undefined, compactBody('PostCompact', trigger, agent), false)
     }
     return r
+  })
+  // A `/compact` the person typed (T-1069). Where the security default is
+  // seated, Claude Code 2.1.309 and newer pass `session.compact` over a
+  // person's mod as well as every `classic.*` event, so on the native road
+  // this command is the one trace a compaction leaves: `command.run` comes
+  // before the compaction and resolves after it (5.5 s measured, after the
+  // hook set's `PostCompact`), or at once when there was nothing to
+  // compact. The hook set's `PreCompact` goes up before, its `PostCompact`
+  // after, unless `session.compact` came and closed the compaction itself.
+  // An automatic compaction has no command and leaves no trace here.
+  on('command.run', { command: 'compact' }, async ($, e, next) => {
+    if (!(await nativeRoad($, 'command.run'))) return next(e)
+    const typed = { closed: false }
+    typedCompact = typed
+    void relay($, 'PreCompact', undefined, compactBody('PreCompact', 'manual'), false)
+    try {
+      return await next(e)
+    } finally {
+      if (typedCompact === typed) typedCompact = undefined
+      if (!typed.closed) void relay($, 'PostCompact', undefined, compactBody('PostCompact', 'manual'), false)
+    }
   })
 
   // ---- The relay, event by event: the hook set's names, not `classic.*`,
