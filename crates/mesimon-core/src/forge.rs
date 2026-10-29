@@ -1187,6 +1187,15 @@ pub fn sign_in_trouble(forge: Forge, host: &str, why: &str) -> String {
     format!("{host} sign-in: {} ({cli} auth login --hostname {host})", why.trim())
 }
 
+/// The advisory row's line for a GitLab host signed in whose account
+/// `glab api user` did not name (T-1067): its MRs are listed by that
+/// account alone, so none are read until it answers. The sign-in held, so
+/// no sign-in fix is offered: the account is asked again in `minutes`.
+pub fn account_trouble(host: &str, why: &str, minutes: u64) -> String {
+    let why = crate::text::scrub_text(why);
+    format!("{host} account unknown: glab api user: {} ∙ asked again in {minutes} min", why.trim())
+}
+
 /// The line for a host no CLI on PATH can read (T-810): on a board that
 /// merges through pull requests that is trouble, never "no forge".
 /// `candidates` in the order the probe asks them (`Remote::candidates`).

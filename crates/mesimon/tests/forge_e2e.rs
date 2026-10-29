@@ -4161,6 +4161,142 @@ fn a_cli_never_signed_in_is_trouble_with_its_fix() {
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
+/// T-1067, the author's report: after a wake from sleep GitLab's MRs stayed
+/// unread until Merge into was toggled. glab's sign-in answered while its
+/// `api user` did not, and the probe was believed for six hours with no
+/// account to list by. Here the account fails (offline, then an answer with
+/// no username) on a ticket with a GitLab and a GitHub leg: no MR list is
+/// made and none unfiltered, the advisory row names the account, the
+/// GitHub leg's PR is read all along, and the account is asked again on
+/// the backoff. Once it answers the same daemon lists the ticket's MRs by
+/// it, the row clears, and the named account is not asked again on the
+/// backoff.
+#[test]
+fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
+    const STUB: &str =
+        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    let name = "forge_account";
+    let (stub_dir, path_var) = gh_stub(name);
+    let offline = stub_dir.join("offline");
+    let nameless = stub_dir.join("nameless");
+    let glab = stub_dir.join("glab");
+    let stub = GLAB_STUB.replacen(
+        "user) echo '{\"username\":\"me\"}' ;;",
+        "user)\n        [ -f \"$(dirname \"$0\")/offline\" ] && { echo 'dial tcp: lookup \
+             gitlab.example.com: no such host' >&2; exit 1; }\n        [ -f \"$(dirname \
+             \"$0\")/nameless\" ] && { echo '{\"id\":1}'; exit 0; }\n        echo \
+             '{\"username\":\"me\"}' ;;",
+        1,
+    );
+    assert_ne!(stub, GLAB_STUB, "the stub's account answer is gated");
+    std::fs::write(&glab, stub).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write(&offline, "");
+    let mrs = stub_dir.join("mrs.json");
+    let prs = stub_dir.join("prs.json");
+    let glab_log = stub_dir.join("glab.log");
+    write(&mrs, "[]");
+    write(&prs, "[]");
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(STUB),
+        &[
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_FORGE_BACKOFF_MS", "3000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs.display().to_string()),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_LOG", &glab_log.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    let glab_calls = || std::fs::read_to_string(&glab_log).unwrap_or_default();
+    let users = || glab_calls().lines().filter(|l| l.ends_with(" user")).count();
+    let mr_lists = || glab_calls().lines().filter(|l| l.starts_with("mr list")).count();
+    let row = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { notices, forge, .. } => (
+            notices.into_iter().find(|n| n.kind == "forge_unreachable").map(|n| n.text),
+            forge.trouble,
+        ),
+        other => panic!("not a board: {other:?}"),
+    };
+    // A folder workspace: a GitLab repository and a GitHub one.
+    let root = h.repo.clone();
+    for (dir, url) in [
+        ("api", "https://gitlab.example.com/lab/forge-api.git"),
+        ("web", "https://github.com/example/forge.git"),
+    ] {
+        init_repo(&root.join(dir), "a.txt", "one\n");
+        git(&root.join(dir), &["remote", "add", "origin", url]);
+    }
+    let mut c = h.client(name);
+    through_prs(&mut c);
+    let (id, _, branch, container) = cut(&mut c, "both");
+    let mut tips = Vec::new();
+    for dir in ["api", "web"] {
+        let leg = container.join(dir);
+        std::fs::write(leg.join("work.txt"), "work\n").unwrap();
+        git(&leg, &["add", "."]);
+        git(&leg, &["commit", "-qm", "work"]);
+        tips.push(git(&leg, &["rev-parse", "HEAD"]).trim().to_string());
+    }
+    write(&mrs, &mr_json("forge-api", 9, &branch, &tips[0], None));
+    write(&prs, &format!("[{}]", numbered_pr(42, &branch, &tips[1], false)));
+
+    // Offline: signed in, the account unknown. Said as the account, with
+    // the GitHub leg read all along and no MR list made.
+    let offline_words = "gitlab.example.com account unknown: glab api user: dial tcp: lookup \
+                         gitlab.example.com: no such host ∙ asked again in 1 min";
+    wait_until(Duration::from_secs(20), "the advisory row to name the account", || {
+        row(&mut c).0.is_some_and(|t| t == format!("pull requests not read — {offline_words}"))
+    });
+    assert_eq!(row(&mut c).1.as_deref(), Some(offline_words), "the snapshot carries it");
+    wait_until(Duration::from_secs(20), "the GitHub leg's PR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42)
+    });
+    // Asked again on the backoff (3 s here), not six hours on.
+    let first = users();
+    wait_until(Duration::from_secs(20), "the account asked again on the backoff", || {
+        users() >= first + 2
+    });
+    assert_eq!(mr_lists(), 0, "no list without the account, never an unfiltered one");
+    assert!(!prs_of(&mut c).iter().any(|p| p.ticket == id && p.forge == "gitlab"));
+
+    // The network answers, with no username: still lost, in its own words.
+    write(&nameless, "");
+    let _ = std::fs::remove_file(&offline);
+    wait_until(Duration::from_secs(20), "the row to say the answer named no one", || {
+        row(&mut c).1.is_some_and(|t| t.contains("glab api user: its answer named no username"))
+    });
+    assert_eq!(mr_lists(), 0, "still no list");
+
+    // The account answers: the same daemon lists the MRs by it, no toggle.
+    let _ = std::fs::remove_file(&nameless);
+    wait_until(Duration::from_secs(20), "the GitLab leg's MR to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 9 && p.forge == "gitlab")
+    });
+    assert_eq!(row(&mut c), (None, None), "the advisory row clears");
+    assert!(prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42), "and keeps GitHub's");
+    let lists: Vec<String> =
+        glab_calls().lines().filter(|l| l.starts_with("mr list")).map(str::to_string).collect();
+    assert!(!lists.is_empty());
+    assert!(lists.iter().all(|l| l.contains("--author me")), "by the account alone: {lists:?}");
+    // A named account is believed: no ask on the backoff's cadence.
+    let named = users();
+    std::thread::sleep(Duration::from_millis(4500));
+    assert_eq!(users(), named, "a named account is not asked again on the backoff");
+    assert!(mr_lists() > lists.len(), "while its MRs go on being read");
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
 /// T-890: a worker the crown started, delivered and parked, whose PR a
 /// person squash-merges on the forge with the base never fetched here:
 /// the crown hears `merged` once, awake or across a daemon restart.

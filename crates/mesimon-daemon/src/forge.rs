@@ -155,6 +155,8 @@ pub struct HostProbe {
     /// that merges through pull requests, the only one that reads a forge,
     /// every such host is trouble (T-810): asked again on the backoff, said
     /// on the advisory row and in `ForgeStatus.trouble`, never "no forge".
+    /// A GitLab host signed in whose account did not answer is lost too
+    /// (`forge::account_trouble`, T-1067): glab lists by that account.
     pub lost: Option<String>,
 }
 
@@ -1113,7 +1115,9 @@ pub fn setup_probe(dir: &Path) -> Option<(Forge, bool)> {
     let out = crate::git::git(dir).args(["remote", "get-url", "origin"]).output().ok()?;
     let remote = forge::Remote::parse(&String::from_utf8_lossy(&out.stdout))?;
     let found: Vec<Cli> = remote.candidates().iter().filter_map(|f| find_cli(*f, None)).collect();
-    if let Some(cli) = probe_host(&remote.host, &found).cli {
+    // Signed in is the question; the board's own probe also asks glab's
+    // account (T-1067), which setup does not need.
+    if let Some(cli) = found.iter().find(|c| auth_status(c, &remote.host, CALL_TIMEOUT).is_ok()) {
         return Some((cli.forge, true));
     }
     let guess = remote
@@ -1136,14 +1140,42 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
         }
         let viewer = match c.forge {
             Forge::GitHub => None,
-            Forge::GitLab => run(&c.bin, &["api", "--hostname", host, "user"], None)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.get("username")?.as_str().map(str::to_string)),
+            // glab lists by the account's name, and a sign-in alone lists
+            // nothing (T-1067): an account the forge did not name (no
+            // network yet after a wake, a 502, an answer with no username)
+            // is lost like a sign-in, asked again on the backoff and never
+            // believed for `PROBE_FOR`.
+            Forge::GitLab => match run(&c.bin, &["api", "--hostname", host, "user"], None)
+                .and_then(|answer| viewer_of(&answer))
+            {
+                Ok(viewer) => Some(viewer),
+                Err(why) => {
+                    let minutes = backoff().as_secs().div_ceil(60).max(1);
+                    let lost = forge::account_trouble(host, &why, minutes);
+                    return HostProbe {
+                        cli: None,
+                        at: Instant::now(),
+                        viewer: None,
+                        lost: Some(lost),
+                    };
+                }
+            },
         };
         return HostProbe { cli: Some(c.clone()), at: Instant::now(), viewer, lost: None };
     }
     HostProbe { cli: None, at: Instant::now(), viewer: None, lost }
+}
+
+/// The username in `glab api user`'s answer, or why there is none.
+fn viewer_of(answer: &str) -> Result<String, String> {
+    let user: serde_json::Value =
+        serde_json::from_str(answer).map_err(|_| "its answer was not JSON".to_string())?;
+    user.get("username")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "its answer named no username".into())
 }
 
 /// `auth status` for the host. gh checks only the active account where it
@@ -3800,6 +3832,100 @@ mod tests {
             HostProbe { cli: Some(cli), at: Instant::now(), viewer: None, lost: None },
         );
         assert_eq!(s.trouble(), None);
+    }
+
+    /// T-1067: glab signed in whose `api user` did not name the account (a
+    /// wake before the network, a 502, an answer with no username) reads
+    /// nothing, since a GitLab list is the account's own or none: the
+    /// host is lost, said as the account and not the sign-in, and asked
+    /// again on the backoff. Once the account answers the probe carries
+    /// it, the trouble clears and the probe is believed for `PROBE_FOR`.
+    #[test]
+    fn a_gitlab_account_that_did_not_answer_is_lost_and_asked_again_on_the_backoff() {
+        assert_eq!(viewer_of(r#"{"id":1,"username":"me"}"#), Ok("me".into()));
+        assert_eq!(viewer_of("<html>502</html>"), Err("its answer was not JSON".into()));
+        for answer in [r#"{"id":1}"#, r#"{"username":""}"#, r#"{"username":null}"#, "[]"] {
+            assert_eq!(viewer_of(answer), Err("its answer named no username".into()), "{answer}");
+        }
+
+        let dir = std::env::temp_dir().join(format!("msmn-forge-account-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = dir.join("user");
+        let bin = dir.join("glab");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\ncase \"$1 $2\" in\n  \"auth status\") exit 0 ;;\n  \"api --hostname\") \
+                 [ -f '{u}' ] && {{ cat '{u}'; exit 0; }}; echo 'dial tcp: lookup gitlab.lab: no \
+                 such host' >&2; exit 1 ;;\nesac\nexit 1\n",
+                u = user.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let glab = Cli { forge: Forge::GitLab, bin };
+        let mut s = State::default();
+        s.remotes.insert(
+            PathBuf::from("/r"),
+            Some(Remote { host: "gitlab.lab".into(), path: "g/a".into() }),
+        );
+
+        // Offline: signed in, the account unknown. Nothing lists the host.
+        let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
+        assert_eq!((probe.cli.as_ref(), probe.viewer.as_deref()), (None, None));
+        assert!(!probe.reads_nothing(), "lost, never a board of no forge");
+        let words = "gitlab.lab account unknown: glab api user: dial tcp: lookup gitlab.lab: no \
+                     such host ∙ asked again in 5 min";
+        assert_eq!(probe.lost.as_deref(), Some(words));
+        let query = || Query {
+            pending: vec![PendingRepo {
+                remote: Remote { host: "gitlab.lab".into(), path: "g/a".into() },
+                dir: "/r".into(),
+            }],
+            ..Default::default()
+        };
+        let mut q = query();
+        list_probed(&mut q, &[("gitlab.lab".into(), probe.clone())]);
+        assert!(q.repos.is_empty(), "no list, and never an unfiltered one");
+        let mut old = probe.clone();
+        old.at = Instant::now() - BACKOFF;
+        assert!(old.stale(), "asked again on the backoff, not in six hours");
+        s.take_probe("gitlab.lab".into(), probe);
+        assert_eq!(s.trouble().as_deref(), Some(words));
+
+        // An answer with no username is the same, in its own words.
+        std::fs::write(&user, r#"{"id":1}"#).unwrap();
+        let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
+        assert_eq!(
+            probe.lost.as_deref(),
+            Some(
+                "gitlab.lab account unknown: glab api user: its answer named no username ∙ asked \
+                  again in 5 min"
+            )
+        );
+
+        // The network is back: the account is named and believed.
+        std::fs::write(&user, r#"{"id":1,"username":"me"}"#).unwrap();
+        let probe = probe_host("gitlab.lab", std::slice::from_ref(&glab));
+        assert_eq!((probe.cli.as_ref(), probe.viewer.as_deref()), (Some(&glab), Some("me")));
+        assert_eq!(probe.lost, None);
+        let mut held = probe.clone();
+        held.at = Instant::now() - BACKOFF;
+        assert!(!held.stale(), "a named account is believed past the backoff");
+        held.at = Instant::now() - PROBE_FOR;
+        assert!(held.stale());
+        let mut q = query();
+        list_probed(&mut q, &[("gitlab.lab".into(), probe.clone())]);
+        assert_eq!(q.repos.len(), 1);
+        assert_eq!(q.repos[0].viewer.as_deref(), Some("me"), "listed by the account");
+        s.take_probe("gitlab.lab".into(), probe);
+        assert_eq!(s.trouble(), None, "the advisory row clears");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
