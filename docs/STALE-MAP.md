@@ -39247,5 +39247,14 @@ with the change uncommitted.
   sample). The old reader with the old 50 ms reaper passed 5/5 here, which is why the late reaper
   is in the stub. With the fix, bounded: 10/10 runs of the binary before the stub change and 5/5
   after, every fixture audit clean. No assertion, timing or sleep was relaxed.
+- **Gates on `47d21d3b`.** `cargo ut` passed (clean nine-owner audit), `cargo build --workspace`
+  passed, `cargo fmt --check` and clippy `-D warnings` on the daemon (macOS and
+  `aarch64-unknown-linux-musl`) passed. One bounded `cargo nextest run --workspace --no-fail-fast`:
+  **3,204/3,204** on the normal road and **411/411** on the mod road, the 11 and 1 existing skips
+  only, fixture audit clean for **867 owners**; no reruns. WR1 ran once on Claude Code 2.1.312's
+  mod road (crown `claude-opus-5-5`, worker Sonnet): **PASS**; its feed shows four
+  `async_hook_wait` holds of one child each on real turns and no `async_hook_unobserved`. WR1
+  cannot place a hook's exit inside a sample, so it shows the hold intact, not the race;
+  `--reset --no-build` parked, archived and stopped the rig board.
 - **Limits.** Linux is clippy-checked on `aarch64-unknown-linux-musl`, not run. A process that
   exits between `ps` and the birth read still disappears from that sample, as before.
