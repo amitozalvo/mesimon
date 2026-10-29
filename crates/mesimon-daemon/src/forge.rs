@@ -3500,6 +3500,7 @@ mod tests {
             let q = Query {
                 envs: envs.to_vec(),
                 commit_pipelines: s.commit_pipelines.clone(),
+                commit_runs: s.commit_runs.clone(),
                 deployed: s.deployed.clone(),
                 ..Default::default()
             };
@@ -3516,14 +3517,13 @@ mod tests {
                     &mut set,
                     &q,
                     0,
-                    |_| Pipeline::Passed,
+                    // Each merge commit's own run (T-1065).
+                    |p| (Pipeline::Passed, if p.merge_oid == "m10" { 110 } else { 112 }),
                     |_| vec![read("staging", staging), read("production", production)],
                     |p, latest| git(&p.merge_oid, latest),
                 );
                 for p in &set {
-                    let key = (p.repo.clone(), p.merge_oid.clone());
-                    s.commit_pipelines.insert(key.clone(), p.pipeline.clone());
-                    s.deployed.insert(key, p.deployed.clone());
+                    s.take_commit(p);
                 }
                 let late = s.since_restart(t, true);
                 if let Some(old) = s.sets.get(&t) {
@@ -3561,6 +3561,7 @@ mod tests {
         // Restored, the same environments: nothing, where git can say and
         // where it cannot (no fetch, and the read's page has moved on).
         let mut r = restart(&s);
+        assert_eq!(r.commit_runs, s.commit_runs, "each commit's run comes back beside its facts");
         assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
         let mut r = restart(&s);
         assert!(pass(&mut r, "m12", "m10", &|_, _| None, false).is_empty());
