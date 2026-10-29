@@ -39258,3 +39258,31 @@ with the change uncommitted.
   `--reset --no-build` parked, archived and stopped the rig board.
 - **Limits.** Linux is clippy-checked on `aarch64-unknown-linux-musl`, not run. A process that
   exits between `ps` and the birth read still disappears from that sample, as before.
+- **AH1, the live findings-turn case (rig only, no product source).** `async_review` restarts
+  the rig daemon with `MESIMON_CLAUDE_BIN` naming `target/rig/ah1/claude-review`, a wrapper that
+  adds `--settings target/rig/ah1/settings.json` only where `MESIMON_TICKET` is the test's key:
+  one Stop hook, `asyncRewake`, running `review.py`, whose first run sleeps 5 s, prints
+  `AH1-REVIEW-FINDING: …` to stderr and exits 2, and every later run exits 0 after 1 s, each
+  logging `n`, `start_ms`, `exit_ms` and `code` to `review.jsonl`. No settings file, plugin or
+  hook of the person's is written; their own hooks still run beside it. `train_on` with the
+  `AH1.txt` blocker arms the train so a merge is attempted and refused, as HT1 does. The new
+  `findings_first` check needs the hold on the first Stop, the finding in a `user` row of the
+  worker's transcript (Claude Code 2.1.312 hands the rewake over as a task notification, "Stop
+  hook feedback"; a queue or request-blob copy does not count), a findings turn whose Stop comes
+  before any crown wake or `merge_train*` line for the ticket, then exactly one `delivered` wake
+  and the train, and no `async_hook_unobserved` or `async_hook_cap`. A failed step now also runs
+  `train_off`, so a failed HT1 or AH1 leaves no armed train or blocker. Offline:
+  `python3 -B -m unittest ci/rig_test.py` 73/73, five new cases (the pass, an early wake or train
+  line, a second, missing or train-less delivery, an unobserved, capped or unheld release, no or
+  unread finding or no findings turn).
+- **AH1, one live run** (`python3 -B ci/rig.py --only AH1`, 2026-10-29 21:26, Claude Code
+  2.1.312, mod road, crown `claude-opus-5-5`, worker Sonnet, the daemon of `47d21d3b`): **PASS**,
+  `target/rig/verdicts-20261029-212617.md`. From the worker's Stop: held with 2 unaccounted
+  children (the fixture's and one of the person's own async hooks), the fixture hook exited 2 at
+  +5.0 s, the findings prompt came at +5.1 s, the agent added `ah1 reviewed` and committed, its
+  Stop at +15.5 s was held again (1 child), and the train's refused merge and the one
+  `delivered` wake came at +20.1 s. The run was graded with a looser read of the finding (any
+  non-assistant row); the stricter `user`-row read above was then applied to the same retained
+  feed, hook log and transcript: PASS, same observations. No live rerun. It shows the order
+  with the real Claude Code, not the zombie race. `--reset --no-build` parked the session,
+  archived the two rig tickets and stopped the rig's daemon and tmux; `AH1.txt` was removed.

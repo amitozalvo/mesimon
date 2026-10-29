@@ -943,6 +943,62 @@ def sampled_before(rows, key, prefix):
     return False, " → ".join(seen) or "no overrun line reached the crown"
 
 
+# AH1 (T-1075): the fixture's asyncRewake Stop hook prints this with its
+# finding, so the findings turn is told from any other hook's.
+FINDING_MARK = "AH1-REVIEW-FINDING"
+
+
+def findings_first(lines, sid, tid, runs, rows):
+    """`findings_first` (AH1, T-1075), over the test's feed, the fixture
+    hook's own log (`runs`, one dict per invocation: n, start_ms, exit_ms,
+    code) and the worker's transcript: the hook's first run exits 2 after
+    the worker's first Stop; the agent reads its finding; the next turn
+    (its UserPromptSubmit after that exit) ends with a Stop; and only after
+    that Stop does the board wake the crown, `delivered` exactly once, and
+    the merge train take the ticket. The hold must have engaged on the
+    first Stop, and nothing may release it unobserved or at the cap.
+    (passed, what was seen)."""
+    findings = next((r for r in runs if r.get("code") == 2), None)
+    if not findings:
+        return False, f"the fixture hook never reported a finding ({len(runs)} runs)"
+    exit_ms = findings["exit_ms"]
+    mine = [l for l in lines if of_session(l, sid) and l.get("kind") == "hook"]
+    stops = [l["at_ms"] for l in mine if l.get("event") == "Stop"]
+    asks = [l["at_ms"] for l in mine if l.get("event") == "UserPromptSubmit"]
+    first = max((s for s in stops if s <= exit_ms), default=None)
+    rewake = min((a for a in asks if a >= exit_ms), default=None)
+    end = min((s for s in stops if rewake is not None and s > rewake), default=None)
+    if first is None or rewake is None or end is None:
+        return False, (f"Stops {stops}, prompts {asks}, finding exited {exit_ms}: "
+                       "no Stop before it, findings turn or its end")
+
+    def rel(ms):
+        return f"{(ms - first) / 1000:+.1f} s"
+
+    # Claude Code 2.1.312 hands the rewake to the model as a user row (a
+    # task notification, "Stop hook feedback"); a queue or request copy
+    # alone is not the agent reading it.
+    read = any(r.get("type") == "user" and FINDING_MARK in json.dumps(r.get("message")) for r in rows)
+    board = [l for l in lines if l.get("kind") == "board" and l.get("ticket") == tid]
+    wakes = [l for l in lines if l.get("kind") == "crown_wake" and l.get("worker") == tid]
+    train = [l for l in board if str(l.get("cmd", "")).startswith("merge_train")]
+    held = [l for l in board if l.get("cmd") == "async_hook_wait" and first <= l["at_ms"] < rewake]
+    loose = [l["cmd"] for l in board if l.get("cmd") in ("async_hook_unobserved", "async_hook_cap")]
+    early = [f"{l.get('cause')} wake" for l in wakes if l["at_ms"] < end] + [
+        l["cmd"] for l in train if l["at_ms"] < end]
+    delivered = [l for l in wakes if l.get("cause") == "delivered"]
+    seen = (f"Stop, finding exit {rel(exit_ms)}, findings prompt {rel(rewake)}, its Stop {rel(end)}; "
+            f"hold {'seen' if held else 'never seen'}; finding "
+            f"{'read by the agent' if read else 'not in the transcript'}; wakes "
+            f"{[(l.get('cause'), rel(l['at_ms'])) for l in wakes]}; train "
+            f"{[(l['cmd'], rel(l['at_ms'])) for l in train[:1]]}"
+            + (f"; before the findings turn ended: {early}" if early else "")
+            + (f"; released by {loose}" if loose else ""))
+    ok = (bool(held) and read and not early and not loose and len(delivered) == 1
+          and delivered[0]["at_ms"] > end and bool(train) and train[0]["at_ms"] > end)
+    return ok, seen
+
+
 def tool_inputs(rows):
     """(tool name, its input) for every tool use in a transcript, in order."""
     out = []
@@ -3189,6 +3245,59 @@ Reply with the single word ready and end your turn."""
             if not ok:
                 record["failures"].append("the daemon never came up on the mods-off Claude Code")
             return ok
+        if what == "async_review":
+            # AH1 (T-1075): the real Claude Code, whose launch for this test's
+            # ticket alone also takes `--settings` naming one Stop hook with
+            # `asyncRewake`, all under target/rig/ah1: no settings file,
+            # plugin or person's hook is touched. Its first run sleeps past
+            # the Stop and exits 2 with a marked finding (the rewake); every
+            # later run exits 0. Each run logs its times and exit code.
+            d = os.path.join(self.out, "ah1")
+            os.makedirs(d, exist_ok=True)
+            log = os.path.join(d, "review.jsonl")
+            if os.path.exists(log):
+                os.remove(log)
+            script = os.path.join(d, "review.py")
+            with open(script, "w") as f:
+                f.write(
+                    "# AH1 (T-1075): the fixture's asyncRewake review hook.\n"
+                    "import json, sys, time\n"
+                    "log = sys.argv[1]\n"
+                    "sys.stdin.read()\n"
+                    "start = int(time.time() * 1000)\n"
+                    "try:\n"
+                    "    n = sum(1 for l in open(log) if l.strip()) + 1\n"
+                    "except OSError:\n"
+                    "    n = 1\n"
+                    "code = 2 if n == 1 else 0\n"
+                    f"time.sleep({step.get('seconds', 5)} if code else 1)\n"
+                    "if code:\n"
+                    f"    print({FINDING_MARK!r} + ': AH1.txt needs a second line reading "
+                    "ah1 reviewed. Add it, commit the change with the message AH1 review, "
+                    "then reply with the single word fixed and end your turn.', file=sys.stderr)\n"
+                    "with open(log, 'a') as f:\n"
+                    "    f.write(json.dumps({'n': n, 'start_ms': start, 'exit_ms': "
+                    "int(time.time() * 1000), 'code': code}) + '\\n')\n"
+                    "sys.exit(code)\n")
+            settings = os.path.join(d, "settings.json")
+            command = f"{shlex.quote(sys.executable)} -I {shlex.quote(script)} {shlex.quote(log)}"
+            with open(settings, "w") as f:
+                json.dump({"hooks": {"Stop": [{"hooks": [
+                    {"type": "command", "command": command, "asyncRewake": True, "timeout": 60}]}]}}, f)
+            wrapper = os.path.join(d, "claude-review")
+            with open(wrapper, "w") as f:
+                f.write("#!/bin/sh\n# The rig's AH1 (T-1075): the fixture's review hook on one ticket.\n"
+                        f'if [ "$MESIMON_TICKET" = {shlex.quote(test["key"])} ]; then\n'
+                        f'  exec "{self.claude}" --settings {shlex.quote(settings)} "$@"\n'
+                        "fi\n"
+                        f'exec "{self.claude}" "$@"\n')
+            os.chmod(wrapper, 0o755)
+            record["review_log"] = log
+            ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe="the mod validated")
+            self.restarted = True
+            if not ok:
+                record["failures"].append("the daemon never came up with the review hook's Claude Code")
+            return ok
         if what == "restart_plain":
             ok = self.restart(want_probe="the mod validated")
             self.restarted = True
@@ -3836,9 +3945,11 @@ Reply with the single word ready and end your turn."""
             for step in test["steps"]:
                 if ok:
                     ok = self.run_step(test, step, record)
-                elif step.get("rig") in ("restart_plain", "binary_back"):
+                elif step.get("rig") in ("restart_plain", "binary_back", "train_off"):
                     # A failed R7 still gives the board back its own Claude
-                    # Code, and a failed DB1 the binary its own stamp.
+                    # Code, a failed DB1 the binary its own stamp, and a
+                    # failed HT1 or AH1 disarms the train and takes its
+                    # blocker out of the checkout.
                     self.run_step(test, step, record)
         finally:
             # An exception skips the steps above: DB1's stamp goes back here.
@@ -4552,6 +4663,17 @@ Reply with the single word ready and end your turn."""
                 hit = next((i for i, f in enumerate(fed) if str(f).startswith(prefix)), None)
                 check(c, at is not None and hit is not None and hit > at,
                       f"{first} at {at}, first {prefix}* at {hit} ({fed[hit] if hit is not None else 'none'})")
+            elif name == "findings_first":
+                # AH1 (T-1075): see `findings_first`; the hook's log is the
+                # one `async_review` laid.
+                runs = []
+                try:
+                    with open(record.get("review_log") or "") as f:
+                        runs = [json.loads(l) for l in f if l.strip()]
+                except (OSError, ValueError):
+                    pass
+                ok, seen = findings_first(lines, rec["id"], tid, runs, rows)
+                check(c, ok, seen)
             elif name == "crown_obstacle":
                 # T-930's review (F3): the crown's hands or its last words
                 # name the merge's owner or what blocks it, any of `arg`'s

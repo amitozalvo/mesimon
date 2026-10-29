@@ -701,5 +701,71 @@ class CreateStartTests(unittest.TestCase):
             self.assertFalse(ok, observed)
 
 
+
+class FindingsFirstTests(unittest.TestCase):
+    """AH1 (T-1075): the findings turn ends before the board delivers."""
+
+    SID, TID = "11111111-2222-3333-4444-555555555555", "01TICKET"
+
+    def hook(self, event, at):
+        return {"kind": "hook", "event": event, "session": self.SID, "at_ms": at}
+
+    def board(self, cmd, at):
+        return {"kind": "board", "cmd": cmd, "ticket": self.TID, "at_ms": at}
+
+    def wake(self, at, cause="delivered"):
+        return {"kind": "crown_wake", "cause": cause, "worker": self.TID, "at_ms": at}
+
+    def feed(self):
+        return [self.hook("UserPromptSubmit", 0), self.hook("Stop", 10_000),
+                self.board("async_hook_wait", 10_200), self.hook("UserPromptSubmit", 15_100),
+                self.hook("Stop", 30_000), self.wake(34_000), self.board("merge_train_refused:merge", 40_000)]
+
+    RUNS = [{"n": 1, "start_ms": 10_010, "exit_ms": 15_020, "code": 2},
+            {"n": 2, "start_ms": 30_010, "exit_ms": 31_020, "code": 0}]
+    ROWS = [{"type": "user", "message": {"content": rig.FINDING_MARK + ": AH1.txt needs a second line"}}]
+
+    def judge(self, lines=None, runs=None, rows=None):
+        return rig.findings_first(self.feed() if lines is None else lines, self.SID, self.TID,
+                                  self.RUNS if runs is None else runs, self.ROWS if rows is None else rows)
+
+    def test_a_findings_turn_then_one_delivery_and_the_train_passes(self):
+        ok, seen = self.judge()
+        self.assertTrue(ok, seen)
+
+    def test_a_wake_or_a_train_line_before_the_findings_turn_ends_fails(self):
+        for early in (self.wake(12_000), self.wake(20_000, "finished"),
+                      self.board("merge_train_merged", 12_000), self.board("merge_train_refused:merge", 29_000)):
+            lines = sorted(self.feed() + [early], key=lambda l: l["at_ms"])
+            ok, seen = self.judge(lines)
+            self.assertFalse(ok, seen)
+            self.assertIn("before the findings turn ended", seen)
+
+    def test_a_second_delivery_or_none_or_no_train_fails(self):
+        feed = self.feed()
+        for lines in (feed + [self.wake(36_000)], [l for l in feed if l.get("kind") != "crown_wake"],
+                      [l for l in feed if not str(l.get("cmd", "")).startswith("merge_train")]):
+            ok, seen = self.judge(lines)
+            self.assertFalse(ok, seen)
+
+    def test_a_release_without_evidence_fails(self):
+        for cmd in ("async_hook_unobserved", "async_hook_cap"):
+            ok, seen = self.judge(self.feed() + [self.board(cmd, 12_000)])
+            self.assertFalse(ok, seen)
+        ok, seen = self.judge([l for l in self.feed() if l.get("cmd") != "async_hook_wait"])
+        self.assertFalse(ok, seen)
+
+    def test_no_finding_unread_finding_or_no_findings_turn_fails(self):
+        ok, seen = self.judge(runs=[dict(r, code=0) for r in self.RUNS])
+        self.assertFalse(ok, seen)
+        for row in ({"type": "assistant", "message": {"content": rig.FINDING_MARK}},
+                    {"type": "queue-operation", "content": rig.FINDING_MARK},
+                    {"type": "api-request-blob", "content": [{"type": "text", "text": rig.FINDING_MARK}]}):
+            ok, seen = self.judge(rows=[row])
+            self.assertFalse(ok, seen)
+        ok, seen = self.judge([l for l in self.feed() if l.get("at_ms") < 15_000])
+        self.assertFalse(ok, seen)
+
+
 if __name__ == "__main__":
     unittest.main()

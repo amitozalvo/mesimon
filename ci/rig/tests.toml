@@ -32,7 +32,11 @@
 #              session reports a usage limit through the real hook binary;
 #              the step ends with the crown's turn on the board's wake),
 #              `fail` (T-936: the same, a turn ending on an error, its
-#              `class` server_error unless said).
+#              `class` server_error unless said), `async_review` (T-1075:
+#              the daemon again with MESIMON_CLAUDE_BIN naming a wrapper that
+#              gives the test ticket's launch alone `--settings` with the
+#              rig's own asyncRewake Stop hook, under target/rig/ah1; its
+#              first run exits 2 with a finding after `seconds`, default 5).
 #   until      for a crown step: `stops = N` (that many Stop frames from the
 #              worker since the step began) and/or `events = [...]`, then the
 #              worker's card word `state` (working | needs_you | idle |
@@ -124,6 +128,11 @@
 #              ran: the board's wake is the wait), fed_after:<cmd>:<prefix>
 #              (T-919: the ticket's first board line whose cmd begins
 #              <prefix> follows its first <cmd> line, none before it),
+#              findings_first (T-1075: the `async_review` hook's first run
+#              exits 2 after the worker's first Stop, held meanwhile; the
+#              agent reads its marked finding; the next turn's Stop comes
+#              before any crown wake or train line for the ticket; then one
+#              `delivered` wake and the train; no unobserved or cap release),
 #              filed (T-916: the crown started at least one agent since
 #              the test began, and every ticket it started one on was filed
 #              by the crown's session, its agent the crown's and the one
@@ -1707,6 +1716,37 @@ checks = ["road:mod", "started_by_crown", "crown:hold_ticket=1", "crown:return_t
   [[test.steps]]
   rig = "train_off"
   block = "HT1.txt"
+
+[[test]]
+id = "AH1"
+title = "AH1 · a review hook's findings turn comes before the board's delivery: do the steps below"
+workspace = "worktree"
+brief = "Write a file named AH1.txt holding the single line ah1, commit it with git with the message AH1, then reply with the single word done and end your turn. If a review finding arrives after your turn, do what it asks."
+brief_file = "ah1 reviewed"
+expect = "the worker's launch alone carries the rig's own Stop hook with asyncRewake (`--settings` from target/rig/ah1, no person's settings or plugin touched), the merge train is armed and the ticket off the person's hold. The worker commits and stops; the hook outlives that Stop, and the board holds the turn open (async_hook_wait): no crown wake, no train. The hook exits 2 with its marked finding, the agent reads it, adds the line and commits in a findings turn, and only once that turn's Stop is released does the board wake the crown, delivered, once, and the train take the ticket, its fast-forward refused by the rig's blocker so nothing lands here (T-1044, T-1075). A live run cannot place the hook's exit inside a process sample: async_hook_e2e's late-reaping stub and panes.rs's unit test are the race's proof; this is the same order with the real Claude Code."
+checks = ["road:mod", "started_by_crown", "findings_first", "woke:delivered", "file:AH1.txt", "replies:done,fixed", "unlanded"]
+
+  [[test.steps]]
+  rig = "async_review"
+
+  [[test.steps]]
+  rig = "train_on"
+  block = "AH1.txt"
+
+  [[test.steps]]
+  crown = "AH1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: AH1 started. Merge nothing yourself. When the board wakes you for {key}, end your turn with the single line: AH1 seen."
+  until = { stops = 2, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "train_wait"
+
+  [[test.steps]]
+  rig = "train_off"
+  block = "AH1.txt"
+
+  [[test.steps]]
+  rig = "restart_plain"
 
 [[test]]
 id = "RH2"
