@@ -24,7 +24,11 @@ while True:
             'import time,sys; from pathlib import Path; p=Path(sys.argv[1]); '\
             'exec("while not p.exists(): time.sleep(.05)")',str(root/('release-'+key))], start_new_session=True)
         (root/('child-'+key)).write_text(str(child.pid))
-    if child is not None: child.poll()
+    # Reap late, as a busy event loop does: the exited hook stays a zombie
+    # across at least one sample (T-1075).
+    released=root/('release-'+key)
+    if child is not None and (not released.exists() or time.time()-released.stat().st_mtime>2.5):
+        child.poll()
     time.sleep(.05)
 "#;
 
@@ -205,6 +209,8 @@ fn a_clean_child_exit_delivers_after_the_grace_and_allows_a_park() {
     wait_until(Duration::from_secs(10), "crown delivery after child exit", || t.wakes() == 1);
     assert!(matches!(t.c.request(Command::SleepSession { id: t.sid }), Response::Ok));
     assert!(!t.feed().contains("async_hook_cap"));
+    // An exiting child is read as gone, never as a failed reader (T-1075).
+    assert!(!t.feed().contains("async_hook_unobserved"), "{}", t.feed());
 }
 
 #[test]
@@ -225,11 +231,12 @@ fn a_findings_turn_reaches_the_board_before_the_train_or_the_crown() {
     t.send("UserPromptSubmit");
     std::thread::sleep(Duration::from_secs(5));
     assert_eq!(t.c.board().live_agent(t.worker).unwrap().state, SessionState::Running);
-    assert!(!t.merged());
+    assert!(!t.merged(), "train merged behind a findings turn:\n{}", t.feed());
     assert_eq!(t.wakes(), 0);
     t.send("Stop");
     wait_until(Duration::from_secs(20), "train after findings turn", || t.merged());
     wait_until(Duration::from_secs(15), "crown after landing", || t.wakes() > 0);
+    assert!(!t.feed().contains("async_hook_unobserved"), "{}", t.feed());
 }
 
 #[test]

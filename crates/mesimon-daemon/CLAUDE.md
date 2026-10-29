@@ -179,6 +179,8 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
   `Stop` hook fires, so a status probe races the hook on every turn.
 - **Async hooks are absent from `Stop.background_tasks` and the mod lifecycle (2.1.310).**
   Their detached direct children outlive Stop; exit-2 rewakes measured 44–71 ms (T-1044).
+- **macOS `proc_pidinfo` answers `ESRCH` for a zombie that `kill(pid, 0)` still finds**
+  (macOS 27, T-1075): an exited, unreaped child is gone by the first and alive by the second.
 - **A teammate is listed `running` in every later `Stop` payload for its whole life**, idle or
   not, so teammates are counted and never classed.
 - **`automove` is edge-triggered**, and a second `UserPromptSubmit` to an already-`Running`

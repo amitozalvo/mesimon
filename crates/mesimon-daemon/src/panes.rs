@@ -211,38 +211,44 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
         // Whole-second etime cannot distinguish infrastructure born just
         // before a prompt from a hook born during the turn. An unreadable
         // birth leaves this sample unknown, never an empty tree.
-        let Some((born_ms, pgid)) = birth(row.pid) else {
-            // Exiting between ps and the birth read is positive absence,
-            // not a broken reader: it must retain the rewake grace.
-            // SAFETY: signal zero only checks whether this PID exists.
-            let gone = unsafe { libc::kill(row.pid, 0) } == -1
-                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-            if gone {
-                continue;
-            }
-            return None;
+        let (born_ms, pgid) = match birth(row.pid) {
+            Ok(b) => b,
+            // Exiting between ps and the birth read, or exited and not yet
+            // reaped, is positive absence, not a broken reader: it must
+            // retain the rewake grace (T-1075).
+            Err(Unread::Gone) => continue,
+            Err(Unread::Failed) => return None,
         };
         rows.push(HookProcess { pid: row.pid, ppid: row.ppid, pgid, born_ms, argv: row.comm });
     }
     Some(rows)
 }
 
+/// Why a birth read has no answer.
+#[derive(Debug, PartialEq)]
+enum Unread {
+    /// No live process: reaped, or exited and not yet reaped.
+    Gone,
+    /// The process may be alive and was not read.
+    Failed,
+}
+
 /// A process's birth (epoch ms) and process group, by pid.
 #[cfg(target_os = "macos")]
-fn birth_reader() -> impl Fn(i32) -> Option<(u64, i32)> {
+fn birth_reader() -> impl Fn(i32) -> Result<(u64, i32), Unread> {
     process_birth_ms
 }
 
 /// A process's birth (epoch ms) and process group, by pid: the boot clock
 /// read once a sample, not once a process.
 #[cfg(target_os = "linux")]
-fn birth_reader() -> impl Fn(i32) -> Option<(u64, i32)> {
+fn birth_reader() -> impl Fn(i32) -> Result<(u64, i32), Unread> {
     let clock = boot_clock();
-    move |pid| process_birth_ms(pid, clock.as_ref()?)
+    move |pid| process_birth_ms(pid, clock.as_ref().ok_or(Unread::Failed)?)
 }
 
 #[cfg(target_os = "macos")]
-fn process_birth_ms(pid: i32) -> Option<(u64, i32)> {
+fn process_birth_ms(pid: i32) -> Result<(u64, i32), Unread> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_bsdinfo>();
     // SAFETY: proc_pidinfo receives a correctly sized writable buffer; it
@@ -251,11 +257,18 @@ fn process_birth_ms(pid: i32) -> Option<(u64, i32)> {
         libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size as i32)
     };
     if read != size as i32 {
-        return None;
+        // ESRCH for a zombie too, which `kill(pid, 0)` still finds; another
+        // user's process is EPERM (measured, macOS 27).
+        let errno = std::io::Error::last_os_error().raw_os_error();
+        return Err(if read <= 0 && errno == Some(libc::ESRCH) {
+            Unread::Gone
+        } else {
+            Unread::Failed
+        });
     }
     // SAFETY: the successful read above initialized every byte.
     let info = unsafe { info.assume_init() };
-    Some((
+    Ok((
         info.pbi_start_tvsec.saturating_mul(1000) + info.pbi_start_tvusec / 1000,
         info.pbi_pgid as i32,
     ))
@@ -283,12 +296,21 @@ fn boot_clock() -> Option<BootClock> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_birth_ms(pid: i32, clock: &BootClock) -> Option<(u64, i32)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, fields) = stat.rsplit_once(')')?;
-    let pgid = fields.split_whitespace().nth(2)?.parse::<i32>().ok()?;
-    let ticks = fields.split_whitespace().nth(19)?.parse::<u64>().ok()?;
-    Some((clock.boot_ms + ticks * 1000 / clock.hz, pgid))
+fn process_birth_ms(pid: i32, clock: &BootClock) -> Result<(u64, i32), Unread> {
+    // A zombie's stat still reads; only a reaped process is missing.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|e| {
+        match (e.kind(), e.raw_os_error()) {
+            (std::io::ErrorKind::NotFound, _) | (_, Some(libc::ESRCH)) => Unread::Gone,
+            _ => Unread::Failed,
+        }
+    })?;
+    let parse = || {
+        let (_, fields) = stat.rsplit_once(')')?;
+        let pgid = fields.split_whitespace().nth(2)?.parse::<i32>().ok()?;
+        let ticks = fields.split_whitespace().nth(19)?.parse::<u64>().ok()?;
+        Some((clock.boot_ms + ticks * 1000 / clock.hz, pgid))
+    };
+    parse().ok_or(Unread::Failed)
 }
 
 #[cfg(test)]
@@ -314,5 +336,62 @@ mod tests {
         // facts once for the facts and the rss, two per startup, one per
         // screen, the rss's ps, the rows' ps.
         assert_eq!(q.forks(), 1 + 2 + 2 + 1 + 1);
+    }
+
+    fn zombie(pid: u32) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim_start().starts_with('Z')
+    }
+
+    /// T-1075: a review hook that exited before its parent reaped it failed
+    /// the whole sample, so the held Stop skipped its rewake grace.
+    #[test]
+    fn an_exited_unreaped_child_is_absence_not_a_failed_read() {
+        let mut live = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut done = std::process::Command::new("true").spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !zombie(done.id()) {
+            assert!(Instant::now() < deadline, "child never became a zombie");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pane = PaneFacts {
+            session_name: String::new(),
+            pane_pid: std::process::id() as i32,
+            pane_dead: false,
+            reaped: false,
+            server_pid: 1,
+            current_command: String::new(),
+            attached: false,
+            activity: None,
+            title: String::new(),
+        };
+        let rows = hook_process_rows(&[pane]);
+        let zombie_left = zombie(done.id());
+        live.kill().unwrap();
+        live.wait().unwrap();
+        done.wait().unwrap();
+        assert!(zombie_left, "the zombie was reaped before the read");
+        let rows = rows.expect("an unreaped exit failed the process read");
+        let row = rows.iter().find(|r| r.pid == live.id() as i32).expect("live child missing");
+        // SAFETY: getpgrp takes no arguments and cannot fail.
+        assert_eq!(row.pgid, unsafe { libc::getpgrp() });
+        assert!(row.born_ms.abs_diff(mesimon_core::clock::now_ms()) < 60_000);
+        // A zombie row, where the platform still lists one, reads as exited.
+        assert!(rows
+            .iter()
+            .filter(|r| r.pid == done.id() as i32)
+            .all(|r| r.argv.contains("<defunct>") || r.argv.starts_with('(')));
+        assert_eq!(birth_reader()(done.id() as i32), Err(Unread::Gone), "reaped");
+    }
+
+    #[test]
+    fn a_process_that_exists_is_never_read_as_gone() {
+        let birth = birth_reader();
+        // Our own process reads; pid 1 exists and may be unreadable to us.
+        assert!(birth(std::process::id() as i32).is_ok());
+        assert_ne!(birth(1), Err(Unread::Gone));
     }
 }

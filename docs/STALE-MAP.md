@@ -39216,3 +39216,36 @@ then `finished`, no stand-in. Both workers' transcripts hold the corrected sente
 `get_ticket` result and none of the first wording. The earlier runs are
 `verdicts-20261029-140501.md` (before) and `-140829.md` (first wording), both stamped `2999796a`
 with the change uncommitted.
+
+## T-1075 — an exited, unreaped hook child is absence, not a failed read (2026-10-29)
+
+- **Measured cause.** `async_hook_e2e::a_findings_turn_reaches_the_board_before_the_train_or_the_crown`
+  failed 2/6 here on `3fb26cd2` (T-1067 recorded 2/5 and 2/6), always at `!t.merged()` during
+  the findings turn. Both failing feeds read the same: `async_hook_wait` (1 child), then, at the
+  first sample after the review child exited, `async_hook_unobserved: process read failed`,
+  `Idle{EndTurn}` at once, `merge_train_merged` ~400 ms later, and the findings prompt landing
+  on a DONE ticket. A product race, not the fixture: T-1044's reader asked `proc_pidinfo` for the
+  child's birth and, on failure, `kill(pid, 0)` whether it still existed. On macOS 27 a child that
+  exited and is not yet reaped answers `proc_pidinfo` with `ESRCH` while `kill(pid, 0)` still
+  finds it (a zombie; another user's pid 1 answers `EPERM`), so the whole sample read as a failed
+  reader and the held Stop was released without its three-second rewake grace. Any zombie child of
+  the pane at sample time did the same, a listed `<defunct>` row included; the stub reaps within
+  50 ms, Claude Code's event loop whenever it gets to it.
+- **Change.** The birth read says why it has no answer (`panes::Unread`): `Gone` (macOS: `ESRCH`
+  from `proc_pidinfo`; Linux: `/proc/<pid>/stat` missing or `ESRCH`; a Linux zombie's stat still
+  reads) skips the row, as an exit between `ps` and the read already did; anything else is
+  `Failed` and keeps T-1044's fail-open release after the scan window. `asynchooks.rs`, the
+  grace, the cap, the train, park and the crown's wake are unchanged. An existing process is never
+  `Gone`. No text an agent or the crown reads changed.
+- **Tests.** Units in `panes.rs`: a zombie child under a pane leaves the sample readable, a live
+  child is read with its group and birth, a reaped pid is `Gone`; and our own pid and pid 1 are
+  never `Gone`. The zombie case fails on the old `kill(pid, 0)` check. The e2e stub now reaps its
+  review child 2.5 s after release, so the zombie spans a sample on every run, and the clean and
+  train cases assert no `async_hook_unobserved`; the train case prints the feed when it merged.
+  With the old reader and the late reaper: 3/3 runs failed, the clean case every time at the new
+  check and the train case twice at `!t.merged()` (the third run's findings prompt beat the next
+  sample). The old reader with the old 50 ms reaper passed 5/5 here, which is why the late reaper
+  is in the stub. With the fix, bounded: 10/10 runs of the binary before the stub change and 5/5
+  after, every fixture audit clean. No assertion, timing or sleep was relaxed.
+- **Limits.** Linux is clippy-checked on `aarch64-unknown-linux-musl`, not run. A process that
+  exits between `ps` and the birth read still disappears from that sample, as before.
