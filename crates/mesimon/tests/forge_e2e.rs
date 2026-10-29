@@ -3447,7 +3447,8 @@ fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
 /// news, and that run's name heard after it is news.
 #[test]
 fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
-    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-wait-{}", std::process::id()));
+    // Its own name: `gh_stub("forge-wait")` is another test's, run beside it.
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-job-wait-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
     let glab = stub_dir.join("glab");
