@@ -38860,7 +38860,9 @@ already drives the fallback's two frames through the daemon, on both roads.
   filing's stamp differs from a read's, `rename_ticket` takes it with no read, a retry under the
   same tool-use id replays the key, `replayed: true` and the same stamp, and after a person's
   note `start_agent` refuses both the filing's stamp and the rename's. `crownreceipt` unit: a
-  replaced crown session, or a seat arriving on the filed ticket, stales the filing's receipt.
+  replaced crown session, or a seat arriving on the filed ticket, stales the filing's receipt;
+  a seen-less own write after the filing refuses the filing's stamp while its own stamp serves
+  (the limitation above, pinned; added after the full run and run alone, 1/1, clippy clean).
   `crown_e2e::a_crown_s_filing_receipt_starts_its_ticket_with_no_read`: a replay after the
   crowning of a pre-crown filing stays stampless.
 - **Second-round validation.** The four changed e2e cases 4/4 on their first run, audit clean.
