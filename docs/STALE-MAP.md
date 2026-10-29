@@ -38675,7 +38675,12 @@ last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with 
    unseated native launch hears each frame once. A vetoed typed `/compact` is now closed by the
    command at once, not by `COMPACT_STALE_MS`. `SessionStart{compact}` is not built: the window is
    all the daemon reads off it, and the id does not change. Every other command never reaches
-   the hook (the matcher). Observe-only, `next(e)` returned as it came.
+   the hook (the matcher). Observe-only, `next(e)` returned as it came. What the window drives,
+   which a managed native seat now gets for a typed `/compact` (one the board sends included)
+   and did not before: the card's compacting paint, words held against it
+   (`quiet::holds_against_words`: a queued ask, the crown's ask and its wake wait for the
+   close), auto-park held off, and the crown's rules owed again on its next board-tool reply at
+   both edges (`crown_rules.forget`, T-930). Nothing reaches the model from the mod itself.
 2. *An automatic compaction has no trace there, and that is said.* `road::COMPACT_PASSED_OVER_FLOOR`
    (2.1.309, the oldest measured) and `Verdict::passes_compaction_over`; the launch's
    `RoadVerdict` carries `auto_compaction_unseen` (absent unless true) for a native launch on such
@@ -38688,15 +38693,24 @@ last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with 
    tick (a new per-tick capture per seat, for a card paint), and a native stand-in for
    `session.append`'s passed-over doors (no mesimon read uses them). Auto-park can still sleep a
    seat Claude Code is compacting automatically there; the conversation resumes whole, uncompacted.
+   And a crown seat there is not told its rules again after an automatic compaction: the
+   transcript's `compact_boundary` (read for the context figure, T-969) would say so, and
+   making it a `crown_rules.forget` is crown-facing and left to its own ticket.
 4. *Found, not owned here:* the mod's `registerList` swallows a refused `$.tool.register` (it
    keeps the tool's last state and tries again next turn), so under managed `allowedMcpServers` the
    board's tools would be missing with nothing said. Not measured on a real policy.
 
-**Tests.** Mod (`claude plugin test`, 58 pass): a typed `/compact` whose `session.compact` passes
+**Tests.** Mod (`claude plugin test`, 60 pass): a typed `/compact` whose `session.compact` passes
 over is `PreCompact` then `PostCompact`, the first while the command runs; one whose
 `session.compact` still comes is relayed once in the hook set's order, and a vetoed one is closed
-by the command; off the native road nothing; another command never reaches the hook. Rust:
+by the command; an abandoned one still closes and its failure passes through; a subagent's own
+compaction inside one keeps its own frames and leaves the typed one open; off the native road
+nothing; another command never reaches the hook. The existing native compaction test (automatic,
+vetoed, `precompute`) and the off-switch test hold the untyped roads as they were. Rust:
+`a_typed_compaction_with_no_start_between_opens_and_closes_the_window`,
 `an_automatic_compaction_is_heard_natively_only_below_the_measured_floor`,
 `a_verdict_says_whether_its_claude_code_passes_compaction_over`, doctor's road line with the 2.1.312
-case; `mod_auto_e2e`'s enterprise launch on a 2.1.312 stub writes `auto_compaction_unseen: true`,
-and the 2.1.288 deaf relaunch writes none.
+case and no compaction words on 2.1.289; `mod_auto_e2e`: the enterprise launch on a 2.1.312 stub
+writes `auto_compaction_unseen: true` at the probe and keeps it after the launch, an unmanaged
+2.1.312 launch writes none, and the 2.1.288 deaf relaunch writes none. `compact_e2e`'s queued ask
+already drives the fallback's two frames through the daemon, on both roads.
