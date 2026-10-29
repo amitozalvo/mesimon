@@ -257,6 +257,11 @@ pub struct Pr {
     pub conflict: bool,
     pub review: Review,
     pub pipeline: Pipeline,
+    /// The forge's id of the run `pipeline` was read from (T-1065): a
+    /// GitLab pipeline's, zero where the forge gave none (GitHub, a read
+    /// that failed, an older build's file). What says a later read whose
+    /// job lookup came back empty is still the same wait.
+    pub pipeline_run: u64,
     /// Unix ms the forge last touched it; what orders a ticket's set.
     pub updated_ms: u64,
     /// Unix ms it merged, zero where it has not or the forge did not say
@@ -374,6 +379,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 conflict: v.get("mergeable").and_then(Value::as_str) == Some("CONFLICTING"),
                 review,
                 pipeline: gh_rollup(v.get("statusCheckRollup")),
+                pipeline_run: 0,
                 updated_ms: iso_ms(v.get("updatedAt")),
                 merged_ms: iso_ms(v.get("mergedAt")),
                 deployed: Vec::new(),
@@ -532,6 +538,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         conflict,
         review,
         pipeline: Pipeline::Unknown,
+        pipeline_run: 0,
         updated_ms: iso_ms(v.get("updated_at")),
         merged_ms: iso_ms(v.get("merged_at")),
         deployed: Vec::new(),
@@ -1788,6 +1795,7 @@ mod tests {
             conflict: false,
             review: Review::None,
             pipeline: Pipeline::None,
+            pipeline_run: 0,
             updated_ms: updated,
             merged_ms: 0,
             deployed: Vec::new(),

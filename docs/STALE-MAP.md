@@ -38930,3 +38930,64 @@ What can still re-say a deployment, by mechanism, none confirmed on the reportin
 
 The evidence that separates these is the reporting board's journal, feed and state files from
 around the restart, not this repository.
+
+## A waiting job a read failed to name is the same wait (T-1065, 2026-10-29)
+
+GitLab names a waiting pipeline's job with a second call, the run's `jobs` read
+(`named_job`, T-772). When that call failed or named nothing, the pass kept
+`Waiting("")`. `forge::edge` compares the whole `Pipeline`, job word included,
+for the open set's `waiting` and each merged PR's `stopped`. So a wait read
+named, then bare, then named again sent the crown two wakes about one
+unchanged pipeline: `waiting on a manual job`, then `waiting on <job>`. It was
+seen on a work board after an upgrade and restart, on a merged MR whose merge
+pipeline stays parked on a manual job. The saved state was named, the first
+live read came back bare, and the next read named it again. The dump does not
+hold the API answers, so why the name went missing is unproven.
+
+Now `Pr::pipeline_run` keeps the forge's run id, GitLab's pipeline id, and is
+zero for GitHub, for a failed read, and in an older `forge.json`. It is saved
+as `PrRecord::pipeline_run`, a defaulted field with no schema bump.
+`forge::keep_waiting_jobs` runs at the end of each ticket's pass in `sample`,
+against the set the board held. A read at `Waiting("")` takes the job name the
+held read had when all of these hold:
+- it is the same PR, still open or still merged;
+- it is at the same commit (an open PR's head, a merged PR's merge commit);
+- the held read was a named wait;
+- the run ids are equal, or one side does not know its run.
+
+The commit stands in for the run only when a run id is missing, as with a
+record from before this change.
+
+What stays news: a new run that stops bare (`waiting on a manual job`), and
+that run's name when a later read gives it; another job of the same run; a new
+commit; and a wait never named before, whose name is news when it arrives. A
+pass or a failure is read as it stands, and nothing hides manual jobs or
+finished tickets in general. `carry` now copies the run with the pipeline it
+keeps for an open PR whose read failed.
+
+Not covered: a run that moves from one manual job to another between two
+passes, while the second jobs read fails, keeps the old name until a read
+names the new job. That read is then news, so the delay never hides it.
+Running and failed words are not kept. Their job word does not change any
+crown edge, though a `Failed(x)` → `Failed("")` read still writes a second
+`pipeline failed` feed line. This does not show that every daily wake for an
+old merged ticket on a permanently manual pipeline came from this cause;
+deployment replays (T-1070) and missing merge notices (T-1071) are separate.
+
+Tests: `a_wait_its_job_read_missed_is_the_same_wait` covers open and merged
+PRs, a `forge.json` round trip, an older record with no run, a new run,
+another job, a new commit, a name heard for the first time, and a pass and a
+failure. It fails with the retention disabled.
+`forge_e2e::a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_commit`
+now removes the stub's jobs answer for two reads and then restores it. The
+board keeps `deploy:production`, and the crown hears `waiting on
+deploy:production !1` exactly once and never a bare wait. That step fails
+without the fix. `forge_e2e::an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart`
+covers the open MR's head pipeline. The crown hears run 7's `deploy:production`
+once. Then come two bare jobs reads, a daemon restart, two more bare reads and
+one read that names the job again: no further forge wake, and no bare wait.
+After that, the same crown is woken by run 8 waiting on `approve`, by run 9
+read bare, and by run 9's name when it arrives, so those wakes still reach it
+after the restart. It fails without the fix. No rig case was added: the wake's words are unchanged, the
+change only removes a false wake, and the rig's stub forge is GitHub, which has
+no second call to fail.

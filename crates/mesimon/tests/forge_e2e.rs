@@ -1348,6 +1348,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
             ("PATH", &path_var),
             ("MSMN_GLAB_MRS", &mrs_file.display().to_string()),
             ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_LOG", &stub_dir.join("calls.log").display().to_string()),
         ],
     ) else {
         return;
@@ -1454,6 +1455,32 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
         !lines_with("waiting on deploy:production !1").is_empty()
     });
     assert!(lines_with("a manual job").is_empty(), "never the bare wait once named");
+    // T-1065: jobs reads that name nothing, then one that names the same
+    // job, are the same wait: the board keeps its name, and the crown hears
+    // neither a bare wait nor the named one again.
+    let jobs = pipelines.with_extension("jobs");
+    let named = std::fs::read_to_string(&jobs).unwrap();
+    let job_reads = || {
+        std::fs::read_to_string(stub_dir.join("calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("/jobs"))
+            .count()
+    };
+    std::fs::remove_file(&jobs).unwrap();
+    let from = job_reads();
+    wait_until(Duration::from_secs(20), "two job reads that name nothing", || {
+        job_reads() >= from + 2
+    });
+    assert!(prs_of(&mut c).iter().any(|p| {
+        p.ticket == w && p.pipeline == "waiting" && p.job.as_deref() == Some("deploy:production")
+    }));
+    write(&jobs, &named);
+    let from = job_reads();
+    // Two reads past the one that names it again: that one's pass landed.
+    wait_until(Duration::from_secs(20), "job reads that name it again", || job_reads() >= from + 3);
+    assert_eq!(lines_with("waiting on deploy:production !1").len(), 1, "said once");
+    assert!(lines_with("a manual job").is_empty(), "a read that named nothing is no wait");
     // The crown's read of the worker: where it landed, and no merger.
     let view = match c.send(
         Principal::Agent { session: sa },
@@ -3378,6 +3405,207 @@ fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
     assert!(std::fs::read_to_string(&mrs).unwrap().contains(&failed), "the list never caught up");
     let pr = prs_of(&mut c).into_iter().find(|p| p.ticket == id).unwrap();
     assert_eq!(pr.pipeline, "passed", "{pr:?}");
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-1065: an open MR's head pipeline waits on a manual job GitLab's jobs
+/// read names, and the crown hears it once. Jobs reads that name nothing,
+/// a daemon restart among them, and one that names the same job again are
+/// the same wait: no bare wait, no second wake, and the card keeps the
+/// name. A new run waiting on another job is news, a new run read bare is
+/// news, and that run's name heard after it is news.
+#[test]
+fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
+    let stub_dir = std::env::temp_dir().join(format!("msmn-forge-wait-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stub_dir);
+    std::fs::create_dir_all(&stub_dir).unwrap();
+    let glab = stub_dir.join("glab");
+    std::fs::write(&glab, GLAB_STUB).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mrs = stub_dir.join("mrs.json");
+    let pipelines = stub_dir.join("pipelines");
+    let one = stub_dir.join("mr");
+    let calls = stub_dir.join("calls.log");
+    write(&mrs, "[]");
+    let path_var = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+    );
+    let Some(h) = Harness::boot_with_env(
+        "forge_wait",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GLAB_MRS", &mrs.display().to_string()),
+            ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_MR", &one.display().to_string()),
+            ("MSMN_GLAB_LOG", &calls.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("forge_wait");
+    through_prs(&mut c);
+    let got = h.dir.join("got.txt");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    let job_reads = || {
+        std::fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("/jobs"))
+            .count()
+    };
+    let jobs = pipelines.with_extension("jobs");
+    let manual = |job: &str| {
+        format!(r#"[{{"name":"build","status":"success"}},{{"name":"{job}","status":"manual"}}]"#)
+    };
+
+    // The crown, idle, and a worker it started on a worktree.
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("wait worker");
+    let kw = c.board().ticket(w).unwrap().short_key.clone();
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    turn(&mut c, sa);
+    match c.crown_start(sa, &kw, "worktree") {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let wt = wait_attached(&mut c, w);
+    let path = PathBuf::from(wt.path.clone().expect("a path"));
+    wait_until(Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(path.join("work.txt"), "work\n").unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", "work"]);
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let worker = format!("{kw} \"wait worker\"");
+    turn(&mut c, ws);
+    wait_until(Duration::from_secs(10), "the delivery's wake", || {
+        lines_with(&format!("{worker} delivered")).len() == 1
+    });
+    turn(&mut c, sa);
+    let forge_wakes = || {
+        std::fs::read_to_string(&feed_path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"worker\":\"{w}\""))
+                    && l.contains("\"cause\":\"forge\"")
+            })
+            .count()
+    };
+    // The MR's own read, its head pipeline run `run` at `status`.
+    let read = mr_json("api", 9, &wt.branch, &tip, None);
+    let read = read.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('}');
+    let head = |run: u64, status: &str| {
+        write(
+            &PathBuf::from(format!("{}.9", one.display())),
+            &format!(
+                r#"{read},"head_pipeline":{{"id":{run},"sha":"{tip}","status":"{status}"}}}}"#
+            ),
+        );
+    };
+    let news = format!("{worker} has news from the forge (");
+    let heard = |words: &str| lines_with(&news).iter().filter(|l| l.contains(words)).count();
+    let waits_on = |c: &mut TestClient, job: &str| {
+        prs_of(c).iter().any(|p| {
+            p.ticket == w
+                && p.number == 9
+                && p.pipeline == "waiting"
+                && p.job.as_deref() == Some(job)
+        })
+    };
+
+    // !9 binds running: the baseline.
+    head(7, "running");
+    write(&mrs, &mr_json("api", 9, &wt.branch, &tip, None));
+    wait_until(Duration::from_secs(20), "!9 to bind, running", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 9 && p.pipeline == "running")
+    });
+    // ---- run 7 stops on deploy:production: one wake --------------------------
+    write(&jobs, &manual("deploy:production"));
+    head(7, "manual");
+    wait_until(Duration::from_secs(20), "the named wait's wake", || {
+        heard("waiting on deploy:production !9)") == 1
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 1);
+    turn(&mut c, sa);
+
+    // ---- the jobs read names nothing, across a restart ----------------------
+    std::fs::remove_file(&jobs).unwrap();
+    let from = job_reads();
+    wait_until(Duration::from_secs(20), "two job reads that name nothing", || {
+        job_reads() >= from + 2
+    });
+    assert!(waits_on(&mut c, "deploy:production"), "the card keeps the name");
+    h.restart();
+    let mut c = h.client("forge_wait");
+    turn(&mut c, sa);
+    let from = job_reads();
+    wait_until(Duration::from_secs(20), "two job reads after the restart", || {
+        job_reads() >= from + 2
+    });
+    assert!(waits_on(&mut c, "deploy:production"), "forge.json kept the name and its run");
+    // ---- and names it again: the same wait ----------------------------------
+    write(&jobs, &manual("deploy:production"));
+    let from = job_reads();
+    // Two reads past the one that names it again: that one's pass landed.
+    wait_until(Duration::from_secs(20), "job reads that name it again", || job_reads() >= from + 3);
+    assert_eq!(forge_wakes(), 1, "{}", std::fs::read_to_string(&got).unwrap());
+    assert_eq!(heard("waiting on deploy:production !9)"), 1);
+    assert!(lines_with("a manual job").is_empty(), "a read that named nothing is no wait");
+
+    // ---- a new run stops on another job: news -------------------------------
+    write(&jobs, &manual("approve"));
+    head(8, "manual");
+    wait_until(Duration::from_secs(20), "the new run's wake", || {
+        heard("waiting on approve !9)") == 1
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 2);
+    turn(&mut c, sa);
+    // ---- a new run read bare is news, and its name after it -----------------
+    std::fs::remove_file(&jobs).unwrap();
+    head(9, "manual");
+    wait_until(Duration::from_secs(20), "the bare run's wake", || {
+        heard("waiting on a manual job !9)") == 1
+    });
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 3);
+    turn(&mut c, sa);
+    write(&jobs, &manual("approve"));
+    wait_until(Duration::from_secs(20), "the name's wake", || heard("waiting on approve !9)") == 2);
+    wait_until(Duration::from_secs(5), "the forge wake's feed line", || forge_wakes() == 4);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
