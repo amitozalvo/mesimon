@@ -1536,12 +1536,33 @@ impl Daemon {
     /// the ticket has no agent and carries a pull request
     /// (`unattended_pr`, T-890). The one claim every wake but an answer
     /// makes — `note_crown_wake` narrows a watch and a hold to what a
-    /// person's agent gives the crown to act on.
+    /// person's agent gives the crown to act on. Never a ticket off the
+    /// board (T-1076): an archived or snoozed ticket has no turn to end,
+    /// so its news is the forge's and the flags', which the board still
+    /// reads for its card and its reclaim and tells no crown.
     fn crown_hears(&self, worker: ulid::Ulid, crown: ulid::Ulid) -> bool {
-        self.started_by_crown(worker, crown)
-            || self.watched_by_crown(worker, crown)
-            || self.held_by_crown(worker, crown)
-            || self.unattended_pr(worker, crown)
+        self.board.ticket(worker).is_some_and(|t| !t.is_archived())
+            && (self.started_by_crown(worker, crown)
+                || self.watched_by_crown(worker, crown)
+                || self.held_by_crown(worker, crown)
+                || self.unattended_pr(worker, crown))
+    }
+
+    /// Forge news owed on a ticket archived or snoozed since (T-1076): a
+    /// wake queued, restored from `crown.json` or given back by a Codex box
+    /// that is the forge's alone is not told, as `crown_hears` would not
+    /// owe it now. A wake whose cause is a turn's, a merge or a hand stays;
+    /// one the crown's box already holds is told.
+    pub(super) fn drop_archived_forge(&mut self) -> bool {
+        let board = &self.board;
+        let off = |w: &CrownWake| {
+            w.cause == WakeCause::Forge && board.ticket(w.worker).is_some_and(|t| t.is_archived())
+        };
+        if !self.crown_wakes.iter().any(off) {
+            return false;
+        }
+        self.crown_wakes.retain(|w| !off(w));
+        true
     }
 
     /// A pull request on a ticket with no agent (T-890): the crown did the
@@ -4066,6 +4087,139 @@ mod tests {
     /// The wake owed for the bed's worker, if any.
     fn owed_for(d: &crate::server::Daemon, worker: ulid::Ulid) -> Option<&CrownWake> {
         d.crown_wakes.iter().find(|w| w.worker == worker)
+    }
+
+    /// The forge's news on the bed's worker, as a pass hands it on.
+    fn forge_news(worker: ulid::Ulid, words: &str, late: bool) -> ForgeNews {
+        ForgeNews { worker, words: words.into(), late, merged: false }
+    }
+
+    /// The bed's worker off the board: archived, or snoozed until later.
+    fn archive(d: &mut crate::server::Daemon, worker: ulid::Ulid, snooze: bool) {
+        let until = snooze.then(|| format!("@{}", now_ms() / 1000 + 3600));
+        let archived = mesimon_core::board::Archived {
+            at: "@1".into(),
+            by: "local".into(),
+            until,
+            needs_you: false,
+        };
+        d.board.ticket_mut(worker).unwrap().archived = Some(archived);
+    }
+
+    /// A PR on the bed's worker, as the forge's last read bound it.
+    fn bind_pr(d: &mut crate::server::Daemon, worker: ulid::Ulid) {
+        use mesimon_core::forge::{Forge, Pipeline, Pr, PrState};
+        let pr = Pr {
+            forge: Forge::GitHub,
+            repo: "o/r".into(),
+            number: 43,
+            title: String::new(),
+            url: "https://github.com/o/r/pull/43".into(),
+            state: PrState::Open,
+            head_oid: "h".into(),
+            head_ref: "b".into(),
+            merge_oid: String::new(),
+            conflict: false,
+            review: Default::default(),
+            pipeline: Pipeline::Passed,
+            pipeline_run: 0,
+            updated_ms: 1,
+            merged_ms: 0,
+            deployed: Vec::new(),
+            landed_tips: Vec::new(),
+            reviewed: false,
+        };
+        d.forge.sets.insert(worker, vec![pr]);
+    }
+
+    /// An archived or snoozed ticket's forge news wakes no crown (T-1076),
+    /// after a restart too, on every claim the crown has on it: one it
+    /// started (its agent parked, as an archive leaves it), one it watches,
+    /// and an unattended PR. The same ticket in DONE, unarchived, still
+    /// wakes it.
+    #[test]
+    fn forge_news_on_a_ticket_off_the_board_wakes_no_crown() {
+        type Claim = fn(&mut crate::server::crownask::ledger_tests::Bed);
+        let started: Claim = |b| {
+            b.d.board.sessions[0].started_by = Some(b.crown);
+            b.d.board.sessions[0].state = SessionState::Sleeping;
+        };
+        let watched: Claim = |b| {
+            b.d.board.sessions[0].started_by = None;
+            b.d.crown_watched.insert(b.worker);
+        };
+        let unattended: Claim = |b| {
+            b.d.board.sessions.clear();
+            b.d.board.crown_watches = true;
+            bind_pr(&mut b.d, b.worker);
+        };
+        for (name, claim) in [("started", started), ("watched", watched), ("pr", unattended)] {
+            for off in [None, Some(false), Some(true)] {
+                let mut b = crate::server::crownask::ledger_tests::bed(&format!("arch-{name}"));
+                let w = b.worker;
+                claim(&mut b);
+                b.d.board.ticket_mut(w).unwrap().column = "DONE".into();
+                if let Some(snooze) = off {
+                    archive(&mut b.d, w, snooze);
+                }
+                let woke = b.d.hear_forge(vec![forge_news(w, "pipeline passed #43", true)]);
+                let owed = owed_for(&b.d, w).map(|o| o.cause);
+                if off.is_some() {
+                    assert!(!woke && owed.is_none(), "{name}, {off:?}: {owed:?}");
+                } else {
+                    assert!(woke, "{name}: DONE and on the board");
+                    assert_eq!(owed, Some(WakeCause::Forge), "{name}");
+                }
+            }
+        }
+    }
+
+    /// The forge's merge of an archived ticket's branch (its flags flip on
+    /// the merged clause) tells no crown, and moves the baselines the crown
+    /// has, as for any worker it does not hear (T-936).
+    #[test]
+    fn an_archived_ticket_s_merge_wakes_no_crown() {
+        let mut b = watched_bed("arch-merge", Some(branch("aaa", "ahead", 1, "DONE")));
+        let w = b.worker;
+        archive(&mut b.d, w, false);
+        b.d.wt_agg.insert(
+            w,
+            crate::worktree::Aggregate { merged: true, tip: "aaa".into(), ..Default::default() },
+        );
+        b.d.crown_landed.push(w);
+        assert!(!b.d.hear_merges());
+        assert!(owed_for(&b.d, w).is_none());
+        let told = b.d.crown_heard.get(&w).and_then(|h| h.told.as_ref());
+        assert_eq!(told.and_then(|t| t.merge), Some("merged"), "the baseline moved");
+    }
+
+    /// Forge news owed while the ticket was on the board and still queued
+    /// when it left (T-1076) is not told: owed, restored or given back by a
+    /// box, the drain drops it. A turn's wake on the same ticket stays, and
+    /// news on a ticket still on the board goes as before.
+    #[test]
+    fn forge_news_queued_before_an_archive_is_not_told_after_it() {
+        let mut b = watched_bed("arch-queued", None);
+        let (w, other) = (b.worker, ulid::Ulid(3));
+        b.d.crown_watched.insert(other);
+        b.d.hear_forge(vec![forge_news(w, "pipeline passed #43", false)]);
+        b.d.hear_forge(vec![forge_news(other, "pipeline failed #44", false)]);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Forge));
+        archive(&mut b.d, w, false);
+        assert!(b.d.drain_crown_wakes(None), "the drop is a change");
+        assert!(owed_for(&b.d, w).is_none(), "queued");
+        assert!(owed_for(&b.d, other).is_some(), "on the board");
+        assert!(!b.d.drain_crown_wakes(None), "nothing more to drop");
+        // Given back by a Codex box, or restored from `crown.json`.
+        let back = CrownWake::new(w, WakeCause::Forge, None, None, Owed::default());
+        b.d.owe_again(vec![back]);
+        b.d.drain_crown_wakes(None);
+        assert!(owed_for(&b.d, w).is_none(), "given back");
+        // A turn's wake is not the forge's.
+        let turn = CrownWake::new(w, WakeCause::Delivered, None, None, Owed::default());
+        b.d.owe_again(vec![turn]);
+        b.d.drain_crown_wakes(None);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Delivered));
     }
 
     /// A merge held for its step ends the watch once, at the release, and

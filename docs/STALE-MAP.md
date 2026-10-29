@@ -39306,3 +39306,27 @@ with the change uncommitted.
   unread). My retained 21:26 run, rejudged under this oracle (not a new live run): PASS, train
   lines `[merge_train_refused:merge]`, no other branch holds `b311ee7e`, and `main`'s reflog has
   not moved since `3fb26cd2`. No production code changed.
+
+## Forge news on an archived ticket wakes no crown (T-1076, 2026-10-29)
+
+Seen in T-1066's regression run: a fresh rig crown on F7 was woken twice, mid-step, with
+`has news from the forge (…, pipeline passed #43, after a restart)` for F10's and F11's tickets,
+both archived by `--reset` hours earlier, after the step's daemon restart. Root cause:
+`crownwake::crown_hears`, the claim every wake but an answer makes, never asked whether the
+ticket was on the board. F10's and F11's parked agents still held their seats, so
+`started_by_crown` claimed them (`unattended_pr` was never consulted; its missing check was not
+the cause), and `hear_forge` owed the wake on the restored set's first read (`late`, T-937).
+`forge_names`, `forge_query` and the card keep reading archived tickets on purpose:
+`reclaim_archived` waits on `open_pr`, and the archive view shows the PRs.
+
+Now `crown_hears` is false for an archived or snoozed ticket (`is_archived`, as `hear_deferred`
+and `train_takes` already read it): `hear_forge` owes nothing, `hear_merges` moves only the
+baselines (the T-936 road for a worker the crown does not hear), and a restart's probe skips it.
+No turn can run on such a ticket (archive needs every session asleep; a wake is refused), so no
+turn wake is lost. A snooze's news is not told either and is not replayed when it returns; the
+card has it. A wake already queued when the ticket left — owed, restored from `crown.json` or
+given back by a Codex box — whose cause is `Forge` is dropped at the drain
+(`drop_archived_forge`, ahead of `deliver_crown_wakes`); a turn's, a merge's or a hand's wake
+on it stays, and one in the crown's box is told. DONE tickets on the board are unchanged.
+Units: every claim × {on the board in DONE, archived, snoozed}; the flags' merge; the queue,
+the box's return and a turn wake beside it. Each fails with the fix taken out.
