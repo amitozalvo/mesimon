@@ -39337,3 +39337,33 @@ for T-4's delivery alone. This run does **not** reproduce the trigger: the feed 
 pr` line for the archived tickets after the reset, so PR 43 did not move on the stub after the
 archive, as it had in T-1066's longer run. The suppression itself rests on the unit tests; the
 rig shows only that F7's oracle holds beside archived forge tickets.
+
+**Round 2 (crown review of `828a98f0`+`b07895fd`), rebased onto `4346192e`.** The review found
+the drop ran before `lose_entering`, whose give-backs (`lose_taken`, `wake_not_entered`,
+`retire_submitted_wake`) `owe_again` a box's wakes: an archived ticket's forge wake handed back
+there went out in the same drain. `drain_crown_wakes` is now `lose_entering`, then
+`drop_archived_forge`, then `deliver_crown_wakes(landed, lost)` (the old body, its `lost`
+passed in, so its return is what it was); a drop is always a change. Unit
+`forge_news_a_lost_box_gives_back_is_dropped_in_the_same_drain` seeds a submitted box whose pane
+went and a taken one whose pane went, drains, and finds the archived ticket's forge wake
+neither owed nor in a box while the active ticket's is owed again; a turn's wake on the archived
+ticket comes back owed, and a box whose pane stands keeps its words. It fails with the old order.
+
+**AF1, the controlled rig case** (`ci/rig/tests.toml`, `forge_archived`, check
+`archived_quiet`). Two crown-started workers commit; `forge_prs` opens PR 42 and 43 on the stub,
+running. `forge_archived` parks the second worker and waits until its pane is gone (a park reads
+`sleeping` at once and a handover inside the reap window read the record `crashed`, which holds
+no seat: the first run of the case measured that, its archived ticket heard through
+`unattended_pr` and not as the crown's start), archives it, passes both pipelines on the stub,
+hands the daemon over onto it, waits for the forge's `pipeline passed` line on each ticket and
+the crown's turn on the active ticket's wake, holds 10 s of 2 s passes, then restores the ticket
+(the snapshot carries no archived ticket) and fails unless its seat still reads `sleeping`.
+`archived_quiet` judges the archive's window only: a `forge pr` pass line for the ticket, and a
+forge wake exactly when the ticket stayed on the board. Offline tests in `ci/rig_test.py`.
+Claude Code 2.1.312, workers Sonnet, crown Opus, stamped `2b7a9f96`: with the two daemon files
+checked out from `4346192e` (uncommitted, the stamp says the branch), **FAIL**, the archived
+T-22 read `pipeline passed #43` and woke the crown `forge` (`target/rig/verdicts-20261029-224842.md`);
+with the fix, **PASS** twice (`-224303.md`, `-224445.md`), the archived ticket read and unwoken,
+the active one woken `forge`. The close-out's DONE moves are refused (`worktree unmerged`), as
+for every rig case whose branch is unmerged. Seen, not fixed here: a park followed within the
+reap window by a handover leaves the record `crashed`.
