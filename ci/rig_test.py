@@ -659,6 +659,7 @@ class CompactionWindowTests(unittest.TestCase):
     def test_no_boundary_fails(self):
         self.assertFalse(rig.rules_after_compaction(self.crown_rows(False, True, boundary=False), 0)[0])
 
+
 class CreateStartTests(unittest.TestCase):
     """T-1072: SF1's acceptance, off the crown's own calls and results."""
 
