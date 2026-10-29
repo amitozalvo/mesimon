@@ -4014,6 +4014,161 @@ fn old_squash_merges_found_again_after_a_restart_are_not_news() {
     }
 }
 
+/// What T-1064 must not mute: squash merges past the scan budget are each
+/// heard once. Three land in one move of the base, so a pass sees all
+/// three memos stale and the third waits a pass for its scan, read
+/// unchecked between an answered "unmerged" and its merge.
+#[test]
+fn squash_merges_past_the_scan_budget_are_each_heard_live() {
+    squash_merges_past_the_budget("crown_budget_live", Landing::Live);
+}
+
+/// The same after the crown left and came back (T-1064): nothing is owed,
+/// so only the answered "unmerged" kept across the unchecked pass makes the
+/// merge news, said as the delivery it is to a crown that heard none.
+#[test]
+fn squash_merges_past_the_scan_budget_after_a_crown_change_are_each_heard() {
+    squash_merges_past_the_budget("crown_budget_switch", Landing::AfterSwitch);
+}
+
+/// The same while no daemon is up, the crown having heard the deliveries
+/// (T-1064): the restart's look says each once, `after a restart`, and the
+/// flags' rescan, two scans a pass, says none of them again.
+#[test]
+fn squash_merges_past_the_scan_budget_while_down_are_each_heard_once() {
+    squash_merges_past_the_budget("crown_budget_down", Landing::WhileDown);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Landing {
+    Live,
+    AfterSwitch,
+    WhileDown,
+}
+
+/// Three crown-started workers delivered and heard, their branches then
+/// squash-merged in one move of the base as `landing` says, and each merge
+/// said exactly once.
+fn squash_merges_past_the_budget(name: &str, landing: Landing) {
+    let Some(h) = Harness::boot_with_env(
+        name,
+        Some(RECORDING_STUB_PER_TICKET),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
+
+    let a = c.create_ticket("coordinate");
+    let b = c.create_ticket("another crown");
+    let sa = crown_idle(&h, &mut c, a);
+    let start = |c: &mut TestClient, title: &str| {
+        let w = c.create_ticket(title);
+        let kw = c.key_of(w);
+        assert!(matches!(
+            c.request(Command::SetWorkspace {
+                id: w,
+                workspace: Some(WorkspaceStrategy::Worktree)
+            }),
+            Response::Ok
+        ));
+        match c.crown_start(sa, &kw, "worktree") {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent: {other:?}"),
+        }
+        let path = std::path::PathBuf::from(wait_attached(c, w).path.expect("a path"));
+        wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+            c.board().live_agent(w).is_some()
+        });
+        let ws = c.board().live_agent(w).unwrap().id;
+        let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        (kw.clone(), ws, path, branch, format!("{kw} \"{title}\""))
+    };
+    let merge_state = |c: &mut TestClient, kw: &str| c.agent_read(sa, kw).unwrap().merge_state;
+    // Three workers, each delivered and heard, each branch read ahead.
+    let deliver_three = |c: &mut TestClient| {
+        let mut out = Vec::new();
+        for n in 1..=3 {
+            let (kw, ws, path, branch, worker) = start(c, &format!("mesimon-probe-1064{n} budget"));
+            commit(&path, &format!("w{n}.txt"));
+            h.one_turn(c, ws);
+            wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
+                lines_with(&worker).len() == 1
+            });
+            h.one_turn(c, sa);
+            wait_until(std::time::Duration::from_secs(10), "the branch ahead", || {
+                merge_state(c, &kw).as_deref() == Some("ahead")
+            });
+            out.push((kw, ws, branch, worker));
+        }
+        out
+    };
+    // Every branch squashed on a side branch, then the base moved ONCE: a
+    // pass sees all three memos stale together.
+    let squash_all = |workers: &[(String, uuid::Uuid, String, String)]| {
+        git(&h.repo, &["checkout", "-q", "-b", "land"]);
+        for (_, _, branch, _) in workers {
+            git(&h.repo, &["merge", "--squash", "-q", branch]);
+            git(&h.repo, &["commit", "-qm", &format!("{branch} (squash)")]);
+        }
+        git(&h.repo, &["checkout", "-q", "main"]);
+        git(&h.repo, &["merge", "--ff-only", "-q", "land"]);
+        git(&h.repo, &["branch", "-qD", "land"]);
+    };
+    // The crown takes its turns until every worker's merge is said; a wake
+    // owed while it works joins one sentence, so each worker is read by
+    // its own words.
+    let heard_merged = |c: &mut TestClient,
+                        workers: &[(String, uuid::Uuid, String, String)],
+                        words: &str| {
+        let said = |w: &str| lines_with(&format!("{w} {words}")).len();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while workers.iter().any(|(_, _, _, w)| said(w) == 0) {
+            assert!(std::time::Instant::now() < deadline, "not every merge said:\n{}", read_got());
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            h.one_turn(c, sa);
+        }
+        // The crown's turn on the last of them, so the next wake goes in.
+        h.one_turn(c, sa);
+        // More passes at `merged`, the rescan among them: silent.
+        std::thread::sleep(std::time::Duration::from_millis(4000));
+        for (kw, _, _, w) in workers {
+            assert_eq!(merge_state(c, kw).as_deref(), Some("merged"));
+            assert_eq!(said(w), 1, "{w}'s merge said once:\n{}", read_got());
+            assert_eq!(lines_with(w).len(), 2, "{w}: a delivery and a merge:\n{}", read_got());
+        }
+    };
+
+    let workers = deliver_three(&mut c);
+    match landing {
+        Landing::Live => {
+            squash_all(&workers);
+            heard_merged(&mut c, &workers, "merged (merge_state ahead → merged)");
+        }
+        Landing::AfterSwitch => {
+            assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+            assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+            squash_all(&workers);
+            heard_merged(&mut c, &workers, "delivered (merge_state merged");
+        }
+        Landing::WhileDown => {
+            drop(c);
+            h.restart_after(|| squash_all(&workers));
+            let mut c = h.client(&format!("{name}_2"));
+            heard_merged(&mut c, &workers, "merged (merge_state ahead → merged, after a restart)");
+        }
+    }
+}
+
 /// A restart between a worker's launch and its first prompt (T-722): the
 /// crown started it, its `SessionStart` came, and the daemon went down (a
 /// person's `U`) before the brief was pasted. The new daemon used to call

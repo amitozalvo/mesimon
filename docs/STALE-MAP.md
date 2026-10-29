@@ -38498,6 +38498,33 @@ merged)`. With the daemon change reverted it fails at the handover: the second w
 heard again. Units: the budget test asserts `unchecked` on the skipped binding, and
 `aggregate_is_unchecked_only_where_no_leg_answered_unmerged`.
 
+**Before and after.** Only the board's decision to hear a landing moved; no word the crown,
+an agent or a person reads changed (no tool text, `get_ticket` field, brief or wake
+template), and nothing new reaches a model's input. A wake that is said reads as before.
+
+| Situation | Before | After |
+|---|---|---|
+| Restart (memos lost), squash merges past the two-scan budget, crown baselines cleared by a switch away and back | the late-scanned ones said `delivered (merge_state merged …)` | silent: a first reading |
+| Same, crown baselines kept (no switch) | silent (`merge_verdict`: told merged at this tip) | silent |
+| A merged branch found by ancestry of the upstream (empty `oid`), its memo staled by a moved upstream, over budget, baselines cleared | merged → unmerged → merged said as a new delivery | silent: the unchecked pass moves nothing (read from the code; no test stages it) |
+| Squash merges landing live past the budget, delivery heard (owed) | each said `merged` once | the same |
+| The same after a crown switch away and back (nothing owed) | each said as `delivered (merge_state merged …)` | the same |
+| Squash merges made while the daemon was down, deliveries heard | each said once, `after a restart` (T-602's look) | the same |
+| A fresh worker's squash after a switch, a handover and a crown sleep and wake | said `merged` | the same |
+| Card, DONE gate, train, `get_ticket`'s `merge_state` while a scan is pending | unmerged until the scan | the same |
+
+**Negative cases** (behaviour kept, each passing on the code before this change too):
+`squash_merges_past_the_scan_budget_are_each_heard_live`,
+`squash_merges_past_the_scan_budget_after_a_crown_change_are_each_heard` and
+`squash_merges_past_the_scan_budget_while_down_are_each_heard_once` (crown_e2e, one
+shared body, `Landing`): three workers delivered and heard, their branches squashed on a
+side branch and the base moved once, so one pass sees three stale memos. The crown-change
+case is the one that needs `wt_answered`: with an unchecked reading dropping the baseline
+instead of keeping it, it fails (measured) and the other two pass, because an owed delivery
+or the restart's look says those merges anyway. They are three fixtures because one stub
+crown pane given some fifteen wakes stops reading as an empty composer and the board rightly
+pastes no more into it (T-936's box check), a limit of the stub and not of the board.
+
 **Live rig: SM1, forge road.** The rig's merge base is `main` (its `origin/HEAD`), which
 no rig test may land a commit on, so a live case cannot squash onto the base and reach the
 git content scan itself; its merges come from the stub forge. SM1 (new rig steps
@@ -38517,3 +38544,7 @@ hold, train, worktree, forge, workspace and PR-merge e2e binaries 171/171. The f
 (3/3 alone), and the `--no-fail-fast` rerun was 3173/3174 with
 `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` red (29.7 s under load, 4/4 alone
 at 20 s; no worktree or merge in it): a different name each run, the known load flakes.
+After the three negative cases were added: rustfmt and clippy clean, `cargo ut` green, and
+`cargo nextest run --workspace --no-fail-fast` 3177/3177 with 11 skipped, every forge e2e
+(39) among them, on its first run. No harness or agent text changed since SM1's run, so it
+was not run again.
