@@ -78,6 +78,10 @@
 //! review inside the window is read on the busy cadence and wakes the
 //! crown in seconds, and the minute alone reads it once the window closes.
 //!
+//! A watch ends at the merge, never at news on a merged branch (T-1071): a
+//! watched person's ticket merged once keeps its new watch through a later
+//! PR's pipeline news, and that PR's merge wakes the crown once.
+//!
 //! The stub is the forge: `auth status` passes, `pr list` prints the file
 //! the test writes, `api …/check-runs` and `api …/status` the merge
 //! commit's pipeline, by sha where the test wrote one, and `api
@@ -5024,4 +5028,140 @@ fn gitlab_merged_pipeline_deployment_replaces_pass_news() {
 #[test]
 fn gitlab_merged_pipeline_pass_during_outage_is_news_on_recovery() {
     merged_pipeline_news(true, false, true);
+}
+
+/// T-1071: a watched person's ticket whose branch an earlier merge landed
+/// keeps reading `merged` while later PRs open on side branches. The crown
+/// watches it again for the next PR: that PR's pipeline news wakes the
+/// crown and leaves the watch standing, and the PR's merge wakes it once,
+/// `merged #2`, and ends the watch. Before, the news line ended the watch
+/// (its branch read merged) and the merge woke nobody. Unwatched after
+/// that, a third PR's merge is the person's: no wake.
+#[test]
+fn a_watched_tickets_later_pr_merge_wakes_the_crown() {
+    let (stub_dir, path_var) = gh_stub("forge-watch-later");
+    let prs_file = stub_dir.join("prs.json");
+    write(&prs_file, "[]");
+    let Some(h) = Harness::boot_with_env(
+        "forge_watch_later",
+        Some(RECORDING_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "500"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge_watch_later");
+    through_prs(&mut c);
+    let got = h.dir.join("got.txt");
+    let feed = h.paths.state_dir.join("activity.jsonl");
+    let lines_with = |needle: &str| -> Vec<String> {
+        std::fs::read_to_string(&got)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_string)
+            .collect()
+    };
+    // The crown, idle.
+    let a = c.create_ticket("coordinate");
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    std::thread::sleep(Duration::from_millis(500));
+    h.one_turn(&mut c, sa);
+
+    // A person's worker on a worktree, one commit on its branch.
+    let (w, _ws, branch, path) = ready(&mut c, "person");
+    let kw = c.key_of(w);
+    let named = format!("{kw} \"person\"");
+    let ended = |w: ulid::Ulid| {
+        std::fs::read_to_string(&feed)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("\"cmd\":\"watch_ended\"") && l.contains(&w.to_string()))
+            .count()
+    };
+    let watch = |c: &mut TestClient| {
+        let seen = c.agent_read(sa, &kw).unwrap().seen;
+        let r = c.send(
+            Principal::Agent { session: sa },
+            Command::AgentWatchTicket { key: kw.clone(), unwatch: false, seen },
+        );
+        assert!(!matches!(r, Response::Err { .. }), "watch: {r:?}");
+        assert!(c.agent_read(sa, &kw).unwrap().watched);
+    };
+
+    // ---- 1. watched, its branch merges: one wake, the watch ends ----------
+    watch(&mut c);
+    git(&h.repo, &["merge", "-q", "--ff-only", &branch]);
+    wait_until(Duration::from_secs(20), "the branch's merge wake and the watch's end", || {
+        ended(w) == 1
+    });
+    assert_eq!(wakes(&h, w, "merged") + wakes(&h, w, "delivered"), 1);
+    assert!(!c.agent_read(sa, &kw).unwrap().watched);
+    h.one_turn(&mut c, sa);
+
+    // ---- 2. watched again: a later PR's news leaves the watch standing ----
+    watch(&mut c);
+    let tip = follow_up(&path, "fix/two");
+    let running = r#""statusCheckRollup":[{"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null}]"#;
+    let passed = r#""statusCheckRollup":[{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]"#;
+    let pr = |n: u64, branch: &str, tip: &str, merged: bool| {
+        numbered_pr(n, branch, tip, merged).replace(passed, running)
+    };
+    write(&prs_file, &format!("[{}]", pr(2, "fix/two", &tip, false)));
+    wait_until(Duration::from_secs(20), "#2 to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 2)
+    });
+    write(&prs_file, &format!("[{}]", numbered_pr(2, "fix/two", &tip, false)));
+    wait_until(Duration::from_secs(20), "#2's pipeline news", || {
+        lines_with(&named).iter().any(|l| l.contains("pipeline passed #2"))
+    });
+    // The branch still reads merged under the line (the card says `open PR
+    // #2`); the watch outlives it.
+    assert_eq!(ended(w), 1, "news on a merged branch is no merge");
+    assert!(c.agent_read(sa, &kw).unwrap().watched, "the watch stands");
+    h.one_turn(&mut c, sa);
+
+    // ---- 3. #2 merges: one wake that says it, and the watch ends ----------
+    write(&prs_file, &format!("[{}]", numbered_pr(2, "fix/two", &tip, true)));
+    wait_until(Duration::from_secs(20), "#2's merge wake", || {
+        lines_with(&named).iter().any(|l| l.contains("merged #2"))
+    });
+    wait_until(Duration::from_secs(5), "the watch's end", || ended(w) == 2);
+    assert!(!c.agent_read(sa, &kw).unwrap().watched, "the merge ended it");
+    h.one_turn(&mut c, sa);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(lines_with("merged #2").len(), 1, "said once: {:?}", lines_with(&named));
+
+    // ---- 4. unwatched: a third PR's merge is the person's, no wake --------
+    let woke = lines_with(&named).len();
+    git(&path, &["checkout", "-q", &branch]);
+    let tip3 = follow_up(&path, "fix/three");
+    let three = |merged: bool| {
+        format!(
+            "[{},{}]",
+            numbered_pr(2, "fix/two", &tip, true),
+            numbered_pr(3, "fix/three", &tip3, merged)
+        )
+    };
+    write(&prs_file, &three(false));
+    wait_until(Duration::from_secs(20), "#3 to bind", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 3)
+    });
+    write(&prs_file, &three(true));
+    wait_until(Duration::from_secs(20), "#3 to read merged", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 3 && p.state == "merged")
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(lines_with(&named).len(), woke, "unwatched: {:?}", lines_with(&named));
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
 }

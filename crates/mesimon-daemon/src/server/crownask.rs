@@ -1603,6 +1603,53 @@ mod ledger_tests {
         assert!(!b.d.crown_watched.contains(&b.worker), "the merge ends the watch");
     }
 
+    /// Every road that says a merge still ends a watch (T-712, T-1071):
+    /// the flags' landing with nothing heard before, a turn's line whose
+    /// branch turned merged, and a merge at a new tip on a branch merged
+    /// before.
+    #[test]
+    fn a_watch_ends_on_each_road_that_says_a_merge() {
+        use super::super::crownwake::{Told, WakeCause};
+        let told = |tip: &str, merge: &'static str| Told {
+            tip: tip.into(),
+            merge: Some(merge),
+            ahead: 1,
+            legs: Vec::new(),
+            column: "REVIEW".into(),
+            forge: None,
+        };
+        let watched = |name: &str| {
+            let mut b = bed(name);
+            b.d.board.sessions[0].started_by = None;
+            b.d.crown_watched.insert(b.worker);
+            b
+        };
+        // The flags flip a branch the crown never heard of: `hear_merges`.
+        let mut b = watched("watch-flags");
+        b.d.wt_agg.insert(
+            b.worker,
+            crate::worktree::Aggregate { merged: true, tip: "a".into(), ..Default::default() },
+        );
+        b.d.crown_landed.push(b.worker);
+        b.d.hear_merges();
+        assert!(!b.d.crown_watched.contains(&b.worker), "the flags' landing");
+        // A turn's line from `ahead` to `merged`.
+        let mut b = watched("watch-turn");
+        let (from, to) = (told("a", "ahead"), told("a", "merged"));
+        b.d.note_crown_wake(b.worker, WakeCause::Delivered, Some(from), Some(to));
+        assert!(!b.d.crown_watched.contains(&b.worker), "the branch turned merged");
+        // Merged before at `a`, merged again at `b`.
+        let mut b = watched("watch-tip");
+        let (from, to) = (told("a", "merged"), told("b", "merged"));
+        b.d.note_crown_wake(b.worker, WakeCause::Delivered, Some(from), Some(to));
+        assert!(!b.d.crown_watched.contains(&b.worker), "merged at a new tip");
+        // Merged at the same tip as last heard: a finished turn is no merge.
+        let mut b = watched("watch-same");
+        let (from, to) = (told("a", "merged"), told("a", "merged"));
+        b.d.note_crown_wake(b.worker, WakeCause::Finished, Some(from), Some(to));
+        assert!(b.d.crown_watched.contains(&b.worker), "nothing merged since");
+    }
+
     /// A settled record is not kept; a queued one is the queue's.
     #[test]
     fn only_an_ask_out_is_kept() {

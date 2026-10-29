@@ -39045,6 +39045,11 @@ the worker yet, is no merge either. The rule is `Owed::merge` plus the transitio
 Hearing (`crown_hears`), wake folding and the forge/flags hand-off are unchanged, so no
 duplicate delivery (T-1036) is added.
 
+One more change follows from naming the merge: a forge `merged !N` on a branch the flags read
+unmerged now ends the watch. That is a later PR at a head that is not the tip, after a merge the
+forge's fold alone made (T-757's case). Before, that line moved nothing to `merged`, so the watch
+outlived the merge it was for.
+
 **The `absorb_forge` hand-off was checked and not changed.** The forge drops a `merged !N`
 whose PR lands a leg tip and is carried by the flags (`flipping`, `flags_said` or
 `forge_lands_all`), and one that does not land the tip while the flags are flipping. For one
@@ -39064,3 +39069,16 @@ the board's `activity.jsonl` lines for the two tickets and the crown from an hou
 each merge to an hour after (`pr`, `crown_wake`, `crown_wake_*`, `watch_*`, `crown_ticket`,
 `uncrown`, `start_agent`); `crown.json`; the tickets' entries in `forge.json`; and the crown's
 transcript lines in that window. The feed's `crown_wake` names the cause but not the words.
+
+**Tests.** Unit `a_watch_outlives_news_on_a_branch_already_merged`: a fresh watch on a merged
+branch with nothing heard yet, then an answer and news at that tip, keep the watch, and the forge's
+`merged !2` ends it. It fails on the old rule at its first assertion. Unit
+`a_watch_ends_on_each_road_that_says_a_merge`: the flags' landing (`hear_merges`, nothing heard
+before), a turn's line from `ahead` to `merged`, and a merge at a new tip each end the watch. A
+finished turn at the tip already heard merged keeps it. E2e
+`forge_e2e::a_watched_tickets_later_pr_merge_wakes_the_crown` follows the 2026-10-18 shape. A
+watched person's branch merges (one wake, watch ends); the crown watches again; `fix/two` opens
+as #2 and its pipeline passes (one wake, watch stands); #2 merges (`merged #2` said once, watch
+ends); unwatched, #3 merges with no wake. Under the old rule it fails at the watch standing. A
+held landing let go by `hear_stepped` sets the flag too, but no test drives a watched ticket
+through a merge step. No rig run: no words an agent or the crown reads changed.
