@@ -784,5 +784,35 @@ class FindingsFirstTests(unittest.TestCase):
         self.assertFalse(ok, seen)
 
 
+class ArchivedQuietTests(unittest.TestCase):
+    """AF1's oracle (T-1076): the forge read the change, and only a ticket
+    on the board woke the crown for it."""
+
+    def lines(self, read=True, wake=None, at=200):
+        out = [{"kind": "board", "actor": "forge", "cmd": "pr", "ticket": "A", "at_ms": at,
+                "outcome": "pipeline passed #43"}] if read else []
+        if wake:
+            out.append({"kind": "crown_wake", "worker": "A", "cause": wake, "at_ms": at + 1})
+        return out
+
+    def test_an_archived_ticket_read_and_unwoken_passes(self):
+        self.assertTrue(rig.archived_quiet(self.lines(), "A", 100, True)[0])
+
+    def test_an_archived_ticket_s_forge_wake_fails(self):
+        ok, seen = rig.archived_quiet(self.lines(wake="forge"), "A", 100, True)
+        self.assertFalse(ok)
+        self.assertIn("forge", seen)
+
+    def test_an_unread_change_proves_nothing(self):
+        self.assertFalse(rig.archived_quiet(self.lines(read=False), "A", 100, True)[0])
+        self.assertFalse(rig.archived_quiet(self.lines(at=50), "A", 100, True)[0], "before the step")
+        self.assertFalse(rig.archived_quiet(self.lines(), "A", None, True)[0], "no step ran")
+
+    def test_a_ticket_on_the_board_needs_its_forge_wake(self):
+        self.assertTrue(rig.archived_quiet(self.lines(wake="forge"), "A", 100, False)[0])
+        self.assertFalse(rig.archived_quiet(self.lines(), "A", 100, False)[0])
+        self.assertFalse(rig.archived_quiet(self.lines(wake="delivered"), "A", 100, False)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
