@@ -38877,3 +38877,11 @@ already drives the fallback's two frames through the daemon, on both roads.
   alone on the mod road, audit clean. None of them files through `create_ticket`. The full
   command therefore did not pass whole in one run. No agent-facing text changed after SF1's
   pass, so the rig was not run again.
+- **Rebase onto main `26191275`** (T-1064, T-1069, T-1073, T-1074). Three append conflicts,
+  each kept both, main's first: `ci/rig_test.py` (T-1069's `CompactionWindowTests` before
+  `CreateStartTests`), `ci/rig.py` (T-1073's title checks and `create_start` both judged with
+  no agent on the test's ticket), and this STALE-MAP block after T-1069's. No product code
+  conflicted. After it: `cargo ut` **2,778 passed**, 10 ignored; `cargo build --workspace`
+  passed; fmt clean; `ci/rig_test.py` 68/68; `crown_e2e` + `mcp_e2e` on the hooks road
+  **119/119** on the first run, audit clean. The full suite and the rig were not rerun here;
+  the crown runs the final full e2e/forge validation on the combined changes.
