@@ -3178,10 +3178,12 @@ mod tests {
         assert!(s.restored.is_empty());
     }
 
-    /// T-1070: a restart replays no deployment. Two GitLab tickets are read,
-    /// deployed as git proves by ancestry (T-801), saved and restored as a
-    /// `U` handover does; the first pass after, on the same environments,
-    /// says nothing, where git can say and where it cannot. Production
+    /// T-1070: intact restored facts make no deployment edge. Two GitLab
+    /// tickets are read, deployed as git proves by ancestry (T-801), saved
+    /// and restored as a `U` handover does; the first pass after (the forge
+    /// helpers as `absorb_forge` uses them, not the daemon itself), on the
+    /// same environments, says nothing, where git can say and where it
+    /// cannot. Production
     /// moving on while no daemon read is said once, late, for the merge it
     /// newly carries alone; a rollback and its redeploy are said as any are.
     #[test]
