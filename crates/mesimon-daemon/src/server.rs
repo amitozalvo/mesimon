@@ -22339,3 +22339,54 @@ mod shell_archive_regressions {
         assert!(shell_children_idle(shells::parse_children(Some(1), b"")).is_ok());
     }
 }
+
+#[cfg(test)]
+mod landing_tests {
+    use super::*;
+
+    /// One leg at `tip`: merged by a verdict, answered unmerged, or
+    /// unmerged for want of a scan (`unchecked`, T-1064).
+    fn leg(tip: &str, merged: bool, unchecked: bool) -> worktree::RepoFlags {
+        worktree::RepoFlags {
+            base: "main".into(),
+            base_oid: "b0".into(),
+            tip: tip.into(),
+            ahead: 1,
+            merged,
+            merged_in: if merged { "origin/main".into() } else { String::new() },
+            unchecked,
+            ..Default::default()
+        }
+    }
+
+    /// A budget-delayed recheck (T-1064): an answered merged branch whose
+    /// memo a moved upstream staled reads unchecked for a pass and merged
+    /// again, which is no landing; a later answered unmerged, at a new tip,
+    /// is the baseline a real merge lands against, an unchecked pass
+    /// between them or not. Nothing is owed throughout: the crown heard
+    /// nothing of the ticket, as after a switch away and back.
+    #[test]
+    fn an_unchecked_reading_neither_lands_nor_moves_the_answered_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
+        d.board.crown = Some(ulid::Ulid::new());
+        let t = ulid::Ulid::new();
+        let read = |d: &mut Daemon, l: worktree::RepoFlags| {
+            d.set_ticket_agg(t, &[l]);
+            (std::mem::take(&mut d.crown_landed), d.wt_answered.get(&t).copied())
+        };
+        // A restart's first pass, out of budget: no answer, no baseline.
+        assert_eq!(read(&mut d, leg("t1", false, true)), (vec![], None));
+        // Its scan: merged, a first reading, said by nothing.
+        assert_eq!(read(&mut d, leg("t1", true, false)), (vec![], Some(true)));
+        // The upstream moves, the memo is stale, the budget is spent.
+        assert_eq!(read(&mut d, leg("t1", false, true)), (vec![], Some(true)));
+        // Rechecked: still merged, so no landing.
+        assert_eq!(read(&mut d, leg("t1", true, false)), (vec![], Some(true)));
+        // New work on the branch, answered unmerged; a pass out of budget.
+        assert_eq!(read(&mut d, leg("t2", false, false)), (vec![], Some(false)));
+        assert_eq!(read(&mut d, leg("t2", false, true)), (vec![], Some(false)));
+        // Its merge lands against the answered unmerged.
+        assert_eq!(read(&mut d, leg("t2", true, false)), (vec![t], Some(true)));
+    }
+}

@@ -38485,10 +38485,13 @@ daemon was down is still said by the restart's look (T-602) for a worker the cro
 an owed delivery is still said on a first reading; forge news, sleeping workers, DONE and
 the restart's own wakes are untouched. No wire, state file or agent text changes.
 
-**Not covered.** A restart's look (`Look::Branch`) runs its own `compute_flags` with the
-same budget; a workspace of three or more touched squash-merged legs could still read
-unchecked there and set the look's baseline to unmerged. T-1066's deployment replay
-(T-1070) is a forge-road question this does not answer.
+**The restart's look is out of it.** `Look::Branch` asks `wt_queries(false, Some(worker))`:
+one ticket, so each repository's query holds that ticket's one leg, and
+`compute_repo_flags` calls `compute_flags` per query, each with a budget of its own. A look
+never runs out of scans, a workspace of any width included; the only unchecked it can read is
+a ref the sample did not capture, which carries `trouble` and read unmerged before this
+change as well (an earlier draft of this block named the look as a gap; it is not one).
+T-1066's deployment replay (T-1070) is a forge-road question this does not answer.
 
 **Tests.** `old_squash_merges_found_again_after_a_restart_are_not_news` (crown_e2e):
 three squash-merged workers (over the budget), each delivery and merge heard once; the
@@ -38506,7 +38509,7 @@ template), and nothing new reaches a model's input. A wake that is said reads as
 |---|---|---|
 | Restart (memos lost), squash merges past the two-scan budget, crown baselines cleared by a switch away and back | the late-scanned ones said `delivered (merge_state merged …)` | silent: a first reading |
 | Same, crown baselines kept (no switch) | silent (`merge_verdict`: told merged at this tip) | silent |
-| A merged branch found by ancestry of the upstream (empty `oid`), its memo staled by a moved upstream, over budget, baselines cleared | merged → unmerged → merged said as a new delivery | silent: the unchecked pass moves nothing (read from the code; no test stages it) |
+| A merged branch found by ancestry of the upstream (empty `oid`), its memo staled by a moved upstream, over budget, baselines cleared | merged → unmerged → merged said as a new delivery | silent: the unchecked pass moves nothing (`landing_tests`, at `set_ticket_agg`) |
 | Squash merges landing live past the budget, delivery heard (owed) | each said `merged` once | the same |
 | The same after a crown switch away and back (nothing owed) | each said as `delivered (merge_state merged …)` | the same |
 | Squash merges made while the daemon was down, deliveries heard | each said once, `after a restart` (T-602's look) | the same |
@@ -38548,3 +38551,23 @@ After the three negative cases were added: rustfmt and clippy clean, `cargo ut` 
 `cargo nextest run --workspace --no-fail-fast` 3177/3177 with 11 skipped, every forge e2e
 (39) among them, on its first run. No harness or agent text changed since SM1's run, so it
 was not run again.
+
+Every full-suite run here was plain `cargo nextest run --workspace` (the last with
+`--no-fail-fast`): no `ci/test-run.py`, so no deadline, no build lock and no fixture
+audit, and `target/suite-passed.json` is still the seeded stamp of `2999796a`, not this
+branch. Cleanup was checked by hand five minutes after the last run instead: each of the
+19 `/tmp/msmn-e2e-*` dirs left on the machine named another ticket's worktree in its paths
+(T-1071's from 14:38 IST, T-1072's from a run then in progress), none this one's, and the
+e2e tmux servers then alive were that run's fixtures, two of them gone seconds later. That
+is not an audit; the crown's combined gate is the bounded run.
+
+`landing_tests::an_unchecked_reading_neither_lands_nor_moves_the_answered_baseline`
+(server.rs, a daemon assembled as `run` assembles one) drives `set_ticket_agg` itself,
+nothing owed: unchecked first (no baseline), merged (a first reading, silent), unchecked
+after a stale memo (the baseline stays merged), merged again (no landing); then new work
+answered unmerged, an unchecked pass, and its merge, which lands. With `set_ticket_agg` letting
+an unchecked reading move the baseline (as the code before this change did), it fails at the
+second step (the restart's unchecked pass made an unmerged baseline, then a landing), and with
+that step taken out it fails at "rechecked: still merged", a landing `[t]` where the fix has
+none (measured both ways). Run under `cargo ut` with fmt and clippy clean; the full suite was
+not run again for a test and docs.
