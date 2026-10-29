@@ -38822,3 +38822,56 @@ already drives the fallback's two frames through the daemon, on both roads.
   JSON, so it is parsed as the leading object now), run 3 **passed 2/2**: `filed` and
   `create_start:accepted`, the start carrying the create's seen with 0 reads between, taken.
   `--reset` parked the rig and stopped its daemon and tmux server.
+- **Behaviour, before → after** (asked by the person to be reported before any merge).
+  - *The crown's `create_ticket` answer (model input):* `{key, column, board_version, replayed,
+    workspace}` → the same plus `seen: "receipt:<ulid>"`. The crown reads one more field.
+  - *Create → start:* `start_agent` on a ticket the crown just filed needed a `get_ticket`
+    first (no stamp existed) → it takes the filing's `seen`, no read. The same holds for every
+    keyed write (rename, move, workspace, archive, ask, hold, watch, …): the stamp goes through
+    the one `check_seen`.
+  - *Edits between filing and start:* before, nothing to refuse (the read came after) → now any
+    change to the ticket after the filing (a person's or another principal's note, rename, tag,
+    move or sort, a seat arriving, the crown session replaced) refuses the filing's stamp with
+    `changed since it was read … read it again with get_ticket`; a fresh read then works.
+  - *Replay (same idempotency key, same session):* the first answer, no stamp → the first
+    answer with the first answer's stamp. Never a fresh stamp, so an edit since the filing
+    makes the replayed stamp stale too. A replay of a filing made before the session was
+    crowned stays stampless.
+  - *A worker's (uncrowned) `create_ticket`:* unchanged, no `seen` field at all.
+  - *Crown text (model input):* `CROWN_ROLE`, on the crown's own `get_ticket` full and on the
+    first call after a crowning, gains one sentence: "A keyed tool's receipt, and
+    create_ticket's for the ticket it files, carries that ticket's seen, which the next keyed
+    call takes in place of a read." No tool description or schema changed.
+  - *Unchanged on purpose:* `get_ticket`'s stamp (strict, distinct from every receipt),
+    `move_ticket`'s replay (`seen: None`), `board_version`, every required `seen`, the DONE,
+    merge, budget, workspace and seat gates, the worker brief, the TUI and phone.
+- **Limitations.** A filing's stamp is a receipt like any other: memory only, so a daemon
+  restart between the filing and the start refuses it (a read fixes it). A seen-less crown
+  write on the new ticket (`write_note`, `tag_ticket`) sent in parallel with the start
+  replaces the receipt with its own, and the start carrying the filing's stamp is then refused
+  (T-1047 keeps only the read token such a write superseded); sent in sequence, the note's or
+  tag's own returned `seen` serves the start. This ticket does not widen that. The replay map
+  is bounded (512) as before; past it a retry files anew, unchanged.
+- **Regression cases added in the second round.** `mcp_e2e::agent_board_tools_tier_and_collisions`
+  (the real `mesimon mcp` shim, an uncrowned session): the filing and its replay carry no
+  `seen`. `mcp_e2e::old_mcp_receipts_remain_readable_and_incompatible_writes_do_not_happen`:
+  the crown's filing over the old envelope decodes in the frozen beta.13 reader and carries a
+  `receipt:` stamp. `mcp_e2e::crown_ticket_reply_sizes` (crowned, through the shim): the
+  filing's stamp differs from a read's, `rename_ticket` takes it with no read, a retry under the
+  same tool-use id replays the key, `replayed: true` and the same stamp, and after a person's
+  note `start_agent` refuses both the filing's stamp and the rename's. `crownreceipt` unit: a
+  replaced crown session, or a seat arriving on the filed ticket, stales the filing's receipt.
+  `crown_e2e::a_crown_s_filing_receipt_starts_its_ticket_with_no_read`: a replay after the
+  crowning of a pre-crown filing stays stampless.
+- **Second-round validation.** The four changed e2e cases 4/4 on their first run, audit clean.
+  `cargo ut` 2,772 passed, 10 ignored; clippy `-D warnings` clean; fmt clean. One full
+  `ci/test-run.py --timeout 3600 -- cargo nextest run --workspace --no-fail-fast` (load ~20,
+  the runner's default 20-minute deadline raised so the mod pass could finish): hooks pass
+  **3,175/3,175**, 11 skipped; mod-road pass **400/403**, 1 skipped, `forge_e2e` 39/39 on each
+  road; audit clean (852 owners). The three mod-road reds, each a different name from the first
+  round's (`the_crown_answers_a_batch_one_answer_per_question`: a stray Down key in the pane;
+  `a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box`: a wait timed out;
+  `the_merged_wake_waits_for_the_notice_turn`: a held count 3 for 2), passed **3/3** together
+  alone on the mod road, audit clean. None of them files through `create_ticket`. The full
+  command therefore did not pass whole in one run. No agent-facing text changed after SF1's
+  pass, so the rig was not run again.
