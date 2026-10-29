@@ -39330,3 +39330,10 @@ given back by a Codex box — whose cause is `Forge` is dropped at the drain
 on it stays, and one in the crown's box is told. DONE tickets on the board are unchanged.
 Units: every claim × {on the board in DONE, archived, snoozed}; the flags' merge; the queue,
 the box's return and a turn wake beside it. Each fails with the fix taken out.
+
+Rig at `828a98f0` (Claude Code 2.1.312, workers Sonnet, crown Opus): `--only F10,F11` (both
+PASS), `--reset` (archived both), then `--only F7`: PASS, `crown_reply:forge`, the crown woken
+for T-4's delivery alone. This run does **not** reproduce the trigger: the feed shows no `forge
+pr` line for the archived tickets after the reset, so PR 43 did not move on the stub after the
+archive, as it had in T-1066's longer run. The suppression itself rests on the unit tests; the
+rig shows only that F7's oracle holds beside archived forge tickets.
