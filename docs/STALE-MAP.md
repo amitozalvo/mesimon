@@ -38630,11 +38630,15 @@ A work Mac's Claude Code said of mesimon's mod: "Its hooks on session.compact, c
 over the plugins you install." An earlier capture there also named `session.append`. The ask was to
 establish which events the native road (T-657, T-658) actually loses before building anything.
 
-**Measured, off the binary** (the security default's own registration table, which is code, read
-in 2.1.309, 2.1.310, 2.1.311 and 2.1.312, identical in all four):
+**Measured, off the binary** (the security default's own registration table, which is code; read
+statically, never on a managed machine), in the darwin-arm64 build of every release npm has from
+the mod floor up, 2.1.287–2.1.296 and 2.1.299–2.1.312 (2.1.297 and 2.1.298 were never published):
+2.1.287 to 2.1.296 hand a person's plugins `session.compact`, and 2.1.299 to 2.1.312 pass it over,
+with the `session.append` doors below; other platforms' builds are assumed the same, and a release
+past 2.1.312 is not known. In 2.1.299–2.1.312:
 - *Passed over a person's plugins:* every `classic.*`; `prompt.section`, `prompt.context`,
   `prompt.attachment`, `prompt.compose`, `skill.prompt`, `attribution.text`, `settings.read`;
-  **`session.compact`** (2.1.289 let it through, T-651; the releases between were not read);
+  **`session.compact`** (from 2.1.299; 2.1.289, T-651, and every release to 2.1.296 let it through);
   `session.append` on its `attachment`, `hook-context` and `compaction` doors (and `tool-message`
   from the Skill tool, `note` from an organization's plugin); `agent.spawn` of an agent an
   organization's plugin provides.
@@ -38681,14 +38685,23 @@ last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with 
    (`quiet::holds_against_words`: a queued ask, the crown's ask and its wake wait for the
    close), auto-park held off, and the crown's rules owed again on its next board-tool reply at
    both edges (`crown_rules.forget`, T-930). Nothing reaches the model from the mod itself.
-2. *An automatic compaction has no trace there, and that is said.* `road::COMPACT_PASSED_OVER_FLOOR`
-   (2.1.309, the oldest measured) and `Verdict::passes_compaction_over`; the launch's
-   `RoadVerdict` carries `auto_compaction_unseen` (absent unless true) for a native launch on such
-   a version, and so does the probe's landing on a classic-off verdict. Doctor's `claude road` line
-   adds `∙ automatic compactions not shown` and one paragraph: a typed `/compact` shows on the
-   card, an automatic compaction does not, and the card keeps its state until Claude Code is done.
-   Still `ok` and still "Nothing is needed from you": the person has no switch, and the classic
-   events the native road never uses raise nothing.
+2. *An automatic compaction has no trace there, and that is said as a degraded road.*
+   `road::native_compaction` reads a version as `Heard` (2.1.287–2.1.296), `PassedOver`
+   (2.1.299–2.1.312) or `Unread` (anything else: 2.1.297–298, a release past the last read), from
+   `COMPACT_HEARD_THROUGH`, `COMPACT_PASSED_OVER_FROM` and `COMPACT_READ_THROUGH`; a release not
+   read is never assumed either way. A native launch's `RoadVerdict` carries `native_compaction`
+   (`passed_over` or `unread`, absent where heard), as does the probe's landing on a classic-off
+   verdict. Doctor's `claude road` line is then a **warning**, `∙ automatic compactions unseen` or
+   `∙ compaction coverage unknown`, and no longer "Nothing is needed from you": its paragraph says
+   what an automatic compaction escapes (the card keeps its state; words for the session, a queued
+   prompt or the crown's ask or wake, are not held back, though Claude Code has refused words sent
+   into one, T-894; auto-park may sleep the session in the middle of it; a crown is not given the
+   board's rules again), that a typed or board-sent `/compact` is still seen, and that no mesimon
+   setting changes which events reach a person's plugins. No policy workaround is offered. The
+   classic events the native road never uses still raise nothing, and a heard road stays `ok`.
+   The first cut said `automatic compactions not shown`, kept `ok`, and certified 2.1.290–2.1.308
+   as heard from two points (289, 309); the crown's review refused both, and the table above is
+   the read that replaced them.
 3. *Not built:* reading the pane's screen for `Compacting conversation…` on every native seat each
    tick (a new per-tick capture per seat, for a card paint), and a native stand-in for
    `session.append`'s passed-over doors (no mesimon read uses them). Auto-park can still sleep a
@@ -38700,6 +38713,26 @@ last (5.5 s; `{text, ref}`). With nothing to compact it resolves in 21 ms, with 
    keeps the tool's last state and tries again next turn), so under managed `allowedMcpServers` the
    board's tools would be missing with nothing said. Not measured on a real policy.
 
+**Rig (agent and harness behaviour, `ci/rig.py --only CX2,NX1,NX2`).** The fallback changes when
+queued words reach a worker and when a crown is given its rules, with no text changed, so it is
+rig-measured (the first cut said no rig was owed; the review refused it). Claude Code 2.1.312, crown
+`claude-opus-5-5` high, workers `claude-sonnet-5-5` low, build `dc7cb45f`. NX1's suppression is a
+simulation (the mod copy above); NX2 is the native road with `session.compact` delivered; neither is
+a managed machine. Every run as it came:
+- Run 1 (rig at its first cut): CX2 pass; NX1 and NX2 fail on two rig faults, the worker side all
+  passing. `crown_rules_after_compact` read nothing after the boundary because 2.1.312 writes each
+  call first into an untimestamped `api-request-blob` row, which the rig's `once` kept in the real
+  row's place (the crown's transcript there shows the rules on its first board result after both
+  compactions); and the closing `crown_road mod` woke the crown before the restarted daemon's probe,
+  so it launched on the hook set. Both fixed in the rig, never by regrading run 1.
+- Run 2: CX2 pass; NX2 pass on every check; NX1 fail on `reply:after` alone. The held prompt went in
+  once, 0.9 s after the window closed, and the Sonnet worker answered it `done`, its brief's word,
+  after the compaction summary: the model's answer, every board-side check passing.
+- Run 3 (NX1 alone, a fresh crown): pass on every check.
+Measured there: the worker's window open 10.7–15.5 s on a `/compact` of ~117k tokens, the queued
+prompt 1.0 s into it, entering 0.3–1.0 s after its close; the crown's own `/compact` window two
+frames on NX1 and three on NX2, and its first board result after it carrying the rules each time.
+
 **Tests.** Mod (`claude plugin test`, 60 pass): a typed `/compact` whose `session.compact` passes
 over is `PreCompact` then `PostCompact`, the first while the command runs; one whose
 `session.compact` still comes is relayed once in the hook set's order, and a vetoed one is closed
@@ -38708,9 +38741,14 @@ compaction inside one keeps its own frames and leaves the typed one open; off th
 nothing; another command never reaches the hook. The existing native compaction test (automatic,
 vetoed, `precompute`) and the off-switch test hold the untyped roads as they were. Rust:
 `a_typed_compaction_with_no_start_between_opens_and_closes_the_window`,
-`an_automatic_compaction_is_heard_natively_only_below_the_measured_floor`,
-`a_verdict_says_whether_its_claude_code_passes_compaction_over`, doctor's road line with the 2.1.312
-case and no compaction words on 2.1.289; `mod_auto_e2e`: the enterprise launch on a 2.1.312 stub
-writes `auto_compaction_unseen: true` at the probe and keeps it after the launch, an unmanaged
-2.1.312 launch writes none, and the 2.1.288 deaf relaunch writes none. `compact_e2e`'s queued ask
+`a_native_launch_hears_compaction_by_the_release_read_and_nothing_is_claimed_past_it` (287, 289,
+296 heard; 297, 298, 313, 2.2.0 unread; 299, 308, 312 passed over),
+`a_verdict_says_what_its_claude_code_hands_the_mod_of_a_compaction`, doctor's road line: a warning
+naming each consequence on 2.1.312, `compaction coverage unknown` on 2.1.313, `ok` with no
+compaction words on 2.1.289; `mod_auto_e2e`: the enterprise launch on a 2.1.312 stub writes
+`native_compaction: passed_over` at the probe and keeps it after the launch, an unmanaged 2.1.312
+launch writes none, and the 2.1.288 deaf relaunch writes none. Rig offline (`ci/rig_test.py`, 65):
+the frames, the hold (a prompt that entered inside the window, one queued outside it, one taken
+twice, a window never closed all fail), and the rules after the crown's compaction (none after, the
+rules on every result, no boundary all fail; a request blob hides nothing). `compact_e2e`'s queued ask
 already drives the fallback's two frames through the daemon, on both roads.
