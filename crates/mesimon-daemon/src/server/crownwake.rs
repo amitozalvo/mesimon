@@ -1549,8 +1549,9 @@ impl Daemon {
     }
 
     /// Forge news owed on a ticket archived or snoozed since (T-1076): a
-    /// wake queued, restored from `crown.json` or given back by a Codex box
-    /// that is the forge's alone is not told, as `crown_hears` would not
+    /// wake queued, restored from `crown.json` or given back by a box the
+    /// crown lost (`lose_entering`, which the drain runs first) that is the
+    /// forge's alone is not told, as `crown_hears` would not
     /// owe it now. A wake whose cause is a turn's, a merge or a hand stays;
     /// one the crown's box already holds is told.
     pub(super) fn drop_archived_forge(&mut self) -> bool {
@@ -4220,6 +4221,91 @@ mod tests {
         b.d.owe_again(vec![turn]);
         b.d.drain_crown_wakes(None);
         assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Delivered));
+    }
+
+    /// A wake the crown's box held, submitted down the mod with a window
+    /// still open, on `session`'s pane `pane`.
+    fn in_box(
+        crown: ulid::Ulid,
+        session: uuid::Uuid,
+        pane: &str,
+        wakes: Vec<CrownWake>,
+    ) -> Entering {
+        Entering {
+            crown,
+            session,
+            text: "the wake".into(),
+            wakes,
+            telling: Telling::default(),
+            person_came: false,
+            frame: Some("F1".into()),
+            pane: Some(pane.into()),
+            expires_ms: Some(now_ms() + 3_600_000),
+            parked: false,
+        }
+    }
+
+    fn wake(worker: ulid::Ulid, cause: WakeCause) -> CrownWake {
+        CrownWake::new(worker, cause, None, None, Owed::default())
+    }
+
+    /// A box the crown lost gives its wakes back inside the drain
+    /// (`lose_entering`: a submitted wake whose pane went, a taken one
+    /// whose pane went), and an archived ticket's forge news among them is
+    /// dropped in that same drain, before delivery reads the owed list
+    /// (T-1076, round 2: the drop ran first and the give-back after it).
+    /// The rest come back owed as before, a turn's wake on the archived
+    /// ticket included, and a box whose pane stands keeps its words.
+    #[test]
+    fn forge_news_a_lost_box_gives_back_is_dropped_in_the_same_drain() {
+        let gone = uuid::Uuid::from_u128(99);
+        // Submitted, its pane gone: owed again, and the archived one dropped.
+        let mut b = watched_bed("arch-lost", None);
+        let (w, other, crown) = (b.worker, ulid::Ulid(3), b.crown);
+        archive(&mut b.d, w, false);
+        let wakes = vec![wake(w, WakeCause::Forge), wake(other, WakeCause::Forge)];
+        *b.d.crown_wake_entering = Some(in_box(crown, gone, "100:%9", wakes));
+        assert!(b.d.drain_crown_wakes(None), "a box lost and a wake dropped");
+        assert!(b.d.crown_wake_entering.is_none());
+        assert!(owed_for(&b.d, w).is_none(), "not resent: dropped before delivery");
+        assert_eq!(owed_for(&b.d, other).map(|o| o.cause), Some(WakeCause::Forge), "on the board");
+        // Taken by the box, its pane gone since: the same.
+        let mut b = watched_bed("arch-taken", None);
+        let w = b.worker;
+        archive(&mut b.d, w, false);
+        b.d.crown_wakes_taken.push(in_box(crown, gone, "100:%9", vec![wake(w, WakeCause::Forge)]));
+        assert!(b.d.drain_crown_wakes(None));
+        assert!(b.d.crown_wakes_taken.is_empty());
+        assert!(owed_for(&b.d, w).is_none(), "taken, then lost");
+        // A turn's wake on the archived ticket comes back owed.
+        let mut b = watched_bed("arch-lost-turn", None);
+        let w = b.worker;
+        archive(&mut b.d, w, false);
+        *b.d.crown_wake_entering =
+            Some(in_box(crown, gone, "100:%9", vec![wake(w, WakeCause::Delivered)]));
+        b.d.drain_crown_wakes(None);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Delivered));
+        // The box still on its pane: its words are the crown's, and stay.
+        let mut b = watched_bed("arch-boxed", None);
+        let w = b.worker;
+        archive(&mut b.d, w, false);
+        let seat = uuid::Uuid::from_u128(1);
+        let mut rec = mesimon_core::board::SessionRecord::new(
+            seat,
+            mesimon_core::board::SessionKind::Claude,
+            crown,
+            vec!["claude".into()],
+            "/".into(),
+            SessionState::Running,
+        );
+        rec.pane_key = Some("100:%2".into());
+        b.d.board.sessions.push(rec);
+        *b.d.crown_wake_entering =
+            Some(in_box(crown, seat, "100:%2", vec![wake(w, WakeCause::Forge)]));
+        assert!(!b.d.drain_crown_wakes(None), "nothing lost, nothing dropped");
+        let held = b.d.crown_wake_entering.as_ref().map(|e| e.wakes.len());
+        assert_eq!(held, Some(1), "the box's words stay");
+        assert!(owed_for(&b.d, w).is_none());
     }
 
     /// A merge held for its step ends the watch once, at the release, and

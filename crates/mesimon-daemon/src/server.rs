@@ -9828,15 +9828,18 @@ impl Daemon {
     /// pane is pasted, a parked crown is woken with the words parked for
     /// its first tick. A pane's paste is owed an ack, so the crown is held
     /// in `owed` until its `UserPromptSubmit`, exactly as a queued ask is.
-    /// Forge news on a ticket archived since it was owed goes first
-    /// (`drop_archived_forge`, T-1076).
+    /// Forge news on a ticket archived since it was owed is dropped
+    /// (`drop_archived_forge`, T-1076) after a lost box's wakes are owed
+    /// again and before anything is read for delivery.
     fn drain_crown_wakes(&mut self, landed: Option<u64>) -> bool {
+        let lost = self.lose_entering();
         let dropped = self.drop_archived_forge();
-        self.deliver_crown_wakes(landed) || dropped
+        self.deliver_crown_wakes(landed, lost) || dropped
     }
 
-    fn deliver_crown_wakes(&mut self, landed: Option<u64>) -> bool {
-        let lost = self.lose_entering();
+    /// `drain_crown_wakes` past its losses: `lost` says a box's wakes came
+    /// back, a change whichever way delivery goes from here.
+    fn deliver_crown_wakes(&mut self, landed: Option<u64>, lost: bool) -> bool {
         // A wake down the mod's `submit` is out until its frame is answered
         // (T-936): what is owed meanwhile waits, and folds.
         if self.crown_wakes.is_empty()
