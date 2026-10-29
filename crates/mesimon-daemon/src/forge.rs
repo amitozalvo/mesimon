@@ -282,6 +282,9 @@ pub struct Query {
     /// Merge commits' pipelines as earlier passes read them, by repository
     /// path and oid: a passed or failed one is not asked again.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
+    /// The run each of those was read from, where the forge gave one
+    /// (T-1065): a pipeline kept from an earlier pass keeps its run.
+    pub commit_runs: HashMap<(String, String), u64>,
     /// The environments each merge commit was deployed to as the last pass
     /// read it (T-801): what stands where this pass cannot say otherwise.
     pub deployed: HashMap<(String, String), Vec<String>>,
@@ -898,10 +901,12 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
 /// last read held `Waiting(job)`, so the same wait read as a new one twice,
 /// bare and then named again, and each was crown news. Only the same wait:
 /// the same PR, open or merged as before, at the same commit (an open PR's
-/// head, a merged one's merge commit), held at a named wait, of the same run
-/// where both reads know theirs. A new run, a new head, another job named,
-/// a pass or a failure is read as it stands, and a wait never named before
-/// is said bare, its name news when it comes.
+/// head, a merged one's merge commit), held at a named wait, and the same
+/// run, which both reads must know: GitLab runs a commit's pipeline again
+/// under a new id, so a commit alone, or a run one read does not know (an
+/// older file's, a read that gave none), is no proof. A new run, a new
+/// head, another job named, a pass or a failure is read as it stands, and a
+/// wait never named before is said bare, its name news when it comes.
 pub fn keep_waiting_jobs(held: &[Pr], set: &mut [Pr]) {
     let commit = |p: &Pr| match p.state {
         PrState::Open | PrState::Draft => Some(p.head_oid.clone()),
@@ -916,13 +921,11 @@ pub fn keep_waiting_jobs(held: &[Pr], set: &mut [Pr]) {
                 && o.state.is_open() == p.state.is_open()
                 && commit(o).as_ref() == Some(&at)
                 && matches!(&o.pipeline, Pipeline::Waiting(job) if !job.is_empty())
-                && (o.pipeline_run == 0 || p.pipeline_run == 0 || o.pipeline_run == p.pipeline_run)
+                && p.pipeline_run != 0
+                && o.pipeline_run == p.pipeline_run
         });
         if let Some(o) = last {
             p.pipeline = o.pipeline.clone();
-            if p.pipeline_run == 0 {
-                p.pipeline_run = o.pipeline_run;
-            }
         }
     }
 }
@@ -958,18 +961,23 @@ pub fn merged_reads(
         let live = !superseded || young;
         let key = (pr.repo.clone(), pr.merge_oid.clone());
         let last = q.commit_pipelines.get(&key);
-        pr.pipeline = match last {
-            Some(p @ Pipeline::Passed) => p.clone(),
-            Some(p @ (Pipeline::Failed(_) | Pipeline::Cancelled(_))) if !young => p.clone(),
+        // A pipeline kept from an earlier pass keeps the run it was read
+        // from (T-1065); the list's row knows none.
+        let last_run = q.commit_runs.get(&key).copied().unwrap_or(0);
+        (pr.pipeline, pr.pipeline_run) = match last {
+            Some(p @ Pipeline::Passed) => (p.clone(), last_run),
+            Some(p @ (Pipeline::Failed(_) | Pipeline::Cancelled(_))) if !young => {
+                (p.clone(), last_run)
+            }
             _ if live => match pipeline(pr) {
-                (Pipeline::Unknown, _) => last.cloned().unwrap_or(Pipeline::Unknown),
-                (p, run) => {
-                    pr.pipeline_run = run;
-                    p
-                }
+                (Pipeline::Unknown, _) => match last {
+                    Some(p) => (p.clone(), last_run),
+                    None => (Pipeline::Unknown, 0),
+                },
+                read => read,
             },
-            Some(p) => p.clone(),
-            None => pr.pipeline.clone(),
+            Some(p) => (p.clone(), last_run),
+            None => (pr.pipeline.clone(), pr.pipeline_run),
         };
         let was = q.deployed.get(&key).cloned().unwrap_or_default();
         if q.envs.is_empty() {
@@ -1665,6 +1673,8 @@ pub struct State {
     /// Merge commits' pipelines as last read, by repository path and oid
     /// (T-771): settled once passed or failed.
     pub commit_pipelines: HashMap<(String, String), Pipeline>,
+    /// The run each was read from, where the forge gave one (T-1065).
+    pub commit_runs: HashMap<(String, String), u64>,
     /// The environments each merge commit was deployed to as last read
     /// (T-801): a rollback takes one away, so it is the last read's word,
     /// never a sum of every read's.
@@ -1941,6 +1951,30 @@ impl State {
     }
 
     /// Forgets every ticket not in `live`, in each per-ticket map.
+    /// What a pass read of a merged PR's merge commit (T-771, T-801): its
+    /// pipeline and that pipeline's run (T-1065), kept for the next pass
+    /// where the read said one, and where it is deployed, which is this
+    /// read's word.
+    pub fn take_commit(&mut self, pr: &Pr) {
+        if pr.state != PrState::Merged || pr.merge_oid.is_empty() {
+            return;
+        }
+        let key = (pr.repo.clone(), pr.merge_oid.clone());
+        if pr.pipeline != Pipeline::Unknown {
+            self.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
+            if pr.pipeline_run == 0 {
+                self.commit_runs.remove(&key);
+            } else {
+                self.commit_runs.insert(key.clone(), pr.pipeline_run);
+            }
+        }
+        if pr.deployed.is_empty() {
+            self.deployed.remove(&key);
+        } else {
+            self.deployed.insert(key, pr.deployed.clone());
+        }
+    }
+
     pub fn keep_tickets(&mut self, live: &HashSet<ulid::Ulid>) {
         self.sets.retain(|t, _| live.contains(t));
         self.at_ms.retain(|t, _| live.contains(t));
@@ -1965,6 +1999,7 @@ impl State {
             .map(|p| (p.repo.clone(), p.merge_oid.clone()))
             .collect();
         self.commit_pipelines.retain(|k, _| named.contains(k));
+        self.commit_runs.retain(|k, _| named.contains(k));
         self.deployed.retain(|k, _| named.contains(k));
     }
 
@@ -2172,6 +2207,10 @@ pub struct CommitRecord {
     pub pipeline: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub job: String,
+    /// The run the pipeline was read from (T-1065); zero, and absent, in an
+    /// older file or where the forge gave none.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pipeline_run: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deployed: Vec<String>,
 }
@@ -2215,6 +2254,7 @@ impl ForgeFile {
                     oid: key.1.clone(),
                     pipeline: pipeline.map(|p| p.word().to_string()).unwrap_or_default(),
                     job: pipeline.and_then(Pipeline::job).unwrap_or_default().into(),
+                    pipeline_run: state.commit_runs.get(key).copied().unwrap_or(0),
                     deployed: state.deployed.get(key).cloned().unwrap_or_default(),
                 }
             })
@@ -2280,6 +2320,9 @@ impl State {
                 Pipeline::Unknown => {}
                 p => {
                     self.commit_pipelines.insert(key.clone(), p);
+                    if c.pipeline_run != 0 {
+                        self.commit_runs.insert(key.clone(), c.pipeline_run);
+                    }
                 }
             }
             if !c.deployed.is_empty() {
@@ -3132,17 +3175,31 @@ mod tests {
         for state in [PrState::Open, PrState::Merged] {
             let named = gl(state, job, 44);
             let held = restart(std::slice::from_ref(&named));
-            assert_eq!(held, [named.clone()], "{state:?}: the run comes back with forge.json");
+            assert_eq!(
+                held,
+                std::slice::from_ref(&named),
+                "{state:?}: the run comes back with forge.json"
+            );
             let (set, words) = pass(&held, gl(state, "", 44));
-            assert_eq!(set, [named.clone()], "{state:?}");
+            assert_eq!(set, std::slice::from_ref(&named), "{state:?}");
             assert!(words.is_empty(), "{state:?}: {words:?}");
             let (_, words) = pass(&restart(&set), named.clone());
             assert!(words.is_empty(), "{state:?}: {words:?}");
-            // An older file's record has no run: its commit stands for it.
+            // A run one read does not know is no proof of the same run, the
+            // commit alone neither: an older file's record, and a read that
+            // gave none.
             let mut unrun = named.clone();
             unrun.pipeline_run = 0;
             let (set, words) = pass(&[unrun], gl(state, "", 44));
-            assert_eq!(set[0].pipeline, named.pipeline, "{state:?}");
+            assert_eq!(set[0].pipeline, Pipeline::Waiting(String::new()), "{state:?}");
+            assert_eq!(words, ["waiting on a manual job !1"], "{state:?}");
+            let (set, words) = pass(std::slice::from_ref(&named), gl(state, "", 0));
+            assert_eq!(set[0].pipeline, Pipeline::Waiting(String::new()), "{state:?}");
+            assert_eq!(words, ["waiting on a manual job !1"], "{state:?}");
+            // Unchanged by T-1065: a new run named at the same job as the
+            // last is read as the same wait, as before, since the edge
+            // compares the pipeline's word and job and never its run.
+            let (_, words) = pass(std::slice::from_ref(&named), gl(state, job, 45));
             assert!(words.is_empty(), "{state:?}: {words:?}");
 
             // A new run stopped bare is news, and its name after it.
@@ -3173,6 +3230,90 @@ mod tests {
                 assert_eq!(set[0].pipeline, now, "{state:?}");
             }
         }
+    }
+
+    /// T-1065's review: a merge commit's pipeline kept from an earlier pass
+    /// while its read fails keeps its run, across a restart, so the same
+    /// run read bare later is the same wait; a later run at the same merge
+    /// commit read bare never takes the old run's name, before or after a
+    /// restart, and an older file's kept pipeline, with no run, lends none.
+    /// Each pass runs as `sample` and the server do: the list's row, the
+    /// merge commit's read (`merged_reads`), the kept name, the edge, and
+    /// what the state keeps (`take_commit`).
+    #[test]
+    fn a_kept_merge_pipeline_keeps_its_run_and_lends_no_name_to_the_next() {
+        let job = "smoke:staging";
+        let now = 10 * SUPERSEDED_READ_MS;
+        let t = ulid::Ulid::new();
+        let key = ("o/r".to_string(), "m".to_string());
+        let merged = |pipeline: Pipeline, run: u64| {
+            let mut p = pr(1, PrState::Merged, pipeline);
+            p.forge = Forge::GitLab;
+            p.merge_oid = "m".into();
+            p.merged_ms = now - 1000;
+            p.pipeline_run = run;
+            p
+        };
+        let pass = |s: &mut State, read: (Pipeline, u64)| -> Vec<String> {
+            let held = s.sets.get(&t).cloned().unwrap_or_default();
+            let q = Query {
+                commit_pipelines: s.commit_pipelines.clone(),
+                commit_runs: s.commit_runs.clone(),
+                ..Query::default()
+            };
+            let mut set = vec![merged(Pipeline::Unknown, 0)];
+            merged_reads(&mut set, &q, now, |_| read.clone(), |_| Vec::new(), |_, _| None);
+            keep_waiting_jobs(&held, &mut set);
+            let words = edge(&held, &set).news(&set);
+            for p in &set {
+                s.take_commit(p);
+            }
+            s.sets.insert(t, set);
+            words
+        };
+        let restart = |s: &State| {
+            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
+            let mut back = State::default();
+            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+            back
+        };
+        let named = Pipeline::Waiting(job.into());
+        let bare = Pipeline::Waiting(String::new());
+
+        let mut s = State::default();
+        pass(&mut s, (named.clone(), 44));
+        assert_eq!(s.commit_runs.get(&key), Some(&44));
+        // The whole pipeline read fails: the kept pipeline keeps run 44.
+        assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty());
+        assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&named, 44));
+        assert_eq!(s.commit_runs.get(&key), Some(&44));
+        let mut s = restart(&s);
+        assert_eq!(s.commit_runs.get(&key), Some(&44), "forge.json keeps the commit's run");
+        assert_eq!(s.sets[&t][0].pipeline_run, 44, "and the PR's");
+        // Run 44 again, its jobs read missing: the same wait.
+        assert!(pass(&mut s, (bare.clone(), 44)).is_empty());
+        assert_eq!(s.sets[&t][0].pipeline, named);
+        // Run 45 at the same merge commit, read bare: news, never run 44's job.
+        assert_eq!(pass(&mut s, (bare.clone(), 45)), ["waiting on a manual job !1"]);
+        assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&bare, 45));
+        // Its read failing, and a restart, keep it bare and run 45's.
+        assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty());
+        let mut s = restart(&s);
+        assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&bare, 45));
+        // Its own name, when a read gives it, is news.
+        assert_eq!(pass(&mut s, (named.clone(), 45)), [format!("waiting on {job} !1")]);
+
+        // An older file's kept pipeline has no run: it lends its name to no
+        // run read bare, whatever the merge commit.
+        let mut s = State::default();
+        s.sets.insert(t, vec![merged(named.clone(), 0)]);
+        s.commit_pipelines.insert(key.clone(), named.clone());
+        let mut s = restart(&s);
+        assert!(!s.commit_runs.contains_key(&key));
+        assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty(), "a failed read keeps it");
+        assert_eq!(s.sets[&t][0].pipeline_run, 0);
+        assert_eq!(pass(&mut s, (bare.clone(), 45)), ["waiting on a manual job !1"]);
+        assert_eq!(s.sets[&t][0].pipeline, bare);
     }
 
     #[test]

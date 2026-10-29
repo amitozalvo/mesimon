@@ -18960,6 +18960,7 @@ impl Daemon {
             others: self.board.reviewed_prs,
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
+            commit_runs: self.forge.commit_runs.clone(),
             deployed: self.forge.deployed.clone(),
             landed: self.forge.landed.clone(),
             carried: self.forge.carried.clone(),
@@ -19048,18 +19049,7 @@ impl Daemon {
         let taken: Vec<&mesimon_core::forge::Pr> =
             sample.sets.iter().filter(|(t, _)| !later(t)).flat_map(|(_, set)| set).collect();
         for pr in taken {
-            if pr.state != mesimon_core::forge::PrState::Merged || pr.merge_oid.is_empty() {
-                continue;
-            }
-            let key = (pr.repo.clone(), pr.merge_oid.clone());
-            if pr.pipeline != mesimon_core::forge::Pipeline::Unknown {
-                self.forge.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
-            }
-            if pr.deployed.is_empty() {
-                self.forge.deployed.remove(&key);
-            } else {
-                self.forge.deployed.insert(key, pr.deployed.clone());
-            }
+            self.forge.take_commit(pr);
         }
         let mut changed = false;
         let mut news: Vec<(ulid::Ulid, String, bool)> = Vec::new();

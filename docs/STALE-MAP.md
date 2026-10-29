@@ -38953,17 +38953,38 @@ held read had when all of these hold:
 - it is the same PR, still open or still merged;
 - it is at the same commit (an open PR's head, a merged PR's merge commit);
 - the held read was a named wait;
-- the run ids are equal, or one side does not know its run.
+- both reads know their run id, and the ids are equal.
 
-The commit stands in for the run only when a run id is missing, as with a
-record from before this change.
+GitLab can run a commit's pipeline again under a new id, so a shared commit
+proves nothing about the run, and neither does an unknown id. A record from
+before this change, or a read that came with no id, keeps no name. Merge
+commits' kept pipelines carry their run too: `State::commit_runs`, saved as
+`CommitRecord::pipeline_run` and filled by `State::take_commit`. When
+`merged_reads` keeps an earlier pipeline (the read failed, or a pass or a
+failure is settled), it keeps that pipeline's run with it.
+
+Crown review of the first cut (3b1b6c0b) found a hole here. That cut matched
+a zero run id to anything, and `merged_reads` dropped the run whenever it kept
+an earlier pipeline after a failed read. So run 44 named, then a failed
+pipeline read (the kept wait stored with run 0), then run 45 read bare at the
+same merge commit, gave run 45 run 44's job with no wake. That would have
+hidden a real new run.
 
 What stays news: a new run that stops bare (`waiting on a manual job`), and
 that run's name when a later read gives it; another job of the same run; a new
 commit; and a wait never named before, whose name is news when it arrives. A
 pass or a failure is read as it stands, and nothing hides manual jobs or
-finished tickets in general. `carry` now copies the run with the pipeline it
+finished tickets in general. Unchanged, and not decided here: a new run whose
+first read names the same job as the last run is no news, because `edge`
+compares the pipeline's word and job and never its run. That was true before
+this ticket too. A run read bare first is news, and so is its name after,
+even when the job is the same as the last run's. `carry` now copies the run with the pipeline it
 keeps for an open PR whose read failed.
+
+After an upgrade, the first bare read of a wait saved by an older build is
+news once (`waiting on a manual job`), and that wait's name is news again
+when it arrives. An older record has no run id that could prove the run is
+the same. Once a read records the run, the rule above holds.
 
 Not covered: a run that moves from one manual job to another between two
 passes, while the second jobs read fails, keeps the old name until a read
@@ -38978,11 +38999,21 @@ Tests: `a_wait_its_job_read_missed_is_the_same_wait` covers open and merged
 PRs, a `forge.json` round trip, an older record with no run, a new run,
 another job, a new commit, a name heard for the first time, and a pass and a
 failure. It fails with the retention disabled.
+`a_kept_merge_pipeline_keeps_its_run_and_lends_no_name_to_the_next` drives
+`merged_reads`, `keep_waiting_jobs`, `edge` and `take_commit` the way a pass
+and the server do. Run 44 named, then a failed pipeline read, keeps run 44
+across a `forge.json` restart. Run 44 read bare again is silent. Run 45 read
+bare is news and stays bare through a failed read and a restart, and its name
+is then news. An older file's kept pipeline with no run lends its name to
+nothing. The test fails on 3b1b6c0b's logic.
 `forge_e2e::a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_commit`
 now removes the stub's jobs answer for two reads and then restores it. The
 board keeps `deploy:production`, and the crown hears `waiting on
 deploy:production !1` exactly once and never a bare wait. That step fails
-without the fix. `forge_e2e::an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart`
+without the fix. A later step makes the merge commit's whole pipeline read
+fail, then reads run 45 bare: the crown hears `waiting on a manual job !1`,
+then that run's `deploy:production`. On 3b1b6c0b's logic the run 45 wake
+never comes. `forge_e2e::an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart`
 covers the open MR's head pipeline. The crown hears run 7's `deploy:production`
 once. Then come two bare jobs reads, a daemon restart, two more bare reads and
 one read that names the job again: no further forge wake, and no bare wait.

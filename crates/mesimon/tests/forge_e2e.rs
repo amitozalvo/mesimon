@@ -1481,6 +1481,37 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     wait_until(Duration::from_secs(20), "job reads that name it again", || job_reads() >= from + 3);
     assert_eq!(lines_with("waiting on deploy:production !1").len(), 1, "said once");
     assert!(lines_with("a manual job").is_empty(), "a read that named nothing is no wait");
+    // The merge commit's whole pipeline read fails: the kept wait keeps its
+    // run. Then run 45 at the same merge commit, read bare, is news and
+    // never run 44's job; its own name, when a read gives it, is news too.
+    let at_merge = pipelines.with_extension(merge_sha);
+    let pipeline_reads = || {
+        std::fs::read_to_string(stub_dir.join("calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(&format!("sha={merge_sha}")))
+            .count()
+    };
+    write(&at_merge, "not json");
+    let from = pipeline_reads();
+    wait_until(Duration::from_secs(20), "two pipeline reads that fail", || {
+        pipeline_reads() >= from + 2
+    });
+    assert!(prs_of(&mut c).iter().any(|p| {
+        p.ticket == w && p.pipeline == "waiting" && p.job.as_deref() == Some("deploy:production")
+    }));
+    std::fs::remove_file(&jobs).unwrap();
+    write(&at_merge, r#"[{"id":45,"status":"manual"}]"#);
+    wait_until(Duration::from_secs(20), "run 45's bare wait", || {
+        lines_with("waiting on a manual job !1").len() == 1
+    });
+    assert!(prs_of(&mut c)
+        .iter()
+        .any(|p| p.ticket == w && p.pipeline == "waiting" && p.job.is_none()));
+    write(&jobs, &named);
+    wait_until(Duration::from_secs(20), "run 45's name", || {
+        lines_with("waiting on deploy:production !1").len() == 2
+    });
     // The crown's read of the worker: where it landed, and no merger.
     let view = match c.send(
         Principal::Agent { session: sa },
