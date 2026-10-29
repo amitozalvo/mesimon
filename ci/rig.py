@@ -3782,11 +3782,16 @@ Reply with the single word ready and end your turn."""
             rec = self.agent_of(self.board(), gone)
             if rec and word_of(rec.get("state")) != "sleeping":
                 self.wire.sleep(rec["id"])
-                if not self.wait_for("the last worker parked", lambda: word_of(
-                        (self.agent_of(self.board(), gone) or {}).get("state")) == "sleeping",
-                        60, self.watch):
-                    record["failures"].append("the last worker would not park")
-                    return False
+            # Parked, and its pane gone: a park reads `sleeping` at once and
+            # its pane exits after, and a handover inside that window reads
+            # the record as crashed, which holds no seat (T-1066's archived
+            # tickets held theirs, so the crown heard them as its starts).
+            if not rec or not self.wait_for("the last worker parked, its pane gone", lambda: word_of(
+                    (self.agent_of(self.board(), gone) or {}).get("state")) == "sleeping"
+                    and self.tmux("has-session", "-t", "=" + sid16(rec["id"])).returncode != 0,
+                    60, self.watch):
+                record["failures"].append("the last worker would not park")
+                return False
             try:
                 self.wire.archive(gone)
             except WireError as e:
@@ -3833,6 +3838,10 @@ Reply with the single word ready and end your turn."""
                 self.wire.request({"cmd": "unarchive_ticket", "id": gone})
             except WireError as e:
                 record["failures"].append(f"forge_archived: the restore: {e}")
+                return False
+            held = word_of((self.agent_of(self.board(), gone) or {}).get("state"))
+            if held != "sleeping":
+                record["failures"].append(f"the archived worker's seat read {held}, not sleeping")
                 return False
             return True
         if what == "crown_away":
