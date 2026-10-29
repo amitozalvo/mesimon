@@ -1259,6 +1259,45 @@ test('native: a typed /compact whose session.compact still comes is relayed once
   expect(eventsOf(runs).slice(3)).toEqual(['PreCompact', 'PostCompact'])
 })
 
+test('native: a typed /compact the engine abandons still closes, and the failure reaches the caller as it came (T-1069)', async ($, on) => {
+  const runs = nativeSession(on)
+  on('command.run', async () => {
+    throw new Error('interrupted')
+  })
+  let failed: unknown
+  try {
+    await $.command.run({ command: 'compact', args: '' } as any)
+  } catch (err) {
+    failed = err
+  }
+  // The engine's own words for a host that failed; the mod adds none.
+  expect(failed).toBeDefined()
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact', 'PostCompact'])
+})
+
+test('native: a subagent\'s own compaction inside a typed /compact is its own frames and leaves the typed one open (T-1069)', async ($, on) => {
+  const runs = nativeSession(on)
+  let release = () => {}
+  on('command.run', async () => {
+    await new Promise<void>(resolve => (release = resolve))
+    return { text: 'Compacted' } as any
+  })
+  on('session.compact', () => ({ messages: MESSAGES, tokensBefore: 9, tokensAfter: 3 }) as any)
+  const run: any = $.command.run({ command: 'compact', args: '' } as any)
+  await settle()
+  await $.session.compact({ trigger: 'manual', agentId: 'a7', messages: MESSAGES } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual(['PreCompact', 'PreCompact', 'PostCompact'])
+  expect(bodyOf(runs[1])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual', agent_id: 'a7' })
+  expect(bodyOf(runs[2])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual', agent_id: 'a7' })
+  release()
+  await run
+  await settle()
+  expect(eventsOf(runs).slice(3)).toEqual(['PostCompact'])
+  expect(bodyOf(runs[3])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual' })
+})
+
 test('a typed /compact off the native road, and any other command, relays nothing', async ($, on) => {
   mock.env(on, ENV)
   const runs = recordRuns(on)

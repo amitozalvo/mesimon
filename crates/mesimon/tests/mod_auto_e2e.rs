@@ -77,6 +77,26 @@ fn a_new_claude_code_is_probed_before_any_launch_and_launches_on_the_mod() {
     assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
 }
 
+/// T-1069, the negative: a Claude Code that passes `session.compact` over a
+/// seated security default, on an account and machine that seat none, hears
+/// every compaction, so neither the probe's verdict nor the launch's says
+/// otherwise.
+#[test]
+fn an_unmanaged_claude_code_past_the_compaction_floor_says_nothing_of_compaction() {
+    let Some(h) = boot("mod-auto-new-312", "2.1.312") else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["probe"], "claude 2.1.312, the mod validated");
+    assert!(v.get("auto_compaction_unseen").is_none(), "{v}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Mod);
+    assert!(!rec.argv.iter().any(|a| a == "--settings"), "not native: {:?}", rec.argv);
+    let v = road_json(&h).unwrap();
+    assert!(v.get("auto_compaction_unseen").is_none(), "after the launch: {v}");
+}
+
 #[test]
 fn a_claude_code_too_old_for_mods_launches_on_the_hook_set() {
     let Some(h) = boot("mod-auto-old", "2.1.286") else { return };
@@ -416,6 +436,9 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     let rec = record(&mut c, sid);
     assert_native(&h, &rec);
     assert_eq!(rec.state, SessionState::Spawning);
+    // The native launch's own verdict keeps the limit (T-1069).
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["auto_compaction_unseen"], true, "after the launch: {v}");
 
     // The mod's SessionStart is the session's: it leaves `starting up`, and
     // the brief goes down the mod's `submit`.

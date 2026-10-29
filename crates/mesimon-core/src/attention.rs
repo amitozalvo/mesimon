@@ -1806,6 +1806,26 @@ mod tests {
         assert_eq!(m.confidence(), Confidence::High);
     }
 
+    /// A typed `/compact` on the native road under a seated security default
+    /// (T-1069) is `PreCompact{manual}` and `PostCompact{manual}` alone, no
+    /// `SessionStart{compact}` between: the window opens and closes on the
+    /// two and moves no state, at rest or inside a turn, at the confidence
+    /// it had.
+    #[test]
+    fn a_typed_compaction_with_no_start_between_opens_and_closes_the_window() {
+        let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        for state in [done, SessionState::Running] {
+            let mut m = m(state.clone());
+            assert!(m.apply(&Signal::PreCompact { manual: true }, 100).is_none());
+            assert!(m.compacting(), "{state:?}");
+            assert_eq!(m.compacting_since(), Some(100));
+            assert!(m.apply(&Signal::PostCompact { manual: true }, 5_600).is_none());
+            assert!(!m.compacting(), "{state:?}");
+            assert_eq!(m.state(), &state);
+            assert_eq!(m.confidence(), Confidence::High);
+        }
+    }
+
     #[test]
     fn a_restart_inside_a_compaction_reads_no_turn() {
         let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
