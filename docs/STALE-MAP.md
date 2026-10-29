@@ -38794,3 +38794,31 @@ already drives the fallback's two frames through the daemon, on both roads.
   filed twice) → `start_agent` on that stamp with no read, taken; a second filing, a person's
   rename, the start refused stale, the replay's stamp equal to the first and refused too, a
   fresh read's start taken.
+- **Validation, as run.** `cargo ut` **2,772 passed**, 10 ignored (the configured
+  measurements, child entry points and the live-release check). Clippy on the workspace, all
+  targets, `-D warnings`: clean. `cargo fmt --check` clean. `ci/rig_test.py` 59/59 (SF1's
+  acceptance on synthetic transcripts: taken passes; a read between, a stale refusal, another
+  stamp, no start and a receipt with no stamp each fail). The new e2e passed 1/1 on its first
+  run. One full `cargo nextest run --workspace --no-fail-fast` under `ci/test-run.py`, with two
+  other worktrees' e2es on the machine (load average ~135): the hooks pass **3,172/3,175**, 11
+  skipped; the three reds were
+  `crown_e2e::a_delivery_the_train_will_take_wakes_the_crown_at_its_merge`,
+  `crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` and
+  `mod_turns_e2e::a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewise`
+  (a 4 s wall-clock bound). The mod-road pass was cut by the runner's 20-minute deadline
+  at 210/403, the full run therefore **failed**. An earlier attempt had been killed at ten
+  minutes by the session's own tool timeout, not by a test. Reruns: those three and the mod pass's
+  `killing_a_shell_keeps_the_running_agent_s_turn` and
+  `a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out` (120 s timeout; it
+  takes 111 s alone) together, alone: 4/5, the mod launch's 4 s bound red again, then 1/1
+  alone. `crown_e2e` + `mcp_e2e` on the hooks road **115/115**, audit clean; on the mod road
+  113/115, the dialog-restart case (a different assertion each time: a stale plan read, then
+  `unknown` after the restart) and the 120 s ask case; both passed together alone on the mod
+  road, 2/2, audit clean. None of these tests files a ticket through `create_ticket`.
+  **Rig SF1** (Claude Code 2.1.312, mod road, crown `claude-opus-5-5`, worker
+  `claude-sonnet-5-5`), three runs, the crown making the same three calls in each: runs 1 and 2
+  failed on the rig's side (the judge required an agent on the test's own ticket; then the
+  create's receipt, the first call after the crowning, carries the crown's rules after its
+  JSON, so it is parsed as the leading object now), run 3 **passed 2/2**: `filed` and
+  `create_start:accepted`, the start carrying the create's seen with 0 reads between, taken.
+  `--reset` parked the rig and stopped its daemon and tmux server.

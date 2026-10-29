@@ -673,8 +673,10 @@ class CreateStartTests(unittest.TestCase):
             {"type": "tool_result", "tool_use_id": i, "content": [{"type": "text", "text": body}]}]}}
 
     def filed(self):
+        # The first call after a crowning carries the rules after its receipt.
         return [self.use("c", "create_ticket", {"title": "SF1 child"}),
-                self.said("c", json.dumps({"key": "T-9", "seen": "receipt:a"}))]
+                self.said("c", json.dumps({"key": "T-9", "seen": "receipt:a"}, indent=2)
+                          + "\n\nThe board's rules for this session's crown: ...")]
 
     def start(self, seen="receipt:a", body=None):
         return [self.use("s", "start_agent", {"key": "T-9", "seen": seen}),

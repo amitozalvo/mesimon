@@ -557,7 +557,9 @@ def create_start_outcome(rows):
             args = b.get("input") or {}
             if tool == "create_ticket" and filed is None:
                 try:
-                    receipt = json.loads(results.get(b.get("id")) or "")
+                    # The first call after a crowning carries the rules after
+                    # its receipt (T-930): the receipt is the leading object.
+                    receipt = json.JSONDecoder().raw_decode((results.get(b.get("id")) or "").lstrip())[0]
                     filed = (receipt["key"], receipt["seen"])
                 except (ValueError, KeyError, TypeError):
                     return False, f"the create's receipt names no key and seen: {results.get(b.get('id'), '')[:120]!r}"
@@ -578,7 +580,7 @@ def create_start_outcome(rows):
     if seen != filed[1]:
         return False, f"the start carried {seen!r}, the create's receipt {filed[1]!r}; {reads} read(s) between"
     try:
-        receipt = json.loads(said)
+        receipt = json.JSONDecoder().raw_decode(said.lstrip())[0]
         taken = isinstance(receipt, dict) and receipt.get("key") == filed[0]
     except ValueError:
         taken = False
@@ -3911,7 +3913,7 @@ Reply with the single word ready and end your turn."""
             if rec is None and name not in ("woke", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing", "title_words", "title_never",
-                                            "title_is", "title_match", "described"):
+                                            "title_is", "title_match", "described", "create_start"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
