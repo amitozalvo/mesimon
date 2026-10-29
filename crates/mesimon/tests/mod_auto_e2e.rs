@@ -89,12 +89,12 @@ fn an_unmanaged_claude_code_past_the_compaction_floor_says_nothing_of_compaction
     });
     let v = road_json(&h).unwrap();
     assert_eq!(v["probe"], "claude 2.1.312, the mod validated");
-    assert!(v.get("auto_compaction_unseen").is_none(), "{v}");
+    assert!(v.get("native_compaction").is_none(), "{v}");
     let rec = launch(&h);
     assert_eq!(rec.road, Road::Mod);
     assert!(!rec.argv.iter().any(|a| a == "--settings"), "not native: {:?}", rec.argv);
     let v = road_json(&h).unwrap();
-    assert!(v.get("auto_compaction_unseen").is_none(), "after the launch: {v}");
+    assert!(v.get("native_compaction").is_none(), "after the launch: {v}");
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_nati
     assert_eq!(road["road"], "mod", "{road}");
     assert_eq!(road["mods_off"], true, "{road}");
     assert!(road["probe"].as_str().unwrap().contains("hook events do not reach the mod"), "{road}");
-    assert!(road.get("auto_compaction_unseen").is_none(), "2.1.288 hears compaction: {road}");
+    assert!(road.get("native_compaction").is_none(), "2.1.288 hears compaction: {road}");
 
     // The new pane's mod comes up too; its own SessionStart arms the words,
     // which go down the mod's `submit`, whole and once, and the mod's
@@ -427,7 +427,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     let probe = probe_json(&h).unwrap();
     assert_eq!(probe["verdict"], "classic_off", "{probe}");
     assert_eq!(probe["found"], "an enterprise account", "{probe}");
-    assert_eq!(v["auto_compaction_unseen"], true, "{v}");
+    assert_eq!(v["native_compaction"], "passed_over", "{v}");
 
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("auto-enterprise");
@@ -438,7 +438,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     assert_eq!(rec.state, SessionState::Spawning);
     // The native launch's own verdict keeps the limit (T-1069).
     let v = road_json(&h).unwrap();
-    assert_eq!(v["auto_compaction_unseen"], true, "after the launch: {v}");
+    assert_eq!(v["native_compaction"], "passed_over", "after the launch: {v}");
 
     // The mod's SessionStart is the session's: it leaves `starting up`, and
     // the brief goes down the mod's `submit`.

@@ -53,7 +53,7 @@
 //    `agent.spawn`, a typed `/compact`'s `command.run`), which a Team or
 //    Enterprise account's security default lets through where it keeps
 //    every `classic.*` event from a person's mod (T-650, T-651), and, from
-//    Claude Code 2.1.309, `session.compact` too (T-1069). One named
+//    Claude Code 2.1.299, `session.compact` too (T-1069). One named
 //    adapter: the `Stop`'s task list, kept here from the tool results that
 //    start a task and `$.agent.list()`.
 //
@@ -1133,7 +1133,7 @@ export const register: Register = on => {
     return r
   })
   // A `/compact` the person typed (T-1069). Where the security default is
-  // seated, Claude Code 2.1.309 and newer pass `session.compact` over a
+  // seated, Claude Code 2.1.299 to 2.1.312 pass `session.compact` over a
   // person's mod as well as every `classic.*` event, so on the native road
   // this command is the one trace a compaction leaves: `command.run` comes
   // before the compaction and resolves after it (5.5 s measured, after the

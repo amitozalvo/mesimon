@@ -447,9 +447,13 @@ says which of the two a session got. The mod reports the session's events to the
 its writes to the board's files and serves its board tools. On a Team or Enterprise account,
 Claude Code keeps its hook events from a person's plugins, so the mod there reports the session
 from Claude Code's own events instead, and one hook beside it reports permission requests;
-`mesimon doctor` says so, and nothing is needed from you. Claude Code 2.1.309 and newer keep
-compaction from a person's plugins there too: a `/compact` you type still shows on the card
-while it runs, an automatic compaction does not, and `mesimon doctor` names that as well.
+`mesimon doctor` says so. Claude Code 2.1.299 to 2.1.312 keep compaction from a person's
+plugins there too, and a release past those is not known. A `/compact` you type, or one the
+board sends, is still seen; an automatic compaction is not. While Claude Code compacts on its
+own, the card keeps its state, words for that session (a queued prompt, or the crown's ask or
+wake) are not held back until it ends, auto-park may put the session to sleep in the middle of
+it, and a crown is not given the board's rules again afterwards. `mesimon doctor` warns where
+this applies, or where it cannot tell; no setting in mesimon changes it.
 Through the mod, a session gets its brief and every prompt you send it as your own words, whole,
 without anything typed into its pane, and a question it asks is answered straight in its dialog
 when you answer from Remote Control or the crown does. A session without the mod has its prompts

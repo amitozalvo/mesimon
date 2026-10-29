@@ -937,6 +937,7 @@ fn reviewed_prs(on: bool) -> Record {
 /// seam is not in doctor's environment). No setting chooses the road
 /// (T-588), and since T-577 the mod carries a session alone.
 fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
+    use mesimon_core::road::NativeCompaction;
     use mesimon_daemon::modroad::{read_verdict, Source};
     let advice = "mesimon loads its mod where Claude Code is 2.1.287 or newer, `claude plugin validate` passes on it and Claude Code loads mods: the mod reports the session's events, refuses writes to the board's files and serves the board's tools. Below that, the hook set and the MCP server mesimon generates. Each launch decides; `mesimon state ping <KEY>` times one session's mod.";
     let Some(v) = read_verdict(paths) else {
@@ -959,17 +960,30 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
     // before 2.1.287, or the mod reports from Claude Code's own events with
     // one hook for permissions (T-658), and the probe asks again by itself.
     if v.mods_off {
-        // What the native road cannot hear (T-1069): Claude Code 2.1.309 and
-        // newer keep compaction from a person's plugins too, and only a typed
-        // `/compact` leaves a trace the mod hears.
-        let compaction = if v.auto_compaction_unseen {
-            value.push_str(" ∙ automatic compactions not shown");
-            "\n\nThis Claude Code also keeps compaction from a person's plugins. A /compact typed in a session shows on its card while it runs; an automatic compaction does not, and the card keeps the state it had until Claude Code is done."
-        } else {
-            ""
+        let road = "Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account, or managed settings). With mods off, the hook set reports each session as it did before 2.1.287. With hook events kept, the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours.";
+        // What a native launch may not hear (T-1069): from 2.1.299 Claude Code
+        // keeps compaction from a person's plugins too, and a release not read
+        // is not known. Only a typed `/compact` leaves the mod a trace, so an
+        // automatic compaction is lost to everything the board does around
+        // one, not only to the card.
+        let Some(compaction) = v.native_compaction else {
+            return rec(Level::Ok, "claude road", value)
+                .advice(format!("Nothing is needed from you: {road} {advice}"));
         };
-        return rec(Level::Ok, "claude road", value).advice(format!(
-            "Nothing is needed from you: Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account). With mods off, the hook set reports each session as it did before 2.1.287. On a Team or Enterprise account the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours. {advice}{compaction}"
+        let unseen = "an automatic compaction is not seen: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards. A /compact typed in the session or sent from the board is still seen, and all of that holds for it.";
+        let (tag, limit) = match compaction {
+            NativeCompaction::PassedOver => (
+                "automatic compactions unseen",
+                format!("This Claude Code keeps compaction from a person's plugins too, so {unseen}"),
+            ),
+            NativeCompaction::Unread | NativeCompaction::Heard => (
+                "compaction coverage unknown",
+                format!("Whether this Claude Code keeps compaction from a person's plugins too is not known: 2.1.287 to 2.1.296 do not, 2.1.299 to 2.1.312 do, and no other release was read. If it does, {unseen}"),
+            ),
+        };
+        value.push_str(&format!(" ∙ {tag}"));
+        return rec(Level::Warn, "claude road", value).advice(format!(
+            "{road} {advice}\n\n{limit} No setting in mesimon changes which events Claude Code lets reach a person's plugins."
         ));
     }
     let level = if v.fallback { Level::Warn } else { Level::Ok };
@@ -1658,7 +1672,7 @@ mod tests {
                 lay_error: None,
                 fallback: false,
                 mods_off: false,
-                auto_compaction_unseen: false,
+                native_compaction: None,
             };
             write_verdict(&paths, &verdict);
             super::claude_road(&paths).value
@@ -1699,7 +1713,7 @@ mod tests {
                 lay_error: None,
                 fallback: true,
                 mods_off: true,
-                auto_compaction_unseen: false,
+                native_compaction: None,
             },
         );
         let r = super::claude_road(&paths);
@@ -1720,7 +1734,7 @@ mod tests {
                 lay_error: None,
                 fallback: true,
                 mods_off: true,
-                auto_compaction_unseen: false,
+                native_compaction: None,
             },
         );
         let r = super::claude_road(&paths);
@@ -1730,29 +1744,56 @@ mod tests {
         assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
         assert!(advice.contains("Team or Enterprise"), "{advice}");
         assert!(!advice.contains("compaction"), "2.1.289 hears every compaction: {advice}");
-        // T-1069: from 2.1.309 compaction is kept from the mod too. The line
-        // names what is not shown, and still asks nothing.
-        let deaf = "claude 2.1.312: hook events do not reach the mod in this Claude Code (seen 11:44; managed settings on this machine); the plugin reports from its own events, with one hook for permissions";
-        write_verdict(
-            &paths,
-            &RoadVerdict {
-                road: Road::Mod,
-                setting: "auto".into(),
-                source: auto,
-                probe: Some(deaf.into()),
-                lay_error: None,
-                fallback: true,
-                mods_off: true,
-                auto_compaction_unseen: true,
-            },
-        );
-        let r = super::claude_road(&paths);
-        assert_eq!(r.value, format!("mod ∙ {deaf} ∙ automatic compactions not shown"));
-        assert!(matches!(r.level, super::Level::Ok), "nothing to fix");
+        // T-1069: from 2.1.299 compaction is kept from the mod too. The line
+        // says so as a warning naming what the board then cannot do around
+        // an automatic one, and no longer that nothing is needed; a release
+        // not read is said to be unknown, never heard.
+        use mesimon_core::road::NativeCompaction;
+        let native = |version: &str, compaction| {
+            let probe = format!("claude {version}: hook events do not reach the mod in this Claude Code (seen 11:44; managed settings on this machine); the plugin reports from its own events, with one hook for permissions");
+            write_verdict(
+                &paths,
+                &RoadVerdict {
+                    road: Road::Mod,
+                    setting: "auto".into(),
+                    source: auto,
+                    probe: Some(probe.clone()),
+                    lay_error: None,
+                    fallback: true,
+                    mods_off: true,
+                    native_compaction: Some(compaction),
+                },
+            );
+            (probe, super::claude_road(&paths))
+        };
+        let (probe, r) = native("2.1.312", NativeCompaction::PassedOver);
+        assert_eq!(r.value, format!("mod ∙ {probe} ∙ automatic compactions unseen"));
+        assert!(matches!(r.level, super::Level::Warn), "a degraded road is no ok");
         let advice = r.advice.unwrap_or_default();
-        assert!(advice.starts_with("Nothing is needed from you"), "{advice}");
-        assert!(advice.contains("A /compact typed in a session shows on its card"), "{advice}");
-        assert!(advice.contains("an automatic compaction does not"), "{advice}");
+        assert!(!advice.contains("Nothing is needed"), "{advice}");
+        assert!(advice.contains("keeps compaction from a person's plugins too, so an automatic compaction is not seen"), "{advice}");
+        for consequence in [
+            "the session's card keeps the state it had",
+            "are not held back until it ends",
+            "auto-park may put the session to sleep",
+            "a crown is not given the board's rules again",
+            "A /compact typed in the session or sent from the board is still seen",
+            "No setting in mesimon changes",
+        ] {
+            assert!(advice.contains(consequence), "{consequence}: {advice}");
+        }
+        for cause in ["server error", "server_error", "interrupted"] {
+            assert!(!advice.contains(cause), "no word on a failure's cause: {advice}");
+        }
+        let (probe, r) = native("2.1.313", NativeCompaction::Unread);
+        assert_eq!(r.value, format!("mod ∙ {probe} ∙ compaction coverage unknown"));
+        assert!(matches!(r.level, super::Level::Warn));
+        let advice = r.advice.unwrap_or_default();
+        assert!(
+            advice.contains("is not known: 2.1.287 to 2.1.296 do not, 2.1.299 to 2.1.312 do"),
+            "{advice}"
+        );
+        assert!(advice.contains("If it does, an automatic compaction is not seen"), "{advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

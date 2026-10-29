@@ -103,16 +103,42 @@ pub fn has_mods(version: (u32, u32, u32)) -> bool {
     version >= MOD_FLOOR
 }
 
-/// The oldest Claude Code measured to pass `session.compact` over a person's
-/// mod where its security default is seated (T-1069): 2.1.309 to 2.1.312
-/// list it with the `classic.*` events, 2.1.289 let it through (T-651), and
-/// the releases between were not read.
-pub const COMPACT_PASSED_OVER_FLOOR: (u32, u32, u32) = (2, 1, 309);
+/// Whether a native launch (T-658) hears an automatic compaction, by the
+/// Claude Code it runs (T-1069): whether that release's security default,
+/// where it is seated, hands `session.compact` past a person's plugins. Read
+/// off the binary (its registration table), not off a managed machine, in
+/// the darwin-arm64 build of every release npm has from the mod floor to
+/// [`COMPACT_READ_THROUGH`]; 2.1.297 and 2.1.298 were never published, and a
+/// release past the last one read is not known. A typed `/compact` is heard
+/// on every release, by its `command.run`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeCompaction {
+    /// 2.1.287 to 2.1.296: `session.compact` reaches the mod.
+    Heard,
+    /// 2.1.299 to 2.1.312: it does not, beside every `classic.*` event.
+    PassedOver,
+    /// Not read: whether it does is unknown.
+    Unread,
+}
 
-/// Whether a native launch on that version hears an automatic compaction:
-/// a typed `/compact` it hears on every version, by its `command.run`.
-pub fn hears_auto_compaction(version: (u32, u32, u32)) -> bool {
-    version < COMPACT_PASSED_OVER_FLOOR
+/// The newest release read whose security default lets `session.compact`
+/// through to a person's mod.
+pub const COMPACT_HEARD_THROUGH: (u32, u32, u32) = (2, 1, 296);
+/// The oldest release read whose security default passes it over.
+pub const COMPACT_PASSED_OVER_FROM: (u32, u32, u32) = (2, 1, 299);
+/// The newest release read at all.
+pub const COMPACT_READ_THROUGH: (u32, u32, u32) = (2, 1, 312);
+
+/// What a native launch on that version hears of a compaction.
+pub fn native_compaction(version: (u32, u32, u32)) -> NativeCompaction {
+    if (MOD_FLOOR..=COMPACT_HEARD_THROUGH).contains(&version) {
+        NativeCompaction::Heard
+    } else if (COMPACT_PASSED_OVER_FROM..=COMPACT_READ_THROUGH).contains(&version) {
+        NativeCompaction::PassedOver
+    } else {
+        NativeCompaction::Unread
+    }
 }
 
 /// The hook-set events the mod relays, by the names `mesimon hook` sends for
@@ -415,15 +441,28 @@ mod tests {
         assert_eq!(launch_words(Some("T-9"), false, None, "go"), "T-9go");
     }
 
-    /// T-1069: 2.1.289 let `session.compact` through to a person's mod;
-    /// 2.1.309 to 2.1.312 pass it over with the classic events.
+    /// T-1069: every published release from the mod floor through 2.1.312
+    /// was read; 2.1.296 is the last that lets `session.compact` through and
+    /// 2.1.299 the first that passes it over. The two between were never
+    /// published, and nothing past the last read is claimed either way.
     #[test]
-    fn an_automatic_compaction_is_heard_natively_only_below_the_measured_floor() {
-        assert!(hears_auto_compaction((2, 1, 289)));
-        assert!(hears_auto_compaction((2, 1, 308)));
-        assert!(!hears_auto_compaction((2, 1, 309)));
-        assert!(!hears_auto_compaction((2, 1, 312)));
-        assert!(!hears_auto_compaction((2, 2, 0)));
+    fn a_native_launch_hears_compaction_by_the_release_read_and_nothing_is_claimed_past_it() {
+        use NativeCompaction::*;
+        for (v, want) in [
+            ((2, 1, 287), Heard),
+            ((2, 1, 289), Heard),
+            ((2, 1, 296), Heard),
+            ((2, 1, 297), Unread),
+            ((2, 1, 298), Unread),
+            ((2, 1, 299), PassedOver),
+            ((2, 1, 308), PassedOver),
+            ((2, 1, 312), PassedOver),
+            ((2, 1, 313), Unread),
+            ((2, 2, 0), Unread),
+            ((2, 1, 286), Unread),
+        ] {
+            assert_eq!(native_compaction(v), want, "{v:?}");
+        }
     }
 
     #[test]

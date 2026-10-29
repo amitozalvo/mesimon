@@ -34,8 +34,8 @@ use super::*;
 use crate::hook_settings::HookSet;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
-    ModCommand, ModFrame, Road, RoadPref, MOD_ANSWER, MOD_FILL, MOD_LOAD_FAILED, MOD_PONG,
-    MOD_SUBMIT, MOD_USAGE,
+    ModCommand, ModFrame, NativeCompaction, Road, RoadPref, MOD_ANSWER, MOD_FILL, MOD_LOAD_FAILED,
+    MOD_PONG, MOD_SUBMIT, MOD_USAGE,
 };
 use std::collections::VecDeque;
 
@@ -235,8 +235,14 @@ impl Daemon {
             Road::Mod if native => HookSet::PermissionOnly,
             Road::Mod => HookSet::None,
         };
-        let auto_compaction_unseen = hook_set == HookSet::PermissionOnly
-            && self.modroad.probe.as_ref().is_some_and(|p| p.verdict.passes_compaction_over());
+        let native_compaction = (hook_set == HookSet::PermissionOnly)
+            .then(|| {
+                self.modroad
+                    .probe
+                    .as_ref()
+                    .map_or(NativeCompaction::Unread, |p| p.verdict.native_compaction())
+            })
+            .filter(|c| *c != NativeCompaction::Heard);
         self.note_road(RoadVerdict {
             road,
             setting: setting.pref.word().into(),
@@ -247,7 +253,7 @@ impl Daemon {
             mods_off: self.modroad.probe.as_ref().is_some_and(Probe::claude_off)
                 && hook_set != HookSet::None
                 && setting.pref == RoadPref::Auto,
-            auto_compaction_unseen,
+            native_compaction,
         });
         Pick { road, folder, hook_set }
     }
@@ -402,7 +408,9 @@ impl Daemon {
         }
         let setting = modroad::read_setting();
         let mods_off = probe.claude_off();
-        let auto_compaction_unseen = probe.verdict.deaf() && probe.verdict.passes_compaction_over();
+        let native_compaction = (loads && probe.verdict.deaf())
+            .then(|| probe.verdict.native_compaction())
+            .filter(|c| *c != NativeCompaction::Heard);
         self.modroad.probe = Some(probe);
         if setting.pref == RoadPref::Auto {
             self.note_road(RoadVerdict {
@@ -413,7 +421,7 @@ impl Daemon {
                 lay_error: self.modroad.lay_error.clone(),
                 fallback: had_passed && !passes,
                 mods_off,
-                auto_compaction_unseen,
+                native_compaction,
             });
         }
     }

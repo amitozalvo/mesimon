@@ -95,12 +95,16 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
   `claude plugin test` pass all the same; the feed shows `ModUsage` and `ModSubmit` and no
   `SessionStart`. The seating rule is `qjr` in the binary; `allowManagedHooksOnly` and
   `disableAllHooks` are a different thing (the module is not loaded at all).
-  **From 2.1.309 it passes `session.compact` over too** (T-1069; read off 2.1.309–2.1.312's
-  table, `PASSED_OVER_EVENTS`), and `session.append` on its `attachment`, `hook-context` and
-  `compaction` doors; a task notification is door `delivery` and still arrives. A typed
-  `/compact` is `command.run{command: "compact"}`, which resolves after the compaction, and is
-  the native road's one compaction trace. Managed `allowedMcpServers` refuses a person's
-  `$.tool.register`. `CLAUDE_CODE_MANAGED_SETTINGS_PATH` is ignored by the public build.
+  **From 2.1.299 it passes `session.compact` over too** (T-1069: read off the binary's table,
+  `PASSED_OVER_EVENTS`, in every published release 2.1.287–2.1.312; 2.1.296 lets it through,
+  2.1.297 and 2.1.298 were never published, and no managed machine was traced), and
+  `session.append` on its `attachment`, `hook-context` and `compaction` doors; a task
+  notification is door `delivery` and still arrives. A typed `/compact` is
+  `command.run{command: "compact"}`, which resolves after the compaction: the native road's one
+  compaction trace. Managed `allowedMcpServers` refuses a person's `$.tool.register`. The public
+  build ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`, and `next.to` loads only in a managed
+  plugin (a person's plugin that spells it loses its whole hooks module), so neither can stand
+  in for the seat in a test.
 - **A mod's `submit` fires `UserPromptSubmit` as a typed prompt does, but an answer the mod
   returns in a dialog's place fires no `PostToolUse`**: the mod's `ModAnswer` report is that edge.
 - **A `$.prompt.submit` made mid-turn resolves only when its words are consumed** (2.1.309,

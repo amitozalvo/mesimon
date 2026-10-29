@@ -47,7 +47,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use mesimon_core::road::{has_mods, parse_claude_version, Road, RoadPref};
+use mesimon_core::road::{has_mods, parse_claude_version, NativeCompaction, Road, RoadPref};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -259,13 +259,12 @@ impl Verdict {
         matches!(self, Verdict::ClassicOff { .. })
     }
 
-    /// Whether this Claude Code passes `session.compact` over a person's mod
-    /// where its security default is seated (T-1069): a native launch on it
-    /// hears a typed `/compact` and no automatic compaction.
-    pub fn passes_compaction_over(&self) -> bool {
+    /// What a native launch on this verdict's Claude Code hears of a
+    /// compaction (T-1069); a verdict with no version is not read.
+    pub fn native_compaction(&self) -> NativeCompaction {
         self.version()
             .and_then(parse_claude_version)
-            .is_some_and(|v| !mesimon_core::road::hears_auto_compaction(v))
+            .map_or(NativeCompaction::Unread, mesimon_core::road::native_compaction)
     }
 
     pub fn version(&self) -> Option<&str> {
@@ -551,10 +550,11 @@ pub struct RoadVerdict {
     /// its first name for the `doctor` of an older build.
     #[serde(default)]
     pub mods_off: bool,
-    /// The launch is native on a Claude Code that passes `session.compact`
-    /// over the mod too (T-1069): an automatic compaction is not seen.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub auto_compaction_unseen: bool,
+    /// The launch is native and its Claude Code does not hand the mod an
+    /// automatic compaction (`passed_over`), or was not read for it
+    /// (`unread`) (T-1069). Absent where every compaction is heard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_compaction: Option<NativeCompaction>,
 }
 
 pub fn read_verdict(paths: &Paths) -> Option<RoadVerdict> {
@@ -783,19 +783,24 @@ mod tests {
         assert!(old.line().contains(FOUND_UNSAID), "{}", old.line());
     }
 
-    /// T-1069: the version a verdict names says whether a native launch on
-    /// it hears an automatic compaction; a verdict with no version, none.
+    /// T-1069: the version a verdict names says what a native launch on it
+    /// hears of a compaction; one with no version, or one not read, is
+    /// unread, never heard.
     #[test]
-    fn a_verdict_says_whether_its_claude_code_passes_compaction_over() {
+    fn a_verdict_says_what_its_claude_code_hands_the_mod_of_a_compaction() {
         let deaf = |version: &str| Verdict::ClassicOff {
             version: version.into(),
             seen_at: 1,
             found: FOUND_BY_MANAGED.into(),
         };
-        assert!(!deaf("2.1.289").passes_compaction_over());
-        assert!(deaf("2.1.309").passes_compaction_over());
-        assert!(deaf("2.1.312").passes_compaction_over());
-        assert!(!Verdict::Failed { error: "gone".into() }.passes_compaction_over());
+        assert_eq!(deaf("2.1.289").native_compaction(), NativeCompaction::Heard);
+        assert_eq!(deaf("2.1.299").native_compaction(), NativeCompaction::PassedOver);
+        assert_eq!(deaf("2.1.312").native_compaction(), NativeCompaction::PassedOver);
+        assert_eq!(deaf("2.1.313").native_compaction(), NativeCompaction::Unread);
+        assert_eq!(
+            Verdict::Failed { error: "gone".into() }.native_compaction(),
+            NativeCompaction::Unread
+        );
     }
 
     /// T-598: a mods-off verdict is asked again six hours after it was seen,
