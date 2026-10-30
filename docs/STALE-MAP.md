@@ -39517,3 +39517,24 @@ also check visible marks, reveal and Enter; fallback inline code checks unchange
 geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.
+
+## Verified board membership and peer authors (T-655, 2026-10-30)
+
+`team.json` schema 3 keeps verified member identities separately from the displayed
+member list. The owner records identities after verifying a locally minted invite;
+joined boards retain the owner named by their invite. Key delivery and rotation use
+those persisted identities. Identity changes in member responses are ignored and
+reported in the feed; epoch lists select only which keys need delivering.
+
+Encrypted record schema 2 adds `Members` at singleton object ID 3. The owner signs
+this directory of public keys, roles and active membership. Joined boards verify it
+against their pinned owner before accepting peer authors, persist its monotonic
+revision with the directory, and retry records that arrived before their author's
+directory. Board metadata, columns and the directory remain owner-authored. Local
+removal disables the member's authority and republishes current content under the
+owner's signature for later joiners. Existing request/response shapes stay unchanged.
+
+Legacy owners must remove and reinvite existing members. Legacy joined boards keep
+local content but stop syncing until they leave and rejoin with a fresh invitation;
+a missing owner pin also stops sync in a newer state file. Board sharing remains
+behind `MESIMON_TEAMS=1`. Relay half: see mesimon-relay (T-655).
