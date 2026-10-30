@@ -117,6 +117,8 @@ mod shelf;
 mod shells;
 mod teamglue;
 mod tiers;
+#[cfg(test)]
+mod train_tests;
 mod trainhold;
 
 const GRACE_SECS: u64 = 9;
@@ -10950,6 +10952,15 @@ impl Daemon {
                 "the train is armed and reaches this column; it waits for its agent's turn to end",
             );
         }
+        if let Some(a) = self
+            .wt_agg
+            .get(&id)
+            .filter(|a| a.ahead > 0 && !a.merged && !a.needs_rebase && !a.conflict && !a.unchecked)
+        {
+            if let Some(detail) = self.train.refusal(id, &a.tip, &a.base_tip) {
+                return view("train", detail);
+            }
+        }
         view("train", "the train is armed and reaches this column")
     }
 
@@ -14625,10 +14636,7 @@ impl Daemon {
                     return true;
                 }
                 Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
-                    let base_tip = self.base_tip_of(t).to_string();
-                    self.train.refuse(t, tip, base_tip, detail);
-                    self.train_acted_ms = mesimon_core::clock::now_ms();
-                    self.feed.board("automation", "merge_train_refused:merge", Some(t));
+                    self.record_train_refusal(t, tip, &detail);
                     refused = true;
                 }
                 // NeedsRebase / AlreadyMerged: the cached flags lagged git;
@@ -14659,6 +14667,23 @@ impl Daemon {
                 false
             }
         }
+    }
+
+    /// Keep and report the same bounded reason. Git's stderr may contain
+    /// arbitrary paths; flatten before scrubbing so line breaks stay spaces.
+    fn record_train_refusal(&mut self, ticket: ulid::Ulid, tip: String, detail: &str) {
+        use mesimon_core::text::{cap_bytes, scrub_text};
+        let detail = scrub_text(&detail.split_whitespace().collect::<Vec<_>>().join(" "));
+        let detail =
+            if detail.is_empty() { "the checkout refused the fast-forward" } else { &detail };
+        let detail = if detail.len() > 2048 {
+            format!("{}…", cap_bytes(detail, 2048 - '…'.len_utf8()))
+        } else {
+            detail.to_string()
+        };
+        self.feed.board_outcome("automation", "merge_train_refused:merge", Some(ticket), &detail);
+        self.train.refuse(ticket, tip, self.base_tip_of(ticket).to_string(), detail);
+        self.train_acted_ms = mesimon_core::clock::now_ms();
     }
 
     // ------------------------------------------------------------ notes

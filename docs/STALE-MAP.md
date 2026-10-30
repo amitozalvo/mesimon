@@ -39517,3 +39517,36 @@ also check visible marks, reveal and Enter; fallback inline code checks unchange
 geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.
+
+## A merge train refusal keeps Git's reason in the feed and ticket (T-1049, 2026-10-30)
+
+Demo episode 3 (T-1045's scorecard, gap 2): at 20:09:05 on October 26,
+T-3's merge left only `merge_train_refused:merge`, without an outcome, and
+the daemon journal gave no reason. The crown's 20:07:30 `uv run --with pytest`
+had left `src/ledger.egg-info/` untracked in the base; T-3 committed those
+paths. An untracked-file collision was the likely cause, inferred from those
+artifacts, not a reason the refusal recorded.
+
+At the run-2 base `e7828106`, T-289's tip-pair refusal memory and checkout-change
+invalidation already existed, as did the pending row and standing notice. The
+feed still discarded the detail and `get_ticket.merge.why` only described the
+train's reach. Also, `merge_refusal_detail` replaced Git's collision error and
+paths with generic advice. The original ticket's comparison to `deliver_failed`
+and `no_pane` was stale: those feed lines also carried no outcome at this base.
+
+Keep Git's own words alongside the existing advice. The train flattens and
+`scrub_text`s the reason, caps it at 2048 UTF-8 bytes (including a truncation
+ellipsis), and writes that same string to the feed's `outcome` and its existing
+refusal memory. A delivered worker's `merge.why` reads that memory only for the
+current branch/base tips after the existing merger-authority and seat checks.
+Holds, supervised mode, a busy worker, disarming, changed tips or a merged branch
+therefore do not show a stale refusal in place of their current explanation;
+checkout changes clear it by the existing mechanism. No new retry or authority
+rule, journal channel, or persisted refusal state.
+
+The train unit regression checks feed/ticket agreement, scrubbing and a multibyte
+bound, tip invalidation and state/authority precedence. The existing
+`a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean` e2e already
+creates the real untracked-file collision: it now checks Git's error and path
+in the feed and worker read, unchanged base tip and untracked contents after
+refusal, and disappearance of the reason after cleanup lets the merge land.
