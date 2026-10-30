@@ -832,6 +832,8 @@ pub enum Verb {
     /// carries a session's context fill. Board state like `CrownWatches`,
     /// on by default; Enter toggles it.
     CrownContext,
+    /// Open the guided tour from Settings › Crown.
+    CrownTour,
     /// The Settings row under it (T-969): whether the crown's `get_ticket`
     /// carries a ticket's cost. Board state like `CrownArchives`, off by
     /// default; Enter toggles it.
@@ -1224,6 +1226,7 @@ impl SettingsSection {
             | Verb::CrownArchives
             | Verb::CrownWatches
             | Verb::CrownContext
+            | Verb::CrownTour
             | Verb::CrownCost
             | Verb::CrownSamples
             | Verb::CrownLinks => Self::Crown,
@@ -5862,6 +5865,13 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::CrownTour,
+        label: |_| "Learn more…".into(),
+        detail: |_| "use ^o to crown any ticket ∙ take the guided tour".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::McpTools,
         label: |_| "Agent tools".into(),
         // Off says the consequence, not the mechanism, and names the one
@@ -6302,6 +6312,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::CrownCost,
             Verb::CrownSamples,
             Verb::CrownLinks,
+            Verb::CrownTour,
         ],
         SettingsSection::Terminal => &[
             Verb::TabTitle,
@@ -6453,6 +6464,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownCost => Value::Switch(c.crown_cost),
         Verb::CrownSamples => Value::Switch(c.crown_samples),
         Verb::CrownLinks => Value::Door(or(&c.crown_links, "none").into()),
+        Verb::CrownTour => Value::Door("guided tour".into()),
         Verb::TabTitle => Value::Choice {
             options: &["off", "project", "mesimon ∙ project"],
             at: match c.tab_title_word {
@@ -11045,6 +11057,7 @@ mod tests {
                     Verb::CrownCost,
                     Verb::CrownSamples,
                     Verb::CrownLinks,
+                    Verb::CrownTour,
                 ],
             ),
         ] {

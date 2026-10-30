@@ -8870,6 +8870,7 @@ impl App {
             }
             // The boards this one reaches (T-733).
             Verb::CrownLinks => self.open_boards_list(),
+            Verb::CrownTour => self.open_tour(),
             // `^n` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
