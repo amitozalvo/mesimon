@@ -5031,6 +5031,8 @@ impl App {
                 InputPurpose::Prompt { .. } => "an ask",
             };
             (what, buffer.paste(text), buffer.limit())
+        } else if let Mode::Search(s) = &mut self.mode {
+            ("a search query", s.query.paste(text), s.query.limit())
         } else if let Mode::Editor(ed) = &mut self.mode {
             ed.esc_armed = false;
             ed.delete_armed = false;
@@ -5064,6 +5066,9 @@ impl App {
         };
         if pasted.trimmed {
             self.status = format!("paste trimmed ∙ {what} holds at most {}", limit_words(limit));
+        }
+        if matches!(self.mode, Mode::Search(_)) {
+            self.research(false);
         }
         Ok(true)
     }
@@ -19854,6 +19859,16 @@ mod tests {
         assert_eq!(keys, ["T-1", "T-2", "T-3"]);
         assert_eq!(search(&app).idx, 0);
         assert!(search(&app).archived, "archived tickets are in by default");
+    }
+
+    #[test]
+    fn paste_into_search_flattens_query_and_reranks() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        assert!(app.on_paste("auth\n middleware").unwrap());
+        assert_eq!(search(&app).query.as_str(), "auth middleware");
+        let titles: Vec<&str> = search(&app).hits.iter().map(|h| h.title.text.as_str()).collect();
+        assert_eq!(titles, ["Auth middleware"]);
     }
 
     #[test]
