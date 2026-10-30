@@ -36,13 +36,8 @@ const WSL_MAX_HOLD_MS: u64 = 4 * 60 * 60 * 1000;
 
 /// Where WSL's PATH usually has it, for the case where interop is on but the
 /// System32 directory is not on PATH.
-const WSL_POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
-
-/// PowerShell location used by other WSL host integrations, including
-/// notification sounds. PATH wins when interop has exposed the executable.
-pub(crate) fn wsl_powershell() -> &'static str {
-    WSL_POWERSHELL
-}
+pub(crate) const WSL_POWERSHELL: &str =
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
 /// What the ladder answered: how this machine can be held awake, if it can.
 #[derive(Debug, Clone, PartialEq, Eq)]

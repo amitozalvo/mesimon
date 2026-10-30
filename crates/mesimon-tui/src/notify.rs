@@ -85,6 +85,9 @@
 //! macOS → Windows system sounds through PowerShell on Windows and WSL →
 //! `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal bell,
 //! which is the rung nothing can take away.
+//! WSL selects PowerShell only when an executable is found. An immediate
+//! interop launch failure uses the Linux player, then the bell; detached
+//! helpers' later exit statuses and host audio settings are not observed.
 //!
 //! **The two escape rungs write to OUR stdout, and since T-291 they say so.**
 //! Every other rung spawns a program and is therefore indifferent to what the
@@ -413,6 +416,12 @@ pub enum Player {
     Afplay,
     /// The Windows host's built-in system sound, invoked through PowerShell.
     Windows(String),
+    /// WSL interop may be disabled even when PowerShell exists. Keep the
+    /// Linux player (or bell) for an immediate host-helper launch failure.
+    Wsl {
+        program: String,
+        fallback: Box<Player>,
+    },
     Paplay,
     PwPlay,
     Canberra,
@@ -437,7 +446,9 @@ impl Player {
                 let f = sound.file_macos()?;
                 std::fs::metadata(&f).is_ok().then(|| vec!["afplay".to_string(), f])
             }
-            Player::Windows(program) => Some(windows_sound_argv(program, sound)),
+            Player::Windows(program) | Player::Wsl { program, .. } => {
+                Some(windows_sound_argv(program, sound))
+            }
             Player::Paplay => v(vec!["paplay".into(), file(sound.event_freedesktop()?)?]),
             Player::PwPlay => v(vec!["pw-play".into(), file(sound.event_freedesktop()?)?]),
             // The theme-aware one: it takes the event, not a path, so it
@@ -454,7 +465,7 @@ impl Player {
             Player::Bell => "the terminal bell".into(),
             Player::Custom(p) => format!("{p} ($MESIMON_SOUND)"),
             Player::Afplay => "afplay".into(),
-            Player::Windows(_) => "Windows system sounds (PowerShell)".into(),
+            Player::Windows(_) | Player::Wsl { .. } => "Windows system sounds (PowerShell)".into(),
             Player::Paplay => "paplay".into(),
             Player::PwPlay => "pw-play".into(),
             Player::Canberra => "canberra-gtk-play".into(),
@@ -822,7 +833,28 @@ fn in_kitty(window_id: Option<&str>, term_program: Option<&str>) -> bool {
 }
 
 fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Player {
-    find_player_for(env, cfg!(target_os = "macos"), crate::opener::is_wsl(), which)
+    find_player_for(env, cfg!(target_os = "macos"), crate::opener::is_wsl(), |name| {
+        sound_executable(name, &which)
+    })
+}
+
+/// Check both PATH results and the fixed WSL candidate. Finding a file
+/// alone is not enough: WSL must be able to execute it.
+fn sound_executable(name: &str, which: impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    let path =
+        if std::path::Path::new(name).is_absolute() { PathBuf::from(name) } else { which(name)? };
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 fn find_player_for(
@@ -842,12 +874,21 @@ fn find_player_for(
     if cfg!(target_os = "windows") {
         return Player::Windows("powershell.exe".into());
     }
+    let fallback = linux_player(&which);
     if wsl {
-        let powershell = which("powershell.exe")
-            .map(|_| "powershell.exe".to_string())
-            .unwrap_or_else(|| crate::caffeine::wsl_powershell().to_string());
-        return Player::Windows(powershell);
+        if let Some(program) =
+            which("powershell.exe").or_else(|| which(crate::caffeine::WSL_POWERSHELL))
+        {
+            return Player::Wsl {
+                program: program.to_string_lossy().into_owned(),
+                fallback: Box::new(fallback),
+            };
+        }
     }
+    fallback
+}
+
+fn linux_player(which: impl Fn(&str) -> Option<PathBuf>) -> Player {
     for (name, rung) in [
         ("paplay", Player::Paplay),
         ("pw-play", Player::PwPlay),
@@ -1023,7 +1064,21 @@ fn post_with(
     }
     if !p.sound.is_off() {
         match ch.player.argv(p.sound) {
-            Some(argv) => launch(&argv)?,
+            Some(argv) => {
+                if let Err(error) = launch(&argv) {
+                    if let Player::Wsl { fallback, .. } = &ch.player {
+                        // Detached launch can only report an immediate error.
+                        // A later PowerShell exit or muted host is not observed.
+                        let played =
+                            fallback.argv(p.sound).is_some_and(|args| launch(&args).is_ok());
+                        if !played {
+                            console.write_if_held(|| emit(BELL))?;
+                        }
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
             None if ch.player == Player::Off => {}
             None => console.write_if_held(|| emit(BELL))?,
         }
@@ -1466,13 +1521,14 @@ mod tests {
             assert_eq!(find_player(None, none), Player::Afplay);
         } else {
             assert_eq!(find_banner(None, none, false), Banner::Osc);
-            assert_eq!(find_player(None, none), Player::Bell);
             assert_eq!(find_banner(None, all, false), Banner::TerminalNotifier);
-            assert_eq!(find_player(None, all), Player::Paplay);
             let send =
                 |n: &str| (n == "notify-send").then(|| PathBuf::from("/usr/bin/notify-send"));
             assert_eq!(find_banner(None, send, false), Banner::NotifySend);
         }
+        // Pure Linux discovery, independent of the host's files and WSL interop.
+        assert_eq!(find_player_for(None, false, false, none), Player::Bell);
+        assert_eq!(find_player_for(None, false, false, all), Player::Paplay);
         // terminal-notifier outranks the platform's own on every platform.
         let tn = |n: &str| (n == "terminal-notifier").then(|| PathBuf::from("/usr/bin/x"));
         assert_eq!(find_banner(None, tn, false), Banner::TerminalNotifier);
@@ -1922,36 +1978,153 @@ mod tests {
     }
 
     #[test]
-    fn windows_has_a_builtin_sound_player_and_explicit_choices_still_win() {
+    fn wsl_uses_only_available_helpers_and_keeps_the_linux_ladder() {
         let none = |_: &str| None;
-        let wsl = find_player_for(None, false, true, none);
-        assert_eq!(wsl, Player::Windows(crate::caffeine::wsl_powershell().into()));
-        let argv = wsl.argv(Sound::Glass).expect("WSL sound argv");
-        assert_eq!(argv[0], crate::caffeine::wsl_powershell());
-        assert!(argv[4].contains("::Asterisk.Play()"), "{argv:?}");
+        assert_eq!(find_player_for(None, false, true, none), Player::Bell);
+        for (name, expected) in [
+            ("paplay", Player::Paplay),
+            ("pw-play", Player::PwPlay),
+            ("canberra-gtk-play", Player::Canberra),
+        ] {
+            let which = |n: &str| (n == name).then(|| PathBuf::from(format!("/bin/{n}")));
+            assert_eq!(find_player_for(None, false, true, which), expected);
+        }
+        for host in ["powershell.exe", crate::caffeine::WSL_POWERSHELL] {
+            let which = |name: &str| {
+                if name == host {
+                    Some(PathBuf::from("/resolved/host/powershell.exe"))
+                } else if name == "canberra-gtk-play" {
+                    Some(PathBuf::from("/bin/canberra-gtk-play"))
+                } else {
+                    None
+                }
+            };
+            assert_eq!(
+                find_player_for(None, false, true, which),
+                Player::Wsl {
+                    program: "/resolved/host/powershell.exe".into(),
+                    fallback: Box::new(Player::Canberra),
+                }
+            );
+        }
+        assert_eq!(find_player_for(None, true, false, none), Player::Afplay);
+        assert_eq!(find_player_for(None, false, false, none), Player::Bell);
+    }
 
-        let on_path = |name: &str| {
-            (name == "powershell.exe").then(|| PathBuf::from("/test/bin/powershell.exe"))
-        };
-        let wsl_on_path = find_player_for(None, false, true, on_path);
-        assert_eq!(wsl_on_path, Player::Windows("powershell.exe".into()));
-        assert_eq!(wsl_on_path.argv(Sound::Hero).expect("WSL sound argv")[0], "powershell.exe");
+    #[test]
+    #[cfg(unix)]
+    fn sound_discovery_checks_path_and_fixed_candidates_are_executable_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("msmn-sound-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("powershell.exe");
+        let which = |_: &str| Some(path.clone());
+        assert!(sound_executable(path.to_str().unwrap(), which).is_none());
+        assert!(sound_executable(dir.to_str().unwrap(), which).is_none());
+        std::fs::write(&path, "fixture").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        for name in ["powershell.exe", path.to_str().unwrap()] {
+            assert!(sound_executable(name, which).is_none());
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["powershell.exe", path.to_str().unwrap()] {
+            assert_eq!(sound_executable(name, which), Some(path.clone()));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
-        assert_eq!(find_player_for(Some("off"), false, true, none), Player::Off);
-        assert_eq!(
-            find_player_for(Some("custom-player"), false, true, none),
-            Player::Custom("custom-player".into())
-        );
-        assert_eq!(
-            find_player_for(None, true, false, none),
-            Player::Afplay,
-            "macOS keeps priority"
-        );
-        assert_eq!(
-            find_player_for(None, false, false, none),
-            Player::Bell,
-            "non-WSL Linux remains unchanged"
-        );
+    #[test]
+    fn wsl_launch_failure_uses_linux_then_the_bell_and_respects_terminal_handover() {
+        // Host success, host failure with a working Linux player, both
+        // failing, and no Linux player. A handed-over terminal stays quiet.
+        for (host_ok, linux_available, linux_ok, held, calls, bell) in [
+            (true, true, true, true, 1, false),
+            (false, true, true, true, 2, false),
+            (false, true, false, true, 2, true),
+            (false, false, false, true, 1, true),
+            (false, false, false, false, 1, false),
+        ] {
+            let player = find_player_for(None, false, true, |name| {
+                (name == "powershell.exe" || (linux_available && name == "canberra-gtk-play"))
+                    .then(|| PathBuf::from(format!("/bin/{name}")))
+            });
+            let ch = Channels {
+                banner: Banner::Off,
+                player,
+                group: None,
+                click: None,
+                icon_dir: None,
+                notifier_app: None,
+                poster: None,
+            };
+            let console = Console::default();
+            console.set_held(held);
+            let launched = std::cell::RefCell::new(Vec::new());
+            let wrote = std::cell::RefCell::new(String::new());
+            post_with(
+                &ch,
+                &Post::sound_only(Sound::Glass),
+                &console,
+                Delivery::default(),
+                |args| {
+                    launched.borrow_mut().push(args[0].clone());
+                    let ok = if args[0] == "/bin/powershell.exe" { host_ok } else { linux_ok };
+                    if ok {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                    }
+                },
+                |bytes| {
+                    wrote.borrow_mut().push_str(bytes);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let launched = launched.into_inner();
+            assert_eq!(launched.len(), calls);
+            assert_eq!(launched[0], "/bin/powershell.exe");
+            if calls == 2 {
+                assert_eq!(launched[1], "canberra-gtk-play");
+            }
+            assert_eq!(wrote.into_inner(), if bell { BELL } else { "" });
+        }
+    }
+
+    #[test]
+    fn explicit_sound_choices_do_not_acquire_automatic_fallback() {
+        for env in [" off ", "custom-player"] {
+            let player = find_player_for(Some(env), false, true, |_| {
+                panic!("explicit choice probes no helpers")
+            });
+            let ch = Channels {
+                banner: Banner::Off,
+                player,
+                group: None,
+                click: None,
+                icon_dir: None,
+                notifier_app: None,
+                poster: None,
+            };
+            for sound in [Sound::Glass, Sound::Off] {
+                let launched = std::cell::Cell::new(0);
+                let result = post_with(
+                    &ch,
+                    &Post::sound_only(sound),
+                    &Console::default(),
+                    Delivery::default(),
+                    |args| {
+                        launched.set(launched.get() + 1);
+                        assert_eq!(args, &["custom-player", "Glass"]);
+                        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                    },
+                    |_| panic!("explicit choices never fall back to the bell"),
+                );
+                let custom = env == "custom-player" && !sound.is_off();
+                assert_eq!(result.is_err(), custom);
+                assert_eq!(launched.get(), usize::from(custom));
+            }
+        }
     }
 
     #[test]
