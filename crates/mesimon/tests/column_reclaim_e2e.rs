@@ -49,7 +49,7 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
     });
     let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
     std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
+    git(&path, &["add", &format!("{title}.txt")]);
     git(&path, &["commit", "-qm", title]);
     (id, sid, wt.branch, path)
 }
@@ -81,7 +81,9 @@ fn arrival_waits_for_a_parked_live_pane_then_wake_recuts_the_same_branch() {
     let stub =
         "#!/bin/sh\ntrap '' TERM\n: > \"$(dirname \"$0\")/armed\"\nwhile true; do sleep 1; done\n";
     let Some(h) = Harness::boot("col-wake", Some(stub)) else { return };
-    init_repo(&h.repo, ".gitignore", "target/\n");
+    // The daemon is already running: its atomic .mesimon writes are runtime
+    // state, not fixture source files to stage while they are being replaced.
+    init_repo(&h.repo, ".gitignore", "target/\n.mesimon/\n");
     let mut c = h.client("col-wake");
     let (id, sid, branch, path) = ready(&mut c, "landed");
     git(&h.repo, &["merge", "--ff-only", &branch]);
@@ -122,7 +124,7 @@ fn arrival_waits_for_a_parked_live_pane_then_wake_recuts_the_same_branch() {
 #[test]
 fn unmerged_dirty_and_untracked_work_stays_and_the_card_says_why() {
     let Some(h) = Harness::boot("col-keep", Some(STUB)) else { return };
-    init_repo(&h.repo, "base", "base\n");
+    init_repo(&h.repo, ".gitignore", "target/\n.mesimon/\n");
     let mut c = h.client("col-keep");
     // A custom destination exercises reclamation independently of the DONE gate.
     let mut settings = c.board().column("REVIEW").unwrap().settings.clone();
@@ -156,7 +158,7 @@ fn unmerged_dirty_and_untracked_work_stays_and_the_card_says_why() {
 #[test]
 fn a_live_pane_without_a_ticket_record_also_holds_the_directory() {
     let Some(h) = Harness::boot("col-pane", Some(STUB)) else { return };
-    init_repo(&h.repo, "base", "base\n");
+    init_repo(&h.repo, ".gitignore", "target/\n.mesimon/\n");
     let mut c = h.client("col-pane");
     let (id, sid, branch, path) = ready(&mut c, "terminal");
     quiet(&mut c, id, sid);
