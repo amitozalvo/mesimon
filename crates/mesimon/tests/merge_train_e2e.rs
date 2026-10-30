@@ -722,6 +722,15 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     let (a, sa, branch_a, _) = ready(&mut c, "alpha");
     // In the way: the ff would create this file, and git will not overwrite
     // one it does not know about.
+    let base_before = git(&repo, &["rev-parse", "main"]);
+    let key_a = c.board().ticket(a).unwrap().short_key.clone();
+    let read_merge = |c: &mut TestClient| match c.send(
+        mesimon_core::Principal::Agent { session: sa },
+        Command::AgentReadTicket { key: key_a.clone(), full: false, plan: false },
+    ) {
+        Response::AgentTicket { ticket } => ticket.merge.expect("a branch has a merger"),
+        other => panic!("get_ticket: {other:?}"),
+    };
     std::fs::write(repo.join("alpha.txt"), "not mine\n").unwrap();
     std::thread::sleep(Duration::from_millis(500));
     for sid in [sa, sb] {
@@ -757,6 +766,24 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
         .unwrap_or_else(|| panic!("a merge row: {owed:?}"));
     let why = merge.text.clone().expect("the refusal travels with the row");
     assert!(why.contains("uncommitted changes"), "{why}");
+    assert!(why.contains("untracked working tree files would be overwritten by merge"), "{why}");
+    assert!(why.contains("alpha.txt"), "{why}");
+    let refusal = feed()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|line| line["cmd"] == "merge_train_refused:merge")
+        .expect("the refusal feed line");
+    assert_eq!(refusal["ticket"], a.to_string());
+    assert_eq!(refusal["outcome"], why);
+    let tool_merge = read_merge(&mut c);
+    assert_eq!(tool_merge.by, "train");
+    assert_eq!(tool_merge.why, why, "get_ticket carries the same refusal");
+    assert_eq!(
+        git(&repo, &["rev-parse", "main"]),
+        base_before,
+        "a refusal leaves the target alone"
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("alpha.txt")).unwrap(), "not mine\n");
     let notices = match c.request(Command::Snapshot) {
         Response::Board { notices, .. } => notices,
         other => panic!("not a board: {other:?}"),
@@ -780,6 +807,10 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     wait_until(Duration::from_secs(5), "the notice to go with it", || {
         !pending_of(&mut c, Some(a)).iter().any(|p| p.action == PendingAction::Merge)
     });
+    let tool_merge = read_merge(&mut c);
+    assert_eq!(tool_merge.by, "nobody");
+    assert!(!tool_merge.why.contains("alpha.txt"), "a merged ticket has no stale refusal");
+    assert_eq!(std::fs::read_to_string(repo.join("alpha.txt")).unwrap(), "alpha\n");
     wait_until(Duration::from_secs(15), "B to be asked after A merges", || {
         automation_of(&mut c).train_asked.iter().any(|ask| ask.ticket == b && ask.current)
     });

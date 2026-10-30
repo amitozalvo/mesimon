@@ -2026,15 +2026,18 @@ pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
 }
 
 /// A refusal reason fit for the status line: git's dirty-checkout refusal
-/// (multi-line, one path per line) becomes one actionable sentence; anything
-/// else is flattened to a single line — the wire must never carry text a
+/// (multi-line, one path per line) gains actionable advice, keeping git's
+/// words and paths. Flattened to a single line — the wire must never carry text a
 /// one-line footer cannot render. Never EMPTY, since T-289 hangs a standing
 /// notice off it: a git that refused without a word still owes the user one.
 pub fn merge_refusal_detail(err: &str, base: &str) -> String {
-    if err.contains("local changes") || err.contains("would be overwritten") {
-        return format!("uncommitted changes in the {base} checkout — commit or stash them first");
-    }
     let one_line = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = mesimon_core::text::scrub_text(&one_line);
+    if err.contains("local changes") || err.contains("would be overwritten") {
+        return format!(
+            "uncommitted changes in the {base} checkout — commit or stash them first: {one_line}"
+        );
+    }
     if one_line.is_empty() {
         return format!("the {base} checkout refused the fast-forward");
     }
@@ -3176,14 +3179,15 @@ mod tests {
 
     #[test]
     fn dirty_main_checkout_refusal_maps_to_one_line() {
-        // Pure mapping: git's multi-line dirty refusal → one actionable
-        // sentence; any other error still flattens to a single line.
+        // Keep the actionable advice and Git's specific files/reason,
+        // all on one line for the status line and train diagnostics.
         let raw = "git merge failed: error: Your local changes to the following files \
                    would be overwritten by merge:\n\ta.txt\nPlease commit your changes \
                    or stash them before you merge.\nAborting";
         let d = merge_refusal_detail(raw, "main");
         assert!(!d.contains('\n') && !d.contains('\t'));
-        assert_eq!(d, "uncommitted changes in the main checkout — commit or stash them first");
+        assert!(d.contains("uncommitted changes in the main checkout"));
+        assert!(d.contains("would be overwritten by merge: a.txt"), "{d}");
         assert_eq!(merge_refusal_detail("boom\nline two", "main"), "boom line two");
         assert_eq!(
             merge_refusal_detail("  \n ", "main"),
@@ -3192,7 +3196,7 @@ mod tests {
         );
 
         // The real thing: ff-able branch, dirty base checkout on overlapping
-        // files — git refuses the ff, the mapped detail is the sentence.
+        // files — git refuses the ff, and the mapped detail keeps its reason.
         let Some(repo) = scratch_repo("dirtymain") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
