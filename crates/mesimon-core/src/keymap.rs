@@ -536,6 +536,12 @@ pub enum Verb {
     TranscriptNewer,
     /// `{` in the transcript dialog: the message before.
     TranscriptOlder,
+    /// Move the transcript's selected link.
+    TranscriptLinkNext,
+    /// Move the transcript's selected link backward.
+    TranscriptLinkPrev,
+    /// Open the transcript's selected link.
+    TranscriptLinkOpen,
     /// `^h` on the board or the ticket page: the PULL REQUESTS dialog over
     /// the ticket's pull requests (T-759). Inert while the forge has bound
     /// none, so the dialog is never opened empty.
@@ -1433,6 +1439,7 @@ pub struct Ctx {
     /// The transcript dialog holds more than one message, so `{ }` has
     /// somewhere to step.
     pub transcript_messages: bool,
+    pub transcript_links: bool,
     /// The transcript dialog's message is longer than its window, so `jk`
     /// has rows to scroll.
     pub transcript_scrolls: bool,
@@ -7365,6 +7372,39 @@ static TRANSCRIPT: &[Binding] = &[
         prio: 10,
     },
     Binding {
+        keys: &[Key::Char('l'), Key::Char('n')],
+        verb: Verb::TranscriptLinkNext,
+        show: "ln",
+        hint: |_| "next link",
+        avail: |c| c.transcript_links,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 12,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Char('N')],
+        verb: Verb::TranscriptLinkPrev,
+        show: "hN",
+        hint: |_| "previous link",
+        avail: |c| c.transcript_links,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 13,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::TranscriptLinkOpen,
+        show: "enter",
+        hint: |_| "open link",
+        avail: |c| c.transcript_links,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 14,
+    },
+    Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::ScrollDown,
         show: "jk",
@@ -11390,6 +11430,13 @@ mod tests {
         assert_eq!(resolve(Scope::Transcript, Key::Char('{'), &open), Some(Verb::TranscriptOlder));
         assert_eq!(resolve(Scope::Transcript, Key::Char('}'), &Ctx::default()), None);
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &Ctx::default()), None);
+        let linked = Ctx { transcript_links: true, ..Default::default() };
+        assert_eq!(
+            resolve(Scope::Transcript, Key::Char('l'), &linked),
+            Some(Verb::TranscriptLinkNext)
+        );
+        assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), Some(Verb::TranscriptLinkOpen));
+        assert_eq!(resolve(Scope::Transcript, Key::Enter, &Ctx::default()), None);
         let long = Ctx { transcript_scrolls: true, ..Default::default() };
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &long), Some(Verb::ScrollDown));
         assert_eq!(resolve(Scope::Transcript, Key::Char('k'), &long), Some(Verb::ScrollUp));

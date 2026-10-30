@@ -514,6 +514,7 @@ pub enum Mode {
     /// reading position are `App::transcript`.
     Transcript {
         ticket: ulid::Ulid,
+        link_idx: usize,
     },
     /// The pull requests dialog (T-759): every PR the forge bound to the
     /// ticket, over the board or the ticket page. Read off the snapshot each
@@ -2761,8 +2762,36 @@ impl App {
     /// The transcript dialog's conversation, while its mode is up (T-921).
     pub(crate) fn open_transcript_view(&self) -> Option<&crate::transcript::Transcript> {
         match self.mode {
-            Mode::Transcript { ticket } => self.transcript.as_ref().filter(|t| t.ticket == ticket),
+            Mode::Transcript { ticket, .. } => {
+                self.transcript.as_ref().filter(|t| t.ticket == ticket)
+            }
             _ => None,
+        }
+    }
+
+    /// The open message's resolved links, in the order the reader sees
+    /// them. Derived per access so a transcript tail or board change cannot
+    /// leave a stale target behind the cursor.
+    pub(crate) fn transcript_links(&self) -> Vec<TicketLink> {
+        let Some(t) = self.open_transcript_view() else { return Vec::new() };
+        let Some(message) = t.message() else { return Vec::new() };
+        let ticket = t.ticket;
+        let dir = self.link_dir(ticket);
+        let mut links = Vec::new();
+        self.push_links(ticket, &dir, t.text(message), &mut links);
+        links
+    }
+
+    pub(crate) fn transcript_cursor_link(&self) -> Option<TicketLink> {
+        let Mode::Transcript { link_idx, .. } = self.mode else { return None };
+        let links = self.transcript_links();
+        (!links.is_empty()).then(|| links[link_idx.min(links.len() - 1)].clone())
+    }
+
+    fn transcript_links_changed(&mut self) {
+        let len = self.transcript_links().len();
+        if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+            *link_idx = (*link_idx).min(len.saturating_sub(1));
         }
     }
 
@@ -2777,7 +2806,7 @@ impl App {
         {
             Some(t) => {
                 self.transcript = Some(t);
-                self.mode = Mode::Transcript { ticket };
+                self.mode = Mode::Transcript { ticket, link_idx: 0 };
             }
             None => self.status = format!("nothing in {key}'s transcript yet"),
         }
@@ -2793,7 +2822,11 @@ impl App {
         let Some(t) = self.transcript.as_mut() else { return false };
         let record = crate::transcript::session_of(&self.board, t.ticket)
             .and_then(|s| Some((s.kind, s.transcript_path.as_deref()?)));
-        t.poll(record)
+        let changed = t.poll(record);
+        if changed {
+            self.transcript_links_changed();
+        }
+        changed
     }
 
     pub(crate) fn dialog_card(&self) -> Option<ulid::Ulid> {
@@ -2803,7 +2836,7 @@ impl App {
         match &self.mode {
             Mode::Links { ticket, .. }
             | Mode::Summary { ticket, .. }
-            | Mode::Transcript { ticket }
+            | Mode::Transcript { ticket, .. }
             | Mode::PullRequests { ticket, .. } => Some(*ticket),
             _ => self.merge_dialog.as_ref().map(|d| d.ticket),
         }
@@ -2816,15 +2849,21 @@ impl App {
         if !matches!(self.screen, Screen::Board) {
             return None;
         }
-        let Mode::Links { links, idx, .. } = &self.mode else {
-            return None;
-        };
-        let row = match self.hover.get() {
-            Some((crate::mouse::Target::Row(i), _)) => i,
-            _ => *idx,
-        };
-        match links.get(row)?.target {
-            LinkTarget::Ticket(id) => Some(id),
+        match &self.mode {
+            Mode::Links { links, idx, .. } => {
+                let row = match self.hover.get() {
+                    Some((crate::mouse::Target::Row(i), _)) => i,
+                    _ => *idx,
+                };
+                match links.get(row)?.target {
+                    LinkTarget::Ticket(id) => Some(id),
+                    _ => None,
+                }
+            }
+            Mode::Transcript { .. } => self.transcript_cursor_link().and_then(|l| match l.target {
+                LinkTarget::Ticket(id) => Some(id),
+                _ => None,
+            }),
             _ => None,
         }
     }
@@ -7631,6 +7670,7 @@ impl App {
             transcript_messages: self
                 .open_transcript_view()
                 .is_some_and(|t| t.messages().len() > 1),
+            transcript_links: !self.transcript_links().is_empty(),
             transcript_scrolls: self
                 .open_transcript_view()
                 .is_some_and(|t| t.pager.view.get().max > 0),
@@ -9717,6 +9757,28 @@ impl App {
                 if let Some(t) = self.transcript.as_mut() {
                     t.step(dir);
                 }
+                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                    *link_idx = 0;
+                }
+                self.transcript_links_changed();
+            }
+            Verb::TranscriptLinkNext | Verb::TranscriptLinkPrev => {
+                let links = self.transcript_links();
+                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                    if !links.is_empty() {
+                        if verb == Verb::TranscriptLinkNext {
+                            *link_idx = (*link_idx + 1) % links.len();
+                        } else {
+                            *link_idx = link_idx.checked_sub(1).unwrap_or(links.len() - 1);
+                        }
+                    }
+                }
+            }
+            Verb::TranscriptLinkOpen => {
+                if let Some(link) = self.transcript_cursor_link() {
+                    self.mode = Mode::Normal;
+                    self.open_link(link);
+                }
             }
             Verb::PullRequests => {
                 if let Some(ticket) = self.subject() {
@@ -10132,6 +10194,18 @@ impl App {
             Scope::Links => {
                 if let Mode::Links { links, idx, .. } = &mut self.mode {
                     *idx = step(*idx, links.len(), down);
+                }
+            }
+            Scope::Transcript if verb == Verb::CursorUp || verb == Verb::CursorDown => {
+                let links = self.transcript_links();
+                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                    if !links.is_empty() {
+                        if down {
+                            *link_idx = (*link_idx + 1) % links.len();
+                        } else {
+                            *link_idx = link_idx.checked_sub(1).unwrap_or(links.len() - 1);
+                        }
+                    }
                 }
             }
             Scope::Setup => {

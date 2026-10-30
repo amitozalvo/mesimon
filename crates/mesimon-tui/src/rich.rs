@@ -147,6 +147,61 @@ pub(crate) fn render_all(
     render_on(src, width, usize::MAX, theme, Surface::Ground, newline)
 }
 
+/// Render the markdown as usual and underline runs that belong to the
+/// selected resolved link. Matching the extracted target keeps this in step
+/// with the TUI's link resolver while the rich parser owns wrapping.
+pub(crate) fn render_all_with_link(
+    src: &str,
+    width: usize,
+    theme: &Theme,
+    newline: Newline,
+    selected: &mesimon_core::links::Link,
+) -> Vec<Line<'static>> {
+    let mut lines = render_all(src, width, theme, newline);
+    let Some(link) =
+        mesimon_core::links::extract(src).into_iter().find(|link| link.target == selected.target)
+    else {
+        return lines;
+    };
+    let needle = link.label.clone().unwrap_or_else(|| match &link.target {
+        mesimon_core::links::Found::Url(s) | mesimon_core::links::Found::Ticket(s) => s.clone(),
+        mesimon_core::links::Found::Path { path, .. } => path.clone(),
+        mesimon_core::links::Found::Attachment(id) => mesimon_core::attachment::target(*id),
+    });
+    underline_text(&mut lines, &needle);
+    lines
+}
+
+fn underline_text(lines: &mut [Line<'static>], needle: &str) {
+    if needle.is_empty() {
+        return;
+    }
+    for line in lines {
+        let mut text = String::new();
+        let mut spans = Vec::new();
+        for span in std::mem::take(&mut line.spans) {
+            let start = text.len();
+            text.push_str(&span.content);
+            spans.push((span, start, text.len()));
+        }
+        let Some(at) = text.find(needle) else {
+            line.spans = spans.into_iter().map(|(s, _, _)| s).collect();
+            continue;
+        };
+        let end = at + needle.len();
+        line.spans = spans
+            .into_iter()
+            .map(|(mut span, start, stop)| {
+                if start < end && stop > at {
+                    span.style = span.style.add_modifier(Modifier::UNDERLINED);
+                }
+                span
+            })
+            .collect();
+        return;
+    }
+}
+
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
 /// runs out of rows, for a window that stops short of the last one. Clips
 /// the last row to make the cell if it has to.

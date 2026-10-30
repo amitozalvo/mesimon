@@ -6789,6 +6789,32 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn transcript_links_cycle_open_and_reveal_board_targets() {
+    let (mut app, dir) = app_transcript("links");
+    // First displayed message with links, with two live targets on the board.
+    let text = "See [issue](https://example.test/a) and T-2.";
+    let path = dir.join("linked.jsonl");
+    let line = serde_json::json!({ "uuid": "linked", "type": "assistant", "message": {
+        "role": "assistant", "content": [{"type":"text", "text":text}] } })
+    .to_string();
+    std::fs::write(&path, format!("{line}\n")).unwrap();
+    app.board_mut().sessions.iter_mut().find(|s| s.ticket == ulid_n(3)).unwrap().transcript_path =
+        Some(path.to_string_lossy().into_owned());
+    // The fixture has T-2 on the board. Select T-2 after the URL.
+    press(&mut app, '}');
+    assert!(matches!(app.mode, Mode::Transcript { .. }));
+    assert_eq!(app.transcript_links().len(), 2);
+    press(&mut app, 'l');
+    assert_eq!(app.transcript_cursor_link().unwrap().text, "T-2");
+    assert_eq!(app.link_hovered(), Some(ulid_n(2)));
+    press(&mut app, 'h');
+    assert_eq!(app.transcript_cursor_link().unwrap().text, "https://example.test/a");
+    press(&mut app, '}');
+    assert!(matches!(app.mode, Mode::Transcript { link_idx: 0, .. }));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A card with no agent conversation offers no `{ }`, and the key is inert.
 #[test]
 fn test_transcript_needs_a_conversation() {
