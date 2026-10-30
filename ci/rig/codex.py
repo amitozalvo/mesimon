@@ -47,6 +47,26 @@ CHILDREN = {"child", "delegate"}
 DELEGATE_ASK = ("Have greet.py done on a ticket of its own, by its own agent: a small Python "
                 "module with a function greet(name) that returns \"Hello, <name>!\", and a "
                 "unittest for it in test_greet.py.")
+# The delegation oracle checks the delivered behavior independently of whatever
+# tests the worker chose to write. Runs in a supervised child, never in the rig.
+DELIVERY_CHECK = """
+import os, runpy, sys, unittest
+from pathlib import Path
+os.chdir(sys.argv[1])
+sys.path.insert(0, os.getcwd())
+for name in ('greet.py', 'test_greet.py'):
+    if not Path(name).is_file():
+        raise SystemExit('missing deliverable: ' + name)
+greet = runpy.run_path('greet.py')['greet']
+for name in ('Mesimon', '', 'שלום'):
+    if greet(name) != 'Hello, ' + name + '!':
+        raise SystemExit('greet returned the wrong result for ' + repr(name))
+suite = unittest.defaultTestLoader.discover('.', pattern='test_greet.py')
+if not suite.countTestCases():
+    raise SystemExit('the delivered test file contains no unittest cases')
+result = unittest.TextTestRunner().run(suite)
+sys.exit(0 if result.wasSuccessful() else 1)
+"""
 FORGE_WORKER = "Append the line forge fixture to README.md, then reply done."
 FORGE_ASK = "Please start {key} in its own worktree and look after its pull request. If its CI fails, get it fixed."
 BOARD_TOOLS = ("get_ticket", "list_board", "read_note", "write_note", "create_ticket", "tag_ticket",
@@ -76,6 +96,8 @@ def module(name, filename):
 
 def add_arguments(parser):
     parser.add_argument("--live", action="store_true", help="authorize Codex model calls")
+    parser.add_argument("--binary", type=Path,
+                        help="evaluate this prebuilt Mesimon binary without rebuilding (Codex only)")
     parser.add_argument("--model", help="Codex model, checked against authenticated model/list")
     parser.add_argument("--effort", help="Codex effort, checked before submission (default: low)")
     parser.add_argument("--suite", choices=("smoke", "extended"), default="smoke")
@@ -1025,6 +1047,19 @@ def adapter(base):
             self.record_calls("crown_calls_on_wake", tool_calls(self.crown_rows(board), row))
             cwd = Path(worker["cwd"])
             self.manifest["worker_files"] = {name: (cwd / name).is_file() for name in names}
+            logs_before = set(self.guard.root.glob("child-*.log"))
+            pid = self.guard.request(op="spawn", argv=[sys.executable, "-I", "-B", "-c",
+                                                       DELIVERY_CHECK, str(cwd)], env=self.env)
+            deadline = time.monotonic() + 15
+            while (code := self.guard.request(op="poll", pid=pid)) is None:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("the delivered module/test exceeded its 15-second verification bound")
+                time.sleep(0.05)
+            for log in set(self.guard.root.glob("child-*.log")) - logs_before:
+                (self.out / "delivery-check.log").write_text(log.read_text(errors="replace")[-16384:])
+            self.manifest["delivery_check"] = dict(exit_code=code, passed=code == 0)
+            if code:
+                raise AssertionError("the worker did not deliver the requested greeting behavior and a passing unittest")
             self.manifest["crown_board_calls"] = board_calls(every)
             # A worktree's path is the work's; the checkout's is the crown's own cwd.
             signs = self.implemented(every, names + ((str(cwd),) if tree else ()), self.looks)
@@ -1367,8 +1402,8 @@ def run(repo, args, parser):
                    str(min(1200, 120 + sum(case_timeout(args, case) + 30 for case in cases))), "--", sys.executable,
                    "-B", str(ROOT / "ci/rig.py"), *sys.argv[1:]]
         os.execv(sys.executable, command)
-    binary = Path(repo) / "target/debug/mesimon"
-    if not args.no_build:
+    binary = args.binary or Path(repo) / "target/debug/mesimon"
+    if not args.no_build and args.binary is None:
         subprocess.run(["cargo", "build", "-p", "mesimon"], cwd=repo, check=True)
     binary = binary.resolve(strict=True)
     executable = shutil.which("codex")

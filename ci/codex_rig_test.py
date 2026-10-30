@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import tomllib
@@ -13,6 +14,54 @@ from unittest.mock import Mock, patch
 SPEC = importlib.util.spec_from_file_location("codex_rig", Path(__file__).parent / "rig/codex.py")
 rig = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(rig)
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_codex_disposable_cases_accept_an_external_checkout_and_prebuilt_binary(self):
+        entry = rig.module("rig_entry_test", "rig.py")
+        for branch in ("main", "codex/efficiency", "HEAD"):
+            with self.subTest(branch=branch), patch.dict(sys.modules, codex=rig), \
+                 patch.object(entry, "git", side_effect=[str(Path.cwd()), branch]), \
+                 patch.object(sys, "argv", ["rig.py", "--provider", "codex", "--lay",
+                                           "--binary", "/tmp/baseline"]), \
+                 patch.object(rig, "run", return_value=0) as run:
+                with self.assertRaises(SystemExit) as exited:
+                    entry.main()
+                self.assertEqual(exited.exception.code, 0)
+                self.assertTrue(run.call_args.args[1].lay)
+                self.assertEqual(run.call_args.args[1].binary, Path("/tmp/baseline"))
+
+    def test_claude_persistent_board_still_requires_a_ticket_worktree(self):
+        entry = rig.module("rig_entry_claude_test", "rig.py")
+        with patch.object(entry, "git", side_effect=[str(Path.cwd()), "codex/efficiency"]), \
+             patch.object(sys, "argv", ["rig.py", "--lay"]), \
+             patch.object(entry, "Rig") as persistent:
+            with self.assertRaises(SystemExit):
+                entry.main()
+            persistent.assert_not_called()
+
+
+class DeliveryOracleTests(unittest.TestCase):
+    def test_delegation_requires_working_code_and_a_nonempty_passing_test(self):
+        good = 'def greet(name):\n    return "Hello, " + name + "!"\n'
+        test = ('import unittest\nfrom greet import greet\nclass Greeting(unittest.TestCase):\n'
+                '    def test_greeting(self):\n        self.assertEqual(greet("A"), "Hello, A!")\n')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for source, tests, passes in ((good, test, True),
+                                          ('def greet(name): return "wrong"\n', test, False),
+                                          (good, '# no tests\n', False),
+                                          (good, test.replace('Hello, A!', 'wrong'), False),
+                                          (None, test, False)):
+                with self.subTest(source=source, tests=tests):
+                    if source is None:
+                        (root / 'greet.py').unlink(missing_ok=True)
+                    else:
+                        (root / 'greet.py').write_text(source)
+                    (root / 'test_greet.py').write_text(tests)
+                    result = subprocess.run([sys.executable, '-I', '-B', '-c', rig.DELIVERY_CHECK, directory],
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode == 0, passes, result.stdout + result.stderr)
 
 
 def arguments(**changes):

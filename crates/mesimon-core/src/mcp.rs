@@ -304,7 +304,10 @@ pub const CROWN_WAKES: &str = concat!(
 pub const CROWN_ROLE: &str = "This session wears the board's crown: it coordinates the \
      board's other tickets for the person, who gives it work in this session's prompts. Those \
      prompts are this session's brief as much as its ticket's description and notes, so an \
-     empty description holds nothing up. create_ticket files a ticket whose description is \
+     empty description holds nothing up. Ending this session's turn leaves its workers and \
+     subscriptions running; their news starts its next turn automatically. A foreground \
+     wait, including a sleep tool or polling loop, keeps this session busy and delays its \
+     wake and the merge train. create_ticket files a ticket whose description is \
      its agent's brief, and start_agent starts that agent, a session of its own, in the \
      workspace the crown names; the board wakes this session with what becomes of it. A \
      keyed tool's receipt, and create_ticket's for the ticket it files, carries that \

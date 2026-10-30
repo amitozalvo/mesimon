@@ -370,6 +370,10 @@ mod tests {
     /// changes anything else is written once, as ever.
     #[test]
     fn an_underline_colour_change_is_written_as_two_attribute_changes() {
+        // This fixture tests colour bytes. Agent shells often set NO_COLOR;
+        // crossterm otherwise suppresses the very output asserted below.
+        // All byte-colour fixtures use the same override; no env mutation.
+        ratatui::crossterm::style::force_color_output(true);
         use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
         let (mut t, tty) = term();
@@ -404,6 +408,7 @@ mod tests {
 
     #[test]
     fn leaving_a_card_on_apple_terminal_keeps_its_text_style_and_plain_underline() {
+        ratatui::crossterm::style::force_color_output(true);
         use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
         let actual = Tty::default();

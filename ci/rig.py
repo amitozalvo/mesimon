@@ -5233,12 +5233,15 @@ def main():
         die("not inside a git checkout")
     repo = os.path.realpath(repo)
     branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD") or ""
-    if branch == "main" or not branch.startswith("msmn/"):
-        die(f"the rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
+    # Codex creates a disposable repository and home per case. The branch
+    # restriction belongs to Claude's persistent board and cleanup sweep,
+    # neither of which the Codex adapter uses.
     if args.provider == "codex":
         sys.exit(run_codex(repo, args, ap))
+    if branch == "main" or not branch.startswith("msmn/"):
+        die(f"the Claude rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
     if args.live or args.suite != "smoke" or any(value is not None for value in
-            (args.model, args.effort, args.max_turns, args.max_tokens, args.case_timeout)):
+            (args.model, args.effort, args.max_turns, args.max_tokens, args.case_timeout, args.binary)):
         ap.error("model, budget, --live and --suite options are for the Codex rig")
     rig = Rig(repo, args)
     rig.branch = branch

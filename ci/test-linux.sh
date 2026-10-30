@@ -57,5 +57,9 @@ exec docker run --rm --init --cpus 2 --memory 4g --platform linux/arm64 \
     git config --global --add safe.directory /work
     . /etc/os-release
     echo "$PRETTY_NAME, $(tmux -V), $(rustc -V)"
-    python3 -B ci/test-run.py -- cargo test --workspace --locked "$@"
+    # The no-argument release check covers both roads; a targeted developer
+    # selection stays targeted, with no hidden second full integration pass.
+    roads=()
+    if [ "$#" -eq 0 ]; then roads=(--both-roads); fi
+    python3 -B ci/test-run.py "${roads[@]}" -- cargo test --workspace --locked "$@"
   ' -- "$@"

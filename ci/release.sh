@@ -164,7 +164,7 @@ import json, sys
 s = json.load(open(sys.argv[1]))
 # Both roads (T-574): a stamp from before the mod road pass is not the gate.
 same = (s.get("sha"), s.get("tmux"), s.get("tmux_sha256")) == tuple(sys.argv[2:5])
-sys.exit(0 if same and s.get("roads") == ["hooks", "mod"] else 1)
+sys.exit(0 if same and s.get("coverage") == "full-workspace-v2" and s.get("roads") == ["hooks", "mod"] else 1)
 ' "$stamp" "$want_sha" "$want_tmux" "$want_hash"; then
     suite_done=1
   fi
@@ -197,7 +197,7 @@ step "tests (driven by the bundled tmux)"
 # --exclusive: ticket worktrees' bounded runs overlap one another (T-830),
 # but this one waits for them to end and holds new ones off, so the gate is
 # timed on a quiet machine.
-MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --exclusive --timeout 2400 -- cargo test --workspace
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --exclusive --timeout 2400 -- cargo test --workspace
 fi
 
 step "the mod against this machine's Claude Code"

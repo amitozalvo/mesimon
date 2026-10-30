@@ -39,14 +39,57 @@ class RoadPassTests(unittest.TestCase):
                          ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)", "--no-fail-fast"])
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--no-fail-fast"], None),
                          ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"])
-        # Past `--` it is the test binary's word, not the suite's.
-        self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--", "--no-fail-fast"], None),
-                         ["cargo", "test", "-p", "mesimon", "--tests"])
+        # Past `--` it is not a recognized harness option, so coverage is unknown.
+        self.assertIsNone(runner.road_pass(["cargo", "test", "--workspace", "--", "--no-fail-fast"], None))
 
     def test_anything_narrower_runs_once(self):
         for command in (["cargo", "test", "-p", "mesimon", "--test", "hook_e2e"],
                         ["cargo", "clippy", "--workspace"], ["echo", "hello"]):
             self.assertIsNone(runner.road_pass(command, None), command)
+
+    def test_workspace_filters_never_expand_into_a_second_suite_or_get_stamped(self):
+        selections = (["--lib", "--bins"], ["--test", "crown_e2e"], ["--tests"],
+                      ["-p", "mesimon-core"], ["--exclude=mesimon"], ["crown"],
+                      ["-E", "test(crown)"], ["--filter-expr=test(crown)"],
+                      ["--no-run"], ["--", "--list"], ["--", "--skip", "crown"],
+                      ["--", "--ignored"], ["--partition", "count:1/2"],
+                      ["--profile", "ci"], ["--future-selection-option"])
+        for prefix in (["cargo", "test"], ["cargo", "nextest", "run"]):
+            for selection in selections:
+                command = [*prefix, "--workspace", *selection]
+                with self.subTest(command=command), patch.object(runner.subprocess, "run") as run:
+                    self.assertIsNone(runner.road_pass(command, None))
+                    runner.stamp_pass(command, {}, ["hooks", "mod"])
+                    run.assert_not_called()
+
+    def test_output_and_concurrency_options_preserve_full_coverage(self):
+        for suffix in ([], ["--locked", "--no-fail-fast"], ["--test-threads", "4"],
+                       ["--jobs=2", "--color", "never"], ["--target-dir", "/tmp/build"],
+                       ["--", "--nocapture", "--test-threads=4"]):
+            with self.subTest(suffix=suffix):
+                self.assertTrue(runner.full_workspace_suite(["cargo", "test", "--workspace", *suffix]))
+
+    def test_custom_nextest_profile_cannot_certify_release_coverage(self):
+        with patch.object(runner.subprocess, "run") as run:
+            runner.stamp_pass(["cargo", "nextest", "run", "--workspace"],
+                              {"NEXTEST_PROFILE": "ci"}, ["hooks", "mod"])
+            run.assert_not_called()
+
+    def test_an_unfiltered_clean_suite_records_the_new_coverage_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tmux = root / "tmux"
+            tmux.write_bytes(b"fixture tmux identity")
+            with patch.object(runner.subprocess, "run", side_effect=[SimpleNamespace(stdout="abc123\n"),
+                                                                     SimpleNamespace(stdout="")]), \
+                 patch.object(runner.shutil, "which", return_value=str(tmux)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                runner.stamp_pass(["cargo", "nextest", "run", "--workspace"], {},
+                                  ["hooks", "mod"], target=root)
+            stamp = json.loads((root / "suite-passed.json").read_text())
+            self.assertEqual(stamp["coverage"], "full-workspace-v2")
+            self.assertEqual(stamp["roads"], ["hooks", "mod"])
+            self.assertEqual(stamp["sha"], "abc123")
 
 
 class DiskBudgetTests(unittest.TestCase):
@@ -128,7 +171,7 @@ class DiskBudgetTests(unittest.TestCase):
             stamp.assert_not_called()
 
 class PassTests(unittest.TestCase):
-    def passes_run(self, command, codes):
+    def passes_run(self, command, codes, flags=()):
         """The argv of every pass a fake supervisor was asked to spawn, and
         the run's result, when each pass exits with its code in turn."""
         with tempfile.TemporaryDirectory() as directory:
@@ -141,16 +184,18 @@ class PassTests(unittest.TestCase):
             replies = "\n".join(json.dumps({"ok": value}) for value in values) + "\n"
             guard = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(replies), wait=lambda timeout: 0)
             spawned = []
+            self.spawned_env = []
             real_write = guard.stdin.write
             def write(text):
                 for line in text.splitlines():
                     request = json.loads(line)
                     if request.get("op") == "spawn":
                         spawned.append(request["argv"])
+                        self.spawned_env.append(request["env"])
                 return real_write(text)
             guard.stdin.write = write
             real_mkdtemp = tempfile.mkdtemp
-            with patch.object(runner.sys, "argv", ["test-run.py", "--min-free-gib", "0", "--", *command]), \
+            with patch.object(runner.sys, "argv", ["test-run.py", "--min-free-gib", "0", *flags, "--", *command]), \
                  patch.object(runner, "build_output", return_value=[]), \
                  patch.object(runner, "lock_dir", return_value=root), \
                  patch.object(runner.Claims, "take"), \
@@ -163,20 +208,50 @@ class PassTests(unittest.TestCase):
                 return runner.main(), spawned
 
     def test_a_red_suite_asked_past_its_first_red_still_runs_the_mod_road(self):
-        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [1, 0])
+        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [1, 0],
+                                          flags=["--both-roads"])
         self.assertEqual(result, 1)
         self.assertEqual(spawned, [["cargo", "test", "--workspace", "--no-fail-fast"],
                                    ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"]])
 
     def test_a_red_suite_otherwise_ends_the_run(self):
-        result, spawned = self.passes_run(["cargo", "test", "--workspace"], [1])
+        result, spawned = self.passes_run(["cargo", "test", "--workspace"], [1], flags=["--both-roads"])
         self.assertEqual(result, 1)
         self.assertEqual(spawned, [["cargo", "test", "--workspace"]])
 
     def test_a_red_mod_road_fails_the_run(self):
-        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [0, 1])
+        result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [0, 1],
+                                          flags=["--both-roads"])
         self.assertEqual(result, 1)
         self.assertEqual(len(spawned), 2)
+
+    def test_a_filtered_workspace_runs_only_the_requested_command(self):
+        command = ["cargo", "nextest", "run", "--workspace", "-E", "test(crown)"]
+        result, spawned = self.passes_run(command, [0])
+        self.assertEqual((result, spawned), (0, [command]))
+
+    def test_an_unfiltered_development_suite_also_runs_once_by_default(self):
+        command = ["cargo", "nextest", "run", "--workspace"]
+        result, spawned = self.passes_run(command, [0])
+        self.assertEqual((result, spawned), (0, [command]))
+
+    def test_both_roads_rejects_a_partial_check_before_starting_anything(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exited:
+            self.passes_run(["cargo", "test", "--workspace", "--lib"], [], flags=["--both-roads"])
+        self.assertEqual(exited.exception.code, 2)
+
+    def test_an_explicit_mod_road_is_not_repeated(self):
+        command = ["cargo", "nextest", "run", "--workspace"]
+        with patch.dict(os.environ, MESIMON_TEST_ROAD="mod"):
+            result, spawned = self.passes_run(command, [0])
+        self.assertEqual((result, spawned), (0, [command]))
+
+    def test_jobs_caps_nextest_even_for_an_explicit_command(self):
+        command = ["cargo", "nextest", "run", "--workspace", "-E", "test(crown)"]
+        result, spawned = self.passes_run(command, [0], flags=["--jobs", "2"])
+        self.assertEqual((result, spawned), (0, [command]))
+        self.assertEqual(self.spawned_env[0]["NEXTEST_TEST_THREADS"], "2")
+        self.assertEqual(self.spawned_env[0]["CARGO_BUILD_JOBS"], "2")
 
 
 HERE = Path(__file__).resolve().parent

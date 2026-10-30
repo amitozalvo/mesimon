@@ -1,7 +1,7 @@
 # crates/mesimon/tests
 
-Loaded when a session works under this directory; the root `CLAUDE.md` (Test infrastructure)
-still applies.
+Loaded when a session works under this directory; `AGENTS.md` is the shared contract.
+See `docs/DEVELOPMENT.md` (Test infrastructure) for the supervisor and fixture details.
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary for the
 pane-died notify — required in e2e, because the in-process daemon's `current_exe()` is the test

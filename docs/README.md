@@ -9,10 +9,12 @@ For people using mesimon:
 
 For people working on mesimon:
 
-- `STALE-MAP.md` — the design record: what shipped, what was refuted, and why. Append a block
-  when you ship something (see `CLAUDE.md`, "Source of truth").
+- [`../AGENTS.md`](../AGENTS.md) — the shared development and verification contract.
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — implementation details and measured traps; consult by area.
+- `STALE-MAP.md` — the historical design record: search for relevant decisions, and append
+  consequential changes briefly. Existing decisions can be reevaluated against current evidence.
 - `ARCHITECTURE.md` — the long-form implementation narrative. Its milestone story lags the code;
-  the code and its tests are the spec.
+  compare it with current code and intended product behavior.
 - `state-scenarios/` — recorded agent-state scenarios replayed by the daemon's state tests
   (`crates/mesimon-daemon/src/state_replay.rs`).
 - `claude-compatibility.json`, `codex-compatibility.json` — the agent compatibility manifests
@@ -27,7 +29,7 @@ provenance, not obligation.
 ## The repository
 
 - `crates/` — the Rust workspace.
-- `docs/` — this directory. The code is the spec.
+- `docs/` — current product commitments and historical implementation evidence.
 - `web/mesophon` — the Remote Control browser client.
 - The paid Teams relay is a separate, private repository; `crates/mesimon-team` is its Apache
   client.

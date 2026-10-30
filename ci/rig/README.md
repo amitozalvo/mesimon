@@ -55,7 +55,8 @@ python3 -B ci/rig.py --provider codex --live --only mcp,sleep-resume
 python3 -B ci/rig.py --provider codex --live --failed
 ```
 
-Run in a ticket worktree on an `msmn/` branch. The live command builds Mesimon
+Run from any Mesimon checkout; Codex uses disposable repositories, not the
+Claude rig's persistent board or branch cleanup. The live command builds Mesimon
 (unless `--no-build`), enters `ci/test-run.py` automatically, and runs each case
 sequentially under the existing cleanup supervisor. Python 3, tmux, Codex and an
 existing file-based Codex login are required. The fixture copies authentication
@@ -69,6 +70,11 @@ the selection without building, creating a board, accessing credentials or
 calling a model. Each live case prints an external-terminal command for watching
 its disposable board. Fixtures are reaped after each case, including failures;
 Codex does not use Claude's persistent rig board or its `--reset`/`--stale` flags.
+
+`--binary /path/to/mesimon` evaluates an already built binary without rebuilding.
+Use it to compare baseline and candidate binaries on the same rig and model;
+the manifest records the evaluated binary's hash. `--no-build` alone keeps using
+the checkout's `target/debug/mesimon`.
 
 The rig defaults to `gpt-6-luna` with low reasoning effort. `--model` and
 `--effort` override those choices. Before any scenario submits a turn, the actual
@@ -155,7 +161,11 @@ and listed (`approvals_left`), and a crown kept waiting on one fails.
   no `merged_oid`). Then the worker's turn ends, the board
   wakes the crown with it, and the crown's turn on that wake ends, the same
   no-implementation evidence holding over every crown turn. The crown's calls,
-  the worker's files and the wake's cause are recorded, not judged.
+  the worker's files and the wake's cause are recorded. The delivered module
+  must return the requested greeting for ordinary, empty and Unicode names;
+  its unittest file must contain tests and pass. This independent check runs
+  in a supervised child with a 15-second bound. Earlier runs without a
+  `delivery_check` record prove delegation only, not implementation quality.
 - `forge`: the board merges through pull requests, the fixture repository has
   a github.com remote it never reaches, and the Claude rig's stub `gh` comes
   first on the daemon's PATH and on its login shell's (the forge looks for

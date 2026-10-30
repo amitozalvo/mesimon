@@ -39367,3 +39367,72 @@ with the fix, **PASS** twice (`-224303.md`, `-224445.md`), the archived ticket r
 the active one woken `forge`. The close-out's DONE moves are refused (`worktree unmerged`), as
 for every rig case whose branch is unmerged. Seen, not fixed here: a park followed within the
 reap window by a handover leaves the record `crashed`.
+
+## 2026-10-30 — Crown development efficiency, outside-board assessment
+
+Baseline `0d2ee48a`; work isolated on `codex/crown-development-efficiency`.
+The live checkout/board was not changed. The aim is faster useful delivery inside
+Mesimon, with inherited process requirements open to reevaluation.
+
+**Evidence and decisions.** The root AGENTS/CLAUDE instructions contained 2,186/6,145
+words. Shared guidance is now 930 words plus a 50-word Claude pointer; implementation
+detail moved to a searchable reference. Preserve authorization, single-writer state,
+scrubbed Git, fixture ownership and deliberate runtime handover. Replace unconditional
+verification/escalation habits with checks tied to changed behavior and concrete risk.
+Historical code/tests are evidence, not proof that the behavior remains desirable.
+
+A read-only audit of five ticket transcripts found repeated testing/build/integration
+commands and long inactive gaps. T-957 spanned 6.81 h with 136 targeted/unit test shell
+invocations, nine workspace test invocations and 34 builds. T-930 spanned 16.52 h,
+including a 145-minute gap. These are invocation counts and transcript spans, not test
+counts or measured causal attribution of ten hours to testing. Background durations
+can overlap. The evidence justifies removing demonstrable waste, not a delivery-time
+guarantee or assuming every long gap is an agent failure.
+
+The old runner treated any `--workspace` as full coverage: filtered nextest, unit-only
+and `--no-run` commands could trigger another integration pass and qualify for a suite
+stamp. Recognition is now conservative, unknown/filter options cannot certify coverage,
+and development checks run once. Release/Linux full gates explicitly request
+`--both-roads`; release accepts only the new coverage marker and both roads. `--jobs`
+also caps explicitly supplied nextest commands. Small automatic PR checks supplement
+the existing manual heavy matrix. Merely touching a relay client file no longer creates
+an empty relay branch; an actual contract change still needs compatible validation.
+
+**Crown behavior.** One baseline crown used a 30-second foreground sleep after forwarding
+a failed pipeline, blocking its wake. Another failed to forward the failure, attempting
+to start an existing interrupted worker instead. The role now explains that ending a
+turn preserves workers/subscriptions and lets news wake the crown; foreground waits
+keep it busy. This is a small mechanics clarification, not a broader workflow rewrite.
+
+Codex CLI 0.164.0, authenticated `gpt-6-luna`, low effort, disposable boards: forge
+baseline 1/3, candidate 3/3. Baseline run IDs (under `target/rig/codex/`) are
+`20261030T100655Z-e3124386`, `20261030T101219Z-ec3c45f9`,
+`20261030T103841Z-5b7a3179`; candidate IDs are `20261030T101448Z-d7654599`,
+`20261030T103652Z-72733b2e`, `20261030T103953Z-3b87c641`. After the first two
+baseline/one candidate samples, the remaining B/A/B schedule was fixed; failures
+were retained. Baseline binary SHA prefix `d6c0aa260fc0`; candidate `db618a423ad9`
+then `f310619daab0` after a workspace rebuild with unchanged crown source. The small
+sample, rebuild and budget model limit inference; this is not proof of general
+reliability, instruction-length causality or faster real feature delivery.
+
+Candidate delegation `20261030T104101Z-0f4ec0f6` passed, including an independent
+check of the worker's greeting function and a nonempty passing unittest. The old oracle
+only checked delegation; it could accept bad delivered code. Codex evaluation now accepts
+external checkouts/prebuilt binaries because its boards are disposable; Claude's
+persistent-board branch restriction stays. Eight live cases used 5,976,842 observed
+tokens including 5,433,216 cached input tokens; this is usage, not billed cost. No paid
+Claude calls. All live fixtures reported clean cleanup.
+
+**Verification and limits.** Runner regressions: 29 passed; Codex-rig tests: 39 passed.
+The broad run executed 3,208 hooks tests: 3,206 passed, two color fixtures failed under
+the inherited `NO_COLOR=1`. Its second/mod pass hit the shared 20-minute deadline:
+301 passed, one acknowledgment assertion failed, eight running tests were terminated,
+101 not run. Abnormal fixture records were retained; inspection found no remaining
+registered fixture roots, sockets or child PIDs. This is NOT a green full-suite result.
+The color fixtures now explicitly enable the color bytes they assert (eight focused
+tests pass under the same environment). The crown test now waits for the required
+recorded acknowledgment rather than equating stub stdin arrival with daemon receipt.
+That focused crown test passes on both hooks and mod, with clean fixture audits.
+Hosted CI and Linux were not run. Next real-ticket work should measure elapsed time,
+active checks and rework; use narrow fixtures for instruction experiments, then return
+normal development to a crown after deliberate integration/handover.

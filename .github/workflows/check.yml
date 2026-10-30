@@ -1,0 +1,33 @@
+name: focused checks
+
+# Reliable feedback on every change. The process/timing-heavy matrix remains
+# available through ci.yml and the full release gate; this is not its replacement.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: focused-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Compile every Rust target
+        run: cargo check --workspace --all-targets --locked
+      - name: Pure core behavior
+        run: cargo test -p mesimon-core --lib --locked
+      - name: Runner and Codex evaluation contracts
+        run: python3 -B -m unittest ci.test_run_test ci.codex_rig_test

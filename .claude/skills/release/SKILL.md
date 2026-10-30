@@ -5,10 +5,10 @@ description: Cutting a mesimon release — the order (bump, CHANGELOG, test run,
 
 # Releasing mesimon
 
-From the root `CLAUDE.md` (Commands). Production deploys — `deploy/ship.sh`, the tag, the push, `ci/release.sh` — are the author's.
+See `AGENTS.md` for the shared development contract. Production deploys — `deploy/ship.sh`, the tag, the push, `ci/release.sh` — are the author's.
 
 **Release order**: bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3
--B ci/test-run.py` → tag → push → `ci/release.sh`. Never verify before the bump — the bump
+-B ci/test-run.py --both-roads` → tag → push → `ci/release.sh`. Never verify before the bump — the bump
 relinks every crate and the run is thrown away. From the tag on, the author runs **one
 command, the relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the
 relay, then the tag, push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses

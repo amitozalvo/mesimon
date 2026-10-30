@@ -850,10 +850,12 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // every other (T-244): the card says `sending` until Claude takes it.
     let p = pending_of(&mut c, Some(b));
     assert!(p.iter().all(|p| p.in_flight), "only the paste's own mark remains: {p:?}");
-    // Pasted and not yet confirmed; the mod pass's stand-in engine reports
-    // `entered` with the words, which hands them at once.
+    // The mod stand-in reports `entered` after writing the words to stdin;
+    // observing those words does not mean the daemon has received the ack.
     let want = if test_road() == "mod" { "handed" } else { "sent" };
-    assert_eq!(dropped(&mut c).map(|d| d.0), Some(want.into()));
+    wait_until(std::time::Duration::from_secs(5), "the sent ask's recorded status", || {
+        dropped(&mut c).is_some_and(|d| d.0 == want)
+    });
     hook_send(&h.paths.hook_sock(), &sb.to_string(), "UserPromptSubmit", "{}");
     wait_until(std::time::Duration::from_secs(5), "the paste's ack to clear it", || {
         pending_of(&mut c, Some(b)).is_empty()

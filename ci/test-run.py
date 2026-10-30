@@ -2,10 +2,11 @@
 """One bounded local/CI verification command, with a checked fixture audit.
 
 Default: cargo nextest run --workspace (cargo's own parallelism; --jobs N caps
-build jobs and test threads together). A full-workspace suite is followed by
-the mod road's pass (T-574): the `mesimon` crate's integration tests again
-under MESIMON_TEST_ROAD=mod, the stand-in engine beside every stub; a stamp
-needs both. --one-road skips it.
+build jobs and test threads together). Checks run once by default. --both-roads
+adds the mod road's pass after a recognized full-workspace suite: the `mesimon`
+integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine. Release
+verification requests both explicitly; a one-road stamp is not a release gate.
+--one-road remains an explicit spelling of the default for existing callers.
 Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test hook_e2e.
 Runs in independent checkouts overlap (T-830): a run holds a lock on each
 Cargo build directory it writes (target dir and build-dir, however
@@ -279,6 +280,50 @@ class Claims:
 LOCK_POLL = 0.5
 
 
+def full_workspace_suite(command):
+    """Recognize an unfiltered executing suite, conservatively.
+
+    Unknown options still run as requested, but cannot expand a targeted
+    check or certify release coverage. In particular --workspace alone says
+    nothing about test filters, target selection, listing or compilation.
+    """
+    if command[:3] == ["cargo", "nextest", "run"]:
+        words = command[3:]
+    elif command[:2] == ["cargo", "test"]:
+        words = command[2:]
+    else:
+        return False
+    switches = {"--workspace", "--no-fail-fast", "--locked", "--offline", "--frozen",
+                "--quiet", "-q", "--verbose", "-v", "-vv"}
+    values = {"--jobs", "-j", "--test-threads", "--color", "--target-dir"}
+    workspace = False
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            # Harness output/concurrency options do not narrow coverage.
+            tail = words[index + 1:]
+            for item in tail:
+                if item not in {"--nocapture", "--show-output", "--quiet"} and not (
+                        item.startswith("--test-threads=") and item.split("=", 1)[1].isdigit()):
+                    return False
+            break
+        key, equal, value = word.partition("=")
+        if key in values:
+            if not equal:
+                index += 1
+                if index >= len(words) or words[index].startswith("-"):
+                    return False
+            elif not value:
+                return False
+        elif word in switches:
+            workspace |= word == "--workspace"
+        else:
+            return False
+        index += 1
+    return workspace
+
+
 def road_pass(command, jobs):
     """The mod road's pass after a full-workspace suite (T-574), or None.
 
@@ -288,7 +333,7 @@ def road_pass(command, jobs):
     shadow pairs the whole suite's frames. A suite asked to run past its
     first red (--no-fail-fast, as CI asks) asks the same of this pass, so
     one run reports every red on both roads (T-1023)."""
-    if command[:1] != ["cargo"] or "--workspace" not in command:
+    if not full_workspace_suite(command):
         return None
     if command[1:3] == ["nextest", "run"]:
         # The whole workspace, filtered, rather than `-p mesimon`: one
@@ -323,9 +368,9 @@ def stamp_pass(command, env, roads, target=None):
     the tree was clean (so the commit IS what ran), and which tmux drove it,
     by path and by hash — the release honours it only for the bundled one.
     A partial command (one crate, one e2e) never stamps."""
-    if "--workspace" not in command:
+    if not full_workspace_suite(command):
         return
-    if not (command[:1] == ["cargo"] and command[1:2] and command[1] in ("test", "nextest")):
+    if command[1] == "nextest" and env.get("NEXTEST_PROFILE", "default") != "default":
         return
     try:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -343,7 +388,7 @@ def stamp_pass(command, env, roads, target=None):
     # Linux mounts the checkout read-only and builds in CARGO_TARGET_DIR.
     stamp = Path(target or env.get("CARGO_TARGET_DIR") or "target") / "suite-passed.json"
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, roads=roads,
+    stamp.write_text(json.dumps(dict(coverage="full-workspace-v2", sha=sha, tmux=tmux, tmux_sha256=digest, roads=roads,
                                      at=int(time.time())), indent=2) + "\n")
     print(f"Suite passed at {sha[:7]} against {tmux}; stamped {stamp}.", flush=True)
 
@@ -354,8 +399,10 @@ def main():
     parser.add_argument("--jobs", type=int, help="cap cargo build jobs and test threads (default: cargo's own)")
     parser.add_argument("--min-free-gib", type=int, default=5,
                         help="stop below this free disk reserve (default: 5 GiB; 0 disables)")
-    parser.add_argument("--one-road", action="store_true",
-                        help="skip the mod road's pass after a full-workspace suite (T-574)")
+    roads = parser.add_mutually_exclusive_group()
+    roads.add_argument("--one-road", action="store_true", help="run once (the default)")
+    roads.add_argument("--both-roads", action="store_true",
+                       help="run a full workspace suite and the mod pass; required for release stamps")
     parser.add_argument("--exclusive", action="store_true",
                         help="wait for every other bounded run to end and hold new ones off (the release gate)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -374,7 +421,11 @@ def main():
         if args.jobs:
             command += ["--test-threads", str(args.jobs)]
     passes = [(command, {})]
-    mod = None if args.one_road else road_pass(command, args.jobs)
+    first_road = os.environ.get("MESIMON_TEST_ROAD", "hooks")
+    mod = road_pass(command, args.jobs) if args.both_roads and first_road == "hooks" else None
+    if args.both_roads and mod is None:
+        parser.error("--both-roads needs an unfiltered full workspace suite starting on hooks; "
+                     "run a targeted mod check with MESIMON_TEST_ROAD=mod instead")
     if mod:
         passes.append((mod, {"MESIMON_TEST_ROAD": "mod"}))
     os.umask(0o077)
@@ -411,7 +462,8 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
     run = Path(tempfile.mkdtemp(prefix="msmn-test-run-", dir=audit_root)).resolve()
     env = dict(os.environ, MESIMON_TEST_RUN=str(run), MESIMON_TEST_HELD=claims.env())
     if args.jobs:
-        env.update(CARGO_BUILD_JOBS=str(args.jobs), RUST_TEST_THREADS=str(args.jobs))
+        env.update(CARGO_BUILD_JOBS=str(args.jobs), RUST_TEST_THREADS=str(args.jobs),
+                   NEXTEST_TEST_THREADS=str(args.jobs))
     env.setdefault("MESIMON_REQUIRE_TMUX", "1")
     guard = subprocess.Popen(
         [sys.executable, "-B", "-u", str(Path(__file__).with_name("test_guard.py")),
@@ -529,7 +581,8 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
             # Evidence is for a failure; a clean pass leaves nothing in /tmp.
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
-            stamp_pass(command, env, ["hooks", "mod"] if len(passes) > 1 else ["hooks"],
+            stamp_pass(command, env, [env.get("MESIMON_TEST_ROAD", "hooks"), "mod"] if len(passes) > 1
+                       else [env.get("MESIMON_TEST_ROAD", "hooks")],
                        build_dirs[0] if build_dirs else None)
         # Every relink leaves its split-debuginfo objects behind and cargo
         # collects none of them; a week of that made deps/ 879k entries and
