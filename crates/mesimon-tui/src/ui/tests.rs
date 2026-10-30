@@ -13071,7 +13071,11 @@ fn the_wheel_walks_the_column_under_it() {
     assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(10)));
     render(&app, 120, 30);
     mouse(&mut app, MouseEventKind::ScrollUp, at);
-    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(3)), "one event returns exactly three rows");
+    assert_eq!(
+        app.selected_ticket().map(|t| t.id),
+        Some(ulid_n(3)),
+        "one event returns exactly three rows"
+    );
     mouse(&mut app, MouseEventKind::ScrollUp, at);
     assert_eq!(app.cursor_row, Some(0), "the wheel stops at the top card");
 }
