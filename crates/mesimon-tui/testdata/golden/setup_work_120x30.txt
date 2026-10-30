@@ -11,7 +11,7 @@
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   1 ticket                                                                          │  │
 │  │                                                                                                                │  │
-│  │   TODO                 0 →    IN PROGRESS          1 →    REVIEW               0 →    DONE                  0  │  │
+│  │   TODO                 0 →    IN PROGRESS          1 →    REVIEW               0 →    DONE                0 →  │  │
 │  │                                                                                                                │  │
 │  │   o  new ticket               ⠋ Fix the login ~ ⎇↑ now                                                         │  │
 │  │                                 Fixing it in my own                                                            │  │

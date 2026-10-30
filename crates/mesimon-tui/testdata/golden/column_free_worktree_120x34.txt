@@ -1,0 +1,34 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+                  ╭─ COLUMN ∙ IN PROGRESS ───────────────────────────────────────────────────────────╮
+   TODO           │  Description             none                                                    │               1
+                  │                                                                                  │
+   Decay treatment│ LOOK                                                                             │ accent bar  >1y
+                  │  Collapsed               ● off   ○ always   ○ when empty                         │
+   Keymap validato│  Sort once               newest first                                            │
+                  │                                                                                  │
+                  │ NEW TICKETS                                                                      │
+                  │  Filed here              ● on                                                    │
+                  │  Workspace               ○ worktree   ● shared checkout                          │
+                  │                                                                                  │
+                  │ COMING IN                                                                        │
+                  │  Moves in when           nothing                                                 │
+                  │  Needs merged branch     ○ off                                                   │
+                  │  Needs passed pipeline   ○ off                                                   │
+                  │  Needs boxes ticked      ○ off                                                   │
+                  │                                                                                  │
+                  │ GOING OUT                                                                        │
+                  │  Agent starts working    stays                                                   │
+                  │  Agent ends a turn       stays                                                   │
+                  │  Branch merged           stays                                                   │
+                  │                                                                                  │
+                  │ FINISHED TICKETS                                                                 │
+                  │  Free worktree           ○ off                                                   │
+                  │  Offer                   ● off   ○ sleep         ○ archive   ○ sleep + archive   │
+                  │  Auto merge              ● off   ○ rebase only   ○ on                            │
+                  │                                                                                  │
+                  │  Agent behaviour         mode auto ∙ tools full ∙ sleep off ›                    │
+                  │                                                                                  │
+                  │  on arrival ∙ merged and clean, after panes close ∙ keeps card and branch        │
+                  ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+ COLUMN                                                                                                          ? keys

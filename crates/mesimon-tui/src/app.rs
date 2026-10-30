@@ -7607,6 +7607,7 @@ impl App {
             col_on_done: cs.on_done.clone().unwrap_or_default(),
             col_on_merged: cs.on_merged.clone().unwrap_or_default(),
             col_sleep_after: cs.sleep_after_minutes,
+            col_free_worktree: cs.free_worktree,
             col_requires_merge: cs.requires_merge,
             col_requires_pipeline: cs.requires_pipeline,
             col_arrives_word: cs.arrives_on.word(),
@@ -9949,6 +9950,7 @@ impl App {
                 let next = self.next_column_target(|s| s.on_merged.clone());
                 self.set_column(|s| s.on_merged = next)?;
             }
+            Verb::ColumnFreeWorktree => self.set_column(|s| s.free_worktree = !s.free_worktree)?,
             Verb::ColumnSleepAfter => {
                 self.set_column(|s| s.sleep_after_minutes = s.next_sleep_after())?
             }
@@ -22101,6 +22103,30 @@ mod tests {
             assert_eq!(app.ctx().col_offers_word, offer.word());
         }
         assert!(sent_contains(&sent, "SetColumnSettings"));
+    }
+
+    #[test]
+    fn column_worktree_reclamation_is_an_opt_in_toggle() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let row = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnFreeWorktree)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = row;
+        }
+        assert!(!app.ctx().col_free_worktree);
+        for value in [true, false] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.column("todo").unwrap().settings.free_worktree, value);
+            assert_eq!(
+                keymap::value(Verb::ColumnFreeWorktree, &app.ctx()),
+                Some(keymap::Value::Switch(value))
+            );
+        }
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 2);
     }
 
     /// T-543: the column's idle park is a row in Agent behaviour that

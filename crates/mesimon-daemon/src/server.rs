@@ -110,6 +110,7 @@ mod crownreceipt;
 mod crownrules;
 mod crownsample;
 mod crownwake;
+mod eviction;
 mod mcpcompat;
 mod mesophon;
 mod peer;
@@ -343,6 +344,14 @@ struct Teardown {
     sids: Vec<String>,
 }
 
+/// An arrival awaiting safe reclamation. Leaving the column cancels it;
+/// success consumes it, so waking in the same column does not evict again.
+struct ColumnEviction {
+    column: String,
+    due: Instant,
+    refusal: Option<String>,
+}
+
 /// Why a worktree is going, which is what decides what stays behind.
 enum TeardownWhy {
     /// The ticket left through the grace band: the binding goes with it,
@@ -535,6 +544,10 @@ enum Msg {
         archived: bool,
         branch_kept: bool,
         took: Duration,
+    },
+    ColumnEvicted {
+        ticket: ulid::Ulid,
+        outcome: worktree::Eviction,
     },
     /// A look at a worker's work at its turn's end (T-469): what decides
     /// whether the crown hears of it. Off-thread because it forks git.
@@ -879,6 +892,7 @@ pub struct Daemon {
     /// Memory only: a daemon that stops mid-flight finds the tree gone or
     /// standing at start, and reads the binding off the disk either way.
     tearing_down: std::collections::HashSet<ulid::Ulid>,
+    column_evictions: HashMap<ulid::Ulid, ColumnEviction>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
     /// Board sharing (T-215): identity, this board's sharing state, and the
@@ -1711,6 +1725,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Backfilled(..) => "backfill".into(),
             Msg::TicketFlags(..) => "ticket flags".into(),
             Msg::TornDown { .. } => "torn down".into(),
+            Msg::ColumnEvicted { .. } => "column worktree freed".into(),
             Msg::TurnProbed(..) => "turn probed".into(),
             Msg::Team(_) => "team".into(),
             Msg::Control(..) => "mesophon".into(),
@@ -1761,6 +1776,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::TicketFlags(ticket, gen, seq, flags, local) => {
                 d.on_ticket_flags(ticket, gen, seq, flags, local)
             }
+            Msg::ColumnEvicted { ticket, outcome } => d.on_column_evicted(ticket, outcome),
             Msg::TornDown { ticket, archived, branch_kept, took } => {
                 d.on_torn_down(ticket, archived, branch_kept, took)
             }
@@ -2018,6 +2034,7 @@ impl Daemon {
             forge: Default::default(),
             pending_teardown: Vec::new(),
             tearing_down: Default::default(),
+            column_evictions: Default::default(),
             tx: tx.clone(),
             team: teamglue::TeamCtx::new(tx.clone()),
             control: mesophon::Control::new(tx.clone()),
@@ -3821,6 +3838,7 @@ impl Daemon {
             stage!(self, "expire_grace", self.expire_grace());
             stage!(self, "sweep_reaping", self.sweep_reaping());
             stage!(self, "sweep_codex_orphans", self.sweep_codex_orphans());
+            stage!(self, "column_evictions", self.process_column_evictions());
             stage!(self, "process_teardowns", self.process_teardowns());
         }
         self.poll_codex();
@@ -11705,6 +11723,13 @@ impl Daemon {
         self.moves.record(id, &from, dest, by, turn_of, Instant::now());
         self.note_hand_move(id, by);
         self.held.moved(id);
+        self.column_evictions.remove(&id);
+        if self.board.column(dest).is_some_and(|c| c.settings.free_worktree) {
+            self.column_evictions.insert(
+                id,
+                ColumnEviction { column: dest.to_string(), due: Instant::now(), refusal: None },
+            );
+        }
         if by.is_human() {
             self.train.hand_touched(id);
         }
@@ -11826,23 +11851,25 @@ impl Daemon {
             ahead: self.wt_agg.get(tid).map_or(0, |a| a.ahead),
             needs_rebase: self.wt_agg.get(tid).is_some_and(|a| a.needs_rebase),
             counted: self.wt_agg.get(tid).map(|a| a.counted.clone()).unwrap_or_default(),
-            detail: match &b.status {
-                BindingStatus::Error { stage, message } => {
-                    Some(worktree::error_words(stage, message))
+            detail: self.column_evictions.get(tid).and_then(|e| e.refusal.clone()).or_else(|| {
+                match &b.status {
+                    BindingStatus::Error { stage, message } => {
+                        Some(worktree::error_words(stage, message))
+                    }
+                    BindingStatus::Provisioning if self.wt_init.contains(tid) => {
+                        Some("init script running".into())
+                    }
+                    BindingStatus::Provisioning => {
+                        self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
+                    }
+                    // How the init script went, while it went wrong (T-614);
+                    // else a leg whose sample failed (T-754).
+                    BindingStatus::Attached => {
+                        b.init.as_ref().and_then(|r| r.detail()).or_else(|| self.leg_trouble(tid))
+                    }
+                    _ => None,
                 }
-                BindingStatus::Provisioning if self.wt_init.contains(tid) => {
-                    Some("init script running".into())
-                }
-                BindingStatus::Provisioning => {
-                    self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
-                }
-                // How the init script went, while it went wrong (T-614);
-                // else a leg whose sample failed (T-754).
-                BindingStatus::Attached => {
-                    b.init.as_ref().and_then(|r| r.detail()).or_else(|| self.leg_trouble(tid))
-                }
-                _ => None,
-            },
+            }),
             path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
             repos: if b.is_workspace() {
                 self.wt_repos
@@ -18544,6 +18571,58 @@ impl Daemon {
         ]
     }
 
+    fn replay_worktree_waiters(&mut self, ticket: ulid::Ulid) {
+        // The replay is timed as a stage (T-430): what is left on
+        // this turn is `spawn_session`'s tmux work, and the
+        // slow-turn line names it so the number is read off the
+        // journal, not guessed.
+        let replay = Instant::now();
+        let (pending, rest): (Vec<PendingSpawn>, Vec<PendingSpawn>) =
+            self.pending_spawns.drain(..).partition(|s| s.ticket == ticket);
+        self.pending_spawns = rest;
+        for s in pending {
+            // A failed replay has no client waiting on it — leave a
+            // feed trace (the TUI's parked focus intent surfaces the
+            // "attached but no session" outcome to the user).
+            let kind = s.kind;
+            if let Response::Err { message } =
+                self.spawn_session(s.ticket, kind, s.submit_prompt, s.prompt, s.started_by, s.plan)
+            {
+                eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
+                self.feed.board("daemon", "spawn_replay_failed", Some(s.ticket));
+            }
+        }
+        // A wake parked behind the rebuild (T-278) replays the same
+        // way; the words a Shift+Enter parked with it land as
+        // `prompt_sleeping` would have landed them.
+        let (resumes, rest): (Vec<PendingResume>, Vec<PendingResume>) =
+            self.pending_resumes.drain(..).partition(|r| r.ticket == ticket);
+        self.pending_resumes = rest;
+        for r in resumes {
+            match self.resume_session_in(r.session, r.confirm, r.plan) {
+                Response::Spawned { .. } => {
+                    if let Some(text) = r.prompt {
+                        let words = Parked { text, brief: r.brief, title: r.brief };
+                        self.park(r.session, r.ticket, words, r.ack);
+                        self.crown_ask_retag(r.ticket, r.session, r.ask);
+                    }
+                }
+                Response::Err { message } => {
+                    eprintln!("mesimon: parked wake replay failed: {message}");
+                    self.feed.board("daemon", "resume_replay_failed", Some(ticket));
+                    self.crown_ask_dropped(
+                        r.ticket,
+                        None,
+                        "board",
+                        "its agent's wake failed after the worktree was rebuilt",
+                    );
+                }
+                _ => {}
+            }
+        }
+        self.note_stage("spawn_replay", replay.elapsed());
+    }
+
     fn on_provisioned(
         &mut self,
         ticket: ulid::Ulid,
@@ -18594,60 +18673,7 @@ impl Daemon {
                     _ => Some(r.run.clone()),
                 });
                 self.worktrees.insert(ticket, b);
-                // The replay is timed as a stage (T-430): what is left on
-                // this turn is `spawn_session`'s tmux work, and the
-                // slow-turn line names it so the number is read off the
-                // journal, not guessed.
-                let replay = Instant::now();
-                let (pending, rest): (Vec<PendingSpawn>, Vec<PendingSpawn>) =
-                    self.pending_spawns.drain(..).partition(|s| s.ticket == ticket);
-                self.pending_spawns = rest;
-                for s in pending {
-                    // A failed replay has no client waiting on it — leave a
-                    // feed trace (the TUI's parked focus intent surfaces the
-                    // "attached but no session" outcome to the user).
-                    let kind = s.kind;
-                    if let Response::Err { message } = self.spawn_session(
-                        s.ticket,
-                        kind,
-                        s.submit_prompt,
-                        s.prompt,
-                        s.started_by,
-                        s.plan,
-                    ) {
-                        eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
-                        self.feed.board("daemon", "spawn_replay_failed", Some(s.ticket));
-                    }
-                }
-                // A wake parked behind the rebuild (T-278) replays the same
-                // way; the words a Shift+Enter parked with it land as
-                // `prompt_sleeping` would have landed them.
-                let (resumes, rest): (Vec<PendingResume>, Vec<PendingResume>) =
-                    self.pending_resumes.drain(..).partition(|r| r.ticket == ticket);
-                self.pending_resumes = rest;
-                for r in resumes {
-                    match self.resume_session_in(r.session, r.confirm, r.plan) {
-                        Response::Spawned { .. } => {
-                            if let Some(text) = r.prompt {
-                                let words = Parked { text, brief: r.brief, title: r.brief };
-                                self.park(r.session, r.ticket, words, r.ack);
-                                self.crown_ask_retag(r.ticket, r.session, r.ask);
-                            }
-                        }
-                        Response::Err { message } => {
-                            eprintln!("mesimon: parked wake replay failed: {message}");
-                            self.feed.board("daemon", "resume_replay_failed", Some(ticket));
-                            self.crown_ask_dropped(
-                                r.ticket,
-                                None,
-                                "board",
-                                "its agent's wake failed after the worktree was rebuilt",
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                self.note_stage("spawn_replay", replay.elapsed());
+                self.replay_worktree_waiters(ticket);
             }
             Err((stage, message)) => {
                 // A start the crown asked for, or a wake of a worker it
@@ -20454,6 +20480,58 @@ impl Daemon {
         if let Some(refusal) = self.resume_guard(&rec, confirm) {
             return refusal;
         }
+        let (sid, mut cwd, ticket) =
+            (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
+        let strategy = self
+            .board
+            .ticket(ticket)
+            .map(|t| t.workspace_strategy())
+            .unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE);
+        // M4: never silently relocate an agent — a removed worktree/cwd is an
+        // explicit refusal, not a fallback into the main checkout. The one
+        // road that is not a relocation (T-278): a worktree ticket whose tree
+        // the archive reclaimed gets it rebuilt the way a first spawn does —
+        // the same branch where it survived, a fresh one off the base where
+        // `branch -d` took it — and the wake is parked behind the build.
+        if !cwd.is_dir()
+            || self.tearing_down.contains(&ticket)
+            || self.worktrees.get(&ticket).is_some_and(|b| {
+                matches!(
+                    b.status,
+                    BindingStatus::Evicted | BindingStatus::Queued | BindingStatus::Provisioning
+                )
+            })
+        {
+            if strategy != WorkspaceStrategy::Worktree {
+                return Response::Err {
+                    message: format!(
+                        "session's directory is gone ({}) — cannot resume",
+                        cwd.display()
+                    ),
+                };
+            }
+            match self.resolve_spawn_cwd(ticket) {
+                Ok(Some(p)) => cwd = p,
+                Ok(None) => {
+                    if !self.pending_resumes.iter().any(|r| r.session == id) {
+                        self.pending_resumes.push(PendingResume {
+                            ticket,
+                            session: id,
+                            confirm,
+                            prompt: None,
+                            brief: false,
+                            plan,
+                            ack: Ack::PROMPT,
+                            ask: None,
+                        });
+                    }
+                    self.persist_and_notify();
+                    return Response::Provisioning;
+                }
+                Err(message) => return Response::Err { message },
+            }
+        }
+        rec.cwd = cwd.display().to_string();
         let adapter = crate::agents::adapter(rec.kind).expect("agent kind checked above");
         // Nothing to come back to? Then "resume" and "start fresh" have the
         // SAME outcome — no conversation is lost either way — and refusing was
@@ -20532,49 +20610,6 @@ impl Daemon {
             }
         };
         let argv = spec.argv;
-        let (sid, mut cwd, ticket) =
-            (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
-        let strategy = self
-            .board
-            .ticket(ticket)
-            .map(|t| t.workspace_strategy())
-            .unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE);
-        // M4: never silently relocate an agent — a removed worktree/cwd is an
-        // explicit refusal, not a fallback into the main checkout. The one
-        // road that is not a relocation (T-278): a worktree ticket whose tree
-        // the archive reclaimed gets it rebuilt the way a first spawn does —
-        // the same branch where it survived, a fresh one off the base where
-        // `branch -d` took it — and the wake is parked behind the build.
-        if !cwd.is_dir() {
-            if strategy != WorkspaceStrategy::Worktree {
-                return Response::Err {
-                    message: format!(
-                        "session's directory is gone ({}) — cannot resume",
-                        cwd.display()
-                    ),
-                };
-            }
-            match self.resolve_spawn_cwd(ticket) {
-                Ok(Some(p)) => cwd = p,
-                Ok(None) => {
-                    if !self.pending_resumes.iter().any(|r| r.session == id) {
-                        self.pending_resumes.push(PendingResume {
-                            ticket,
-                            session: id,
-                            confirm,
-                            prompt: None,
-                            brief: false,
-                            plan,
-                            ack: Ack::PROMPT,
-                            ask: None,
-                        });
-                    }
-                    self.persist_and_notify();
-                    return Response::Provisioning;
-                }
-                Err(message) => return Response::Err { message },
-            }
-        }
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
         }
@@ -20996,6 +21031,11 @@ impl Daemon {
                     std::path::PathBuf::from(rec.cwd.clone()),
                     rec.ticket,
                 );
+                if self.tearing_down.contains(&ticket) {
+                    return Response::Err {
+                        message: "worktree is being removed — try again when ready".into(),
+                    };
+                }
                 if !cwd.is_dir() {
                     return Response::Err {
                         message: format!(
@@ -21409,6 +21449,11 @@ impl Daemon {
         ticket: Option<ulid::Ulid>,
         by: &Arc<Mutex<UnixStream>>,
     ) -> Response {
+        if ticket.is_some_and(|id| self.tearing_down.contains(&id)) {
+            return Response::Err {
+                message: "worktree is being removed — try again when ready".into(),
+            };
+        }
         let want = Focus::Terminal { ticket };
         if let Some(holder) = self.focus_held() {
             if holder != want {

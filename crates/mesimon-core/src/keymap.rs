@@ -591,6 +591,7 @@ pub enum Verb {
     ColumnOnMerged,
     /// The column's idle park (T-543): Enter cycles `COLUMN_SLEEP_MINUTES`.
     ColumnSleepAfter,
+    ColumnFreeWorktree,
     ColumnRequiresMerge,
     /// The column dialog's `Needs passed pipeline` row (T-739).
     ColumnRequiresPipeline,
@@ -1853,6 +1854,7 @@ pub struct Ctx {
     pub col_on_merged: String,
     /// The column's own idle park in minutes; zero is off (T-543).
     pub col_sleep_after: u32,
+    pub col_free_worktree: bool,
     pub col_requires_merge: bool,
     /// The column refuses entry unless the pipeline passed (T-739).
     pub col_requires_pipeline: bool,
@@ -6781,6 +6783,15 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ColumnFreeWorktree,
+        label: |_| "Free worktree".into(),
+        detail: |_| {
+            "on arrival ∙ merged and clean, after panes close ∙ keeps card and branch".into()
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ColumnReclaim,
         label: |_| "Offer".into(),
         detail: |_| "for finished tickets here: sleep their agents, archive them, or both".into(),
@@ -6884,7 +6895,7 @@ pub fn column_group(verb: Verb) -> Option<&'static str> {
         | Verb::ColumnRequiresPipeline
         | Verb::ColumnRequiresTicked => "COMING IN",
         Verb::ColumnOnWorking | Verb::ColumnOnDone | Verb::ColumnOnMerged => "GOING OUT",
-        Verb::ColumnReclaim | Verb::ColumnTrain => "FINISHED TICKETS",
+        Verb::ColumnReclaim | Verb::ColumnTrain | Verb::ColumnFreeWorktree => "FINISHED TICKETS",
         Verb::ColumnAgentBehaviour => "",
         Verb::ColumnClaudeMode
         | Verb::ColumnCodexSandbox
@@ -6930,6 +6941,7 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
             "" => "nothing".into(),
             w => w.into(),
         }),
+        Verb::ColumnFreeWorktree => Value::Switch(c.col_free_worktree),
         Verb::ColumnRequiresMerge => Value::Switch(c.col_requires_merge),
         Verb::ColumnRequiresPipeline => Value::Switch(c.col_requires_pipeline),
         Verb::ColumnRequiresTicked => Value::Switch(c.col_requires_ticked),
@@ -10451,7 +10463,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 15);
+        assert_eq!(column_items(&other).len(), 16);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(

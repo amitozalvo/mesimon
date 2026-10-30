@@ -39575,3 +39575,68 @@ Independent review found that the old reaper discarded its reservation before at
 pane listing proving absence releases it. Unavailable restart inspection reconstructs a
 parked agent's reaper reservation. A TERM-resistant real pane regression exercises failed
 removal, failed inspection, restart, and eventual confirmed absence.
+## A column frees a merged worktree while keeping its card (T-1040, 2026-10-30)
+
+Verified against integrated `e7828106` before implementation: archive reclamation and the
+missing-cwd resume road (T-278) already existed. Column reclamation did not. A remaining
+resume race tested only directory existence while asynchronous teardown could still be
+removing it. Resume now waits on `tearing_down` and provisioning/evicted bindings before
+provider preparation, as well as before opening its pane; the ticket terminal and shell
+wake also refuse an in-flight removal. A fresh spawn already waited in `resolve_spawn_cwd`.
+
+`ColumnSettings::free_worktree` is an arrival action, false when absent, with a row under
+Finished tickets. New kanban DONE opts in. Existing saved columns stay off, including the
+old v3 migration which otherwise reseeds from today's template. No `COLUMNS_SCHEMA` bump:
+forgetting this opt-in stops reclamation and widens no spawn or agent authority. This is
+separate from archive, the DONE/move gates and the merge train. Leaving the column or
+turning the setting off cancels a pending attempt; success consumes it, so a wake in the
+same column does not immediately evict again. Pending attempts/refusals are runtime state.
+
+The writer checks real authorization, the binding store's bar, `ticket_merged` for every
+leg, `holds_process` (including `codex_stopping`), reaping, pending starts/resumes, actual
+live panes and their directories. A refusal keeps the tree and supplies the card/page's
+worktree detail. An arrival waits for its holders to finish; it never kills them. Once
+admitted, `tearing_down` seals starts, resumes and ticket terminals until the worker reports
+back. The shared waiter replay runs after provisioning or a refused eviction; a successful
+eviction provisions the retained branch first when a waiter exists. T-1080 owns the queued
+Start/Wake shared-checkout ownership recheck, not this change. Integration must preserve
+both those ownership checks and this admission seal/replay; Sleeping alone releases neither.
+
+The worker verifies every leg's ticket marker, repository, current branch and unchanged tip,
+canonical paths under this board's worktrees directory, and clean Git status with `-uall`.
+A folder workspace's unversioned container is checked too: only known legs, an unchanged
+copied CLAUDE.md and an empty provider-created .codex directory are disposable. Any refusal
+precedes mutation of every leg. One same-directory rename stages the whole root, detaching
+all original leg paths together; only then are their Git registrations removed and the
+staged files unlinked. Branches and the binding stay; the latter becomes `Evicted`.
+
+**Atomicity limit:** the root rename is atomic; Git bookkeeping and recursive deletion are
+not. A failed rename leaves the original tree intact. A later bookkeeping failure retains
+the staged files, and a deletion failure may leave partial staged contents. Both report the
+exact retained path on the card/page and in the activity feed, keep all branches, and never
+claim complete cleanup. A daemon crash during that interval can also leave staged residue;
+there is no automatic residue sweeper. Do not describe recursive filesystem deletion as a
+transaction with rollback. Normal completion re-cuts every leg on wake through the existing
+`provision_existing` road.
+
+Coverage: filesystem regressions for modified/untracked files, ignored builds, foreign
+paths/markers, changed tips, folder/meta workspaces, failed staging and partial cleanup;
+daemon regressions for barred stores, process/reaper reservations, starts/resumes/terminals
+while the original directory still exists, and waiter replay on refusal; socket regressions
+for a sleeping-but-live pane, eventual reclamation and wake on the retained branch, plus
+unmerged/dirty refusal details. Column toggle, persistence/migration and dialog goldens cover
+the setting. The crown coordinates the broad workspace run; this branch runs `cargo ut`
+and the affected integration suites locally. No paid agent-behavior run: provider prompts,
+permissions and working instructions are unchanged.
+
+Local verification completed: 25/25 affected integration tests (archive reclamation 7,
+column reclamation 3, merge train 9, workspace 2, worktree 4), clean 26-owner fixture audit.
+The final unit attempt plus the remaining-package run covered 2,840 passes and ten
+configured ignores; the one failure was the unchanged
+`permission_connection_stays_duplex_until_process_cancellation` close-visibility race already
+recorded under T-1037/T-1054. It passed in the preceding unit attempt; no test or product
+change was made to it, and it was not retried for green. The earlier unit attempts required
+updating the dialog row count and the two Setup previews' intentional DONE automation mark.
+The last production edit only notifies clients when disabling the setting clears a refusal;
+its deterministic daemon regression passed after the integration run. Formatting and diff
+checks passed. Full workspace/second Claude transport coverage remains crown-coordinated.

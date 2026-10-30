@@ -1067,7 +1067,8 @@ pub(super) fn render(
     // the owed row, and said on the pull requests' row.
     let ship_words = ship_row.filter(|_| selected);
     let accordion = selected
-        && (!sessions.is_empty()
+        && (wt.is_some_and(|w| w.detail.is_some())
+            || !sessions.is_empty()
             || meta_row
             || snooze.is_some()
             || owed_row.is_some()
@@ -1104,6 +1105,13 @@ pub(super) fn render(
         // is doing now, where the work goes, and last what the ticket is.
         // Each kind has one place, so a card that grows a row grows it where
         // that kind always stands.
+
+        if let Some(detail) = wt.and_then(|w| w.detail.as_deref()) {
+            push(vec![Span::styled(
+                format!("  {}", truncate(detail, t_cells.saturating_sub(2))),
+                dim,
+            )]);
+        }
 
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.

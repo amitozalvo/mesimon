@@ -2046,6 +2046,114 @@ pub fn merge_refusal_detail(err: &str, base: &str) -> String {
 
 // ---- teardown ---------------------------------------------------------------
 
+/// Detaching a whole binding is atomic; deleting its staged contents and Git
+/// bookkeeping is not. A cleanup failure names the residue, never claims success.
+pub struct Eviction {
+    pub evicted: bool,
+    pub trouble: Option<String>,
+}
+
+/// Free only a managed, clean binding. All legs are checked before any mutation;
+/// one rename detaches the entire root, including every workspace leg together.
+/// No branch is deleted. Callers hold daemon admission closed for the whole call.
+pub fn evict(repo: &Path, root: &Path, ticket: ulid::Ulid, b: &Binding, legs: &[Leg]) -> Eviction {
+    let preflight = (|| -> Result<()> {
+        let root = root.canonicalize()?;
+        let path = b.path.canonicalize()?;
+        if b.status != BindingStatus::Attached
+            || !b.branch.starts_with("msmn/")
+            || b.path != path
+            || path.parent() != Some(root.as_path())
+            || legs.is_empty()
+        {
+            bail!("not a managed worktree under this board's state directory");
+        }
+        for leg in legs {
+            if leg.path.canonicalize()? != leg.path
+                || !leg.path.starts_with(&path)
+                || marker_ticket(&leg.path) != Some(ticket)
+            {
+                bail!("{}: worktree ownership could not be verified", leg_word(&leg.name));
+            }
+            let common = |p: &Path| -> Result<PathBuf> {
+                let value =
+                    git_read(p, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+                Ok(PathBuf::from(value.trim()).canonicalize()?)
+            };
+            if common(&leg.path)? != common(&leg.repo)?
+                || git_read(&leg.path, &["symbolic-ref", "--quiet", "HEAD"])?.trim()
+                    != format!("refs/heads/{}", b.branch)
+                || leg.branch_oid.is_empty()
+                || branch_tip(&leg.repo, &b.branch) != leg.branch_oid
+            {
+                bail!("{}: branch changed since the merge check", leg_word(&leg.name));
+            }
+            if !git_read(
+                &leg.path,
+                &["status", "--porcelain=v1", "-uall", "--ignore-submodules=none", "-z"],
+            )?
+            .is_empty()
+            {
+                bail!("{}: uncommitted changes or untracked files", leg_word(&leg.name));
+            }
+        }
+        if !b.has_root_leg() {
+            // A folder workspace has no Git status for its container. Its copied
+            // brief is disposable only while identical; all other stray files stay.
+            for entry in std::fs::read_dir(&path)? {
+                let entry = entry?;
+                if legs.iter().any(|l| l.path == entry.path()) {
+                    continue;
+                }
+                if entry.file_name() == "CLAUDE.md"
+                    && entry.file_type()?.is_file()
+                    && std::fs::read(entry.path())? == std::fs::read(repo.join("CLAUDE.md"))?
+                {
+                    continue;
+                }
+                if entry.file_name() == ".codex"
+                    && entry.file_type()?.is_dir()
+                    && std::fs::read_dir(entry.path())?.next().is_none()
+                {
+                    continue;
+                }
+                bail!(
+                    "workspace container has an untracked or changed file: {}",
+                    entry.file_name().to_string_lossy()
+                );
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = preflight {
+        return Eviction { evicted: false, trouble: Some(e.to_string()) };
+    }
+    let staged = root.join(format!(".evicted-{ticket}-{}", uuid::Uuid::new_v4()));
+    if let Err(e) = std::fs::rename(&b.path, &staged) {
+        return Eviction { evicted: false, trouble: Some(format!("cannot stage worktree: {e}")) };
+    }
+    // Each original path is now absent. Git unregisters it without touching the
+    // staged files. If bookkeeping fails, retain the complete staged tree for
+    // recovery rather than deleting the only directory it can help recover.
+    for leg in legs.iter().rev() {
+        let path = leg.path.to_string_lossy();
+        let _ = unlock(&leg.repo, &leg.path);
+        if let Err(e) = git(&leg.repo, &["worktree", "remove", "--force", &path]) {
+            return Eviction {
+                evicted: true,
+                trouble: Some(format!(
+                    "worktree cleanup failed; files retained at {}: {e}",
+                    staged.display()
+                )),
+            };
+        }
+    }
+    let trouble = std::fs::remove_dir_all(&staged)
+        .err()
+        .map(|e| format!("worktree freed; incomplete cleanup at {}: {e}", staged.display()));
+    Eviction { evicted: true, trouble }
+}
+
 /// Step 3 of the teardown order: OUR audit, never git's inverted refusal.
 /// Returns (modified+untracked count, human summary) — empty = clean.
 pub fn audit(wt: &Path) -> Result<(usize, String)> {
@@ -4800,5 +4908,145 @@ mod tests {
         // The seam, and its default.
         assert_eq!(init_timeout(), Duration::from_secs(600));
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod eviction_tests {
+    use super::*;
+    use crate::testrepo;
+
+    #[test]
+    fn eviction_preserves_untracked_and_modified_files_but_frees_ignored_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        testrepo::init(&repo, ".gitignore", "target/\n");
+        let root = dir.path().join("worktrees");
+        std::fs::create_dir(&root).unwrap();
+        let id = ulid::Ulid(1);
+        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
+        let legs = b.legs(&repo, "main");
+        std::fs::create_dir_all(b.path.join("stray/nested")).unwrap();
+        std::fs::write(b.path.join("stray/nested/precious"), "mine").unwrap();
+        let result = evict(&repo, &root, id, &b, &legs);
+        assert!(!result.evicted);
+        assert!(result.trouble.unwrap().contains("untracked"));
+        assert_eq!(std::fs::read_to_string(b.path.join("stray/nested/precious")).unwrap(), "mine");
+        std::fs::remove_dir_all(b.path.join("stray")).unwrap();
+        std::fs::write(b.path.join(".gitignore"), "changed").unwrap();
+        assert!(!evict(&repo, &root, id, &b, &legs).evicted);
+        testrepo::run(&b.path, &["restore", ".gitignore"]);
+        std::fs::create_dir(b.path.join("target")).unwrap();
+        std::fs::write(b.path.join("target/build"), "disposable").unwrap();
+        let result = evict(&repo, &root, id, &b, &legs);
+        assert!(result.evicted, "{:?}", result.trouble);
+        assert!(result.trouble.is_none(), "{:?}", result.trouble);
+        assert!(!b.path.exists());
+        assert_eq!(branch_tip(&repo, &b.branch), b.branch_oid);
+        let again = provision_existing(&repo, id, &Binding { status: BindingStatus::Evicted, ..b })
+            .unwrap();
+        assert!(again.path.join(".gitignore").exists());
+        assert!(!again.path.join("target").exists());
+    }
+
+    #[test]
+    fn eviction_distinguishes_a_failed_detach_from_partial_staged_cleanup() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        testrepo::init(&repo, ".gitignore", "target/\n");
+        let root = dir.path().join("worktrees");
+        std::fs::create_dir(&root).unwrap();
+        let id = ulid::Ulid(1);
+        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
+        let legs = b.legs(&repo, "main");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = evict(&repo, &root, id, &b, &legs);
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!result.evicted, "a failed rename leaves the original whole");
+        assert!(b.path.join(".gitignore").exists());
+        std::fs::create_dir(b.path.join("target")).unwrap();
+        std::fs::write(b.path.join("target/locked"), "build").unwrap();
+        std::fs::set_permissions(b.path.join("target"), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+        let result = evict(&repo, &root, id, &b, &legs);
+        let staged = std::fs::read_dir(&root).unwrap().next().unwrap().unwrap().path();
+        std::fs::set_permissions(staged.join("target"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert!(result.evicted && !b.path.exists());
+        let trouble = result.trouble.expect("partial deletion must be reported");
+        assert!(
+            trouble.contains("incomplete cleanup") && trouble.contains(staged.to_str().unwrap()),
+            "{trouble}"
+        );
+        assert_eq!(branch_tip(&repo, &b.branch), b.branch_oid);
+        assert!(
+            provision_existing(&repo, id, &Binding { status: BindingStatus::Evicted, ..b }).is_ok()
+        );
+    }
+
+    #[test]
+    fn eviction_refuses_foreign_paths_ownership_and_changed_tips() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        testrepo::init(&repo, "file", "one");
+        let root = dir.path().join("worktrees");
+        std::fs::create_dir(&root).unwrap();
+        let id = ulid::Ulid(1);
+        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
+        let legs = b.legs(&repo, "main");
+        assert!(!evict(&repo, dir.path(), id, &b, &legs).evicted);
+        assert!(!evict(&repo, &root, ulid::Ulid(2), &b, &legs).evicted);
+        testrepo::commit(&b.path, "file", "two", "external commit");
+        assert!(!evict(&repo, &root, id, &b, &legs).evicted);
+        assert_eq!(std::fs::read_to_string(b.path.join("file")).unwrap(), "two");
+    }
+
+    #[test]
+    fn eviction_checks_every_workspace_leg_before_detaching_the_whole_root() {
+        for meta in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path().join("repo");
+            if meta {
+                testrepo::init(&repo, ".gitignore", "api/\nweb/\n");
+            }
+            testrepo::init(&repo.join("api"), "file", "api");
+            testrepo::init(&repo.join("web"), "file", "web");
+            let root = dir.path().join("worktrees");
+            std::fs::create_dir(&root).unwrap();
+            let id = ulid::Ulid(1);
+            let b = provision_workspace(
+                &repo,
+                &root,
+                &crate::gitstatus::census(&repo),
+                meta,
+                id,
+                "T-1",
+                "workspace",
+                false,
+                &mut |_, _| {},
+            )
+            .unwrap();
+            let legs = b.legs(&repo, "main");
+            std::fs::write(b.path.join("web/precious"), "mine").unwrap();
+            assert!(!evict(&repo, &root, id, &b, &legs).evicted);
+            assert!(legs.iter().all(|l| l.path.join("file").exists() || l.name.is_empty()));
+            std::fs::remove_file(b.path.join("web/precious")).unwrap();
+            if !meta {
+                std::fs::write(b.path.join("stray"), "mine").unwrap();
+                assert!(!evict(&repo, &root, id, &b, &legs).evicted);
+                std::fs::remove_file(b.path.join("stray")).unwrap();
+            }
+            let result = evict(&repo, &root, id, &b, &legs);
+            assert!(result.evicted && result.trouble.is_none(), "{:?}", result.trouble);
+            assert!(legs
+                .iter()
+                .all(|l| !l.path.exists() && branch_tip(&l.repo, &b.branch) == l.branch_oid));
+            assert!(!b.path.exists());
+            let again =
+                provision_existing(&repo, id, &Binding { status: BindingStatus::Evicted, ..b })
+                    .unwrap();
+            assert!(verify_on_disk(id, &again, &repo));
+        }
     }
 }
