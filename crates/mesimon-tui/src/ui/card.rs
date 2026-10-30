@@ -383,8 +383,9 @@ fn worktree_mark(
         "evicted" => (format!("{g}-"), WtTone::Quiet),
         _ if w.conflict => (format!("{g}!"), WtTone::Err),
         _ if w.merged => (format!("{g}{check}"), WtTone::Quiet),
-        // Behind main — the m flow's rebase stage comes before merge.
-        _ if w.needs_rebase => (format!("{g}{down}"), WtTone::Ready),
+        // Main moved past this branch. Keep the direction visible, but only
+        // color commits that are waiting to merge; the moved base is not work.
+        _ if w.needs_rebase => (format!("{g}{down}"), WtTone::Quiet),
         _ if w.ahead > 0 => (format!("{g}{up}"), WtTone::Ready),
         // Nothing to report — and the trailing space is load-bearing: the
         // mark is right-aligned against the fixed age slot, so a one-cell
