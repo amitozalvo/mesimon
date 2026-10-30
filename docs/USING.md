@@ -925,12 +925,15 @@ while the board's terminal is handed to an agent pane or an editor.
 ## Pictures in notes
 
 Pictures can be pasted into a ticket note or new-ticket description with **Ctrl+V**
+(**Alt+V** also works, including the Windows Claude Code convention)
 while the body is focused. Each appears as `[Image #N]`; save keeps the PNG with the
 ticket, and the ticket's links menu (**Ctrl+K** on the board or the ticket page) opens it in
 your desktop image viewer.
 The ticket's agent can read pictures through `read_attachment`. Clipboard text still
 pastes as text. Local macOS, X11, and Wayland desktops are supported (Wayland needs
-clipboard data-control support); SSH and WSL image paste are not supported.
+clipboard data-control support). WSL2 reads pictures from the Windows host clipboard through
+`powershell.exe` interop; Windows interop must be enabled. WSL clipboard text also pastes as
+text. SSH image paste is not supported.
 Pictures are limited to 10 MiB and 25 megapixels each, with 50 MiB of pending
 pictures per draft. Discarding a draft discards its new pictures. Shared boards
 currently synchronize the note text only: a picture absent on another machine is

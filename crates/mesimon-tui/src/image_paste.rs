@@ -2,8 +2,37 @@
 use anyhow::{Context, Result};
 use mesimon_core::attachment::{self, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS};
 use std::io::Cursor;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{mpsc, Arc};
 use ulid::Ulid;
+
+const WSL_POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+const POWERSHELL_IMAGE: &str = concat!(
+    "$ErrorActionPreference='Stop'; ",
+    "Add-Type -AssemblyName System.Windows.Forms; ",
+    "$image=[Windows.Forms.Clipboard]::GetImage(); ",
+    "if ($null -eq $image) { $text=[Windows.Forms.Clipboard]::GetText(); ",
+    "if ([string]::IsNullOrEmpty($text)) { exit 2 }; ",
+    "[Console]::Out.Write('TEXT:'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))) } ",
+    "else { if ([long]$image.Width * [long]$image.Height -gt 25000000) { exit 3 }; ",
+    "$stream=New-Object System.IO.MemoryStream; ",
+    "try { $image.Save($stream,[System.Drawing.Imaging.ImageFormat]::Png); ",
+    "if ($stream.Length -gt 10485760) { exit 4 }; ",
+    "[Console]::Out.Write('PNG:'+[Convert]::ToBase64String($stream.ToArray())) } ",
+    "finally { $stream.Dispose(); $image.Dispose() } }"
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Native,
+    WslHost,
+}
+
+fn select_backend(ssh: bool, wsl: bool) -> Result<Backend> {
+    anyhow::ensure!(!ssh, "image paste is unavailable over SSH; terminal text paste still works");
+    Ok(if wsl { Backend::WslHost } else { Backend::Native })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DraftImage {
@@ -26,24 +55,23 @@ pub struct Pending {
 }
 
 pub fn start(editor: Ulid, body: crate::text::TextArea) -> Result<Pending> {
-    anyhow::ensure!(
-        !["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+    let backend = select_backend(
+        ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
             .iter()
             .any(|key| std::env::var_os(key).is_some()),
-        "image paste is unavailable over SSH; terminal text paste still works"
-    );
-    anyhow::ensure!(
-        !crate::opener::is_wsl(),
-        "image paste is unavailable under WSL; terminal text paste still works"
-    );
+        crate::opener::is_wsl(),
+    )?;
     let (tx, result) = mpsc::channel();
     std::thread::Builder::new().name("mesimon-paste".into()).spawn(move || {
-        let _ = tx.send(read().map_err(|e| format!("{e:#}")));
+        let _ = tx.send(read(backend).map_err(|e| format!("{e:#}")));
     })?;
     Ok(Pending { editor, body, result, started: std::time::Instant::now(), timed_out: false })
 }
 
-fn read() -> Result<Pasted> {
+fn read(backend: Backend) -> Result<Pasted> {
+    if backend == Backend::WslHost {
+        return read_wsl_host_clipboard();
+    }
     let mut clipboard = arboard::Clipboard::new().context("desktop clipboard unavailable")?;
     match clipboard.get_image() {
         Ok(image) => Ok(Pasted::Image(encode(image)?)),
@@ -55,6 +83,75 @@ fn read() -> Result<Pasted> {
         }
         Err(e) => Err(e).context("could not read clipboard picture"),
     }
+}
+
+fn powershell_program() -> Result<PathBuf> {
+    crate::opener::which_on_path("powershell.exe")
+        .or_else(|| {
+            let path = PathBuf::from(WSL_POWERSHELL);
+            path.is_file().then_some(path)
+        })
+        .context("Windows PowerShell was not found; check WSL Windows interop")
+}
+
+fn read_wsl_host_clipboard() -> Result<Pasted> {
+    let output = Command::new(powershell_program()?)
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-Command", POWERSHELL_IMAGE])
+        .output()
+        .context("could not read the Windows clipboard through WSL interop")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Windows clipboard read failed (PowerShell exit {}){}",
+        output.status.code().unwrap_or(-1),
+        if output.status.code() == Some(2) {
+            ": the Windows clipboard has no picture or text"
+        } else if output.status.code() == Some(3) {
+            ": picture exceeds 25 megapixels"
+        } else if output.status.code() == Some(4) {
+            ": picture exceeds 10 MiB"
+        } else {
+            ""
+        }
+    );
+    decode_wsl_output(&output.stdout)
+}
+
+fn decode_wsl_output(output: &[u8]) -> Result<Pasted> {
+    let output = std::str::from_utf8(output)?.trim();
+    if let Some(encoded) = output.strip_prefix("PNG:") {
+        Ok(Pasted::Image(decode_wsl_png(encoded.as_bytes())?))
+    } else if let Some(encoded) = output.strip_prefix("TEXT:") {
+        Ok(Pasted::Text(decode_wsl_text(encoded.as_bytes())?))
+    } else {
+        anyhow::bail!("Windows clipboard returned an unknown format")
+    }
+}
+
+fn decode_wsl_text(encoded: &[u8]) -> Result<String> {
+    use base64::Engine as _;
+    Ok(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(encoded)?)?)
+}
+
+fn decode_wsl_png(encoded: &[u8]) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    let encoded = std::str::from_utf8(encoded)?.trim();
+    let png = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    anyhow::ensure!(png.len() <= MAX_BYTES, "picture exceeds 10 MiB");
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PIXELS as u32);
+    limits.max_image_height = Some(MAX_PIXELS as u32);
+    limits.max_alloc = Some(MAX_PIXELS * 4);
+    let decoder = image::codecs::png::PngDecoder::with_limits(Cursor::new(png.as_slice()), limits)
+        .context("Windows clipboard did not return a valid PNG image")?;
+    use image::ImageDecoder as _;
+    let (width, height) = decoder.dimensions();
+    anyhow::ensure!(
+        width > 0 && height > 0 && u64::from(width) * u64::from(height) <= MAX_PIXELS,
+        "picture exceeds 25 megapixels"
+    );
+    image::DynamicImage::from_decoder(decoder)
+        .context("Windows clipboard returned a corrupt PNG image")?;
+    Ok(png)
 }
 
 fn encode(image: arboard::ImageData<'_>) -> Result<Vec<u8>> {
@@ -129,6 +226,40 @@ pub fn check_draft(images: &[DraftImage], bytes: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_selection_uses_the_windows_host_only_for_local_wsl() {
+        assert_eq!(select_backend(false, false).unwrap(), Backend::Native);
+        assert_eq!(select_backend(false, true).unwrap(), Backend::WslHost);
+        assert!(select_backend(true, false).is_err());
+        assert!(select_backend(true, true).is_err());
+    }
+
+    #[test]
+    fn wsl_clipboard_base64_decodes_to_a_valid_bounded_png() {
+        use base64::Engine as _;
+        let png = encode(arboard::ImageData {
+            width: 1,
+            height: 1,
+            bytes: std::borrow::Cow::Borrowed(&[1, 2, 3, 255]),
+        })
+        .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let decoded = decode_wsl_png(format!("{encoded}\r\n").as_bytes()).unwrap();
+        assert_eq!(image::load_from_memory(&decoded).unwrap().to_rgba8().as_raw(), &[1, 2, 3, 255]);
+        assert_eq!(decode_wsl_text(b"aGVsbG8=").unwrap(), "hello");
+        assert!(decode_wsl_text(b"//8=").is_err(), "invalid UTF-8 is refused");
+        assert!(matches!(
+            decode_wsl_output(format!("PNG:{encoded}").as_bytes()).unwrap(),
+            Pasted::Image(_)
+        ));
+        assert!(
+            matches!(decode_wsl_output(b"TEXT:aGVsbG8=").unwrap(), Pasted::Text(text) if text == "hello")
+        );
+        assert!(decode_wsl_output(b"unknown").is_err());
+        assert!(decode_wsl_png(b"not base64").is_err());
+        assert!(decode_wsl_png(&vec![b'A'; MAX_BYTES * 2]).is_err());
+    }
 
     #[test]
     fn packing_never_overwrites_an_explicit_markdown_target() {

@@ -263,6 +263,7 @@ mod tests {
     fn alt_v_aliases_text_field_paste_without_changing_other_keys() {
         let v = KeyCode::Char('v');
         assert_eq!(to_key_text(v, KeyModifiers::ALT), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::CONTROL), Some(Key::Ctrl('v')));
         assert_eq!(to_key_text(v, KeyModifiers::CONTROL | KeyModifiers::ALT), Some(Key::Ctrl('v')));
         assert_eq!(to_key_text(v, KeyModifiers::NONE), Some(Key::Char('v')));
         assert_eq!(to_key(v, KeyModifiers::ALT), Some(Key::Char('v')));

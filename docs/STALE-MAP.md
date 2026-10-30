@@ -39436,3 +39436,13 @@ That focused crown test passes on both hooks and mod, with clean fixture audits.
 Hosted CI and Linux were not run. Next real-ticket work should measure elapsed time,
 active checks and rework; use narrow fixtures for instruction experiments, then return
 normal development to a crown after deliberate integration/handover.
+
+## WSL reads clipboard pictures from the Windows host (T-1022, 2026-10-30)
+
+Alt+V reaches the existing image paste action in text fields. For local WSL2, the
+clipboard backend invokes `powershell.exe` in STA mode and Windows Forms converts a
+clipboard image to PNG (with text fallback); SSH remains refused and native desktop
+reads stay on arboard.
+The helper caps dimensions before encoding, and Rust validates the base64 PNG, byte
+size and pixel count before accepting it into a draft. Focused selection/decode and
+key-route tests cover the code path. Real WSL/Windows host validation was unavailable.

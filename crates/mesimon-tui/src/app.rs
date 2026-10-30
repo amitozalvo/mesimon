@@ -22904,7 +22904,9 @@ mod tests {
             body: TextArea::new(8),
             result: dead,
         });
-        app.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL).unwrap();
+        // Exercise the Windows/Claude Code chord through the same editor
+        // dispatch as ^v, without starting a real clipboard backend.
+        app.handle_key(KeyCode::Char('v'), KeyModifiers::ALT).unwrap();
         assert!(editor(&app).asking(), "the field grew into the room");
         assert_eq!(editor(&app).body.as_str(), "look");
         queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2, 3])));
