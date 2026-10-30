@@ -56,6 +56,15 @@ const _: () = assert!(RENEW_AGAIN < RENEW_WINDOW);
 /// (`mesimon_core::team::enabled`).
 const TEAMS_OFF: &str = "board sharing is off; start mesimon with MESIMON_TEAMS=1 to use it";
 
+/// The shared receiver contract. Durable ingress and retry are supplied by
+/// T-656 when these independently reviewed branches are integrated.
+#[derive(Debug, PartialEq, Eq)]
+enum ApplyOutcome {
+    Applied,
+    Deferred,
+    Rejected,
+}
+
 pub(super) struct TeamCtx {
     jobs: Sender<Job>,
     pub(super) device: Option<DeviceFile>,
@@ -1441,9 +1450,25 @@ impl Daemon {
     // ---- incoming: a record becomes board state ---------------------------
 
     fn team_retry_pending(&mut self) {
-        let pending = std::mem::take(&mut self.team.pending);
-        for record in pending {
-            self.team_apply(record);
+        if mesimon_core::team::enabled() {
+            self.team_retry_pending_records();
+        }
+    }
+
+    // Standalone branch scaffolding only: integration uses T-656's durable
+    // retained records and bounded retry here, rather than this volatile queue.
+    fn team_retry_pending_records(&mut self) {
+        loop {
+            let pending = std::mem::take(&mut self.team.pending);
+            let count = pending.len();
+            for record in pending {
+                if self.team_apply_record(&record) == ApplyOutcome::Deferred {
+                    self.team.pending.push(record);
+                }
+            }
+            if self.team.pending.is_empty() || self.team.pending.len() >= count {
+                break;
+            }
         }
     }
 
@@ -1451,35 +1476,39 @@ impl Daemon {
         if !mesimon_core::team::enabled() {
             return;
         }
-        self.team_apply_record(record);
+        if self.team_apply_record(&record) == ApplyOutcome::Deferred {
+            self.team.pending.push(record);
+        }
     }
 
-    fn team_apply_record(&mut self, record: StoredRecord) {
-        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
-        let Some(state) = self.team.state.as_ref() else { return };
-        let Some(board) = state.board_id() else { return };
+    fn team_apply_record(&mut self, record: &StoredRecord) -> ApplyOutcome {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else {
+            return ApplyOutcome::Deferred;
+        };
+        let Some(state) = self.team.state.as_ref() else { return ApplyOutcome::Rejected };
+        let Some(board) = state.board_id() else { return ApplyOutcome::Rejected };
         if state.needs_rejoin {
-            return;
+            return ApplyOutcome::Rejected;
         }
-        // Our own accepted writes come back on the next pull; the digest
-        // already matches and nothing needs applying.
+        // Own echoes are accounted for by the local receipt. A claimed
+        // self author must not authorize a new inbound floor on its own.
         if record.record.author == keys.id() {
-            return;
+            return ApplyOutcome::Rejected;
+        }
+        let Some(author) = state.verified_members.get(&record.record.author.to_hex()).cloned()
+        else {
+            self.team.want_members = true;
+            return ApplyOutcome::Deferred;
+        };
+        // A missing directory may supply an unknown author's identity. A
+        // known revoked or read-only identity has already been decided: its
+        // rejected records must not become eligible after a later re-invite.
+        if !author.active || !author.role.may_write() {
+            return ApplyOutcome::Rejected;
         }
         let Some(key) = state.key(record.record.epoch) else {
             self.team.want_keys = true;
-            self.team.pending.push(record);
-            return;
-        };
-        let Some(author) = state
-            .verified_members
-            .get(&record.record.author.to_hex())
-            .filter(|m| m.active && m.role.may_write())
-            .cloned()
-        else {
-            self.team.want_members = true;
-            self.team.pending.push(record);
-            return;
+            return ApplyOutcome::Deferred;
         };
         let scope = RecordScope { board, object: record.object, revision: record.revision };
         let plaintext = match crypto::open(&key, scope, &record.record, &author.public) {
@@ -1487,13 +1516,13 @@ impl Daemon {
             Err(e) => {
                 self.team.error =
                     Some(format!("a record from {} did not verify: {e}", author.display_name));
-                return;
+                return ApplyOutcome::Rejected;
             }
         };
         let Ok(body) = serde_json::from_slice::<RecordBody>(&plaintext) else {
             self.team.error =
                 Some(format!("a record from {} is not readable", author.display_name));
-            return;
+            return ApplyOutcome::Rejected;
         };
         if body.schema > RECORD_SCHEMA {
             self.notices.retain(|n| n.kind != "team_schema");
@@ -1501,7 +1530,7 @@ impl Daemon {
                 "team_schema",
                 "a teammate runs a newer mesimon; update to see their changes",
             ));
-            return;
+            return ApplyOutcome::Deferred;
         }
         let from_owner =
             state.verified_owner.as_deref() == Some(record.record.author.to_hex().as_str());
@@ -1512,29 +1541,31 @@ impl Daemon {
                 | SharedObject::Columns { .. }
         ) && !from_owner
         {
-            return;
+            return ApplyOutcome::Rejected;
         }
         if let SharedObject::Members { members } = &body.object {
             if record.object != ObjectId(MEMBERS_OBJECT)
                 || state.is_owner()
                 || record.revision <= state.membership_revision
             {
-                return;
+                return ApplyOutcome::Rejected;
             }
             let mut verified = std::collections::BTreeMap::new();
             for m in members {
-                let Some(pin) = VerifiedMember::from_shared(m) else { return };
+                let Some(pin) = VerifiedMember::from_shared(m) else {
+                    return ApplyOutcome::Rejected;
+                };
                 if state.verified_members.get(&m.device).is_some_and(|p| p.public != pin.public)
                     || verified.insert(m.device.clone(), pin).is_some()
                 {
-                    return;
+                    return ApplyOutcome::Rejected;
                 }
             }
             let owner_id = record.record.author.to_hex();
             if verified.get(&owner_id) != Some(&author)
                 || verified.iter().any(|(id, p)| p.role == Role::Owner && *id != owner_id)
             {
-                return;
+                return ApplyOutcome::Rejected;
             }
             let old = self.team.state.clone();
             let state = self.team.state.as_mut().expect("sharing state");
@@ -1548,14 +1579,12 @@ impl Daemon {
             state.membership_revision = record.revision;
             if !self.team_save() {
                 self.team.state = old;
-                self.team.pending.push(record);
-                return;
+                return ApplyOutcome::Deferred;
             }
-            self.team_retry_pending();
-            return;
+            return ApplyOutcome::Applied;
         }
         if record.object == ObjectId(MEMBERS_OBJECT) {
-            return;
+            return ApplyOutcome::Rejected;
         }
         let name = mesimon_core::text::scrub_text(&author.display_name);
         let member = Principal::Remote { member: name.clone() };
@@ -1563,6 +1592,12 @@ impl Daemon {
         // nothing to send back.
         let key = record.object.to_hex();
         let pending = state.outbox.iter().any(|o| o.object == key);
+        if !pending
+            && matches!(&body.object, SharedObject::Note(note)
+            if !note.deleted && self.board.ticket(note.ticket).is_none())
+        {
+            return ApplyOutcome::Deferred;
+        }
         if let Some(state) = self.team.state.as_mut() {
             state.published.insert(
                 key,
@@ -1582,7 +1617,7 @@ impl Daemon {
         // ours. Applying theirs first was what lost a rename made here
         // moments before their older record arrived.
         if pending {
-            return;
+            return ApplyOutcome::Applied;
         }
         self.team.applying = true;
         match body.object {
@@ -1590,11 +1625,6 @@ impl Daemon {
                 self.team_apply_ticket(ulid::Ulid::from(record.object), shared, &member)
             }
             SharedObject::Note(note) => {
-                if self.board.ticket(note.ticket).is_none() && !note.deleted {
-                    self.team.applying = false;
-                    self.team.pending.push(record);
-                    return;
-                }
                 self.team_apply_note(ulid::Ulid::from(record.object), note, &member);
             }
             SharedObject::Columns { names } => self.team_apply_columns(names),
@@ -1606,6 +1636,7 @@ impl Daemon {
             }
         }
         self.team.applying = false;
+        ApplyOutcome::Applied
     }
 
     fn team_apply_ticket(
@@ -2071,10 +2102,10 @@ mod tests {
         };
         d.team_accept_members(vec![row(&peer, vec![0])]);
         let object = ObjectId::random();
-        d.team_apply_record(record(&d, &peer, object, 1, peer_ticket()));
+        d.team_apply_record(&record(&d, &peer, object, 1, peer_ticket()));
         assert!(d.board.ticket(ulid::Ulid::from(object)).is_none());
         // Even a correctly signed directory from a peer is not owner authority.
-        d.team_apply_record(record(
+        d.team_apply_record(&record(
             &d,
             &peer,
             ObjectId(MEMBERS_OBJECT),
@@ -2082,7 +2113,7 @@ mod tests {
             directory(true, Role::Contributor),
         ));
         assert!(!d.team.state.as_ref().unwrap().verified_members.contains_key(&peer.id().to_hex()));
-        d.team_apply_record(record(
+        d.team_apply_record(&record(
             &d,
             &owner,
             ObjectId::random(),
@@ -2090,16 +2121,16 @@ mod tests {
             directory(true, Role::Contributor),
         ));
         assert!(!d.team.state.as_ref().unwrap().verified_members.contains_key(&peer.id().to_hex()));
-        d.team_apply_record(record(
+        d.team_apply_record(&record(
             &d,
             &owner,
             ObjectId(MEMBERS_OBJECT),
             1,
             directory(true, Role::Contributor),
         ));
-        d.team_apply_record(record(&d, &peer, object, 1, peer_ticket()));
+        d.team_apply_record(&record(&d, &peer, object, 1, peer_ticket()));
         assert_eq!(d.board.ticket(ulid::Ulid::from(object)).unwrap().title, "peer edit");
-        d.team_apply_record(record(
+        d.team_apply_record(&record(
             &d,
             &peer,
             ObjectId(mesimon_core::team::BOARD_OBJECT),
@@ -2109,7 +2140,7 @@ mod tests {
         assert_ne!(d.team.state.as_ref().unwrap().title.as_deref(), Some("not the owner"));
         // Downgrade, then revocation, are the signed owner's decisions.
         for (revision, active, role) in [(2, true, Role::Viewer), (3, false, Role::Contributor)] {
-            d.team_apply_record(record(
+            d.team_apply_record(&record(
                 &d,
                 &owner,
                 ObjectId(MEMBERS_OBJECT),
@@ -2117,7 +2148,7 @@ mod tests {
                 directory(active, role),
             ));
             d.team.state = TeamState::load(&d.paths.team_file()).unwrap();
-            d.team_apply_record(record(
+            d.team_apply_record(&record(
                 &d,
                 &owner,
                 ObjectId(MEMBERS_OBJECT),
@@ -2125,7 +2156,10 @@ mod tests {
                 directory(true, Role::Contributor),
             ));
             let next = ObjectId::random();
-            d.team_apply_record(record(&d, &peer, next, 1, peer_ticket()));
+            assert_eq!(
+                d.team_apply_record(&record(&d, &peer, next, 1, peer_ticket())),
+                ApplyOutcome::Rejected
+            );
             assert!(d.board.ticket(ulid::Ulid::from(next)).is_none());
             assert_eq!(d.team.state.as_ref().unwrap().membership_revision, revision);
         }
@@ -2144,7 +2178,12 @@ mod tests {
         d.team_accept_members(vec![row(&peer, vec![u32::MAX])]);
         d.team_rotate();
         assert!(key_requests(&rx).iter().flatten().all(|w| w.recipient != peer.id()));
-        d.team_apply_record(record(&d, &peer, ObjectId::random(), 1, peer_ticket()));
+        let rejected = ObjectId::random();
+        assert_eq!(
+            d.team_apply_record(&record(&d, &peer, rejected, 1, peer_ticket())),
+            ApplyOutcome::Rejected
+        );
+        assert!(!d.team.pending.iter().any(|r| r.object == rejected));
         assert!(!d.team.state.as_ref().unwrap().verified_members[&peer.id().to_hex()].active);
         assert_eq!(
             d.team.state.as_ref().unwrap().verified_members,
@@ -2153,7 +2192,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_save_failure_keeps_old_authority_and_retries() {
+    fn directory_save_outcomes_preserve_authority_and_leave_retry_to_the_caller() {
         let dir = tempfile::tempdir().unwrap();
         let (mut d, _) = owner_daemon(dir.path());
         let owner = crypto::DeviceKeys::generate();
@@ -2175,17 +2214,42 @@ mod tests {
                 .shared(),
             ],
         });
+        let directory = record(&d, &owner, ObjectId(MEMBERS_OBJECT), 9, body);
+        let peer_object = ObjectId::random();
+        let peer_record = record(&d, &peer, peer_object, 1, peer_ticket());
+        assert_eq!(d.team_apply_record(&peer_record), ApplyOutcome::Deferred);
+        assert!(d.team.pending.is_empty(), "the receiver does not retain input itself");
+        d.team.pending.push(peer_record);
+        let old_state = d.team.state.clone();
         std::fs::create_dir(d.paths.team_file()).unwrap();
-        d.team_apply_record(record(&d, &owner, ObjectId(MEMBERS_OBJECT), 9, body));
-        assert_eq!(d.team.state.as_ref().unwrap().verified_members, old);
-        assert_eq!(d.team.state.as_ref().unwrap().membership_revision, 0);
-        assert_eq!(d.team.pending.len(), 1);
+        assert_eq!(d.team_apply_record(&directory), ApplyOutcome::Deferred);
+        assert_eq!(d.team.state, old_state, "authority, revision and cursor roll back together");
+        assert_eq!(d.team.pending.len(), 1, "directory retention belongs to the shared caller");
         std::fs::remove_dir(d.paths.team_file()).unwrap();
-        let pending = d.team.pending.pop().unwrap();
-        d.team_apply_record(pending);
+        assert_eq!(d.team_apply_record(&directory), ApplyOutcome::Applied);
         let saved = TeamState::load(&d.paths.team_file()).unwrap().unwrap();
         assert_eq!(saved.membership_revision, 9);
         assert!(saved.verified_members.contains_key(&peer.id().to_hex()));
+        assert_eq!(d.team.pending.len(), 1, "no recursive retry from the directory receiver");
+        assert!(d.board.ticket(ulid::Ulid::from(peer_object)).is_none());
+        d.team_retry_pending_records();
+        assert!(d.team.pending.is_empty());
+        assert!(d.board.ticket(ulid::Ulid::from(peer_object)).is_some());
+        assert_eq!(d.team_apply_record(&directory), ApplyOutcome::Rejected);
+        assert_eq!(d.team.state.as_ref().unwrap().membership_revision, 9);
+    }
+
+    #[test]
+    fn a_claimed_self_author_does_not_authorize_an_inbound_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _) = owner_daemon(dir.path());
+        let other = crypto::DeviceKeys::generate();
+        let mut incoming = record(&d, &other, ObjectId::random(), u64::MAX, peer_ticket());
+        incoming.record.author = d.team.device.as_ref().unwrap().keys().unwrap().id();
+        let before = d.team.state.clone();
+        assert_eq!(d.team_apply_record(&incoming), ApplyOutcome::Rejected);
+        assert_eq!(d.team.state, before);
+        assert!(d.team.pending.is_empty());
     }
 
     #[test]
