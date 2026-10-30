@@ -79,11 +79,12 @@
 //! posted under the terminal's signature and no program of ours is launched.
 //! A terminal with no escape shows nothing: falling back to the helper would
 //! launch exactly what the row was chosen to keep from launching.
-//! `MESIMON_NOTIFY=off` still silences it; the sound ladder is untouched.
+//! `MESIMON_NOTIFY=off` still silences it; the sound ladder is independent.
 //!
 //! **The sound ladder** is `MESIMON_SOUND` (`off` or a program) → `afplay` on
-//! macOS → `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal
-//! bell, which is the rung nothing can take away.
+//! macOS → Windows system sounds on Windows → `paplay` / `pw-play` /
+//! `canberra-gtk-play` on Linux → the terminal bell, which is the rung nothing
+//! can take away.
 //!
 //! **The two escape rungs write to OUR stdout, and since T-291 they say so.**
 //! Every other rung spawns a program and is therefore indifferent to what the
@@ -410,6 +411,8 @@ pub enum Player {
     /// `MESIMON_SOUND=<program>`, called `<program> <sound>` with the name.
     Custom(String),
     Afplay,
+    /// The Windows host's built-in system sound, invoked through PowerShell.
+    Windows,
     Paplay,
     PwPlay,
     Canberra,
@@ -434,6 +437,7 @@ impl Player {
                 let f = sound.file_macos()?;
                 std::fs::metadata(&f).is_ok().then(|| vec!["afplay".to_string(), f])
             }
+            Player::Windows => Some(windows_sound_argv(sound)),
             Player::Paplay => v(vec!["paplay".into(), file(sound.event_freedesktop()?)?]),
             Player::PwPlay => v(vec!["pw-play".into(), file(sound.event_freedesktop()?)?]),
             // The theme-aware one: it takes the event, not a path, so it
@@ -450,6 +454,7 @@ impl Player {
             Player::Bell => "the terminal bell".into(),
             Player::Custom(p) => format!("{p} ($MESIMON_SOUND)"),
             Player::Afplay => "afplay".into(),
+            Player::Windows => "Windows system sounds (PowerShell)".into(),
             Player::Paplay => "paplay".into(),
             Player::PwPlay => "pw-play".into(),
             Player::Canberra => "canberra-gtk-play".into(),
@@ -817,13 +822,25 @@ fn in_kitty(window_id: Option<&str>, term_program: Option<&str>) -> bool {
 }
 
 fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Player {
+    find_player_for(env, cfg!(target_os = "macos"), cfg!(target_os = "windows"), which)
+}
+
+fn find_player_for(
+    env: Option<&str>,
+    macos: bool,
+    windows: bool,
+    which: impl Fn(&str) -> Option<PathBuf>,
+) -> Player {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) if v.eq_ignore_ascii_case("off") => return Player::Off,
         Some(v) => return Player::Custom(v.to_string()),
         None => {}
     }
-    if cfg!(target_os = "macos") {
+    if macos {
         return Player::Afplay;
+    }
+    if windows {
+        return Player::Windows;
     }
     for (name, rung) in [
         ("paplay", Player::Paplay),
@@ -835,6 +852,29 @@ fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Pl
         }
     }
     Player::Bell
+}
+
+/// Map the existing sound choices onto Windows' built-in notification sounds.
+/// PowerShell and System.Media are present on supported Windows installations,
+/// and the call returns as soon as the sound has been queued.
+fn windows_sound_argv(sound: Sound) -> Vec<String> {
+    let system_sound = match sound {
+        Sound::Off => return Vec::new(),
+        Sound::Glass | Sound::Ping => "Asterisk",
+        Sound::Tink | Sound::Purr => "Beep",
+        Sound::Submarine | Sound::Hero => "Exclamation",
+    };
+    #[cfg(windows)]
+    const POWERSHELL: &str = "powershell.exe";
+    #[cfg(not(windows))]
+    const POWERSHELL: &str = "powershell.exe";
+    vec![
+        POWERSHELL.into(),
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        format!("[System.Media.SystemSounds]::{system_sound}.Play()"),
+    ]
 }
 
 /// The board's own terminal, shared with the notification thread (T-291).
@@ -1864,6 +1904,31 @@ mod tests {
             Player::Custom("ding".into()).argv(Sound::Tink).expect("argv"),
             vec!["ding", "Tink"]
         );
+        for (sound, expected) in [
+            (Sound::Glass, "Asterisk"),
+            (Sound::Ping, "Asterisk"),
+            (Sound::Tink, "Beep"),
+            (Sound::Purr, "Beep"),
+            (Sound::Submarine, "Exclamation"),
+            (Sound::Hero, "Exclamation"),
+        ] {
+            let argv = Player::Windows.argv(sound).expect("Windows sound argv");
+            assert_eq!(argv[0], "powershell.exe");
+            assert!(argv[4].contains(&format!("::{expected}.Play()")), "{argv:?}");
+        }
+        assert!(Player::Windows.argv(Sound::Off).is_none());
+    }
+
+    #[test]
+    fn windows_has_a_builtin_sound_player_and_explicit_choices_still_win() {
+        let none = |_: &str| None;
+        assert_eq!(find_player_for(None, false, true, none), Player::Windows);
+        assert_eq!(find_player_for(Some("off"), false, true, none), Player::Off);
+        assert_eq!(
+            find_player_for(Some("custom-player"), false, true, none),
+            Player::Custom("custom-player".into())
+        );
+        assert_eq!(find_player_for(None, true, true, none), Player::Afplay, "macOS keeps priority");
     }
 
     #[test]
