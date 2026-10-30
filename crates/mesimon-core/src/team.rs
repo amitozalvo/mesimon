@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// The plaintext schema version inside a sealed record. A record from a
 /// newer build is kept as bytes and applied when the daemon is upgraded.
-pub const RECORD_SCHEMA: u32 = 1;
+pub const RECORD_SCHEMA: u32 = 2;
 
 /// The hosted relay (T-514): what the sign-in's relay field holds before a
 /// person types. No pin: it presents a public certificate, verified against
@@ -90,8 +90,28 @@ pub fn looks_like_license_key(text: &str) -> bool {
 pub enum SharedObject {
     Ticket(SharedTicket),
     Note(SharedNote),
-    Columns { names: Vec<String> },
-    Board { title: String },
+    Columns {
+        names: Vec<String>,
+    },
+    Board {
+        title: String,
+    },
+    /// Owner-signed authority for peer authors, carried inside the sealed record.
+    Members {
+        members: Vec<SharedMember>,
+    },
+}
+
+/// One identity authorized by the board owner. Keys are hex so core stays
+/// independent of the crypto implementation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMember {
+    pub device: String,
+    pub sign: String,
+    pub kex: String,
+    pub display_name: String,
+    pub role: String,
+    pub active: bool,
 }
 
 /// A ticket's shared scalars. Nothing here is a session, a worktree, an
@@ -130,6 +150,9 @@ pub struct SharedNote {
 /// collide with a real object.
 pub const COLUMNS_OBJECT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 pub const BOARD_OBJECT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+
+/// The owner's authenticated member directory.
+pub const MEMBERS_OBJECT: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
 
 /// A sealed record's plaintext, versioned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,7 +345,7 @@ mod tests {
             deleted: false,
         }));
         let text = serde_json::to_string(&body).unwrap();
-        assert!(text.contains("\"schema\":1"));
+        assert!(text.contains("\"schema\":2"));
         assert_eq!(serde_json::from_str::<RecordBody>(&text).unwrap(), body);
         let columns =
             serde_json::to_string(&SharedObject::Columns { names: vec!["TODO".into()] }).unwrap();
@@ -333,7 +356,7 @@ mod tests {
     fn the_singleton_ids_cannot_be_ulids() {
         // A ULID's first six bytes are a millisecond timestamp; the year 2000
         // already has a non-zero first byte.
-        for id in [COLUMNS_OBJECT, BOARD_OBJECT] {
+        for id in [COLUMNS_OBJECT, BOARD_OBJECT, MEMBERS_OBJECT] {
             assert_eq!(id[0], 0);
             assert!(ulid::Ulid::from_bytes(id).timestamp_ms() < 1_000_000_000_000);
         }

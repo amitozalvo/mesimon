@@ -4,15 +4,15 @@
 //! (their secrets, until the joiner is keyed), and the member list as last
 //! seen. 0600 because of the keys.
 use anyhow::{Context, Result};
-use mesimon_core::team::RecordBody;
-use mesimon_team::crypto::{BoardId, BoardKey, ObjectId, OperationId};
+use mesimon_core::team::{RecordBody, SharedMember};
+use mesimon_team::crypto::{BoardId, BoardKey, DevicePublic, ObjectId, OperationId};
 use mesimon_team::hex;
 use mesimon_team::wire::{Member, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-pub const TEAM_SCHEMA: u32 = 1;
+pub const TEAM_SCHEMA: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Published {
@@ -51,6 +51,39 @@ pub struct PendingInvite {
     pub code: String,
 }
 
+/// Identity and authority verified locally or by the invite-pinned owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedMember {
+    pub public: DevicePublic,
+    pub display_name: String,
+    pub role: Role,
+    pub active: bool,
+}
+
+impl VerifiedMember {
+    pub fn shared(&self) -> SharedMember {
+        SharedMember {
+            device: self.public.id().to_hex(),
+            sign: hex::encode(&self.public.sign),
+            kex: hex::encode(&self.public.kex),
+            display_name: self.display_name.clone(),
+            role: self.role.word().into(),
+            active: self.active,
+        }
+    }
+
+    pub fn from_shared(m: &SharedMember) -> Option<Self> {
+        let public = DevicePublic { sign: hex::decode(&m.sign)?, kex: hex::decode(&m.kex)? };
+        let role = Role::parse(&m.role)?;
+        (public.id().to_hex() == m.device).then(|| Self {
+            public,
+            role,
+            display_name: m.display_name.clone(),
+            active: m.active,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamState {
     pub schema_version: u32,
@@ -80,6 +113,16 @@ pub struct TeamState {
     pub invites: Vec<PendingInvite>,
     #[serde(default)]
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub verified_members: BTreeMap<String, VerifiedMember>,
+    /// Invite-pinned owner on joined boards; our own identity on owned boards.
+    #[serde(default)]
+    pub verified_owner: Option<String>,
+    #[serde(default)]
+    pub membership_revision: u64,
+    /// Legacy joined boards have no independently persisted owner identity.
+    #[serde(default)]
+    pub needs_rejoin: bool,
 }
 
 impl TeamState {
@@ -98,7 +141,18 @@ impl TeamState {
             outbox: Vec::new(),
             invites: Vec::new(),
             members: Vec::new(),
+            verified_members: BTreeMap::new(),
+            verified_owner: None,
+            membership_revision: 0,
+            needs_rejoin: false,
         }
+    }
+
+    pub fn pin_owner(&mut self, public: DevicePublic, display_name: String) {
+        let id = public.id().to_hex();
+        self.verified_owner = Some(id.clone());
+        self.verified_members
+            .insert(id, VerifiedMember { public, display_name, role: Role::Owner, active: true });
     }
 
     pub fn board_id(&self) -> Option<BoardId> {
@@ -151,13 +205,34 @@ impl TeamState {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
-        let state: Self =
+        let mut state: Self =
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         if state.schema_version > TEAM_SCHEMA {
             anyhow::bail!("{} was written by a newer mesimon", path.display());
         }
         if state.board_id().is_none() {
             anyhow::bail!("{} names no board", path.display());
+        }
+        if state.schema_version < 2 {
+            state.verified_members.clear();
+            state.verified_owner = None;
+            state.needs_rejoin = !state.is_owner();
+            state.schema_version = TEAM_SCHEMA;
+        }
+        // A state written by a content-floors-only build may already have
+        // schema 2 without identity pins. Version alone is not proof of trust.
+        if !state.is_owner()
+            && !state
+                .verified_owner
+                .as_ref()
+                .and_then(|id| state.verified_members.get(id))
+                .is_some_and(|p| p.active && p.role == Role::Owner)
+        {
+            state.needs_rejoin = true;
+        }
+        state.schema_version = TEAM_SCHEMA;
+        if state.verified_members.iter().any(|(id, m)| m.public.id().to_hex() != *id) {
+            anyhow::bail!("{} holds an inconsistent member identity", path.display());
         }
         Ok(Some(state))
     }
@@ -199,11 +274,66 @@ mod tests {
     }
 
     #[test]
+    fn legacy_rosters_never_seed_verified_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.json");
+        let owner = mesimon_team::crypto::DeviceKeys::generate();
+        for role in [Role::Owner, Role::Contributor] {
+            let mut state =
+                TeamState::new(BoardId::random(), role, role != Role::Owner, "Owner".into());
+            state.pin_owner(owner.public(), "Owner".into());
+            state.members.push(Member {
+                device: owner.id(),
+                public: owner.public(),
+                display_name: "Owner".into(),
+                role: Role::Owner,
+                status: mesimon_team::wire::MemberStatus::Active,
+                proof: None,
+                epochs: vec![0],
+            });
+            state.add_key(0, &BoardKey::generate());
+            state.schema_version = 1;
+            state.save(&path).unwrap();
+            let migrated = TeamState::load(&path).unwrap().unwrap();
+            assert_eq!(migrated.schema_version, TEAM_SCHEMA);
+            assert!(migrated.verified_members.is_empty());
+            assert!(migrated.verified_owner.is_none());
+            assert_eq!(migrated.needs_rejoin, role != Role::Owner);
+            assert_eq!(migrated.keys, state.keys);
+            migrated.save(&path).unwrap();
+            assert_eq!(TeamState::load(&path).unwrap().unwrap(), migrated);
+        }
+    }
+
+    #[test]
+    fn missing_owner_trust_is_closed_at_every_schema_and_newer_state_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.json");
+        for version in [1, 2, TEAM_SCHEMA] {
+            let mut state =
+                TeamState::new(BoardId::random(), Role::Contributor, true, "Owner".into());
+            state.schema_version = version;
+            state.membership_revision = 7;
+            state.save(&path).unwrap();
+            let loaded = TeamState::load(&path).unwrap().unwrap();
+            assert!(loaded.needs_rejoin);
+            assert_eq!(loaded.membership_revision, 7);
+        }
+        let mut state = TeamState::new(BoardId::random(), Role::Owner, false, "Owner".into());
+        state.schema_version = TEAM_SCHEMA + 1;
+        state.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(TeamState::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
     fn state_round_trips_privately() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("team.json");
         assert!(TeamState::load(&path).unwrap().is_none());
         let mut state = TeamState::new(BoardId::random(), Role::Contributor, true, "Amit".into());
+        state.pin_owner(mesimon_team::crypto::DeviceKeys::generate().public(), "Amit".into());
         state.add_key(0, &BoardKey::generate());
         state.add_key(1, &BoardKey::generate());
         state.save(&path).unwrap();
