@@ -13048,18 +13048,30 @@ fn a_click_in_the_drawer_only_walks() {
     assert!(matches!(app.mode, Mode::External { idx: 1 }), "walked, nothing adopted");
 }
 
-/// The wheel walks the column under the pointer, and never climbs off the
-/// top card onto the header.
+/// The wheel moves three cards in the column under the pointer, and clamps
+/// at the top rather than climbing onto the header.
 #[test]
 fn the_wheel_walks_the_column_under_it() {
     use ratatui::crossterm::event::MouseEventKind;
-    let mut app = app_graphite(fixture(false));
+    let mut board = fixture(false);
+    for n in 8..=10 {
+        board.tickets.push(ticket(
+            n,
+            &format!("T-{n}"),
+            &format!("Extra card {n}"),
+            "in progress",
+            "a",
+        ));
+    }
+    let mut app = app_graphite(board);
     let lines = render(&app, 120, 30);
-    let at = spot_of(&lines, "Fix OSC");
+    let at = spot_of(&lines, "Extra card 10");
     mouse(&mut app, MouseEventKind::ScrollDown, at);
-    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(4)), "into the column, one down");
+    assert_eq!(app.cursor_row, Some(3), "one event advances exactly three rows");
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(10)));
     render(&app, 120, 30);
     mouse(&mut app, MouseEventKind::ScrollUp, at);
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(3)), "one event returns exactly three rows");
     mouse(&mut app, MouseEventKind::ScrollUp, at);
     assert_eq!(app.cursor_row, Some(0), "the wheel stops at the top card");
 }

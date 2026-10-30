@@ -7942,14 +7942,15 @@ conversation cannot be resumed already says so where it matters, in the PREVIEW 
 conversation to resume ∙ waking it starts a fresh one` (T-308), which is read off
 `transcript_path` at draw time rather than latched into a record at sleep time.
 
-## Terminal history scrolls one line per wheel event (2026-09-08)
+## Terminal history scrolls three lines per wheel event (2026-09-08; updated T-1079)
 
 Mesimon enabled tmux mouse handling but inherited the five-line wheel step in both
-`copy-mode` and `copy-mode-vi`. Each wheel event now scrolls one line in either direction,
-retaining pane selection. Root-table forwarding is unchanged, so applications that handle
-mouse input still receive it. The same binding definitions render into fresh configs and
+`copy-mode` and `copy-mode-vi`. Each wheel event scrolls three lines in either direction,
+retaining pane selection. Board columns also move three cards per wheel event; item lists and
+rails still move one selectable row. Root-table forwarding is unchanged, so applications that
+handle mouse input still receive it. The same binding definitions render into fresh configs and
 are installed on surviving tmux servers at daemon startup; a reload does not require killing
-agent sessions. `wheel_scrolls_one_line_on_fresh_and_surviving_servers` checks the bindings
+agent sessions. `wheel_scrolls_three_lines_on_fresh_and_surviving_servers` checks the bindings
 against real tmux, including replacing old five-line bindings and repeated installation.
 
 
@@ -36788,7 +36789,7 @@ test's own stub. Nothing in the daemon changed.
 - **The harness.** A failing e2e now echoes every pane of the fixture's tmux servers: the screen,
   cursor, modes, the pane's processes and tty modes, and the `.txt` files its stubs write
   (`Fixture::echo_panes` in `ci/test_support.rs`). That dump is what found all three.
-- **`mesimon-backend-tmux::wheel_scrolls_one_line_on_fresh_and_surviving_servers` on tmux
+- **`mesimon-backend-tmux::wheel_scrolls_three_lines_on_fresh_and_surviving_servers` on tmux
   3.7c.** `list-keys -T <table> <key>` prints nothing there (exit 0); the whole table still
   lists the binding. The test reads the key's line from its table. Nothing outside tests asks
   for one key.

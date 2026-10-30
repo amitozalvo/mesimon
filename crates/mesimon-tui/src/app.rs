@@ -5030,7 +5030,10 @@ impl App {
                     if dir < 0 && app.cursor_row.is_none_or(|r| r == 0) {
                         return Ok(());
                     }
-                    app.handle_key(step.0, step.1)
+                    for _ in 0..WHEEL_ROWS {
+                        app.handle_key(step.0, step.1)?;
+                    }
+                    Ok(())
                 })
             }
             Screen::Ticket { .. } if self.scope() != Scope::Ticket => Ok(false),

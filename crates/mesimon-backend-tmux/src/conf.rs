@@ -13,14 +13,15 @@ pub const STATUS_RIGHT: &str = " ^] back  ";
 /// same bytes. Rendered into the conf and replayed live by `TmuxBackend::set_status_left`.
 pub const SHIFT_ENTER_HEX: &str = "1b 5b 32 37 3b 32 3b 31 33 7e";
 
-/// One line per wheel event: tmux's default five-line step amplifies trackpad
-/// gestures. Shared by fresh configs and live-server upgrades. Keep pane
-/// selection and leave root-table mouse forwarding to applications intact.
+/// Three lines per wheel event: faster for a physical wheel while remaining
+/// smaller than tmux's default five-line step. Shared by fresh configs and
+/// live-server upgrades. Keep pane selection and leave root-table mouse
+/// forwarding to applications intact.
 pub const SCROLL_BINDINGS: [(&str, &str, &str); 4] = [
-    ("copy-mode", "WheelUpPane", "select-pane; send-keys -N 1 -X scroll-up"),
-    ("copy-mode", "WheelDownPane", "select-pane; send-keys -N 1 -X scroll-down"),
-    ("copy-mode-vi", "WheelUpPane", "select-pane; send-keys -N 1 -X scroll-up"),
-    ("copy-mode-vi", "WheelDownPane", "select-pane; send-keys -N 1 -X scroll-down"),
+    ("copy-mode", "WheelUpPane", "select-pane; send-keys -N 3 -X scroll-up"),
+    ("copy-mode", "WheelDownPane", "select-pane; send-keys -N 3 -X scroll-down"),
+    ("copy-mode-vi", "WheelUpPane", "select-pane; send-keys -N 3 -X scroll-up"),
+    ("copy-mode-vi", "WheelDownPane", "select-pane; send-keys -N 3 -X scroll-down"),
 ];
 
 /// The `status-position` word for a preference: tmux's own two values.
