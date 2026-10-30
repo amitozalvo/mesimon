@@ -6,12 +6,12 @@
 //! Outgoing changes are found by diffing, not by instrumenting every
 //! mutation: `team_after_broadcast` runs at the end of `broadcast()`, projects
 //! the board, and queues every object whose digest moved. Incoming records
-//! set the published digest before they touch the board, so the diff that
-//! follows their broadcast sees nothing to send.
+//! retain a durable revision floor and encrypted intent before content writes.
+//! Publication finishes only after the content and sharing-state writes succeed.
 use super::*;
 use crate::team::device::DeviceFile;
 use crate::team::project;
-use crate::team::state::{PendingInvite, Published, TeamState};
+use crate::team::state::{LocalSnapshot, PendingInvite, PendingRecord, Published, TeamState};
 use crate::team::sync::{Done, Job, Tag};
 use mesimon_core::board::{
     note_name, sanitize_note, sanitize_title, Archived, ExecutionPolicy, NoteMeta,
@@ -39,6 +39,9 @@ fn pull_every() -> u64 {
         .map_or(12, |ms| (ms / TICK_MS).max(1))
 }
 const MEMBERS_EVERY: u64 = 120;
+const MAX_PENDING_RECORDS: usize = 1024;
+const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RETRY_RECORDS: usize = 64;
 const OFFLINE_BACKOFF: u64 = 20;
 /// Ticks between asking the relay when this device's grant ends: an hour.
 const GRANT_EVERY: u64 = 3_600_000 / TICK_MS;
@@ -54,6 +57,13 @@ const RENEW_AGAIN: u64 = 6 * 3_600;
 const _: () = assert!(RENEW_AGAIN < RENEW_WINDOW);
 /// What a share or a join answers while board sharing is off
 /// (`mesimon_core::team::enabled`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApplyOutcome {
+    Applied,
+    Deferred,
+    Rejected,
+}
+
 const TEAMS_OFF: &str = "board sharing is off; start mesimon with MESIMON_TEAMS=1 to use it";
 
 pub(super) struct TeamCtx {
@@ -70,9 +80,15 @@ pub(super) struct TeamCtx {
     last_members: u64,
     backoff_until: u64,
     applying: bool,
-    pending: Vec<StoredRecord>,
     /// note id → (rev, ticket): what the relay has of each note body.
     note_revs: HashMap<ulid::Ulid, (u64, ulid::Ulid)>,
+    /// Visible projections while an I/O-failed intent waits. An actual local
+    /// change still queues; the unchanged snapshot must not echo as a new edit.
+    blocked_digests: HashMap<String, Option<String>>,
+    retention_full: bool,
+    retry_at: usize,
+    #[cfg(test)]
+    before_record_finish: Option<fn(&mut Daemon)>,
     want_keys: bool,
     want_members: bool,
     /// The invite being minted, until the relay names it.
@@ -132,8 +148,12 @@ impl TeamCtx {
             last_members: 0,
             backoff_until: 0,
             applying: false,
-            pending: Vec::new(),
             note_revs: HashMap::new(),
+            blocked_digests: HashMap::new(),
+            retention_full: false,
+            retry_at: 0,
+            #[cfg(test)]
+            before_record_finish: None,
             want_keys: false,
             want_members: false,
             minting: None,
@@ -288,14 +308,20 @@ impl Daemon {
             // ticket object was published. Anything newer is queued below.
             for t in &self.board.tickets {
                 for n in &t.notes {
-                    if state.published.contains_key(&ObjectId::from(n.id).to_hex()) {
+                    if state.published.contains_key(&ObjectId::from(n.id).to_hex())
+                        || state.pending_records.iter().any(|p| {
+                            p.record.object == ObjectId::from(n.id) && p.publication.is_some()
+                        })
+                    {
                         self.team.note_revs.insert(n.id, (n.rev, t.id));
                     }
                 }
             }
         }
+        self.team_capture_blocked_digests();
         self.team.connect();
         self.team.want_members = true;
+        self.team_retry_pending();
         self.team_after_broadcast();
         if self.team.signed_in() {
             self.team.call(Tag::Boards, Request::Boards);
@@ -303,13 +329,20 @@ impl Daemon {
         }
     }
 
-    fn team_save(&mut self) {
+    fn team_save(&mut self) -> bool {
         if let Some(state) = &self.team.state {
             if let Err(e) = state.save(&self.paths.team_file()) {
                 self.team.error = Some(format!("saving sharing state: {e}"));
+                self.team.state_dirty = true;
+                return false;
             }
         }
         self.team.state_dirty = false;
+        true
+    }
+
+    pub(super) fn team_defers_ticket_write(&self) -> bool {
+        self.team.applying
     }
 
     pub(super) fn team_content_only(&self) -> bool {
@@ -658,6 +691,7 @@ impl Daemon {
         // an invite out looks for the joiner just as often.
         let pull_due = ticks.saturating_sub(self.team.last_pull) >= pull_every();
         if pull_due {
+            self.team_retry_pending();
             if let Some(state) = &self.team.state {
                 if state.current_epoch().is_none() {
                     self.team.want_members = true;
@@ -709,10 +743,12 @@ impl Daemon {
             return;
         };
         let Some(key) = state.key(epoch) else { return };
+        let Some(object) = state.outbox.first().map(|o| o.object.clone()) else { return };
+        let expected = state.revision(&object);
         let Some(entry) = state.outbox.first_mut() else { return };
         // Expected is read now, not when queued: a pull in between may have
         // moved the object on, and the retry must name the revision it saw.
-        entry.expected = state.published.get(&entry.object).map(|p| p.revision);
+        entry.expected = expected;
         let Some(object) = ObjectId::parse(&entry.object) else {
             state.outbox.remove(0);
             return;
@@ -721,7 +757,11 @@ impl Daemon {
             state.outbox.remove(0);
             return;
         };
-        let scope = RecordScope { board, object, revision: entry.expected.map_or(1, |e| e + 1) };
+        let Some(revision) = entry.expected.unwrap_or(0).checked_add(1) else {
+            self.team.error = Some("this object's revision cannot advance".into());
+            return;
+        };
+        let scope = RecordScope { board, object, revision };
         let plaintext = serde_json::to_vec(&entry.body).unwrap_or_default();
         let record = match crypto::seal(&key, epoch, scope, &keys, &plaintext) {
             Ok(record) => record,
@@ -926,15 +966,15 @@ impl Daemon {
                 self.team.error = Some(format!("relay: {code}"));
             }
             (Tag::Sync, Ok(Wire::Records { records, next, more })) => {
+                self.team.retention_full = false;
                 for record in records {
                     self.team_apply(record);
                 }
                 self.team_retry_pending();
-                if let Some(state) = self.team.state.as_mut() {
-                    state.cursor = state.cursor.max(next);
-                }
-                self.team.state_dirty = true;
-                if more {
+                // Retained encrypted records and the cursor are one write.
+                // Later pages can supply their keys, author directory or parent.
+                let saved = self.team_save_cursor(next);
+                if saved && more {
                     if let (Some(board), Some(after)) =
                         (self.team.board(), self.team.state.as_ref().map(|s| s.cursor))
                     {
@@ -943,7 +983,7 @@ impl Daemon {
                             Request::Sync { board, after, limit: MAX_SYNC_RECORDS },
                         );
                     }
-                } else {
+                } else if saved {
                     self.team.sync_word = "synced";
                 }
                 self.persist_and_notify();
@@ -1159,23 +1199,59 @@ impl Daemon {
         let Some(at) = state.outbox.iter().position(|o| o.operation == operation) else { return };
         match result {
             Ok(Wire::Accepted { receipt }) => {
+                let entry = &state.outbox[at];
+                if receipt.object.to_hex() != entry.object
+                    || entry.expected.unwrap_or(0).checked_add(1) != Some(receipt.revision)
+                {
+                    self.team.error = Some("the relay returned a mismatched edit receipt".into());
+                    return;
+                }
                 let entry = state.outbox.remove(at);
                 let kind = kind_of(&entry.body);
-                state.published.insert(
-                    entry.object.clone(),
-                    Published {
-                        revision: receipt.revision,
-                        digest: project::digest(&entry.body),
-                        kind,
-                        by: None,
-                    },
-                );
+                // A pull may have advanced this object while the receipt
+                // was in flight. Its older digest must not replace that one.
+                if state.revision(&entry.object).is_none_or(|r| receipt.revision > r) {
+                    state.remember_revision(&entry.object, receipt.revision);
+                    if is_tombstone(&entry.body) {
+                        state.forget_published(&entry.object);
+                    } else {
+                        state.published.insert(
+                            entry.object.clone(),
+                            Published {
+                                revision: receipt.revision,
+                                digest: project::digest(&entry.body),
+                                kind,
+                                by: None,
+                            },
+                        );
+                    }
+                } else {
+                    // The incoming record was held off for this local edit.
+                    // Keep that edit queued against the newer floor, including
+                    // notes whose cached local rev will not trigger a diff.
+                    state.enqueue(receipt.object, entry.body.clone(), None);
+                }
                 self.team.state_dirty = true;
                 self.team.synced_at_ms = Some(now_ms());
                 if self.team.sync_word == "error" {
                     self.team.sync_word = "synced";
                 }
                 if entry.dirty {
+                    if let SharedObject::Note(note) = &entry.body.object {
+                        let id = ulid::Ulid::from(receipt.object);
+                        self.team.note_revs.remove(&id);
+                        if !self
+                            .board
+                            .ticket(note.ticket)
+                            .is_some_and(|t| t.notes.iter().any(|n| n.id == id))
+                        {
+                            state.enqueue(
+                                receipt.object,
+                                project::note_tombstone(note.ticket),
+                                None,
+                            );
+                        }
+                    }
                     self.team_after_broadcast();
                 }
             }
@@ -1220,7 +1296,7 @@ impl Daemon {
 
     /// At the end of every `broadcast()`: queue whatever the relay does not
     /// have yet. Silent while a remote record is being applied, because that
-    /// record's digest was published before it touched the board.
+    /// record's content/publication transaction has not finished yet.
     pub(super) fn team_after_broadcast(&mut self) {
         if self.team.applying {
             return;
@@ -1236,6 +1312,9 @@ impl Daemon {
         let Some(state) = self.team.state.as_mut() else { return };
         for (id, body) in &objects {
             let digest = project::digest(body);
+            if self.team.blocked_digests.get(&id.to_hex()) == Some(&Some(digest.clone())) {
+                continue;
+            }
             if state.published.get(&id.to_hex()).is_none_or(|p| p.digest != digest) {
                 state.enqueue(*id, body.clone(), in_flight.as_deref());
                 // Changed here now, whoever changed it last: the card's
@@ -1246,12 +1325,13 @@ impl Daemon {
                 changed = true;
             }
         }
-        // Tickets that are gone: a tombstone, once, then forgotten.
+        // Tickets that are gone: a tombstone once; keep their revision floor.
         let gone: Vec<String> = state
             .published
             .iter()
             .filter(|(k, p)| {
                 p.kind == "ticket"
+                    && self.team.blocked_digests.get(*k) != Some(&None)
                     && ObjectId::parse(k).is_some_and(|id| !objects.contains_key(&id))
             })
             .map(|(k, _)| k.clone())
@@ -1271,9 +1351,9 @@ impl Daemon {
                 });
                 if !state.outbox.iter().any(|o| o.object == key) {
                     state.enqueue(id, stone, in_flight.as_deref());
-                    changed = true;
                 }
-                state.published.remove(&key);
+                state.forget_published(&key);
+                changed = true;
             }
         }
         // Notes: bodies are files, read only when a rev moved — and never
@@ -1314,7 +1394,7 @@ impl Daemon {
                     project::note_tombstone(ticket),
                     in_flight.as_deref(),
                 );
-                state.published.remove(&key);
+                state.forget_published(&key);
                 changed = true;
             }
         }
@@ -1325,35 +1405,398 @@ impl Daemon {
 
     // ---- incoming: a record becomes board state ---------------------------
 
-    fn team_retry_pending(&mut self) {
-        let pending = std::mem::take(&mut self.team.pending);
-        for record in pending {
-            self.team_apply(record);
+    fn team_save_cursor(&mut self, next: u64) -> bool {
+        if self.team.retention_full {
+            // The page will be fetched again; every previously retained input
+            // stays intact. Other requests can still deliver missing keys.
+            self.team_save();
+            return false;
+        }
+        let Some(state) = self.team.state.as_mut() else { return false };
+        let previous = state.cursor;
+        state.cursor = previous.max(next);
+        self.team.state_dirty = true;
+        if self.team_save() {
+            true
+        } else {
+            if let Some(state) = self.team.state.as_mut() {
+                state.cursor = previous;
+            }
+            false
         }
     }
 
-    fn team_apply(&mut self, record: StoredRecord) {
-        if !mesimon_core::team::enabled() {
-            return;
+    fn team_retry_pending(&mut self) {
+        if mesimon_core::team::enabled() {
+            self.team_retry_pending_records();
         }
-        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+    }
+
+    fn team_retry_pending_records(&mut self) {
+        let mut budget = MAX_RETRY_RECORDS;
+        while budget > 0 {
+            let Some(state) = self.team.state.as_ref() else { return };
+            let count = state.pending_records.len();
+            if count == 0 {
+                return;
+            }
+            let start = self.team.retry_at % count;
+            let take = budget.min(count);
+            let pending: Vec<_> = state
+                .pending_records
+                .iter()
+                .cycle()
+                .skip(start)
+                .take(take)
+                .map(|p| p.record.clone())
+                .collect();
+            for record in pending {
+                self.team_receive_record(record);
+                budget -= 1;
+            }
+            let remaining = self.team.state.as_ref().map_or(0, |s| s.pending_records.len());
+            self.team.retry_at = if remaining == 0 { 0 } else { (start + take) % remaining };
+            if remaining == 0 || remaining >= count {
+                break;
+            }
+        }
+    }
+
+    fn team_can_retain(&mut self, record: &StoredRecord) -> bool {
+        let Some(state) = self.team.state.as_ref() else { return false };
+        if state.pending_records.iter().any(|p| p.matches(record)) {
+            return true;
+        }
+        let bytes: usize =
+            state.pending_records.iter().map(|p| p.record.record.ciphertext.len()).sum();
+        if state.pending_records.len() < MAX_PENDING_RECORDS
+            && record.record.ciphertext.len() <= MAX_PENDING_BYTES.saturating_sub(bytes)
+        {
+            return true;
+        }
+        self.team.retention_full = true;
+        self.team.sync_word = "error";
+        self.team.error = Some(format!(
+            "sharing paused: retained input limit ({MAX_PENDING_RECORDS} records / {} MiB); existing records and cursor kept. Recover pending records or use a build with a higher retained limit; this page will be retried",
+            MAX_PENDING_BYTES / (1024 * 1024)
+        ));
+        false
+    }
+
+    fn team_apply(&mut self, record: StoredRecord) {
+        if mesimon_core::team::enabled() {
+            self.team_receive_record(record);
+        }
+    }
+
+    /// Shared ingress/finalization for content and the authenticated directory.
+    /// Only this layer retains deferred input and finishes its publication.
+    fn team_receive_record(&mut self, record: StoredRecord) -> ApplyOutcome {
+        let board_before = self.board.clone();
+        let notes_before = self.team.note_revs.clone();
+        let mut outcome = self.team_apply_record(&record);
+        let content_succeeded = outcome == ApplyOutcome::Applied;
+        #[cfg(test)]
+        if outcome == ApplyOutcome::Applied {
+            if let Some(fail) = self.team.before_record_finish.take() {
+                fail(self);
+            }
+        }
+        let can_retain = outcome != ApplyOutcome::Deferred || self.team_can_retain(&record);
+        let Some(state) = self.team.state.as_mut() else { return outcome };
+        match outcome {
+            ApplyOutcome::Deferred => {
+                if can_retain && !state.pending_records.iter().any(|p| p.matches(&record)) {
+                    state.pending_records.push(PendingRecord {
+                        record: record.clone(),
+                        publication: None,
+                        note_rev: None,
+                        local_before: None,
+                        local_after: None,
+                        local_intermediate: Vec::new(),
+                        applied_at: None,
+                    });
+                }
+                self.team.state_dirty = true;
+            }
+            ApplyOutcome::Applied => {
+                // A directory applied directly may already have committed all
+                // its state and have no retained entry to finalize.
+                if let Some(entry) =
+                    state.pending_records.iter().find(|p| p.matches(&record)).cloned()
+                {
+                    let before_finish = state.clone();
+                    if let Some(publication) = entry.publication {
+                        state.published.insert(record.object.to_hex(), publication);
+                    }
+                    state.pending_records.retain(|p| !p.matches(&record));
+                    self.team.state_dirty = true;
+                    if !self.team_save() {
+                        self.team.state = Some(before_finish);
+                        outcome = ApplyOutcome::Deferred;
+                    }
+                }
+            }
+            ApplyOutcome::Rejected => {
+                let before = state.pending_records.len();
+                state.pending_records.retain(|p| !p.matches(&record));
+                self.team.state_dirty |= before != state.pending_records.len();
+            }
+        }
+        if outcome == ApplyOutcome::Deferred {
+            // Failed content work restores its visible snapshot. Successful
+            // content stays visible if only finalization failed; the saved
+            // intent/floor already protects it across a restart.
+            if !content_succeeded {
+                self.board = board_before;
+                self.team.note_revs = notes_before;
+            }
+            self.team_capture_blocked_digests();
+        } else if !self.team.state.as_ref().is_some_and(|s| {
+            s.pending_records
+                .iter()
+                .any(|p| p.record.object == record.object && p.publication.is_some())
+        }) {
+            self.team.blocked_digests.remove(&record.object.to_hex());
+        }
+        outcome
+    }
+
+    fn team_capture_blocked_digests(&mut self) {
         let Some(state) = self.team.state.as_ref() else { return };
-        let Some(board) = state.board_id() else { return };
+        let title = self.board_title();
+        let me = self.team.device.as_ref().map(|d| d.display_name.clone()).unwrap_or_default();
+        let objects =
+            project::project(&self.board, state.is_owner(), &title, !state.notes_withheld, &me);
+        for entry in state.pending_records.iter().filter(|p| p.publication.is_some()) {
+            self.team
+                .blocked_digests
+                .entry(entry.record.object.to_hex())
+                .or_insert_with(|| objects.get(&entry.record.object).map(project::digest));
+        }
+    }
+
+    fn team_local_body(&self, object: ObjectId, body: &RecordBody) -> Option<RecordBody> {
+        let me = self.team.device.as_ref().map(|d| d.display_name.as_str()).unwrap_or_default();
+        match &body.object {
+            SharedObject::Ticket(shared) => Some(
+                self.board
+                    .ticket(ulid::Ulid::from(object))
+                    .map(|t| {
+                        project::ticket_body(
+                            t,
+                            self.team.state.as_ref().is_none_or(|s| !s.notes_withheld),
+                            me,
+                        )
+                    })
+                    .unwrap_or_else(|| project::ticket_tombstone(shared)),
+            ),
+            SharedObject::Note(note) => {
+                let Some(t) = self.board.ticket(note.ticket) else {
+                    return Some(project::note_tombstone(note.ticket));
+                };
+                if !t.notes.iter().any(|n| n.id == ulid::Ulid::from(object)) {
+                    return Some(project::note_tombstone(note.ticket));
+                }
+                store::read_note(&self.paths, &t.short_key, ulid::Ulid::from(object))
+                    .ok()
+                    .map(|text| project::note_body(note.ticket, text))
+            }
+            _ => None,
+        }
+    }
+
+    fn team_local_snapshot(&self, object: ObjectId, body: &RecordBody) -> Option<LocalSnapshot> {
+        let id = ulid::Ulid::from(object);
+        match &body.object {
+            SharedObject::Ticket(_) => {
+                let local = self.team_local_body(object, body)?;
+                let path = self.board.ticket(id).map(|t| {
+                    self.paths
+                        .board_dir
+                        .join("board/tickets")
+                        .join(&t.short_key)
+                        .join("ticket.toml")
+                });
+                Some(LocalSnapshot {
+                    digest: project::digest(&local),
+                    stamp: file_stamp(path.as_deref()),
+                })
+            }
+            SharedObject::Note(note) => {
+                let Some(ticket) = self.board.ticket(note.ticket) else {
+                    return Some(LocalSnapshot {
+                        digest: local_fingerprint(&(None::<String>, None::<NoteMeta>)),
+                        stamp: "missing".into(),
+                    });
+                };
+                let path = self
+                    .paths
+                    .board_dir
+                    .join("board/tickets")
+                    .join(&ticket.short_key)
+                    .join("notes")
+                    .join(format!("{id}.md"));
+                let text = match store::read_note(&self.paths, &ticket.short_key, id) {
+                    Ok(text) => Some(text),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(_) => return None,
+                };
+                let meta = ticket.notes.iter().find(|n| n.id == id);
+                Some(LocalSnapshot {
+                    digest: local_fingerprint(&(text, meta)),
+                    stamp: file_stamp(Some(&path)),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn team_expected_local_digest(
+        &self,
+        object: ObjectId,
+        body: &RecordBody,
+        by: &Principal,
+        note_rev: Option<u64>,
+        at: &str,
+    ) -> (Option<String>, Vec<String>) {
+        let id = ulid::Ulid::from(object);
+        match &body.object {
+            SharedObject::Note(note) => {
+                let old = self
+                    .board
+                    .ticket(note.ticket)
+                    .and_then(|t| t.notes.iter().find(|n| n.id == id))
+                    .cloned();
+                let text = (!note.deleted).then(|| sanitize_note(&note.body));
+                let intermediate = local_fingerprint(&(text.clone(), old.clone()));
+                let meta = if note.deleted {
+                    None
+                } else {
+                    let author = by.note_author();
+                    Some(NoteMeta {
+                        id,
+                        name: note_name(text.as_deref().unwrap_or_default()),
+                        rev: note_rev.unwrap_or(1),
+                        created_at: old
+                            .as_ref()
+                            .map(|n| n.created_at.clone())
+                            .unwrap_or_else(|| at.into()),
+                        created_by: old
+                            .as_ref()
+                            .map(|n| n.created_by.clone())
+                            .unwrap_or_else(|| author.clone()),
+                        edited_at: at.into(),
+                        edited_by: author,
+                    })
+                };
+                (Some(local_fingerprint(&(text, meta))), vec![intermediate])
+            }
+            SharedObject::Ticket(shared) => {
+                let current = self.board.ticket(id);
+                let me =
+                    self.team.device.as_ref().map(|d| d.display_name.as_str()).unwrap_or_default();
+                let mut next = if let Some(t) = current {
+                    let SharedObject::Ticket(t) = project::ticket_body(
+                        t,
+                        self.team.state.as_ref().is_none_or(|s| !s.notes_withheld),
+                        me,
+                    )
+                    .object
+                    else {
+                        unreachable!()
+                    };
+                    t
+                } else {
+                    mesimon_core::team::SharedTicket {
+                        created_by: if shared.created_by.starts_with("member:") {
+                            shared.created_by.clone()
+                        } else {
+                            by.note_author()
+                        },
+                        notes: Vec::new(),
+                        deleted: false,
+                        ..shared.clone()
+                    }
+                };
+                if shared.deleted {
+                    if current.is_none() {
+                        return (
+                            Some(project::digest(&project::ticket_tombstone(shared))),
+                            Vec::new(),
+                        );
+                    }
+                    next.archived = true;
+                    return (
+                        Some(project::digest(&RecordBody::new(SharedObject::Ticket(next)))),
+                        Vec::new(),
+                    );
+                }
+                let column = if self.board.column(&shared.column).is_some() {
+                    shared.column.clone()
+                } else {
+                    self.board.landing_column().unwrap_or_default()
+                };
+                if current.is_none()
+                    || (!next.archived
+                        && !shared.archived
+                        && self.column_gate(id, &column).is_none())
+                {
+                    next.column = column;
+                }
+                next.title = sanitize_title(&shared.title);
+                next.order = shared.order.clone();
+                next.archived = shared.archived;
+                if !shared.notes.is_empty() {
+                    next.notes.sort_by_key(|id| {
+                        shared.notes.iter().position(|n| n == id).unwrap_or(usize::MAX)
+                    });
+                }
+                (Some(project::digest(&RecordBody::new(SharedObject::Ticket(next)))), Vec::new())
+            }
+            _ => (None, Vec::new()),
+        }
+    }
+
+    fn team_apply_record(&mut self, record: &StoredRecord) -> ApplyOutcome {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else {
+            return ApplyOutcome::Deferred;
+        };
+        let Some(state) = self.team.state.as_ref() else { return ApplyOutcome::Rejected };
+        let Some(board) = state.board_id() else { return ApplyOutcome::Rejected };
         // Our own accepted writes come back on the next pull; the digest
         // already matches and nothing needs applying.
         if record.record.author == keys.id() {
-            return;
+            return ApplyOutcome::Rejected;
+        }
+        let object = record.object.to_hex();
+        if let Some(published) = state.revision(&object) {
+            let retained = record.revision == published
+                && state
+                    .pending_records
+                    .iter()
+                    .any(|p| p.matches(record) && p.publication.is_some());
+            if record.revision <= published && !retained {
+                self.feed.board_detail(
+                    "mesimon",
+                    "team_revision_refused",
+                    "refused",
+                    &format!(
+                        "object {object}: received revision {}, published revision {published}",
+                        record.revision
+                    ),
+                );
+                return ApplyOutcome::Rejected;
+            }
         }
         let Some(key) = state.key(record.record.epoch) else {
             self.team.want_keys = true;
-            self.team.pending.push(record);
-            return;
+            return ApplyOutcome::Deferred;
         };
         let Some(author) = state.members.iter().find(|m| m.device == record.record.author).cloned()
         else {
             self.team.want_members = true;
-            self.team.pending.push(record);
-            return;
+            return ApplyOutcome::Deferred;
         };
         let scope = RecordScope { board, object: record.object, revision: record.revision };
         let plaintext = match crypto::open(&key, scope, &record.record, &author.public) {
@@ -1361,13 +1804,13 @@ impl Daemon {
             Err(e) => {
                 self.team.error =
                     Some(format!("a record from {} did not verify: {e}", author.display_name));
-                return;
+                return ApplyOutcome::Rejected;
             }
         };
         let Ok(body) = serde_json::from_slice::<RecordBody>(&plaintext) else {
             self.team.error =
                 Some(format!("a record from {} is not readable", author.display_name));
-            return;
+            return ApplyOutcome::Rejected;
         };
         if body.schema > RECORD_SCHEMA {
             self.notices.retain(|n| n.kind != "team_schema");
@@ -1375,59 +1818,156 @@ impl Daemon {
                 "team_schema",
                 "a teammate runs a newer mesimon; update to see their changes",
             ));
-            return;
+            return ApplyOutcome::Deferred;
         }
         if !state.is_owner() && !author.role.may_write() && author.role != Role::Owner {
-            return;
+            return ApplyOutcome::Rejected;
         }
         let name = mesimon_core::text::scrub_text(&author.display_name);
         let member = Principal::Remote { member: name.clone() };
-        // Published before applied, so the broadcast the apply triggers has
-        // nothing to send back.
+        // Defer dependencies before accepting a content intent. Broadcasts
+        // during application are suppressed until publication is finalized.
         let key = record.object.to_hex();
-        let pending = state.outbox.iter().any(|o| o.object == key);
-        if let Some(state) = self.team.state.as_mut() {
-            state.published.insert(
-                key,
-                Published {
-                    revision: record.revision,
-                    digest: project::digest(&body),
-                    kind: kind_of(&body),
-                    by: Some(name),
-                },
-            );
+        let mut pending = state.outbox.iter().any(|o| o.object == key);
+        let retained = state.pending_records.iter().find(|p| p.matches(record)).cloned();
+        // A note can arrive before its parent. It has not been accepted
+        // yet: publishing it here would make its own retry stale.
+        if !pending
+            && matches!(&body.object, SharedObject::Note(note)
+                if !note.deleted && self.board.ticket(note.ticket).is_none())
+        {
+            return ApplyOutcome::Deferred;
+        }
+        if !pending
+            && self.columns_barred
+            && matches!(&body.object, SharedObject::Ticket(t)
+                if !t.deleted && self.board.ticket(ulid::Ulid::from(record.object)).is_none())
+        {
+            return ApplyOutcome::Deferred;
+        }
+        let local_before = self.team_local_snapshot(record.object, &body);
+        if matches!(body.object, SharedObject::Ticket(_) | SharedObject::Note(_))
+            && local_before.is_none()
+        {
+            self.team.error = Some(format!(
+                "local content for shared object {key} could not be inspected; record retained for retry"
+            ));
+            return ApplyOutcome::Deferred;
+        }
+        let already_applied = retained.as_ref().is_some_and(|p| {
+            p.publication.is_some()
+                && local_before.as_ref().is_some_and(|s| p.local_after.as_ref() == Some(&s.digest))
+        });
+        if let Some(intent) = retained.as_ref().filter(|p| p.publication.is_some() && !pending) {
+            if let Some(current) = &local_before {
+                if intent.local_before.as_ref() != Some(current)
+                    && intent.local_after.as_ref() != Some(&current.digest)
+                    && !intent.local_intermediate.contains(&current.digest)
+                {
+                    // A durable local write happened after this intent. It may
+                    // have outlived an unsaved outbox: reconstruct that edit.
+                    if let Some(local) = self.team_local_body(record.object, &body) {
+                        let state = self.team.state.as_mut().expect("sharing state");
+                        if !matches!(local.object, SharedObject::Note(_)) || !state.notes_withheld {
+                            state.enqueue(record.object, local, None);
+                        }
+                        pending = true;
+                    }
+                }
+            }
+        }
+        if !self.team_can_retain(record) {
+            return ApplyOutcome::Deferred;
+        }
+        let publication = Published {
+            revision: record.revision,
+            digest: project::digest(&body),
+            kind: kind_of(&body),
+            by: Some(name),
+        };
+        let note_rev = match &body.object {
+            SharedObject::Note(note) if !note.deleted => Some(
+                self.board
+                    .ticket(note.ticket)
+                    .and_then(|t| t.notes.iter().find(|n| n.id == ulid::Ulid::from(record.object)))
+                    .map_or(1, |n| n.rev.saturating_add(1)),
+            ),
+            _ => None,
+        };
+        let applied_at =
+            retained.as_ref().and_then(|p| p.applied_at.clone()).unwrap_or_else(now_iso);
+        let target_rev = retained.as_ref().and_then(|p| p.note_rev).or(note_rev);
+        let (local_after, local_intermediate) =
+            self.team_expected_local_digest(record.object, &body, &member, target_rev, &applied_at);
+        let state = self.team.state.as_mut().expect("sharing state");
+        state.remember_revision(&key, record.revision);
+        if let Some(entry) = state.pending_records.iter_mut().find(|p| p.matches(record)) {
+            if entry.publication.is_none() {
+                entry.publication = Some(publication);
+                entry.note_rev = target_rev;
+                entry.local_before = local_before;
+                entry.local_after = local_after;
+                entry.local_intermediate = local_intermediate;
+                entry.applied_at = Some(applied_at.clone());
+            }
+        } else {
+            state.pending_records.push(PendingRecord {
+                record: record.clone(),
+                publication: Some(publication),
+                note_rev: target_rev,
+                local_before,
+                local_after,
+                local_intermediate,
+                applied_at: Some(applied_at.clone()),
+            });
         }
         self.team.state_dirty = true;
-        // A local edit to this object is still on its way out (T-335): it is
-        // the later of the two, so theirs is not written over it. The put
-        // goes out against their revision — the diff re-queues the local
-        // body against the digest just recorded — and both copies end on
-        // ours. Applying theirs first was what lost a rename made here
-        // moments before their older record arrived.
-        if pending {
-            return;
+        // The floor and exact recoverable intent precede every content write.
+        if !self.team_save() {
+            return ApplyOutcome::Deferred;
+        }
+        if pending || already_applied {
+            return ApplyOutcome::Applied;
         }
         self.team.applying = true;
-        match body.object {
+        let result = match body.object {
             SharedObject::Ticket(shared) => {
                 self.team_apply_ticket(ulid::Ulid::from(record.object), shared, &member)
             }
             SharedObject::Note(note) => {
-                if self.board.ticket(note.ticket).is_none() && !note.deleted {
-                    self.team.applying = false;
-                    self.team.pending.push(record);
-                    return;
-                }
-                self.team_apply_note(ulid::Ulid::from(record.object), note, &member);
+                let rev = self
+                    .team
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.pending_records.iter().find(|p| p.matches(record)))
+                    .and_then(|p| p.note_rev);
+                self.team_apply_note(
+                    ulid::Ulid::from(record.object),
+                    note,
+                    &member,
+                    rev,
+                    &applied_at,
+                )
             }
-            SharedObject::Columns { names } => self.team_apply_columns(names),
+            SharedObject::Columns { names } => {
+                self.team_apply_columns(names);
+                store::save_columns(&self.paths, &self.board)
+            }
             SharedObject::Board { title } => {
                 if let Some(state) = self.team.state.as_mut() {
                     state.title = Some(sanitize_title(&title));
                 }
+                Ok(())
+            }
+        };
+        self.team.applying = false;
+        match result {
+            Ok(()) => ApplyOutcome::Applied,
+            Err(error) => {
+                self.team.error = Some(format!("applying shared object {key}: {error}"));
+                ApplyOutcome::Deferred
             }
         }
-        self.team.applying = false;
     }
 
     fn team_apply_ticket(
@@ -1435,19 +1975,22 @@ impl Daemon {
         id: ulid::Ulid,
         shared: mesimon_core::team::SharedTicket,
         by: &Principal,
-    ) {
+    ) -> Result<()> {
         let now = now_iso();
         let exists = self.board.ticket(id).is_some();
         if shared.deleted {
             if exists && !self.board.ticket(id).is_some_and(Ticket::is_archived) {
                 let by_word = by.note_author();
-                self.with_ticket(id, |t| {
+                if let Some(t) = self.board.ticket_mut(id) {
                     t.archived =
-                        Some(Archived { at: now, by: by_word, until: None, needs_you: false })
-                });
+                        Some(Archived { at: now, by: by_word, until: None, needs_you: false });
+                }
                 self.feed.board(by.actor(), "team_archive", Some(id));
             }
-            return;
+            if let Some(ticket) = self.board.ticket(id) {
+                store::save_ticket(&self.paths, ticket)?;
+            }
+            return Ok(());
         }
         let column = if self.board.column(&shared.column).is_some() {
             shared.column.clone()
@@ -1456,7 +1999,7 @@ impl Daemon {
         };
         if !exists {
             if self.columns_barred {
-                return;
+                anyhow::bail!("columns are unavailable");
             }
             self.board.next_key += 1;
             let t = Ticket {
@@ -1499,12 +2042,12 @@ impl Daemon {
                     needs_you: false,
                 }),
             };
-            let _ = store::save_ticket(&self.paths, &t);
+            store::save_ticket(&self.paths, &t)?;
             self.board.tickets.push(t);
-            self.persist_columns();
+            store::save_columns(&self.paths, &self.board)?;
             self.feed.board(by.actor(), "team_create", Some(id));
             self.broadcast();
-            return;
+            return Ok(());
         }
         let (from, was_archived) =
             self.board.ticket(id).map(|t| (t.column.clone(), t.is_archived())).unwrap_or_default();
@@ -1524,7 +2067,7 @@ impl Daemon {
         let title = sanitize_title(&shared.title);
         let notes = shared.notes.clone();
         let archive = shared.archived;
-        self.with_ticket(id, move |t| {
+        if let Some(t) = self.board.ticket_mut(id) {
             t.title = title;
             t.order = order;
             if archive && t.archived.is_none() {
@@ -1536,8 +2079,11 @@ impl Daemon {
                 t.notes
                     .sort_by_key(|n| notes.iter().position(|id| *id == n.id).unwrap_or(usize::MAX));
             }
-        });
+        }
+        store::save_ticket(&self.paths, self.board.ticket(id).expect("existing ticket"))?;
         self.feed.board(by.actor(), "team_update", Some(id));
+        self.broadcast();
+        Ok(())
     }
 
     fn team_apply_note(
@@ -1545,47 +2091,53 @@ impl Daemon {
         note: ulid::Ulid,
         shared: mesimon_core::team::SharedNote,
         by: &Principal,
-    ) {
-        let Some(t) = self.board.ticket(shared.ticket) else { return };
+        target_rev: Option<u64>,
+        applied_at: &str,
+    ) -> Result<()> {
+        let Some(t) = self.board.ticket(shared.ticket) else { return Ok(()) };
+        let mut updated = t.clone();
         let key = t.short_key.clone();
         let ticket = t.id;
         if shared.deleted {
-            let _ = store::delete_note(&self.paths, &key, note);
+            store::delete_note(&self.paths, &key, note)?;
+            updated.notes.retain(|n| n.id != note);
+            store::save_ticket(&self.paths, &updated)?;
+            *self.board.ticket_mut(ticket).expect("existing ticket") = updated;
             self.team.note_revs.remove(&note);
-            self.with_ticket(ticket, |t| t.notes.retain(|n| n.id != note));
-            return;
+            self.broadcast();
+            return Ok(());
         }
         let text = sanitize_note(&shared.body);
-        if store::save_note(&self.paths, &key, note, &text).is_err() {
-            return;
-        }
+        store::save_note(&self.paths, &key, note, &text)?;
         let name = note_name(&text);
-        let now = now_iso();
+        let now = applied_at.to_owned();
         let author = by.note_author();
-        let mut rev = 0;
-        self.with_ticket(ticket, |t| match t.notes.iter_mut().find(|n| n.id == note) {
+        let rev = target_rev.expect("note content intent carries its local revision");
+        match updated.notes.iter_mut().find(|n| n.id == note) {
             Some(n) => {
                 n.name = name;
-                n.rev += 1;
-                n.edited_at = now.clone();
-                n.edited_by = author.clone();
-                rev = n.rev;
+                n.rev = rev;
+                n.edited_at = now;
+                n.edited_by = author;
             }
             None => {
-                t.notes.push(NoteMeta {
+                updated.notes.push(NoteMeta {
                     id: note,
                     name,
-                    rev: 1,
+                    rev,
                     created_at: now.clone(),
                     created_by: author.clone(),
-                    edited_at: now.clone(),
-                    edited_by: author.clone(),
+                    edited_at: now,
+                    edited_by: author,
                 });
-                rev = 1;
             }
-        });
+        }
+        store::save_ticket(&self.paths, &updated)?;
+        *self.board.ticket_mut(ticket).expect("existing ticket") = updated;
         self.team.note_revs.insert(note, (rev, ticket));
         self.feed.board(by.actor(), "team_note", Some(ticket));
+        self.broadcast();
+        Ok(())
     }
 
     /// On a joined board the owner's columns are the columns: missing ones
@@ -1654,6 +2206,31 @@ fn viewer_edit(command: &Command) -> bool {
     }
     let meta = command.meta();
     meta.subject.is_some() && !matches!(meta.action, mesimon_core::authorize::Action::Read)
+}
+
+fn local_fingerprint(value: &impl serde::Serialize) -> String {
+    use sha2::Digest;
+    mesimon_team::hex::encode(&sha2::Sha256::digest(serde_json::to_vec(value).unwrap_or_default()))
+}
+
+fn file_stamp(path: Option<&std::path::Path>) -> String {
+    use std::os::unix::fs::MetadataExt;
+    path.and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| {
+            m.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|t| format!("{}:{}:{}:{}", m.dev(), m.ino(), t.as_nanos(), m.len()))
+        })
+        .unwrap_or_else(|| "missing".into())
+}
+
+fn is_tombstone(body: &RecordBody) -> bool {
+    match &body.object {
+        SharedObject::Ticket(ticket) => ticket.deleted,
+        SharedObject::Note(note) => note.deleted,
+        _ => false,
+    }
 }
 
 fn kind_of(body: &RecordBody) -> String {
@@ -1879,3 +2456,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "teamglue_tests.rs"]
+mod record_tests;

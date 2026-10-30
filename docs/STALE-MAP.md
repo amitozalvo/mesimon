@@ -39517,3 +39517,30 @@ also check visible marks, reveal and Enter; fallback inline code checks unchange
 geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.
+
+## Teams keeps per-object revisions and deferred input (T-656, 2026-10-30)
+
+`team.json` moves to schema 2 and adds defaulted `revision_floors` and `pending_records`.
+Older binaries refuse to rewrite it. Existing published revisions remain floors, and deletion
+retains them across restart. Sync refuses lower/equal revisions, with object and revisions in
+the activity feed; an exact authenticated record retained for unfinished application can retry.
+
+Encrypted deferred records and the page cursor are saved together. Missing keys, authors or
+parents do not stop later-page fetching below the retained-capacity bound. Before content
+writes, the daemon saves the verified floor and exact recoverable intent; publication finishes
+after checked content writes. Recovery compares saved local fingerprints with durable content,
+preserves later local edits even when their outbox was not saved, and completes a note without
+incrementing its local revision twice. Ticket placement preserves authorization and gates while
+the complete shared ticket is written once. Withheld notes remain withheld during recovery.
+
+Retention is limited to 1,024 records and 16 MiB of ciphertext payload; metadata is additional,
+bounded by record count. A retry pass attempts at most 64 records and rotates through the queue.
+Overflow preserves existing records and the cursor and reports a recoverable pause. Catch-up
+through later dependencies is guaranteed only within capacity; overflow can require recovery
+or a build with a higher limit. No records are silently evicted.
+
+Outgoing edits use the retained revision for CAS. Receipts must match the sent object/revision;
+late receipts preserve newer publication and dirty local edits. Accepted local tombstones do
+not queue another deletion. Historical keys remain usable for untouched content after rotation.
+The `Put`/`Accepted`/`Sync`/`Records` wire and the Teams environment gate are unchanged.
+Relay half: see mesimon-relay (T-656).
