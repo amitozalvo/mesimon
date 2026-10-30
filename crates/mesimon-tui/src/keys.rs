@@ -99,6 +99,15 @@ pub fn from_key(key: Key) -> (KeyCode, KeyModifiers) {
 /// `alt+←` become [`Key::AltLeft`] would stop jumping by word, and the board's
 /// nudge is not something a half-typed title can do anyway.
 pub fn to_key_text(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
+    // Claude Code on Windows uses Alt+V for pasting clipboard images. Treat
+    // that chord as the existing paste binding, but only in text fields so
+    // it cannot trigger a board-level `v` action.
+    if code == KeyCode::Char('v')
+        && mods.contains(KeyModifiers::ALT)
+        && !mods.contains(KeyModifiers::CONTROL)
+    {
+        return Some(Key::Ctrl('v'));
+    }
     to_key(text_code(code, mods), mods - KeyModifiers::ALT)
 }
 
