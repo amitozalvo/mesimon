@@ -174,7 +174,7 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
     // from a note is two rows tall (T-882), so the window is measured in
     // rows and holds whole hits.
     let rows = body.height as usize;
-    let tall = |h: &Hit| 1 + usize::from(h.excerpt.is_some());
+    let tall = |h: &Hit| 1 + usize::from(h.excerpt.is_some() || h.pr.is_some());
     let mut top = s.top.get().min(s.hits.len().saturating_sub(1));
     if s.idx < top {
         top = s.idx;
@@ -217,6 +217,11 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
         if let Some(ex) = &hit.excerpt {
             let y = body.y + lines.len() as u16;
             lines.push(excerpt_row(theme, &ex.line, selected, w, 1 + key_w + 2));
+            hits.record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(top + i));
+        }
+        if let Some(pr) = &hit.pr {
+            let y = body.y + lines.len() as u16;
+            lines.push(excerpt_row(theme, pr, selected, w, 1 + key_w + 2));
             hits.record(Rect { y, height: 1, ..body }, crate::mouse::Target::Row(top + i));
         }
     }

@@ -196,8 +196,17 @@ pub struct Hit {
     pub trail: Field,
     /// The note line that matched, for a hit whose row did not (T-882).
     pub excerpt: Option<Excerpt>,
+    /// A matching pull request row, when the ticket row and notes did not match.
+    pub pr: Option<Field>,
     pub archived: bool,
     pub score: u32,
+}
+
+/// Cached forge text associated with one ticket. Search never reads the forge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequest {
+    pub ticket: ulid::Ulid,
+    pub text: String,
 }
 
 /// A reusable matcher. `Matcher::new` eagerly allocates ~135 KB of scoring
@@ -274,6 +283,18 @@ impl Searcher {
         archived: bool,
         bodies: &dyn Bodies,
     ) -> Vec<Hit> {
+        self.rank_with_prs(board, query, archived, bodies, &[])
+    }
+
+    /// Like `rank`, also searches the forge rows already cached by the picker.
+    pub fn rank_with_prs(
+        &mut self,
+        board: &Board,
+        query: &str,
+        archived: bool,
+        bodies: &dyn Bodies,
+        prs: &[PullRequest],
+    ) -> Vec<Hit> {
         self.pattern.atoms = atoms(query);
         self.needles = self
             .pattern
@@ -286,7 +307,7 @@ impl Searcher {
         // The notes are asked only for a query that names something: `!foo`
         // alone matches every line that lacks it, which is every ticket.
         let notes = self.pattern.atoms.iter().any(|a| !a.negative);
-        let mut out: Vec<(bool, bool, u32, usize, Hit)> = Vec::new();
+        let mut out: Vec<(bool, u8, u32, usize, Hit)> = Vec::new();
 
         // Board order is the tie-break, so it is also the enumeration order:
         // live cards column by column, then the archived list as the archived
@@ -295,20 +316,75 @@ impl Searcher {
         let live: Vec<&Ticket> = columns.iter().flat_map(|c| board.column_tickets(c)).collect();
         let rest: Vec<&Ticket> = if archived { board.archived_tickets() } else { Vec::new() };
         for (rank, t) in live.into_iter().chain(rest).enumerate() {
-            let hit =
-                self.score(t, trimmed).or_else(|| notes.then(|| self.excerpt(t, bodies)).flatten());
+            let hit = self
+                .score(t, trimmed)
+                .or_else(|| notes.then(|| self.pr_excerpt(t, prs)).flatten())
+                .or_else(|| notes.then(|| self.excerpt(t, bodies)).flatten());
             if let Some(hit) = hit {
-                out.push((hit.archived, hit.excerpt.is_some(), hit.score, rank, hit));
+                let tier = if hit.pr.is_some() {
+                    1
+                } else if hit.excerpt.is_some() {
+                    2
+                } else {
+                    0
+                };
+                out.push((hit.archived, tier, hit.score, rank, hit));
             }
         }
         // Archived below live; inside a tier, the rows the query landed on
-        // before the notes it landed in; then score first and board order
+        // before PR/MR title hits, then note hits; then score and board order
         // second — so an empty query is the board, and equal scores never
         // shuffle between frames.
         out.sort_by(|a, b| {
             a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.cmp(&a.2)).then(a.3.cmp(&b.3))
         });
         out.into_iter().map(|(_, _, _, _, hit)| hit).collect()
+    }
+
+    fn pr_excerpt(&mut self, ticket: &Ticket, prs: &[PullRequest]) -> Option<Hit> {
+        let mut best: Option<(u32, String)> = None;
+        for pr in prs.iter().filter(|p| p.ticket == ticket.id) {
+            let Some(score) =
+                self.pattern.score(Utf32Str::new(&pr.text, &mut self.buf), &mut self.matcher)
+            else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(old, _)| score > *old) {
+                best = Some((score, pr.text.clone()));
+            }
+        }
+        let (score, text) = best?;
+        self.indices.clear();
+        self.pattern.indices(
+            Utf32Str::new(&text, &mut self.buf),
+            &mut self.matcher,
+            &mut self.indices,
+        );
+        // Pattern indices are sparse for substring atoms in nucleo. Record
+        // each positive contiguous needle's visible span explicitly.
+        let folded: Vec<char> = text.chars().map(fold).collect();
+        for atom in self.pattern.atoms.iter().filter(|a| !a.negative && a.kind != AtomKind::Fuzzy) {
+            let needle: Vec<char> = atom.needle_text().chars().map(fold).collect();
+            if needle.is_empty() {
+                continue;
+            }
+            if let Some(at) = folded.windows(needle.len()).position(|window| window == needle) {
+                self.indices.extend((at..at + needle.len()).map(|i| i as u32));
+            }
+        }
+        self.indices.sort_unstable();
+        self.indices.dedup();
+        let matched = std::mem::take(&mut self.indices);
+        Some(Hit {
+            id: ticket.id,
+            key: Field { text: ticket.short_key.clone(), matched: vec![] },
+            title: Field { text: crate::text::scrub_cells(&ticket.title, false), matched: vec![] },
+            trail: Field { text: trail_of(ticket), matched: vec![] },
+            excerpt: None,
+            pr: Some(Field { text, matched }),
+            archived: ticket.is_archived(),
+            score,
+        })
     }
 
     fn score(&mut self, ticket: &Ticket, query: &str) -> Option<Hit> {
@@ -350,6 +426,7 @@ impl Searcher {
             title: Field { matched: cut(title_at, title_at + title_len), text: title },
             trail: Field { matched: cut(trail_at, trail_at + trail.chars().count()), text: trail },
             excerpt: None,
+            pr: None,
             archived: ticket.is_archived(),
             score: score + exact_key_bonus(ticket, query),
         };
@@ -399,6 +476,7 @@ impl Searcher {
                 note,
                 line: Field { text: line.to_string(), matched: self.indices.clone() },
             }),
+            pr: None,
             archived: ticket.is_archived(),
             score,
         })
@@ -488,6 +566,10 @@ mod tests {
 
     fn keys(hits: &[Hit]) -> Vec<&str> {
         hits.iter().map(|h| h.key.text.as_str()).collect()
+    }
+
+    fn pr(ticket: u128, text: &str) -> PullRequest {
+        PullRequest { ticket: ulid_n(ticket), text: text.into() }
     }
 
     #[test]
@@ -647,6 +729,55 @@ mod tests {
         assert!(s.rank(&b, "friend board", true, &bodies()).is_empty());
         // Without bodies, no excerpt and no hit.
         assert!(s.rank(&b, "friend", true, &()).is_empty());
+    }
+
+    #[test]
+    fn pull_request_number_title_repo_state_and_url_are_searchable_and_highlighted() {
+        let mut b = board();
+        let rows = [
+            pr(1, "#812 Add auth redirects acme/service open https://github.com/acme/service/pull/812"),
+            pr(2, "!44 Login copy acme/web merged https://gitlab.com/acme/web/-/merge_requests/44"),
+        ];
+        let mut s = Searcher::new();
+        for (query, expected) in [
+            ("812", "T-1"),
+            ("redirects", "T-1"),
+            ("service", "T-1"),
+            ("open", "T-1"),
+            ("gitlab.com", "T-2"),
+            ("merged", "T-2"),
+        ] {
+            let hits = s.rank_with_prs(&b, query, true, &(), &rows);
+            assert_eq!(keys(&hits), [expected], "{query}");
+            let field = hits[0].pr.as_ref().expect("visible PR/MR match row");
+            let byte_at =
+                field.text.to_lowercase().find(&query.to_lowercase()).expect("matched query");
+            let char_at = field.text[..byte_at].chars().count();
+            assert!(field.is_match(char_at), "{query} should highlight its visible text");
+            assert!(hits[0].excerpt.is_none());
+        }
+        b.tickets[0].title = "Add auth redirects".into();
+        assert_eq!(keys(&s.rank_with_prs(&b, "redirects", true, &(), &rows)), ["T-1"]);
+    }
+
+    #[test]
+    fn pull_request_hits_rank_after_ticket_rows_before_notes_and_preserve_note_hits() {
+        let mut b = noted();
+        b.tickets[0].title = "friend codes".into();
+        b.tickets[0].column = "TODO".into();
+        b.tickets[0].tags.clear();
+        let prs = [pr(1, "friend codes in PR #812"), pr(3, "friend codes in MR !44")];
+        let mut s = Searcher::new();
+        let hits = s.rank_with_prs(&b, "friend codes", true, &bodies(), &prs);
+        assert_eq!(keys(&hits), ["T-1", "T-3", "T-2"]);
+        assert!(
+            hits.iter().any(|h| h.key.text == "T-1" && h.pr.is_none() && h.excerpt.is_none()),
+            "ticket row match stays ahead of PR hits"
+        );
+        assert!(hits[1].pr.is_some() && hits[1].excerpt.is_none(), "PR/MR hit precedes note hit");
+        assert!(hits[2].pr.is_none() && hits[2].excerpt.is_some(), "note hit remains available");
+        assert!(hits[1].pr.as_ref().unwrap().is_match(0));
+        assert_eq!(keys(&s.rank(&b, "friend codes", true, &bodies())), ["T-1", "T-2"]);
     }
 
     /// The precheck is the matcher's own fold: an ASCII word finds its
