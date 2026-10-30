@@ -746,6 +746,7 @@ fn dialog_open(app: &App) -> bool {
                 | Mode::Brief { .. }
                 | Mode::ColumnSettings { .. }
                 | Mode::Search(_)
+                | Mode::Input { purpose: InputPurpose::SetMergeBranch, .. }
         )
         || (matches!(app.screen, Screen::Board)
             && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))
@@ -764,6 +765,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // keys, so the word must name the scope the hints came from.
         _ if app.tag_armed.is_some() => Scope::TagChord.word(),
         Mode::Input { purpose: InputPurpose::Create { .. }, .. } => "NEW",
+        Mode::Input { purpose: InputPurpose::SetMergeBranch, .. } => "INTEGRATION BRANCH",
         Mode::Input {
             purpose: InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. },
             ..

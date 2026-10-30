@@ -276,6 +276,9 @@ pub enum Command {
     MergeTicket {
         id: ulid::Ulid,
     },
+    /// Promote the configured integration branch to the repository's default
+    /// branch, fast-forward only. Local person action; never agent-facing.
+    PromoteMain,
     /// Paste one of the merge-flow requests into the ticket's live claude
     /// session (explicit user gesture — the m key's staged progression).
     MergeToAgent {
@@ -1729,6 +1732,7 @@ impl Command {
             | SetCrownBudget { .. }
             | SetCrownMode { .. }
             | SetMergeInto { .. }
+            | PromoteMain
             | ApplySetup { .. }
             | SetBoardWorkspace { .. }
             | SetCrownArchives { .. }
@@ -2199,6 +2203,11 @@ pub enum Response {
         detail: String,
         #[serde(default)]
         notified: bool,
+    },
+    /// Result of the person's integration-branch promotion action.
+    Promotion {
+        outcome: PromotionOutcome,
+        detail: String,
     },
     /// argv the client should exec for the focus handover.
     Attach {
@@ -3845,6 +3854,13 @@ pub enum MergeOutcome {
     /// stage asks the agent to rebase + test (`MergeToAgent`).
     NeedsRebase,
     /// Not performed; `detail` says why (sessions active, dirty checkout, …).
+    Refused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionOutcome {
+    Promoted,
     Refused,
 }
 

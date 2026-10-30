@@ -24,8 +24,8 @@ use mesimon_core::command::{
     AgentMergeView, AgentNeedsYouView, AgentQuestionView, AgentRepoView, AgentStateView,
     AgentTagView, AgentTicketRow, AgentTicketView, AskRoad, AskWake, Command, CrownTouch, Deliver,
     DiffTarget, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Notice, Pending,
-    PendingAction, Resources, Response, StartPrompt, TerminalItem, WorktreeItem, WorktreeRepoItem,
-    PROTOCOL_VERSION,
+    PendingAction, PromotionOutcome, Resources, Response, StartPrompt, TerminalItem, WorktreeItem,
+    WorktreeRepoItem, PROTOCOL_VERSION,
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
@@ -521,7 +521,7 @@ enum Msg {
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
     /// train may take, and the number it started under; with the look at
     /// what its legs pushed (T-761) where a forge may read them.
-    TicketFlags(ulid::Ulid, u64, Vec<worktree::RepoSample>, Option<crate::forge::Local>),
+    TicketFlags(ulid::Ulid, u64, u64, Vec<worktree::RepoSample>, Option<crate::forge::Local>),
     /// A worktree's teardown finished on a worker (T-561): `worktree remove
     /// --force` walks and unlinks the whole tree, `target/` included, and
     /// an `archive_all` queued a dozen of them for one tick, so the board
@@ -840,6 +840,9 @@ pub struct Daemon {
     /// Bumped by every synchronous flag refresh; a worker's sample carries
     /// the value it started under and lands only if nothing bumped it since.
     wt_gen: u64,
+    /// Only a merge-target change invalidates a crown turn's captured
+    /// observation; a later merge/flag refresh must not erase its delivery.
+    merge_target_gen: u64,
     /// A worker is out sampling the flags: the tick asks for no second one.
     wt_inflight: bool,
     /// Every flag sample is numbered as it starts (T-678): `wt_seq` the
@@ -1735,8 +1738,8 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
             Msg::Backfilled(found) => d.on_backfilled(found),
-            Msg::TicketFlags(ticket, seq, flags, local) => {
-                d.on_ticket_flags(ticket, seq, flags, local)
+            Msg::TicketFlags(ticket, gen, seq, flags, local) => {
+                d.on_ticket_flags(ticket, gen, seq, flags, local)
             }
             Msg::TornDown { ticket, archived, branch_kept, took } => {
                 d.on_torn_down(ticket, archived, branch_kept, took)
@@ -1983,6 +1986,7 @@ impl Daemon {
             wt_init: std::collections::HashSet::new(),
             wt_conflicts: Vec::new(),
             wt_gen: 0,
+            merge_target_gen: 0,
             wt_inflight: false,
             wt_seq: 0,
             wt_inflight_seq: 0,
@@ -3401,6 +3405,7 @@ impl Daemon {
                 self.move_tag(group, name, to_group, to_index)
             }
             Command::MergeTicket { id } => self.hand_merge(id),
+            Command::PromoteMain => self.promote_main(),
             Command::MergeToAgent { id, request } => {
                 self.merge_to_agent(id, request, &Principal::Local, Ack::PROMPT)
             }
@@ -10707,10 +10712,9 @@ impl Daemon {
     /// it. `None` with several legs, where a number alone names no one
     /// repository, and before the remote is learned.
     fn ticket_repo(&self, id: ulid::Ulid) -> Option<mesimon_core::forge::Remote> {
-        let base = self.base_branch.clone().unwrap_or_default();
         let dir = match self.worktrees.get(&id).filter(|b| !b.branch.is_empty()) {
             Some(b) => {
-                let legs = b.legs(&self.paths.repo_root, &base);
+                let legs = self.binding_legs(b);
                 let [leg] = legs.as_slice() else { return None };
                 leg.repo.clone()
             }
@@ -10742,7 +10746,6 @@ impl Daemon {
     /// hosts a CLI is pointed at, and whether every such leg's remote is
     /// parsed yet; one that is not leaves the answer partial.
     fn forge_hosts(&self) -> (std::collections::HashSet<String>, bool) {
-        let base = self.base_branch.clone().unwrap_or_default();
         let mut hosts = std::collections::HashSet::new();
         let mut whole = true;
         // The checkout's own remote (T-859): what a ticket on the checkout
@@ -10758,7 +10761,7 @@ impl Daemon {
             if b.branch.is_empty() || self.tearing_down.contains(t) {
                 continue;
             }
-            for leg in b.legs(&self.paths.repo_root, &base) {
+            for leg in self.binding_legs(b) {
                 match self.forge.remotes.get(&leg.repo) {
                     Some(Some(remote)) => {
                         hosts.insert(remote.host.clone());
@@ -10793,9 +10796,8 @@ impl Daemon {
         let Some(b) = self.worktrees.get(&id).filter(|b| !b.branch.is_empty()) else {
             return false;
         };
-        let base = self.base_branch.clone().unwrap_or_default();
-        let tips: Vec<(String, String)> = b
-            .legs(&self.paths.repo_root, &base)
+        let tips: Vec<(String, String)> = self
+            .binding_legs(b)
             .iter()
             .flat_map(|leg| {
                 // Under every path its remotes name (T-800): a fork's PR
@@ -10991,6 +10993,7 @@ impl Daemon {
                     .get(&target)
                     .map(|a| a.counted.as_str())
                     .filter(|c| !c.is_empty())
+                    .or(self.board.merge_into.integration_branch())
                     .or(self.base_branch.as_deref())
                     .unwrap_or("main"),
                 rebase_first()
@@ -13370,15 +13373,20 @@ impl Daemon {
             return false;
         }
         let single_base = self
-            .base_branch
-            .clone()
+            .worktree_base_cached()
             .or_else(|| worktree::default_branch(&self.paths.repo_root).ok())
             .unwrap_or_default();
-        let legs = b.legs(&self.paths.repo_root, &single_base);
+        let legs = self.binding_legs_at(b, &single_base);
         legs.iter().all(|leg| {
             // Fresh check on gate paths (the 10 s cache may lag a just-made
             // merge).
-            if !leg.base.is_empty() && worktree::is_merged(&leg.repo, &b.branch, &leg.base) {
+            if !leg.base.is_empty()
+                && worktree::is_merged(
+                    &leg.repo,
+                    &format!("refs/heads/{}", b.branch),
+                    &format!("refs/heads/{}", leg.base),
+                )
+            {
                 return true;
             }
             // The forge's word (T-739), at the branch's tip as it stands: a
@@ -13447,8 +13455,31 @@ impl Daemon {
     /// The binding's legs, with the daemon's base branch for a single-repo
     /// one (a workspace leg carries its own).
     fn legs_of(&self, id: ulid::Ulid) -> Vec<worktree::Leg> {
-        let base = self.base_branch.clone().unwrap_or_default();
-        self.worktrees.get(&id).map(|b| b.legs(&self.paths.repo_root, &base)).unwrap_or_default()
+        self.worktrees.get(&id).map(|b| self.binding_legs(b)).unwrap_or_default()
+    }
+
+    fn binding_legs(&self, binding: &worktree::Binding) -> Vec<worktree::Leg> {
+        let base = self.worktree_base_cached().unwrap_or_default();
+        self.binding_legs_at(binding, &base)
+    }
+
+    fn binding_legs_at(&self, binding: &worktree::Binding, base: &str) -> Vec<worktree::Leg> {
+        let selected = self.configured_worktree_base();
+        binding.legs_with_target(&self.paths.repo_root, base, selected.as_deref())
+    }
+
+    fn worktree_base_cached(&self) -> Option<String> {
+        self.configured_worktree_base().or_else(|| self.base_branch.clone())
+    }
+
+    fn worktree_base(&mut self) -> Option<String> {
+        self.configured_worktree_base().or_else(|| self.root_base())
+    }
+
+    /// The board-selected target, before the repository default branch is
+    /// lazily resolved. All worktree readers share this choice.
+    fn configured_worktree_base(&self) -> Option<String> {
+        self.board.merge_into.integration_branch().map(str::to_string)
     }
 
     /// The root's default branch, resolved once and forgotten by a fetch
@@ -13468,13 +13499,17 @@ impl Daemon {
     /// `base_branch` alone sat still on such a board: no leg ever read
     /// ahead or merged, by git or by the forge, and nothing said so.
     fn needs_root_base(&self) -> bool {
+        if self.board.merge_into.integration_branch().is_some() {
+            return false;
+        }
         self.worktrees.values().any(|b| !b.branch.is_empty() && !b.is_workspace())
     }
 
     /// The base this ticket's branch is judged against is known (T-754):
     /// the root's default branch, or the legs' own on a workspace binding.
     fn base_known_for(&self, ticket: ulid::Ulid) -> bool {
-        self.base_branch.is_some() || self.worktrees.get(&ticket).is_some_and(|b| b.is_workspace())
+        self.worktree_base_cached().is_some()
+            || self.worktrees.get(&ticket).is_some_and(|b| b.is_workspace())
     }
 
     /// The first leg whose last sample failed (T-754), for the ticket page
@@ -13767,7 +13802,7 @@ impl Daemon {
         // A single-repo branch lands on the root's default branch; a
         // workspace leg on its own base (T-368), so a folder root with no
         // branch of its own refuses nothing there (T-754).
-        let base = match self.root_base() {
+        let base = match self.worktree_base() {
             Some(b) => b,
             None if workspace => String::new(),
             None => {
@@ -13949,7 +13984,7 @@ impl Daemon {
         if !self.worktrees.contains_key(&id) {
             return Response::Err { message: "no worktree on this ticket".into() };
         }
-        let mut base = self.root_base().unwrap_or_else(|| "main".into());
+        let mut base = self.worktree_base().unwrap_or_else(|| "main".into());
         // On a forge board the counts that asked it are the upstream's
         // (T-786), so the rebase is onto that: `origin/main`.
         if let Some(a) = self.wt_agg.get(&id).filter(|a| !a.counted.is_empty()) {
@@ -14547,7 +14582,7 @@ impl Daemon {
         if !self.train.is_armed()
             || self.worktrees_barred
             || self.worktrees.is_empty()
-            || (self.base_branch.is_none() && self.needs_root_base())
+            || (self.worktree_base_cached().is_none() && self.needs_root_base())
         {
             return false;
         }
@@ -17122,8 +17157,21 @@ impl Daemon {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
+        if let Some(branch) = into.integration_branch() {
+            if let Err(message) = self.validate_integration_branch(branch) {
+                return Response::Err { message };
+            }
+        }
         if self.board.merge_into != into {
-            self.board.merge_into = into;
+            if self.worktrees.values().any(|binding| binding.status == BindingStatus::Provisioning)
+            {
+                return Response::Err {
+                    message:
+                        "wait for worktree provisioning to finish before changing the merge target"
+                            .into(),
+                };
+            }
+            self.board.merge_into = into.clone();
             if into.pull_requests() {
                 let (file, notices, barred) = crate::forge::load_or_recover(&self.paths);
                 self.notices.extend(notices);
@@ -17137,9 +17185,84 @@ impl Daemon {
                 (self.forge.gen, self.forge.epoch) = (gen, epoch);
                 self.forge_written.clear();
             }
+            self.wt_gen = self.wt_gen.wrapping_add(1);
+            self.merge_target_gen = self.merge_target_gen.wrapping_add(1);
+            self.wt_agg.clear();
+            self.wt_answered.clear();
+            self.wt_repos.clear();
+            self.wt_conflicts.clear();
+            self.wt_fresh.clear();
+            self.upstreams.clear();
+            self.refresh_worktree_flags();
             self.persist_and_notify();
         }
         Response::Ok
+    }
+
+    fn validate_integration_branch(&self, branch: &str) -> Result<(), String> {
+        let root = &self.paths.repo_root;
+        let mut repos = Vec::new();
+        if root.join(".git").exists() {
+            repos.push((String::from("root"), root.clone()));
+        }
+        for name in crate::gitstatus::census(root) {
+            repos.push((name.clone(), root.join(name)));
+        }
+        if repos.is_empty() {
+            return Err("no git repositories are available for an integration branch".into());
+        }
+        for (name, repo) in repos {
+            if !worktree::valid_branch_name(&repo, branch) {
+                return Err(format!("{name}: {branch} is not a valid branch name"));
+            }
+            if worktree::branch_tip(&repo, branch).is_empty() {
+                return Err(format!("{name}: branch {branch} does not exist"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A person advances every repository leg from the selected integration
+    /// ref to its local default branch. Git offers no cross-repository
+    /// transaction, so a later failure reports any earlier legs already moved.
+    fn promote_main(&mut self) -> Response {
+        if self.columns_barred {
+            return self.refuse_promotion(self.barred_message("columns"));
+        }
+        let Some(target) = self.board.merge_into.integration_branch().map(str::to_owned) else {
+            return self
+                .refuse_promotion("choose an integration branch before promoting to main".into());
+        };
+        let root = &self.paths.repo_root;
+        let mut repos = Vec::new();
+        if root.join(".git").exists() {
+            repos.push(root.clone());
+        }
+        repos.extend(crate::gitstatus::census(root).into_iter().map(|name| root.join(name)));
+        if repos.is_empty() {
+            return self.refuse_promotion("no git repositories are available to promote".into());
+        }
+        let result = worktree::promote_to_main(&repos, &target);
+        if let Some(reason) = result.refusal {
+            let detail = if result.promoted.is_empty() {
+                reason
+            } else {
+                format!("promoted {}; then refused: {reason}", result.promoted.join(", "))
+            };
+            return self.refuse_promotion(detail);
+        }
+        let detail = format!("promoted {target} to {}", result.promoted.join(", "));
+        self.feed.board_detail("person", "promote_main", "promoted", &detail);
+        self.note_promotion_wake(&target, &result.promoted);
+        self.persist_crown();
+        self.persist_sessions();
+        self.broadcast();
+        Response::Promotion { outcome: PromotionOutcome::Promoted, detail }
+    }
+
+    fn refuse_promotion(&mut self, detail: String) -> Response {
+        self.feed.board_detail("person", "promote_main", "refused", &detail);
+        Response::Promotion { outcome: PromotionOutcome::Refused, detail }
     }
 
     /// `Command::SetBoardWorkspace` (T-816): the workspace a ticket is
@@ -17785,6 +17908,7 @@ impl Daemon {
             // landed leg's branch goes while an unmerged sibling's stays.
             let discard = matches!(why, TeardownWhy::Deleted { discard: true });
             let workspace = b.is_workspace();
+            let targets = self.binding_legs(&b);
             let branch = b.branch.clone();
             let repo_root = self.paths.repo_root.clone();
             let tx = self.tx.clone();
@@ -17793,7 +17917,16 @@ impl Daemon {
                 let started = Instant::now();
                 let branch_kept = worktree::teardown(&repo_root, &b, &|leg| {
                     let leg_merged = if workspace {
-                        !leg.base.is_empty() && worktree::is_merged(&leg.repo, &branch, &leg.base)
+                        targets.iter().find(|target| target.name == leg.name).is_some_and(
+                            |target| {
+                                !target.base.is_empty()
+                                    && worktree::is_merged(
+                                        &leg.repo,
+                                        &format!("refs/heads/{branch}"),
+                                        &format!("refs/heads/{}", target.base),
+                                    )
+                            },
+                        )
                     } else {
                         merged
                     };
@@ -18213,15 +18346,22 @@ impl Daemon {
         // Cut at the fetched upstream only where the board merges through
         // pull requests (T-779, T-810).
         let upstream = self.through_prs();
+        let base_override = self.configured_worktree_base();
         std::thread::spawn(move || {
             let started = Instant::now();
             let ptx = tx.clone();
             let result = match evicted {
                 Some(prior) => worktree::provision_existing(&repo, ticket, &prior),
-                None if census.is_empty() => {
-                    worktree::provision(&repo, &root, ticket, &key, &title, upstream)
-                }
-                None => worktree::provision_workspace(
+                None if census.is_empty() => worktree::provision_on(
+                    &repo,
+                    &root,
+                    ticket,
+                    &key,
+                    &title,
+                    upstream,
+                    base_override.as_deref(),
+                ),
+                None => worktree::provision_workspace_on(
                     &repo,
                     &root,
                     &census,
@@ -18230,6 +18370,7 @@ impl Daemon {
                     &key,
                     &title,
                     upstream,
+                    base_override.as_deref(),
                     &mut |done, total| {
                         let _ = ptx.send(Msg::ProvisionProgress(ticket, done, total));
                     },
@@ -18245,7 +18386,7 @@ impl Daemon {
                     ("MESIMON_TICKET".to_string(), key.clone()),
                     ("MESIMON_WORKTREE_BRANCH".to_string(), b.branch.clone()),
                 ];
-                for leg in b.legs(&repo, "") {
+                for leg in b.legs_with_target(&repo, "", base_override.as_deref()) {
                     if worktree::init_script(&leg.repo).is_none() {
                         continue;
                     }
@@ -18484,7 +18625,6 @@ impl Daemon {
         ask_upstream: bool,
         only: Option<ulid::Ulid>,
     ) -> Vec<worktree::RepoQuery> {
-        let base = self.base_branch.clone().unwrap_or_default();
         let mut queries: Vec<worktree::RepoQuery> = Vec::new();
         let tickets: Vec<ulid::Ulid> = self
             .worktrees
@@ -18499,7 +18639,7 @@ impl Daemon {
             }
             let branch = b.branch.clone();
             let workspace = b.is_workspace();
-            for leg in b.legs(&self.paths.repo_root, &base) {
+            for leg in self.binding_legs(b) {
                 if leg.base.is_empty() && workspace {
                     continue;
                 }
@@ -18570,7 +18710,7 @@ impl Daemon {
         // A workspace leg carries its own base, so a folder root with no
         // branch of its own samples its legs all the same (T-754); only a
         // single-repo binding waits on the root's, and the journal says so.
-        if self.root_base().is_none() && self.needs_root_base() {
+        if self.worktree_base().is_none() && self.needs_root_base() {
             self.journal.line(&format!(
                 "worktree flags: no default branch at {}; single-repo bindings unsampled",
                 self.paths.repo_root.display()
@@ -18717,12 +18857,11 @@ impl Daemon {
         // The floor first, off the cached remotes (T-795): this is asked
         // every tick, and a query walks the tickets and copies the settled
         // commits. A leg's repository not due is one the query would hold.
-        let base = self.base_branch.clone().unwrap_or_default();
         let held = self
             .worktrees
             .iter()
             .filter(|(t, _)| only.contains(t))
-            .flat_map(|(_, b)| b.legs(&self.paths.repo_root, &base))
+            .flat_map(|(_, b)| self.binding_legs(b))
             .any(|leg| {
                 self.forge
                     .remotes
@@ -18795,7 +18934,7 @@ impl Daemon {
             {
                 continue;
             }
-            let legs = b.legs(&self.paths.repo_root, &base);
+            let legs = self.binding_legs(b);
             tickets.push((*t, b.branch.clone(), legs, self.named_prs(*t)));
         }
         // And every other ticket that named a PR (T-859): one on the
@@ -19523,7 +19662,7 @@ impl Daemon {
         self.wt_inflight_seq = self.wt_seq;
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
-        let base = self.base_branch.clone();
+        let base = self.worktree_base_cached();
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         let parsed: Vec<std::path::PathBuf> = self.forge.remotes.keys().cloned().collect();
         let prs = self.through_prs();
@@ -19578,7 +19717,7 @@ impl Daemon {
         if gen != self.wt_gen || samples.is_empty() {
             return;
         }
-        if self.base_branch.is_none() {
+        if self.board.merge_into.integration_branch().is_none() && self.base_branch.is_none() {
             if let Some(root) = samples.iter().find(|s| s.name.is_empty()) {
                 self.base_branch = Some(root.base.clone());
             }
@@ -19660,7 +19799,6 @@ impl Daemon {
         let mut changed = self.wt_conflicts != conflicts;
         self.wt_conflicts = conflicts;
         // Per ticket, its legs in binding order.
-        let base = self.base_branch.clone().unwrap_or_default();
         let mut rebased = false;
         let tickets: Vec<ulid::Ulid> = self
             .worktrees
@@ -19676,7 +19814,7 @@ impl Daemon {
             }
             let branch = b.branch.clone();
             let mut legs: Vec<worktree::RepoFlags> = Vec::new();
-            for leg in b.legs(&self.paths.repo_root, &base) {
+            for leg in self.binding_legs(b) {
                 let Some(s) = samples.iter().find(|s| s.name == leg.name && s.base == leg.base)
                 else {
                     // Not sampled this pass: carry the old leg forward. A
@@ -22329,6 +22467,119 @@ mod shell_archive_regressions {
             .unwrap_err()
             .contains("live children"));
         assert!(shell_children_idle(shells::parse_children(Some(1), b"")).is_ok());
+    }
+
+    #[test]
+    fn a_flags_sample_from_the_previous_target_cannot_restore_the_train_merge_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, rx) = queued_person_push_tests::daemon(dir.path());
+        let repo = d.paths.repo_root.clone();
+        let git = |args: &[&str]| {
+            let out =
+                std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@mesimon"]);
+        git(&["config", "user.name", "Mesimon test"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["branch", "target-b"]);
+        git(&["branch", "target-a"]);
+        git(&["checkout", "-q", "target-b"]);
+        std::fs::write(repo.join("target-b.txt"), "target B\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "target B moves"]);
+        git(&["checkout", "-q", "target-a"]);
+        std::fs::write(repo.join("target-a.txt"), "target A\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "target A moves"]);
+        git(&["checkout", "-q", "-b", "topic"]);
+        std::fs::write(repo.join("topic.txt"), "ticket work\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "ticket work"]);
+        let tip = git(&["rev-parse", "topic"]);
+        git(&["checkout", "-q", "main"]);
+
+        let ticket = match d.create_ticket(
+            &Principal::Local,
+            "TODO".into(),
+            "stale flags".into(),
+            Some(WorkspaceStrategy::Worktree),
+            None,
+        ) {
+            Response::Created { id } => id,
+            other => panic!("ticket creation failed: {other:?}"),
+        };
+        d.board.ticket_mut(ticket).unwrap().column = "REVIEW".into();
+        d.board.sessions[0].ticket = ticket;
+        d.worktrees.insert(
+            ticket,
+            worktree::Binding {
+                path: repo.join(".wt/stale-flags"),
+                branch: "topic".into(),
+                base_oid: git(&["rev-parse", "main"]),
+                branch_oid: tip,
+                status: worktree::BindingStatus::Attached,
+                locked: false,
+                repos: Vec::new(),
+                init: None,
+            },
+        );
+        for name in ["missing", "bad name", "@{-1}", "target-a~1", "-option"] {
+            assert!(
+                matches!(d.set_merge_into(MergeInto::Branch(name.into())), Response::Err { .. }),
+                "{name}"
+            );
+            assert_eq!(d.board.merge_into, MergeInto::Main);
+        }
+        assert!(matches!(d.set_merge_into(MergeInto::Branch("target-a".into())), Response::Ok));
+        let queued_gen = d.wt_gen;
+        let mut old_samples = worktree::compute_repo_flags(&d.wt_queries(false, Some(ticket)));
+        assert!(old_samples.iter().any(|s| {
+            s.base == "target-a"
+                && s.flags
+                    .flags
+                    .iter()
+                    .any(|f| f.ticket == ticket && f.ahead == 1 && !f.needs_rebase)
+        }));
+
+        assert!(matches!(d.set_merge_into(MergeInto::Branch("target-b".into())), Response::Ok));
+        let current = d.wt_agg.get(&ticket).expect("the new target was sampled synchronously");
+        assert!(current.needs_rebase && !current.merged, "target B's lane: {current:?}");
+        let plan = d.train_plan();
+        assert!(!plan.merge.contains(&ticket));
+        assert!(plan.rebase.contains(&ticket));
+
+        // Even conflict data (stored separately from the aggregate) must
+        // not return from either asynchronous sampling road.
+        old_samples[0].flags.conflicts.push("topic".into());
+        d.on_worktree_flags(queued_gen, old_samples.clone());
+        d.on_ticket_flags(ticket, queued_gen, 0, old_samples, None);
+        assert!(!d.wt_conflicts.contains(&"topic".to_string()));
+        let after = d.wt_agg.get(&ticket).expect("stale delivery must not clear current flags");
+        assert!(after.needs_rebase && !after.merged, "old target A sample was dropped: {after:?}");
+        let plan = d.train_plan();
+        assert!(!plan.merge.contains(&ticket));
+        assert!(
+            plan.rebase.contains(&ticket),
+            "stale sample cannot put the ticket in the merge lane"
+        );
+        d.base_branch = None;
+        assert!(d.base_known_for(ticket), "a named target needs no cached repository default");
+        // The rejected per-ticket read schedules a fresh one. Wait for its
+        // worker before dropping the disposable repository.
+        loop {
+            if let Msg::TicketFlags(id, gen, seq, samples, local) =
+                rx.recv_timeout(Duration::from_secs(10)).unwrap()
+            {
+                assert_eq!(gen, d.wt_gen);
+                d.on_ticket_flags(id, gen, seq, samples, local);
+                break;
+            }
+        }
     }
 }
 

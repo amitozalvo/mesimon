@@ -39436,3 +39436,41 @@ That focused crown test passes on both hooks and mod, with clean fixture audits.
 Hosted CI and Linux were not run. Next real-ticket work should measure elapsed time,
 active checks and rework; use narrow fixtures for instruction experiments, then return
 normal development to a crown after deliberate integration/handover.
+
+## A named integration target and person promotion (T-954, 2026-10-30)
+
+`MergeInto` retains the serialized values `main` and `pull_requests`, and adds
+`branch:<name>` for an existing local integration branch. Daemon validation checks the branch
+in each repository leg. A shared selected-target resolver supplies provisioning, worktree flag
+queries and reads, the train/rebase path, `merge_ticket`, and `ticket_merged`; the latter remains
+the shared answer for cards and the DONE, delete, and archive gates. Workspace bindings keep the
+cut branch in `RepoBinding.base` and each repository's true default in `RepoBinding.default_base`.
+With a named target, each leg resolves to that target; with Main, it returns to its own default.
+Older bindings without `default_base` fall back to their recorded base. PR-only forge readers
+keep the default base because forge mode remains a separate setting and no forge is sampled for
+an integration target.
+
+Changing the target advances the worktree flag generation, clears target-derived aggregates and
+samples again. Both `on_worktree_flags` and `on_ticket_flags` drop a response stamped with the
+prior generation before it can reach conflicts, forge state, the card, train, or gates. Crown turn
+probes use a separate target-only generation: discard a previous target's result and ask again,
+but retain a turn's captured delivery when an ordinary flag refresh or merge happens meanwhile.
+Target changes wait until active provisioning finishes, so a tree cannot be cut against a target
+that has just been replaced.
+
+Ordinary ticket/train merges capture the source commit and destination tip per leg. The shared
+destination lookup locates a linked integration checkout, requires it clean, and fast-forwards
+there instead of trying to push into a checked-out branch. An un-checked-out target still uses a
+local ref fast-forward; the existing main-checkout path retains Git's dirty-file protection.
+Branch entry uses the existing editable dialog, including its scrolling cursor and cancel return
+to Settings; the rebase dialog names the selected integration target.
+
+Promotion is a person-only local command. It adds no agent write-allowlist capability and no
+crown tool. Before any write, every repository leg must have both refs, a fast-forward path from
+its default branch to the target, and a clean checkout of the destination branch. The legs then
+advance sequentially to the captured target commits, rechecking destination tips and cleanliness
+and updating a linked destination checkout where it stands. They use fast-forward-only Git
+operations; Git has no multi-repository transaction, so a race or later write failure reports any
+legs already advanced. Success writes a
+`promote_main` feed outcome and queues a crown wake naming the target and promoted commit IDs.
+Refusal writes its reason and creates no promotion wake.

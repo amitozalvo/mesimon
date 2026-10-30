@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, WorkspaceStrategy};
+use mesimon_core::board::{MergeInto, SessionKind, WorkspaceStrategy};
 use mesimon_core::command::{Command, DiffTarget, MergeOutcome, Response};
 
 #[test]
@@ -223,8 +223,21 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     git(&root, &["commit", "-qm", "ignore children"]);
     init_repo(&root.join("api"), "server.ts", "one\n");
     init_repo(&root.join("web"), "page.tsx", "hello\n");
+    for repo in [&root, &root.join("api")] {
+        git(repo, &["branch", "staging"]);
+    }
     let mut c = h.client("workspace-wt");
     assert!(matches!(c.request(Command::Subscribe), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Err { message } if message.contains("web")
+    ));
+    assert_eq!(c.board().merge_into, MergeInto::Main);
+    git(&root.join("web"), &["branch", "staging"]);
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Ok
+    ));
 
     // ---- the spawn is accepted and parks on provisioning ----------------
     let _ = c.request(Command::CreateTicket {
@@ -251,7 +264,50 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     assert_eq!(wt.branch, "msmn/T-1-fix-thing");
     let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(names, ["", "api", "web"], "the root leg first, then census order");
-    assert!(wt.repos.iter().all(|r| r.base == "main"), "{:?}", wt.repos);
+    assert!(wt.repos.iter().all(|r| r.base == "staging"), "cut on selected target: {:?}", wt.repos);
+    assert!(matches!(c.request(Command::SetMergeInto { into: MergeInto::Main }), Response::Ok));
+    wait_until(
+        Duration::from_secs(10),
+        "named-target workspace resolves to repository defaults",
+        || {
+            wt_of(&mut c, id).is_some_and(|w| {
+                w.repos.iter().map(|r| (r.name.as_str(), r.base.as_str())).collect::<Vec<_>>()
+                    == [("", "main"), ("api", "main"), ("web", "main")]
+            })
+        },
+    );
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(10), "existing workspace legs switch to staging", || {
+        wt_of(&mut c, id)
+            .is_some_and(|w| w.repos.len() == 3 && w.repos.iter().all(|r| r.base == "staging"))
+    });
+    drop(c);
+    h.restart();
+    let mut c = h.client("workspace-wt-restart");
+    wait_until(
+        Duration::from_secs(15),
+        "named target and persisted workspace legs after restart",
+        || {
+            c.board().merge_into == MergeInto::Branch("staging".into())
+                && wt_of(&mut c, id).is_some_and(|w| {
+                    w.repos.len() == 3 && w.repos.iter().all(|r| r.base == "staging")
+                })
+        },
+    );
+    assert!(matches!(c.request(Command::SetMergeInto { into: MergeInto::Main }), Response::Ok));
+    wait_until(
+        Duration::from_secs(10),
+        "existing workspace legs return to per-repo defaults",
+        || {
+            wt_of(&mut c, id).is_some_and(|w| {
+                w.repos.iter().map(|r| (r.name.as_str(), r.base.as_str())).collect::<Vec<_>>()
+                    == [("", "main"), ("api", "main"), ("web", "main")]
+            })
+        },
+    );
     assert!(!wt.merged && wt.ahead == 0, "{wt:?}");
     let container = PathBuf::from(wt.path.as_deref().expect("attached: the container's path"));
     assert_eq!(

@@ -692,12 +692,36 @@ found again. With no turn id on that road, a late report that the crown's words 
 that an abrupt stop of the board between a wake's delivery and its save can repeat that wake
 after the restart.
 
+## Integration branches
+
+In **Settings › Behaviour**, set **Merge into** to `main`, `pull requests`, or an existing local
+branch such as `staging`. Use **Integration branch** to enter its name; the branch must already
+exist in every repository the board uses. New worktrees, the merge train, rebase decisions, and
+the card's merged state all use that branch as their target. Shared-checkout tickets keep their
+existing behavior. A linked checkout of the integration branch receives merges in place and must
+be clean first.
+
+When the batch is ready, choose **Promote to main** in Settings. Mesimon checks every repository
+leg first: the target and each repository's default branch must exist, main must be an ancestor of
+the integration branch, and every checkout of main must be clean. It then fast-forwards each
+repository locally. A refusal explains the dirty or diverged destination. Git has no transaction
+across repositories, so an unexpected failure after preflight can leave earlier legs promoted;
+the result names those legs. Promotion never pushes to a remote or changes branch protection.
+A protected remote main still needs the repository's allowed path for updating it.
+
+Promotion is a local person action; agents and crowns have no promotion tool. Success records the
+branch and promoted commits in the activity feed and queues that news for the crown. A refusal
+records its reason and queues no promotion wake. Board files are normally excluded from Git; if
+you track `.mesimon/board/columns.toml`, selecting a target changes that file too. Commit or stash
+tracked settings changes, and include any committed changes to main in the integration branch,
+before promotion.
+
 ## Pull requests
 
 A board merges its worktree branches one way. **Settings › Behaviour › Merge into** is `main` on
-every board: the merge train and `m` fast-forward a finished branch into your local main, and the
-board never calls a forge. Set it to `pull requests` if your team merges through them: a branch
-then lands through its pull request, merged on the forge, and the board reads the forge through
+every board by default: the merge train and `m` fast-forward a finished branch into your local
+main, and the board never calls a forge. Set it to `pull requests` if your team merges through
+them: a branch then lands through its pull request, merged on the forge, and the board reads the forge through
 the `gh` or `glab` you are signed in to: `gh` for a github.com remote, `glab` for a GitLab host.
 A new worktree starts at your fetched `origin/main` when your local main is behind it, and counts
 its commits against it. Tickets on the shared checkout are the same under either setting: their

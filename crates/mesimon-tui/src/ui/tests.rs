@@ -1174,6 +1174,82 @@ fn golden_settings_behaviour_board_120() {
     golden("settings_behaviour_board_120x30", &render(&app, 120, 30));
 }
 
+#[test]
+fn golden_settings_integration_branch() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
+    std::sync::Arc::make_mut(&mut app.board).merge_into =
+        mesimon_core::board::MergeInto::Branch("staging".into());
+    app.mode = Mode::Settings { idx: app.settings_row(mesimon_core::keymap::Verb::PromoteMain) };
+    for (w, h) in [(60, 20), (120, 30)] {
+        golden(&format!("settings_integration_{w}x{h}"), &render(&app, w, h));
+    }
+}
+
+#[test]
+fn rebase_dialog_names_the_selected_integration_target() {
+    let mut app = app_graphite(fixture_archived());
+    std::sync::Arc::make_mut(&mut app.board).merge_into =
+        mesimon_core::board::MergeInto::Branch("staging".into());
+    app.merge_dialog = Some(crate::app::MergeDialog {
+        ticket: ulid_n(1),
+        stage: crate::app::MergeStage::Rebase,
+        branch: "msmn/T-1-work".into(),
+        ahead: 1,
+        outstanding: false,
+        running: None,
+        outcome: String::new(),
+    });
+    for (w, h) in [(60, 20), (120, 30)] {
+        let rows = render(&app, w, h).join("\n");
+        assert!(rows.contains("staging moved under msmn/T-1-work"), "{rows}");
+        assert!(!rows.contains("main moved"));
+    }
+    app.merge_dialog.as_mut().unwrap().outcome = "api/staging needs a rebase".into();
+    assert_eq!(app.merge_dialog_rows()[0], "api/staging needs a rebase");
+}
+
+#[test]
+fn integration_branch_entry_draws_text_and_cursor_and_cancel_returns_to_settings() {
+    use mesimon_core::keymap::{SettingsSection, Verb};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    for (w, h) in [(60, 20), (120, 30)] {
+        let mut app = app_graphite(fixture_archived());
+        app.settings_section = SettingsSection::Behaviour;
+        let row = app.settings_row(Verb::SetMergeBranch);
+        app.mode = Mode::Settings { idx: row };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for ch in "staging".chars() {
+            press(&mut app, ch);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        let lines = lines_of(terminal.backend().buffer());
+        let y = lines.iter().position(|l| l.contains("Branch: staging")).expect("visible field");
+        let x = lines[y].find("staging").unwrap();
+        let x = lines[y][..x].width() + "staging".len();
+        assert_eq!(terminal.get_cursor_position().unwrap(), (x as u16, y as u16).into());
+        golden(&format!("settings_integration_entry_{w}x{h}"), &lines);
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        assert_eq!(terminal.get_cursor_position().unwrap(), (x as u16 - 1, y as u16).into());
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        // The existing field renderer must scroll long names and follow edits.
+        for ch in format!("{}/batch", "x".repeat(80)).chars() {
+            press(&mut app, ch);
+        }
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        let lines = lines_of(terminal.backend().buffer());
+        assert!(lines[y].contains("/batch"), "long branch tail remains visible: {lines:?}");
+        let end = terminal.get_cursor_position().unwrap();
+        assert!(end.x < w - 2 && end.y == y as u16, "cursor stays inside the field");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Settings { idx: row });
+        assert_eq!(app.board.merge_into, mesimon_core::board::MergeInto::Main);
+    }
+}
+
 /// Board scope under Appearance, on the status line row: a machine-only
 /// key says `machine` at its right edge.
 #[test]

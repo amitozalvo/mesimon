@@ -188,6 +188,12 @@ impl FeedWriter {
         }));
     }
 
+    /// A board-level person action whose detail is useful in the activity log.
+    pub fn board_detail(&mut self, actor: &str, cmd: &str, outcome: &str, detail: &str) {
+        self.push(json!({"kind":"board", "actor":actor, "cmd":cmd,
+            "outcome":outcome, "detail":detail}));
+    }
+
     /// The crown's ask sent (T-974): `ask` is its record's id, and
     /// `beside` the ticket's other asks still out when it went, each
     /// `<id> <word>`, written only where there are any. `outcome` is the

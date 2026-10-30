@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
+  │                                                      │
+  │  Comes back                ● lit   ○ quiet           │
+  │  Week starts on            Monday                    │
+  │                                                      │
+  │ MERGE                                                │
+  │  Merge into                staging (integration)     │
+  │  Integration branch        staging                   │
+  │  Promote to main           ready                     │
+  │                                                      │
+  │ REMOTE                                               │
+  │  Fetch from the remote     off                       │
+  │                                                      │
+  │ AUTO MERGE                                           │
+  │  Auto merge                ● on                      │
+  │                                                      │
+  │ fast-forward main from staging                       │
+  ╰──────────── jk select ∙ enter change ∙ b this board ─╯
+ SETTINGS                                            ? keys

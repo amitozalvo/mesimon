@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Proc;
 use std::time::Duration;
 
-use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{MergeInto, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response};
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
@@ -235,9 +235,14 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     let repo = h.repo.clone();
     // The harness boots on a bare directory; the train needs a repository.
     init_repo(&repo, "a.txt", "hello\n");
+    git(&repo, &["branch", "staging"]);
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train");
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Ok
+    ));
 
     let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
@@ -270,7 +275,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     });
     // Nothing moves before the train is armed.
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]));
+    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "staging"]));
     assert!(!feed().contains("merge_train"));
 
     // Arm: this connection owns the train.
@@ -283,7 +288,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     assert_eq!(automation_of(&mut c).acted_at_ms, 0, "a train that has done nothing");
     // A merges first, and its agent is told.
     wait_until(Duration::from_secs(15), "A to be merged", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "staging"])
     });
     // The feed flushes on the tick, a beat behind git.
     wait_until(Duration::from_secs(5), "the feed to say so", || {
@@ -294,9 +299,13 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     // REVIEW's `on_merged` (T-1037) closed it in the same step: DONE before
     // its agent hears of the merge, so the notice's turn starts there.
     assert_eq!(c.board().ticket(a).unwrap().column, "DONE");
+    assert!(
+        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
+        "train targets staging without promoting main"
+    );
     assert!(feed().contains("\"on_merged\""), "{}", feed());
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
-        text().contains(&format!("Your branch {branch_a} has been merged into main"))
+        text().contains(&format!("Your branch {branch_a} has been merged into staging"))
     });
     // The notice started a turn on A: the train waits for it. Ack and end it.
     start(&mut c, sa);
@@ -304,7 +313,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     assert_eq!(c.board().ticket(a).unwrap().column, "DONE", "DONE drags no turn back");
     // B fell behind: asked to rebase — once.
     wait_until(Duration::from_secs(15), "B to be asked to rebase", || {
-        text().contains(&format!("Rebase your current branch {branch_b} onto main"))
+        text().contains(&format!("Rebase your current branch {branch_b} onto staging"))
     });
     let asks = || {
         text()
@@ -319,10 +328,10 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
         .any(|x| x.ticket == b && x.current && x.by == "train"));
     // The agent takes the turn, rebases, ends it; the same tip is not asked again.
     start(&mut c, sb);
-    git(&wt_b, &["rebase", "-q", "main"]);
+    git(&wt_b, &["rebase", "-q", "staging"]);
     stop(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "staging"])
     });
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(asks(), 1, "asked once per base tip");
@@ -361,8 +370,12 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
         Response::Ok
     ));
     wait_until(Duration::from_secs(15), "C to be merged once re-armed", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "staging"])
     });
+    assert!(
+        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"]),
+        "re-armed train still targets staging"
+    );
     let board = c2.board();
     assert!([b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "DONE"));
     std::thread::sleep(Duration::from_millis(1500));

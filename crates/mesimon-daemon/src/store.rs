@@ -989,7 +989,7 @@ fn columns_text(board: &Board) -> Result<String> {
         crown_budget: board.crown_budget,
         crown_mode: board.crown_mode,
         legacy_crown_answers: (!board.crown_mode.answers()).then_some(false),
-        merge_into: board.merge_into,
+        merge_into: board.merge_into.clone(),
         crown_archives: board.crown_archives,
         crown_watches: board.crown_watches,
         crown_context: board.crown_context,

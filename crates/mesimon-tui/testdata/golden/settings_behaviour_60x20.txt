@@ -12,8 +12,8 @@
   │                                                      │
   │ MERGE                                                │
   │  Merge into                ● main   ○ pull requests  │
+  │  Integration branch        not set                   │
   │                                                      │
-  │ REMOTE                                               │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

@@ -103,10 +103,7 @@ impl AgentPrompt {
                 "Rebase your current branch {branch} onto {base}, resolve any conflicts, \
                  then run the tests and fix any failures before we merge."
             }
-            AgentPrompt::Merged => {
-                "Your branch {branch} has been merged into {base}. The main checkout now \
-                 contains this work."
-            }
+            AgentPrompt::Merged => "Your branch {branch} has been merged into {base}.",
             AgentPrompt::NoteUpdated => {
                 "Note \"{note}\" on this ticket was just updated; read_note with id {id} \
                  returns the new text."
@@ -273,8 +270,7 @@ mod tests {
         );
         assert_eq!(
             p.render(AgentPrompt::Merged, &[("branch", "msmn/T-1-x"), ("base", "main")]),
-            "Your branch msmn/T-1-x has been merged into main. The main checkout now contains \
-             this work."
+            "Your branch msmn/T-1-x has been merged into main."
         );
         assert_eq!(
             p.render(AgentPrompt::NoteUpdated, &[("note", "Design"), ("id", "01ABC")]),

@@ -1386,6 +1386,7 @@ enum FocusTarget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputPurpose {
+    SetMergeBranch,
     /// New-ticket composer. `workspace` is the Shift+Tab selector below the
     /// name (M4 layering): None = the board default (shared checkout).
     Create {
@@ -5025,6 +5026,7 @@ impl App {
         } else if let Mode::Input { purpose, buffer } = &mut self.mode {
             let what = match purpose {
                 InputPurpose::Create { .. } | InputPurpose::Rename { .. } => "a title",
+                InputPurpose::SetMergeBranch => "an integration branch",
                 InputPurpose::RenameColumn { .. } => "a column name",
                 InputPurpose::Prompt { .. } => "an ask",
             };
@@ -7486,7 +7488,7 @@ impl App {
             agent_provider: self.board.agent_provider,
             crown_budget: self.board.crown_budget,
             crown_mode: self.board.crown_mode,
-            merge_into: self.board.merge_into,
+            merge_into: self.board.merge_into.clone(),
             crown_archives: self.board.crown_archives,
             crown_watches: self.board.crown_watches,
             crown_context: self.board.crown_context,
@@ -8914,7 +8916,7 @@ impl App {
                     return Ok(());
                 }
                 let into = self.board.merge_into.toggled();
-                match self.client.request(Command::SetMergeInto { into })? {
+                match self.client.request(Command::SetMergeInto { into: into.clone() })? {
                     Response::Err { message } => self.status = message,
                     _ => {
                         self.refresh_soon()?;
@@ -8927,6 +8929,20 @@ impl App {
                         };
                     }
                 }
+            }
+            Verb::SetMergeBranch => {
+                if !self.catch_up()? { return Ok(()); }
+                let branch = self.board.merge_into.integration_branch().unwrap_or("").to_string();
+                self.mode = Mode::Input { purpose: InputPurpose::SetMergeBranch, buffer: EditBuffer::from_text(branch, 255) };
+            }
+            Verb::PromoteMain => {
+                if !self.catch_up()? { return Ok(()); }
+                match self.client.request(Command::PromoteMain)? {
+                    Response::Promotion { detail, .. } => self.status = detail,
+                    Response::Err { message } => self.status = message,
+                    _ => self.status = "promotion outcome unavailable".into(),
+                }
+                self.refresh_soon()?;
             }
             // Who takes a card off the board (T-590).
             Verb::CrownArchives => self.flip_board_switch(
@@ -12191,7 +12207,11 @@ impl App {
         let verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
         match verb {
             Some(Verb::Cancel) => {
-                self.mode = Mode::Normal;
+                if purpose == InputPurpose::SetMergeBranch {
+                    self.return_to_settings(Verb::SetMergeBranch);
+                } else {
+                    self.mode = Mode::Normal;
+                }
                 return Ok(());
             }
             Some(Verb::Save) => {
@@ -12276,7 +12296,9 @@ impl App {
                     let target = target.clone();
                     self.cycle_ask_mode(&target, queued, immediately, accept_plan)
                 }
-                InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
+                InputPurpose::Rename { .. }
+                | InputPurpose::RenameColumn { .. }
+                | InputPurpose::SetMergeBranch => {}
             },
             // `^p` (T-434): the launch this field ends in runs in plan mode,
             // or stops to. The keymap offers it only where `plan_able`.
@@ -12284,7 +12306,9 @@ impl App {
                 InputPurpose::Create { plan, .. } | InputPurpose::Prompt { plan, .. } => {
                     *plan = !*plan
                 }
-                InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
+                InputPurpose::Rename { .. }
+                | InputPurpose::RenameColumn { .. }
+                | InputPurpose::SetMergeBranch => {}
             },
             // `^n` (T-443): the tier the launch these words end in runs on,
             // riding the draft or the ask. The keymap offers it only where
@@ -14178,7 +14202,9 @@ impl App {
             ],
             MergeStage::Rebase => vec![
                 if d.outcome.is_empty() {
-                    format!("main moved under {}", d.branch)
+                    let target =
+                        self.board.merge_into.integration_branch().unwrap_or("the merge target");
+                    format!("{target} moved under {}", d.branch)
                 } else {
                     d.outcome.clone()
                 },
@@ -14506,6 +14532,11 @@ impl App {
         // that opened the field, finished (T-294): start claude on the
         // title, which is what a quiet checkout does with no field at all.
         if title.is_empty() {
+            if purpose == InputPurpose::SetMergeBranch {
+                self.status = "enter an existing integration branch name".into();
+                self.return_to_settings(Verb::SetMergeBranch);
+                return Ok(());
+            }
             // A blank Enter on a column's field starts its EMPTY seats on
             // their own titles (T-405) — the singular's rule, plural — and
             // says nothing to the agents already seated. With no empty seat
@@ -14574,6 +14605,17 @@ impl App {
             return Ok(());
         }
         match purpose {
+            InputPurpose::SetMergeBranch => {
+                match self.req(Command::SetMergeInto {
+                    into: mesimon_core::board::MergeInto::Branch(title.clone()),
+                }) {
+                    Response::Ok => self.status = format!("merge into {title}"),
+                    Response::Err { message } => self.status = message,
+                    _ => self.status = "merge target outcome unavailable".into(),
+                }
+                self.refresh()?;
+                self.return_to_settings(Verb::SetMergeBranch);
+            }
             InputPurpose::Create { workspace, tags, description, images, plan, tier } => {
                 self.mint_ticket_with_images(
                     title,
@@ -20922,11 +20964,8 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.settings_section = keymap::SettingsSection::Behaviour;
         let idx = app.settings_row(Verb::MergeInto);
-        assert_eq!(
-            idx + 1,
-            app.settings_row(Verb::FetchEvery),
-            "reviewed pull requests is hidden when merging into main"
-        );
+        assert_eq!(idx + 1, app.settings_row(Verb::SetMergeBranch));
+        assert_eq!(idx + 2, app.settings_row(Verb::FetchEvery));
         app.mode = Mode::Settings { idx };
         assert_eq!(app.ctx().merge_into, MergeInto::Main, "main by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -20935,6 +20974,28 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.ctx().merge_into, MergeInto::Main);
         assert!(app.status.contains("no forge is read"), "{}", app.status);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetMergeInto")).count(), 2);
+    }
+
+    #[test]
+    fn integration_branch_setting_submits_the_name_and_can_return_to_main() {
+        use mesimon_core::board::MergeInto;
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Behaviour;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::SetMergeBranch) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::SetMergeBranch, .. }));
+        for ch in "staging".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.merge_into, MergeInto::Branch("staging".into()));
+        assert_eq!(app.mode, Mode::Settings { idx: app.settings_row(Verb::SetMergeBranch) });
+        assert!(keymap::settings_items(&app.ctx()).iter().any(|m| m.verb == Verb::PromoteMain));
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::MergeInto) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.merge_into, MergeInto::Main);
+        assert!(!keymap::settings_items(&app.ctx()).iter().any(|m| m.verb == Verb::PromoteMain));
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetMergeInto")).count(), 2);
     }
 
@@ -20979,7 +21040,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(offered(&app), "shown after choosing pull requests");
         let idx = app.settings_row(Verb::ReviewedPrs);
-        assert_eq!(idx, app.settings_row(Verb::MergeInto) + 1, "under the merge row");
+        assert!(idx > app.settings_row(Verb::SetMergeBranch), "after integration branch row");
         app.mode = Mode::Settings { idx };
         assert!(app.board.reviewed_prs && app.ctx().reviewed_prs, "on by default");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -20990,6 +21051,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!offered(&app));
         assert!(!app.board.reviewed_prs, "hiding the row keeps its choice");
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::MergeInto) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(offered(&app));
         assert!(!app.ctx().reviewed_prs, "showing the row restores its choice");

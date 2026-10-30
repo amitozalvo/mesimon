@@ -13,14 +13,14 @@
       │  Agents                                                                                                  │
       │                     MERGE                                                                                │
       │  Crown               Merge into                ● main   ○ pull requests                                  │
+      │                      Integration branch        not set                                                   │
+      │  Terminal                                                                                                │
+      │                     REMOTE                                                                               │
+      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
       │                                                                                                          │
-      │  Terminal           REMOTE                                                                               │
-      │                      Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
-      │  Usage                                                                                                   │
-      │                     AUTO MERGE                                                                           │
-      │  About               Auto merge                ● on                                            set here  │
+      │  About              AUTO MERGE                                                                           │
+      │                      Auto merge                ● on                                            set here  │
       │                      Tells the agent           ● on                                           inherited  │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │

@@ -786,6 +786,10 @@ pub enum Verb {
     /// (T-810): into main, or through pull requests. Board state like
     /// `McpTools`, in `columns.toml`; Enter toggles it.
     MergeInto,
+    /// Name the board's integration branch (T-954).
+    SetMergeBranch,
+    /// Person-only action to fast-forward the default branch from integration.
+    PromoteMain,
     /// The Settings row that turns the agent tool surface on or off for this
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
@@ -1201,6 +1205,8 @@ impl SettingsSection {
             | Verb::MergeTrainNotice
             | Verb::FetchEvery
             | Verb::MergeInto
+            | Verb::SetMergeBranch
+            | Verb::PromoteMain
             | Verb::ReviewedPrs
             | Verb::SnoozeQuiet
             | Verb::WeekStart
@@ -5603,11 +5609,32 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "a branch lands through its PR, merged on the forge ∙ the board reads GitHub or \
                  GitLab"
                     .into()
+            } else if let Some(branch) = c.merge_into.integration_branch() {
+                format!("a branch lands in {branch}; promote it to main when ready")
             } else {
                 "a branch lands by the merge train or m ∙ no forge is read".into()
             }
         },
         avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::SetMergeBranch,
+        label: |_| "Integration branch".into(),
+        detail: |c| c.merge_into.integration_branch().unwrap_or("not set").to_string(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromoteMain,
+        label: |_| "Promote to main".into(),
+        detail: |c| {
+            c.merge_into.integration_branch().map_or_else(
+                || "choose an integration branch first".into(),
+                |branch| format!("fast-forward main from {branch}"),
+            )
+        },
+        avail: |c| c.merge_into.integration_branch().is_some(),
         key: "",
     },
     // Whose pull requests a ticket carries (T-859): the account's own, or
@@ -6252,6 +6279,8 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::WeekStart,
             // The workflow before the rows that serve it: fetch and train.
             Verb::MergeInto,
+            Verb::SetMergeBranch,
+            Verb::PromoteMain,
             Verb::ReviewedPrs,
             Verb::FetchEvery,
             Verb::MergeTrain,
@@ -6406,7 +6435,17 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
             format!("{} at once", c.crown_budget)
         }),
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
-        Verb::MergeInto => choice(&["main", "pull requests"], c.merge_into.word()),
+        Verb::MergeInto => match c.merge_into {
+            crate::board::MergeInto::Main => choice(&["main", "pull requests"], "main"),
+            crate::board::MergeInto::PullRequests => {
+                choice(&["main", "pull requests"], "pull requests")
+            }
+            crate::board::MergeInto::Branch(_) => Value::Word(c.merge_into.word()),
+        },
+        Verb::SetMergeBranch => {
+            Value::Word(c.merge_into.integration_branch().unwrap_or("not set").to_string())
+        }
+        Verb::PromoteMain => Value::Word("ready".into()),
         Verb::ReviewedPrs => Value::Switch(c.reviewed_prs),
         Verb::CrownArchives => Value::Switch(c.crown_archives),
         Verb::CrownWatches => Value::Switch(c.crown_watches),
@@ -10980,6 +11019,7 @@ mod tests {
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
                     Verb::MergeInto,
+                    Verb::SetMergeBranch,
                     Verb::FetchEvery,
                     Verb::MergeTrain,
                 ],
@@ -11021,7 +11061,7 @@ mod tests {
         .iter()
         .map(|m| m.verb)
         .collect();
-        assert_eq!(on[8..10], [Verb::MergeTrain, Verb::MergeTrainNotice]);
+        assert_eq!(&on[on.len() - 2..], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -11797,7 +11837,7 @@ mod tests {
             notify: true,
             notify_done: true,
             merge_train: true,
-            merge_into: crate::board::MergeInto::PullRequests,
+            merge_into: crate::board::MergeInto::Branch("staging".into()),
             tab_title: true,
             ..Default::default()
         };
@@ -11813,7 +11853,16 @@ mod tests {
                 seen += 1;
             }
         }
-        assert_eq!(seen, SETTINGS_ITEMS.len() + NOTIFY_ITEMS.len(), "every row is on a page");
+        let live_rows = SETTINGS_ITEMS.iter().filter(|item| item.live(&full)).count()
+            + NOTIFY_ITEMS.iter().filter(|item| item.live(&full)).count();
+        assert_eq!(seen, live_rows, "every live row is on a page");
+        assert!(settings_items(&Ctx {
+            settings_section: SettingsSection::Behaviour,
+            merge_into: crate::board::MergeInto::Branch("staging".into()),
+            ..Default::default()
+        })
+        .iter()
+        .any(|item| item.verb == Verb::PromoteMain));
         assert_eq!(value(Verb::Quit, &full), None, "a menu row is not a setting");
     }
 
