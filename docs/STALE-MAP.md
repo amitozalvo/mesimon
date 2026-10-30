@@ -39738,3 +39738,11 @@ late receipts preserve newer publication and dirty local edits. Accepted local t
 not queue another deletion. Historical keys remain usable for untouched content after rotation.
 The `Put`/`Accepted`/`Sync`/`Records` wire and the Teams environment gate are unchanged.
 Relay half: see mesimon-relay (T-656).
+
+## Crown asks wait automatically for their own cleanup (T-1080, 2026-10-30)
+
+An authorized idle ask stays queued while its previous shared-checkout pane is
+being removed, then dispatches after cleanup confirms absence. This temporary
+reservation does not turn the ask into a person-only send. Explicit immediate
+sends and starts refuse during cleanup, before replacing already queued words.
+Other workers, approval ownership and budget checks keep their existing rules.

@@ -8365,6 +8365,19 @@ impl Daemon {
                         };
                     }
                 }
+                // Idle delivery waits for teardown through queued_target_ready.
+                // An explicit send bypasses that queue check, so refuse it
+                // before replacing any already queued words.
+                if deliver != Deliver::Idle
+                    && matches!(seat, QueuedSeat::Wake(_))
+                    && self.crown_checkout_reaping().contains(&target)
+                {
+                    return Response::Err {
+                        message: format!(
+                            "{key}'s previous pane is still stopping; wait for cleanup"
+                        ),
+                    };
+                }
                 if deliver == Deliver::Immediately {
                     if let Some(why) = self.immediate_refusal(target) {
                         return Response::Err {
@@ -9240,11 +9253,6 @@ impl Daemon {
                 crown::runs_in(rec, &checkout) == WorkspaceStrategy::SharedCheckout
             });
             if on_checkout {
-                if self.crown_checkout_reaping().contains(&target) {
-                    return Some(
-                        "its previous pane is still stopping; ask again after cleanup".into(),
-                    );
-                }
                 let holders = crown::checkout_holders(
                     &self.board,
                     &checkout,
@@ -22856,8 +22864,12 @@ mod crown_checkout_tests {
         d.board.sessions[0].started_by = Some(crown);
         d.reaping.insert(sid.clone(), Instant::now() + REAP_GRACE);
         assert!(!d.queued_target_ready(&d.queued[0]), "its own reaper blocks a wake");
-        assert!(d.crown_ask_hold(crown, ticket, &QueuedSeat::Wake(session)).is_some());
+        assert!(
+            d.crown_ask_hold(crown, ticket, &QueuedSeat::Wake(session)).is_none(),
+            "temporary cleanup does not require a person's resend"
+        );
         d.reaping.remove(&sid);
+        assert!(d.queued_target_ready(&d.queued[0]), "cleanup releases the authorized wake");
         // A person's later start can bypass crown admission. Even idle,
         // it prevents the older crown wake from being delivered.
         let other = ulid::Ulid::new();

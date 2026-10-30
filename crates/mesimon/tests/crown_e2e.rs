@@ -11449,7 +11449,30 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     assert_eq!(wake, Some(AskWake::WhenSent), "still asleep: the checkout is busy");
     settle();
     assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Sleeping);
-    match start_agent(&mut c, &kw, "shared_checkout") {
+    let old_pane = c.board().session(ws).unwrap().sid16();
+    wait_until(std::time::Duration::from_secs(15), "parked pane cleanup", || {
+        !tmux(&h.paths.tmux_sock())
+            .args(["has-session", "-t", &old_pane])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    });
+    // The pane can exit before the daemon reaches its reaper deadline.
+    // Wait for the daemon's confirmation without bypassing that reservation.
+    let mut started = None;
+    wait_until(
+        std::time::Duration::from_secs(15),
+        "daemon confirms cleanup",
+        || match start_agent(&mut c, &kw, "shared_checkout") {
+            Response::Err { message } if message.contains("still stopping") => false,
+            response => {
+                started = Some(response);
+                true
+            }
+        },
+    );
+    match started.unwrap() {
         Response::AgentStarted { session_started: true, woken: true, prompt, .. } => {
             assert_eq!(prompt, Some(StartPrompt::Queued), "the crown's words wait for it");
         }
@@ -15258,7 +15281,19 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     // ---- the race: the person's Enter before the board's first paste ----
     park_w(&mut c);
     let first = ask(&mut c, "mesimon-probe-9841 the crown's words");
-    assert_eq!(first.status, "sent", "{first:?}");
+    // Explicit sends cannot bypass teardown or replace this authorized ask.
+    for delivery in [Deliver::Now, Deliver::Immediately] {
+        match c.crown_ask(sa, &kw, "must not replace queued words", delivery, None) {
+            Response::Err { message } => assert!(message.contains("still stopping"), "{message}"),
+            other => panic!("sent before cleanup: {other:?}"),
+        }
+        assert_eq!(asked(&mut c).ask, first.ask);
+    }
+    wait_until(std::time::Duration::from_secs(15), "same ask sent after cleanup", || {
+        let current = asked(&mut c);
+        assert_eq!(current.ask, first.ask);
+        current.status == "sent"
+    });
     woken(&mut c);
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(!in_w().contains("mesimon-probe-9841"), "parked until SessionStart");
