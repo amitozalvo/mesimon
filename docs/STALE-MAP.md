@@ -39444,5 +39444,7 @@ clipboard backend invokes `powershell.exe` in STA mode and Windows Forms convert
 clipboard image to PNG (with text fallback); SSH remains refused and native desktop
 reads stay on arboard.
 The helper caps dimensions before encoding, and Rust validates the base64 PNG, byte
-size and pixel count before accepting it into a draft. Focused selection/decode and
-key-route tests cover the code path. Real WSL/Windows host validation was unavailable.
+size and pixel count before accepting it into a draft. The PowerShell child has a
+two-second deadline; timeout or polling errors kill and reap it, and captured output
+is capped. Focused selection/decode, timeout/reap and key-route tests cover the path.
+Real WSL/Windows host validation was unavailable.

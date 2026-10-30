@@ -1,13 +1,16 @@
 //! Desktop clipboard reads and the image portion of an editor draft.
 use anyhow::{Context, Result};
 use mesimon_core::attachment::{self, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS};
-use std::io::Cursor;
+use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 use ulid::Ulid;
 
 const WSL_POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+const WSL_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
+const WSL_HELPER_MAX_OUTPUT: usize = 16 * 1024 * 1024;
 const POWERSHELL_IMAGE: &str = concat!(
     "$ErrorActionPreference='Stop'; ",
     "Add-Type -AssemblyName System.Windows.Forms; ",
@@ -95,9 +98,16 @@ fn powershell_program() -> Result<PathBuf> {
 }
 
 fn read_wsl_host_clipboard() -> Result<Pasted> {
-    let output = Command::new(powershell_program()?)
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-Command", POWERSHELL_IMAGE])
-        .output()
+    let mut command = Command::new(powershell_program()?);
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-STA",
+        "-Command",
+        POWERSHELL_IMAGE,
+    ]);
+    let output = bounded_output(command, WSL_HELPER_TIMEOUT)
         .context("could not read the Windows clipboard through WSL interop")?;
     anyhow::ensure!(
         output.status.success(),
@@ -114,6 +124,62 @@ fn read_wsl_host_clipboard() -> Result<Pasted> {
         }
     );
     decode_wsl_output(&output.stdout)
+}
+
+fn bounded_output(mut command: Command, timeout: Duration) -> io::Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let reader =
+        match std::thread::Builder::new().name("mesimon-clipboard-output".into()).spawn(move || {
+            let mut output = Vec::new();
+            stdout.take((WSL_HELPER_MAX_OUTPUT + 1) as u64).read_to_end(&mut output)?;
+            if output.len() > WSL_HELPER_MAX_OUTPUT {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "clipboard helper output exceeds 16 MiB",
+                ));
+            }
+            Ok(output)
+        }) {
+            Ok(reader) => reader,
+            Err(error) => {
+                kill_and_reap(&mut child);
+                return Err(error);
+            }
+        };
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = reader
+                    .join()
+                    .map_err(|_| io::Error::other("clipboard output reader failed"))??;
+                return Ok(Output { status, stdout, stderr: Vec::new() });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                kill_and_reap(&mut child);
+                let _ = reader.join();
+                return Err(error);
+            }
+        }
+        if Instant::now() >= deadline {
+            kill_and_reap(&mut child);
+            let _ = reader.join();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Windows clipboard helper timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn decode_wsl_output(output: &[u8]) -> Result<Pasted> {
@@ -259,6 +325,28 @@ mod tests {
         assert!(decode_wsl_output(b"unknown").is_err());
         assert!(decode_wsl_png(b"not base64").is_err());
         assert!(decode_wsl_png(&vec![b'A'; MAX_BYTES * 2]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_output_times_out_and_reaps_the_helper() {
+        let pid_file = std::env::temp_dir().join(format!("mesimon-clipboard-{}.pid", Ulid::new()));
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf '%s' $$ > \"$1\"; exec sleep 10", "mesimon-test-helper"]);
+        command.arg(&pid_file);
+
+        let started = Instant::now();
+        let error = bounded_output(command, Duration::from_millis(300)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2), "helper deadline was not enforced");
+
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        let _ = std::fs::remove_file(pid_file);
+        // ESRCH after the call proves the killed child was waited for rather
+        // than left as a running process or an unreaped zombie.
+        let result = unsafe { libc::kill(pid, 0) };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]
