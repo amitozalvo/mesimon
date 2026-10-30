@@ -10,7 +10,7 @@
       │                      Reads cost         ○ off                                                            │
       │  Behaviour           Samples agents     ● on                                                             │
       │                      Reaches boards     none ›                                                           │
-      │  Agents                                                                                                  │
+      │  Agents              Learn more…        guided tour ›                                                    │
       │                                                                                                          │
       │▎ Crown                                                                                                   │
       │                                                                                                          │

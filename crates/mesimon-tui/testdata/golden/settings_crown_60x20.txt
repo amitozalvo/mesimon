@@ -9,7 +9,7 @@
   │  Reads cost         ○ off                            │
   │  Samples agents     ● on                             │
   │  Reaches boards     none ›                           │
-  │                                                      │
+  │  Learn more…        guided tour ›                    │
   │                                                      │
   │                                                      │
   │                                                      │

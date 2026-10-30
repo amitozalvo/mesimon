@@ -1067,6 +1067,14 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
     }
 }
 
+#[test]
+fn golden_settings_crown_page() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Crown;
+    app.mode = Mode::Settings { idx: 0 };
+    golden("settings_crown_120x30", &render(&app, 120, 30));
+}
+
 /// The Appearance preview's crown (T-717): the crowned card's ♛ and the
 /// crown's tint show only while `Crown's actions` is the row under the
 /// cursor; turning it to lightning strikes the bolt between the two cards
