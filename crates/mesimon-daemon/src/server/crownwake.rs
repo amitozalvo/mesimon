@@ -727,6 +727,72 @@ pub(super) fn lingering_clause(l: Linger) -> String {
 }
 
 impl CrownWake {
+    fn says_merge(&self) -> bool {
+        self.cause == WakeCause::Merged
+            || self.merge
+            || self.to.as_ref().is_some_and(|to| {
+                to.merge == Some("merged")
+                    && self
+                        .from
+                        .as_ref()
+                        .is_some_and(|from| from.merge != Some("merged") || from.tip != to.tip)
+            })
+    }
+
+    /// A wake can cover a held merge's fact, but never another answer or
+    /// forge edge merely because the branch still reads merged.
+    fn only_merge_at(&self, tip: &str) -> bool {
+        !self.finished && self.merge_fact_at(tip)
+    }
+
+    fn merge_fact_at(&self, tip: &str) -> bool {
+        matches!(self.cause, WakeCause::Merged | WakeCause::Delivered)
+            && self
+                .to
+                .as_ref()
+                .is_some_and(|to| to.merge == Some("merged") && to.tip == tip && to.forge.is_none())
+            && self.ask.is_none()
+            && self.linger.is_none()
+            && self.overrun.is_none()
+            && self.failed.is_none()
+            && self.unstarted.is_none()
+            && self.promotion.is_none()
+    }
+
+    fn awaiting_forge_only(&self) -> bool {
+        self.cause == WakeCause::Forge && self.to.as_ref().is_none_or(|to| to.forge.is_none())
+    }
+
+    /// The clause or delta actually names this branch's merge. `to` alone
+    /// is not enough: a held landing already advanced the internal baseline,
+    /// so an answer from merged to merged may say no merge at all.
+    fn reports_merge(&self) -> bool {
+        !matches!(self.cause, WakeCause::Promotion | WakeCause::Unstarted)
+            && self.to.as_ref().is_some_and(|to| {
+                to.merge == Some("merged")
+                    && (self.cause == WakeCause::Merged
+                        || self
+                            .from
+                            .as_ref()
+                            .is_none_or(|from| from.merge != Some("merged") || from.tip != to.tip))
+            })
+    }
+
+    /// A ticket read carries the worker's turn/ask and branch state. Keep
+    /// material alerts and forge edges conservatively: their historical
+    /// details need not be in a later ticket view, even at the same tip.
+    fn turn_news(&self) -> bool {
+        matches!(
+            self.cause,
+            WakeCause::Finished | WakeCause::Answered | WakeCause::Delivered | WakeCause::Merged
+        ) && self.to.as_ref().is_none_or(|to| to.forge.is_none())
+            && self.linger.is_none()
+            && self.overrun.is_none()
+            && self.failed.is_none()
+            && self.unstarted.is_none()
+            && self.promotion.is_none()
+    }
+
     /// A wake owed with what rides it (`Owed`); a start's or a failure's
     /// words are set by the road that owes it.
     fn new(
@@ -2023,6 +2089,20 @@ impl Daemon {
         }
         let heard = self.crown_heard.entry(worker).or_default();
         if let Some(f) = heard.forging.as_mut() {
+            if f.wake.awaiting_forge_only() {
+                // The older turn was observed. This end is new news, with
+                // its own forge wait; it must not inherit the placeholder's
+                // stronger Forge cause and be discarded as an empty read.
+                f.wake = CrownWake::new(
+                    worker,
+                    cause,
+                    from,
+                    to,
+                    Owed { ask, late: heard.restored, ..Owed::default() },
+                );
+                f.since_ms = now_ms();
+                return;
+            }
             f.wake.absorb(cause, from, to, Owed { ask, ..Owed::default() });
             return;
         }
@@ -2073,6 +2153,11 @@ impl Daemon {
         for worker in over {
             let Some(h) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(Forging { wake, .. }) = h.forging.take() else { continue };
+            // A keyed observation consumed the turn, but kept the slot for
+            // the forge read still out. With no new opening, it owes nothing.
+            if wake.awaiting_forge_only() {
+                continue;
+            }
             let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
                 continue;
             };
@@ -2477,12 +2562,7 @@ impl Daemon {
         // merged at another tip. A branch that stays merged is no merge: a
         // later PR's news on it said nothing new of the branch, and ended
         // the watch before that PR's own merge.
-        let merged = |t: &Told| t.merge == Some("merged");
-        let landed = cause == WakeCause::Merged
-            || owed.merge
-            || to.as_ref().is_some_and(|t| {
-                merged(t) && from.as_ref().is_some_and(|f| !merged(f) || f.tip != t.tip)
-            });
+        let landed = CrownWake::new(worker, cause, from.clone(), to.clone(), owed).says_merge();
         if let Some(w) = self.crown_wakes.iter_mut().find(|w| w.worker == worker) {
             // A proven end folding into merge news owed ahead of it (T-1004,
             // round 3): the merge was told alone, its turn not seen to end,
@@ -2499,9 +2579,8 @@ impl Daemon {
         }
         // A watch ends at the merge (T-712): the wait it was for is over,
         // and the line that says so is its last.
-        if landed && self.crown_watched.remove(&worker) {
-            self.hold_unwatched_sends(worker);
-            self.feed.board("automation", "watch_ended", Some(worker));
+        if landed {
+            self.end_merge_watch(worker);
         }
         let named = ask.filter(|_| cause == WakeCause::Answered);
         let named = named.map(|a| format!("{} {}", a.ask, a.said.word()));
@@ -2707,7 +2786,12 @@ impl Daemon {
     /// sent it to `get_ticket` for it, and the hand it would have read
     /// there is the one coming down here. A hand somebody lowered before
     /// the sentence went in keeps nothing: that person dealt with it.
-    pub(super) fn told(&mut self, crown: ulid::Ulid, telling: Telling) {
+    pub(super) fn told(&mut self, crown: ulid::Ulid, telling: Telling, wakes: &[CrownWake]) {
+        for wake in wakes.iter().filter(|wake| wake.reports_merge()) {
+            if let Some(to) = wake.to.as_ref().filter(|to| to.merge == Some("merged")) {
+                self.consume_merge_news(wake.worker, &to.tip);
+            }
+        }
         let Telling { columns, raised, news } = telling;
         for (worker, column) in columns {
             if let Some(told) = self.crown_heard.get_mut(&worker).and_then(|h| h.told.as_mut()) {
@@ -2724,6 +2808,121 @@ impl Daemon {
         }
         self.feed.board("automation", "crown_wake_sent", Some(crown));
         self.crown_said(crown, &news);
+    }
+
+    fn end_merge_watch(&mut self, worker: ulid::Ulid) {
+        if self.crown_watched.remove(&worker) {
+            self.hold_unwatched_sends(worker);
+            self.feed.board("automation", "watch_ended", Some(worker));
+        }
+    }
+
+    /// Consume only news already present on the writer thread. Later
+    /// events, including another answer at the same tip, remain news.
+    /// Retry copies lose it too, without changing words already in flight.
+    fn consume_crown_news(&mut self, worker: ulid::Ulid, covers: impl Fn(&CrownWake) -> bool) {
+        let mut landed = false;
+        let mut keep = |w: &CrownWake| !(w.worker == worker && covers(w));
+        self.crown_wakes.retain(&mut keep);
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            if h.stepped.as_ref().is_some_and(|w| !keep(w)) {
+                landed |= h.stepped.as_ref().is_some_and(CrownWake::says_merge);
+                h.stepped = None;
+            }
+            if let Some(f) = h.forging.as_mut().filter(|f| !keep(&f.wake)) {
+                landed |= f.wake.says_merge();
+                // The turn is known; the outstanding forge read is not.
+                // Keep its slot so a later opening still has a wake to ride.
+                let mut to = f.wake.to.clone();
+                if let Some(to) = to.as_mut() {
+                    to.forge = None;
+                }
+                f.wake = CrownWake::new(worker, WakeCause::Forge, to.clone(), to, Owed::default());
+            }
+        }
+        if let Some(e) = self.crown_wake_entering.as_mut() {
+            e.wakes.retain(&mut keep);
+        }
+        for e in self.crown_wakes_taken.iter_mut() {
+            e.wakes.retain(&mut keep);
+        }
+        if landed {
+            self.end_merge_watch(worker);
+        }
+    }
+
+    fn consume_merge_news(&mut self, worker: ulid::Ulid, tip: &str) {
+        self.consume_crown_news(worker, |w| w.only_merge_at(tip));
+        let mut landed = false;
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            // A stepped wake's `finished` predicts its own notice turn's
+            // end. Unlike a queued wake, no later Finished folds here: due
+            // holds only Delivered/Merged for a step. Consuming the merge
+            // can remove this hold, but not a new completion queued later.
+            if h.stepped.as_ref().is_some_and(|w| w.merge_fact_at(tip)) {
+                landed = h.stepped.take().is_some_and(|w| w.says_merge());
+            }
+            // A delivery still held for the train has not become a merged
+            // wake yet. Its work is covered by this merge too; a different
+            // tip or a later finished turn is not.
+            if h.deferred
+                .as_ref()
+                .is_some_and(|held| held.cause == WakeCause::Delivered && held.look.tip == tip)
+            {
+                h.deferred = None;
+            }
+        }
+        if landed {
+            self.end_merge_watch(worker);
+        }
+    }
+
+    /// A merge receipt handles only its merge, never unrelated turn,
+    /// failure, dialog or forge news folded alongside it.
+    pub(super) fn crown_observed_merge(&mut self, worker: ulid::Ulid) {
+        let Some(now) = self
+            .sampled(worker)
+            .filter(|look| look.merged)
+            .and_then(|look| Some(look.told(self.board.ticket(worker)?.column.clone())))
+        else {
+            return;
+        };
+        self.consume_merge_news(worker, &now.tip);
+        self.crown_landed.retain(|w| *w != worker);
+        self.end_merge_watch(worker);
+        self.crown_heard.entry(worker).or_default().told = Some(now);
+        self.persist_crown();
+    }
+
+    /// A successful keyed ticket read observes this ticket's pending turn
+    /// and branch news (T-1036). Board listings and narrow writes do not.
+    pub(super) fn crown_observed(&mut self, worker: ulid::Ulid, merge: Option<&str>) {
+        if self.board.crown.is_none() || self.board.crown == Some(worker) {
+            return;
+        }
+        self.consume_crown_news(worker, |w| {
+            w.turn_news()
+                && (merge == Some("merged")
+                    || w.to.as_ref().is_none_or(|to| to.merge != Some("merged")))
+        });
+        let now = self
+            .sampled(worker)
+            .filter(|look| look.merged && merge == Some("merged"))
+            .and_then(|look| Some(look.told(self.board.ticket(worker)?.column.clone())));
+        if now.as_ref().is_some_and(|t| t.merge == Some("merged"))
+            && self.crown_landed.contains(&worker)
+        {
+            self.crown_landed.retain(|w| *w != worker);
+            self.end_merge_watch(worker);
+        }
+        if now.is_some() || self.crown_heard.contains_key(&worker) {
+            let h = self.crown_heard.entry(worker).or_default();
+            h.deferred = None;
+            if let Some(now) = now {
+                h.told = Some(now);
+            }
+        }
+        self.persist_crown();
     }
 
     /// The wakes a Codex box took and never entered (T-918): owed again,
@@ -4170,6 +4369,362 @@ mod tests {
     /// The wake owed for the bed's worker, if any.
     fn owed_for(d: &crate::server::Daemon, worker: ulid::Ulid) -> Option<&CrownWake> {
         d.crown_wakes.iter().find(|w| w.worker == worker)
+    }
+
+    #[test]
+    fn an_answer_reporting_the_merge_consumes_its_held_merge_wake() {
+        let mut b = watched_bed("answered-merge", Some(branch("aaa", "ahead", 1, "REVIEW")));
+        let w = b.worker;
+        let merged = branch("aaa", "merged", 1, "DONE");
+        b.d.hold_for_step(w, WakeCause::Merged, merged.clone(), false);
+        b.d.enter_wake(b.crown, w, WakeCause::Answered, None, Some(merged), Owed::default());
+        let telling = b.d.telling();
+        let wakes = std::mem::take(&mut *b.d.crown_wakes);
+        let seat = uuid::Uuid::from_u128(1036);
+        let mut entering = in_box(b.crown, seat, "100:%2", wakes);
+        entering.telling = telling;
+        *b.d.crown_wake_entering = Some(entering);
+        b.d.wake_entered(seat);
+        assert!(!b.d.hear_stepped(), "the answered turn already heard this merge");
+        assert!(b.d.crown_wakes.is_empty());
+        assert!(!b.d.crown_watched.contains(&w), "observing the merge still ends its watch");
+    }
+
+    #[test]
+    fn a_keyed_read_consumes_old_news_but_keeps_other_workers_and_later_events() {
+        let mut b = watched_bed("observed-read", None);
+        let w = b.worker;
+        sampled_branch(&mut b, "aaa", true);
+        let other = ulid::Ulid(3);
+        b.d.enter_wake(b.crown, w, WakeCause::Answered, None, None, Owed::default());
+        b.d.enter_wake(b.crown, other, WakeCause::Finished, None, None, Owed::default());
+        b.d.hold_for_step(w, WakeCause::Merged, branch("aaa", "merged", 1, "DONE"), false);
+        // Constructing a board view alone observes no ticket's news.
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        assert!(owed_for(&b.d, w).is_some());
+        b.d.crown_reads(&mut view, w);
+        assert!(owed_for(&b.d, w).is_none());
+        assert!(!b.d.hear_stepped());
+        assert!(owed_for(&b.d, other).is_some());
+        assert!(!b.d.crown_watched.contains(&w));
+        // A later answer, even at the same tip, and a later merge are new.
+        b.d.enter_wake(
+            b.crown,
+            w,
+            WakeCause::Answered,
+            None,
+            Some(branch("aaa", "merged", 1, "DONE")),
+            Owed::default(),
+        );
+        b.d.hold_for_step(w, WakeCause::Merged, branch("bbb", "merged", 1, "DONE"), false);
+        assert!(b.d.hear_stepped());
+        let wake = owed_for(&b.d, w).unwrap();
+        assert_eq!(wake.cause, WakeCause::Answered);
+        assert_eq!(wake.to.as_ref().unwrap().tip, "bbb");
+    }
+
+    #[test]
+    fn narrow_write_receipts_do_not_consume_unseen_news() {
+        for (i, action) in ["noted", "renamed", "tagged"].into_iter().enumerate() {
+            for cause in [
+                WakeCause::Answered,
+                WakeCause::Failed,
+                WakeCause::Asked,
+                WakeCause::Limited,
+                WakeCause::Forge,
+                WakeCause::Merged,
+            ] {
+                let mut b = watched_bed(&format!("wr-{i}-{cause:?}"), None);
+                let w = b.worker;
+                b.d.enter_wake(b.crown, w, cause, None, None, Owed::default());
+                b.d.hold_for_step(w, WakeCause::Merged, branch("aaa", "merged", 1, "DONE"), false);
+                let write = b.d.receipt_write(w, None);
+                b.d.crown_touched(b.crown, w, action, write);
+                assert_eq!(owed_for(&b.d, w).unwrap().cause, cause, "{action}");
+                assert!(b.d.hear_stepped(), "a narrow receipt did not say the merge either");
+            }
+        }
+    }
+
+    #[test]
+    fn a_delayed_merge_acknowledgment_keeps_new_answers_forge_news_and_other_tips() {
+        for cause in [WakeCause::Answered, WakeCause::Forge, WakeCause::Merged] {
+            let mut b = watched_bed(&format!("late-ack-{cause:?}"), None);
+            let w = b.worker;
+            sampled_branch(&mut b, "aaa", true);
+            let old = CrownWake::new(
+                w,
+                WakeCause::Answered,
+                None,
+                Some(branch("aaa", "merged", 1, "DONE")),
+                Owed::default(),
+            );
+            let seat = uuid::Uuid::from_u128(1036);
+            *b.d.crown_wake_entering = Some(in_box(b.crown, seat, "100:%9", vec![old]));
+            let mut view = b.d.agent_ticket_view(w).unwrap();
+            b.d.crown_reads(&mut view, w);
+            let mut newer =
+                branch(if cause == WakeCause::Merged { "bbb" } else { "aaa" }, "merged", 1, "DONE");
+            if cause == WakeCause::Forge {
+                newer.forge = Some("pipeline failed #43".into());
+            }
+            b.d.enter_wake(b.crown, w, cause, None, Some(newer.clone()), Owed::default());
+            b.d.wake_entered(seat);
+            let wake = owed_for(&b.d, w).unwrap();
+            assert_eq!(wake.cause, cause);
+            assert_eq!(wake.to.as_ref(), Some(&newer));
+        }
+    }
+
+    #[test]
+    fn a_read_of_a_turn_waiting_for_the_forge_keeps_news_that_arrives_afterward() {
+        for opening in [false, true] {
+            let mut b = watched_bed(&format!("observed-forge-{opening}"), None);
+            let w = b.worker;
+            let wake = CrownWake::new(
+                w,
+                WakeCause::Answered,
+                None,
+                Some(branch("aaa", "ahead", 1, "REVIEW")),
+                Owed::default(),
+            );
+            b.d.crown_heard.get_mut(&w).unwrap().forging = Some(Forging { wake, since_ms: 0 });
+            let mut view = b.d.agent_ticket_view(w).unwrap();
+            b.d.crown_reads(&mut view, w);
+            let openings =
+                if opening { HashMap::from([(w, "opened #43".into())]) } else { HashMap::new() };
+            assert_eq!(b.d.hear_forged(openings), opening);
+            if opening {
+                let wake = owed_for(&b.d, w).unwrap();
+                assert_eq!(wake.cause, WakeCause::Forge);
+                assert_eq!(wake.to.as_ref().unwrap().forge.as_deref(), Some("opened #43"));
+            } else {
+                assert!(owed_for(&b.d, w).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn review_a_new_finished_turn_rearms_an_observed_forge_slot() {
+        let mut b = watched_bed("rv-forge-end", None);
+        let w = b.worker;
+        b.d.forge.remotes.insert(
+            "/r".into(),
+            Some(mesimon_core::forge::Remote { host: "github.com".into(), path: "o/r".into() }),
+        );
+        b.d.forge.looking.insert(w);
+        let state = branch("aaa", "ahead", 1, "REVIEW");
+        b.d.owe_turn_end(b.crown, w, WakeCause::Finished, None, Some(state.clone()), None);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        b.d.owe_turn_end(b.crown, w, WakeCause::Finished, Some(state.clone()), Some(state), None);
+        b.d.forge.looking.remove(&w);
+        assert!(b.d.hear_forged(HashMap::new()), "the new end survives a read with no opening");
+        assert_eq!(owed_for(&b.d, w).unwrap().cause, WakeCause::Finished);
+    }
+
+    #[test]
+    fn review_a_delayed_merge_ack_keeps_a_new_finished_turn_folded_into_its_merge() {
+        let mut b = watched_bed("rv-merge-end", None);
+        let w = b.worker;
+        let merged = branch("aaa", "merged", 1, "DONE");
+        let old =
+            CrownWake::new(w, WakeCause::Answered, None, Some(merged.clone()), Owed::default());
+        let seat = uuid::Uuid::from_u128(1036);
+        *b.d.crown_wake_entering = Some(in_box(b.crown, seat, "100:%9", vec![old]));
+        b.d.enter_wake(b.crown, w, WakeCause::Merged, None, Some(merged.clone()), Owed::default());
+        b.d.enter_wake(
+            b.crown,
+            w,
+            WakeCause::Finished,
+            Some(merged.clone()),
+            Some(merged),
+            Owed::default(),
+        );
+        assert!(owed_for(&b.d, w).unwrap().finished);
+        b.d.wake_entered(seat);
+        assert!(
+            owed_for(&b.d, w)
+                .is_some_and(|wake| wake.finished || wake.cause == WakeCause::Finished),
+            "the old merge's acknowledgment cannot consume the later end"
+        );
+    }
+
+    #[test]
+    fn a_wakes_internal_merged_baseline_is_not_a_report_of_the_merge() {
+        let mut b = watched_bed("merge-unsaid", None);
+        let w = b.worker;
+        let merged = branch("aaa", "merged", 1, "DONE");
+        b.d.hold_for_step(w, WakeCause::Merged, merged.clone(), false);
+        let answer = CrownWake::new(
+            w,
+            WakeCause::Answered,
+            Some(merged.clone()),
+            Some(merged),
+            Owed::default(),
+        );
+        assert!(answer.changed().is_empty(), "the answer carries no merge fact");
+        b.d.told(b.crown, Telling::default(), &[answer]);
+        assert!(b.d.hear_stepped(), "the unreported merge is still owed");
+    }
+
+    #[test]
+    fn a_ticket_view_that_does_not_report_merged_keeps_the_pending_merge() {
+        let mut b = watched_bed("merge-unread", None);
+        let w = b.worker;
+        sampled_branch(&mut b, "aaa", true);
+        b.d.hold_for_step(w, WakeCause::Merged, branch("aaa", "merged", 1, "DONE"), false);
+        // A later open PR can replace merge_state's standing merged word.
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        view.merge_state = Some("open PR #43".into());
+        b.d.crown_reads(&mut view, w);
+        assert!(b.d.hear_stepped(), "an internal merged flag was not returned");
+    }
+
+    #[test]
+    fn an_observed_wake_is_not_restored_from_a_lost_box() {
+        let mut b = watched_bed("observed-return", None);
+        let w = b.worker;
+        let other = ulid::Ulid(3);
+        let gone = uuid::Uuid::from_u128(1036);
+        let wakes = vec![wake(w, WakeCause::Answered), wake(other, WakeCause::Finished)];
+        *b.d.crown_wake_entering = Some(in_box(b.crown, gone, "100:%9", wakes.clone()));
+        b.d.crown_wakes_taken.push(in_box(b.crown, gone, "100:%9", wakes));
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        b.d.drain_crown_wakes(None);
+        assert!(owed_for(&b.d, w).is_none());
+        assert!(owed_for(&b.d, other).is_some());
+    }
+
+    fn sampled_branch(b: &mut crate::server::crownask::ledger_tests::Bed, tip: &str, merged: bool) {
+        b.d.worktrees.insert(
+            b.worker,
+            Binding {
+                path: b.d.paths.repo_root.clone(),
+                branch: "msmn/worker".into(),
+                base_oid: "base".into(),
+                branch_oid: tip.into(),
+                status: BindingStatus::Attached,
+                locked: false,
+                repos: Vec::new(),
+                init: None,
+            },
+        );
+        b.d.wt_agg.insert(
+            b.worker,
+            worktree::Aggregate { tip: tip.into(), merged, ahead: 1, ..Default::default() },
+        );
+    }
+
+    #[test]
+    fn a_read_before_the_merge_tick_hears_that_merge_but_not_a_later_one() {
+        let mut b = watched_bed("read-merge-tick", None);
+        let w = b.worker;
+        sampled_branch(&mut b, "aaa", false);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        sampled_branch(&mut b, "aaa", true);
+        b.d.crown_landed.push(w);
+        assert!(b.d.hear_merges(), "a read before the merge cannot consume it");
+        assert!(owed_for(&b.d, w).is_some());
+
+        b.d.crown_watched.insert(w);
+        sampled_branch(&mut b, "bbb", true);
+        b.d.crown_landed.push(w);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        assert!(!b.d.hear_merges(), "the read carried the merge before its wake was composed");
+        assert!(owed_for(&b.d, w).is_none());
+        assert!(!b.d.crown_watched.contains(&w));
+    }
+
+    #[test]
+    fn a_merge_receipt_consumes_its_merge_but_preserves_unrelated_news() {
+        for cause in [
+            WakeCause::Merged,
+            WakeCause::Answered,
+            WakeCause::Failed,
+            WakeCause::Asked,
+            WakeCause::Limited,
+            WakeCause::Forge,
+        ] {
+            let mut b = watched_bed(&format!("mrc-{cause:?}"), None);
+            let w = b.worker;
+            sampled_branch(&mut b, "aaa", true);
+            let mut to = branch("aaa", "merged", 1, "DONE");
+            if cause == WakeCause::Forge {
+                to.forge = Some("pipeline failed #43".into());
+            }
+            b.d.enter_wake(b.crown, w, cause, None, Some(to), Owed::default());
+            b.d.hold_for_step(w, WakeCause::Merged, branch("aaa", "merged", 1, "DONE"), false);
+            let write = b.d.receipt_write(w, None);
+            b.d.crown_touched(b.crown, w, "merged", write);
+            assert!(!b.d.hear_stepped());
+            assert_eq!(
+                owed_for(&b.d, w).map(|w| w.cause),
+                (cause != WakeCause::Merged).then_some(cause)
+            );
+        }
+    }
+
+    #[test]
+    fn observing_an_old_queued_merge_does_not_end_a_later_watch() {
+        let mut b = watched_bed("read-rewatch", None);
+        let w = b.worker;
+        sampled_branch(&mut b, "aaa", true);
+        b.d.enter_wake(
+            b.crown,
+            w,
+            WakeCause::Merged,
+            None,
+            Some(branch("aaa", "merged", 1, "DONE")),
+            Owed::default(),
+        );
+        assert!(!b.d.crown_watched.contains(&w));
+        b.d.crown_watched.insert(w);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        assert!(b.d.crown_watched.contains(&w), "the queued merge already ended its watch");
+        assert!(owed_for(&b.d, w).is_none());
+    }
+
+    #[test]
+    fn an_observed_merge_consumes_only_its_delivery_still_held_for_the_train() {
+        for (i, (cause, tip)) in [
+            (WakeCause::Delivered, "aaa"),
+            (WakeCause::Delivered, "bbb"),
+            (WakeCause::Finished, "aaa"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut b = watched_bed(&format!("read-train-{i}"), None);
+            let w = b.worker;
+            sampled_branch(&mut b, "aaa", true);
+            b.d.crown_heard.get_mut(&w).unwrap().deferred = Some(Held {
+                cause,
+                look: BranchLook { tip: tip.into(), ahead: 1, ..Default::default() },
+            });
+            b.d.crown_observed_merge(w);
+            assert_eq!(
+                b.d.crown_heard[&w].deferred.is_none(),
+                cause == WakeCause::Delivered && tip == "aaa"
+            );
+            assert!(!b.d.crown_watched.contains(&w), "the successful merge ends its watch");
+        }
+    }
+
+    #[test]
+    fn a_ticket_read_keeps_material_details_not_proven_by_its_current_state() {
+        for cause in [WakeCause::Failed, WakeCause::Asked, WakeCause::Limited, WakeCause::Forge] {
+            let mut b = watched_bed(&format!("alert-{cause:?}"), None);
+            let w = b.worker;
+            b.d.enter_wake(b.crown, w, cause, None, None, Owed::default());
+            let mut view = b.d.agent_ticket_view(w).unwrap();
+            b.d.crown_reads(&mut view, w);
+            assert_eq!(owed_for(&b.d, w).unwrap().cause, cause);
+        }
     }
 
     /// The forge's news on the bed's worker, as a pass hands it on.

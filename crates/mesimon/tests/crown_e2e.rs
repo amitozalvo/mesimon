@@ -3688,7 +3688,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         wait_until(
             std::time::Duration::from_secs(10),
             "the flags to read the branch ahead",
-            || c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead"),
+            || wt_of(c, w).is_some_and(|wt| wt.ahead > 0 && !wt.merged && !wt.needs_rebase),
         );
     };
 
@@ -4740,7 +4740,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
     }
 
-    // ---- 1. delivered, then merged by the crown: the notice goes ----------
+    // ---- 1. delivered, then merged by the person: the notice goes ---------
     commit(&path, "one.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
@@ -4750,13 +4750,12 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     wait_until(std::time::Duration::from_secs(10), "the flags to read the branch ahead", || {
         c.agent_read(sa, &kw).unwrap().merge_state.as_deref() == Some("ahead")
     });
-    let seen = c.agent_read(sa, &kw).unwrap().seen;
-    match c
-        .send(Principal::Agent { session: sa }, Command::AgentMergeTicket { key: kw.clone(), seen })
-    {
-        Response::AgentMerged { notice, .. } => assert_eq!(notice, "sent"),
-        other => panic!("merge_ticket: {other:?}"),
-    }
+    // The crown has not handled this merge. A crown's own merge receipt
+    // consumes its news; this test exercises an unseen merge across restart.
+    assert!(matches!(
+        c.request(Command::MergeTicket { id: w }),
+        Response::Merge { outcome: mesimon_core::command::MergeOutcome::Merged, .. }
+    ));
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
@@ -10331,7 +10330,7 @@ fn the_crown_merges_where_the_train_will_not() {
     h.one_turn(&mut c, sa);
     wait_state(&mut c, "ahead");
 
-    // ---- 5. the crown merges, pref off: no notice, the wake at once -------
+    // ---- 5. the crown merges, pref off: the receipt is its merge news -----
     // T-810: not on a board that merges through pull requests, where the
     // forge merges every worktree branch and the crown is asked for none.
     assert!(matches!(
@@ -10369,27 +10368,18 @@ fn the_crown_merges_where_the_train_will_not() {
             })
         })
     });
-    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
-        lines_with(&worker).len() == 4
-    });
-    assert_eq!(
-        lines_with(&worker)[3],
-        format!(
-            "{worker} merged (merge_state ahead → merged, column DONE) ∙ get_ticket key={kw} \
-             for state and notes"
-        )
-    );
+    assert_eq!(lines_with(&worker).len(), 3, "the merge receipt is already its news");
     assert!(lines_with(&notice).is_empty(), "the pref is off: no notice");
     let (_, _, seen) = who(&mut c, &kw);
     refused(merge(&mut c, &kw, seen), &[&kw, "already merged"]);
     h.one_turn(&mut c, sa);
 
-    // ---- 6. pref on (the default): the notice goes, the wake waits for it -
+    // ---- 6. pref on: the worker gets its notice, the crown knows the merge -
     std::fs::remove_file(h.paths.prefs_file()).unwrap();
     commit(&path, "two.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
-        lines_with(&worker).len() == 5
+        lines_with(&worker).len() == 4
     });
     h.one_turn(&mut c, sa);
     wait_state(&mut c, "ahead");
@@ -10403,23 +10393,15 @@ fn the_crown_merges_where_the_train_will_not() {
         lines_with(&notice).len() == 1
     });
     std::thread::sleep(std::time::Duration::from_millis(2000));
-    assert_eq!(lines_with(&worker).len(), 5, "held while the notice is on its way");
+    assert_eq!(lines_with(&worker).len(), 4, "the merge was handled by its receipt");
     start(&mut c, ws);
     std::thread::sleep(std::time::Duration::from_millis(2000));
-    assert_eq!(lines_with(&worker).len(), 5, "held while the notice turn runs");
+    assert_eq!(lines_with(&worker).len(), 4, "the notice is not new merge news");
     stop(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
-        lines_with(&worker).len() == 6
-    });
-    assert_eq!(
-        lines_with(&worker)[5],
-        format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged) ∙ get_ticket \
-             key={kw} for state and notes"
-        )
-    );
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(lines_with(&worker).len(), 4, "no second turn for a merge the crown handled");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
-    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "{feed}");
+    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 0, "{feed}");
     assert!(feed.contains("\"merge_notified\""), "{feed}");
 }
 
@@ -16012,15 +15994,13 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     };
     // The notice reaches the worker and its turn runs and ends: the seat
     // went working and idle, the board moved the card where its column's
-    // on_merged says, and the merged wake went. Each moved the stamp.
+    // on_merged says. These move the stamp, but the merge receipt already
+    // told the crown the merge: it is not owed a second turn for it.
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
     h.one_turn(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the merged wake", || {
-        lines_with(&worker).len() == 2
-    });
-    assert!(lines_with(&worker)[1].contains("merged"), "{:?}", lines_with(&worker));
+    assert_eq!(lines_with(&worker).len(), 1, "the merge receipt consumed the merge news");
     assert_ne!(
         c.agent_read(sa, &kw).unwrap().seen.as_deref(),
         Some(merged.as_str()),
@@ -16050,6 +16030,50 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     h.one_turn(&mut c, ws);
     let fresh = c.agent_read(sa, &kw).unwrap().seen;
     parked(sleep(&mut c, fresh));
+}
+
+/// A keyed read during the crown's turn consumes a worker's queued end.
+/// A later turn by that same worker still reaches the real delivery road.
+#[test]
+fn a_worker_read_during_the_crowns_turn_is_not_a_second_wake() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_observed",
+        Some(RECORDING_STUB_PER_TICKET),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("crown_observed");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1036 observed worker");
+    let kw = c.key_of(w);
+    let sa = crown_idle(&h, &mut c, a);
+    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
+    wait_attached(&mut c, w);
+    wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    h.prompt_turn(&mut c, sa);
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the queued worker wake", || {
+        h.feed()
+            .lines()
+            .any(|line| line.contains("\"kind\":\"crown_wake\"") && line.contains(&w.to_string()))
+    });
+    c.agent_read(sa, &kw).unwrap();
+    h.end_turn(&mut c, sa);
+    let worker = format!("{kw} \"mesimon-probe-1036 observed worker\"");
+    let got = h.dir.join("got.txt");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(lines_in(&got, &worker).is_empty(), "the read consumed the old end");
+
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the later turn's wake", || {
+        !lines_in(&got, &worker).is_empty()
+    });
+    assert_eq!(lines_in(&got, &worker).len(), 1, "only the later event is delivered");
 }
 
 /// T-1047: the writer serializes parallel calls, but both arrived with the

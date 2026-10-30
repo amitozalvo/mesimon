@@ -9520,6 +9520,9 @@ impl Daemon {
             return None;
         }
         self.crown_mark(own, target, action);
+        if action == "merged" {
+            self.crown_observed_merge(target);
+        }
         Some(self.receipt_seen(target, Some(write)))
     }
 
@@ -10073,8 +10076,8 @@ impl Daemon {
                 (frame, pane, Some(now_ms() + INFLIGHT_MS), false)
             }
             _ => {
-                self.crown_wakes.clear();
-                self.told(crown, telling);
+                let wakes = std::mem::take(&mut *self.crown_wakes);
+                self.told(crown, telling, &wakes);
                 return true;
             }
         };
@@ -10108,7 +10111,7 @@ impl Daemon {
     fn wake_entered(&mut self, id: uuid::Uuid) {
         if self.crown_wake_entering.as_ref().is_some_and(|e| e.session == id) {
             if let Some(e) = self.crown_wake_entering.take() {
-                self.told(e.crown, e.telling);
+                self.told(e.crown, e.telling, &e.wakes);
             }
         }
     }
@@ -10284,7 +10287,7 @@ impl Daemon {
         }
         let Some(e) = self.crown_wake_entering.take() else { return };
         self.journal.line(&format!("crown wake {frame} in session {id}: taken"));
-        self.told(e.crown, e.telling.clone());
+        self.told(e.crown, e.telling.clone(), &e.wakes);
         // Kept until its `entered`, its refusal, its seat or pane gone or a
         // crown change, however many are out (T-990, round 2): one evicted
         // could no longer be owed again by its refusal.
@@ -11372,7 +11375,8 @@ impl Daemon {
     /// the session points at as the cost ledger's last pass left it, and the
     /// ticket's account as the card shows it. Facts with their `about`
     /// lines; an absent fact is absent with its line.
-    fn crown_reads(&self, view: &mut AgentTicketView, ticket: ulid::Ulid) {
+    fn crown_reads(&mut self, view: &mut AgentTicketView, ticket: ulid::Ulid) {
+        self.crown_observed(ticket, view.merge_state.as_deref());
         // Unswitched (T-973): the crown armed it.
         view.overrun = self.overrun_view(ticket);
         if self.board.crown_context {
