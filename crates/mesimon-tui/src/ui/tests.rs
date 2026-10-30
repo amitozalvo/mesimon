@@ -3517,6 +3517,32 @@ fn a_worktree_asked_for_but_not_cut_wears_a_dormant_mark() {
     assert!(!rows[0].contains(&planned), "{rows:?}");
 }
 
+#[test]
+fn a_rebase_worktree_mark_is_colored_only_with_unmerged_commits() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_row = None;
+    let tier = crate::glyphs::Tier::Unicode;
+    let mark = format!("{}{}", crate::glyphs::branch_mark(tier), crate::glyphs::behind_mark(tier));
+    for (ahead, color) in [(0, app.theme.rest.dim2), (2, app.theme.calm)] {
+        app.worktrees = vec![mesimon_core::command::WorktreeItem {
+            ahead,
+            needs_rebase: true,
+            ..tagged_worktree()
+        }];
+        let buf = cells(&app, 120, 30);
+        let lines = lines_of(&buf);
+        let (y, row) = lines
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(&mark))
+            .expect("the rebase mark keeps its down glyph");
+        let x = row[..row.find(&mark).unwrap()].width() as u16;
+        for dx in 0..2 {
+            assert_eq!(buf[(x + dx, y as u16)].fg, color, "ahead={ahead}");
+        }
+    }
+}
+
 /// The worktree mark is right-aligned against the fixed age slot, so its
 /// WIDTH is its glyph's column: a state char beside the branch glyph pulls
 /// the glyph one cell left, and a clean attached worktree — the one arm with
