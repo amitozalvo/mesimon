@@ -12252,6 +12252,46 @@ fn usage_line_gives_up_its_parts_in_order() {
     });
 }
 
+#[test]
+fn usage_line_names_a_shared_weekly_reset_once() {
+    use mesimon_core::usage::{Provider, Severity, WindowKind};
+    let mut app = usage_app(81.0, Severity::Warning);
+    app.seed_pref(|p| {
+        p.usage_line = crate::prefs::UsageLine::Every;
+        p.usage_resets = crate::prefs::UsageResets::Near;
+    });
+    let reading = app.usage.get_mut(Provider::Claude).reading.as_mut().unwrap();
+    let week = reading.windows.iter_mut().find(|w| w.kind == WindowKind::Weekly).unwrap();
+    week.label = "week".into();
+    week.percent = 81.0;
+    week.severity = Severity::Warning;
+    week.resets_at_ms = Some(1_791_014_400_000);
+    let model = reading.windows.iter_mut().find(|w| w.kind == WindowKind::Model).unwrap();
+    model.percent = 88.0;
+    model.severity = Severity::Warning;
+    model.resets_at_ms = Some(1_791_014_400_000);
+
+    let row = advisory(&app, 120);
+    assert!(row.contains("week 81% resets Sat 08:00"), "{row:?}");
+    assert!(row.contains("Fable 88%"), "{row:?}");
+    assert_eq!(row.matches("resets Sat 08:00").count(), 1, "{row:?}");
+
+    let model = app
+        .usage
+        .get_mut(Provider::Claude)
+        .reading
+        .as_mut()
+        .unwrap()
+        .windows
+        .iter_mut()
+        .find(|w| w.kind == WindowKind::Model)
+        .unwrap();
+    model.resets_at_ms = Some(1_791_108_000_000); // Sunday 10:00.
+    let row = advisory(&app, 120);
+    assert!(row.contains("resets Sat 08:00"), "{row:?}");
+    assert!(row.contains("resets Sun 10:00"), "{row:?}");
+}
+
 /// A window whose reset has passed since it was read is about a window that
 /// is gone: it leaves the line until the next read.
 #[test]
