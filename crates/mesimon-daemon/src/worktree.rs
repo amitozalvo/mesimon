@@ -54,6 +54,10 @@ pub struct RepoBinding {
     /// `""` is the root repository; otherwise the census name (`api`).
     pub name: String,
     pub base: String,
+    /// The repository default target, kept apart from the branch this ticket
+    /// was cut from so a later settings change can resolve the new target.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_base: String,
     pub base_oid: String,
     pub branch_oid: String,
 }
@@ -89,6 +93,18 @@ impl Binding {
     /// binding's base is not on the binding — it is the daemon's
     /// `base_branch`, re-resolved after every fetch — so the caller passes it.
     pub fn legs(&self, repo_root: &Path, single_base: &str) -> Vec<Leg> {
+        self.legs_with_target(repo_root, single_base, None)
+    }
+
+    /// As `legs`, applying a board-selected named target to every workspace
+    /// leg while keeping each leg's recorded default when the board uses the
+    /// repository-default workflow.
+    pub fn legs_with_target(
+        &self,
+        repo_root: &Path,
+        single_base: &str,
+        selected_target: Option<&str>,
+    ) -> Vec<Leg> {
         if !self.is_workspace() {
             return vec![Leg {
                 name: String::new(),
@@ -109,7 +125,9 @@ impl Binding {
                     repo_root.join(&r.name)
                 },
                 path: if r.name.is_empty() { self.path.clone() } else { self.path.join(&r.name) },
-                base: r.base.clone(),
+                base: selected_target
+                    .unwrap_or(if r.default_base.is_empty() { &r.base } else { &r.default_base })
+                    .to_string(),
                 base_oid: r.base_oid.clone(),
                 branch_oid: r.branch_oid.clone(),
             })
@@ -303,6 +321,7 @@ pub fn rebuild_from_disk(repo: &Path, worktrees_root: &Path) -> Bindings {
                 b.repos.push(RepoBinding {
                     name: String::new(),
                     base: root_base,
+                    default_base: base.clone(),
                     base_oid: b.base_oid.clone(),
                     branch_oid: b.branch_oid.clone(),
                 });
@@ -310,6 +329,7 @@ pub fn rebuild_from_disk(repo: &Path, worktrees_root: &Path) -> Bindings {
             b.repos.push(RepoBinding {
                 name: name.clone(),
                 base: child_base.clone(),
+                default_base: default_branch(&child).unwrap_or_else(|_| child_base.clone()),
                 base_oid,
                 branch_oid,
             });
@@ -499,6 +519,12 @@ pub fn default_branch(repo: &Path) -> Result<String> {
     Ok(git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
 }
 
+pub fn valid_branch_name(repo: &Path, branch: &str) -> bool {
+    !branch.is_empty()
+        && !branch.starts_with('-')
+        && git(repo, &["check-ref-format", &format!("refs/heads/{branch}")]).is_ok()
+}
+
 /// What a worktree cannot be cut from, in words a person acts on (T-777):
 /// a base with no commits, or a checkout on no branch. The card and the
 /// crown's wake show it whole, so it is short and ends on the fix.
@@ -627,11 +653,26 @@ pub fn provision(
     title: &str,
     upstream: bool,
 ) -> std::result::Result<Binding, (String, String)> {
+    provision_on(repo, root, ticket_id, short_key, title, upstream, None)
+}
+
+pub fn provision_on(
+    repo: &Path,
+    root: &Path,
+    ticket_id: ulid::Ulid,
+    short_key: &str,
+    title: &str,
+    upstream: bool,
+    base_override: Option<&str>,
+) -> std::result::Result<Binding, (String, String)> {
     let branch = mesimon_core::workspace::branch_name(short_key, title);
     let dir = root.join(mesimon_core::workspace::dir_name(short_key, title));
 
     // Stage 0 — precheck.
-    let base = default_branch(repo).map_err(|e| ("precheck".into(), e.to_string()))?;
+    let base = match base_override {
+        Some(base) => base.to_string(),
+        None => default_branch(repo).map_err(|e| ("precheck".into(), e.to_string()))?,
+    };
     if base == "HEAD" {
         return Err(("precheck".into(), DETACHED_HEAD.into()));
     }
@@ -784,6 +825,33 @@ pub fn provision_workspace(
     upstream: bool,
     progress: &mut dyn FnMut(u32, u32),
 ) -> std::result::Result<Binding, (String, String)> {
+    provision_workspace_on(
+        root,
+        worktrees_root,
+        census,
+        is_meta,
+        ticket_id,
+        short_key,
+        title,
+        upstream,
+        None,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn provision_workspace_on(
+    root: &Path,
+    worktrees_root: &Path,
+    census: &[String],
+    is_meta: bool,
+    ticket_id: ulid::Ulid,
+    short_key: &str,
+    title: &str,
+    upstream: bool,
+    base_override: Option<&str>,
+    progress: &mut dyn FnMut(u32, u32),
+) -> std::result::Result<Binding, (String, String)> {
     let branch = mesimon_core::workspace::branch_name(short_key, title);
     let dir = worktrees_root.join(mesimon_core::workspace::dir_name(short_key, title));
 
@@ -792,12 +860,24 @@ pub fn provision_workspace(
         return Err(("precheck".into(), format!("{} already exists", dir.display())));
     }
     let branch_ref = format!("refs/heads/{branch}");
-    let mut plan: Vec<(String, PathBuf, String, String)> = Vec::new();
+    let mut plan: Vec<(String, PathBuf, String, String, String)> = Vec::new();
     let names = std::iter::once(String::new()).filter(|_| is_meta).chain(census.iter().cloned());
     for name in names {
         let repo = if name.is_empty() { root.to_path_buf() } else { root.join(&name) };
-        let (base, head) = checked_out(&repo)
-            .map_err(|e| ("precheck".into(), format!("{} {e}", leg_word(&name))))?;
+        let (base, head) = match base_override {
+            Some(base) => {
+                let head = branch_tip(&repo, base);
+                if head.is_empty() {
+                    return Err((
+                        "precheck".into(),
+                        format!("{} has no branch {base}", leg_word(&name)),
+                    ));
+                }
+                (base.to_string(), head)
+            }
+            None => checked_out(&repo)
+                .map_err(|e| ("precheck".into(), format!("{} {e}", leg_word(&name))))?,
+        };
         if git_read(&repo, &["rev-parse", "--verify", "--quiet", &branch_ref]).is_ok() {
             return Err((
                 "precheck".into(),
@@ -805,7 +885,14 @@ pub fn provision_workspace(
             ));
         }
         let head = if upstream { cut_point(&repo, &base, &head).oid } else { head };
-        plan.push((name, repo, base, head));
+        let default_base = if base_override.is_some() {
+            default_branch(&repo).map_err(|e| ("precheck".into(), e.to_string()))?
+        } else {
+            // Preserve the existing workspace workflow: its checked-out
+            // branch is each leg's base, even if another default exists.
+            base.clone()
+        };
+        plan.push((name, repo, base, head, default_base));
     }
     if plan.is_empty() {
         return Err(("precheck".into(), "no repositories to cut a worktree of".into()));
@@ -835,7 +922,7 @@ pub fn provision_workspace(
     }
 
     let mut repos = Vec::with_capacity(plan.len());
-    for (i, (name, repo, base, head)) in plan.iter().enumerate() {
+    for (i, (name, repo, base, head, default_base)) in plan.iter().enumerate() {
         let wt = if name.is_empty() { dir.clone() } else { dir.join(name) };
         if let Err((stage, message)) = add_leg(repo, &wt, &branch, Some(head), ticket_id) {
             // `add -b` mints the branch before it lays the tree, so a failed
@@ -851,6 +938,7 @@ pub fn provision_workspace(
         repos.push(RepoBinding {
             name: name.clone(),
             base: base.clone(),
+            default_base: default_base.clone(),
             base_oid: head.clone(),
             branch_oid: head.clone(),
         });
@@ -1923,11 +2011,14 @@ fn left_right(repo: &Path, from: &str, branch: &str) -> Result<(u32, u32)> {
 ///
 /// - base checked out in the main checkout: `git merge --ff-only` (git itself
 ///   refuses when dirty files would be overwritten — surfaced as the reason).
-/// - base elsewhere: ff-only ref update, no checkout touched.
+/// - base in a linked worktree: require it clean, then merge there.
+/// - base not checked out: ff-only local ref update, no checkout touched.
 pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
     let head = git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     if head == base {
         git(repo, &["merge", "--ff-only", branch]).map(|_| ())
+    } else if let Some(checkout) = merge_destination(repo, base)? {
+        git(&checkout, &["merge", "--ff-only", branch]).map(|_| ())
     } else {
         let refspec = format!("{branch}:refs/heads/{base}");
         git(repo, &["push", "--quiet", ".", &refspec]).map(|_| ())
@@ -2298,21 +2389,22 @@ pub enum LegMerge {
 pub fn merge_legs(legs: &[Leg], branch: &str) -> LegMerge {
     let mut any_touched = false;
     let mut moved = Vec::new();
-    let mut pending: Vec<&Leg> = Vec::new();
+    let mut pending = Vec::new();
     for leg in legs {
         let tip = branch_tip(&leg.repo, branch);
         if tip.is_empty() || tip == leg.base_oid {
             continue;
         }
         any_touched = true;
-        if is_merged(&leg.repo, branch, &leg.base) {
+        let before = branch_tip(&leg.repo, &leg.base);
+        if is_merged(&leg.repo, &tip, &before) {
             continue;
         }
-        if !ff_possible(&leg.repo, branch, &leg.base) {
+        if !ff_possible(&leg.repo, &tip, &before) {
             moved.push((leg.name.clone(), leg.base.clone()));
             continue;
         }
-        pending.push(leg);
+        pending.push((leg, tip, before));
     }
     if !any_touched {
         return LegMerge::Nothing;
@@ -2324,8 +2416,14 @@ pub fn merge_legs(legs: &[Leg], branch: &str) -> LegMerge {
         return LegMerge::Already;
     }
     let mut landed = Vec::new();
-    for leg in pending {
-        match ff_merge(&leg.repo, branch, &leg.base) {
+    for (leg, tip, before) in pending {
+        let advance = (|| -> Result<()> {
+            if branch_tip(&leg.repo, &leg.base) != before {
+                bail!("{} moved after preflight; retry the fast-forward merge", leg.base);
+            }
+            ff_merge(&leg.repo, &tip, &leg.base)
+        })();
+        match advance {
             Ok(()) => landed.push((leg.name.clone(), leg.base.clone())),
             Err(e) => {
                 return LegMerge::Refused {
@@ -2338,6 +2436,108 @@ pub fn merge_legs(legs: &[Leg], branch: &str) -> LegMerge {
         }
     }
     LegMerge::Merged(landed)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionResult {
+    pub promoted: Vec<String>,
+    pub refusal: Option<String>,
+}
+
+/// Promote a named integration ref in each repository to its own default
+/// branch. Every leg is preflighted before writes; later I/O races can still
+/// leave a reported partial promotion because Git has no multi-repository
+/// transaction.
+pub fn promote_to_main(repos: &[PathBuf], target: &str) -> PromotionResult {
+    promote_to_main_with(repos, target, |_, _| {})
+}
+
+fn promote_to_main_with(
+    repos: &[PathBuf],
+    target: &str,
+    mut before_leg: impl FnMut(usize, &Path),
+) -> PromotionResult {
+    let mut plan = Vec::new();
+    for repo in repos {
+        let label = repo.file_name().and_then(|n| n.to_str()).unwrap_or("root");
+        let preflight = (|| -> Result<_> {
+            if !valid_branch_name(repo, target) {
+                bail!("invalid integration branch {target}");
+            }
+            let base = default_branch(repo)?;
+            if base == target {
+                bail!("integration branch is already the default branch");
+            }
+            let tip = branch_tip(repo, target);
+            let before = branch_tip(repo, &base);
+            if tip.is_empty() {
+                bail!("integration branch {target} is missing");
+            }
+            if before.is_empty() {
+                bail!("default branch {base} is missing");
+            }
+            if !ff_possible(repo, &tip, &before) {
+                bail!("{base} has commits not in {target}; promotion must fast-forward");
+            }
+            merge_destination(repo, &base)?;
+            Ok((repo.clone(), label.to_string(), base, before, tip))
+        })();
+        match preflight {
+            Ok(leg) => plan.push(leg),
+            Err(e) => {
+                return PromotionResult {
+                    promoted: Vec::new(),
+                    refusal: Some(format!("{label}: {e}")),
+                };
+            }
+        }
+    }
+    let mut promoted = Vec::new();
+    for (index, (repo, label, base, before, tip)) in plan.into_iter().enumerate() {
+        before_leg(index, &repo);
+        let advance = (|| -> Result<()> {
+            if branch_tip(&repo, &base) != before {
+                bail!("{base} moved after preflight; retry the fast-forward promotion");
+            }
+            // Recheck cleanliness and locate the destination again, including
+            // a default branch checked out in another linked worktree. Merge
+            // the captured commit, not an integration ref that may have moved.
+            let checkout = merge_destination(&repo, &base)?;
+            ff_merge(&checkout.unwrap_or(repo.clone()), &tip, &base)
+        })();
+        match advance {
+            Ok(()) => promoted.push(format!("{label}/{base}@{tip}")),
+            Err(e) => {
+                return PromotionResult {
+                    promoted,
+                    refusal: Some(format!(
+                        "{label}/{base}: {}",
+                        merge_refusal_detail(&e.to_string(), &base)
+                    )),
+                };
+            }
+        }
+    }
+    PromotionResult { promoted, refusal: None }
+}
+
+/// Validate every checkout of the destination, using the existing NUL-safe
+/// worktree parser. Return its checkout so the fast-forward updates its index
+/// and files too; an un-checked-out destination needs only a local ref update.
+fn merge_destination(repo: &Path, branch: &str) -> Result<Option<PathBuf>> {
+    let mut destination = None;
+    for row in list_worktrees(repo)? {
+        if row.branch.as_deref() != Some(branch) {
+            continue;
+        }
+        if !git_read(&row.path, &["status", "--porcelain=v2", "-uall"])?.trim().is_empty() {
+            bail!("uncommitted changes in the {branch} checkout — commit or stash them first");
+        }
+        if destination.replace(row.path).is_some() {
+            bail!("{branch} is checked out more than once; leave one destination checkout");
+        }
+    }
+    Ok(destination)
 }
 
 /// `(name, base)` pairs as a detail names them: the root's base bare, a
@@ -2563,6 +2763,168 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-qm", "init"]);
         Some(dir)
+    }
+
+    #[test]
+    fn promotion_fast_forwards_default_and_refuses_dirty_or_diverged_destinations() {
+        let Some(repo) = scratch_repo("promote") else { return };
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&repo, &["branch", "staging"]);
+        run(&repo, &["checkout", "-q", "staging"]);
+        std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "staging change"]);
+        run(&repo, &["checkout", "-q", "main"]);
+        let result = promote_to_main(std::slice::from_ref(&repo), "staging");
+        assert!(result.refusal.is_none(), "{result:?}");
+        assert_eq!(result.promoted.len(), 1);
+        assert!(result.promoted[0].contains("main@"));
+        assert!(repo.join("stage.txt").exists());
+
+        // A dirty checked-out destination is refused before any ref changes.
+        std::fs::write(repo.join("a.txt"), "dirty\n").unwrap();
+        let before = branch_tip(&repo, "main");
+        let result = promote_to_main(std::slice::from_ref(&repo), "staging");
+        assert!(result.refusal.as_deref().unwrap().contains("uncommitted changes"));
+        assert_eq!(branch_tip(&repo, "main"), before);
+        std::fs::remove_file(repo.join("a.txt")).unwrap();
+
+        // A moved destination that is not an ancestor of staging is refused.
+        run(&repo, &["add", "a.txt"]);
+        run(&repo, &["commit", "-qm", "main only"]);
+        let result = promote_to_main(std::slice::from_ref(&repo), "staging");
+        assert!(result.refusal.as_deref().unwrap().contains("must fast-forward"));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn promotion_preflights_all_repository_legs_before_writing_any() {
+        let Some(first) = scratch_repo("promote-first") else { return };
+        let Some(second) = scratch_repo("promote-second") else { return };
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        for repo in [&first, &second] {
+            run(repo, &["branch", "staging"]);
+            run(repo, &["checkout", "-q", "staging"]);
+            std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
+            run(repo, &["add", "."]);
+            run(repo, &["commit", "-qm", "staging change"]);
+            run(repo, &["checkout", "-q", "main"]);
+        }
+        std::fs::write(second.join("a.txt"), "dirty\n").unwrap();
+        let before = branch_tip(&first, "main");
+        let result = promote_to_main(&[first.clone(), second.clone()], "staging");
+        assert!(result.promoted.is_empty());
+        assert!(result.refusal.as_deref().unwrap().contains("uncommitted changes"));
+        assert_eq!(branch_tip(&first, "main"), before, "first leg must not advance");
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
+    }
+
+    #[test]
+    fn ticket_merge_updates_linked_staging_and_refuses_its_dirty_checkout() {
+        let Some(repo) = scratch_repo("merge-linked-staging") else { return };
+        let main = branch_tip(&repo, "main");
+        testrepo::run(&repo, &["branch", "staging"]);
+        testrepo::run(&repo, &["tag", "staging"]);
+        testrepo::run(&repo, &["tag", "topic"]);
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("staging\ncheckout");
+        let topic = dir.path().join("topic");
+        testrepo::run(&repo, &["worktree", "add", staging.to_str().unwrap(), "staging"]);
+        testrepo::run(&repo, &["worktree", "add", "-b", "topic", topic.to_str().unwrap(), "main"]);
+        testrepo::commit(&topic, "batch.txt", "batch\n", "ticket work");
+        let tip = branch_tip(&repo, "topic");
+        let legs = [Leg {
+            name: String::new(),
+            repo: repo.clone(),
+            path: topic,
+            base: "staging".into(),
+            base_oid: main.clone(),
+            branch_oid: main.clone(),
+        }];
+        std::fs::write(staging.join("dirty.txt"), "keep\n").unwrap();
+        assert!(matches!(merge_legs(&legs, "topic"), LegMerge::Refused { landed, error, .. }
+            if landed.is_empty() && error.contains("uncommitted changes")));
+        assert_eq!(branch_tip(&repo, "staging"), main);
+        assert_eq!(std::fs::read_to_string(staging.join("dirty.txt")).unwrap(), "keep\n");
+        std::fs::remove_file(staging.join("dirty.txt")).unwrap();
+        assert!(matches!(merge_legs(&legs, "topic"), LegMerge::Merged(_)));
+        assert_eq!(branch_tip(&repo, "staging"), tip);
+        assert_eq!(std::fs::read_to_string(staging.join("batch.txt")).unwrap(), "batch\n");
+        assert_eq!(branch_tip(&repo, "main"), main, "board checkout stays on main");
+        assert!(!repo.join("batch.txt").exists());
+        assert!(matches!(merge_legs(&legs, "topic"), LegMerge::Already));
+        std::fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn promotion_updates_a_linked_destination_using_the_preflighted_commit() {
+        let Some(repo) = scratch_repo("promote-linked") else { return };
+        testrepo::run(&repo, &["tag", "staging"]); // Same-named tag must not win.
+        testrepo::run(&repo, &["checkout", "-qb", "staging"]);
+        testrepo::commit(&repo, "batch.txt", "batch\n", "batch");
+        let tip = branch_tip(&repo, "staging");
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("main\ncheckout");
+        testrepo::run(&repo, &["worktree", "add", destination.to_str().unwrap(), "main"]);
+        std::fs::write(destination.join("dirty.txt"), "keep\n").unwrap();
+        let result = promote_to_main(std::slice::from_ref(&repo), "staging");
+        assert!(result.refusal.as_deref().unwrap().contains("uncommitted"));
+        std::fs::remove_file(destination.join("dirty.txt")).unwrap();
+        let result = promote_to_main_with(std::slice::from_ref(&repo), "staging", |_, repo| {
+            testrepo::commit(repo, "later.txt", "later\n", "after preflight");
+        });
+        assert!(result.refusal.is_none(), "{result:?}");
+        assert_eq!(branch_tip(&repo, "main"), tip);
+        assert!(result.promoted[0].ends_with(&tip));
+        assert!(destination.join("batch.txt").exists());
+        assert!(!destination.join("later.txt").exists());
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn promotion_reports_a_later_leg_race_after_an_earlier_leg_landed() {
+        let Some(first) = scratch_repo("promote-race-first") else { return };
+        let Some(second) = scratch_repo("promote-race-second") else { return };
+        let run = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        for repo in [&first, &second] {
+            run(repo, &["branch", "staging"]);
+            run(repo, &["checkout", "-q", "staging"]);
+            std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
+            run(repo, &["add", "."]);
+            run(repo, &["commit", "-qm", "staging change"]);
+            run(repo, &["checkout", "-q", "main"]);
+        }
+        let result =
+            promote_to_main_with(&[first.clone(), second.clone()], "staging", |index, repo| {
+                if index == 1 {
+                    std::fs::write(repo.join("raced.txt"), "main moved after preflight\n").unwrap();
+                    run(repo, &["add", "."]);
+                    run(repo, &["commit", "-qm", "concurrent main change"]);
+                }
+            });
+        assert_eq!(
+            result.promoted.len(),
+            1,
+            "the first leg landed before the later race: {result:?}"
+        );
+        assert!(
+            result.refusal.as_deref().is_some_and(|why| why.contains("fast-forward")),
+            "{result:?}"
+        );
+        assert!(first.join("stage.txt").exists());
+        assert!(!second.join("stage.txt").exists());
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
     }
 
     /// The recovery that makes a lost worktrees.json survivable: git still
@@ -3760,12 +4122,14 @@ mod tests {
                 RepoBinding {
                     name: String::new(),
                     base: "master".into(),
+                    default_base: "trunk".into(),
                     base_oid: "r0".into(),
                     branch_oid: "r0".into(),
                 },
                 RepoBinding {
                     name: name.into(),
                     base: "main".into(),
+                    default_base: "main".into(),
                     base_oid: "a0".into(),
                     branch_oid: "a1".into(),
                 },
@@ -3796,11 +4160,21 @@ mod tests {
         assert_eq!(legs[0].name, "");
         assert_eq!(legs[0].repo, Path::new("/repo"));
         assert_eq!(legs[0].path, Path::new("/wt/T-1-x"));
-        assert_eq!(legs[0].base, "master");
+        assert_eq!(legs[0].base, "trunk");
         assert_eq!(legs[1].name, "api");
         assert_eq!(legs[1].repo, Path::new("/repo/api"));
         assert_eq!(legs[1].path, Path::new("/wt/T-1-x/api"));
         assert_eq!((legs[1].base.as_str(), legs[1].base_oid.as_str()), ("main", "a0"));
+        let selected = b.legs_with_target(Path::new("/repo"), "ignored", Some("staging"));
+        assert_eq!(
+            selected.iter().map(|leg| leg.base.as_str()).collect::<Vec<_>>(),
+            ["staging", "staging"]
+        );
+        let defaults = b.legs_with_target(Path::new("/repo"), "ignored", None);
+        assert_eq!(
+            defaults.iter().map(|leg| leg.base.as_str()).collect::<Vec<_>>(),
+            ["trunk", "main"]
+        );
         assert!(b.is_workspace() && b.has_root_leg());
         let mut folder = b.clone();
         folder.repos.remove(0);

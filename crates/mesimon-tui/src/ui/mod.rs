@@ -287,6 +287,9 @@ fn draw_screen(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Sections | Mode::Settings { .. } | Mode::Theme { .. }) {
         settings::draw(f, app);
     }
+    if let Mode::Input { purpose: crate::app::InputPurpose::SetMergeBranch, buffer } = &app.mode {
+        menu::draw_merge_branch(f, app, buffer);
+    }
     if let Mode::Usage { idx } = &app.mode {
         usage::draw(f, app, *idx);
     }

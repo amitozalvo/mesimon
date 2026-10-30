@@ -78,7 +78,7 @@ impl Daemon {
             *again = true;
             return;
         }
-        let base = self.base_branch.clone();
+        let base = self.worktree_base_cached();
         let mut queries = self.wt_queries(false, Some(ticket));
         if queries.is_empty() {
             return;
@@ -86,6 +86,7 @@ impl Daemon {
         self.ticket_looks.insert(ticket, false);
         self.wt_seq = self.wt_seq.wrapping_add(1);
         let seq = self.wt_seq;
+        let gen = self.wt_gen;
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         // What the forge would need to read again (T-761): the legs a forge
         // may read and the transcripts' tails, looked at beside the flags.
@@ -120,7 +121,7 @@ impl Daemon {
                 }
             }
             let samples = worktree::compute_repo_flags(&queries);
-            let _ = tx.send(Msg::TicketFlags(ticket, seq, samples, local));
+            let _ = tx.send(Msg::TicketFlags(ticket, gen, seq, samples, local));
         });
     }
 
@@ -130,12 +131,19 @@ impl Daemon {
     pub(super) fn on_ticket_flags(
         &mut self,
         ticket: ulid::Ulid,
+        gen: u64,
         seq: u64,
         samples: Vec<worktree::RepoSample>,
         local: Option<crate::forge::Local>,
     ) {
         let again = self.ticket_looks.remove(&ticket).unwrap_or(false);
         self.forge.looking.remove(&ticket);
+        // A target switch or synchronous refresh supersedes both halves of
+        // this look, including conflicts and forge data outside wt_fresh.
+        if gen != self.wt_gen {
+            self.queue_ticket_flags(ticket);
+            return;
+        }
         let mut changed = false;
         let mut acted = false;
         // The look's forge half (T-761), before the train's pass reads it:
@@ -176,9 +184,8 @@ impl Daemon {
         if !self.through_prs() {
             return Vec::new();
         }
-        let base = self.base_branch.clone().unwrap_or_default();
         let legs = match self.worktrees.get(&ticket) {
-            Some(b) if !b.branch.is_empty() => b.legs(&self.paths.repo_root, &base),
+            Some(b) if !b.branch.is_empty() => self.binding_legs(b),
             _ => return Vec::new(),
         };
         self.forge_legs(&legs)

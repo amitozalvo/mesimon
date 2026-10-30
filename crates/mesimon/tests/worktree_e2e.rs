@@ -25,6 +25,102 @@ fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
     }
 }
 
+#[test]
+fn promotion_is_person_local_fast_forward_and_refuses_a_diverged_main() {
+    use mesimon_core::command::{PendingAction, PromotionOutcome};
+    let Some(h) = Harness::boot("promotion", None) else { return };
+    let mut c = h.client("promotion");
+    let crown = c.create_ticket("review the batch");
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    let repo = h.repo.clone();
+    // Booting before git init deliberately leaves the board files tracked.
+    // Normal repository startup excludes .mesimon through info/exclude.
+    init_repo(&repo, "a.txt", "base\n");
+    git(&repo, &["branch", "staging"]);
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Ok
+    ));
+    let original_main = git(&repo, &["rev-parse", "main"]);
+    let dirty = c.request(Command::PromoteMain);
+    assert!(
+        matches!(dirty, Response::Promotion { outcome: PromotionOutcome::Refused, ref detail }
+        if detail.contains("uncommitted")),
+        "{dirty:?}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "main"]), original_main);
+    assert!(!pending_of(&mut c, Some(crown)).iter().any(|p| p.action == PendingAction::CrownWake));
+
+    // The tracked setting must be committed and included in the batch;
+    // promotion never exempts it from the clean-destination requirement.
+    git(&repo, &["add", ".mesimon/board/columns.toml"]);
+    git(&repo, &["commit", "-qm", "select staging integration target"]);
+    let staging_wt = h.dir.join("staging-wt");
+    git(&repo, &["worktree", "add", "-q", staging_wt.to_str().unwrap(), "staging"]);
+    git(&staging_wt, &["merge", "--ff-only", "main"]);
+    std::fs::write(staging_wt.join("staged.txt"), "stage\n").unwrap();
+    git(&staging_wt, &["add", "staged.txt"]);
+    git(&staging_wt, &["commit", "-qm", "staging batch"]);
+    git(&repo, &["worktree", "remove", staging_wt.to_str().unwrap()]);
+    assert!(git(&repo, &["status", "--porcelain"]).is_empty());
+    let tip = git(&repo, &["rev-parse", "staging"]).trim().to_string();
+    let promotion = c.request(Command::PromoteMain);
+    assert!(
+        matches!(promotion, Response::Promotion { outcome: PromotionOutcome::Promoted, .. }),
+        "{promotion:?}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "main"]).trim(), tip);
+    assert!(repo.join("staged.txt").exists());
+    let wakes = pending_of(&mut c, Some(crown));
+    assert!(
+        wakes.iter().any(|p| p.action == PendingAction::CrownWake
+            && p.text
+                .as_deref()
+                .is_some_and(|text| text.contains("staging") && text.contains(&tip))),
+        "{wakes:?}"
+    );
+
+    // Owed promotion news survives a disposable daemon restart.
+    drop(c);
+    h.restart();
+    let mut c = h.client("promotion-restarted");
+    assert!(pending_of(&mut c, Some(crown)).iter().any(|p| p.action == PendingAction::CrownWake
+        && p.text.as_deref().is_some_and(|text| text.contains(&tip))));
+    std::fs::write(repo.join("main-only.txt"), "main\n").unwrap();
+    git(&repo, &["add", "main-only.txt"]);
+    git(&repo, &["commit", "-qm", "main moved"]);
+    let before = git(&repo, &["rev-parse", "main"]);
+    let refused = c.request(Command::PromoteMain);
+    assert!(
+        matches!(refused, Response::Promotion { outcome: PromotionOutcome::Refused, ref detail }
+        if detail.contains("fast-forward")),
+        "{refused:?}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "main"]), before);
+    wait_until(Duration::from_secs(5), "promotion outcomes in the feed", || {
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(h.paths.activity_log())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        rows.iter().filter(|r| r["cmd"] == "promote_main" && r["outcome"] == "refused").count() == 2
+            && rows
+                .iter()
+                .filter(|r| {
+                    r["cmd"] == "promote_main"
+                        && r["outcome"] == "promoted"
+                        && r["detail"].as_str().is_some_and(|s| s.contains(&tip))
+                })
+                .count()
+                == 1
+            && rows
+                .iter()
+                .filter(|r| r["kind"] == "crown_wake" && r["cause"] == "promotion")
+                .count()
+                == 1
+    });
+}
+
 /// Every pane on the private server: `(session name, cwd, dead)`.
 fn list_panes(sock: &std::path::Path) -> Vec<(String, String, bool)> {
     let out = tmux(sock)
@@ -86,6 +182,11 @@ fn m4_worktree_lifecycle() {
     std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "init"]);
+    let main_tip = git(&repo, &["rev-parse", "main"]);
+    git(&repo, &["checkout", "-qb", "staging"]);
+    std::fs::write(repo.join("integration.txt"), "integration baseline\n").unwrap();
+    git(&repo, &["add", "integration.txt"]);
+    git(&repo, &["commit", "-qm", "integration baseline"]);
 
     let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
@@ -122,6 +223,10 @@ fn m4_worktree_lifecycle() {
         }),
         Response::Hello { .. }
     ));
+    assert!(matches!(
+        c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
+        Response::Ok
+    ));
 
     // ---- ticket 1: worktree strategy, lazy provision on spawn -------------
     let _ = c.request(Command::CreateTicket {
@@ -148,7 +253,7 @@ fn m4_worktree_lifecycle() {
     ));
     let wt = wait_wt_status(&mut c, t1, "attached", Duration::from_secs(10));
     assert_eq!(wt.branch, "msmn/T-1-fix-thing");
-    // A fresh branch is trivially an ancestor of main — that must read as
+    // A fresh branch is trivially an ancestor of staging — that must read as
     // "no work yet", never "merged" (dogfood regression 2026-08-30).
     assert!(!wt.merged, "fresh branch must not read merged");
     // The parked spawn replayed: the session exists and its cwd is the worktree.
@@ -163,6 +268,7 @@ fn m4_worktree_lifecycle() {
     };
     let (b, _) = board_of(c.request(Command::Snapshot));
     let rec = b.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert!(std::path::Path::new(&rec.cwd).join("integration.txt").exists(), "cut from staging");
     assert!(
         rec.cwd.contains("worktrees") && rec.cwd.ends_with("T-1-fix-thing"),
         "cwd should be the worktree: {}",
@@ -272,7 +378,8 @@ fn m4_worktree_lifecycle() {
             other => panic!("unexpected merge response: {other:?}"),
         }
     }
-    assert!(repo_canon.join("b.txt").is_file(), "merge must land in main checkout");
+    assert!(repo_canon.join("b.txt").is_file(), "merge must land in the staging checkout");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), main_tip, "main was not promoted");
     // DONE gate lifts.
     assert!(matches!(
         c.request(Command::MoveTicket { id: t1, column: "DONE".into(), before: None }),
@@ -318,8 +425,8 @@ fn m4_worktree_lifecycle() {
     let wt2 = wait_wt_status(&mut c, t2, "attached", Duration::from_secs(10));
     assert_eq!(wt2.branch, "msmn/T-2-clash");
     // Diverge the same file on both sides.
-    std::fs::write(repo_canon.join("a.txt"), "main side\n").unwrap();
-    git(&repo, &["commit", "-aqm", "main change"]);
+    std::fs::write(repo_canon.join("a.txt"), "staging side\n").unwrap();
+    git(&repo, &["commit", "-aqm", "staging change"]);
     let wt2_path = {
         let out = git(&repo, &["worktree", "list", "--porcelain"]);
         out.lines()
@@ -332,7 +439,7 @@ fn m4_worktree_lifecycle() {
     std::fs::write(wt2_path.join("a.txt"), "branch side\n").unwrap();
     git(&wt2_path, &["commit", "-aqm", "branch change"]);
     // Kill the bash session so the ticket is quiet, then merge → NeedsRebase
-    // (main moved past the branch — ff-only policy sends the agent to rebase;
+    // (staging moved past the branch — ff-only policy sends the agent to rebase;
     // mesimon never mints merge commits).
     let (b, _) = board_of(c.request(Command::Snapshot));
     let sid2 = b.sessions.iter().find(|s| s.ticket == t2).unwrap().id;

@@ -30,6 +30,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     draw_list(f, app, idx, "MENU", Scope::Menu, &items);
 }
 
+pub(super) fn draw_merge_branch(f: &mut Frame, app: &App, buffer: &crate::text::EditBuffer) {
+    draw_rows(
+        f,
+        app,
+        0,
+        "INTEGRATION BRANCH",
+        &[("Branch".into(), "Existing local branch in every repository".into())],
+        &[],
+        Some(("Branch: ", buffer)),
+    );
+}
+
 /// The dialog's name with the scope after it when it is this board's
 /// (T-361): the title and the `b` hint are the two places that say which
 /// scope is live, so a stale scope is never silent.

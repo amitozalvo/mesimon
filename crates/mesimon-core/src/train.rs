@@ -228,7 +228,7 @@ pub fn plan(input: &Input) -> Plan {
             let Some(flags) = input.flags.get(&t.id) else { continue };
             let words_owed = input.owed.contains(&t.id);
             let mut reading = Reading {
-                merge_into: input.board.merge_into,
+                merge_into: input.board.merge_into.clone(),
                 reach: col.settings.train,
                 flags,
                 seat: seat(input.board, t.id, words_owed),
@@ -366,11 +366,15 @@ mod tests {
         assert_eq!(read(MergeInto::Main, &ahead), Some(Lane::Merge), "main: the train merges");
         assert_eq!(read(MergeInto::Main, &behind), Some(Lane::Rebase), "and asks the rebase");
         let prs = MergeInto::PullRequests;
-        assert_eq!(read(prs, &ahead), None, "pull requests: the forge merges");
-        assert_eq!(read(prs, &behind), None, "a branch with no PR yet is asked nothing");
+        assert_eq!(read(prs.clone(), &ahead), None, "pull requests: the forge merges");
+        assert_eq!(read(prs.clone(), &behind), None, "a branch with no PR yet is asked nothing");
         let open = WtFlags { has_pr: true, ..flags(2, true) };
-        assert_eq!(read(prs, &open), None, "a base moved past a PR branch is not a reason");
-        assert_eq!(read(prs, &conflict), Some(Lane::Rebase), "a conflict the forge reports is");
+        assert_eq!(read(prs.clone(), &open), None, "a base moved past a PR branch is not a reason");
+        assert_eq!(
+            read(prs.clone(), &conflict),
+            Some(Lane::Rebase),
+            "a conflict the forge reports is"
+        );
         let parked = Reading {
             merge_into: prs,
             reach: TrainReach::Merge,

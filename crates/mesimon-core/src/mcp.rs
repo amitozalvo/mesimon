@@ -2026,6 +2026,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T-810: who merges a branch, the train or the forge, is the
         // team's workflow; an agent choosing it chooses its own merger.
         | Command::SetMergeInto { .. }
+        | Command::PromoteMain
         // T-816: Setup is the person choosing every one of these at once.
         | Command::ApplySetup { .. }
         | Command::SetBoardWorkspace { .. }
@@ -4202,6 +4203,7 @@ mod tests {
             Command::SetCrownBudget { budget: 3 },
             Command::SetCrownMode { mode: crate::board::CrownMode::Autonomous },
             Command::SetMergeInto { into: crate::board::MergeInto::PullRequests },
+            Command::PromoteMain,
             Command::SetBoardWorkspace { workspace: crate::board::WorkspaceStrategy::Worktree },
             Command::ApplySetup {
                 template: crate::board::Template::PullRequests,

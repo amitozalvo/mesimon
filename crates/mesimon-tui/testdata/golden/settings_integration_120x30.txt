@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+   TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+   Dec│  Theme               Keep this machine awake   ○ off                                                     │
+      │                      Snake while idle          ○ off                                                     │
+   Key│  Appearance          Mouse                     ● on                                                      │
+      │                      Editor                    auto                                                      │
+      │  Notifications                                                                                           │
+      │                     SNOOZE                                                                               │
+      │▎ Behaviour           Comes back                ● lit   ○ quiet                                           │
+      │                      Week starts on            Monday                                                    │
+      │  Agents                                                                                                  │
+      │                     MERGE                                                                                │
+      │  Crown               Merge into                staging (integration)                                     │
+      │                      Integration branch        staging                                                   │
+      │  Terminal            Promote to main           ready                                                     │
+      │                                                                                                          │
+      │  Usage              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min                      │
+      │  About                                                                                                   │
+      │                     AUTO MERGE                                                                           │
+      │                      Auto merge                ● on                                                      │
+      │                      Tells the agent           ● on                                                      │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     fast-forward main from staging                                                       │
+      ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
+
+ SETTINGS                                                                                                        ? keys

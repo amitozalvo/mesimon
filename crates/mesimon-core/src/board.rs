@@ -2377,32 +2377,74 @@ impl CrownMode {
 /// fast-forwards a worktree branch, and the train asks only the rebase a PR
 /// conflict needs. A shared-checkout ticket is unchanged under either: its
 /// commits are on the base the moment they exist.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum MergeInto {
     #[default]
     Main,
     PullRequests,
+    /// Land worktree branches on this named local branch before promotion to main.
+    Branch(String),
 }
 
 impl MergeInto {
     /// Branches land through pull requests: the forge is read, and merges.
-    pub fn pull_requests(self) -> bool {
-        self == Self::PullRequests
+    pub fn pull_requests(&self) -> bool {
+        *self == Self::PullRequests
     }
 
     /// The setting's value in the words the row and `doctor` show.
-    pub fn word(self) -> &'static str {
+    pub fn word(&self) -> String {
         match self {
-            Self::Main => "main",
-            Self::PullRequests => "pull requests",
+            Self::Main => "main".into(),
+            Self::PullRequests => "pull requests".into(),
+            Self::Branch(branch) => format!("{branch} (integration)"),
         }
     }
 
-    pub fn toggled(self) -> Self {
+    pub fn integration_branch(&self) -> Option<&str> {
+        match self {
+            Self::Branch(branch) => Some(branch),
+            _ => None,
+        }
+    }
+
+    pub fn toggled(&self) -> Self {
         match self {
             Self::Main => Self::PullRequests,
-            Self::PullRequests => Self::Main,
+            Self::PullRequests | Self::Branch(_) => Self::Main,
+        }
+    }
+}
+
+impl Serialize for MergeInto {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Main => serializer.serialize_str("main"),
+            Self::PullRequests => serializer.serialize_str("pull_requests"),
+            // Git branch names cannot contain ':', keeping the established
+            // scalar representation while adding a backwards-compatible mode.
+            Self::Branch(branch) => serializer.serialize_str(&format!("branch:{branch}")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MergeInto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "main" => Ok(Self::Main),
+            "pull_requests" => Ok(Self::PullRequests),
+            _ => value
+                .strip_prefix("branch:")
+                .filter(|branch| !branch.is_empty())
+                .map(|branch| Self::Branch(branch.to_string()))
+                .ok_or_else(|| serde::de::Error::custom("unknown merge target")),
         }
     }
 }
@@ -3751,7 +3793,7 @@ impl Board {
             agent_provider: self.agent_provider,
             crown_budget: self.crown_budget,
             crown_mode: self.crown_mode,
-            merge_into: self.merge_into,
+            merge_into: self.merge_into.clone(),
             crown_archives: self.crown_archives,
             crown_watches: self.crown_watches,
             crown_context: self.crown_context,
@@ -3951,7 +3993,17 @@ mod tests {
         let back = serde_json::from_value::<Board>(wire).unwrap().merge_into;
         assert!(back.pull_requests() && !MergeInto::Main.pull_requests());
         assert_eq!(back.toggled(), MergeInto::Main);
-        assert_eq!((MergeInto::Main.word(), back.word()), ("main", "pull requests"));
+        assert_eq!(
+            (MergeInto::Main.word(), back.word()),
+            ("main".to_string(), "pull requests".to_string())
+        );
+        let branch = MergeInto::Branch("staging".into());
+        assert_eq!(serde_json::to_value(&branch).unwrap(), "branch:staging");
+        assert_eq!(
+            serde_json::from_value::<MergeInto>(serde_json::json!("branch:staging")).unwrap(),
+            branch
+        );
+        assert_eq!(branch.word(), "staging (integration)");
     }
 
     /// T-590: a board from before the field leaves archiving to a person,

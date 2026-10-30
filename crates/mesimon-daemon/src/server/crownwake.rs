@@ -352,6 +352,8 @@ pub(super) enum WakeCause {
     /// The strongest: no agent exists, so nothing else about the worker
     /// is news, and the crown is the one who must act.
     Unstarted,
+    /// A person promoted the board's integration branch to main (T-954).
+    Promotion,
 }
 
 impl WakeCause {
@@ -377,6 +379,7 @@ impl WakeCause {
             // reason): the crown reads them with `get_ticket`.
             WakeCause::Asked => "asks a question",
             WakeCause::Unstarted => "could not start",
+            WakeCause::Promotion => "integration branch promoted to main",
         }
     }
 
@@ -396,6 +399,7 @@ impl WakeCause {
             WakeCause::Planned => "planned",
             WakeCause::Asked => "asked",
             WakeCause::Unstarted => "unstarted",
+            WakeCause::Promotion => "promotion",
         }
     }
 }
@@ -443,6 +447,9 @@ pub(super) struct CrownWake {
     /// the step left unmerged. Written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     merge: bool,
+    /// Board-level promotion detail; the worker key is the crown ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    promotion: Option<String>,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -743,6 +750,7 @@ impl CrownWake {
             ask,
             overrun,
             merge,
+            promotion: None,
         }
     }
 
@@ -824,6 +832,9 @@ impl CrownWake {
     /// did not move. Nothing at all where git could not say. A wake owed
     /// across a restart says so last (T-602).
     fn changed(&self) -> Vec<String> {
+        if let Some(detail) = &self.promotion {
+            return vec![detail.clone()];
+        }
         if let (WakeCause::Unstarted, Some(why)) = (self.cause, &self.unstarted) {
             return vec![why.clone()];
         }
@@ -1406,6 +1417,7 @@ enum Look {
         binding: Box<Binding>,
         repo: std::path::PathBuf,
         base: Option<String>,
+        selected_target: Option<String>,
         queries: Vec<worktree::RepoQuery>,
     },
     /// Anything else: the checkout the worker runs in.
@@ -1430,6 +1442,7 @@ pub(super) struct TurnProbe {
     /// time it lands is owed nothing.
     crown: ulid::Ulid,
     why: ProbeWhy,
+    gen: u64,
     found: Found,
 }
 
@@ -1438,7 +1451,7 @@ impl Look {
     /// legs, or one `rev-parse` of the checkout's HEAD.
     fn run(self, worker: ulid::Ulid) -> Found {
         match self {
-            Look::Branch { binding, repo, base, mut queries } => {
+            Look::Branch { binding, repo, base, selected_target, mut queries } => {
                 // The root's default branch for a single-repo leg; a
                 // workspace leg carries its own, so a folder root with no
                 // branch is looked at all the same (T-754).
@@ -1461,7 +1474,7 @@ impl Look {
                 }
                 let samples = worktree::compute_repo_flags(&queries);
                 let legs: Vec<worktree::RepoFlags> = binding
-                    .legs(&repo, &base.unwrap_or_default())
+                    .legs_with_target(&repo, &base.unwrap_or_default(), selected_target.as_deref())
                     .iter()
                     .filter_map(|leg| {
                         let s =
@@ -1844,7 +1857,8 @@ impl Daemon {
                 queries: self.wt_queries(false, Some(worker)),
                 binding: Box::new(binding),
                 repo: self.paths.repo_root.clone(),
-                base: self.base_branch.clone(),
+                base: self.worktree_base_cached(),
+                selected_target: self.configured_worktree_base(),
             },
             None => {
                 let Some(cwd) = self.board.live_agent(worker).map(|s| s.cwd.clone()) else {
@@ -1860,9 +1874,10 @@ impl Daemon {
             heard.unjudged = Some(heard.unjudged.map_or(u, |o| o.join(u)));
         }
         let tx = self.tx.clone();
+        let gen = self.merge_target_gen;
         std::thread::spawn(move || {
             let found = look.run(worker);
-            let _ = tx.send(Msg::TurnProbed(TurnProbe { worker, crown, why, found }));
+            let _ = tx.send(Msg::TurnProbed(TurnProbe { worker, crown, why, gen, found }));
         });
     }
 
@@ -1876,6 +1891,15 @@ impl Daemon {
     /// the queue has had the turn's end.
     pub(super) fn on_turn_probed(&mut self, p: TurnProbe) {
         let worker = p.worker;
+        if p.gen != self.merge_target_gen {
+            if let Some(h) = self.crown_heard.get_mut(&worker) {
+                h.looks = h.looks.saturating_sub(1);
+            }
+            if self.board.crown == Some(p.crown) {
+                self.probe_turn(worker, p.why);
+            }
+            return;
+        }
         self.judge_probe(p);
         // Looked at since the restart (T-602): what is owed from here is
         // current, and every turn it was asked for is judged. The feed says
@@ -2121,7 +2145,7 @@ impl Daemon {
             _ => t.column.as_str(),
         };
         let reading = mesimon_core::train::Reading {
-            merge_into: self.board.merge_into,
+            merge_into: self.board.merge_into.clone(),
             reach: self.board.column(column).map(|c| c.settings.train).unwrap_or_default(),
             flags: &flags,
             seat: self.train_seat(worker),
@@ -2349,6 +2373,20 @@ impl Daemon {
         if self.crown_claims(worker, crown, cause) {
             self.owe_crown_wake(crown, worker, cause, from, to, false);
         }
+    }
+
+    /// A successful person promotion wakes the current crown with the exact
+    /// target and repository legs that advanced.
+    pub(super) fn note_promotion_wake(&mut self, target: &str, legs: &[String]) {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
+        let detail = format!("{target} → main ({})", legs.join(", "));
+        self.enter_wake(crown, crown, WakeCause::Promotion, None, None, Owed::default());
+        if let Some(wake) = self.crown_wakes.iter_mut().find(|wake| wake.worker == crown) {
+            wake.cause = WakeCause::Promotion;
+            wake.promotion = Some(detail);
+        }
+        self.drain_crown_wakes(None);
+        self.broadcast();
     }
 
     /// `note_crown_wake`'s guards: never the crown's own ticket, and, an
@@ -2842,6 +2880,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
             );
             first.unstarted = w.unstarted.or(first.unstarted.take());
             first.failed = w.failed.or(first.failed.take());
+            first.promotion = w.promotion.or(first.promotion.take());
         } else {
             owed.push(w);
         }
@@ -2851,6 +2890,49 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_probe_from_the_previous_merge_target_cannot_owe_news() {
+        let mut b = watched_bed("stale-target-probe", None);
+        b.d.board.sessions.clear(); // No live seat to reprobe in this fixture.
+        b.d.board.merge_into = MergeInto::Branch("target-b".into());
+        b.d.crown_heard.get_mut(&b.worker).unwrap().looks = 1;
+        b.d.on_turn_probed(TurnProbe {
+            worker: b.worker,
+            crown: b.crown,
+            why: ProbeWhy::Turn { asked: None, fresh: true },
+            gen: b.d.merge_target_gen.wrapping_sub(1),
+            found: Found::Branch(BranchLook::default()),
+        });
+        assert!(b.d.crown_wakes.is_empty());
+        let heard = &b.d.crown_heard[&b.worker];
+        assert_eq!(heard.looks, 0);
+        assert!(heard.told.is_none());
+    }
+
+    #[test]
+    fn a_turn_probe_keeps_its_delivery_across_an_ordinary_flag_refresh() {
+        let mut b = watched_bed("same-target-probe", None);
+        b.d.board.sessions.clear();
+        b.d.crown_heard.get_mut(&b.worker).unwrap().looks = 1;
+        let gen = b.d.merge_target_gen;
+        b.d.wt_gen = b.d.wt_gen.wrapping_add(1); // A merge refreshed flags meanwhile.
+        b.d.on_turn_probed(TurnProbe {
+            worker: b.worker,
+            crown: b.crown,
+            why: ProbeWhy::Turn { asked: None, fresh: true },
+            gen,
+            found: Found::Branch(BranchLook {
+                tip: "captured-worker-commit".into(),
+                ahead: 1,
+                ..BranchLook::default()
+            }),
+        });
+        let wake = owed_for(&b.d, b.worker).expect("the captured delivery is still news");
+        assert_eq!(wake.cause, WakeCause::Delivered);
+        assert_eq!(wake.to.as_ref().unwrap().tip, "captured-worker-commit");
+        assert_eq!(b.d.crown_heard[&b.worker].looks, 0);
+    }
 
     /// A Codex box gives back X's wake after newer news for X was owed.
     /// The return keeps both snapshots' facts and the queue's order.
