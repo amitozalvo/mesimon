@@ -1551,6 +1551,10 @@ pub struct ColumnSettings {
     /// The header's sleep and archive offers, `X` and `Z` price this column.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reclaim: bool,
+    /// On arrival, free a clean, merged managed worktree, keeping its branch.
+    /// Off for existing boards; forgetting this opt-in only stops reclamation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub free_worktree: bool,
     /// Independent offer selection. Absent in older boards: `reclaim` still
     /// determines both offers there. An explicit choice overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1613,6 +1617,7 @@ impl ColumnSettings {
         self.arrives_on != Arrival::Nothing
             || self.moves().iter().any(|(_, _, c)| c.is_some())
             || self.train != TrainReach::Off
+            || self.free_worktree
             || self.sleep_after_minutes > 0
     }
 
@@ -1673,6 +1678,9 @@ impl ColumnSettings {
         }
         if self.requires_ticked {
             out.push("entry and archive need every summary box ticked".into());
+        }
+        if self.free_worktree {
+            out.push("frees merged worktrees on arrival".into());
         }
         if self.offers() != ColumnOffers::Off {
             out.push(format!("offers {}", self.offers().word()));
@@ -2812,7 +2820,9 @@ pub fn template_settings(name: &str) -> Option<ColumnSettings> {
             refuses_new: true,
             ..d()
         },
-        "DONE" => ColumnSettings { requires_merge: true, reclaim: true, ..d() },
+        "DONE" => {
+            ColumnSettings { requires_merge: true, reclaim: true, free_worktree: true, ..d() }
+        }
         _ => return None,
     })
 }
@@ -5372,6 +5382,8 @@ mod tests {
         assert_eq!(b.column("REVIEW").unwrap().settings.on_merged.as_deref(), Some("DONE"));
         assert!(b.column("DONE").unwrap().settings.requires_merge);
         assert!(b.column("DONE").unwrap().settings.reclaim);
+        assert!(b.column("DONE").unwrap().settings.free_worktree);
+        assert!(!ColumnSettings::default().free_worktree);
         assert_eq!(b.reclaim_columns().into_iter().collect::<Vec<_>>(), vec!["DONE"]);
         // Every template rule points at a column the board has.
         let mut b2 = b.clone();
@@ -5768,7 +5780,7 @@ mod tests {
             ]
         );
         assert!(s.automated());
-        assert!(!template_settings("DONE").unwrap().automated());
+        assert!(template_settings("DONE").unwrap().automated());
     }
 
     /// T-891: the arrival rule's choice among columns. Among equal stages

@@ -683,6 +683,12 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                             // rules they had as literals, once, on the way
                             // to the new stamp.
                             let migrated = found < 4 && b.seed_template_settings();
+                            if found < 4 {
+                                // Migration restores historical rules, never a new destructive opt-in.
+                                for column in &mut b.columns {
+                                    column.settings.free_worktree = false;
+                                }
+                            }
                             return (b, false, false, migrated);
                         }
                         Err(e) => Some(e.to_string()),
@@ -1608,6 +1614,7 @@ mod tests {
         assert_eq!(col("REVIEW").on_working.as_deref(), Some("IN PROGRESS"));
         assert_eq!(col("REVIEW").train, TrainReach::Merge);
         assert!(col("DONE").requires_merge && col("DONE").reclaim);
+        assert!(!col("DONE").free_worktree, "migration never opts an existing board in");
         assert_eq!(col("BACKLOG"), Default::default());
         assert!(!l.board.mcp_tools, "the other scalars survive the migration");
         let text = std::fs::read_to_string(&cols).unwrap();
@@ -2672,6 +2679,7 @@ order = "a0"
                     arrives_on: mesimon_core::board::Arrival::Nothing,
                     arrives_env: None,
                     reclaim: true,
+                    free_worktree: true,
                     offers: Some(mesimon_core::board::ColumnOffers::Sleep),
                     train: mesimon_core::board::TrainReach::Merge,
                     sleep_after_minutes: 5,

@@ -654,7 +654,12 @@ yours. A hold cannot undo a merge already made. A rebase the train asked for bef
 still runs, but nothing is merged after it.
 Once that agent's branch is merged, the crown moves its ticket to DONE, so a finished worker is
 closed without asking you. Where **Crown archives tickets** is on, it may also archive the ticket,
-which reclaims the merged worktree; otherwise the ticket and its worktree stay until you archive it. An agent you started yourself is never slept by
+which reclaims the merged worktree. A column’s **Free worktree** setting can instead remove
+a merged, clean worktree after its panes close while keeping the card, branch and binding.
+It is on for DONE on new kanban boards; existing boards opt in through the column dialog.
+Uncommitted changes and untracked files keep the tree, with the reason on its card. Waking
+the agent rebuilds the directory on the retained branch before resuming it.
+An agent you started yourself is never slept by
 the crown; it is told to leave that to you. Crowning types nothing into the agent's conversation: the crowned agent learns
 it through its tools. Reading its own ticket, it is told first what the crown is for: your words
 in its session are its brief, even on a ticket with no description; it can file a ticket for

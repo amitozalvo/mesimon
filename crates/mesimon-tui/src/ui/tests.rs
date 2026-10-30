@@ -1919,6 +1919,30 @@ fn golden_column_settings_120() {
     golden("column_settings_120x32", &lines);
 }
 
+/// The new opt-in row, selected so its scope and retained branch are visible.
+#[test]
+fn golden_column_free_worktree_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let row = mesimon_core::keymap::column_items(&app.ctx())
+        .iter()
+        .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnFreeWorktree)
+        .unwrap();
+    if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+        *idx = row;
+    }
+    let lines = render(&app, 120, 34);
+    assert!(lines.iter().any(|l| l.contains("Free worktree")));
+    assert!(lines.iter().any(|l| l.contains("keeps card and branch")));
+    golden("column_free_worktree_120x34", &lines);
+}
+
 /// T-806: on a short screen the column dialog is a window over its rows
 /// that keeps the cursor's in view, as the Settings page is: at the foot,
 /// the door and the sections above it, the top rows scrolled away.
@@ -3476,6 +3500,23 @@ fn golden_card_branch_line_120() {
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     golden("board_worktree_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn a_worktree_refusal_is_readable_on_a_card_without_sessions() {
+    let mut app = app_graphite(fixture(false));
+    let wt = mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(1),
+        detail: Some("worktree kept: branch is not merged".into()),
+        ..tagged_worktree()
+    };
+    let id = wt.ticket;
+    app.board_mut().sessions.retain(|s| s.ticket != id);
+    app.worktrees = vec![wt];
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|line| line.contains("worktree kept:")), "{lines:?}");
 }
 
 /// T-309: a ticket set to a worktree of its own before anyone has started on

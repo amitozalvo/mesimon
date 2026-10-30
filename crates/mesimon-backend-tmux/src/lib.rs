@@ -624,6 +624,37 @@ impl TmuxBackend {
         Ok(Some(parse_snapshot(&out)))
     }
 
+    /// Live pane directories, including terminals without session records.
+    /// A failed read is not evidence that a worktree is unused.
+    pub fn live_directories(&self) -> Result<Vec<PathBuf>> {
+        if !self.server_alive() {
+            // Distinguish an absent endpoint from an unreadable live server.
+            match std::os::unix::net::UnixStream::connect(&self.sock) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    return Ok(Vec::new())
+                }
+                _ => bail!("cannot verify tmux pane directories"),
+            }
+        }
+        let out = self.list_panes(&["pane_dead", "pane_current_path"])?;
+        out.lines()
+            .map(|line| {
+                let (dead, path) = line.split_once(SEP).context("unreadable pane directory")?;
+                match dead {
+                    "1" => Ok(None),
+                    "0" if !path.is_empty() => Ok(Some(PathBuf::from(path))),
+                    _ => bail!("unreadable pane directory"),
+                }
+            })
+            .filter_map(|r| r.transpose())
+            .collect()
+    }
+
     /// `list-panes -a -F <names>` over every session, and nothing — not an
     /// error — on a server with none. A `-D` server lives on between its
     /// sessions (T-690) and answers `list-panes -a` there with `no current

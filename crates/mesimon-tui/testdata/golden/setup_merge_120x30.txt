@@ -10,7 +10,7 @@
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   1 ticket                                                                          │  │
 │  │                                                                                                                │  │
-│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               1 →    DONE                  0  │  │
+│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               1 →    DONE                0 →  │  │
 │  │                                                                                                                │  │
 │  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now                             │  │
 │  │                                                             Done, tests pass. Over                             │  │
