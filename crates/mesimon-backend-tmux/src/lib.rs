@@ -1514,7 +1514,7 @@ finally:
     }
 
     #[test]
-    fn wheel_scrolls_one_line_on_fresh_and_surviving_servers() {
+    fn wheel_scrolls_three_lines_on_fresh_and_surviving_servers() {
         let f = fixture("backend-scroll", "t.sock");
         let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
         be.spawn("scroll", &f.dir, &["sleep".into(), "60".into()]).unwrap();
@@ -1535,7 +1535,7 @@ finally:
                     assert!(
                         binding.contains("select-pane")
                             && binding.contains("send-keys")
-                            && binding.contains("-N 1 ")
+                            && binding.contains("-N 3 ")
                             && binding.contains("-X")
                             && binding.trim_end().ends_with(&format!("scroll-{direction}")),
                         "{binding}"

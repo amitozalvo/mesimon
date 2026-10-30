@@ -12668,16 +12668,16 @@ fn a_click_in_the_drawer_only_walks() {
     assert!(matches!(app.mode, Mode::External { idx: 1 }), "walked, nothing adopted");
 }
 
-/// The wheel walks the column under the pointer, and never climbs off the
-/// top card onto the header.
+/// The wheel moves three cards in the column under the pointer, and clamps
+/// at the top rather than climbing onto the header.
 #[test]
 fn the_wheel_walks_the_column_under_it() {
     use ratatui::crossterm::event::MouseEventKind;
     let mut app = app_graphite(fixture(false));
     let lines = render(&app, 120, 30);
-    let at = spot_of(&lines, "Fix OSC");
+    let at = spot_of(&lines, "Adopt drawer");
     mouse(&mut app, MouseEventKind::ScrollDown, at);
-    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(4)), "into the column, one down");
+    assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(3)), "into the column, three down");
     render(&app, 120, 30);
     mouse(&mut app, MouseEventKind::ScrollUp, at);
     mouse(&mut app, MouseEventKind::ScrollUp, at);
