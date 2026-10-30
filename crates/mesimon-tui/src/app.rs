@@ -12530,7 +12530,7 @@ impl App {
                 .iter()
                 .map(|p| mesimon_core::search::PullRequest {
                     ticket: p.ticket,
-                    text: format!("{} {} {} {} {}", p.number, p.title, p.repo, p.state, p.url),
+                    text: format!("{} {} {} {} {}", p.label(), p.title, p.repo, p.state, p.url),
                 })
                 .collect();
             searcher.rank_with_prs(&self.board, s.query.as_str(), s.archived, &self.corpus, &prs)
@@ -19820,6 +19820,71 @@ mod tests {
         assert_eq!(keys, ["T-1", "T-2", "T-3"]);
         assert_eq!(search(&app).idx, 0);
         assert!(search(&app).archived, "archived tickets are in by default");
+    }
+
+    #[test]
+    fn pr_search_uses_forge_labels_from_cached_items() {
+        for (forge, number, url, query, label) in [
+            ("github", 812, "https://github.com/acme/api/pull/812", "#812", "#812"),
+            ("github", 812, "https://github.com/acme/api/pull/812", "812", "#812"),
+            ("gitlab", 44, "https://gitlab.com/acme/api/-/merge_requests/44", "'!44", "!44"),
+            ("gitlab", 44, "https://gitlab.com/acme/api/-/merge_requests/44", "44", "!44"),
+        ] {
+            let mut app = app_searchable();
+            let ticket = app.board.tickets[1].id;
+            app.prs.push(mesimon_core::command::PrItem {
+                ticket,
+                forge: forge.into(),
+                number,
+                title: "Improve caching".into(),
+                repo: "acme/api".into(),
+                state: "open".into(),
+                url: url.into(),
+                ..Default::default()
+            });
+            press(&mut app, '/');
+            typed(&mut app, query);
+            let hits = &search(&app).hits;
+            assert_eq!(hits.len(), 1, "{forge}: {query}");
+            assert_eq!(hits[0].id, ticket);
+            let line = hits[0].pr.as_ref().expect("the match comes from the cached PR/MR");
+            assert!(line.text.starts_with(&format!("{label} ")), "{}", line.text);
+            if query.contains(label) {
+                assert!(
+                    (0..label.chars().count()).all(|i| line.is_match(i)),
+                    "the forge label is highlighted: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pr_search_keeps_bang_queries_as_negation() {
+        let mut app = app_searchable();
+        std::sync::Arc::make_mut(&mut app.board).tickets[0].title = "44 migration".into();
+        app.prs.push(mesimon_core::command::PrItem {
+            ticket: app.board.tickets[1].id,
+            forge: "gitlab".into(),
+            number: 44,
+            title: "Improve caching".into(),
+            state: "open".into(),
+            ..Default::default()
+        });
+        press(&mut app, '/');
+        typed(&mut app, "!44");
+        let hits = &search(&app).hits;
+        assert_eq!(hits.iter().map(|h| h.key.text.as_str()).collect::<Vec<_>>(), ["T-2", "T-3"]);
+        assert!(
+            hits.iter().all(|h| h.pr.is_none()),
+            "negative-only queries still search ticket rows"
+        );
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        typed(&mut app, "caching !closed");
+        assert_eq!(search(&app).hits.len(), 1);
+        assert!(search(&app).hits[0].pr.is_some());
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        typed(&mut app, "caching !open");
+        assert!(search(&app).hits.is_empty(), "negative atoms still exclude PR text");
     }
 
     #[test]
