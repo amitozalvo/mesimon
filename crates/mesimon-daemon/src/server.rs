@@ -1292,7 +1292,22 @@ pub fn run(paths: Paths) -> Result<()> {
     notices.extend(import_notices);
 
     // Reconcile persisted records against the live private server (D24).
-    let snap = backend.snapshot().unwrap_or_default();
+    let panes = backend.panes();
+    // A failed/unavailable inspection cannot prove a parked process gone.
+    // Reconstruct its lost reaper reservation before accepting any starts.
+    let parked_unverified: Vec<String> = if matches!(&panes, Ok(Some(_))) {
+        Vec::new()
+    } else {
+        board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind.is_agent() && !s.argv.is_empty() && s.state == SessionState::Sleeping
+            })
+            .map(|s| s.sid16())
+            .collect()
+    };
+    let snap = panes.ok().flatten().unwrap_or_default();
     let rec = reconcile(&board.sessions, &snap);
     // The user may have left a session while the daemon was down (this repo
     // restarts one after every daemon-side rebuild). Reconcile still says
@@ -1571,6 +1586,9 @@ pub fn run(paths: Paths) -> Result<()> {
     // Before anything can launch (T-962): the last capture, as the panes
     // will get it, so a launch before the fresh one lands decides its road
     // on the `PATH` it really runs on.
+    for sid in parked_unverified {
+        d.reaping.insert(sid, Instant::now());
+    }
     d.seed_shell_env();
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
@@ -8641,6 +8659,15 @@ impl Daemon {
                 };
                 let checkout = self.paths.repo_root.to_string_lossy().into_owned();
                 let has_worktree = self.worktrees.contains_key(&target);
+                if wanted == WorkspaceStrategy::SharedCheckout
+                    && self.crown_checkout_reaping().contains(&target)
+                {
+                    return Response::Err {
+                        message: format!(
+                            "{key}'s previous pane is still stopping; wait for cleanup"
+                        ),
+                    };
+                }
                 let start = match crown::judge(
                     &self.board,
                     ticket,
@@ -8648,6 +8675,7 @@ impl Daemon {
                     wanted,
                     has_worktree,
                     &checkout,
+                    &self.crown_checkout_reservations(),
                 ) {
                     Ok(start) => start,
                     Err(message) => return Response::Err { message },
@@ -9037,6 +9065,38 @@ impl Daemon {
 
     // ------------------------------------------------------------ the crown
 
+    /// Sleeping is set before SIGTERM. Until the reaper finishes, that
+    /// process still reserves its directory even though its badge is parked.
+    fn crown_checkout_reaping(&self) -> Vec<ulid::Ulid> {
+        let checkout = self.paths.repo_root.to_string_lossy();
+        self.board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind.is_agent() && s.cwd == checkout && self.reaping.contains_key(&s.sid16())
+            })
+            .map(|s| s.ticket)
+            .collect()
+    }
+
+    /// Accepted starts and wakes reserve the checkout before they have a
+    /// pane. Held words do not: only a person's send could start those.
+    fn crown_checkout_reservations(&self) -> Vec<ulid::Ulid> {
+        let mut reserved = self.crown_checkout_reaping();
+        let checkout = self.paths.repo_root.to_string_lossy();
+        reserved.extend(
+            self.queued
+                .iter()
+                .filter(|q| {
+                    q.cwd == checkout
+                        && !q.held_for_person()
+                        && matches!(q.seat, QueuedSeat::Start(_) | QueuedSeat::Wake(_))
+                })
+                .map(|q| q.ticket),
+        );
+        reserved
+    }
+
     /// The seats the crown's starts hold right now (T-412): the keys of
     /// every ticket on the board whose agent carries `started_by` and still
     /// holds its seat awake (`Board::crown_started`, which skips a parked
@@ -9160,8 +9220,17 @@ impl Daemon {
                 crown::runs_in(rec, &checkout) == WorkspaceStrategy::SharedCheckout
             });
             if on_checkout {
-                let holders =
-                    crown::checkout_holders(&self.board, &checkout, &[crown_ticket, target]);
+                if self.crown_checkout_reaping().contains(&target) {
+                    return Some(
+                        "its previous pane is still stopping; ask again after cleanup".into(),
+                    );
+                }
+                let holders = crown::checkout_holders(
+                    &self.board,
+                    &checkout,
+                    &[crown_ticket, target],
+                    &self.crown_checkout_reservations(),
+                );
                 let by = Principal::Automation { rule: "queued_ask".into() };
                 if let Some(who) = crown::checkout_refusal(&by, &holders) {
                     return Some(format!(
@@ -11439,6 +11508,7 @@ impl Daemon {
                 &self.board,
                 &self.paths.repo_root.to_string_lossy(),
                 &[own],
+                &self.crown_checkout_reservations(),
             )
             .into_iter()
             .map(|h| h.key)
@@ -15830,6 +15900,26 @@ impl Daemon {
     /// through it), on the 1 s bucket, and at enqueue. A target that is not
     /// the pane it was queued at is dropped, not redirected.
     fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
+        // A person may have started another worker since a crown wake
+        // or start queued. Recheck live ownership at delivery, even if it is idle.
+        // Other queued reservations are ordered by the queue, not blockers
+        // of its head. A person's own queued start keeps its existing policy.
+        if let (Some(crown), QueuedSeat::Wake(_) | QueuedSeat::Start(_)) = (q.by, &q.seat) {
+            let checkout = self.paths.repo_root.to_string_lossy();
+            let reaping = self.crown_checkout_reaping();
+            if q.cwd == checkout
+                && (reaping.contains(&q.ticket)
+                    || !crown::checkout_holders(
+                        &self.board,
+                        &checkout,
+                        &[crown, q.ticket],
+                        &reaping,
+                    )
+                    .is_empty())
+            {
+                return false;
+            }
+        }
         match q.seat {
             // A relaunch (plan mode, a tier switch owed) ends the pane and
             // its tasks with it, so it waits for a true idle (T-599).
@@ -20957,8 +21047,17 @@ impl Daemon {
             if self.board.sessions.iter().any(|s| s.sid16() == sid && s.codex_stopping) {
                 continue;
             }
-            self.reaping.remove(&sid);
-            let _ = self.backend.kill_session(&sid);
+            // Sleeping precedes the signal: dropping this reservation on
+            // failure would admit a second writer beside a surviving pane.
+            // No server answer is unknown, not evidence of an absent pane.
+            let removed = self.backend.kill_session(&sid).is_ok()
+                || matches!(self.backend.panes(), Ok(Some(panes))
+                    if !panes.iter().any(|pane| pane.session_name == sid));
+            if removed {
+                self.reaping.remove(&sid);
+            } else {
+                self.reaping.insert(sid, now + REAP_GRACE);
+            }
         }
     }
 
@@ -22631,5 +22730,102 @@ mod landing_tests {
         assert_eq!(read(&mut d, leg("t2", false, true)), (vec![], Some(false)));
         // Its merge lands against the answered unmerged.
         assert_eq!(read(&mut d, leg("t2", true, false)), (vec![t], Some(true)));
+    }
+}
+
+#[cfg(test)]
+mod crown_checkout_tests {
+    use super::*;
+
+    #[test]
+    fn checkout_release_keeps_reapers_and_queued_wakes_reserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let ticket = d.board.sessions[0].ticket;
+        let session = d.board.sessions[0].id;
+        d.board.tickets.push(
+            serde_json::from_value(serde_json::json!({
+                "id": ticket.to_string(), "short_key": "T-1", "title": "worker",
+                "column": "DONE", "order": "a", "created_at": "@0"
+            }))
+            .unwrap(),
+        );
+        d.board.sessions[0].set_state(SessionState::Sleeping);
+        d.queued.clear();
+        let crown = ulid::Ulid::new();
+        assert!(d.agent_board_view(crown).checkout_held_by.is_empty());
+        d.reaping.insert(sid.clone(), Instant::now() + REAP_GRACE);
+        assert_eq!(d.agent_board_view(crown).checkout_held_by, vec!["T-1"]);
+        d.reaping.remove(&sid);
+        assert!(d.agent_board_view(crown).checkout_held_by.is_empty());
+        d.queued.push(QueuedAsk {
+            ticket,
+            seat: QueuedSeat::Wake(session),
+            cwd: d.paths.repo_root.display().to_string(),
+            text: "continue".into(),
+            queued_at: now_ms(),
+            by: Some(crown),
+            sends: true,
+            accept_plan: false,
+            send_on_accept: false,
+            held: None,
+            plan: false,
+            deliver: Deliver::Idle,
+            from_board: None,
+        });
+        assert_eq!(d.agent_board_view(crown).checkout_held_by, vec!["T-1"]);
+        assert!(d.queued_target_ready(&d.queued[0]), "its own reservation is not a blocker");
+        d.board.sessions[0].started_by = Some(crown);
+        d.reaping.insert(sid.clone(), Instant::now() + REAP_GRACE);
+        assert!(!d.queued_target_ready(&d.queued[0]), "its own reaper blocks a wake");
+        assert!(d.crown_ask_hold(crown, ticket, &QueuedSeat::Wake(session)).is_some());
+        d.reaping.remove(&sid);
+        // A person's later start can bypass crown admission. Even idle,
+        // it prevents the older crown wake from being delivered.
+        let other = ulid::Ulid::new();
+        let mut t = d.board.tickets[0].clone();
+        t.id = other;
+        t.short_key = "T-2".into();
+        d.board.tickets.push(t);
+        d.board.sessions.push(SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            other,
+            vec!["claude".into()],
+            d.paths.repo_root.display().to_string(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        ));
+        for seat in [QueuedSeat::Wake(session), QueuedSeat::Start(AgentProvider::ClaudeCode)] {
+            d.queued[0].seat = seat;
+            assert!(
+                !d.queued_target_ready(&d.queued[0]),
+                "idle live worker blocks queued delivery"
+            );
+            d.board.sessions[1].set_state(SessionState::Sleeping);
+            let other_sid = d.board.sessions[1].sid16();
+            d.reaping.insert(other_sid.clone(), Instant::now() + REAP_GRACE);
+            assert!(!d.queued_target_ready(&d.queued[0]), "sleeping worker's reaper still blocks");
+            d.reaping.remove(&other_sid);
+            assert!(d.queued_target_ready(&d.queued[0]));
+            d.board.sessions[1].set_state(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        }
+        d.board.sessions[1].set_state(SessionState::Sleeping);
+        let mut later = d.queued[0].clone();
+        later.ticket = other;
+        d.queued.push(later);
+        assert!(d.queued_target_ready(&d.queued[0]), "later reservations do not block the head");
+        d.queued.pop();
+        d.queued[0].sends = false;
+        assert!(
+            d.agent_board_view(crown).checkout_held_by.is_empty(),
+            "held words reserve nothing"
+        );
+        d.queued[0].by = None;
+        d.queued[0].seat = QueuedSeat::Start(AgentProvider::ClaudeCode);
+        assert_eq!(
+            d.agent_board_view(crown).checkout_held_by,
+            vec!["T-1"],
+            "a person's queued start reserves too"
+        );
     }
 }

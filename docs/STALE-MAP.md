@@ -39517,3 +39517,29 @@ also check visible marks, reveal and Enter; fallback inline code checks unchange
 geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.
+
+## Safely parked workers release the shared checkout (T-1080, 2026-10-30)
+
+T-583's two-writer protection counted `holds_agent_seat`, so a sleeping conversation
+reserved the checkout until archive. On a non-Git project, crown `sleep_agent` → DONE →
+`start_agent(shared_checkout)` therefore refused every next ticket despite no worker running.
+
+The reservation now follows an agent's `holds_process` (live pane or `codex_stopping`),
+plus daemon reapers and accepted queued starts/wakes. A parked conversation retains its
+seat and cwd; safe parking releases the directory regardless of column or archive.
+`list_board`, crown starts and crown asks read the same reservation facts. Own-ticket
+exclusion never bypasses its reaper. Queued crown starts and wakes recheck live/idle
+holders and reapers at delivery, without letting later queued reservations block the head.
+A person's explicit start retains its existing authority.
+
+Regressions: core crown state/cleanup/reservation cases; daemon queue races (Start and Wake,
+idle owner, own/other reaper, later reservations); `crown_checkout_e2e` drives the non-Git
+park → DONE → next start and refuses the old worker's resume/ask until the new one parks.
+This admission change does not replace worktree eviction's actual-pane/directory checks,
+pending spawn/resume checks, `tearing_down` barrier, or waiter replay (T-1040).
+
+Independent review found that the old reaper discarded its reservation before attempting
+`kill_session`. A failed removal now retains it; only a successful removal or an answered
+pane listing proving absence releases it. Unavailable restart inspection reconstructs a
+parked agent's reaper reservation. A TERM-resistant real pane regression exercises failed
+removal, failed inspection, restart, and eventual confirmed absence.
