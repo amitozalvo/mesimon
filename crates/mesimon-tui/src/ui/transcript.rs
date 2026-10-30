@@ -150,15 +150,28 @@ fn words(
     let bar = if prompt { 2 } else { 0 };
     let newline = if prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
-    let rows = super::ticket::rendered(
+    let rows = super::ticket::rendered_with_link(
         app,
         key,
         width - bar,
         || crate::peek::sanitize(t.text(m)),
         newline,
+        app.transcript_cursor_source(),
     );
     let budget = usize::from(body.height.saturating_sub(2));
-    let at = t.pager.window(Some(key), rows.len(), budget, false);
+    let mut at = t.pager.window(Some(key), rows.len(), budget, false);
+    if t.reveal_link.replace(false) {
+        if let Some(row) = rows.iter().position(|line| {
+            line.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+        }) {
+            // Leave room for the cut marker: a newly selected link is visible
+            // on this frame, even when it was below the old reading window.
+            if row < at || row >= at + budget.saturating_sub(1).max(1) {
+                t.pager.jump(row);
+                at = t.pager.window(Some(key), rows.len(), budget, false);
+            }
+        }
+    }
     let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
     if at + shown.len() < rows.len() {
         crate::rich::mark_cut(&mut shown, width - bar, theme);

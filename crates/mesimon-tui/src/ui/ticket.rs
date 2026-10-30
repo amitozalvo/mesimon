@@ -1553,15 +1553,32 @@ pub(super) fn rendered<T: AsRef<str>>(
     text: impl FnOnce() -> T,
     newline: Newline,
 ) -> Rc<Vec<Line<'static>>> {
+    rendered_with_link(app, key, width, text, newline, None)
+}
+
+pub(super) fn rendered_with_link<T: AsRef<str>>(
+    app: &App,
+    key: u64,
+    width: usize,
+    text: impl FnOnce() -> T,
+    newline: Newline,
+    selected: Option<mesimon_core::links::Found>,
+) -> Rc<Vec<Line<'static>>> {
     let flavor = app.theme.flavor;
     let mut slot = app.rich_cache.borrow_mut();
     if let Some(c) = slot.as_ref() {
-        if c.key == key && c.width == width && c.flavor == flavor {
+        if c.key == key && c.width == width && c.flavor == flavor && c.selected == selected {
             return Rc::clone(&c.rows);
         }
     }
-    let rows = Rc::new(crate::rich::render_all(text().as_ref(), width, &app.theme, newline));
-    *slot = Some(RichCache { key, width, flavor, rows: Rc::clone(&rows) });
+    let text = text();
+    let rows = Rc::new(match selected.as_ref() {
+        Some(target) => {
+            crate::rich::render_all_with_link(text.as_ref(), width, &app.theme, newline, target)
+        }
+        None => crate::rich::render_all(text.as_ref(), width, &app.theme, newline),
+    });
+    *slot = Some(RichCache { key, width, flavor, selected, rows: Rc::clone(&rows) });
     rows
 }
 

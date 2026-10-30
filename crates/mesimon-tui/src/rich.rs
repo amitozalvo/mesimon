@@ -129,8 +129,9 @@ pub(crate) fn render_on(
         return Vec::new();
     }
     let paint = Paint::of(theme, surface);
-    let mut out = Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false };
-    out.blocks(blocks(src, newline));
+    let mut out =
+        Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false, selected: None };
+    out.blocks(blocks(src, newline, None));
     out.finish()
 }
 
@@ -145,6 +146,32 @@ pub(crate) fn render_all(
     newline: Newline,
 ) -> Vec<Line<'static>> {
     render_on(src, width, usize::MAX, theme, Surface::Ground, newline)
+}
+
+/// The transcript's selected target is marked before wrapping, so its
+/// label and address keep their identity across spans and rows.
+pub(crate) fn render_all_with_link(
+    src: &str,
+    width: usize,
+    theme: &Theme,
+    newline: Newline,
+    selected: &mesimon_core::links::Found,
+) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let paint = Paint::of(theme, Surface::Ground);
+    let mut out = Out {
+        lines: Vec::new(),
+        max: usize::MAX,
+        width,
+        theme,
+        paint,
+        cut: false,
+        selected: Some(selected),
+    };
+    out.blocks(blocks(src, newline, Some(selected)));
+    out.finish()
 }
 
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
@@ -168,7 +195,7 @@ pub(crate) fn mark_cut(lines: &mut [Line<'static>], width: usize, theme: &Theme)
 /// card it is the board's mark for the person's own words (`> {prompt}`).
 /// One line per block, so `peek::wrap` reads each as a word break.
 pub(crate) fn plain(src: &str) -> String {
-    plain_of(&blocks(src, Newline::Space))
+    plain_of(&blocks(src, Newline::Space, None))
 }
 
 /// One line's words with its inline markdown taken off — `plain` for a
@@ -176,7 +203,7 @@ pub(crate) fn plain(src: &str) -> String {
 /// `# ` or `- ` is the person's words, not a heading or a bullet.
 pub(crate) fn plain_inline(line: &str) -> String {
     let mut out = String::new();
-    push_plain(&mut out, &inline(line));
+    push_plain(&mut out, &inline(line, None));
     out
 }
 
@@ -240,12 +267,17 @@ struct Emph {
     strong: bool,
     em: bool,
     code: bool,
+    /// Original inline-code boundaries survive selection-style splits.
+    code_start: bool,
+    code_end: bool,
     /// `~~struck~~` — dead text, said with value (dim3), never SGR 9.
     dead: bool,
     /// The target half of a link: kept, because the page cannot follow one
     /// (`^k` lists the ticket's links and opens them, T-256 — this zone
     /// only reads).
     url: bool,
+    /// Only the transcript's explicitly selected target.
+    selected: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -323,7 +355,11 @@ enum Pending {
     Item { marker: Option<String>, indent: usize, task: Option<bool>, lines: Vec<String> },
 }
 
-fn blocks(src: &str, newline: Newline) -> Vec<Block> {
+fn blocks(
+    src: &str,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut pending = Pending::None;
     let mut fence: Option<(char, usize, Vec<String>)> = None;
@@ -347,7 +383,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             continue;
         }
         if let Some((ch, len)) = fence_open(raw) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             fence = Some((ch, len, Vec::new()));
             continue;
         }
@@ -356,27 +392,28 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
         let indent = trimmed.len() - body.len();
 
         if body.is_empty() {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Blank);
             continue;
         }
         // A thematic break is a blank row: rules are drawn structure (L1).
         if is_break(body) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Blank);
             continue;
         }
         if let Some((level, text)) = heading(body) {
-            flush(&mut pending, &mut out, newline);
-            out.push(Block::Head { level, runs: inline(text) });
+            flush(&mut pending, &mut out, newline, selected);
+            out.push(Block::Head { level, runs: inline(text, selected) });
             continue;
         }
         if let Some(align) = table_head(body, lines.get(at).copied()) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             at += 1; // the delimiter row
             let n = align.len();
             let row = |line: &str| -> Vec<Vec<Run>> {
-                let mut cs: Vec<Vec<Run>> = cells(line).iter().map(|c| inline(c)).collect();
+                let mut cs: Vec<Vec<Run>> =
+                    cells(line).iter().map(|c| inline(c, selected)).collect();
                 cs.resize(n, Vec::new());
                 cs
             };
@@ -394,12 +431,12 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             continue;
         }
         if body.starts_with('|') {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Raw { text: body.to_string() });
             continue;
         }
         if let Some((marker, text)) = list_marker(body) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             // Two source spaces per level, capped: a deep tree would spend
             // the whole column on indent.
             let depth = (indent / 2).min(3);
@@ -416,7 +453,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             match &mut pending {
                 Pending::Quote(lines) => lines.push(text.to_string()),
                 _ => {
-                    flush(&mut pending, &mut out, newline);
+                    flush(&mut pending, &mut out, newline, selected);
                     pending = Pending::Quote(vec![text.to_string()]);
                 }
             }
@@ -432,7 +469,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             }
             Pending::Para(lines) | Pending::Item { lines, .. } => lines.push(line_text(raw, body)),
             _ => {
-                flush(&mut pending, &mut out, newline);
+                flush(&mut pending, &mut out, newline, selected);
                 pending = Pending::Para(vec![line_text(raw, body)]);
             }
         }
@@ -440,14 +477,21 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
     if let Some((_, _, rows)) = fence.take() {
         out.push(Block::Code { rows }); // unterminated fence: show it anyway
     }
-    flush(&mut pending, &mut out, newline);
+    flush(&mut pending, &mut out, newline, selected);
     out
 }
 
-fn flush(pending: &mut Pending, out: &mut Vec<Block>, newline: Newline) {
+fn flush(
+    pending: &mut Pending,
+    out: &mut Vec<Block>,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) {
     match std::mem::replace(pending, Pending::None) {
         Pending::None => {}
-        Pending::Para(lines) => out.push(Block::Para { runs: inline(&joined(&lines, newline)) }),
+        Pending::Para(lines) => {
+            out.push(Block::Para { runs: inline(&joined(&lines, newline), selected) })
+        }
         Pending::Quote(mut lines) => {
             // A GitHub alert (`> [!NOTE]`) names itself on its own first
             // line: the name in weight, on a line of its own. No colour —
@@ -455,10 +499,10 @@ fn flush(pending: &mut Pending, out: &mut Vec<Block>, newline: Newline) {
             if let Some(kind) = lines.first().and_then(|l| alert(l)) {
                 lines[0] = format!("**{kind}**\\");
             }
-            out.push(Block::Quote { blocks: blocks(&lines.join("\n"), newline) })
+            out.push(Block::Quote { blocks: blocks(&lines.join("\n"), newline, selected) })
         }
         Pending::Item { marker, indent, task, lines } => {
-            let mut runs = inline(&joined(&lines, newline));
+            let mut runs = inline(&joined(&lines, newline), selected);
             if task == Some(true) {
                 // A ticked item is read last: the de-emphasis token, like
                 // struck text, so what is left to do is what stands out.
@@ -627,9 +671,102 @@ fn list_marker(body: &str) -> Option<(Option<String>, &str)> {
 
 // -- inline -----------------------------------------------------------------
 
-fn push_run(out: &mut Vec<Run>, cur: &mut String, emph: Emph) {
+/// Split bare targets before wrapping. Classification is the Links parser's;
+/// punctuation and neighboring prose retain their original styling.
+fn target_runs(text: &str, emph: Emph, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
+    use mesimon_core::links::{extract, Found};
+    let Some(selected) = selected else { return vec![Run { text: text.into(), emph }] };
+    let needle = match selected {
+        Found::Url(s) | Found::Ticket(s) => s.clone(),
+        Found::Path { path, line } => line.map_or_else(|| path.clone(), |n| format!("{path}:{n}")),
+        Found::Attachment(id) => mesimon_core::attachment::target(*id),
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    let mut offset = 0;
+    for token in text.split_inclusive(char::is_whitespace) {
+        if extract(token).iter().any(|link| &link.target == selected) {
+            if let Some(at) = token.find(&needle) {
+                let start = offset + at;
+                if start > from {
+                    out.push(Run { text: text[from..start].into(), emph });
+                }
+                let end = start + needle.len();
+                out.push(Run {
+                    text: text[start..end].into(),
+                    emph: Emph { selected: true, ..emph },
+                });
+                from = end;
+            }
+        }
+        offset += token.len();
+    }
+    if from < text.len() {
+        out.push(Run { text: text[from..].into(), emph });
+    }
+    out
+}
+
+fn mark_literal(
+    spans: Vec<Span<'static>>,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Span<'static>> {
+    if selected.is_none() {
+        return spans;
+    }
+    spans
+        .into_iter()
+        .flat_map(|span| {
+            target_runs(&span.content, Emph::default(), selected).into_iter().map(move |run| {
+                let style = if run.emph.selected {
+                    span.style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    span.style
+                };
+                Span::styled(run.text, style)
+            })
+        })
+        .collect()
+}
+
+/// A literal row keeps its geometry. Mark on the full source first, then
+/// clip the styled spans; the existing cut marker also marks a selected
+/// target that extends past the cut, including one wholly beyond it.
+fn literal(
+    text: &str,
+    width: usize,
+    style: Style,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if selected.is_none() {
+        return vec![Span::styled(crate::text::truncate(text, width), style)];
+    }
+    let mut spans = mark_literal(vec![Span::styled(text.to_string(), style)], selected);
+    if text.width() > width {
+        let budget = width - 1;
+        let mut end = 0;
+        let hidden_selection = spans.iter().any(|span| {
+            end += span.content.width();
+            end > budget && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        });
+        clip(&mut spans, budget);
+        let mark = if hidden_selection { style.add_modifier(Modifier::UNDERLINED) } else { style };
+        spans.push(Span::styled("~", mark));
+    }
+    spans
+}
+
+fn push_run(
+    out: &mut Vec<Run>,
+    cur: &mut String,
+    emph: Emph,
+    selected: Option<&mesimon_core::links::Found>,
+) {
     if !cur.is_empty() {
-        out.push(Run { text: std::mem::take(cur), emph });
+        out.extend(target_runs(&std::mem::take(cur), emph, selected));
     }
 }
 
@@ -701,7 +838,7 @@ fn flag_set(emph: Emph, ch: char, len: usize) -> bool {
     }
 }
 
-fn inline(s: &str) -> Vec<Run> {
+fn inline(s: &str, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
     let chars: Vec<char> = s.chars().collect();
     let mut out: Vec<Run> = Vec::new();
     let mut cur = String::new();
@@ -722,10 +859,17 @@ fn inline(s: &str) -> Vec<Run> {
                 let text: String = chars[i + ticks..close].iter().collect();
                 let text = text.trim().to_string();
                 if !text.is_empty() {
-                    push_run(&mut out, &mut cur, emph);
+                    push_run(&mut out, &mut cur, emph, selected);
                     let mut e = emph;
                     e.code = true;
-                    out.push(Run { text, emph: e });
+                    let mut runs = target_runs(&text, e, selected);
+                    if let Some(first) = runs.first_mut() {
+                        first.emph.code_start = true;
+                    }
+                    if let Some(last) = runs.last_mut() {
+                        last.emph.code_end = true;
+                    }
+                    out.extend(runs);
                     i = close + ticks;
                     continue;
                 }
@@ -741,8 +885,8 @@ fn inline(s: &str) -> Vec<Run> {
             }
         }
         if c == '[' || (c == '!' && chars.get(i + 1) == Some(&'[')) {
-            if let Some((runs, next)) = link(&chars, i, emph) {
-                push_run(&mut out, &mut cur, emph);
+            if let Some((runs, next)) = link(&chars, i, emph, selected) {
+                push_run(&mut out, &mut cur, emph, selected);
                 out.extend(runs);
                 i = next;
                 continue;
@@ -756,7 +900,7 @@ fn inline(s: &str) -> Vec<Run> {
                 // its closing `***` ends `*` here and `**` on the next pass.
                 if let Some(&(oc, olen)) = open.last() {
                     if oc == c && run_len(&chars, i) >= olen && closes(&chars, i, olen) {
-                        push_run(&mut out, &mut cur, emph);
+                        push_run(&mut out, &mut cur, emph, selected);
                         open.pop();
                         *flag(&mut emph, c, olen) = false;
                         i += olen;
@@ -767,7 +911,7 @@ fn inline(s: &str) -> Vec<Run> {
                     && opens(&chars, i, len)
                     && has_closer(&chars, i + len, c, len)
                 {
-                    push_run(&mut out, &mut cur, emph);
+                    push_run(&mut out, &mut cur, emph, selected);
                     open.push((c, len));
                     *flag(&mut emph, c, len) = true;
                     i += len;
@@ -778,7 +922,7 @@ fn inline(s: &str) -> Vec<Run> {
         cur.push(c);
         i += 1;
     }
-    push_run(&mut out, &mut cur, emph);
+    push_run(&mut out, &mut cur, emph, selected);
     out
 }
 
@@ -804,7 +948,12 @@ fn find_ticks(chars: &[char], from: usize, len: usize) -> Option<usize> {
 /// delete the half the reader can act on — by hand, or through `^k`, whose
 /// recogniser is `core/src/links.rs` (the same `[label](target)` rule,
 /// parsed again there because this walk returns painted spans).
-fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
+fn link(
+    chars: &[char],
+    i: usize,
+    emph: Emph,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Option<(Vec<Run>, usize)> {
     let open = if chars[i] == '!' { i + 1 } else { i };
     let close = (open + 1..chars.len()).find(|k| chars[*k] == ']')?;
     if chars.get(close + 1) != Some(&'(') {
@@ -814,22 +963,31 @@ fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
     let label: String = chars[open + 1..close].iter().collect();
     let url: String = chars[close + 2..end].iter().collect();
     let url = url.trim().to_string();
+    let marked = selected.is_some_and(|target| {
+        mesimon_core::links::extract(&format!("[link]({url})"))
+            .first()
+            .is_some_and(|link| &link.target == target)
+    });
     if mesimon_core::attachment::parse_target(&url).is_some() {
         return Some((
-            vec![Run { text: format!("[{label}]"), emph: Emph { em: true, ..emph } }],
+            vec![Run {
+                text: format!("[{label}]"),
+                emph: Emph { em: true, selected: marked, ..emph },
+            }],
             end + 1,
         ));
     }
     if label.trim().is_empty() && url.is_empty() {
         return None;
     }
-    let mut runs: Vec<Run> = inline(&label)
+    let mut runs: Vec<Run> = inline(&label, None)
         .into_iter()
-        .map(|r| Run { text: r.text, emph: Emph { em: true, ..r.emph } })
+        .map(|r| Run { text: r.text, emph: Emph { em: true, selected: marked, ..r.emph } })
         .collect();
     if !url.is_empty() && url != label.trim() {
         let mut e = emph;
         e.url = true;
+        e.selected = marked;
         runs.push(Run { text: format!(" {url}"), emph: e });
     }
     Some((runs, end + 1))
@@ -861,6 +1019,9 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
         if let Some(bg) = paint.code_bg {
             s = s.bg(bg);
         }
+    }
+    if e.selected {
+        s = s.add_modifier(Modifier::UNDERLINED);
     }
     s
 }
@@ -894,10 +1055,18 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
     for r in runs {
         // Where the profile cannot paint, the marker survives instead.
         let text = if r.emph.code && paint.code_bg.is_none() {
-            format!("`{}`", r.text)
+            format!(
+                "{}{}{}",
+                if r.emph.code_start { "`" } else { "" },
+                r.text,
+                if r.emph.code_end { "`" } else { "" }
+            )
         } else {
             r.text.clone()
         };
+        // Delimiters affect text, not paint: adjacent pieces of the same
+        // code span still share the separator's background.
+        let emph = Emph { code_start: false, code_end: false, ..r.emph };
         let mut rest = text.as_str();
         while !rest.is_empty() {
             let ws = rest.starts_with(char::is_whitespace);
@@ -917,13 +1086,13 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
             if open {
                 if let Some(w) = out.last_mut() {
                     w.width += chunk.width();
-                    w.parts.push((chunk.to_string(), r.emph));
+                    w.parts.push((chunk.to_string(), emph));
                     continue;
                 }
             }
             out.push(Word {
                 width: chunk.width(),
-                parts: vec![(chunk.to_string(), r.emph)],
+                parts: vec![(chunk.to_string(), emph)],
                 brk: false,
             });
             open = true;
@@ -1065,6 +1234,7 @@ struct Out<'a> {
     theme: &'a Theme,
     paint: Paint,
     cut: bool,
+    selected: Option<&'a mesimon_core::links::Found>,
 }
 
 impl Out<'_> {
@@ -1156,6 +1326,7 @@ impl Out<'_> {
             theme: self.theme,
             paint: self.paint.quoted(),
             cut: false,
+            selected: self.selected,
         };
         inner.blocks(blocks);
         while inner.lines.last().is_some_and(is_blank) {
@@ -1191,17 +1362,22 @@ impl Out<'_> {
         let inner =
             rows.iter().map(|r| r.width()).max().unwrap_or(0).min(self.width.saturating_sub(3));
         for r in rows {
-            let body = crate::text::truncate(r, inner);
             let spans = match self.paint.code_bg {
                 Some(bg) => {
-                    let pad = inner.saturating_sub(body.width());
-                    vec![
-                        Span::raw(" "),
-                        Span::styled(format!(" {body}{} ", " ".repeat(pad)), ink.bg(bg)),
-                    ]
+                    let style = ink.bg(bg);
+                    let body = literal(r, inner, style, self.selected);
+                    let pad = inner.saturating_sub(crate::ui::spans_width(&body));
+                    let mut spans = vec![Span::raw(" "), Span::styled(" ", style)];
+                    spans.extend(body);
+                    push_text(&mut spans, &" ".repeat(pad + 1), style);
+                    spans
                 }
                 // Nothing to paint with: the inset carries the block.
-                None => vec![Span::styled(format!("   {body}"), dim2)],
+                None => {
+                    let mut spans = vec![Span::styled("   ", dim2)];
+                    spans.extend(literal(r, inner, dim2, self.selected));
+                    spans
+                }
             };
             if !self.line(spans) {
                 return;
@@ -1313,8 +1489,12 @@ impl Out<'_> {
     /// A pipe line that is not a table, verbatim: its columns may be spaced
     /// by hand, and a reflow would destroy that.
     fn raw(&mut self, text: &str) {
-        let body = crate::text::truncate(text, self.width);
-        self.line(vec![Span::styled(body, Style::default().fg(self.paint.ink.dim1))]);
+        self.line(literal(
+            text,
+            self.width,
+            Style::default().fg(self.paint.ink.dim1),
+            self.selected,
+        ));
     }
 
     fn finish(mut self) -> Vec<Line<'static>> {
@@ -1486,6 +1666,40 @@ mod tests {
         assert_eq!(mono.code_bg(), None);
         let out = render("run `cargo test` twice", 60, 4, &mono);
         assert_eq!(plain(&out), vec!["run `cargo test` twice"]);
+    }
+
+    #[test]
+    fn selected_inline_code_keeps_fallback_delimiters_and_geometry() {
+        use crate::theme::Flavor;
+        let selected = mesimon_core::links::Found::Ticket("T-2".into());
+        for (flavor, profile) in
+            [(Flavor::Graphite, Profile::Mono), (Flavor::Chalk, Profile::Ansi256)]
+        {
+            let theme = Theme::new(flavor, profile);
+            assert!(theme.code_bg().is_none());
+            for source in [
+                "`see T-2 here`",
+                "`T-2 here` then `other code`",
+                "`see T-2`",
+                "``see ` T-2 here``",
+            ] {
+                for width in [9, 60] {
+                    let plain_rows = render_all(source, width, &theme, Newline::Space);
+                    let marked =
+                        render_all_with_link(source, width, &theme, Newline::Space, &selected);
+                    assert_eq!(
+                        plain(&marked),
+                        plain(&plain_rows),
+                        "{source} at width {width}, {profile:?}"
+                    );
+                    assert!(
+                        styled(&marked).iter().any(|(text, style)| text.contains("T-2")
+                            && style.add_modifier.contains(Modifier::UNDERLINED)),
+                        "the target is still marked"
+                    );
+                }
+            }
+        }
     }
 
     /// A list is a marker plus a hanging indent — the continuation lines up

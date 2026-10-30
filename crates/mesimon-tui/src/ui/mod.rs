@@ -79,6 +79,7 @@ pub(super) fn field_spot(app: &App, row: ratatui::layout::Rect, at: (u16, u16)) 
 
 /// One rendered markdown document, kept across frames (`ticket::rendered`).
 pub(crate) struct RichCache {
+    pub selected: Option<mesimon_core::links::Found>,
     pub key: u64,
     pub width: usize,
     pub flavor: crate::theme::Flavor,
