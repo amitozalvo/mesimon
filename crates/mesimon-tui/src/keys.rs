@@ -260,6 +260,15 @@ mod tests {
     }
 
     #[test]
+    fn alt_v_aliases_text_field_paste_without_changing_other_keys() {
+        let v = KeyCode::Char('v');
+        assert_eq!(to_key_text(v, KeyModifiers::ALT), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::CONTROL | KeyModifiers::ALT), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::NONE), Some(Key::Char('v')));
+        assert_eq!(to_key(v, KeyModifiers::ALT), Some(Key::Char('v')));
+    }
+
+    #[test]
     fn terminal_word_sequences_are_arrows_only_in_text_fields() {
         for (letter, direction) in [('b', Key::Left), ('f', Key::Right)] {
             let code = KeyCode::Char(letter);
