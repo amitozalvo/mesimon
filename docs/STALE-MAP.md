@@ -39474,3 +39474,17 @@ operations; Git has no multi-repository transaction, so a race or later write fa
 legs already advanced. Success writes a
 `promote_main` feed outcome and queues a crown wake naming the target and promoted commit IDs.
 Refusal writes its reason and creates no promotion wake.
+## WSL reads clipboard pictures from the Windows host (T-1022, 2026-10-30)
+
+Alt+V reaches the existing image paste action in text fields. For local WSL2, the
+clipboard backend invokes `powershell.exe` in STA mode and Windows Forms converts a
+clipboard image to PNG (with text fallback); SSH remains refused and native desktop
+reads stay on arboard.
+The helper caps dimensions before encoding, and Rust validates the base64 PNG, byte
+size and pixel count before accepting it into a draft. The PowerShell helper has a
+two-second deadline covering process exit and stdout EOF; stdout is drained
+nonblocking, so an inherited descriptor cannot outlive that deadline. Timeout or
+polling errors kill its process group and reap the child, and captured output is
+capped. Focused selection/decode, inherited-stdout timeout and key-route tests cover
+the path.
+Real WSL/Windows host validation was unavailable.

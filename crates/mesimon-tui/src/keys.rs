@@ -99,6 +99,15 @@ pub fn from_key(key: Key) -> (KeyCode, KeyModifiers) {
 /// `alt+←` become [`Key::AltLeft`] would stop jumping by word, and the board's
 /// nudge is not something a half-typed title can do anyway.
 pub fn to_key_text(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
+    // Claude Code on Windows uses Alt+V for pasting clipboard images. Treat
+    // that chord as the existing paste binding, but only in text fields so
+    // it cannot trigger a board-level `v` action.
+    if code == KeyCode::Char('v')
+        && mods.contains(KeyModifiers::ALT)
+        && !mods.contains(KeyModifiers::CONTROL)
+    {
+        return Some(Key::Ctrl('v'));
+    }
     to_key(text_code(code, mods), mods - KeyModifiers::ALT)
 }
 
@@ -248,6 +257,16 @@ mod tests {
         assert_eq!(to_key_text(KeyCode::Left, a), Some(Key::Left));
         assert_eq!(to_key_text(KeyCode::Char('h'), a), Some(Key::Char('h')));
         assert!(word_wise(a));
+    }
+
+    #[test]
+    fn alt_v_aliases_text_field_paste_without_changing_other_keys() {
+        let v = KeyCode::Char('v');
+        assert_eq!(to_key_text(v, KeyModifiers::ALT), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::CONTROL), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::CONTROL | KeyModifiers::ALT), Some(Key::Ctrl('v')));
+        assert_eq!(to_key_text(v, KeyModifiers::NONE), Some(Key::Char('v')));
+        assert_eq!(to_key(v, KeyModifiers::ALT), Some(Key::Char('v')));
     }
 
     #[test]
