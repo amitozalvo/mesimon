@@ -113,6 +113,10 @@ struct Group<'a> {
 fn spans_of(app: &App, groups: &[Group<'_>], reset: ResetRule<'_>) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let mut out: Vec<Span<'static>> = Vec::new();
+    // Claude's all-model and model-specific weekly limits commonly share a
+    // reset instant. Name that instant once across the displayed providers
+    // and windows; retain every distinct reset.
+    let mut named_quota_resets = Vec::<u64>::new();
     for (i, g) in groups.iter().enumerate() {
         if i > 0 {
             out.push(Span::raw("   "));
@@ -125,13 +129,20 @@ fn spans_of(app: &App, groups: &[Group<'_>], reset: ResetRule<'_>) -> Vec<Span<'
                 if warm { (theme.base(), theme.base()) } else { (theme.dim3(), theme.dim2()) };
             out.push(Span::styled(format!("{} ", clean(&w.label)), label));
             out.push(Span::styled(w.percent_word(), value));
-            if let Some(at) = w.resets_at_ms.filter(|_| reset(w)) {
+            let weekly_quota = matches!(w.kind, WindowKind::Weekly | WindowKind::Model);
+            if let Some(at) = w
+                .resets_at_ms
+                .filter(|at| reset(w) && (!weekly_quota || !named_quota_resets.contains(at)))
+            {
                 let word = reset_word(app, at);
                 if !word.is_empty() {
                     out.push(Span::styled(
                         format!(" resets {word}"),
                         if warm { theme.base() } else { theme.dim3() },
                     ));
+                    if weekly_quota {
+                        named_quota_resets.push(at);
+                    }
                 }
             }
         }
