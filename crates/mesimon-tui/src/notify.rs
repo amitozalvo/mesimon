@@ -82,9 +82,9 @@
 //! `MESIMON_NOTIFY=off` still silences it; the sound ladder is independent.
 //!
 //! **The sound ladder** is `MESIMON_SOUND` (`off` or a program) → `afplay` on
-//! macOS → Windows system sounds on Windows → `paplay` / `pw-play` /
-//! `canberra-gtk-play` on Linux → the terminal bell, which is the rung nothing
-//! can take away.
+//! macOS → Windows system sounds through PowerShell on Windows and WSL →
+//! `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal bell,
+//! which is the rung nothing can take away.
 //!
 //! **The two escape rungs write to OUR stdout, and since T-291 they say so.**
 //! Every other rung spawns a program and is therefore indifferent to what the
@@ -412,7 +412,7 @@ pub enum Player {
     Custom(String),
     Afplay,
     /// The Windows host's built-in system sound, invoked through PowerShell.
-    Windows,
+    Windows(String),
     Paplay,
     PwPlay,
     Canberra,
@@ -437,7 +437,7 @@ impl Player {
                 let f = sound.file_macos()?;
                 std::fs::metadata(&f).is_ok().then(|| vec!["afplay".to_string(), f])
             }
-            Player::Windows => Some(windows_sound_argv(sound)),
+            Player::Windows(program) => Some(windows_sound_argv(program, sound)),
             Player::Paplay => v(vec!["paplay".into(), file(sound.event_freedesktop()?)?]),
             Player::PwPlay => v(vec!["pw-play".into(), file(sound.event_freedesktop()?)?]),
             // The theme-aware one: it takes the event, not a path, so it
@@ -454,7 +454,7 @@ impl Player {
             Player::Bell => "the terminal bell".into(),
             Player::Custom(p) => format!("{p} ($MESIMON_SOUND)"),
             Player::Afplay => "afplay".into(),
-            Player::Windows => "Windows system sounds (PowerShell)".into(),
+            Player::Windows(_) => "Windows system sounds (PowerShell)".into(),
             Player::Paplay => "paplay".into(),
             Player::PwPlay => "pw-play".into(),
             Player::Canberra => "canberra-gtk-play".into(),
@@ -822,13 +822,13 @@ fn in_kitty(window_id: Option<&str>, term_program: Option<&str>) -> bool {
 }
 
 fn find_player(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Player {
-    find_player_for(env, cfg!(target_os = "macos"), cfg!(target_os = "windows"), which)
+    find_player_for(env, cfg!(target_os = "macos"), crate::opener::is_wsl(), which)
 }
 
 fn find_player_for(
     env: Option<&str>,
     macos: bool,
-    windows: bool,
+    wsl: bool,
     which: impl Fn(&str) -> Option<PathBuf>,
 ) -> Player {
     match env.map(str::trim).filter(|v| !v.is_empty()) {
@@ -839,8 +839,14 @@ fn find_player_for(
     if macos {
         return Player::Afplay;
     }
-    if windows {
-        return Player::Windows;
+    if cfg!(target_os = "windows") {
+        return Player::Windows("powershell.exe".into());
+    }
+    if wsl {
+        let powershell = which("powershell.exe")
+            .map(|_| "powershell.exe".to_string())
+            .unwrap_or_else(|| crate::caffeine::wsl_powershell().to_string());
+        return Player::Windows(powershell);
     }
     for (name, rung) in [
         ("paplay", Player::Paplay),
@@ -857,19 +863,15 @@ fn find_player_for(
 /// Map the existing sound choices onto Windows' built-in notification sounds.
 /// PowerShell and System.Media are present on supported Windows installations,
 /// and the call returns as soon as the sound has been queued.
-fn windows_sound_argv(sound: Sound) -> Vec<String> {
+fn windows_sound_argv(program: &str, sound: Sound) -> Vec<String> {
     let system_sound = match sound {
         Sound::Off => return Vec::new(),
         Sound::Glass | Sound::Ping => "Asterisk",
         Sound::Tink | Sound::Purr => "Beep",
         Sound::Submarine | Sound::Hero => "Exclamation",
     };
-    #[cfg(windows)]
-    const POWERSHELL: &str = "powershell.exe";
-    #[cfg(not(windows))]
-    const POWERSHELL: &str = "powershell.exe";
     vec![
-        POWERSHELL.into(),
+        program.into(),
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-Command".into(),
@@ -1912,23 +1914,44 @@ mod tests {
             (Sound::Submarine, "Exclamation"),
             (Sound::Hero, "Exclamation"),
         ] {
-            let argv = Player::Windows.argv(sound).expect("Windows sound argv");
+            let argv = windows_sound_argv("powershell.exe", sound);
             assert_eq!(argv[0], "powershell.exe");
             assert!(argv[4].contains(&format!("::{expected}.Play()")), "{argv:?}");
         }
-        assert!(Player::Windows.argv(Sound::Off).is_none());
+        assert!(Player::Windows("powershell.exe".into()).argv(Sound::Off).is_none());
     }
 
     #[test]
     fn windows_has_a_builtin_sound_player_and_explicit_choices_still_win() {
         let none = |_: &str| None;
-        assert_eq!(find_player_for(None, false, true, none), Player::Windows);
+        let wsl = find_player_for(None, false, true, none);
+        assert_eq!(wsl, Player::Windows(crate::caffeine::wsl_powershell().into()));
+        let argv = wsl.argv(Sound::Glass).expect("WSL sound argv");
+        assert_eq!(argv[0], crate::caffeine::wsl_powershell());
+        assert!(argv[4].contains("::Asterisk.Play()"), "{argv:?}");
+
+        let on_path = |name: &str| {
+            (name == "powershell.exe").then(|| PathBuf::from("/test/bin/powershell.exe"))
+        };
+        let wsl_on_path = find_player_for(None, false, true, on_path);
+        assert_eq!(wsl_on_path, Player::Windows("powershell.exe".into()));
+        assert_eq!(wsl_on_path.argv(Sound::Hero).expect("WSL sound argv")[0], "powershell.exe");
+
         assert_eq!(find_player_for(Some("off"), false, true, none), Player::Off);
         assert_eq!(
             find_player_for(Some("custom-player"), false, true, none),
             Player::Custom("custom-player".into())
         );
-        assert_eq!(find_player_for(None, true, true, none), Player::Afplay, "macOS keeps priority");
+        assert_eq!(
+            find_player_for(None, true, false, none),
+            Player::Afplay,
+            "macOS keeps priority"
+        );
+        assert_eq!(
+            find_player_for(None, false, false, none),
+            Player::Bell,
+            "non-WSL Linux remains unchanged"
+        );
     }
 
     #[test]
