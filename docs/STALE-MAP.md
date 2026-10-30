@@ -39517,3 +39517,55 @@ also check visible marks, reveal and Enter; fallback inline code checks unchange
 geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.
+
+
+## A crown does not hear an observed worker turn or merge twice (T-1036, 2026-10-30)
+
+Verified against integrated `e7828106`: an answered wake reporting a merged branch
+left `Heard::stepped` intact, so the notice turn later owed the same merge again.
+Keyed ticket reads also left queued worker ends untouched. T-1058's retry fold,
+T-1059's ledger mapping and T-1071's merge-watch rule did not close either gap.
+
+The daemon now consumes pending turn/branch news on a keyed ticket read. A merge
+receipt handles only its matching merge, and a delivered wake reporting that merged
+tip folds the pure held merge into its own turn. Serial writer ordering removes the
+news present at observation; later answers, other tips and other workers stay owed.
+Retry copies lose consumed facts too. An outstanding forge read retains a slot for
+an opening it has not returned yet. Existing tracked ledger fields persist the result;
+no clock, timestamp or schema field was added.
+
+The earlier proposal that every write counts as hearing was rejected in review:
+rename, tag, note and other narrow receipts say nothing about an unseen failure,
+question, quota, forge event or turn. They consume no news. Keyed reads conservatively
+retain material alerts and forge details too, since their historical detail need not
+appear in the current view. A merge folded with such news remains owed. A suppressed
+held merge still ends its watch, but consuming an already queued merge cannot end a
+watch started afterward. Delivery boundaries and words already handed to an engine
+are unchanged; retry copies are not permission to retract those words.
+
+Regressions cover answered plus held merged in one turn, keyed observation followed
+by newer news and a delayed acknowledgment, returned copies, narrow writes, merge
+receipts beside material news, reads before/after the merge tick, later forge results,
+and a watch begun after an old queued merge. A process test reads a queued worker end
+while the crown runs and proves the next worker turn still reaches the crown. The
+merge-receipt integration case now expects no redundant merged wake.
+
+Independent review reproduced two lost-new-event orderings before correction. An
+observed forge slot must be rearmed by a later turn with that turn's own cause and
+wait start; otherwise Forge precedence hid a new Finished when the read found no
+opening. A delayed merge acknowledgment must also keep a queued merge carrying a
+later Finished. A still-stepped merge is distinct: its finished flag predicts its
+own notice turn, and that slot admits only Delivered/Merged. Both regressions fail
+without these corrections; all 63 crownwake unit tests pass with them.
+
+Acknowledgment also requires an actually reported merge: an answer whose internal
+baseline is already merged may omit that fact from its delta, and a ticket view can
+replace its standing merged word with a later open PR. Neither consumes unseen merge
+news merely because its internal branch flag is merged.
+
+Validation: the workspace unit suite passed before the final review corrections;
+those corrections were checked with the focused crownwake suite. The full crown
+integration run initially passed 108/116; the eight affected setup/expectation cases
+were corrected and all ten selected integration cases passed afterward. Nextest
+marked one process case leaky; the fixture audit confirmed all eleven owners cleaned.
+No full workspace integration, mod-road or live-model evaluation is claimed here.
