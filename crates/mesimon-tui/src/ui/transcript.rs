@@ -150,43 +150,28 @@ fn words(
     let bar = if prompt { 2 } else { 0 };
     let newline = if prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
-    let selected = app.transcript_cursor_link();
-    let source = crate::peek::sanitize(t.text(m));
-    let rows = if let Some(link) = selected.as_ref() {
-        let found = mesimon_core::links::extract(&source).into_iter().find(|f| {
-            match (&link.target, &f.target) {
-                (crate::app::LinkTarget::Url(a), mesimon_core::links::Found::Url(b)) => a == b,
-                (crate::app::LinkTarget::Ticket(id), mesimon_core::links::Found::Ticket(key)) => {
-                    app.board.ticket(*id).is_some_and(|t| &t.short_key == key)
-                }
-                (
-                    crate::app::LinkTarget::File { path, line },
-                    mesimon_core::links::Found::Path { path: raw, line: found_line },
-                ) => path.ends_with(raw) && line == found_line,
-                (
-                    crate::app::LinkTarget::Attachment { attachment, .. },
-                    mesimon_core::links::Found::Attachment(id),
-                ) => attachment == id,
-                _ => false,
-            }
-        });
-        found.map_or_else(
-            || super::ticket::rendered(app, key, width - bar, || source.clone(), newline),
-            |found| {
-                std::rc::Rc::new(crate::rich::render_all_with_link(
-                    &source,
-                    width - bar,
-                    theme,
-                    newline,
-                    &found,
-                ))
-            },
-        )
-    } else {
-        super::ticket::rendered(app, key, width - bar, || source.clone(), newline)
-    };
+    let rows = super::ticket::rendered_with_link(
+        app,
+        key,
+        width - bar,
+        || crate::peek::sanitize(t.text(m)),
+        newline,
+        app.transcript_cursor_source(),
+    );
     let budget = usize::from(body.height.saturating_sub(2));
-    let at = t.pager.window(Some(key), rows.len(), budget, false);
+    let mut at = t.pager.window(Some(key), rows.len(), budget, false);
+    if t.reveal_link.replace(false) {
+        if let Some(row) = rows.iter().position(|line| {
+            line.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+        }) {
+            // Leave room for the cut marker: a newly selected link is visible
+            // on this frame, even when it was below the old reading window.
+            if row < at || row >= at + budget.saturating_sub(1).max(1) {
+                t.pager.jump(row);
+                at = t.pager.window(Some(key), rows.len(), budget, false);
+            }
+        }
+    }
     let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
     if at + shown.len() < rows.len() {
         crate::rich::mark_cut(&mut shown, width - bar, theme);

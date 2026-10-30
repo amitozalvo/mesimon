@@ -129,8 +129,9 @@ pub(crate) fn render_on(
         return Vec::new();
     }
     let paint = Paint::of(theme, surface);
-    let mut out = Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false };
-    out.blocks(blocks(src, newline));
+    let mut out =
+        Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false, selected: None };
+    out.blocks(blocks(src, newline, None));
     out.finish()
 }
 
@@ -147,59 +148,30 @@ pub(crate) fn render_all(
     render_on(src, width, usize::MAX, theme, Surface::Ground, newline)
 }
 
-/// Render the markdown as usual and underline runs that belong to the
-/// selected resolved link. Matching the extracted target keeps this in step
-/// with the TUI's link resolver while the rich parser owns wrapping.
+/// The transcript's selected target is marked before wrapping, so its
+/// label and address keep their identity across spans and rows.
 pub(crate) fn render_all_with_link(
     src: &str,
     width: usize,
     theme: &Theme,
     newline: Newline,
-    selected: &mesimon_core::links::Link,
+    selected: &mesimon_core::links::Found,
 ) -> Vec<Line<'static>> {
-    let mut lines = render_all(src, width, theme, newline);
-    let Some(link) =
-        mesimon_core::links::extract(src).into_iter().find(|link| link.target == selected.target)
-    else {
-        return lines;
+    if width == 0 {
+        return Vec::new();
+    }
+    let paint = Paint::of(theme, Surface::Ground);
+    let mut out = Out {
+        lines: Vec::new(),
+        max: usize::MAX,
+        width,
+        theme,
+        paint,
+        cut: false,
+        selected: Some(selected),
     };
-    let needle = link.label.clone().unwrap_or_else(|| match &link.target {
-        mesimon_core::links::Found::Url(s) | mesimon_core::links::Found::Ticket(s) => s.clone(),
-        mesimon_core::links::Found::Path { path, .. } => path.clone(),
-        mesimon_core::links::Found::Attachment(id) => mesimon_core::attachment::target(*id),
-    });
-    underline_text(&mut lines, &needle);
-    lines
-}
-
-fn underline_text(lines: &mut [Line<'static>], needle: &str) {
-    if needle.is_empty() {
-        return;
-    }
-    for line in lines {
-        let mut text = String::new();
-        let mut spans = Vec::new();
-        for span in std::mem::take(&mut line.spans) {
-            let start = text.len();
-            text.push_str(&span.content);
-            spans.push((span, start, text.len()));
-        }
-        let Some(at) = text.find(needle) else {
-            line.spans = spans.into_iter().map(|(s, _, _)| s).collect();
-            continue;
-        };
-        let end = at + needle.len();
-        line.spans = spans
-            .into_iter()
-            .map(|(mut span, start, stop)| {
-                if start < end && stop > at {
-                    span.style = span.style.add_modifier(Modifier::UNDERLINED);
-                }
-                span
-            })
-            .collect();
-        return;
-    }
+    out.blocks(blocks(src, newline, Some(selected)));
+    out.finish()
 }
 
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
@@ -223,7 +195,7 @@ pub(crate) fn mark_cut(lines: &mut [Line<'static>], width: usize, theme: &Theme)
 /// card it is the board's mark for the person's own words (`> {prompt}`).
 /// One line per block, so `peek::wrap` reads each as a word break.
 pub(crate) fn plain(src: &str) -> String {
-    plain_of(&blocks(src, Newline::Space))
+    plain_of(&blocks(src, Newline::Space, None))
 }
 
 /// One line's words with its inline markdown taken off — `plain` for a
@@ -231,7 +203,7 @@ pub(crate) fn plain(src: &str) -> String {
 /// `# ` or `- ` is the person's words, not a heading or a bullet.
 pub(crate) fn plain_inline(line: &str) -> String {
     let mut out = String::new();
-    push_plain(&mut out, &inline(line));
+    push_plain(&mut out, &inline(line, None));
     out
 }
 
@@ -301,6 +273,8 @@ struct Emph {
     /// (`^k` lists the ticket's links and opens them, T-256 — this zone
     /// only reads).
     url: bool,
+    /// Only the transcript's explicitly selected target.
+    selected: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -378,7 +352,11 @@ enum Pending {
     Item { marker: Option<String>, indent: usize, task: Option<bool>, lines: Vec<String> },
 }
 
-fn blocks(src: &str, newline: Newline) -> Vec<Block> {
+fn blocks(
+    src: &str,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut pending = Pending::None;
     let mut fence: Option<(char, usize, Vec<String>)> = None;
@@ -402,7 +380,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             continue;
         }
         if let Some((ch, len)) = fence_open(raw) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             fence = Some((ch, len, Vec::new()));
             continue;
         }
@@ -411,27 +389,28 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
         let indent = trimmed.len() - body.len();
 
         if body.is_empty() {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Blank);
             continue;
         }
         // A thematic break is a blank row: rules are drawn structure (L1).
         if is_break(body) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Blank);
             continue;
         }
         if let Some((level, text)) = heading(body) {
-            flush(&mut pending, &mut out, newline);
-            out.push(Block::Head { level, runs: inline(text) });
+            flush(&mut pending, &mut out, newline, selected);
+            out.push(Block::Head { level, runs: inline(text, selected) });
             continue;
         }
         if let Some(align) = table_head(body, lines.get(at).copied()) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             at += 1; // the delimiter row
             let n = align.len();
             let row = |line: &str| -> Vec<Vec<Run>> {
-                let mut cs: Vec<Vec<Run>> = cells(line).iter().map(|c| inline(c)).collect();
+                let mut cs: Vec<Vec<Run>> =
+                    cells(line).iter().map(|c| inline(c, selected)).collect();
                 cs.resize(n, Vec::new());
                 cs
             };
@@ -449,12 +428,12 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             continue;
         }
         if body.starts_with('|') {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             out.push(Block::Raw { text: body.to_string() });
             continue;
         }
         if let Some((marker, text)) = list_marker(body) {
-            flush(&mut pending, &mut out, newline);
+            flush(&mut pending, &mut out, newline, selected);
             // Two source spaces per level, capped: a deep tree would spend
             // the whole column on indent.
             let depth = (indent / 2).min(3);
@@ -471,7 +450,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             match &mut pending {
                 Pending::Quote(lines) => lines.push(text.to_string()),
                 _ => {
-                    flush(&mut pending, &mut out, newline);
+                    flush(&mut pending, &mut out, newline, selected);
                     pending = Pending::Quote(vec![text.to_string()]);
                 }
             }
@@ -487,7 +466,7 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
             }
             Pending::Para(lines) | Pending::Item { lines, .. } => lines.push(line_text(raw, body)),
             _ => {
-                flush(&mut pending, &mut out, newline);
+                flush(&mut pending, &mut out, newline, selected);
                 pending = Pending::Para(vec![line_text(raw, body)]);
             }
         }
@@ -495,14 +474,21 @@ fn blocks(src: &str, newline: Newline) -> Vec<Block> {
     if let Some((_, _, rows)) = fence.take() {
         out.push(Block::Code { rows }); // unterminated fence: show it anyway
     }
-    flush(&mut pending, &mut out, newline);
+    flush(&mut pending, &mut out, newline, selected);
     out
 }
 
-fn flush(pending: &mut Pending, out: &mut Vec<Block>, newline: Newline) {
+fn flush(
+    pending: &mut Pending,
+    out: &mut Vec<Block>,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) {
     match std::mem::replace(pending, Pending::None) {
         Pending::None => {}
-        Pending::Para(lines) => out.push(Block::Para { runs: inline(&joined(&lines, newline)) }),
+        Pending::Para(lines) => {
+            out.push(Block::Para { runs: inline(&joined(&lines, newline), selected) })
+        }
         Pending::Quote(mut lines) => {
             // A GitHub alert (`> [!NOTE]`) names itself on its own first
             // line: the name in weight, on a line of its own. No colour —
@@ -510,10 +496,10 @@ fn flush(pending: &mut Pending, out: &mut Vec<Block>, newline: Newline) {
             if let Some(kind) = lines.first().and_then(|l| alert(l)) {
                 lines[0] = format!("**{kind}**\\");
             }
-            out.push(Block::Quote { blocks: blocks(&lines.join("\n"), newline) })
+            out.push(Block::Quote { blocks: blocks(&lines.join("\n"), newline, selected) })
         }
         Pending::Item { marker, indent, task, lines } => {
-            let mut runs = inline(&joined(&lines, newline));
+            let mut runs = inline(&joined(&lines, newline), selected);
             if task == Some(true) {
                 // A ticked item is read last: the de-emphasis token, like
                 // struck text, so what is left to do is what stands out.
@@ -682,9 +668,72 @@ fn list_marker(body: &str) -> Option<(Option<String>, &str)> {
 
 // -- inline -----------------------------------------------------------------
 
-fn push_run(out: &mut Vec<Run>, cur: &mut String, emph: Emph) {
+/// Split bare targets before wrapping. Classification is the Links parser's;
+/// punctuation and neighboring prose retain their original styling.
+fn target_runs(text: &str, emph: Emph, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
+    use mesimon_core::links::{extract, Found};
+    let Some(selected) = selected else { return vec![Run { text: text.into(), emph }] };
+    let needle = match selected {
+        Found::Url(s) | Found::Ticket(s) => s.clone(),
+        Found::Path { path, line } => line.map_or_else(|| path.clone(), |n| format!("{path}:{n}")),
+        Found::Attachment(id) => mesimon_core::attachment::target(*id),
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    let mut offset = 0;
+    for token in text.split_inclusive(char::is_whitespace) {
+        if extract(token).iter().any(|link| &link.target == selected) {
+            if let Some(at) = token.find(&needle) {
+                let start = offset + at;
+                if start > from {
+                    out.push(Run { text: text[from..start].into(), emph });
+                }
+                let end = start + needle.len();
+                out.push(Run {
+                    text: text[start..end].into(),
+                    emph: Emph { selected: true, ..emph },
+                });
+                from = end;
+            }
+        }
+        offset += token.len();
+    }
+    if from < text.len() {
+        out.push(Run { text: text[from..].into(), emph });
+    }
+    out
+}
+
+fn mark_literal(
+    spans: Vec<Span<'static>>,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Span<'static>> {
+    if selected.is_none() {
+        return spans;
+    }
+    spans
+        .into_iter()
+        .flat_map(|span| {
+            target_runs(&span.content, Emph::default(), selected).into_iter().map(move |run| {
+                let style = if run.emph.selected {
+                    span.style.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    span.style
+                };
+                Span::styled(run.text, style)
+            })
+        })
+        .collect()
+}
+
+fn push_run(
+    out: &mut Vec<Run>,
+    cur: &mut String,
+    emph: Emph,
+    selected: Option<&mesimon_core::links::Found>,
+) {
     if !cur.is_empty() {
-        out.push(Run { text: std::mem::take(cur), emph });
+        out.extend(target_runs(&std::mem::take(cur), emph, selected));
     }
 }
 
@@ -756,7 +805,7 @@ fn flag_set(emph: Emph, ch: char, len: usize) -> bool {
     }
 }
 
-fn inline(s: &str) -> Vec<Run> {
+fn inline(s: &str, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
     let chars: Vec<char> = s.chars().collect();
     let mut out: Vec<Run> = Vec::new();
     let mut cur = String::new();
@@ -777,10 +826,10 @@ fn inline(s: &str) -> Vec<Run> {
                 let text: String = chars[i + ticks..close].iter().collect();
                 let text = text.trim().to_string();
                 if !text.is_empty() {
-                    push_run(&mut out, &mut cur, emph);
+                    push_run(&mut out, &mut cur, emph, selected);
                     let mut e = emph;
                     e.code = true;
-                    out.push(Run { text, emph: e });
+                    out.extend(target_runs(&text, e, selected));
                     i = close + ticks;
                     continue;
                 }
@@ -796,8 +845,8 @@ fn inline(s: &str) -> Vec<Run> {
             }
         }
         if c == '[' || (c == '!' && chars.get(i + 1) == Some(&'[')) {
-            if let Some((runs, next)) = link(&chars, i, emph) {
-                push_run(&mut out, &mut cur, emph);
+            if let Some((runs, next)) = link(&chars, i, emph, selected) {
+                push_run(&mut out, &mut cur, emph, selected);
                 out.extend(runs);
                 i = next;
                 continue;
@@ -811,7 +860,7 @@ fn inline(s: &str) -> Vec<Run> {
                 // its closing `***` ends `*` here and `**` on the next pass.
                 if let Some(&(oc, olen)) = open.last() {
                     if oc == c && run_len(&chars, i) >= olen && closes(&chars, i, olen) {
-                        push_run(&mut out, &mut cur, emph);
+                        push_run(&mut out, &mut cur, emph, selected);
                         open.pop();
                         *flag(&mut emph, c, olen) = false;
                         i += olen;
@@ -822,7 +871,7 @@ fn inline(s: &str) -> Vec<Run> {
                     && opens(&chars, i, len)
                     && has_closer(&chars, i + len, c, len)
                 {
-                    push_run(&mut out, &mut cur, emph);
+                    push_run(&mut out, &mut cur, emph, selected);
                     open.push((c, len));
                     *flag(&mut emph, c, len) = true;
                     i += len;
@@ -833,7 +882,7 @@ fn inline(s: &str) -> Vec<Run> {
         cur.push(c);
         i += 1;
     }
-    push_run(&mut out, &mut cur, emph);
+    push_run(&mut out, &mut cur, emph, selected);
     out
 }
 
@@ -859,7 +908,12 @@ fn find_ticks(chars: &[char], from: usize, len: usize) -> Option<usize> {
 /// delete the half the reader can act on — by hand, or through `^k`, whose
 /// recogniser is `core/src/links.rs` (the same `[label](target)` rule,
 /// parsed again there because this walk returns painted spans).
-fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
+fn link(
+    chars: &[char],
+    i: usize,
+    emph: Emph,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Option<(Vec<Run>, usize)> {
     let open = if chars[i] == '!' { i + 1 } else { i };
     let close = (open + 1..chars.len()).find(|k| chars[*k] == ']')?;
     if chars.get(close + 1) != Some(&'(') {
@@ -869,22 +923,31 @@ fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
     let label: String = chars[open + 1..close].iter().collect();
     let url: String = chars[close + 2..end].iter().collect();
     let url = url.trim().to_string();
+    let marked = selected.is_some_and(|target| {
+        mesimon_core::links::extract(&format!("[link]({url})"))
+            .first()
+            .is_some_and(|link| &link.target == target)
+    });
     if mesimon_core::attachment::parse_target(&url).is_some() {
         return Some((
-            vec![Run { text: format!("[{label}]"), emph: Emph { em: true, ..emph } }],
+            vec![Run {
+                text: format!("[{label}]"),
+                emph: Emph { em: true, selected: marked, ..emph },
+            }],
             end + 1,
         ));
     }
     if label.trim().is_empty() && url.is_empty() {
         return None;
     }
-    let mut runs: Vec<Run> = inline(&label)
+    let mut runs: Vec<Run> = inline(&label, None)
         .into_iter()
-        .map(|r| Run { text: r.text, emph: Emph { em: true, ..r.emph } })
+        .map(|r| Run { text: r.text, emph: Emph { em: true, selected: marked, ..r.emph } })
         .collect();
     if !url.is_empty() && url != label.trim() {
         let mut e = emph;
         e.url = true;
+        e.selected = marked;
         runs.push(Run { text: format!(" {url}"), emph: e });
     }
     Some((runs, end + 1))
@@ -916,6 +979,9 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
         if let Some(bg) = paint.code_bg {
             s = s.bg(bg);
         }
+    }
+    if e.selected {
+        s = s.add_modifier(Modifier::UNDERLINED);
     }
     s
 }
@@ -1120,6 +1186,7 @@ struct Out<'a> {
     theme: &'a Theme,
     paint: Paint,
     cut: bool,
+    selected: Option<&'a mesimon_core::links::Found>,
 }
 
 impl Out<'_> {
@@ -1211,6 +1278,7 @@ impl Out<'_> {
             theme: self.theme,
             paint: self.paint.quoted(),
             cut: false,
+            selected: self.selected,
         };
         inner.blocks(blocks);
         while inner.lines.last().is_some_and(is_blank) {
@@ -1258,7 +1326,7 @@ impl Out<'_> {
                 // Nothing to paint with: the inset carries the block.
                 None => vec![Span::styled(format!("   {body}"), dim2)],
             };
-            if !self.line(spans) {
+            if !self.line(mark_literal(spans, self.selected)) {
                 return;
             }
         }
@@ -1369,7 +1437,10 @@ impl Out<'_> {
     /// by hand, and a reflow would destroy that.
     fn raw(&mut self, text: &str) {
         let body = crate::text::truncate(text, self.width);
-        self.line(vec![Span::styled(body, Style::default().fg(self.paint.ink.dim1))]);
+        self.line(mark_literal(
+            vec![Span::styled(body, Style::default().fg(self.paint.ink.dim1))],
+            self.selected,
+        ));
     }
 
     fn finish(mut self) -> Vec<Line<'static>> {

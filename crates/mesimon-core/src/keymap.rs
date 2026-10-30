@@ -1440,6 +1440,7 @@ pub struct Ctx {
     /// somewhere to step.
     pub transcript_messages: bool,
     pub transcript_links: bool,
+    pub transcript_link_selected: bool,
     /// The transcript dialog's message is longer than its window, so `jk`
     /// has rows to scroll.
     pub transcript_scrolls: bool,
@@ -7398,7 +7399,7 @@ static TRANSCRIPT: &[Binding] = &[
         verb: Verb::TranscriptLinkOpen,
         show: "enter",
         hint: |_| "open link",
-        avail: |c| c.transcript_links,
+        avail: |c| c.transcript_link_selected,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -11435,7 +11436,12 @@ mod tests {
             resolve(Scope::Transcript, Key::Char('l'), &linked),
             Some(Verb::TranscriptLinkNext)
         );
-        assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), Some(Verb::TranscriptLinkOpen));
+        assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), None);
+        let selected = Ctx { transcript_link_selected: true, ..linked };
+        assert_eq!(
+            resolve(Scope::Transcript, Key::Enter, &selected),
+            Some(Verb::TranscriptLinkOpen)
+        );
         assert_eq!(resolve(Scope::Transcript, Key::Enter, &Ctx::default()), None);
         let long = Ctx { transcript_scrolls: true, ..Default::default() };
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &long), Some(Verb::ScrollDown));

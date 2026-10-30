@@ -514,7 +514,7 @@ pub enum Mode {
     /// reading position are `App::transcript`.
     Transcript {
         ticket: ulid::Ulid,
-        link_idx: usize,
+        link_idx: Option<usize>,
     },
     /// The pull requests dialog (T-759): every PR the forge bound to the
     /// ticket, over the board or the ticket page. Read off the snapshot each
@@ -2769,30 +2769,28 @@ impl App {
         }
     }
 
-    /// The open message's resolved links, in the order the reader sees
-    /// them. Derived per access so a transcript tail or board change cannot
-    /// leave a stale target behind the cursor.
-    pub(crate) fn transcript_links(&self) -> Vec<TicketLink> {
+    /// Resolve the cached candidates against the live board, just as Links
+    /// does. Parsing the whole message belongs to Transcript's message cache.
+    pub(crate) fn transcript_links(&self) -> Vec<(mesimon_core::links::Found, TicketLink)> {
         let Some(t) = self.open_transcript_view() else { return Vec::new() };
-        let Some(message) = t.message() else { return Vec::new() };
-        let ticket = t.ticket;
-        let dir = self.link_dir(ticket);
-        let mut links = Vec::new();
-        self.push_links(ticket, &dir, t.text(message), &mut links);
-        links
+        let dir = self.link_dir(t.ticket);
+        t.links()
+            .iter()
+            .filter_map(|link| {
+                self.resolve_link(t.ticket, &dir, link)
+                    .map(|resolved| (link.target.clone(), resolved))
+            })
+            .collect()
     }
 
     pub(crate) fn transcript_cursor_link(&self) -> Option<TicketLink> {
-        let Mode::Transcript { link_idx, .. } = self.mode else { return None };
-        let links = self.transcript_links();
-        (!links.is_empty()).then(|| links[link_idx.min(links.len() - 1)].clone())
+        let Mode::Transcript { link_idx: Some(idx), .. } = self.mode else { return None };
+        self.transcript_links().get(idx).map(|(_, link)| link.clone())
     }
 
-    fn transcript_links_changed(&mut self) {
-        let len = self.transcript_links().len();
-        if let Mode::Transcript { link_idx, .. } = &mut self.mode {
-            *link_idx = (*link_idx).min(len.saturating_sub(1));
-        }
+    pub(crate) fn transcript_cursor_source(&self) -> Option<mesimon_core::links::Found> {
+        let Mode::Transcript { link_idx: Some(idx), .. } = self.mode else { return None };
+        self.transcript_links().get(idx).map(|(source, _)| source.clone())
     }
 
     /// `{ }` on a card: its agent's conversation under it, on the newest
@@ -2806,7 +2804,9 @@ impl App {
         {
             Some(t) => {
                 self.transcript = Some(t);
-                self.mode = Mode::Transcript { ticket, link_idx: 0 };
+                self.mode = Mode::Transcript { ticket, link_idx: None };
+                self.rich_cache.borrow_mut().take();
+                self.poll_archive();
             }
             None => self.status = format!("nothing in {key}'s transcript yet"),
         }
@@ -2819,12 +2819,21 @@ impl App {
             self.transcript = None;
             return false;
         }
+        let selected = self.transcript_cursor_source();
         let Some(t) = self.transcript.as_mut() else { return false };
+        let before = t.message().map(crate::transcript::doc_key);
         let record = crate::transcript::session_of(&self.board, t.ticket)
             .and_then(|s| Some((s.kind, s.transcript_path.as_deref()?)));
         let changed = t.poll(record);
         if changed {
-            self.transcript_links_changed();
+            let same_message = before == t.message().map(crate::transcript::doc_key);
+            self.rich_cache.borrow_mut().take();
+            let idx = selected.filter(|_| same_message).and_then(|source| {
+                self.transcript_links().iter().position(|(target, _)| *target == source)
+            });
+            if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                *link_idx = idx;
+            }
         }
         changed
     }
@@ -7205,7 +7214,7 @@ impl App {
     /// the crown or another client — or carries archived.
     fn wants_archive(&self, board: &Board) -> bool {
         match &self.mode {
-            Mode::Archived { .. } | Mode::Links { .. } => return true,
+            Mode::Archived { .. } | Mode::Links { .. } | Mode::Transcript { .. } => return true,
             Mode::Search(s) if s.archived => return true,
             _ => {}
         }
@@ -7671,6 +7680,7 @@ impl App {
                 .open_transcript_view()
                 .is_some_and(|t| t.messages().len() > 1),
             transcript_links: !self.transcript_links().is_empty(),
+            transcript_link_selected: self.transcript_cursor_link().is_some(),
             transcript_scrolls: self
                 .open_transcript_view()
                 .is_some_and(|t| t.pager.view.get().max > 0),
@@ -9758,20 +9768,22 @@ impl App {
                     t.step(dir);
                 }
                 if let Mode::Transcript { link_idx, .. } = &mut self.mode {
-                    *link_idx = 0;
+                    *link_idx = None;
                 }
-                self.transcript_links_changed();
+                if let Some(t) = self.transcript.as_ref() { t.reveal_link.set(false); }
             }
             Verb::TranscriptLinkNext | Verb::TranscriptLinkPrev => {
-                let links = self.transcript_links();
-                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
-                    if !links.is_empty() {
-                        if verb == Verb::TranscriptLinkNext {
-                            *link_idx = (*link_idx + 1) % links.len();
-                        } else {
-                            *link_idx = link_idx.checked_sub(1).unwrap_or(links.len() - 1);
-                        }
+                let len = self.transcript_links().len();
+                if len > 0 {
+                    if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                        *link_idx = Some(match (*link_idx, verb == Verb::TranscriptLinkNext) {
+                            (None, true) => 0,
+                            (None, false) => len - 1,
+                            (Some(idx), true) => (idx + 1) % len,
+                            (Some(idx), false) => (idx + len - 1) % len,
+                        });
                     }
+                    if let Some(t) = self.transcript.as_ref() { t.reveal_link.set(true); }
                 }
             }
             Verb::TranscriptLinkOpen => {
@@ -10194,18 +10206,6 @@ impl App {
             Scope::Links => {
                 if let Mode::Links { links, idx, .. } = &mut self.mode {
                     *idx = step(*idx, links.len(), down);
-                }
-            }
-            Scope::Transcript if verb == Verb::CursorUp || verb == Verb::CursorDown => {
-                let links = self.transcript_links();
-                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
-                    if !links.is_empty() {
-                        if down {
-                            *link_idx = (*link_idx + 1) % links.len();
-                        } else {
-                            *link_idx = link_idx.checked_sub(1).unwrap_or(links.len() - 1);
-                        }
-                    }
                 }
             }
             Scope::Setup => {
@@ -15430,35 +15430,41 @@ impl App {
     /// Resolve every link in one body and append the ones that lead
     /// somewhere, skipping a target already listed.
     fn push_links(&self, ticket: ulid::Ulid, dir: &Path, body: &str, out: &mut Vec<TicketLink>) {
-        use mesimon_core::links::{extract, Found};
-        for link in extract(body) {
-            let (text, target) = match link.target {
-                Found::Attachment(attachment) => (
-                    mesimon_core::attachment::target(attachment),
-                    LinkTarget::Attachment { ticket, attachment },
-                ),
-                Found::Url(u) => (u.clone(), LinkTarget::Url(u)),
-                Found::Ticket(key) => match self.board.ticket_by_key(&key) {
-                    Some(other) if other.id != ticket => (key, LinkTarget::Ticket(other.id)),
-                    _ => continue,
-                },
-                Found::Path { path, line } => {
-                    let full = resolve_link_path(dir, &path);
-                    if !full.is_file() {
-                        continue;
-                    }
-                    let text = match line {
-                        Some(n) => format!("{path}:{n}"),
-                        None => path,
-                    };
-                    (text, LinkTarget::File { path: full, line })
-                }
-            };
-            if out.iter().any(|o| o.target == target) {
-                continue;
+        for link in mesimon_core::links::extract(body) {
+            let Some(link) = self.resolve_link(ticket, dir, &link) else { continue };
+            if !out.iter().any(|o| o.target == link.target) {
+                out.push(link);
             }
-            out.push(TicketLink { label: link.label, text, target });
         }
+    }
+
+    fn resolve_link(
+        &self,
+        ticket: ulid::Ulid,
+        dir: &Path,
+        link: &mesimon_core::links::Link,
+    ) -> Option<TicketLink> {
+        use mesimon_core::links::Found;
+        let (text, target) = match &link.target {
+            Found::Attachment(attachment) => (
+                mesimon_core::attachment::target(*attachment),
+                LinkTarget::Attachment { ticket, attachment: *attachment },
+            ),
+            Found::Url(u) => (u.clone(), LinkTarget::Url(u.clone())),
+            Found::Ticket(key) => {
+                let other = self.board.ticket_by_key(key).filter(|other| other.id != ticket)?;
+                (key.clone(), LinkTarget::Ticket(other.id))
+            }
+            Found::Path { path, line } => {
+                let full = resolve_link_path(dir, path);
+                if !full.is_file() {
+                    return None;
+                }
+                let text = line.map_or_else(|| path.clone(), |n| format!("{path}:{n}"));
+                (text, LinkTarget::File { path: full, line: *line })
+            }
+        };
+        Some(TicketLink { label: link.label.clone(), text, target })
     }
 
     /// The keypress road: fetch every note body the cache lacks (the board

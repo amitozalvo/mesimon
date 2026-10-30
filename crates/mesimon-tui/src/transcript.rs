@@ -15,8 +15,10 @@
 //! so a row's `at` is its place for good and a page joins where the held
 //! part begins.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -182,6 +184,10 @@ pub(crate) struct Transcript {
     /// back to one lands where the reader was.
     left: HashMap<(u64, usize), usize>,
     pub pager: Pager,
+    /// Parsed once per displayed message, then resolved against the current board.
+    links: RefCell<Option<(u64, Rc<Vec<mesimon_core::links::Link>>)>>,
+    /// A link-cycle press asks the next measured frame to reveal its mark.
+    pub reveal_link: Cell<bool>,
     earlier: Option<Receiver<Page>>,
     /// The tail read in flight, one at a time; `again` when the file moved
     /// meanwhile, so another follows it.
@@ -229,6 +235,8 @@ impl Transcript {
             seen: None,
             left: HashMap::new(),
             pager: Pager::default(),
+            links: RefCell::new(None),
+            reveal_link: Cell::new(false),
             earlier: None,
             tail: None,
             again: false,
@@ -243,6 +251,8 @@ impl Transcript {
     /// A page as the whole of what is held, on its newest message: the
     /// dialog's first read, and a new conversation's.
     fn start_over(&mut self, page: Page) {
+        self.links.get_mut().take();
+        self.reveal_link.set(false);
         self.conversation = page.conversation;
         self.rows = page.rows;
         self.end = page.end;
@@ -307,6 +317,20 @@ impl Transcript {
         &self.rows[m.row].text
     }
 
+    pub(crate) fn links(&self) -> Rc<Vec<mesimon_core::links::Link>> {
+        let Some(m) = self.message() else { return Rc::new(Vec::new()) };
+        let key = doc_key(m);
+        let mut cache = self.links.borrow_mut();
+        if let Some((held, links)) = cache.as_ref() {
+            if *held == key {
+                return Rc::clone(links);
+            }
+        }
+        let links = Rc::new(mesimon_core::links::extract(&crate::peek::sanitize(self.text(m))));
+        *cache = Some((key, Rc::clone(&links)));
+        links
+    }
+
     /// Messages that came after the newest one the reader has been on.
     pub(crate) fn unseen(&self) -> usize {
         self.messages.iter().rev().take_while(|m| Some(m.key) > self.seen).count()
@@ -339,6 +363,7 @@ impl Transcript {
     /// The messages again from the rows, once per poll however many pages
     /// landed; the message on show stays on show, found by its key.
     fn rebuild(&mut self) {
+        self.links.get_mut().take();
         let on = self.message().map(|m| m.key);
         self.messages = messages(&self.rows);
         self.idx = match on {

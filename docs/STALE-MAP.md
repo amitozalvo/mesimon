@@ -39436,3 +39436,24 @@ That focused crown test passes on both hooks and mod, with clean fixture audits.
 Hosted CI and Linux were not run. Next real-ticket work should measure elapsed time,
 active checks and rework; use narrow fixtures for instruction experiments, then return
 normal development to a crown after deliberate integration/handover.
+
+## Transcript link selection follows its target (T-1018, 2026-10-30)
+
+The transcript's `l`/`n` and `h`/`N` cycle resolved links, including ticket IDs.
+Selection starts empty and `{ }` clears it; Enter is available only after a
+link is selected. A ticket selection uses the Links dialog's board highlight.
+Transcript now joins Links in `wants_archive` and asks `poll_archive` on open,
+so archived IDs resolve, survive snapshots while read, and open their page.
+
+The first implementation searched rendered label text: repeated prose or labels
+could mark the wrong target, and wrapping could lose the mark altogether.
+The rich parser now marks the selected target's runs before wrapping, leaving
+neighboring prose unmarked. The existing pager reveals that mark on a cycle.
+Candidates are cached per message; the existing rich cache also keys on the
+selected target, so unchanged frames neither parse nor render the message again.
+
+Focused checks inspect terminal cells and the actual Enter destination for
+repeated labels, wrapped labels and bare URLs; they also cover unselection,
+archive loading/lifetime and unchanged-frame cache reuse. The 37 selected
+transcript, rich-text, keymap and Links checks passed with two workers through
+`ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.

@@ -6789,30 +6789,186 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn transcript_links_cycle_open_and_reveal_board_targets() {
-    let (mut app, dir) = app_transcript("links");
-    // First displayed message with links, with two live targets on the board.
-    let text = "See [issue](https://example.test/a) and T-2.";
+/// A transcript held by the fake daemon, so refresh exercises the same
+/// archive lifetime as a real snapshot (which omits archived tickets).
+fn linked_transcript(name: &str, messages: &[&str], archived: bool) -> (App, std::path::PathBuf) {
+    let (app, dir) = app_transcript(name);
     let path = dir.join("linked.jsonl");
-    let line = serde_json::json!({ "uuid": "linked", "type": "assistant", "message": {
-        "role": "assistant", "content": [{"type":"text", "text":text}] } })
-    .to_string();
-    std::fs::write(&path, format!("{line}\n")).unwrap();
-    app.board_mut().sessions.iter_mut().find(|s| s.ticket == ulid_n(3)).unwrap().transcript_path =
+    let body: String = messages
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            format!(
+                "{}\n",
+                serde_json::json!({"uuid": format!("linked-{i}"), "type": "assistant", "message": {
+            "role": "assistant", "content": [{"type":"text", "text":text}] }})
+            )
+        })
+        .collect();
+    std::fs::write(&path, body).unwrap();
+    let mut board = (*app.board).clone();
+    board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap().transcript_path =
         Some(path.to_string_lossy().into_owned());
-    // The fixture has T-2 on the board. Select T-2 after the URL.
+    if archived {
+        board.tickets.iter_mut().find(|t| t.id == ulid_n(2)).unwrap().archived =
+            Some(mesimon_core::board::Archived {
+                at: "@100".into(),
+                by: "local".into(),
+                until: None,
+                needs_you: false,
+            });
+    }
+    let mut app = app_graphite(board);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    (app, dir)
+}
+
+fn transcript_enter(app: &mut App) {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+}
+
+/// The marker on the terminal, not merely an internal cursor index.
+fn transcript_mark(buffer: &ratatui::buffer::Buffer, row_word: &str, needle: &str, marked: bool) {
+    let lines = lines_of(buffer);
+    let y = lines.iter().position(|line| line.contains(row_word)).expect(row_word);
+    let line = &lines[y];
+    let byte = line.find(needle).expect(needle);
+    let x = line[..byte].width() as u16;
+    for col in x..x + needle.width() as u16 {
+        assert_eq!(
+            buffer[(col, y as u16)].modifier.contains(Modifier::UNDERLINED),
+            marked,
+            "{row_word}: {needle} at {col}, {y}"
+        );
+    }
+}
+
+#[test]
+fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
+    let (mut app, dir) = linked_transcript(
+        "link-labels",
+        &["prose same\n\nfirst [same](https://a.test)\n\nsecond [same](https://b.test)"],
+        false,
+    );
+    app.opener = Some("open".into());
     press(&mut app, '}');
-    assert!(matches!(app.mode, Mode::Transcript { .. }));
-    assert_eq!(app.transcript_links().len(), 2);
+    transcript_enter(&mut app);
+    assert!(app.pending_open.is_none(), "opening the dialog selects nothing");
     press(&mut app, 'l');
-    assert_eq!(app.transcript_cursor_link().unwrap().text, "T-2");
-    assert_eq!(app.link_hovered(), Some(ulid_n(2)));
-    press(&mut app, 'h');
-    assert_eq!(app.transcript_cursor_link().unwrap().text, "https://example.test/a");
+    press(&mut app, 'l');
+    let buf = cells(&app, 120, 30);
+    transcript_mark(&buf, "prose same", "same", false);
+    transcript_mark(&buf, "first same", "same", false);
+    transcript_mark(&buf, "second same", "same", true);
+    transcript_mark(&buf, "second same", "second", false);
+    let cached = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
+    let candidates = app.open_transcript_view().unwrap().links();
+    let _ = cells(&app, 120, 30);
+    assert!(std::rc::Rc::ptr_eq(&cached, &app.rich_cache.borrow().as_ref().unwrap().rows));
+    assert!(std::rc::Rc::ptr_eq(&candidates, &app.open_transcript_view().unwrap().links()));
+    transcript_enter(&mut app);
+    assert_eq!(app.pending_open, Some(vec!["open".into(), "https://b.test".into()]));
+    assert!(matches!(app.mode, Mode::Normal));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
+    let label = "label".repeat(20);
+    let url = format!("https://b.test/{}", "path".repeat(20));
+    for (name, target, link) in [
+        ("wrapped-label", "https://b.test".to_string(), format!("[{label}](https://b.test)")),
+        ("wrapped-url", url.clone(), url.clone()),
+    ] {
+        let text = format!("https://a.test\n\n{}before {link} after", "filler\n\n".repeat(20));
+        let (mut app, dir) = linked_transcript(name, &[&text], false);
+        app.opener = Some("open".into());
+        press(&mut app, '}');
+        let _ = cells(&app, 120, 30);
+        press(&mut app, 'l');
+        let _ = cells(&app, 120, 30);
+        press(&mut app, 'l');
+        let buf = cells(&app, 120, 30);
+        assert!(app.open_transcript_view().unwrap().pager.view.get().offset > 0);
+        let lines = lines_of(&buf);
+        let start =
+            lines.iter().position(|line| line.contains("before ")).expect("selected link revealed");
+        let end = (start..lines.len())
+            .find(|&y| lines[y].contains(" after"))
+            .expect("whole wrapped link");
+        assert!(end > start, "link wraps");
+        let marked: String = (start..=end)
+            .flat_map(|y| (0..120).map(move |x| (x, y)))
+            .filter_map(|(x, y)| {
+                let cell = &buf[(x, y as u16)];
+                cell.modifier.contains(Modifier::UNDERLINED).then(|| cell.symbol().to_string())
+            })
+            .collect();
+        let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let expected =
+            if name == "wrapped-label" { format!("{label}{target}") } else { target.clone() };
+        assert_eq!(compact(&marked), expected, "only the selected link's cells are marked");
+        transcript_mark(&buf, "before ", "before", false);
+        transcript_mark(&buf, " after", "after", false);
+        transcript_enter(&mut app);
+        assert_eq!(app.pending_open, Some(vec!["open".into(), target]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
+    let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);
     press(&mut app, '}');
-    assert!(matches!(app.mode, Mode::Transcript { link_idx: 0, .. }));
-    let _ = std::fs::remove_dir_all(&dir);
+    press(&mut app, 'l');
+    assert_eq!(app.link_hovered(), Some(ulid_n(2)));
+    let _ = cells(&app, 120, 30);
+    press(&mut app, '{');
+    assert!(app.transcript_cursor_link().is_none());
+    assert!(app.link_hovered().is_none());
+    let buf = cells(&app, 120, 30);
+    transcript_mark(&buf, "older T-1", "T-1", false);
+    assert!(!app.ctx().transcript_link_selected);
+    transcript_enter(&mut app);
+    assert!(matches!(app.mode, Mode::Transcript { .. }));
+    assert_eq!(app.selected_ticket().unwrap().id, ulid_n(3));
+    press(&mut app, 'h'); // backward from unselected chooses the last link
+    assert_eq!(app.link_hovered(), Some(ulid_n(1)));
+    press(&mut app, '}');
+    assert!(app.transcript_cursor_link().is_none());
+    transcript_enter(&mut app);
+    assert!(matches!(app.mode, Mode::Transcript { .. }));
+    press(&mut app, 'l');
+    transcript_enter(&mut app);
+    assert!(matches!(app.mode, Mode::Normal));
+    assert_eq!(app.selected_ticket().unwrap().id, ulid_n(2));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn transcript_links_load_archived_ids_and_keep_them_across_snapshots() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let (mut app, dir) = linked_transcript("archived-links", &["archived T-2"], true);
+    assert!(app.board.ticket(ulid_n(2)).is_none(), "the normal snapshot omits it");
+    press(&mut app, '}');
+    assert_eq!(app.transcript_links().len(), 1);
+    press(&mut app, 'l');
+    app.refresh().unwrap();
+    app.poll_archive();
+    assert_eq!(app.transcript_cursor_link().unwrap().text, "T-2");
+    transcript_mark(&cells(&app, 120, 30), "archived T-2", "T-2", true);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    app.refresh().unwrap();
+    assert!(app.board.ticket(ulid_n(2)).is_none(), "leaving the dialog releases the archive");
+    press(&mut app, '}');
+    press(&mut app, 'l');
+    transcript_enter(&mut app);
+    assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(2)));
+    app.refresh().unwrap();
+    assert!(app.board.ticket(ulid_n(2)).unwrap().is_archived(), "the page now holds it");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A card with no agent conversation offers no `{ }`, and the key is inert.
