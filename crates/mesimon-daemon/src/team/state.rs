@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use mesimon_core::team::{RecordBody, SharedMember};
 use mesimon_team::crypto::{BoardId, BoardKey, DevicePublic, ObjectId, OperationId};
 use mesimon_team::hex;
-use mesimon_team::wire::{Member, Role};
+use mesimon_team::wire::{Member, Role, StoredRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,6 +27,39 @@ pub struct Published {
     /// the moment this machine queues a change to the object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+}
+
+/// Encrypted input retained across paging and restart. A publication marks
+/// a verified content intent whose floor is saved before content is written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRecord {
+    pub record: StoredRecord,
+    #[serde(default)]
+    pub publication: Option<Published>,
+    #[serde(default)]
+    pub note_rev: Option<u64>,
+    #[serde(default)]
+    pub local_before: Option<LocalSnapshot>,
+    #[serde(default)]
+    pub local_after: Option<String>,
+    #[serde(default)]
+    pub local_intermediate: Vec<String>,
+    #[serde(default)]
+    pub applied_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalSnapshot {
+    pub digest: String,
+    pub stamp: String,
+}
+
+impl PendingRecord {
+    pub fn matches(&self, record: &StoredRecord) -> bool {
+        self.record.object == record.object
+            && self.record.revision == record.revision
+            && self.record.record == record.record
+    }
 }
 
 /// One edit waiting for the relay. `body` is the plaintext as it stood when
@@ -107,6 +140,13 @@ pub struct TeamState {
     pub cursor: u64,
     #[serde(default)]
     pub published: BTreeMap<String, Published>,
+    /// Highest accepted revision per object, retained after its local data
+    /// and published digest are removed. Older files use `published` as
+    /// their initial floor.
+    #[serde(default)]
+    pub revision_floors: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub pending_records: Vec<PendingRecord>,
     #[serde(default)]
     pub outbox: Vec<Outbound>,
     #[serde(default)]
@@ -138,6 +178,8 @@ impl TeamState {
             keys: BTreeMap::new(),
             cursor: 0,
             published: BTreeMap::new(),
+            revision_floors: BTreeMap::new(),
+            pending_records: Vec::new(),
             outbox: Vec::new(),
             invites: Vec::new(),
             members: Vec::new(),
@@ -174,12 +216,30 @@ impl TeamState {
         self.keys.insert(epoch, hex::encode(key.bytes()));
     }
 
+    pub fn revision(&self, object: &str) -> Option<u64> {
+        self.revision_floors
+            .get(object)
+            .copied()
+            .max(self.published.get(object).map(|p| p.revision))
+    }
+
+    pub fn remember_revision(&mut self, object: &str, revision: u64) {
+        let floor = self.revision(object).unwrap_or(0).max(revision);
+        self.revision_floors.insert(object.to_owned(), floor);
+    }
+
+    pub fn forget_published(&mut self, object: &str) {
+        if let Some(published) = self.published.remove(object) {
+            self.remember_revision(object, published.revision);
+        }
+    }
+
     /// Queue an edit, one entry per object. An entry already in flight is
     /// marked dirty instead of replaced, so its receipt still matches what
     /// was sent.
     pub fn enqueue(&mut self, object: ObjectId, body: RecordBody, in_flight: Option<&str>) {
         let key = object.to_hex();
-        let expected = self.published.get(&key).map(|p| p.revision);
+        let expected = self.revision(&key);
         if let Some(entry) = self.outbox.iter_mut().find(|o| o.object == key) {
             if in_flight == Some(entry.operation.as_str()) {
                 entry.dirty = true;
@@ -325,6 +385,49 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert!(TeamState::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn legacy_published_revisions_survive_forgetting_and_restart() {
+        let mut old = TeamState::new(BoardId::random(), Role::Contributor, true, "Amit".into());
+        let object = ObjectId::random();
+        old.published.insert(
+            object.to_hex(),
+            Published { revision: 3, digest: "old".into(), kind: "ticket".into(), by: None },
+        );
+        let mut json = serde_json::to_value(old).unwrap();
+        json.as_object_mut().unwrap().remove("revision_floors");
+        json["schema_version"] = serde_json::json!(1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.json");
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        let mut state = TeamState::load(&path).unwrap().unwrap();
+        assert_eq!(state.schema_version, TEAM_SCHEMA);
+        assert_eq!(state.revision(&object.to_hex()), Some(3));
+        state.forget_published(&object.to_hex());
+        state.remember_revision(&object.to_hex(), 2);
+        state.save(&path).unwrap();
+        let mut restored = TeamState::load(&path).unwrap().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["schema_version"], TEAM_SCHEMA);
+        assert!(TEAM_SCHEMA > 1, "schema-1 binaries must refuse to write migrated floors");
+        assert!(restored.published.is_empty());
+        assert_eq!(restored.revision(&object.to_hex()), Some(3));
+        restored.enqueue(object, body("restored"), None);
+        assert_eq!(restored.outbox[0].expected, Some(3));
+    }
+
+    #[test]
+    fn newer_sharing_state_is_refused_without_rewriting_it() {
+        let mut state = TeamState::new(BoardId::random(), Role::Owner, false, "Amit".into());
+        state.schema_version = TEAM_SCHEMA + 1;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("team.json");
+        state.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(TeamState::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

@@ -11722,7 +11722,11 @@ impl Daemon {
             // one thing that restarts it (a reorder returned above).
             t.entered_at = Some(stamp);
             let t = t.clone();
-            let _ = store::save_ticket(&self.paths, &t);
+            // A shared record writes all of its fields once after placement;
+            // a failed write must not leave an intermediate ticket on disk.
+            if !self.team_defers_ticket_write() {
+                let _ = store::save_ticket(&self.paths, &t);
+            }
         }
         self.moves.record(id, &from, dest, by, turn_of, Instant::now());
         self.note_hand_move(id, by);
