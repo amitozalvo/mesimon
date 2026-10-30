@@ -385,7 +385,9 @@ fn worktree_mark(
         _ if w.merged => (format!("{g}{check}"), WtTone::Quiet),
         // Main moved past this branch. Keep the direction visible, but only
         // color commits that are waiting to merge; the moved base is not work.
-        _ if w.needs_rebase => (format!("{g}{down}"), WtTone::Quiet),
+        _ if w.needs_rebase => {
+            (format!("{g}{down}"), if w.ahead > 0 { WtTone::Ready } else { WtTone::Quiet })
+        }
         _ if w.ahead > 0 => (format!("{g}{up}"), WtTone::Ready),
         // Nothing to report — and the trailing space is load-bearing: the
         // mark is right-aligned against the fixed age slot, so a one-cell
