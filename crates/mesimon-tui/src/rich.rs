@@ -267,6 +267,9 @@ struct Emph {
     strong: bool,
     em: bool,
     code: bool,
+    /// Original inline-code boundaries survive selection-style splits.
+    code_start: bool,
+    code_end: bool,
     /// `~~struck~~` — dead text, said with value (dim3), never SGR 9.
     dead: bool,
     /// The target half of a link: kept, because the page cannot follow one
@@ -726,6 +729,36 @@ fn mark_literal(
         .collect()
 }
 
+/// A literal row keeps its geometry. Mark on the full source first, then
+/// clip the styled spans; the existing cut marker also marks a selected
+/// target that extends past the cut, including one wholly beyond it.
+fn literal(
+    text: &str,
+    width: usize,
+    style: Style,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if selected.is_none() {
+        return vec![Span::styled(crate::text::truncate(text, width), style)];
+    }
+    let mut spans = mark_literal(vec![Span::styled(text.to_string(), style)], selected);
+    if text.width() > width {
+        let budget = width - 1;
+        let mut end = 0;
+        let hidden_selection = spans.iter().any(|span| {
+            end += span.content.width();
+            end > budget && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        });
+        clip(&mut spans, budget);
+        let mark = if hidden_selection { style.add_modifier(Modifier::UNDERLINED) } else { style };
+        spans.push(Span::styled("~", mark));
+    }
+    spans
+}
+
 fn push_run(
     out: &mut Vec<Run>,
     cur: &mut String,
@@ -829,7 +862,14 @@ fn inline(s: &str, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
                     push_run(&mut out, &mut cur, emph, selected);
                     let mut e = emph;
                     e.code = true;
-                    out.extend(target_runs(&text, e, selected));
+                    let mut runs = target_runs(&text, e, selected);
+                    if let Some(first) = runs.first_mut() {
+                        first.emph.code_start = true;
+                    }
+                    if let Some(last) = runs.last_mut() {
+                        last.emph.code_end = true;
+                    }
+                    out.extend(runs);
                     i = close + ticks;
                     continue;
                 }
@@ -1015,10 +1055,18 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
     for r in runs {
         // Where the profile cannot paint, the marker survives instead.
         let text = if r.emph.code && paint.code_bg.is_none() {
-            format!("`{}`", r.text)
+            format!(
+                "{}{}{}",
+                if r.emph.code_start { "`" } else { "" },
+                r.text,
+                if r.emph.code_end { "`" } else { "" }
+            )
         } else {
             r.text.clone()
         };
+        // Delimiters affect text, not paint: adjacent pieces of the same
+        // code span still share the separator's background.
+        let emph = Emph { code_start: false, code_end: false, ..r.emph };
         let mut rest = text.as_str();
         while !rest.is_empty() {
             let ws = rest.starts_with(char::is_whitespace);
@@ -1038,13 +1086,13 @@ fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
             if open {
                 if let Some(w) = out.last_mut() {
                     w.width += chunk.width();
-                    w.parts.push((chunk.to_string(), r.emph));
+                    w.parts.push((chunk.to_string(), emph));
                     continue;
                 }
             }
             out.push(Word {
                 width: chunk.width(),
-                parts: vec![(chunk.to_string(), r.emph)],
+                parts: vec![(chunk.to_string(), emph)],
                 brk: false,
             });
             open = true;
@@ -1314,19 +1362,24 @@ impl Out<'_> {
         let inner =
             rows.iter().map(|r| r.width()).max().unwrap_or(0).min(self.width.saturating_sub(3));
         for r in rows {
-            let body = crate::text::truncate(r, inner);
             let spans = match self.paint.code_bg {
                 Some(bg) => {
-                    let pad = inner.saturating_sub(body.width());
-                    vec![
-                        Span::raw(" "),
-                        Span::styled(format!(" {body}{} ", " ".repeat(pad)), ink.bg(bg)),
-                    ]
+                    let style = ink.bg(bg);
+                    let body = literal(r, inner, style, self.selected);
+                    let pad = inner.saturating_sub(crate::ui::spans_width(&body));
+                    let mut spans = vec![Span::raw(" "), Span::styled(" ", style)];
+                    spans.extend(body);
+                    push_text(&mut spans, &" ".repeat(pad + 1), style);
+                    spans
                 }
                 // Nothing to paint with: the inset carries the block.
-                None => vec![Span::styled(format!("   {body}"), dim2)],
+                None => {
+                    let mut spans = vec![Span::styled("   ", dim2)];
+                    spans.extend(literal(r, inner, dim2, self.selected));
+                    spans
+                }
             };
-            if !self.line(mark_literal(spans, self.selected)) {
+            if !self.line(spans) {
                 return;
             }
         }
@@ -1436,9 +1489,10 @@ impl Out<'_> {
     /// A pipe line that is not a table, verbatim: its columns may be spaced
     /// by hand, and a reflow would destroy that.
     fn raw(&mut self, text: &str) {
-        let body = crate::text::truncate(text, self.width);
-        self.line(mark_literal(
-            vec![Span::styled(body, Style::default().fg(self.paint.ink.dim1))],
+        self.line(literal(
+            text,
+            self.width,
+            Style::default().fg(self.paint.ink.dim1),
             self.selected,
         ));
     }
@@ -1612,6 +1666,40 @@ mod tests {
         assert_eq!(mono.code_bg(), None);
         let out = render("run `cargo test` twice", 60, 4, &mono);
         assert_eq!(plain(&out), vec!["run `cargo test` twice"]);
+    }
+
+    #[test]
+    fn selected_inline_code_keeps_fallback_delimiters_and_geometry() {
+        use crate::theme::Flavor;
+        let selected = mesimon_core::links::Found::Ticket("T-2".into());
+        for (flavor, profile) in
+            [(Flavor::Graphite, Profile::Mono), (Flavor::Chalk, Profile::Ansi256)]
+        {
+            let theme = Theme::new(flavor, profile);
+            assert!(theme.code_bg().is_none());
+            for source in [
+                "`see T-2 here`",
+                "`T-2 here` then `other code`",
+                "`see T-2`",
+                "``see ` T-2 here``",
+            ] {
+                for width in [9, 60] {
+                    let plain_rows = render_all(source, width, &theme, Newline::Space);
+                    let marked =
+                        render_all_with_link(source, width, &theme, Newline::Space, &selected);
+                    assert_eq!(
+                        plain(&marked),
+                        plain(&plain_rows),
+                        "{source} at width {width}, {profile:?}"
+                    );
+                    assert!(
+                        styled(&marked).iter().any(|(text, style)| text.contains("T-2")
+                            && style.add_modifier.contains(Modifier::UNDERLINED)),
+                        "the target is still marked"
+                    );
+                }
+            }
+        }
     }
 
     /// A list is a marker plus a hanging indent — the continuation lines up

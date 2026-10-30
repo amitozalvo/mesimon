@@ -39452,8 +39452,16 @@ neighboring prose unmarked. The existing pager reveals that mark on a cycle.
 Candidates are cached per message; the existing rich cache also keys on the
 selected target, so unchanged frames neither parse nor render the message again.
 
+Literal code/raw rows mark the full target before clipping. A selected target
+past the cut marks the existing `~`, so the pager can reveal its row without
+reflowing code. Inline code keeps its original delimiter boundaries across
+selection-style splits, preserving fallback backticks and wrapping in profiles
+without a code background.
+
 Focused checks inspect terminal cells and the actual Enter destination for
 repeated labels, wrapped labels and bare URLs; they also cover unselection,
-archive loading/lifetime and unchanged-frame cache reuse. The 37 selected
+archive loading/lifetime and unchanged-frame cache reuse. Clipped literal targets
+also check visible marks, reveal and Enter; fallback inline code checks unchanged
+geometry. The 39 selected
 transcript, rich-text, keymap and Links checks passed with two workers through
 `ci/test-run.py`, with a clean fixture audit. No broad-suite rerun was needed.

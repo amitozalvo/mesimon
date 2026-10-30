@@ -6919,6 +6919,54 @@ fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
 }
 
 #[test]
+fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
+    let target = format!("https://example.test/{}", "path".repeat(30));
+    for fenced in [true, false] {
+        for hidden in [false, true] {
+            let prefix = if hidden { "before ".repeat(20) } else { "before ".into() };
+            let literal = if fenced {
+                format!("```text\n{prefix}{target}\n```")
+            } else {
+                format!("| {prefix}{target} |")
+            };
+            let text = format!("https://a.test\n\n{}{literal}\n\nend", "filler\n\n".repeat(20));
+            let name = format!("clipped-{fenced}-{hidden}");
+            let (mut app, dir) = linked_transcript(&name, &[&text], false);
+            app.opener = Some("open".into());
+            press(&mut app, '}');
+            let _ = cells(&app, 120, 30);
+            let baseline = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
+            press(&mut app, 'l');
+            press(&mut app, 'l');
+            let buf = cells(&app, 120, 30);
+            assert!(
+                app.open_transcript_view().unwrap().pager.view.get().offset > 0,
+                "the literal target's row is revealed: {name}"
+            );
+            let rendered = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
+            let words = |rows: &[ratatui::text::Line<'static>]| -> Vec<String> {
+                rows.iter()
+                    .map(|row| row.spans.iter().map(|s| s.content.as_ref()).collect())
+                    .collect()
+            };
+            assert_eq!(
+                words(&baseline),
+                words(&rendered),
+                "selection cannot reflow code or raw text"
+            );
+            transcript_mark(&buf, "before ", "before", false);
+            transcript_mark(&buf, "before ", "~", true);
+            if !hidden {
+                transcript_mark(&buf, "before ", "https://example.test/", true);
+            }
+            transcript_enter(&mut app);
+            assert_eq!(app.pending_open, Some(vec!["open".into(), target.clone()]));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[test]
 fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);
     press(&mut app, '}');
