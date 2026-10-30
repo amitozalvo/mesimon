@@ -2,6 +2,8 @@
 use anyhow::{Context, Result};
 use mesimon_core::attachment::{self, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS};
 use std::io::{self, Cursor, Read};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{mpsc, Arc};
@@ -127,47 +129,47 @@ fn read_wsl_host_clipboard() -> Result<Pasted> {
 }
 
 fn bounded_output(mut command: Command, timeout: Duration) -> io::Result<Output> {
-    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    command.stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
     let mut child = command.spawn()?;
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let reader =
-        match std::thread::Builder::new().name("mesimon-clipboard-output".into()).spawn(move || {
-            let mut output = Vec::new();
-            stdout.take((WSL_HELPER_MAX_OUTPUT + 1) as u64).read_to_end(&mut output)?;
-            if output.len() > WSL_HELPER_MAX_OUTPUT {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "clipboard helper output exceeds 16 MiB",
-                ));
-            }
-            Ok(output)
-        }) {
-            Ok(reader) => reader,
-            Err(error) => {
-                kill_and_reap(&mut child);
-                return Err(error);
-            }
-        };
+    let mut stdout = child.stdout.take().expect("stdout was piped");
+    if let Err(error) = set_nonblocking(&stdout) {
+        kill_and_reap(&mut child);
+        return Err(error);
+    }
 
     let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    let mut eof = false;
     loop {
+        if !eof {
+            match drain_stdout(&mut stdout, &mut output, deadline) {
+                Ok(reached_eof) => eof = reached_eof,
+                Err(error) => {
+                    kill_and_reap(&mut child);
+                    return Err(error);
+                }
+            }
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = reader
-                    .join()
-                    .map_err(|_| io::Error::other("clipboard output reader failed"))??;
-                return Ok(Output { status, stdout, stderr: Vec::new() });
+                if !status.success() {
+                    if !eof {
+                        kill_process_group(child.id());
+                    }
+                    return Ok(Output { status, stdout: output, stderr: Vec::new() });
+                }
+                if eof {
+                    return Ok(Output { status, stdout: output, stderr: Vec::new() });
+                }
             }
             Ok(None) => {}
             Err(error) => {
                 kill_and_reap(&mut child);
-                let _ = reader.join();
                 return Err(error);
             }
         }
         if Instant::now() >= deadline {
             kill_and_reap(&mut child);
-            let _ = reader.join();
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Windows clipboard helper timed out",
@@ -177,9 +179,64 @@ fn bounded_output(mut command: Command, timeout: Duration) -> io::Result<Output>
     }
 }
 
+fn set_nonblocking(stdout: &std::process::ChildStdout) -> io::Result<()> {
+    let fd = stdout.as_raw_fd();
+    // SAFETY: `fd` is the live stdout descriptor owned by `stdout`.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: same live descriptor; this only adds O_NONBLOCK to its flags.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Drain only bytes already available on the nonblocking pipe. `true` means
+/// EOF; `false` means the child or an inherited descriptor may write more.
+fn drain_stdout(
+    stdout: &mut std::process::ChildStdout,
+    output: &mut Vec<u8>,
+    deadline: Instant,
+) -> io::Result<bool> {
+    let mut buffer = [0; 8192];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Windows clipboard helper timed out while reading output",
+            ));
+        }
+        match stdout.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(n) => {
+                if output.len().saturating_add(n) > WSL_HELPER_MAX_OUTPUT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "clipboard helper output exceeds 16 MiB",
+                    ));
+                }
+                output.extend_from_slice(&buffer[..n]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn kill_and_reap(child: &mut Child) {
+    kill_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn kill_process_group(pid: u32) {
+    // The command is placed in its own group before spawn, so this reaches
+    // descendants that inherited stdout after the helper itself exited.
+    // SAFETY: negative `pid` addresses only the child-owned process group.
+    let _ = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
 }
 
 fn decode_wsl_output(output: &[u8]) -> Result<Pasted> {
@@ -329,24 +386,42 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn bounded_output_times_out_and_reaps_the_helper() {
+    fn bounded_output_times_out_and_kills_descendant_holding_stdout() {
         let pid_file = std::env::temp_dir().join(format!("mesimon-clipboard-{}.pid", Ulid::new()));
         let mut command = Command::new("sh");
-        command.args(["-c", "printf '%s' $$ > \"$1\"; exec sleep 10", "mesimon-test-helper"]);
+        command.args(["-c", "sleep 2 & echo $! > \"$1\"; exit 0", "mesimon-test-helper"]);
         command.arg(&pid_file);
 
         let started = Instant::now();
-        let error = bounded_output(command, Duration::from_millis(300)).unwrap_err();
+        let error = bounded_output(command, Duration::from_millis(100)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2), "helper deadline was not enforced");
+        assert!(started.elapsed() < Duration::from_secs(1), "deadline included pipe draining");
 
-        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         let _ = std::fs::remove_file(pid_file);
-        // ESRCH after the call proves the killed child was waited for rather
-        // than left as a running process or an unreaped zombie.
-        let result = unsafe { libc::kill(pid, 0) };
-        assert_eq!(result, -1);
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        // The shell has exited, but this descendant inherited stdout. The
+        // helper's process group cleanup must kill it as well.
+        let reap_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let result = unsafe { libc::kill(pid, 0) };
+            if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            assert!(Instant::now() < reap_deadline, "stdout-holding descendant survived cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_output_keeps_successful_clipboard_decoding() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'TEXT:aGVsbG8='"]);
+        let output = bounded_output(command, Duration::from_secs(1)).unwrap();
+        assert!(output.status.success());
+        assert!(
+            matches!(decode_wsl_output(&output.stdout).unwrap(), Pasted::Text(text) if text == "hello")
+        );
     }
 
     #[test]
