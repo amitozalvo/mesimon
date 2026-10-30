@@ -12525,7 +12525,15 @@ impl App {
         s.hits = {
             let mut cell = self.searcher.borrow_mut();
             let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
-            searcher.rank(&self.board, s.query.as_str(), s.archived, &self.corpus)
+            let prs: Vec<_> = self
+                .prs
+                .iter()
+                .map(|p| mesimon_core::search::PullRequest {
+                    ticket: p.ticket,
+                    text: format!("{} {} {} {} {}", p.number, p.title, p.repo, p.state, p.url),
+                })
+                .collect();
+            searcher.rank_with_prs(&self.board, s.query.as_str(), s.archived, &self.corpus, &prs)
         };
         // Nothing typed: the pages opened this run, newest first, instead of
         // the whole board (T-355). The rank pass still decides what is IN —
