@@ -5138,14 +5138,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 1 }), Response::Ok));
-    // W, parked on the checkout, still holds it (T-583): W2 takes a worktree.
-    match start_agent(&mut c, &kw2, "shared_checkout") {
-        Response::Err { message } => assert_eq!(
-            message,
-            format!("{kw} (sleeping) works on this checkout; use worktree, or wait")
-        ),
-        other => panic!("a start on the checkout a parked worker holds: {other:?}"),
-    }
+    // W2 takes a worktree so this section isolates the budget gate.
     assert!(matches!(start_agent(&mut c, &kw2, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W2's worktree start to land", || {
         c.board().live_agent(w2).is_some()
@@ -5182,6 +5175,12 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     ));
     let _ = c.request(Command::KillSession { id: sq });
     assert!(c.board().live_agent(q).is_none(), "Q's agent gone, the checkout is free");
+    wait_until(std::time::Duration::from_secs(10), "Q's teardown to release the checkout", || {
+        match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
+            Response::AgentBoard { board } => !board.checkout_held_by.contains(&kq),
+            other => panic!("list_board: {other:?}"),
+        }
+    });
     // With a seat free, the words go — and while they wait on the checkout
     // (the crown mid-turn holds it), the wake holds the seat they need.
     start(&mut c, sa);
@@ -5219,6 +5218,12 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         other => panic!("sleep_agent again: {other:?}"),
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
+    wait_until(std::time::Duration::from_secs(10), "W's teardown before an immediate wake", || {
+        match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
+            Response::AgentBoard { board } => !board.checkout_held_by.contains(&kw),
+            other => panic!("list_board: {other:?}"),
+        }
+    });
     let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-97b woken by words", Deliver::Now);
     assert!(!held, "{why}");
     assert_eq!(wake, Some(AskWake::Woken));

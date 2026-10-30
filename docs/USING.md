@@ -625,8 +625,9 @@ agents** changes the number or turns starting off. A ticket the crown started ca
 may put an agent it started to sleep once that agent is idle, the same park as `x` on its card:
 the conversation is kept, `c` wakes it, and while it sleeps its seat is free for another start.
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
-shared checkout, is refused the shared checkout while another ticket's agent works or sleeps
-there, and wakes an agent it parked itself, in the workspace it was parked in. A wake sends
+shared checkout. It is refused the shared checkout while another ticket's agent is awake or still
+stopping there. A safely sleeping agent releases it without archiving its ticket. The crown
+wakes an agent it parked itself, in the workspace it was parked in. A wake sends
 the agent nothing: it comes back to its prompt box, as after `c`, and sits idle until words reach
 it. The crown is told so when it wakes one (to carry a worker on with another model after a
 usage limit, say), and sends its words to go on once, the same way it asks anything else.

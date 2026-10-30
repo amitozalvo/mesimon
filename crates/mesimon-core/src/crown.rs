@@ -17,7 +17,8 @@
 //!    person's parked agent stays the person's.
 //! 3. **No second agent on a held checkout.** A `shared_checkout` start is
 //!    refused while another ticket's agent is live there — working, idle, or
-//!    parked with the checkout as its cwd, since a wake runs it there. A
+//!    still stopping. A safely parked conversation releases the checkout;
+//!    its next wake must acquire it again. A
 //!    person's own start is the person's decision and is never refused by
 //!    this; the rule is for the crown and the daemon's own automation. The
 //!    crown's own ticket is the caller, not a holder: it coordinates, and a
@@ -57,7 +58,7 @@ pub fn runs_in(rec: &SessionRecord, checkout: &str) -> WorkspaceStrategy {
     }
 }
 
-/// One ticket holding the checkout: its key and its agent's state word.
+/// One ticket holding the checkout: its key and its state or reservation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
     pub key: String,
@@ -65,18 +66,35 @@ pub struct Holder {
 }
 
 /// The tickets whose agent holds the shared checkout, besides `besides`:
-/// an agent seat that is live — working, idle or parked — with the checkout
-/// as its cwd, on a ticket the board shows. An archived ticket's parked
-/// agent is off the board and wakes only after a person restores it.
-pub fn checkout_holders(board: &Board, checkout: &str, besides: &[ulid::Ulid]) -> Vec<Holder> {
+/// a live agent process with the checkout as its cwd, including Codex
+/// cleanup. `reserved` adds daemon-owned teardown and queued starts/wakes.
+/// A parked conversation alone keeps its ticket seat, not this directory.
+pub fn checkout_holders(
+    board: &Board,
+    checkout: &str,
+    besides: &[ulid::Ulid],
+    reserved: &[ulid::Ulid],
+) -> Vec<Holder> {
     let mut out: Vec<Holder> = Vec::new();
     for s in &board.sessions {
-        if !s.holds_agent_seat() || s.cwd != checkout || besides.contains(&s.ticket) {
+        if !(s.kind.is_agent() && s.holds_process())
+            || s.cwd != checkout
+            || besides.contains(&s.ticket)
+        {
             continue;
         }
-        let Some(t) = board.ticket(s.ticket).filter(|t| !t.is_archived()) else { continue };
+        let Some(t) = board.ticket(s.ticket) else { continue };
         if !out.iter().any(|h| h.key == t.short_key) {
             out.push(Holder { key: t.short_key.clone(), state: s.state_word() });
+        }
+    }
+    for id in reserved {
+        if besides.contains(id) {
+            continue;
+        }
+        let Some(t) = board.ticket(*id) else { continue };
+        if !out.iter().any(|h| h.key == t.short_key) {
+            out.push(Holder { key: t.short_key.clone(), state: "reserved" });
         }
     }
     out
@@ -112,7 +130,8 @@ pub enum Start {
 /// or the refusal in words. `own` is the crown's own ticket, `has_worktree`
 /// whether `target` has a worktree binding, `checkout` the shared checkout's
 /// path as a record's cwd spells it. The budget and the plan flag are the
-/// daemon's to judge after this; nothing here mutates.
+/// daemon's to judge after this; `reserved` supplies its teardown and queued
+/// launch reservations on this checkout. Nothing here mutates.
 pub fn judge(
     board: &Board,
     own: ulid::Ulid,
@@ -120,6 +139,7 @@ pub fn judge(
     wanted: WorkspaceStrategy,
     has_worktree: bool,
     checkout: &str,
+    reserved: &[ulid::Ulid],
 ) -> Result<Start, String> {
     let Some(t) = board.ticket(target) else { return Err("no such ticket".into()) };
     let key = t.short_key.as_str();
@@ -161,7 +181,7 @@ pub fn judge(
         None => Start::Spawn { apply: t.workspace_strategy() != wanted },
     };
     if wanted == WorkspaceStrategy::SharedCheckout {
-        let holders = checkout_holders(board, checkout, &[own, target]);
+        let holders = checkout_holders(board, checkout, &[own, target], reserved);
         let crown = Principal::Agent { session: uuid::Uuid::nil() };
         if let Some(who) = checkout_refusal(&crown, &holders) {
             return Err(format!("{who}; use worktree, or wait"));
@@ -220,7 +240,7 @@ mod tests {
     }
 
     fn judge_on(b: &Board, wanted: WorkspaceStrategy, has_worktree: bool) -> Result<Start, String> {
-        judge(b, Ulid(CROWN), Ulid(TARGET), wanted, has_worktree, CHECKOUT)
+        judge(b, Ulid(CROWN), Ulid(TARGET), wanted, has_worktree, CHECKOUT, &[])
     }
 
     #[test]
@@ -356,16 +376,11 @@ mod tests {
         );
     }
 
-    /// The checkout is held by another ticket's agent in each of its three
-    /// live states, and by nothing else: not a worktree agent, not a dead
-    /// record, not a shell, not an archived ticket, not the crown itself.
+    /// Live checkout processes hold; worktree agents, dead records, shells
+    /// and safely parked conversations do not. The crown excludes itself.
     #[test]
-    fn the_checkout_is_held_working_idle_or_parked() {
-        for (state, word) in [
-            (SessionState::Running, "working"),
-            (idle(), "idle"),
-            (SessionState::Sleeping, "sleeping"),
-        ] {
+    fn the_checkout_is_held_working_or_idle_but_not_safely_parked() {
+        for (state, word) in [(SessionState::Running, "working"), (idle(), "idle")] {
             let mut b = board();
             b.sessions.push(agent(3, CHECKOUT, state, false));
             assert_eq!(
@@ -394,6 +409,11 @@ mod tests {
             Ok(Start::Spawn { apply: false })
         );
         b.sessions.push(agent(4, CHECKOUT, SessionState::Sleeping, true));
+        assert_eq!(
+            judge_on(&b, WorkspaceStrategy::SharedCheckout, false),
+            Ok(Start::Spawn { apply: false }),
+            "a safely parked conversation releases the checkout"
+        );
         b.tickets[3].archived = Some(crate::board::Archived {
             at: "@0".into(),
             by: "local".into(),
@@ -416,9 +436,44 @@ mod tests {
         b.sessions.push(agent(4, CHECKOUT, SessionState::Sleeping, false));
         assert_eq!(
             judge_on(&b, WorkspaceStrategy::SharedCheckout, false),
-            Err("T-3 (working) and T-4 (sleeping) work on this checkout; use worktree, or wait"
-                .into())
+            Err("T-3 (working) works on this checkout; use worktree, or wait".into())
         );
+    }
+
+    #[test]
+    fn cleanup_and_queued_reservations_hold_until_released() {
+        for state in [
+            SessionState::Sleeping,
+            SessionState::Exited { reason: crate::board::ExitReason::UserQuit },
+        ] {
+            let mut b = board();
+            let mut retiring = agent(3, CHECKOUT, state, true);
+            retiring.kind = SessionKind::Codex;
+            retiring.codex_stopping = true;
+            b.sessions.push(retiring);
+            assert!(judge_on(&b, WorkspaceStrategy::SharedCheckout, false).is_err());
+            b.sessions[1].codex_stopping = false;
+            assert!(judge_on(&b, WorkspaceStrategy::SharedCheckout, false).is_ok());
+        }
+        let b = board();
+        // A reservation can precede the first session record.
+        let reserved = [Ulid(3)];
+        assert!(judge(
+            &b,
+            Ulid(CROWN),
+            Ulid(TARGET),
+            WorkspaceStrategy::SharedCheckout,
+            false,
+            CHECKOUT,
+            &reserved
+        )
+        .is_err());
+        assert_eq!(
+            checkout_holders(&b, CHECKOUT, &[Ulid(CROWN)], &reserved),
+            vec![Holder { key: "T-3".into(), state: "reserved" }]
+        );
+        assert!(checkout_holders(&b, CHECKOUT, &[Ulid(CROWN), Ulid(3)], &reserved).is_empty());
+        assert!(judge_on(&b, WorkspaceStrategy::SharedCheckout, false).is_ok());
     }
 
     /// A person's start is the person's decision: the rule refuses the

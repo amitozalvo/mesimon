@@ -233,8 +233,8 @@ pub const CROWN_WAKES: &str = concat!(
      on its page. A merged branch's ticket is admitted to the board's done column; where \
      Settings → Agents → Crown archives tickets is off, archiving it is a person's. A \
      workspace is worktree (the ticket's own branch, merged later) or shared_checkout (the \
-     repository's own checkout; refused while another ticket's agent holds it, awake or \
-     parked). A \
+     repository's own checkout; refused while another ticket's agent holds it, awake, \
+     stopping or queued to start; safely parked agents release it). A \
      started agent's first prompt is its ticket's title and description, so the \
      brief is what it works from. start_agent on a ticket whose agent the crown started and \
      parked wakes that agent, conversation kept, in the workspace it was parked in, and sends \
@@ -3794,7 +3794,7 @@ mod tests {
         for words in [
             "A workspace is worktree (the ticket's own branch, merged later)",
             "shared_checkout (the repository's own checkout; refused while another ticket's agent \
-             holds it, awake or parked)",
+             holds it, awake, stopping or queued to start; safely parked agents release it)",
             "first prompt is its ticket's title and description",
             "wakes that agent",
         ] {

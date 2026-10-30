@@ -39550,3 +39550,28 @@ bound, tip invalidation and state/authority precedence. The existing
 creates the real untracked-file collision: it now checks Git's error and path
 in the feed and worker read, unchanged base tip and untracked contents after
 refusal, and disappearance of the reason after cleanup lets the merge land.
+## Safely parked workers release the shared checkout (T-1080, 2026-10-30)
+
+T-583's two-writer protection counted `holds_agent_seat`, so a sleeping conversation
+reserved the checkout until archive. On a non-Git project, crown `sleep_agent` → DONE →
+`start_agent(shared_checkout)` therefore refused every next ticket despite no worker running.
+
+The reservation now follows an agent's `holds_process` (live pane or `codex_stopping`),
+plus daemon reapers and accepted queued starts/wakes. A parked conversation retains its
+seat and cwd; safe parking releases the directory regardless of column or archive.
+`list_board`, crown starts and crown asks read the same reservation facts. Own-ticket
+exclusion never bypasses its reaper. Queued crown starts and wakes recheck live/idle
+holders and reapers at delivery, without letting later queued reservations block the head.
+A person's explicit start retains its existing authority.
+
+Regressions: core crown state/cleanup/reservation cases; daemon queue races (Start and Wake,
+idle owner, own/other reaper, later reservations); `crown_checkout_e2e` drives the non-Git
+park → DONE → next start and refuses the old worker's resume/ask until the new one parks.
+This admission change does not replace worktree eviction's actual-pane/directory checks,
+pending spawn/resume checks, `tearing_down` barrier, or waiter replay (T-1040).
+
+Independent review found that the old reaper discarded its reservation before attempting
+`kill_session`. A failed removal now retains it; only a successful removal or an answered
+pane listing proving absence releases it. Unavailable restart inspection reconstructs a
+parked agent's reaper reservation. A TERM-resistant real pane regression exercises failed
+removal, failed inspection, restart, and eventual confirmed absence.
