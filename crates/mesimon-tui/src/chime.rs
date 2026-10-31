@@ -29,7 +29,7 @@ type Partial = (f64, f64, f64);
 /// slightly detuned double of the fundamental whose slow beating is the
 /// shimmer a struck glass has.
 const BELL: &[Partial] =
-    &[(1.0, 1.0, 0.34), (1.0035, 0.18, 0.34), (2.0, 0.26, 0.14), (3.0, 0.07, 0.07)];
+    &[(1.0, 1.0, 0.26), (1.0035, 0.18, 0.26), (2.0, 0.26, 0.11), (3.0, 0.07, 0.06)];
 
 /// A soft mallet on wood: the fundamental and the fourth harmonic a marimba
 /// bar is tuned to, both short.
@@ -57,18 +57,27 @@ pub(crate) fn wav(sound: Sound) -> Option<&'static [u8]> {
 
 /// E5 then B5, 140 ms apart: a rising fifth, the interval of a call.
 fn chime() -> Vec<u8> {
-    let mut out = vec![0.0; samples(0.95)];
+    let second = 0.14;
+    let mut out = vec![0.0; samples(second + rings_for(BELL))];
     strike(&mut out, 0.0, 659.26, 1.0, 0.004, BELL);
-    strike(&mut out, 0.14, 987.77, 0.85, 0.004, BELL);
+    strike(&mut out, second, 987.77, 0.85, 0.004, BELL);
     encode(&out, 0.55)
 }
 
 /// C6, once, and quieter than the chime: the finished turn is news, not an
 /// alarm.
 fn tick() -> Vec<u8> {
-    let mut out = vec![0.0; samples(0.26)];
+    let mut out = vec![0.0; samples(rings_for(MALLET))];
     strike(&mut out, 0.0, 1046.5, 1.0, 0.002, MALLET);
     encode(&out, 0.38)
+}
+
+/// How long a struck note rings before it is 60 dB down: the buffer ends
+/// there, so the last note dies away rather than being cut off (T-1094: a
+/// fixed 0.95 s ended the chime's second note still ringing at -21 dB).
+fn rings_for(partials: &[Partial]) -> f64 {
+    let slowest = partials.iter().fold(0.0_f64, |m, &(_, _, decay)| m.max(decay));
+    slowest * 1000.0_f64.ln()
 }
 
 fn samples(seconds: f64) -> usize {
@@ -161,6 +170,14 @@ mod tests {
         for s in [&chime, &tick] {
             assert_eq!(*s.last().unwrap(), 0, "faded to silence");
             assert!(s[0].unsigned_abs() < 100, "starts from silence");
+            // The 100 ms before the closing fade: a note still ringing there
+            // is cut off, which is what a fixed length did to the chime.
+            let fade = samples(0.02);
+            let before = &s[s.len() - fade - samples(0.1)..s.len() - fade];
+            assert!(
+                f64::from(peak(before)) < 0.01 * f64::from(peak(s)),
+                "the last note has died away (-40 dB) before the end"
+            );
         }
     }
 

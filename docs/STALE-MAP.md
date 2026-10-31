@@ -40104,7 +40104,7 @@ show Windows' words (the author's call: "Windows file names"), through one proce
 machines keeps its pick, and no name mapping exists to drift.
 
 **Mesimon's own two, first in the ring and the new defaults** (the author's call): `Chime` (two
-bell notes rising a fifth, ~1 s) for needs-you and `Tick` (one short, quieter mallet note) for a
+bell notes rising a fifth, ringing out over ~2 s) for needs-you and `Tick` (one short, quieter mallet note) for a
 finished turn. Synthesized in `chime.rs`, not shipped as recordings: no audio file in the repo,
 no licence, the same 16-bit PCM WAV for `afplay`, `paplay`/`pw-play`, `canberra-gtk-play -f` and
 `SoundPlayer`. Written beside the notification icons by `mascot::publish_asset` (digest name,
@@ -40124,3 +40124,9 @@ which needs a `WSLENV` entry and a `launch` that takes env, for a path the board
 Unverified: nothing here was heard on a Windows machine. The stock file names are from Windows
 10/11 lists, and a missing one falls back to the event; `SoundPlayer` reading a `\\wsl$` UNC
 path is documented, not observed.
+
+Heard on the author's Mac the day it merged: "the first (2 notes) is finishing early". A fixed
+0.95 s buffer ended the second note still ringing at -21 dB, and the 20 ms fade clipped it. The
+length now follows the decay (`rings_for`: the slowest partial 60 dB down, ~1.9 s for the chime,
+~0.4 s for the tick), with the bell's decay shortened from 0.34 s to 0.26 s so the ring stays
+near Glass's length; a test holds the 100 ms before the fade under -40 dB and fails on 0.95 s.
