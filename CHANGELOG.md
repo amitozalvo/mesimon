@@ -10,6 +10,32 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.14.unstable.2 — 2026-11-01
+
+An unstable build. Nothing changes a state file's format.
+
+### Added
+
+- **Two sounds of mesimon's own.** `Chime` (needs you) and `Tick` (turn
+  finished) lead the sound choices in `Settings › Notifications` and are the
+  new defaults. A sound you picked before is kept.
+
+### Changed
+
+- **Windows plays six distinct notification sounds.** Each choice plays its
+  own Windows sound to the end, and the rows show Windows' names for them.
+  Before, the six fell onto three system sounds that most schemes play alike.
+
+### Fixed
+
+- **Links in an agent's pane open in Windows Terminal, kitty, WezTerm and
+  Ghostty.** A ctrl/cmd+click on a link Claude Code prints now reaches the
+  terminal; before, the link arrived as plain text.
+- **Opening a link works on a fresh WSL install.** It opens in Windows' default
+  browser, where before it said `no opener found`.
+- **A ticket you wake while no crown is worn stays yours.** The next crown no
+  longer takes it as its own worker or is woken by its finish.
+
 ## v0.1.0-beta.14.unstable.1 — 2026-10-31
 
 An unstable build: the first on the unstable channel. It carries sixteen tickets
