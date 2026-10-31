@@ -39845,3 +39845,68 @@ the same file's later tests, refuses an explicit send until the parked pane's re
 cleanup (≤ 5 s), in words. Astra's full run predates that rule's commit, so the section never
 met it; it now retries on the refusal's word, as its sibling start does. The rule stands: a
 crown that asks a just-parked worker at once is told to wait for cleanup and asks again.
+
+## The crowned ticket's page is the crown's page: what waits on you, the crown, what it did (T-1016, 2026-10-31, the person: "a page that shows what the crown is currently doing, what it did and what's pending for the user … currently, no way to read the things crown needs you to approve (^y)")
+
+**Designed, not built.** An interactive simulation went through three rounds with the person
+(the artifact is linked from the ticket's note). This block is the approved design; a build
+ticket implements it. No code changed.
+
+**Decided by the person.**
+- **The host is the crowned ticket's own page**, not a new screen and not a new key. Sessions
+  and notes keep their places in the rail.
+- **The shin is the opening's**: `creature.rs`'s medium drawing in its own animations, not a
+  new drawing. The first round's hand-drawn shin was taken back.
+- **A held ask's mark is a glyph, `⇢`** (ASCII `-`): words on their way, not yet sent. A key
+  (`^y`) and the quote bar (`▎`) were both turned down as the mark. `»` was weighed: `›` is the
+  breadcrumb and `>` is Codex's mark.
+- The recommendation on every other question, below.
+
+**The page.**
+- **The rail** gains NEEDS YOU on top of SESSIONS and NOTES (T-975's window, unchanged). A row
+  is a mark, a ticket key, two or three words and an age, inside the rail's 28 columns. The
+  marks: `⇢` a held ask, `!` the crown's own hand, `?` a question, `≡` a plan, `⇡` a merge
+  that is the person's. The needs-you colour stays on what is blocked (the hand, a question, a
+  plan), as on the board; a held ask and a merge wear the crown's tint (T-551's argument).
+- **NEEDS YOU lists everything that waits on the person**: the crown's held asks and its own
+  hand, and every stop the board lights for the person: a worker's question or plan, a usage
+  limit, a merge that is theirs under supervised. **A worker's raised hand is never in it**: the
+  crown hears a hand in every mode (`crown_claims`, `WakeCause::Raised`), and the board lowers it
+  when the crown is told (T-861, T-922). A crown that needs the person for it raises its own.
+- **The left column is the crown**: the shin by the crown session's state (`Anim::of`), and the
+  crown's newest message under it, read as the transcript dialog reads a card's (T-921). `{ }`
+  step messages. The board's sentences and the person's words wear the quote bar.
+- **The middle column follows the rail cursor**, as the preview zone does on every ticket page:
+  - on the crown's session: ACTIONS;
+  - on a NEEDS YOU row: its words whole, why it waits, and its keys (`^y` send, `^u` take
+    back on a held ask; `l` lower on the hand; `enter` opens a merge's or a question's own
+    ticket). This is where a held ask is read before it is sent, and no dialog is needed;
+  - on a note: the note takes the whole zone and the shin steps aside;
+  - on another session: that session, as today.
+- **ACTIONS is one block per crown turn**, newest first, headed by what started it (a wake
+  delivered, the person's prompt, the board's restart look), the turn's actions under it in
+  order. A row leads with the ticket key in the crown's tint and says what was done **in plain
+  words** (`T-1004  moved to DONE`, not `move_ticket`); a receipt word follows (`held for you`,
+  `sent by you`, `taken`, `refused`). PageUp/PageDown and the wheel scroll it, with the rail's
+  `↑ N above` / `↓ N below` cues.
+
+**Motion**, every clock one the board already runs, and none under reduced motion, mono or
+`crown_lightning` off:
+- a new action: the bolt (`strike.rs`, 240 ms leader, stroke, one flicker, cooled by 800 ms)
+  from the shin's light to the row's ticket key; the row writes in on the landing wave (600 ms
+  sweep, lit to 2 s, 400 ms ease);
+- a NEEDS YOU row lands on the wave alone, with no bolt;
+- the crown's message fades in a line at a time (400 ms a line, 90 ms apart);
+- with the cursor off the crown's session, its row counts new actions (`2 new`) instead.
+
+**Gaps the build owns.**
+- The TUI reads no feed today; ACTIONS needs the crown's lines (daemon-served, or the file read
+  with the board's key map). Turn blocks come from `crown_wake_delivered` and the crown's
+  prompts in feed order.
+- Plain words need a table from a tool and its receipt to a phrase, in the TUI.
+- An ask's later word (`handed`, `taken`, `dropped`, `unknown`) is daemon memory
+  (`crown_asks`, T-938); the snapshot must carry it for the row.
+- The bolt runs card to card today; shin to row is a new source and target on the same engine.
+- `^y`/`^u` on a ticket page act on that ticket's own queue; on the crowned page they act on the
+  NEEDS YOU row under the cursor.
+- 100×24 was not drawn: ACTIONS goes under the crown's message there.
