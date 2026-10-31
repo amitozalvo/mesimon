@@ -40084,3 +40084,43 @@ process). `doctor`'s `opener` line under WSL with nothing found points at Window
 `xdg-utils` anyway. Verified by unit tests on the ladder and the respelling; no WSL box was at
 hand, so the live press is the reporter's to confirm (`/mnt/c/Windows/explorer.exe https://…`
 from a WSL shell is the one-line check).
+
+## Windows sounds were three events that sound alike; mesimon has two of its own (T-1094, 2026-11-01)
+
+Reported: on Windows every sound choice played the default Windows sound. The backend from
+2026-10-30 (`windows_sound_argv`) folded the six names onto three `SystemSounds` events
+(Asterisk, Beep, Exclamation), which play whatever the user's sound scheme assigns them, so six
+choices could never be more than three sounds, and on a stock scheme were apparently one. That
+the stock Windows 10/11 scheme maps the three events to the same file was not confirmed from
+documentation; the fix does not depend on it.
+
+**Windows plays files now.** Each of the six choices is a distinct stock file under
+`%WINDIR%\Media` (`Sound::windows`: Messaging, Email, Generic, Calendar, Nudge, Tada), played
+with `SoundPlayer.PlaySync()` because PowerShell exiting would cut an async play short; a file
+that cannot be played falls back to the old event inside the same script. On Windows the rows
+show Windows' words (the author's call: "Windows file names"), through one process-wide switch
+(`Sound::use_windows_names`) set where the player is resolved, so the row, its status line and
+`doctor` agree. `prefs.json` keeps the macOS keys on every platform: a file carried between
+machines keeps its pick, and no name mapping exists to drift.
+
+**Mesimon's own two, first in the ring and the new defaults** (the author's call): `Chime` (two
+bell notes rising a fifth, ~1 s) for needs-you and `Tick` (one short, quieter mallet note) for a
+finished turn. Synthesized in `chime.rs`, not shipped as recordings: no audio file in the repo,
+no licence, the same 16-bit PCM WAV for `afplay`, `paplay`/`pw-play`, `canberra-gtk-play -f` and
+`SoundPlayer`. Written beside the notification icons by `mascot::publish_asset` (digest name,
+atomic, no symlink follow); a sound preview writes it too, which the icons' "previews never
+write" rule did not anticipate and does not forbid. Where it cannot be written, or a WSL path
+cannot be spelled safely, the sound plays as its stand-in (`Glass`, `Tink`). A custom
+`MESIMON_SOUND` program is handed the name and nothing is written. Defaults move only for a
+`prefs.json` that never stored a sound: the board writes both keys on every save, so anyone who
+ever saved Settings keeps Glass/Tink, picked or not.
+
+**The WSL path rides the script, refused rather than escaped.** PowerShell's `-Command` cannot
+take arguments, so the file path sits in a single-quoted literal; `windows_path` spells it as
+`\\wsl$\<distro>\…` and returns `None` (stand-in plays) for any of PowerShell's four
+single-quote characters or a control character. Refuted: passing it in an environment variable,
+which needs a `WSLENV` entry and a `launch` that takes env, for a path the board itself chose.
+
+Unverified: nothing here was heard on a Windows machine. The stock file names are from Windows
+10/11 lists, and a missing one falls back to the event; `SoundPlayer` reading a `\\wsl$` UNC
+path is documented, not observed.

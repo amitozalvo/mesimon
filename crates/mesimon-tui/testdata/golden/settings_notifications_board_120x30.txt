@@ -2,7 +2,7 @@
 
    TOD╭─ SETTINGS ∙ THIS BOARD ──────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               mesimon                                       ♪ Glass                               │
+   Dec│  Theme               mesimon                                       ♪ Chime                               │
       │                      kanban-tui ∙ Fix the OSC parser                                                     │
    Key│  Appearance          “Keep the old parser as a fallback?”                                                │
       │                                                                                                          │
@@ -20,8 +20,8 @@
       │                      Dock bounce                   ○ off                                      inherited  │
       │  About                                                                                                   │
       │                     SOUND                                                                                │
-      │                      Needs you                     Glass                                      inherited  │
-      │                      Turn finishes                 Tink                                       inherited  │
+      │                      Needs you                     Chime                                      inherited  │
+      │                      Turn finishes                 Tick                                       inherited  │
       │                                                                                                          │
       │                                                                                                          │
       │                     machine: on ∙ an OS banner and a sound ∙ only while this board is open ∙ inherit la~ │

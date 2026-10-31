@@ -24,6 +24,8 @@
 //! Everything here is pure and time-injected, the way `attention.rs` is: the
 //! caller passes `now_ms` and the platform half holds no policy.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ulid::Ulid;
 
 use crate::text::clip_words;
@@ -99,16 +101,23 @@ impl Event {
 
 /// A sound, by name.
 ///
-/// Six, because a ring the Settings row cycles has to be walkable in a few
+/// Eight, because a ring the Settings row cycles has to be walkable in a few
 /// presses, and because the ring exists to make the two events
-/// *distinguishable* — not to be a sound library. The names are macOS's own
-/// (they are the filenames); on a freedesktop desktop they collapse to the
-/// three events that theme actually ships, which is honest about what is
-/// there rather than pretending six.
+/// *distinguishable* — not to be a sound library. Two are mesimon's own
+/// ([`Sound::is_own`], T-1094): synthesized by the board, so they sound the
+/// same on every machine, and the defaults for that reason. The other six
+/// keep macOS's filenames as their keys; on Windows they are six stock files
+/// under Windows' own names ([`Sound::windows`]), and on a freedesktop
+/// desktop they collapse to the three events that theme actually ships,
+/// which is honest about what is there rather than pretending six.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sound {
     Off,
+    /// Mesimon's needs-you sound: two rising bell notes.
     #[default]
+    Chime,
+    /// Mesimon's finished-turn sound: one soft, short note.
+    Tick,
     Glass,
     Ping,
     Tink,
@@ -117,11 +126,19 @@ pub enum Sound {
     Hero,
 }
 
+/// Whether [`Sound::name`] speaks Windows' names: set once by the client
+/// when the sound it plays is the Windows host's (natively or through WSL).
+/// One process-wide fact, because every place a name is shown — the
+/// Settings row, its status line, `doctor` — must agree on the spelling.
+static WINDOWS_NAMES: AtomicBool = AtomicBool::new(false);
+
 impl Sound {
-    /// The ring, in the order a Settings row cycles it: bright first, then
-    /// quieter, then off — so a user walking it hears the useful ones before
-    /// they hear silence.
-    pub const ALL: [Sound; 7] = [
+    /// The ring, in the order a Settings row cycles it: mesimon's own first,
+    /// then the platform's from bright to quieter, then off — so a user
+    /// walking it hears the useful ones before they hear silence.
+    pub const ALL: [Sound; 9] = [
+        Sound::Chime,
+        Sound::Tick,
         Sound::Glass,
         Sound::Ping,
         Sound::Tink,
@@ -137,10 +154,35 @@ impl Sound {
         Sound::ALL[(i + 1) % Sound::ALL.len()]
     }
 
+    /// Show Windows' names from now on (or stop). The client calls it once,
+    /// beside resolving who plays the sound.
+    pub fn use_windows_names(on: bool) {
+        WINDOWS_NAMES.store(on, Ordering::Relaxed);
+    }
+
     /// The name, as the Settings row and `doctor` spell it.
     pub fn name(self) -> &'static str {
+        self.name_in(WINDOWS_NAMES.load(Ordering::Relaxed))
+    }
+
+    /// The name on the platform asked about: [`Sound::windows`]' word there,
+    /// the key everywhere else.
+    pub fn name_in(self, windows: bool) -> &'static str {
+        match self.windows() {
+            Some((word, _)) if windows => word,
+            _ => self.key(),
+        }
+    }
+
+    /// `prefs.json`'s spelling, the same on every platform so a file carried
+    /// between machines keeps its pick. Round-trips through
+    /// [`Sound::from_key`], which is case-insensitive because a hand edit is
+    /// the file's other writer.
+    pub fn key(self) -> &'static str {
         match self {
             Sound::Off => "off",
+            Sound::Chime => "Chime",
+            Sound::Tick => "Tick",
             Sound::Glass => "Glass",
             Sound::Ping => "Ping",
             Sound::Tink => "Tink",
@@ -148,13 +190,6 @@ impl Sound {
             Sound::Submarine => "Submarine",
             Sound::Hero => "Hero",
         }
-    }
-
-    /// `prefs.json`'s spelling — the name itself. Round-trips through
-    /// [`Sound::from_key`], which is case-insensitive because a hand edit is
-    /// the file's other writer.
-    pub fn key(self) -> &'static str {
-        self.name()
     }
 
     pub fn from_key(s: &str) -> Option<Sound> {
@@ -165,21 +200,64 @@ impl Sound {
         matches!(self, Sound::Off)
     }
 
+    /// Mesimon's own: a file the board writes rather than one the platform
+    /// ships.
+    pub fn is_own(self) -> bool {
+        matches!(self, Sound::Chime | Sound::Tick)
+    }
+
+    /// What an own sound plays as where its file could not be written: the
+    /// platform sound of the same job. Every other sound stands for itself.
+    pub fn stand_in(self) -> Sound {
+        match self {
+            Sound::Chime => Sound::Glass,
+            Sound::Tick => Sound::Tink,
+            s => s,
+        }
+    }
+
     /// macOS ships these as files, under one directory, with these names.
     pub fn file_macos(self) -> Option<String> {
         match self {
+            Sound::Off | Sound::Chime | Sound::Tick => None,
+            _ => Some(format!("/System/Library/Sounds/{}.aiff", self.key())),
+        }
+    }
+
+    /// Windows' word for the sound and its file under `%WINDIR%\Media`.
+    /// Six distinct stock notification sounds, rather than the three system
+    /// events, which a stock sound scheme plays alike (T-1094).
+    pub fn windows(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Sound::Off | Sound::Chime | Sound::Tick => None,
+            Sound::Glass => Some(("Messaging", "Windows Notify Messaging.wav")),
+            Sound::Ping => Some(("Email", "Windows Notify Email.wav")),
+            Sound::Tink => Some(("Generic", "Windows Notify System Generic.wav")),
+            Sound::Purr => Some(("Calendar", "Windows Notify Calendar.wav")),
+            Sound::Submarine => Some(("Nudge", "Windows Message Nudge.wav")),
+            Sound::Hero => Some(("Tada", "tada.wav")),
+        }
+    }
+
+    /// The Windows system event a sound falls back to when its file cannot
+    /// be played: the alert, the beep or the exclamation.
+    pub fn windows_event(self) -> Option<&'static str> {
+        match self {
             Sound::Off => None,
-            _ => Some(format!("/System/Library/Sounds/{}.aiff", self.name())),
+            Sound::Chime | Sound::Glass | Sound::Ping => Some("Asterisk"),
+            Sound::Tick | Sound::Tink | Sound::Purr => Some("Beep"),
+            Sound::Submarine | Sound::Hero => Some("Exclamation"),
         }
     }
 
     /// The freedesktop sound-theme event this name collapses to. The theme
     /// has no fourteen-sound palette to map onto, so six names become three
     /// events, chosen by what the sound is FOR rather than what it sounds
-    /// like: an alert, a completion, a nudge.
+    /// like: an alert, a completion, a nudge. Mesimon's own two collapse
+    /// with their stand-ins.
     pub fn event_freedesktop(self) -> Option<&'static str> {
-        match self {
-            Sound::Off => None,
+        match self.stand_in() {
+            Sound::Off | Sound::Chime | Sound::Tick => None,
             Sound::Glass | Sound::Ping => Some("message"),
             Sound::Hero | Sound::Submarine => Some("complete"),
             Sound::Tink | Sound::Purr => Some("bell"),
@@ -1075,16 +1153,17 @@ mod tests {
 
     #[test]
     fn the_sound_ring_walks_and_round_trips() {
-        assert_eq!(Sound::default(), Sound::Glass);
-        let mut s = Sound::Glass;
+        assert_eq!(Sound::default(), Sound::Chime, "mesimon's own sound is the default");
+        assert_eq!(Sound::ALL[..2], [Sound::Chime, Sound::Tick], "and its two lead the ring");
+        let mut s = Sound::Chime;
         for _ in 0..Sound::ALL.len() {
             assert_eq!(Sound::from_key(s.key()), Some(s));
             assert_eq!(Sound::from_key(&s.key().to_lowercase()), Some(s));
             s = s.next();
         }
-        assert_eq!(s, Sound::Glass, "the ring closes");
+        assert_eq!(s, Sound::Chime, "the ring closes");
         assert_eq!(Sound::from_key("nonesuch"), None);
-        assert_eq!(Sound::Off.next(), Sound::Glass, "off is a rung, not a stop");
+        assert_eq!(Sound::Off.next(), Sound::Chime, "off is a rung, not a stop");
     }
 
     #[test]
@@ -1093,14 +1172,46 @@ mod tests {
             if s.is_off() {
                 assert_eq!(s.file_macos(), None);
                 assert_eq!(s.event_freedesktop(), None);
+                assert_eq!(s.windows(), None);
+                assert_eq!(s.windows_event(), None);
                 continue;
             }
+            assert!(s.windows_event().is_some(), "{s:?} has a Windows event to fall back to");
+            let e = s.event_freedesktop().expect("an event");
+            assert!(["message", "complete", "bell"].contains(&e), "{e} is not in the theme");
+            if s.is_own() {
+                assert_ne!(s.stand_in(), s, "an own sound stands in as a platform one");
+                assert!(!s.stand_in().is_own());
+                assert_eq!(s.file_macos(), None, "an own sound's file is the board's");
+                assert_eq!(s.windows(), None);
+                continue;
+            }
+            assert_eq!(s.stand_in(), s);
             let f = s.file_macos().expect("a file");
             assert!(f.starts_with("/System/Library/Sounds/"), "{f}");
             assert!(f.ends_with(".aiff"), "{f}");
-            let e = s.event_freedesktop().expect("an event");
-            assert!(["message", "complete", "bell"].contains(&e), "{e} is not in the theme");
         }
+    }
+
+    #[test]
+    fn windows_names_six_distinct_files_and_keys_never_move() {
+        let platform: Vec<Sound> =
+            Sound::ALL.into_iter().filter(|s| !s.is_off() && !s.is_own()).collect();
+        let files: std::collections::HashSet<_> =
+            platform.iter().map(|s| s.windows().expect("a Windows file").1).collect();
+        assert_eq!(files.len(), platform.len(), "no two choices play the same file");
+        let words: std::collections::HashSet<_> =
+            Sound::ALL.iter().map(|s| s.name_in(true)).collect();
+        assert_eq!(words.len(), Sound::ALL.len(), "no two rows read alike");
+        for s in Sound::ALL {
+            assert_eq!(s.name_in(false), s.key(), "elsewhere the name is the key");
+            assert_eq!(Sound::from_key(s.key()), Some(s), "prefs.json is portable");
+            if let Some((_, file)) = s.windows() {
+                assert!(file.ends_with(".wav") && !file.contains(['\\', '/', '\'']), "{file}");
+            }
+        }
+        assert_eq!(Sound::Glass.name_in(true), "Messaging");
+        assert_eq!(Sound::Chime.name_in(true), "Chime", "mesimon's own keep their names");
     }
 
     #[test]

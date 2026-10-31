@@ -28168,8 +28168,8 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::NotifySoundNeedsYou, Key::Enter, Scope::Settings, &ctx)
             .expect("the row");
-        assert_eq!(app.prefs.notify_sound_needs_you, Sound::Ping, "the ring moved");
-        assert!(app.status.starts_with("needs-you sound: Ping"), "{}", app.status);
+        assert_eq!(app.prefs.notify_sound_needs_you, Sound::Tick, "the ring moved");
+        assert!(app.status.starts_with("needs-you sound: Tick"), "{}", app.status);
     }
 
     /// The door and the list: Enter opens it, Esc lands back on the row that

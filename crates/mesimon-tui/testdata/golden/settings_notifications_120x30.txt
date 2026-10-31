@@ -2,7 +2,7 @@
 
    TOD╭─ SETTINGS ∙ MACHINE ─────────────────────────────────────────────────────────────────────────────────────╮   0
       │                                                                                                          │
-   Dec│  Theme               mesimon                                       ♪ Glass                               │
+   Dec│  Theme               mesimon                                       ♪ Chime                               │
       │                      kanban-tui ∙ Fix the OSC parser                                                     │
    Key│  Appearance          “Keep the old parser as a fallback?”                                                │
       │                                                                                                          │
@@ -20,8 +20,8 @@
       │                      Dock bounce                   ○ off                                                 │
       │  About                                                                                                   │
       │                     SOUND                                                                                │
-      │                      Needs you                     Glass                                                 │
-      │                      Turn finishes                 Tink                                                  │
+      │                      Needs you                     Chime                                                 │
+      │                      Turn finishes                 Tick                                                  │
       │                                                                                                          │
       │                                                                                                          │
       │                     an OS banner and a sound ∙ only while this board is open                             │

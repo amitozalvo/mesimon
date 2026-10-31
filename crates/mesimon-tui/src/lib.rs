@@ -17,6 +17,7 @@ pub mod test_support;
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 mod arcade;
 mod boards;
+mod chime;
 pub mod client;
 mod detach_guide;
 mod detect;
@@ -283,7 +284,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // here and never in `App::new` — the rule the two ladders and `opener`
     // already follow — so no test app and no golden raises a banner, makes a
     // sound, or opens a second connection.
-    app.notifier = Some(notifier::Notifier::start(repo_root, notify::find(), (&app.prefs).into()));
+    // Where the Windows host plays the sound, the rows name it as Windows
+    // does (T-1094): one process-wide switch, set before the first frame.
+    let channels = notify::find();
+    mesimon_core::notify::Sound::use_windows_names(channels.player.is_windows());
+    app.notifier = Some(notifier::Notifier::start(repo_root, channels, (&app.prefs).into()));
     // What holds the machine awake while an agent is mid-turn (T-288) —
     // resolved here and never in `App::new`, the same rule again, so no test
     // app takes a power assertion or forks a holder. Its observer keeps

@@ -40,15 +40,27 @@ pub(crate) fn tab_icon(dir: &Path, needs_you: bool) -> std::io::Result<PathBuf> 
 }
 
 fn publish(dir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    publish_asset(dir, "shin", "png", bytes)
+}
+
+/// Write `bytes` once under `<stem>-<digest>.<ext>` in the notification
+/// directory, atomically, never through a symlink — the icons' road, shared
+/// by the board's own sounds (T-1094).
+pub(crate) fn publish_asset(
+    dir: &Path,
+    stem: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> std::io::Result<PathBuf> {
     mesimon_daemon::paths::own_private_dir(dir).map_err(std::io::Error::other)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
-    let path = dir.join(format!("shin-{digest}.png"));
+    let path = dir.join(format!("{stem}-{digest}.{ext}"));
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
         && std::fs::read(&path).is_ok_and(|existing| existing == bytes)
     {
         return Ok(path);
     }
-    let temp = dir.join(format!(".shin-{}.tmp", uuid::Uuid::new_v4()));
+    let temp = dir.join(format!(".{stem}-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut file =
             std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;

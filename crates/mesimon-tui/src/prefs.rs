@@ -517,8 +517,8 @@ impl Default for Prefs {
             notify_in_pane: false,
             notify_crown: false,
             notify_words: true,
-            notify_sound_needs_you: Sound::Glass,
-            notify_sound_done: Sound::Tink,
+            notify_sound_needs_you: Sound::Chime,
+            notify_sound_done: Sound::Tick,
             notify_dock_bounce: false,
             notify_via: NotifyVia::Mesimon,
             peek: PeekLevel::Off,
@@ -1408,8 +1408,8 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let sound = |key: &str, fallback: Sound| {
         doc.get(key).and_then(Value::as_str).and_then(Sound::from_key).unwrap_or(fallback)
     };
-    let notify_sound_needs_you = sound(NOTIFY_SOUND_NEEDS_YOU_KEY, Sound::Glass);
-    let notify_sound_done = sound(NOTIFY_SOUND_DONE_KEY, Sound::Tink);
+    let notify_sound_needs_you = sound(NOTIFY_SOUND_NEEDS_YOU_KEY, Sound::Chime);
+    let notify_sound_done = sound(NOTIFY_SOUND_DONE_KEY, Sound::Tick);
     let week_start = doc
         .get(WEEK_START_KEY)
         .and_then(Value::as_str)
@@ -1993,7 +1993,12 @@ mod tests {
         )
         .unwrap();
         let mut l = load(&p);
-        assert_eq!(l.prefs.notify_sound_needs_you, Sound::Glass, "the default stands in");
+        assert_eq!(l.prefs.notify_sound_needs_you, Sound::Chime, "the default stands in");
+        assert_eq!(
+            l.prefs.notify_sound_done,
+            Sound::Tink,
+            "a pick from before Chime and Tick is kept"
+        );
         l.prefs.set_sound_done(Sound::Purr);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();

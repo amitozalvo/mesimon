@@ -82,12 +82,17 @@
 //! `MESIMON_NOTIFY=off` still silences it; the sound ladder is independent.
 //!
 //! **The sound ladder** is `MESIMON_SOUND` (`off` or a program) → `afplay` on
-//! macOS → Windows system sounds through PowerShell on Windows and WSL →
+//! macOS → Windows sounds through PowerShell on Windows and WSL →
 //! `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal bell,
 //! which is the rung nothing can take away.
 //! WSL selects PowerShell only when an executable is found. An immediate
 //! interop launch failure uses the Linux player, then the bell; detached
 //! helpers' later exit statuses and host audio settings are not observed.
+//! Windows plays six distinct stock files under `%WINDIR%\Media`, not the
+//! three system events a stock scheme plays alike (T-1094). Mesimon's own
+//! two sounds ([`crate::chime`]) are written beside the icons and played
+//! by path on every rung that plays files; where that fails they play as
+//! their stand-ins.
 //!
 //! **The two escape rungs write to OUR stdout, and since T-291 they say so.**
 //! Every other rung spawns a program and is therefore indifferent to what the
@@ -427,12 +432,38 @@ pub enum Player {
     Canberra,
 }
 
+/// Where one of mesimon's own sounds was written (T-1094), in the two
+/// spellings a player may need: this process's path, and the Windows host's
+/// for PowerShell (`None` where it cannot be spelled safely).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnFile {
+    pub path: PathBuf,
+    pub windows: Option<String>,
+}
+
 impl Player {
     /// The argv, or `None` to fall back to the bell — which is what a rung
-    /// whose file is not on this machine does.
-    fn argv(&self, sound: Sound) -> Option<Vec<String>> {
+    /// whose file is not on this machine does. `own` is the written file for
+    /// mesimon's own sound; without it the sound plays as its stand-in.
+    fn argv(&self, sound: Sound, own: Option<&OwnFile>) -> Option<Vec<String>> {
         if sound.is_off() {
             return None;
+        }
+        if sound.is_own() && !matches!(self, Player::Custom(_)) {
+            let Some(own) = own else {
+                return self.argv(sound.stand_in(), None);
+            };
+            let path = own.path.to_string_lossy().into_owned();
+            return match self {
+                Player::Off | Player::Bell | Player::Custom(_) => None,
+                Player::Afplay => Some(vec!["afplay".into(), path]),
+                Player::Windows(program) | Player::Wsl { program, .. } => {
+                    Some(windows_sound_argv(program, sound, own.windows.as_deref()))
+                }
+                Player::Paplay => Some(vec!["paplay".into(), path]),
+                Player::PwPlay => Some(vec!["pw-play".into(), path]),
+                Player::Canberra => Some(vec!["canberra-gtk-play".into(), "-f".into(), path]),
+            };
         }
         let file = |name: &str| {
             let p = PathBuf::from(FREEDESKTOP).join(format!("{name}.oga"));
@@ -441,13 +472,13 @@ impl Player {
         let v = |args: Vec<String>| Some(args);
         match self {
             Player::Off | Player::Bell => None,
-            Player::Custom(prog) => v(vec![prog.clone(), sound.name().to_string()]),
+            Player::Custom(prog) => v(vec![prog.clone(), sound.key().to_string()]),
             Player::Afplay => {
                 let f = sound.file_macos()?;
                 std::fs::metadata(&f).is_ok().then(|| vec!["afplay".to_string(), f])
             }
             Player::Windows(program) | Player::Wsl { program, .. } => {
-                Some(windows_sound_argv(program, sound))
+                Some(windows_sound_argv(program, sound, None))
             }
             Player::Paplay => v(vec!["paplay".into(), file(sound.event_freedesktop()?)?]),
             Player::PwPlay => v(vec!["pw-play".into(), file(sound.event_freedesktop()?)?]),
@@ -459,13 +490,24 @@ impl Player {
         }
     }
 
+    /// Plays the Windows host's sounds, so the rows name them as Windows
+    /// does ([`Sound::name`]).
+    pub fn is_windows(&self) -> bool {
+        matches!(self, Player::Windows(_) | Player::Wsl { .. })
+    }
+
+    /// Plays files, so mesimon's own sound is worth writing for it.
+    fn plays_files(&self) -> bool {
+        !matches!(self, Player::Off | Player::Bell | Player::Custom(_))
+    }
+
     pub fn word(&self) -> String {
         match self {
             Player::Off => "off".into(),
             Player::Bell => "the terminal bell".into(),
             Player::Custom(p) => format!("{p} ($MESIMON_SOUND)"),
             Player::Afplay => "afplay".into(),
-            Player::Windows(_) | Player::Wsl { .. } => "Windows system sounds (PowerShell)".into(),
+            Player::Windows(_) | Player::Wsl { .. } => "Windows sounds (PowerShell)".into(),
             Player::Paplay => "paplay".into(),
             Player::PwPlay => "pw-play".into(),
             Player::Canberra => "canberra-gtk-play".into(),
@@ -546,6 +588,9 @@ pub struct Channels {
     /// The escape this terminal posts a banner from, for the `your
     /// terminal` road (T-676). `None` where it cannot post one.
     pub poster: Option<Poster>,
+    /// The WSL distro this board runs in, which names the Windows host's
+    /// path to mesimon's own sound files (T-1094). `None` outside WSL.
+    pub wsl_distro: Option<String>,
 }
 
 /// The two ladders. The group is not resolved here — this function knows no
@@ -570,6 +615,10 @@ pub fn find() -> Channels {
         notifier_app: crate::opener::which_on_path("terminal-notifier")
             .and_then(|path| crate::notification_app::discover(&path)),
         poster: crate::title::terminal().poster(),
+        wsl_distro: crate::opener::is_wsl()
+            .then(|| std::env::var("WSL_DISTRO_NAME").ok())
+            .flatten()
+            .filter(|d| !d.is_empty()),
         click: find_click(
             std::env::var("MESIMON_TERM_BUNDLE").ok().as_deref(),
             std::env::var("MESIMON_TERM_REVEAL").ok().as_deref(),
@@ -901,23 +950,54 @@ fn linux_player(which: impl Fn(&str) -> Option<PathBuf>) -> Player {
     Player::Bell
 }
 
-/// Map the existing sound choices onto Windows' built-in notification sounds.
-/// PowerShell and System.Media are present on supported Windows installations,
-/// and the call returns as soon as the sound has been queued.
-fn windows_sound_argv(program: &str, sound: Sound) -> Vec<String> {
-    let system_sound = match sound {
-        Sound::Off => return Vec::new(),
-        Sound::Glass | Sound::Ping => "Asterisk",
-        Sound::Tink | Sound::Purr => "Beep",
-        Sound::Submarine | Sound::Hero => "Exclamation",
+/// Play a sound on the Windows host: mesimon's own file at `own` (a Windows
+/// path), or the stock file under `%WINDIR%\Media` the choice names. Played
+/// to the end (`PlaySync`), because PowerShell exiting would cut it short;
+/// a file that cannot be played falls back to the system event of the same
+/// job. The script is built from constants and from `own`, which
+/// [`windows_path`] spells only when no character in it can end a
+/// single-quoted PowerShell string.
+fn windows_sound_argv(program: &str, sound: Sound, own: Option<&str>) -> Vec<String> {
+    let Some(event) = sound.windows_event() else {
+        return Vec::new();
     };
-    vec![
-        program.into(),
-        "-NoProfile".into(),
-        "-NonInteractive".into(),
-        "-Command".into(),
-        format!("[System.Media.SystemSounds]::{system_sound}.Play()"),
-    ]
+    let file = match (own, sound.stand_in().windows()) {
+        (Some(path), _) => format!("'{path}'"),
+        (None, Some((_, stock))) => format!("(Join-Path $env:WINDIR 'Media\\{stock}')"),
+        (None, None) => String::new(),
+    };
+    let fallback = format!("[System.Media.SystemSounds]::{event}.Play()");
+    let script = if file.is_empty() {
+        fallback
+    } else {
+        format!(
+            "try {{ (New-Object System.Media.SoundPlayer {file}).PlaySync() }} catch {{ {fallback} }}"
+        )
+    };
+    vec![program.into(), "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script]
+}
+
+/// The Windows host's spelling of a file this process wrote: the path itself
+/// natively, `\\wsl$\<distro>\…` from inside WSL. `None` — the stand-in plays
+/// instead — where the distro is unknown, the path is not absolute, or any
+/// character in it could end or bend the quoted PowerShell string it rides
+/// in: a quote of any of PowerShell's four kinds, or a control character.
+pub fn windows_path(path: &std::path::Path, distro: Option<&str>) -> Option<String> {
+    let raw = path.to_str()?;
+    let spelled = match distro {
+        Some(d) => {
+            if !raw.starts_with('/') || d.is_empty() || d.contains(['/', '\\']) {
+                return None;
+            }
+            format!("\\\\wsl$\\{d}{}", raw.replace('/', "\\"))
+        }
+        None if cfg!(target_os = "windows") => raw.to_string(),
+        None => return None,
+    };
+    let unsafe_char = |c: char| {
+        c.is_control() || matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}')
+    };
+    (!spelled.chars().any(unsafe_char)).then_some(spelled)
 }
 
 /// The board's own terminal, shared with the notification thread (T-291).
@@ -1063,14 +1143,29 @@ fn post_with(
         console.write_if_held(|| emit(BOUNCE))?;
     }
     if !p.sound.is_off() {
-        match ch.player.argv(p.sound) {
+        // Mesimon's own sound is written beside the icons the first time it
+        // plays; a failure plays its stand-in rather than nothing.
+        let own = (p.sound.is_own() && ch.player.plays_files())
+            .then_some(ch.icon_dir.as_ref())
+            .flatten()
+            .and_then(|dir| crate::chime::file(dir, p.sound).ok())
+            .map(|path| OwnFile {
+                windows: ch
+                    .player
+                    .is_windows()
+                    .then(|| windows_path(&path, ch.wsl_distro.as_deref()))
+                    .flatten(),
+                path,
+            });
+        match ch.player.argv(p.sound, own.as_ref()) {
             Some(argv) => {
                 if let Err(error) = launch(&argv) {
                     if let Player::Wsl { fallback, .. } = &ch.player {
                         // Detached launch can only report an immediate error.
                         // A later PowerShell exit or muted host is not observed.
-                        let played =
-                            fallback.argv(p.sound).is_some_and(|args| launch(&args).is_ok());
+                        let played = fallback
+                            .argv(p.sound, own.as_ref())
+                            .is_some_and(|args| launch(&args).is_ok());
                         if !played {
                             console.write_if_held(|| emit(BELL))?;
                         }
@@ -1226,6 +1321,7 @@ fn banner_words(ch: &Channels, by_terminal: bool) -> String {
 pub fn doctor_line() -> String {
     let p = &crate::prefs::load_home().prefs;
     let ch = find();
+    Sound::use_windows_names(ch.player.is_windows());
     let by_terminal = p.notify_via == crate::prefs::NotifyVia::Terminal;
     let banner = banner_words(&ch, by_terminal);
     // Asked once and said in BOTH arms: "would it work if I turned it on" is
@@ -1332,6 +1428,7 @@ mod tests {
             icon_dir: Some(dir.clone()),
             notifier_app: None,
             poster: None,
+            wsl_distro: None,
         };
         post(&ch, &Post::sound_only(Sound::Off), &Console::default(), Delivery::default()).unwrap();
         ch.banner = Banner::Off;
@@ -1361,6 +1458,7 @@ mod tests {
             icon_dir: Some(root.join("notifications")),
             notifier_app: Some(source),
             poster: None,
+            wsl_distro: None,
         };
         let p = Post {
             needs_you: false,
@@ -1427,6 +1525,7 @@ mod tests {
             icon_dir: Some(root.join("notifications")),
             notifier_app: None,
             poster: None,
+            wsl_distro: None,
         };
         let p = Post {
             needs_you: true,
@@ -1951,15 +2050,18 @@ mod tests {
 
     #[test]
     fn off_means_off_on_each_channel_alone() {
-        assert!(Player::Off.argv(Sound::Glass).is_none());
-        assert!(Player::Afplay.argv(Sound::Off).is_none());
-        assert!(Player::Bell.argv(Sound::Glass).is_none(), "the bell has no argv, it is a write");
+        assert!(Player::Off.argv(Sound::Glass, None).is_none());
+        assert!(Player::Afplay.argv(Sound::Off, None).is_none());
+        assert!(
+            Player::Bell.argv(Sound::Glass, None).is_none(),
+            "the bell has no argv, it is a write"
+        );
         assert_eq!(
-            Player::Canberra.argv(Sound::Glass).expect("argv"),
+            Player::Canberra.argv(Sound::Glass, None).expect("argv"),
             vec!["canberra-gtk-play", "-i", "message"]
         );
         assert_eq!(
-            Player::Custom("ding".into()).argv(Sound::Tink).expect("argv"),
+            Player::Custom("ding".into()).argv(Sound::Tink, None).expect("argv"),
             vec!["ding", "Tink"]
         );
         for (sound, expected) in [
@@ -1970,11 +2072,102 @@ mod tests {
             (Sound::Submarine, "Exclamation"),
             (Sound::Hero, "Exclamation"),
         ] {
-            let argv = windows_sound_argv("powershell.exe", sound);
+            let argv = windows_sound_argv("powershell.exe", sound, None);
             assert_eq!(argv[0], "powershell.exe");
             assert!(argv[4].contains(&format!("::{expected}.Play()")), "{argv:?}");
         }
-        assert!(Player::Windows("powershell.exe".into()).argv(Sound::Off).is_none());
+        assert!(Player::Windows("powershell.exe".into()).argv(Sound::Off, None).is_none());
+    }
+
+    #[test]
+    fn windows_plays_six_distinct_stock_files_to_the_end_and_falls_back_to_the_event() {
+        let mut scripts = std::collections::HashSet::new();
+        for sound in Sound::ALL.into_iter().filter(|s| !s.is_off() && !s.is_own()) {
+            let argv = windows_sound_argv("powershell.exe", sound, None);
+            let (_, file) = sound.windows().unwrap();
+            let script = &argv[4];
+            assert!(script.contains(&format!("$env:WINDIR 'Media\\{file}'")), "{script}");
+            assert!(script.contains(".PlaySync()"), "PowerShell must not exit mid-sound");
+            assert!(script.contains("catch {"), "a missing file falls back: {script}");
+            scripts.insert(script.clone());
+        }
+        assert_eq!(scripts.len(), 6, "six choices, six different sounds");
+        // Mesimon's own: its written file, or without one its stand-in's.
+        let own = windows_sound_argv("powershell.exe", Sound::Chime, Some("C:\\s\\chime-1.wav"));
+        assert!(own[4].contains("SoundPlayer 'C:\\s\\chime-1.wav'"), "{own:?}");
+        assert!(own[4].contains("::Asterisk.Play()"));
+        let stand_in = windows_sound_argv("powershell.exe", Sound::Tick, None);
+        assert!(stand_in[4].contains("Windows Notify System Generic.wav"), "{stand_in:?}");
+    }
+
+    #[test]
+    fn a_wsl_path_is_spelled_for_the_host_or_refused_never_escaped() {
+        let p = std::path::Path::new("/home/a b/.local/state/mesimon/notifications/chime-1.wav");
+        assert_eq!(
+            windows_path(p, Some("Ubuntu-24.04")).as_deref(),
+            Some("\\\\wsl$\\Ubuntu-24.04\\home\\a b\\.local\\state\\mesimon\\notifications\\chime-1.wav")
+        );
+        for bad in ["/home/o'neil/x.wav", "/home/o\u{2019}neil/x.wav", "/home/a\nb/x.wav"] {
+            assert_eq!(windows_path(std::path::Path::new(bad), Some("Ubuntu")), None, "{bad:?}");
+        }
+        assert_eq!(windows_path(p, Some("")), None);
+        assert_eq!(windows_path(p, Some("a\\b")), None);
+        assert_eq!(windows_path(std::path::Path::new("rel/x.wav"), Some("Ubuntu")), None);
+        if !cfg!(target_os = "windows") {
+            assert_eq!(windows_path(p, None), None, "outside WSL there is no host to spell for");
+        }
+    }
+
+    #[test]
+    fn an_own_sound_is_written_once_and_played_by_path_or_stands_in() {
+        let root = std::env::temp_dir().join(format!("msmn-own-sound-{}", uuid::Uuid::new_v4()));
+        let mut ch = Channels {
+            banner: Banner::Off,
+            player: Player::Paplay,
+            group: None,
+            click: None,
+            icon_dir: Some(root.join("notifications")),
+            notifier_app: None,
+            poster: None,
+            wsl_distro: None,
+        };
+        let played = |ch: &Channels, sound: Sound| {
+            let launched = std::cell::RefCell::new(Vec::new());
+            post_with(
+                ch,
+                &Post::sound_only(sound),
+                &Console::default(),
+                Delivery::default(),
+                |argv| {
+                    launched.borrow_mut().push(argv.to_vec());
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+            launched.into_inner()
+        };
+        let chime = played(&ch, Sound::Chime);
+        assert_eq!(chime.len(), 1);
+        assert_eq!(chime[0][0], "paplay");
+        let file = PathBuf::from(&chime[0][1]);
+        assert!(file.starts_with(root.join("notifications")), "{file:?}");
+        assert_eq!(std::fs::read(&file).unwrap(), crate::chime::wav(Sound::Chime).unwrap());
+        assert_ne!(played(&ch, Sound::Tick)[0][1], chime[0][1], "two sounds, two files");
+        // A custom player is handed the name, and nothing is written for it.
+        ch.player = Player::Custom("ding".into());
+        assert_eq!(played(&ch, Sound::Tick), vec![vec!["ding".to_string(), "Tick".into()]]);
+        // Inside WSL the host gets its own spelling of the same file.
+        ch.player =
+            Player::Wsl { program: "powershell.exe".into(), fallback: Box::new(Player::Bell) };
+        ch.wsl_distro = Some("Ubuntu".into());
+        let host = played(&ch, Sound::Chime);
+        assert!(host[0][4].contains("SoundPlayer '\\\\wsl$\\Ubuntu\\"), "{host:?}");
+        // Nowhere to write it: the stand-in plays rather than nothing.
+        ch.icon_dir = None;
+        ch.player = Player::Canberra;
+        assert_eq!(played(&ch, Sound::Chime), vec![vec!["canberra-gtk-play", "-i", "message"]]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2056,6 +2249,7 @@ mod tests {
                 icon_dir: None,
                 notifier_app: None,
                 poster: None,
+                wsl_distro: None,
             };
             let console = Console::default();
             console.set_held(held);
@@ -2105,6 +2299,7 @@ mod tests {
                 icon_dir: None,
                 notifier_app: None,
                 poster: None,
+                wsl_distro: None,
             };
             for sound in [Sound::Glass, Sound::Off] {
                 let launched = std::cell::Cell::new(0);
@@ -2139,6 +2334,7 @@ mod tests {
             icon_dir: None,
             notifier_app: None,
             poster: None,
+            wsl_distro: None,
         };
         let p = Post {
             needs_you: false,
@@ -2188,6 +2384,7 @@ mod tests {
             icon_dir: Some(PathBuf::from("/nonexistent/msmn-notify-terminal")),
             notifier_app: Some(PathBuf::from("/nonexistent/terminal-notifier.app")),
             poster,
+            wsl_distro: None,
         };
         let launched = std::cell::RefCell::new(Vec::new());
         let wrote = std::cell::RefCell::new(String::new());
@@ -2293,6 +2490,7 @@ mod tests {
             icon_dir: None,
             notifier_app: None,
             poster: Some(Poster::Osc99),
+            wsl_distro: None,
         };
         assert_eq!(banner_words(&ch, false), "terminal-notifier");
         assert_eq!(banner_words(&ch, true), "your terminal, kitty (OSC 99)");
