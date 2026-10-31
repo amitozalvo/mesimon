@@ -40064,3 +40064,23 @@ tmux keeps no OSC 8 at all, and no flag brings the links back there.
 and would send OSC 8 to every xterm-alike, including terminals that print it. Building the flag
 in `TmuxBackend::attach_argv`: the daemon's environment is not the board's terminal, and two
 boards on different terminals share one daemon.
+
+## WSL opens a link in the Windows default browser (T-1096, 2026-11-01)
+
+Reported from WSL: `^k` then Enter said `no opener found`. The ladder off macOS knew two rungs,
+`wslview` (the `wslu` package) and `xdg-open` (`xdg-utils`), and a fresh WSL distro carries
+neither. **Built:** under WSL the ladder now takes Windows' own `explorer.exe` after `wslview` —
+from PATH, else at `/mnt/c/Windows/explorer.exe` for a distro with `appendWindowsPath=false`
+(`image_paste.rs` finds PowerShell the same way) — and before `xdg-open`, which would look for a
+Linux browser. Explorer is not Internet Explorer: it hands the target to ShellExecute, so the
+machine's default browser takes a URL, Chrome or whichever. A URL goes as is; a file that is
+not text (an attachment, a `.bin`) is respelled the way Windows reaches it, `/mnt/c/x` →
+`C:\x`, anything else `\\wsl$\<WSL_DISTRO_NAME>\…` (`opener::host_argv`, pure, no `wslpath`
+process). `doctor`'s `opener` line under WSL with nothing found points at Windows interop
+(`/etc/wsl.conf`), the one way Explorer goes missing.
+
+**Refuted:** `cmd.exe /c start` — splits a URL at `&` and warns about the UNC working directory;
+`powershell Start-Process` — a second slower; `xdg-open` with `BROWSER=explorer.exe` — needs
+`xdg-utils` anyway. Verified by unit tests on the ladder and the respelling; no WSL box was at
+hand, so the live press is the reporter's to confirm (`/mnt/c/Windows/explorer.exe https://…`
+from a WSL shell is the one-line check).

@@ -15654,7 +15654,7 @@ impl App {
         }
         match &self.opener {
             Some(prog) => {
-                self.pending_open = Some(vec![prog.clone(), target.clone()]);
+                self.pending_open = Some(crate::opener::host_argv(prog, &target));
                 self.status = format!("opening {target}");
             }
             None => {
