@@ -10,6 +10,65 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.14.unstable.1 — 2026-10-31
+
+An unstable build: the first on the unstable channel. It carries sixteen tickets
+delivered by Codex agents on a mesimon board and reviewed before landing. Nothing
+changes a state file's format.
+
+### Added
+
+- **Merge into a branch of your choosing.** `Settings › Behaviour › Merge into`
+  takes an existing local branch (`staging`, say) beside `main` and
+  `pull requests`; type its name in the `Integration branch` row. New worktrees
+  cut from it, the merge train and `m` land on it, and a card reads merged
+  against it. When the batch is ready, `Promote to main` in the same section
+  fast-forwards your default branch to it, after checking that every repository
+  of the board can, and never pushes. A refusal names the dirty or diverged
+  checkout. With a branch set, the board's `columns.toml` records it.
+- **A column can free a merged ticket's worktree on arrival.** The column
+  dialog's `Free worktree` row (under `Finished tickets`) removes a clean,
+  merged worktree once its panes close and keeps the card, the branch and the
+  binding; waking the agent rebuilds the directory on its branch. Uncommitted or
+  untracked work keeps the tree, with the reason on the card. On for DONE on
+  new boards; existing boards opt in.
+- **Search finds pull requests.** The board's search lists a ticket's pull
+  requests and their labels beside its cards.
+- **Links in a transcript can be opened.** In the conversation dialog (`{`
+  `}`), `l` and `n` step forward through the message's links and ticket keys,
+  `h` and `N` back, Enter opens the selected one, and `{` `}` clear the
+  selection.
+- **The merge train says why it refused a merge.** Git's own words, the
+  colliding paths included, appear in the activity feed line and on the ticket
+  page, and clear once the merge lands.
+- **`Alt+V` pastes a picture into a note**, beside `Ctrl+V`, including under
+  the Windows Claude Code convention. On WSL2, pictures are read from the
+  Windows clipboard through `powershell.exe`; Windows interop must be on. SSH
+  picture paste is still not supported.
+- **Notification sounds on Windows and WSL** play through PowerShell, with the
+  previous silent fallback where PowerShell is unavailable.
+- **`Settings › Crown` has a `Learn more…` row** that opens the guided tour.
+
+Neither Windows change was validated on a real Windows host; please report what
+you see.
+
+### Changed
+
+- **A sleeping agent no longer holds the shared checkout.** The crown may start
+  the next ticket on the checkout once the previous agent is parked; an agent
+  that is awake, or still stopping, holds it as before.
+- **Terminal history and board columns scroll three rows per wheel notch**,
+  instead of five in the terminal.
+- **A card's worktree glyph stays grey until the branch has work of its own**,
+  and keeps the unmerged colour when a rebase is needed.
+
+### Fixed
+
+- The crown was woken twice for one merge, or once for a merge it had already
+  read on the ticket. It hears each merge and each finished turn once.
+- The weekly quota warning showed its reset time twice.
+- Paste did not reach the search box.
+
 ## v0.1.0-beta.14 — 2026-10-27
 
 ### Added
