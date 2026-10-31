@@ -39990,3 +39990,47 @@ October only, 54 entries unfetched.
 **Unverified**: Harness² Appendices A–G read as summaries; its code's acceptance rule and harness
 format are not on its pages; Self-Evolving Agent Harness's admission inequality did not render.
 No rig or demo run was made for this ticket; cost figures are T-930's and T-1032's.
+
+## A person's wake between two crowns makes the seat the person's (T-1091, 2026-10-31, "The crown is woken \"finished\" for a ticket a person started and never watched")
+
+**What happened.** Feed seq 474 woke the crown (`01M698QH…`) with `finished` for
+T-1016, which the person regarded as theirs; the crown moved it to DONE. `owe_wake` was not at
+fault: `crown_hears` passed on `started_by_crown`. T-1016's record carried `started_by` =
+`01M5STNM…`, a crown from 2026-10-25 that ran `start_agent` on it then. On 2026-10-31 the person
+archived the crown of the day (`uncrown` 15:57:56 IST), and 14 s later woke T-1016's parked seat
+(`prompt_session`, actor local, `--resume`) with no crown worn. The record kept its provenance;
+when the person crowned a new ticket at 17:19, T-927's rule ("what a crown started is the crown
+seat's") made the seat that crown's worker, and its next finish woke it. No watch or hold was
+involved, and no earlier session's watch: `crown_watched` held nothing for it.
+
+**The rule.** With no crown worn every worker is the person's (`Board::started_by_crown`), and a
+person's wake or resume is a person's start: `person_woke` drops the seat's `started_by` when
+the wake goes through with no crown worn. Roads: the board's wake (`WakeSession`), a human
+`ResumeSession`, a prompt sent now to a parked seat (`PromptSession`), and the phone's start on a
+parked seat (`mesophon`). Not changed: a wake under a worn crown keeps the crown's provenance
+(T-583's `c` on a parked worker), an automation's relaunch (tier switch, silent-mod relaunch,
+eviction replay) is nobody's start, and a seat no one woke between crowns stays the new crown's
+(T-927). Not covered: a person's ask *queued* to a parked seat between crowns, which the drain
+wakes later; and a person who types into a live crown-started pane between crowns. Both stay the
+crown's.
+
+**Refuted.** Clearing `started_by` at `Uncrown`: T-927's handover, through an archive and a
+later crown, would lose every worker. Clearing it in `resume_session_with_cleanup_ack` whenever
+no crown is worn: the automation's relaunches go through there too. Rewriting `started_by` to the
+crown worn now, or tracking "seat woken since": `started_by: None` already means "the person's",
+and nothing else reads the difference. The live board's T-1016 record still carries the old
+provenance (the fix does not rewrite state); it is parked and in DONE.
+
+**Question 2, the person's (proposal, nothing added).** Should keyed `move_ticket` refuse a
+person-started ticket no watch or hold covers? Proposal: no. The crown places other tickets by
+judgement (backlog grooming, DONE after a person's own merge), and this incident's wrong move
+came from a wrong wake, which is now fixed. If a guard is wanted, the smaller one is a word in
+`move_ticket`'s receipt ("a person's agent; not watched or held") so the crown sees it before
+the next move, not a refusal.
+
+**Tests.** `crown_e2e`: `a_seat_a_person_woke_between_crowns_is_the_person_s`. Crown A starts
+two workers in worktrees; the person parks one, uncrowns, and wakes it; crown B is crowned;
+both workers end a turn. B is woken for the untouched worker (T-927) and never for the woken one,
+whose `started_by` is gone and whose `get_ticket` carries no `under_crown`. With `person_woke`
+disabled the run fails at the provenance check, and with that check and `under_crown` skipped
+it fails at `!woke(b, w)`.

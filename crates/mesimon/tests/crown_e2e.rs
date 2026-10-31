@@ -16703,3 +16703,106 @@ fn a_crown_s_filing_receipt_starts_its_ticket_with_no_read() {
         other => panic!("start_agent after a fresh read: {other:?}"),
     }
 }
+
+/// T-1091: a crown started T-1016's agent, the person archived that crown's
+/// ticket and woke the parked agent with no crown worn, and the next crown
+/// was woken by the agent's finish and moved the ticket to DONE. With no
+/// crown worn every worker is the person's, and a person's wake is a
+/// person's start: the seat drops the earlier crown's `started_by`, and the
+/// crown worn next hears it only by a watch or a hold. A worker the earlier
+/// crown started and nobody woke stays the new crown's (T-927).
+#[test]
+fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
+    let Some(h) = Harness::boot_with_env(
+        "crown_person_woke",
+        Some(RECORDING_STUB_PER_TICKET),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("crown_person_woke");
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    let woke = |crown: ulid::Ulid, worker: ulid::Ulid| {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"")
+                    && l.contains(&format!("\"crown\":\"{crown}\""))
+                    && l.contains(&format!("\"worker\":\"{worker}\""))
+            })
+        })
+    };
+
+    let a = c.create_ticket("the first crown");
+    let b = c.create_ticket("the second crown");
+    let w = c.create_ticket("mesimon-probe-1091 woken by the person");
+    let k = c.create_ticket("mesimon-probe-1091 kept by the crown");
+    let (kb, kw, kk) = (c.key_of(b), c.key_of(w), c.key_of(k));
+    let sa = crown_idle(&h, &mut c, a);
+
+    // ---- 1. the first crown starts both workers ---------------------------
+    let seat = |c: &mut TestClient, key: &str, t: ulid::Ulid| {
+        match c.crown_start(sa, key, "worktree") {
+            Response::AgentStarted { .. } => {}
+            other => panic!("start_agent {key}: {other:?}"),
+        }
+        wait_attached(c, t);
+        wait_until(std::time::Duration::from_secs(15), "the crown's start to land", || {
+            c.board().live_agent(t).is_some()
+        });
+        c.board().live_agent(t).unwrap().id
+    };
+    let ws = seat(&mut c, &kw, w);
+    let ks = seat(&mut c, &kk, k);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    h.one_turn(&mut c, ws);
+    h.one_turn(&mut c, ks);
+
+    // ---- 2. the person parks one, the crown goes, the person wakes it -----
+    assert!(matches!(c.request(Command::SleepSession { id: ws }), Response::Ok));
+    wait_until(std::time::Duration::from_secs(10), "the worker parked", || {
+        c.board().sessions.iter().any(|s| s.id == ws && s.state == SessionState::Sleeping)
+    });
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(matches!(
+        c.request(Command::WakeSession { id: ws }),
+        Response::Spawned { .. } | Response::Provisioning
+    ));
+    wait_until(std::time::Duration::from_secs(15), "the person's wake", || {
+        c.board().sessions.iter().any(|s| s.id == ws && s.state != SessionState::Sleeping)
+    });
+    let by = |c: &mut TestClient, sid: uuid::Uuid| {
+        c.board().sessions.iter().find(|s| s.id == sid).and_then(|s| s.started_by)
+    };
+    assert_eq!(by(&mut c, ws), None, "the person's wake made the seat the person's");
+    assert_eq!(by(&mut c, ks), Some(a), "a seat nobody woke keeps its provenance");
+
+    // ---- 3. a new crown; both workers end a turn --------------------------
+    let sb = c.spawn_claude(b);
+    assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    h.one_turn(&mut c, sb);
+    match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
+        Response::AgentTicket { ticket } => {
+            assert!(ticket.under_crown.is_none(), "the woken agent is no crown's")
+        }
+        other => panic!("the woken agent's get_ticket: {other:?}"),
+    }
+    h.one_turn(&mut c, ks);
+    wait_until(std::time::Duration::from_secs(15), "the kept worker's finish on the crown", || {
+        woke(b, k)
+    });
+    h.one_turn(&mut c, ws);
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    assert!(!woke(b, w), "the person's agent woke the crown it was never given to");
+    let got_crown =
+        std::fs::read_to_string(h.dir.join(format!("got-{kb}.txt"))).unwrap_or_default();
+    assert!(
+        got_crown.contains(&kk) && !got_crown.contains(&kw),
+        "the crown's pane names the kept worker alone: {got_crown}"
+    );
+}

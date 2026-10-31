@@ -3475,12 +3475,17 @@ impl Daemon {
                 let send = |d: &mut Self, text: String| {
                     d.prompt_session(ticket, text, queued, immediately, accept_plan, plan, tier)
                 };
-                match self.with_pictures(&owner, ticket, text, &uploads, send, |r| {
+                // A send that wakes a parked seat now is the person's wake
+                // (T-1091); a queued one wakes it later, on the drain's road.
+                let parked = (!queued).then(|| self.parked_agent(ticket)).flatten();
+                let resp = match self.with_pictures(&owner, ticket, text, &uploads, send, |r| {
                     matches!(r, Response::Err { .. })
                 }) {
                     Ok(response) => response,
                     Err(message) => Response::Err { message },
-                }
+                };
+                self.person_woke(parked, &resp);
+                resp
             }
             Command::PromptColumn { column, text, queued, accept_plan } => {
                 self.prompt_column(&column, text, queued, accept_plan)
@@ -3738,6 +3743,9 @@ impl Daemon {
                     env.principal.is_human(),
                     false,
                 );
+                if env.principal.is_human() {
+                    self.person_woke(Some(id), &resp);
+                }
                 self.retype_title(&resp);
                 self.persist_and_notify();
                 resp
@@ -3757,6 +3765,7 @@ impl Daemon {
             },
             Command::WakeSession { id } => {
                 let resp = self.wake_session(id);
+                self.person_woke(Some(id), &resp);
                 self.retype_title(&resp);
                 self.persist_and_notify();
                 resp
@@ -21052,6 +21061,37 @@ impl Daemon {
             );
         }
         true
+    }
+
+    /// `ticket`'s parked agent seat, if it has one.
+    fn parked_agent(&self, ticket: ulid::Ulid) -> Option<uuid::Uuid> {
+        self.board
+            .live_agent(ticket)
+            .filter(|s| matches!(s.state, SessionState::Sleeping))
+            .map(|s| s.id)
+    }
+
+    /// A person woke or resumed agent seat `id` and `resp` says it is coming
+    /// up (T-1091). With no crown worn every worker is the person's
+    /// (`Board::started_by_crown`), and a person's wake is a person's start:
+    /// the seat drops the `started_by` an earlier crown left on it, so a
+    /// crown worn later hears it only by `watch_ticket` or `hold_ticket`, as
+    /// any person's agent. T-1016's seat, started by a crown on 10-25 and
+    /// woken by the person between two crowns on 10-31, kept it, and the next
+    /// crown was woken by its finish and moved it to DONE. A wake under a
+    /// worn crown keeps the crown's (T-583: `c` on a parked worker), and an
+    /// automation's relaunch is no person's start (T-927's handover).
+    fn person_woke(&mut self, id: Option<uuid::Uuid>, resp: &Response) {
+        let Some(id) = id else { return };
+        if self.board.crown_holder().is_some()
+            || matches!(resp, Response::Err { .. } | Response::NeedsConfirm { .. })
+        {
+            return;
+        }
+        let rec = self.board.sessions.iter_mut().find(|s| s.id == id && s.kind.is_agent());
+        if rec.is_some_and(|s| s.started_by.take().is_some()) {
+            self.persist_sessions();
+        }
     }
 
     fn wake_session(&mut self, id: uuid::Uuid) -> Response {

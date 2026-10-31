@@ -3151,6 +3151,7 @@ impl Daemon {
                 self.spawn_session(id, kind, true, words, None, false)
             }
         };
+        self.person_woke(asleep, &answer);
         let (status, session) = match answer {
             Response::Spawned { id, .. } => ("starting", Some(id)),
             Response::Provisioning => ("provisioning", None),
