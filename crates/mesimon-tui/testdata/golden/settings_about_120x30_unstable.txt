@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+   TOD╭─ SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────────╮   0
+      │                                                                                                          │
+   Dec│  Theme              mesimon vX.Y.Z                    ∙ unstable build                                   │
+      │                                                                                                          │
+   Key│  Appearance          Project page      github.com/amitozalvo/mesimon ›                                   │
+      │                      Release channel   ○ stable   ● unstable                                             │
+      │  Notifications                                                                                           │
+      │                                                                                                          │
+      │  Behaviour                                                                                               │
+      │                                                                                                          │
+      │  Agents                                                                                                  │
+      │                                                                                                          │
+      │  Crown                                                                                                   │
+      │                                                                                                          │
+      │  Terminal                                                                                                │
+      │                                                                                                          │
+      │  Usage                                                                                                   │
+      │                                                                                                          │
+      │▎ About                                                                                                   │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                                                                                                          │
+      │                     the README, the docs and where to report a problem                                   │
+      ╰──────────────────────────────────────────────────────────────── jk select ∙ enter change ∙ esc sections ─╯
+
+ SETTINGS                                                                                                        ? keys

@@ -1059,9 +1059,15 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
                 let label = (item.label)(&ctx);
                 assert!(shown(&rows, &label) || shown(&end, &label), "{label}: {rows:?} {end:?}");
             }
-            golden(&format!("settings_{name}_{w}x{h}"), &rows);
+            // About says which channel this build is on and follows it
+            // (T-946), so an unstable build has goldens of its own there.
+            let channel = match (section, mesimon_core::channel::Channel::running()) {
+                (SettingsSection::About, mesimon_core::channel::Channel::Unstable) => "_unstable",
+                _ => "",
+            };
+            golden(&format!("settings_{name}_{w}x{h}{channel}"), &rows);
             if scrolls {
-                golden(&format!("settings_{name}_{w}x{h}_end"), &end);
+                golden(&format!("settings_{name}_{w}x{h}{channel}_end"), &end);
             }
         }
     }

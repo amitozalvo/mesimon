@@ -6074,7 +6074,20 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         }
         c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
         switch("mod-hold-entered", true);
-        let parked = receipt(ask(&mut c, "mesimon-probe-9399 to a parked seat", Deliver::Now));
+        // An explicit send waits for the parked pane's reaper (T-1080): the
+        // daemon refuses it in words until cleanup is confirmed, so the ask
+        // is retried on that word, as the start above is.
+        let mut sent = None;
+        wait_until(std::time::Duration::from_secs(15), "the parked pane's cleanup", || {
+            match ask(&mut c, "mesimon-probe-9399 to a parked seat", Deliver::Now) {
+                Response::Err { message } if message.contains("still stopping") => false,
+                response => {
+                    sent = Some(response);
+                    true
+                }
+            }
+        });
+        let parked = receipt(sent.expect("the ask after cleanup"));
         assert_eq!(parked.status, "sent", "{parked:?}");
         hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
         let mod_record = h.dir.join(format!("mod-{ws}.ndjson"));

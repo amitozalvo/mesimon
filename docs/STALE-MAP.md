@@ -39835,3 +39835,13 @@ case lists them in that order, so no verdict before this was wrong.
 sixteen tickets and daemon tick and restart changes with no full-suite run on the final commit
 soak on the unstable channel first. The release notes say the two Windows changes (T-1022,
 T-1028) were not validated on a real Windows host.
+
+**Two reds the first unstable gate found (same day).** The Settings › About goldens render the
+build's channel word and the channel row's default, so an unstable build has goldens of its own
+(`settings_about_*_unstable`), minted and read. And one section of `crown_e2e`'s
+`a_crown_ask_says_one_true_word…` (T-974 round 3, mod road only) sent an explicit ask to a worker
+the instant it was parked and expected `sent`; T-1080's rule, pinned by `crown_checkout_e2e` and
+the same file's later tests, refuses an explicit send until the parked pane's reaper confirms
+cleanup (≤ 5 s), in words. Astra's full run predates that rule's commit, so the section never
+met it; it now retries on the refusal's word, as its sibling start does. The rule stands: a
+crown that asks a just-parked worker at once is told to wait for cleanup and asks again.

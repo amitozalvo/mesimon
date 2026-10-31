@@ -1,0 +1,20 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+  ╭─ SETTINGS ∙ ABOUT ───────────────────────────────────╮
+  │                                                      │
+  │ mesimon vX.Y.Z                    ∙ unstable build   │
+  │                                                      │
+  │  Project page      github.com/amitozalvo/mesimon ›   │
+  │  Release channel   ○ stable   ● unstable             │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │ the README, the docs and where to report a problem   │
+  ╰──────────── jk select ∙ enter change ∙ esc sections ─╯
+ SETTINGS                                            ? keys
