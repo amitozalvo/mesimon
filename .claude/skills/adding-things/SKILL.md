@@ -5,7 +5,7 @@ description: The recipes for adding to mesimon — the complete set of places a 
 
 # Adding things: the recipes
 
-From the root `CLAUDE.md`, whose rules still apply.
+From `AGENTS.md`, whose rules still apply.
 
 Each list is the complete set of places a change touches. The compiler finds most of them (the
 exhaustive matches are the mechanism); this is the rest. **If a step is missing here, add it

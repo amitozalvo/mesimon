@@ -1,11 +1,10 @@
 name: focused checks
 
-# Reliable feedback on every change. The process/timing-heavy matrix remains
-# available through ci.yml and the full release gate; this is not its replacement.
+# A small compile-and-core check, dispatched by hand like ci.yml: the local
+# gate (ci/test-run.py on the author's Mac) is the release bar, and hosted
+# runs are off until T-1030 revisits them (2026-10-26). Not a replacement for
+# the process/timing-heavy matrix or the release gate.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:

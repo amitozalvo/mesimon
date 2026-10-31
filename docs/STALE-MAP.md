@@ -39746,3 +39746,60 @@ being removed, then dispatches after cleanup confirms absence. This temporary
 reservation does not turn the ask into a person-only send. Explicit immediate
 sends and starts refuse during cleanup, before replacing already queued words.
 Other workers, approval ownership and budget checks keep their existing rules.
+
+## Review of the Codex trial integration: three fixes and the contract (2026-10-31)
+
+An outside-board read of `codex/board-trial-integration` at `9fd31c85` (two independent
+reviewers over the daemon and the Teams halves) found the direction right and three things
+that stopped it landing; fixed here on the same branch.
+
+**T-1040's arrival stage forked on the writer.** `process_column_evictions` ran a tmux
+snapshot, `live_directories`, `branch_tip` per leg and `ticket_merged` inside the tick, and
+re-judged every refused ticket every 2 s for as long as it sat in a `free_worktree` column —
+the shape T-857 removed. Now the tick runs the in-memory checks only and reads the merge
+verdict off the card's own flags (`wt_repos`, the worktree sampler's last answer; an open PR
+is unmerged, an unsampled leg is "merge state not read yet"); the pane reads ride the pane
+sampler as `Query::directories` (with the facts) and are judged in `absorb_evictions` as the
+sample lands; each leg carries the tip its verdict was read at, which the eviction worker
+already refuses to find moved. A merge made since the last flags sample is a bucket's wait,
+never a wrong answer, and the gates (a keypress) still ask `ticket_merged` fresh. An asked
+sample unanswered past 10 s is judged afresh.
+
+**T-1080's reaper never cleared without a tmux server.** `sweep_reaping` took only a pane
+listing as proof of absence, while `panes()` answers `None` when no server runs, and the
+restart reconcile seeded a reservation for every parked agent whenever it had no listing. After
+a reboot no server runs until the first spawn, so every parked ticket's teardown, column
+eviction and shared-checkout start was held until a person launched something. A pane cannot
+outlive its server: `TmuxBackend::endpoint_absent` (no socket file, or nothing listening on a
+dead server's stale one — the probe `live_directories` already made) is now positive proof for
+the reaper and the restart alike; a server that exists and does not answer still proves nothing
+(`crown_checkout_e2e`'s `list-panes` stub). A unit test drives both socket states; a listener
+that is not tmux cannot be simulated in a unit test because the tmux client hangs on it.
+
+**One clippy error** (`team/state.rs`, an assertion on a constant) failed the release gate's
+clippy; it is a `const` assertion now.
+
+**The development contract.** Astra cut the root instructions from 78 KB to a pointer and a
+930-word `AGENTS.md`, with the detail in `docs/DEVELOPMENT.md`. Kept, with these decisions:
+`CLAUDE.md` imports `AGENTS.md` (`@AGENTS.md`) so there is one contract and Claude Code loads
+it rather than being told to read it; "code and tests describe current behaviour, not proof it
+is desirable" is narrowed — the code and its tests are the spec for what the product does and a
+failing test changes only with the decision that changes the behaviour, while *process* rules
+may be reevaluated by their original failure and cost; the ticket-worktree rules (commit when
+done, never checkout or merge main, never relocate with `EnterWorktree`), the inside-mesimon
+facts, the commands block, the T-857 and T-930 one-liners and the rig rule for agent-facing
+text (a case plus one live run on the affected provider at the board's real tier, never tuned
+on a budget model) are back in the contract, since none of them survived anywhere on the
+branch; `.github/workflows/check.yml` is `workflow_dispatch` only, as hosted CI has been since
+2026-10-26. The `test-run.py` default of one road stands: the release gate asks for both.
+
+Not changed here, by the person's word: the Teams gate (`MESIMON_TEAMS=1`) stays shut, and
+the two T-655/T-656 findings the review raised (a rejected head record wedges that object for
+every honest writer; directory equality includes `display_name`) wait for the Teams
+discussion. The train's fast-forward into a linked checkout of the base (T-954) is a promise-1
+widening left for the person to rule on.
+
+Verified on this branch: `cargo ut` (all crates green), the release gate's clippy, `cargo fmt
+--check`, and `column_reclaim_e2e` (3), `crown_checkout_e2e` (2), `worktree_e2e` (4),
+`restart_e2e` (4) under `ci/test-run.py`, clean fixture audits. No full-suite rerun: the diff
+touches the tick and the restart path, so the one at release time is owed.
