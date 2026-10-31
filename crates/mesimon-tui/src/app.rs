@@ -28404,7 +28404,14 @@ mod tests {
             };
             (options[at], (item.detail)(ctx))
         };
-        assert_eq!(row(&app.ctx()), ("stable", String::new()), "a stable build follows stable");
+        // The channel is the version's (T-946): with no preference saved, a
+        // stable build follows stable and an unstable build unstable.
+        if Channel::running() == Channel::Unstable {
+            assert_eq!(row(&app.ctx()).0, "unstable", "an unstable build follows unstable");
+            app.seed_pref(|p| p.release_channel = Some(Channel::Stable));
+        } else {
+            assert_eq!(row(&app.ctx()), ("stable", String::new()), "a stable build follows stable");
+        }
         let ctx = app.ctx();
         app.dispatch(Verb::ReleaseChannel, Key::Enter, Scope::Settings, &ctx).expect("the row");
         assert_eq!(app.machine_prefs.release_channel, Some(Channel::Unstable));
