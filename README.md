@@ -122,7 +122,7 @@ up](https://mesimon.dev/relay/) is on mesimon.dev. Sharing a board with teammate
 
 1. **A strict write allowlist.** mesimon writes to a short list of paths, every one named, and
    nowhere else: never your shell rc, your git config, your agent configuration or your tmux
-   config.
+   config. The one branch of yours it touches is the one it merges into, fast-forward only.
 2. **No config mutation.** `mesimon doctor` prints fixes for you to apply; it never applies one
    itself.
 3. **Zero prompt injection.** mesimon adds, removes and reorders no token of your conversation.

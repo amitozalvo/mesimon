@@ -2317,3 +2317,17 @@ checks = ["road:mod", "started_by_crown", "reply:done", "budget_reused"]
   crown = "Please have {key2}'s own agent carry out its brief in its own worktree. When it finishes, tell me what it answered."
   until = { stops = 1, state = "idle", on = "key2" }
   wake = true
+
+[[test]]
+id = "WT1"
+title = "WT1 · do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown, asked to start a worker and say when its work is finished, starts it and ends its turn, with no sleep, no Monitor and no polling loop of its own: CROWN_ROLE says ending the turn leaves its workers running and their news starts its next turn, while a foreground wait keeps it busy and delays its wake (the paragraph the 2026-10-31 review kept, on Codex evidence; this is the Claude reading). The worker answers done, the board wakes the crown with the finished turn (delivered), and the crown's turn on that wake ends with WT1 finished and the worker's word."
+checks = ["road:mod", "started_by_crown", "woke:finished", "crown_never:sleep,Monitor,until,while,tail", "crown_line:WT1 finished:{reply}", "replies:done"]
+
+  [[test.steps]]
+  crown = "WT1: start {key}'s agent with workspace worktree, no tier and no plan. I need to know when its work is finished: when it is, end your turn with the single line: WT1 finished, followed by the word it replied."
+  until = { stops = 1, state = "idle" }
+  wake = true

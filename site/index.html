@@ -110,7 +110,8 @@
   <ol>
     <li><strong>A strict write allowlist.</strong> mesimon writes to a short list of paths, every
     one named, and nowhere else: never your shell rc, your git config, your agent configuration
-    or your tmux config.</li>
+    or your tmux config. The one branch of yours it touches is the one it merges into,
+    fast-forward only.</li>
     <li><strong>No config mutation.</strong> <code>mesimon doctor</code> prints fixes for you to
     apply; it never applies one itself.</li>
     <li><strong>Zero prompt injection.</strong> mesimon adds, removes and reorders no token of

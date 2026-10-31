@@ -6,7 +6,10 @@ These are commitments, and a way to make mesimon break one is a security bug. Th
 ## 1. A strict write allowlist
 
 On its own, mesimon writes only to `.mesimon/`, `$GIT_DIR/info/exclude`, the git worktrees and
-`msmn/*` branches it created (and their git bookkeeping), its state dir under
+`msmn/*` branches it created (and their git bookkeeping), the local branch it merges those
+branches into — your default branch, or the integration branch you name in *Settings ›
+Behaviour › Merge into* — advanced by fast-forward only, in the checkout where that branch is
+checked out when it is clean, its state dir under
 `~/.local/state/mesimon/`, and its runtime dir at `/tmp/mesimon-<uid>/<project key>/` — the
 sockets, provider observation snapshots/logs, the daemon lock, and the environment file every
 pane is launched with. That last one is a copy of your login shell's environment, secrets and
@@ -95,6 +98,7 @@ What the tools can and cannot do is in
 | `~/.local/state/mesimon/usage.lock` | An empty lock file, so only one board's daemon reads the quota at a time. |
 | `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. Codex starts and wakes create an empty `.codex/` directory in their Git worktree so Codex can resolve the main checkout's existing trust; existing contents are untouched. |
+| The branch it merges into | Your default branch, or the integration branch you name in *Settings › Behaviour › Merge into*, moved forward by fast-forward only when a ticket's branch is merged (the merge train, `m`, the crown) and, for an integration branch, when you choose *Promote to main*. Where that branch is checked out — your repository, or a worktree of yours — the checkout's files move with it, and only while it is clean; a dirty checkout refuses the merge and says so. Never a commit, a rebase or a push of mesimon's own. |
 | mesimon's own binary | Replaced in place, only if you take an update offer, only after its published checksum verifies. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting

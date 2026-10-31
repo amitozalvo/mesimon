@@ -39803,3 +39803,35 @@ Verified on this branch: `cargo ut` (all crates green), the release gate's clipp
 --check`, and `column_reclaim_e2e` (3), `crown_checkout_e2e` (2), `worktree_e2e` (4),
 `restart_e2e` (4) under `ci/test-run.py`, clean fixture audits. No full-suite rerun: the diff
 touches the tick and the restart path, so the one at release time is owed.
+
+## Promise 1 names the branch mesimon merges into; the crown's wait is a rig case (2026-10-31)
+
+**The widening, by the person's word.** T-954's named integration target made the train, `m`
+and the crown fast-forward the merge target inside a checkout where it is checked out — a
+worktree of the person's, not only the repository itself — and `Promote to main` does the same
+for the default branch. The old `git push .` road refused a checked-out branch, so that was a
+write promise 1 did not name. Asked whether to widen or refuse, the person widened:
+`docs/PROMISES.md` (the allowlist paragraph and a row of the table), the README line and the
+site's copy now name the branch mesimon merges into, fast-forward only, in its clean checkout,
+and never a commit, rebase or push of mesimon's own. The behaviour is unchanged.
+
+**WT1 (`ci/rig/tests.toml`), blind.** The crown paragraph Astra added to `CROWN_ROLE` (ending
+the turn leaves its workers running and their news starts the next; a foreground wait delays
+the wake and the train) had Codex evidence only. WT1 asks the crown to start a worker and say
+when its work is finished, with no word of how; `crown_never:sleep,Monitor,until,while,tail`
+and `woke:finished` read the answer. Two runs on claude-opus-5-5 (the worker on Sonnet), both
+with the behaviour the paragraph describes: start_agent, turn ended 5 s later with zero Bash
+calls, woken by the finished turn 6 s after that, `WT1 finished, done`. The first run's
+verdict read FAIL on two misspelt checks of mine (`woke:delivered` for a cause the board names
+`finished`, and a `words:` check), the second PASS with them corrected. Spend: ~0.9 min and
+~20k uncached tokens a run.
+
+**A rig check bug found by WT1.** `crown_never` bound its word list to `words`, the local the
+`words:` check reads, so a `words:` listed after a `crown_never:` judged the forbidden words as
+the card's (`sleep → Monitor → until → while → tail`). The local is `never` now; no shipped
+case lists them in that order, so no verdict before this was wrong.
+
+**Release.** `v0.1.0-beta.14.unstable.1`, the first unstable build, by the person's word:
+sixteen tickets and daemon tick and restart changes with no full-suite run on the final commit
+soak on the unstable channel first. The release notes say the two Windows changes (T-1022,
+T-1028) were not validated on a real Windows host.

@@ -4319,7 +4319,9 @@ Reply with the single word ready and end your turn."""
                 since = record.get("t0_ms", 0)
                 crown_rows = [r for r in (transcript(crown) if crown else [])
                               if (iso_ms(r.get("timestamp") or "") or 0) >= since]
-                words = [w for w in arg.split(",") if w]
+                # Not `words`: that is the card words `words:` reads, and a
+                # `words:` check listed after this one read these instead.
+                never = [w for w in arg.split(",") if w]
                 calls = tool_inputs(crown_rows)
                 ran = [i.get("command", "") for n, i in calls if n == "Bash"]
                 # T-973, rounds 1-2: every tool's input but the board's own
@@ -4327,7 +4329,7 @@ Reply with the single word ready and end your turn."""
                 # a Read, Grep or Glob of a transcript counts as a Bash `cat`.
                 hand = [f"<{n}> {json.dumps(i)}" for n, i in calls
                         if not (n or "").startswith("mcp__mesimon__") and n != "Bash"]
-                bad = [r for r in ran + hand if any(w in r for w in words)]
+                bad = [r for r in ran + hand if any(w in r for w in never)]
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
                       or f"{len(ran)} bash calls, {len(hand)} other tool calls, none of {words}")
