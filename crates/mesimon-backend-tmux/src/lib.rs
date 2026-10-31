@@ -124,7 +124,7 @@ fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
 /// (`#{pane_current_command}` — the shell's own at a prompt, the command's
 /// while one runs), whether a client has its session open, and its OSC-0
 /// title.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneFacts {
     pub session_name: String,
     /// The pane's process — the agent's own, since `mesimon exec` execs.
@@ -624,22 +624,30 @@ impl TmuxBackend {
         Ok(Some(parse_snapshot(&out)))
     }
 
+    /// No server stands behind the socket: the path is gone, or nothing
+    /// listens on it (a dead server's stale file). A pane cannot outlive its
+    /// server, so this is positive evidence that every pane is gone — unlike
+    /// a server that exists and does not answer, which proves nothing. The
+    /// reaper (`sweep_reaping`) and the restart reconcile read it where
+    /// `panes()` returned `None`.
+    pub fn endpoint_absent(&self) -> bool {
+        match std::os::unix::net::UnixStream::connect(&self.sock) {
+            Err(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ),
+            Ok(_) => false,
+        }
+    }
+
     /// Live pane directories, including terminals without session records.
     /// A failed read is not evidence that a worktree is unused.
     pub fn live_directories(&self) -> Result<Vec<PathBuf>> {
         if !self.server_alive() {
-            // Distinguish an absent endpoint from an unreadable live server.
-            match std::os::unix::net::UnixStream::connect(&self.sock) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    ) =>
-                {
-                    return Ok(Vec::new())
-                }
-                _ => bail!("cannot verify tmux pane directories"),
+            if self.endpoint_absent() {
+                return Ok(Vec::new());
             }
+            bail!("cannot verify tmux pane directories");
         }
         let out = self.list_panes(&["pane_dead", "pane_current_path"])?;
         out.lines()

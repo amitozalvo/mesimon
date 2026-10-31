@@ -411,7 +411,8 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["schema_version"], TEAM_SCHEMA);
-        assert!(TEAM_SCHEMA > 1, "schema-1 binaries must refuse to write migrated floors");
+        // Schema-1 binaries must refuse to write migrated floors.
+        const _: () = assert!(TEAM_SCHEMA > 1);
         assert!(restored.published.is_empty());
         assert_eq!(restored.revision(&object.to_hex()), Some(3));
         restored.enqueue(object, body("restored"), None);

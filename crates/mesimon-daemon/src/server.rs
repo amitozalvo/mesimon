@@ -350,6 +350,9 @@ struct ColumnEviction {
     column: String,
     due: Instant,
     refusal: Option<String>,
+    /// The pane sample that judges it is out (T-857): `absorb_evictions`
+    /// answers, or `due` passes and the arrival is judged afresh.
+    probing: bool,
 }
 
 /// Why a worktree is going, which is what decides what stays behind.
@@ -1311,18 +1314,12 @@ pub fn run(paths: Paths) -> Result<()> {
     let panes = backend.panes();
     // A failed/unavailable inspection cannot prove a parked process gone.
     // Reconstruct its lost reaper reservation before accepting any starts.
-    let parked_unverified: Vec<String> = if matches!(&panes, Ok(Some(_))) {
-        Vec::new()
-    } else {
-        board
-            .sessions
-            .iter()
-            .filter(|s| {
-                s.kind.is_agent() && !s.argv.is_empty() && s.state == SessionState::Sleeping
-            })
-            .map(|s| s.sid16())
-            .collect()
-    };
+    // No server at all is an answer, though: a pane cannot outlive its
+    // server, and after a reboot none runs until the first spawn, so a
+    // reservation seeded here would hold every parked ticket's teardown,
+    // eviction and shared-checkout start until a person launched something.
+    let inspected = matches!(&panes, Ok(Some(_))) || backend.endpoint_absent();
+    let parked_unverified = unverified_parked(&board.sessions, inspected);
     let snap = panes.ok().flatten().unwrap_or_default();
     let rec = reconcile(&board.sessions, &snap);
     // The user may have left a session while the daemon was down (this repo
@@ -1854,6 +1851,20 @@ pub fn run(paths: Paths) -> Result<()> {
 /// A tick stage, timed (T-856): the slowest is remembered under its name,
 /// so a slow tick's journal line can name the probe that took the second.
 /// `on_tick`'s stages and `on_pane_sampled`'s absorbs ride it alike.
+/// The parked agents whose live pane could not be inspected at startup:
+/// each gets a reaper reservation until a pane listing (or the absence of
+/// any server) proves it gone. `inspected` is that proof already in hand.
+fn unverified_parked(sessions: &[SessionRecord], inspected: bool) -> Vec<String> {
+    if inspected {
+        return Vec::new();
+    }
+    sessions
+        .iter()
+        .filter(|s| s.kind.is_agent() && !s.argv.is_empty() && s.state == SessionState::Sleeping)
+        .map(|s| s.sid16())
+        .collect()
+}
+
 macro_rules! stage {
     ($self:ident, $name:literal, $e:expr) => {{
         let t = Instant::now();
@@ -11743,7 +11754,12 @@ impl Daemon {
         if self.board.column(dest).is_some_and(|c| c.settings.free_worktree) {
             self.column_evictions.insert(
                 id,
-                ColumnEviction { column: dest.to_string(), due: Instant::now(), refusal: None },
+                ColumnEviction {
+                    column: dest.to_string(),
+                    due: Instant::now(),
+                    refusal: None,
+                    probing: false,
+                },
             );
         }
         if by.is_human() {
@@ -19769,6 +19785,16 @@ impl Daemon {
         if let Some(access) = s.access {
             changed |= stage!(self, "recheck_server_access", self.absorb_server_access(access));
         }
+        // A column arrival's worktree (T-1040) goes on the sample that read
+        // the panes and their directories together: nothing of it on the
+        // writer forks (T-857).
+        if s.directories.is_some() {
+            repaint |= stage!(
+                self,
+                "absorb_evictions",
+                self.absorb_evictions(s.facts.as_deref(), s.directories.as_ref())
+            );
+        }
         // The newest screen of each pane, for the composer reads; a pane
         // gone takes its screen with it.
         let paned: std::collections::HashSet<String> =
@@ -21132,8 +21158,14 @@ impl Daemon {
             // failure would admit a second writer beside a surviving pane.
             // No server answer is unknown, not evidence of an absent pane.
             let removed = self.backend.kill_session(&sid).is_ok()
-                || matches!(self.backend.panes(), Ok(Some(panes))
-                    if !panes.iter().any(|pane| pane.session_name == sid));
+                || match self.backend.panes() {
+                    Ok(Some(panes)) => !panes.iter().any(|pane| pane.session_name == sid),
+                    // No server behind the socket is proof: a pane cannot
+                    // outlive its server. A server that exists and does not
+                    // answer is not.
+                    Ok(None) => self.backend.endpoint_absent(),
+                    Err(_) => false,
+                };
             if removed {
                 self.reaping.remove(&sid);
             } else {
@@ -22226,6 +22258,7 @@ mod queued_person_push_tests {
             hook_rows: None,
             alive: None,
             access: None,
+            directories: None,
             took: Duration::ZERO,
             forks: 0,
         }
@@ -22341,6 +22374,55 @@ mod queued_person_push_tests {
         let typed = QueuedAsk { text: "/compact".into(), ..submitted };
         assert!(d.typed_under_a_person(id, &typed), "typed words wait for a fresh read");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reaper_without_server_tests {
+    use super::*;
+
+    /// A pane cannot outlive its server: no server behind the socket — no
+    /// file, or a dead server's stale one — clears a reaper reservation,
+    /// where a listing was never going to be had.
+    #[test]
+    fn a_reaper_reservation_clears_when_no_server_stands_behind_the_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        assert!(!dir.path().join("tmux.sock").exists());
+        d.reaping.insert(sid.clone(), Instant::now());
+        d.sweep_reaping();
+        assert!(!d.reaping.contains_key(&sid), "no socket file: the pane is gone");
+        // A stale socket file nothing listens on is a dead server too.
+        drop(std::os::unix::net::UnixListener::bind(dir.path().join("tmux.sock")).unwrap());
+        assert!(dir.path().join("tmux.sock").exists());
+        d.reaping.insert(sid.clone(), Instant::now());
+        d.sweep_reaping();
+        assert!(!d.reaping.contains_key(&sid), "a stale socket: the pane is gone");
+        // A server that exists and does not answer proves nothing, and the
+        // reservation stands: `crown_checkout_e2e` drives that with a
+        // `list-panes` stub (a listener here would hang the tmux client).
+    }
+
+    /// Restart seeds a reaper reservation for a parked agent only while its
+    /// pane could not be inspected: a listing, or no server at all, is the
+    /// inspection.
+    #[test]
+    fn restart_seeds_reservations_only_for_uninspected_parked_agents() {
+        let parked = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            vec!["claude".into()],
+            "/tmp".into(),
+            SessionState::Sleeping,
+        );
+        let mut shell = parked.clone();
+        shell.kind = SessionKind::Bash;
+        let mut working = parked.clone();
+        working.set_state(SessionState::Running);
+        let sessions = vec![parked.clone(), shell, working];
+        assert_eq!(unverified_parked(&sessions, false), vec![parked.sid16()]);
+        assert!(unverified_parked(&sessions, true).is_empty());
     }
 }
 

@@ -62,6 +62,9 @@ pub struct Query {
     pub alive: bool,
     /// `folder_access`, while the cut-off notice stands (T-690).
     pub access: bool,
+    /// `live_directories`, with the facts: a column arrival wants its
+    /// worktree freed (`absorb_evictions`), and must see no pane in it.
+    pub directories: bool,
 }
 
 impl Query {
@@ -75,6 +78,7 @@ impl Query {
             && !self.hook_rows
             && !self.alive
             && !self.access
+            && !self.directories
     }
 
     /// Ask for a pane's screen, once.
@@ -102,6 +106,7 @@ impl Query {
             + usize::from(self.hook_rows)
             + usize::from(self.alive)
             + usize::from(self.access)
+            + usize::from(self.directories)
     }
 }
 
@@ -124,6 +129,9 @@ pub struct Sample {
     pub hook_rows: Option<Result<Vec<HookProcess>, ()>>,
     pub alive: Option<bool>,
     pub access: Option<Access>,
+    /// Every live pane's directory; `Err` is a server that did not answer,
+    /// which proves no directory free.
+    pub directories: Option<Result<Vec<std::path::PathBuf>, ()>>,
     /// How long the reads took, for the journal.
     pub took: Duration,
     pub forks: usize,
@@ -133,7 +141,9 @@ pub struct Sample {
 pub fn take(backend: &TmuxBackend, repo: &Path, q: Query, gen: u64, at: u64) -> Sample {
     let started = Instant::now();
     let forks = q.forks();
-    let facts = (q.facts || q.rss.is_some()).then(|| backend.pane_facts().ok()).flatten();
+    let facts =
+        (q.facts || q.rss.is_some() || q.directories).then(|| backend.pane_facts().ok()).flatten();
+    let directories = q.directories.then(|| backend.live_directories().map_err(|_| ()));
     let rows = q.rows.then(process_rows);
     let hook_rows = q.hook_rows.then(|| facts.as_deref().and_then(hook_process_rows).ok_or(()));
     let rss = match (&q.rss, &facts) {
@@ -176,6 +186,7 @@ pub fn take(backend: &TmuxBackend, repo: &Path, q: Query, gen: u64, at: u64) -> 
         hook_rows,
         alive,
         access,
+        directories,
         took: started.elapsed(),
         forks,
     }
