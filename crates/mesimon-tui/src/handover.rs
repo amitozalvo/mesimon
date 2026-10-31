@@ -49,6 +49,18 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
+/// A daemon's attach argv (`tmux -S … attach …`) with the client's terminal
+/// features (`tmux -T`, a client flag, so right after the binary) for what
+/// the board knows of its own terminal and tmux cannot learn by asking it
+/// (T-1095, `title::Terminal::client_features`). The daemon builds the argv
+/// and never sees this terminal; the board that execs it does.
+pub fn with_client_features(mut argv: Vec<String>, features: Option<&str>) -> Vec<String> {
+    if let Some(f) = features.filter(|_| !argv.is_empty()) {
+        argv.splice(1..1, ["-T".to_string(), f.to_string()]);
+    }
+    argv
+}
+
 /// Spike T-4: tmux queries DA1/DA2/OSC 10/11 at attach; on a fast detach the
 /// terminal's replies can land in our stdin. Drain before the event loop
 /// reads keys. Called AFTER the alt screen is back up: the 50 ms settle would
@@ -70,5 +82,22 @@ pub fn drain_stdin() {
             }
         }
         libc::fcntl(fd, libc::F_SETFL, flags);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_features_ride_right_after_the_binary() {
+        let argv: Vec<String> =
+            ["tmux", "-S", "/s", "attach", "-t", "a"].map(String::from).to_vec();
+        assert_eq!(with_client_features(argv.clone(), None), argv);
+        assert_eq!(
+            with_client_features(argv, Some("hyperlinks")),
+            ["tmux", "-T", "hyperlinks", "-S", "/s", "attach", "-t", "a"].map(String::from)
+        );
+        assert!(with_client_features(Vec::new(), Some("hyperlinks")).is_empty());
     }
 }

@@ -92,6 +92,10 @@ pub(crate) enum Terminal {
     Kitty,
     WezTerm,
     Ghostty,
+    /// Windows Terminal (T-1095), by the `WT_SESSION` it sets in every
+    /// shell it starts, WSL's included. Posts no banner; named for the
+    /// hyperlinks tmux cannot find out about on its own.
+    WinTerm,
     #[default]
     Other,
 }
@@ -105,7 +109,25 @@ impl Terminal {
             Terminal::ITerm2 { .. } => Some(Poster::Osc9),
             Terminal::Kitty => Some(Poster::Osc99),
             Terminal::WezTerm | Terminal::Ghostty => Some(Poster::Osc777),
-            Terminal::OuterTmux | Terminal::Other => None,
+            Terminal::WinTerm | Terminal::OuterTmux | Terminal::Other => None,
+        }
+    }
+
+    /// The features (`tmux -T`) a pane's tmux client is told this terminal
+    /// has (T-1095). tmux 3.6a sends a pane's OSC 8 hyperlinks on only to a
+    /// terminal it recognises by its XTVERSION reply as one that has them —
+    /// iTerm2, mintty, tmux — and drops the link (keeping its text)
+    /// everywhere else. Claude Code writes OSC 8 inside any tmux 3.4+, so on
+    /// these four a ctrl/cmd+click had nothing to open: a markdown link
+    /// showed its label alone, and a long URL broke at the pane's edge. All
+    /// four draw OSC 8 links. tmux below 3.4 ignores a feature it does not
+    /// know, so the flag is safe on the oldest tmux mesimon runs on.
+    pub(crate) fn client_features(self) -> Option<&'static str> {
+        match self {
+            Terminal::Kitty | Terminal::WezTerm | Terminal::Ghostty | Terminal::WinTerm => {
+                Some("hyperlinks")
+            }
+            Terminal::ITerm2 { .. } | Terminal::OuterTmux | Terminal::Other => None,
         }
     }
 }
@@ -118,6 +140,7 @@ pub(crate) fn terminal() -> Terminal {
         version: var("TERM_PROGRAM_VERSION").as_deref(),
         term: var("TERM").as_deref(),
         kitty_window: var("KITTY_WINDOW_ID").as_deref(),
+        wt_session: var("WT_SESSION").as_deref(),
     })
 }
 
@@ -129,6 +152,7 @@ struct Seen<'a> {
     version: Option<&'a str>,
     term: Option<&'a str>,
     kitty_window: Option<&'a str>,
+    wt_session: Option<&'a str>,
 }
 
 fn classify(e: &Seen) -> Terminal {
@@ -155,6 +179,11 @@ fn classify(e: &Seen) -> Terminal {
     let ghostty = e.term == Some("xterm-ghostty") || e.bundle == Some("com.mitchellh.ghostty");
     if program("ghostty") || (unnamed && ghostty) {
         return Terminal::Ghostty;
+    }
+    // Windows Terminal names no `TERM_PROGRAM`, so one that is set (VS Code
+    // started from a Windows Terminal shell) outranks the inherited id.
+    if unnamed && e.wt_session.is_some_and(|v| !v.is_empty()) {
+        return Terminal::WinTerm;
     }
     Terminal::Other
 }
@@ -471,6 +500,29 @@ mod tests {
         assert_eq!(c(Some("Apple_Terminal"), None, Some("455")), Terminal::Other);
         assert!(!at_least("3", (3, 7)));
         assert!(!at_least("beta", (3, 7)));
+    }
+
+    /// Windows Terminal by its session id, never through an outer tmux or
+    /// under a program that names itself; it and the three banner
+    /// terminals tell tmux about hyperlinks, and iTerm2, which tmux already
+    /// recognises, does not (T-1095).
+    #[test]
+    fn windows_terminal_is_named_and_hyperlinks_go_to_the_unrecognised() {
+        let wt = Seen { wt_session: Some("0b3e…"), ..Seen::default() };
+        assert_eq!(classify(&wt), Terminal::WinTerm);
+        assert_eq!(classify(&Seen { wt_session: Some(""), ..Seen::default() }), Terminal::Other);
+        let in_tmux = Seen { term_program: Some("tmux"), ..wt };
+        assert_eq!(classify(&in_tmux), Terminal::OuterTmux);
+        let vscode =
+            Seen { term_program: Some("vscode"), wt_session: Some("x"), ..Seen::default() };
+        assert_eq!(classify(&vscode), Terminal::Other, "an inherited WT_SESSION is not WT");
+        assert_eq!(Terminal::WinTerm.poster(), None);
+        for t in [Terminal::WinTerm, Terminal::Kitty, Terminal::WezTerm, Terminal::Ghostty] {
+            assert_eq!(t.client_features(), Some("hyperlinks"), "{t:?}");
+        }
+        for t in [Terminal::ITerm2 { status: true }, Terminal::OuterTmux, Terminal::Other] {
+            assert_eq!(t.client_features(), None, "{t:?}");
+        }
     }
 
     /// The three other terminals that post a banner (T-676), each by its

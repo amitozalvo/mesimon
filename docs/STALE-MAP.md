@@ -40034,3 +40034,33 @@ both workers end a turn. B is woken for the untouched worker (T-927) and never f
 whose `started_by` is gone and whose `get_ticket` carries no `under_crown`. With `person_woke`
 disabled the run fails at the provenance check, and with that check and `under_crown` skipped
 it fails at `!woke(b, w)`.
+
+## A pane's links reach a terminal tmux does not recognise (T-1095, 2026-11-01, "ctrl+click not opening links from sessions in windows")
+
+**Cause.** Claude Code writes OSC 8 hyperlinks inside any tmux 3.4+ (and wherever `WT_SESSION`
+is set, which `shellenv::DENY` lets into a pane). tmux 3.6a forwards a pane's OSC 8 only to a
+client whose features include `hyperlinks`. It turns that on for iTerm2, mintty and tmux, which
+it recognises from their XTVERSION/DA2 replies, and never for an `xterm*` TERM by default. In
+Windows Terminal the link was dropped and its text kept. A markdown link then showed only its
+label. A file path had no target. A long URL that tmux redrew row by row reached Windows
+Terminal's URL detection as two pieces. Ctrl+click itself was never the problem: Windows
+Terminal handles a link before mouse reporting (GH#9396), so `mouse on` stays.
+
+**What changed.** `title::Terminal` gains `WinTerm` (`WT_SESSION` set, `TERM_PROGRAM` unset, not
+under an outer tmux). `Terminal::client_features` returns `hyperlinks` for it and for kitty,
+WezTerm and Ghostty: each draws OSC 8, and tmux recognises none of them for it. `App::client_argv`
+puts `-T hyperlinks` right after the binary in every attach argv the daemon grants (focus, gate,
+`!` shell) through `handover::with_client_features`. The board does this, not the daemon,
+because the daemon never sees the terminal the board is drawn on. No wire or conf change. iTerm2
+and every unknown terminal get the same argv as before.
+
+**Measured** on tmux 3.6a, with a client attached under `script(1)` (a terminal tmux does not
+recognise): without the flag the pane's OSC 8 link is drawn as plain text; with `-T hyperlinks`
+it reaches the terminal as `ESC]8;id=tmux1;https://…`. tmux 3.2a's `tty_add_features` logs an
+unknown name and ignores it, so the flag is safe on the oldest tmux mesimon runs on. Below 3.4
+tmux keeps no OSC 8 at all, and no flag brings the links back there.
+
+**Refuted.** `set -as terminal-features 'xterm*:hyperlinks'` in `conf.rs`: it applies server-wide
+and would send OSC 8 to every xterm-alike, including terminals that print it. Building the flag
+in `TmuxBackend::attach_argv`: the daemon's environment is not the board's terminal, and two
+boards on different terminals share one daemon.

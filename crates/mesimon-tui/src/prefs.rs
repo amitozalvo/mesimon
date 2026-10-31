@@ -1639,6 +1639,7 @@ pub fn tab_title_doctor_line() -> String {
         crate::title::Terminal::Kitty
         | crate::title::Terminal::WezTerm
         | crate::title::Terminal::Ghostty
+        | crate::title::Terminal::WinTerm
         | crate::title::Terminal::Other => {}
     }
     if matches!(crate::title::terminal(), crate::title::Terminal::ITerm2 { .. }) {

@@ -15257,19 +15257,25 @@ impl App {
         match self.req(Command::GateStatus) {
             Response::Gate { passed: true, .. } => match self.req(grant) {
                 Response::Attach { argv } => {
-                    self.pending_attach = Some(argv);
+                    self.pending_attach = Some(self.client_argv(argv));
                     self.focused_session_hint = Some(target);
                 }
                 Response::Err { message } => self.status = message,
                 _ => {}
             },
             Response::Gate { passed: false, attach_argv: Some(argv) } => {
-                self.pending_attach = Some(argv);
+                self.pending_attach = Some(self.client_argv(argv));
                 self.pending_gate_then = Some(target);
             }
             Response::Err { message } => self.status = message,
             _ => {}
         }
+    }
+
+    /// A daemon's attach argv as this board's terminal runs it: with the
+    /// features tmux cannot learn from the terminal itself (T-1095).
+    fn client_argv(&self, argv: Vec<String>) -> Vec<String> {
+        crate::handover::with_client_features(argv, self.terminal.client_features())
     }
 
     /// What grants the attach for a target — the gate's second half asks it
@@ -15307,7 +15313,7 @@ impl App {
             self.send(Command::GatePassed)?;
             match self.req(self.grant_for(target)) {
                 Response::Attach { argv } => {
-                    self.pending_attach = Some(argv);
+                    self.pending_attach = Some(self.client_argv(argv));
                     self.focused_session_hint = Some(target);
                     return Ok(());
                 }
@@ -25400,6 +25406,25 @@ mod tests {
             app.status
         );
         app.pump().expect("the board keeps running");
+    }
+
+    /// On a terminal tmux cannot recognise as drawing hyperlinks, every
+    /// attach the daemon grants — a session's focus and the `!` shell —
+    /// tells the tmux client so, and a test app's unknown terminal tells it
+    /// nothing (T-1095).
+    #[test]
+    fn an_attach_tells_tmux_the_terminal_draws_hyperlinks() {
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.pending_attach.take(), Some(vec!["tmux".to_string()]));
+        app.after_handover().unwrap();
+        app.terminal = crate::title::Terminal::WinTerm;
+        let told = Some(["tmux", "-T", "hyperlinks"].map(String::from).to_vec());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.pending_attach.take(), told, "a session's focus");
+        app.after_handover().unwrap();
+        press(&mut app, '!');
+        assert_eq!(app.pending_attach.take(), told, "the ! shell");
     }
 
     /// `!` opens the SCREEN's directory (T-273): the board's is the checkout,
