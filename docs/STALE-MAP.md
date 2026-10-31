@@ -39910,3 +39910,83 @@ ticket implements it. No code changed.
 - `^y`/`^u` on a ticket page act on that ticket's own queue; on the crowned page they act on the
   NEEDS YOU row under the cursor.
 - 100×24 was not drawn: ACTIONS goes under the crown's message there.
+
+## Continuous crown improvement: the observation layer and the loop, researched and proposed (T-1084, 2026-10-31, the person: "I want a full research and proposal for the observation layer and how we can incorporate harness^2 / other approaches to help mesimon crowns become better and better")
+
+**Research only.** Nothing shipped: no runtime code, no provider configuration, no live crown run.
+The proposal is an Artifact page linked from the ticket's `Summary` note. It consolidates T-1015
+(the person's KPI idea), T-1061 (the 30-source catalogue, 2026-10-29) and T-935 (the scorecard as
+rescoped 2026-10-26). The T-1061 catalogue is the baseline and was not redone.
+
+**Decided (proposed to the person; the seven open decisions are on the page).**
+- **Derive, do not collect anew.** Every first measure comes from events the daemon already has:
+  `feed.rs` (state edges, board actions, wakes, merges, moves, asks), `cost.rs` (tokens by hour and
+  model, context fill), `usage.rs` (account windows), `resources.rs` on the pane sampler (RSS per
+  pane process group). What is missing is derivation, retention past the feed's 8 MB rotation (107 h
+  on the author's board) and a reading road.
+- **Eight built-in measures**, each with definition, source, denominator, missing-data rule and
+  reader: time to accepted delivery split by who was waited on (working / person / crown / train /
+  idle / unknown); iterations by turn kind (brief, crown ask, person prompt, merge flow); the
+  person's steers by kind (never "corrections"); rework and linked regressions; quota and cost as an
+  upper bound; attributed vs unattributed resources; crown attention load; alert usefulness.
+- **Two new persisted fields on `Ticket`**, both `#[serde(default)]`, no bump: `regression_of`
+  (a link a person or the crown sets) and `accepted_at` (a person's move into the done column).
+- **The store**: `observations.jsonl` with `FeedWriter`'s push/flush contract, folded daily into
+  `measures.json` (schema 1, `persist_measures` honouring the bar), `alerts.json` with a persisted
+  cursor. Derivation is a tick stage timed by `stage!`; samples ride the pane sampler and an hourly
+  worker; the fold runs on a worker. Overhead targets stated (under 1 ms a tick, 2 MB a day).
+- **The crown reads** through `Board::crown_measures` (off by default, proposed): a `measures`
+  field on keyed `get_ticket` and a `read_measures` tool, `Action::Read` on `Resource::Board` with
+  the daemon's crown-plus-setting gate as `sample_gate`. Tool text states what is measured and what
+  is the person's (T-930). Workers see nothing of it.
+- **Alerts** are deterministic rules over built-ins (normal → pending → firing → recovered, stale
+  apart, cooldown, a fuse of six wakes an hour), persisted with the last evaluated `seq` so a restart
+  neither storms nor repeats; a `WakeCause::Alert` keyed by the crown's ticket as `Promotion` is,
+  entered through `owe_wake`, so it rides `crown.json` and the feed.
+- **Harness² for mesimon**: the "harness" is three layers with three owners: the board's text
+  (facts only by T-930, changed by a ticket, a rig run and the person's merge), the person's words
+  (CLAUDE.md, the crown ticket's standing words, tier descriptions, skills: proposal only), and the
+  model's own memory (never). The task set is the blind rig cases plus the demo script; the probe a
+  fresh Opus crown per sample; the admission evidence deterministic graders and spend; what is
+  retained is the merged text, a STALE-MAP block (the EXPERIENCE.md analogue) and the raw run
+  directories, kept for refuted candidates too.
+- **The loop**: a hypothesis record (CIG's evidence → hypothesis → intervention → outcome plus
+  AHE's predicted outcome) on a HARNESS ticket; two arms, N = 10 per arm per case, an equal-budget
+  arm and a five-case regression set; a candidate is supported only when it passes five or more of
+  ten above the incumbent (two-sided Fisher exact p = 0.033); admission is the person's with RRSI's
+  cost clause; rollback is a revert and `U`. Measured cost: about $0.39 and about 0.18 % of a
+  week's Claude quota per sample (T-930: $28.88 and 4 → 17 % over ~74 samples, other sessions
+  included), so one hypothesis across six cases is about a fifth of a week.
+- **Roadmap**: O1 derive and store, O2 `mesimon measures` text report, O3 samples, O4 the crown's
+  read, O5 alerts, O6 the board (frames approved first), O7 user-defined measures; I1 the T-935
+  scorecard, I2 the record and retro recipe, I3 the first real hypothesis from the demo episodes,
+  I4 HERA pairs, I5 demo episode 3, I6 the research inbox. About 22–27 worker days, four live runs,
+  15–17 % of one week's quota.
+
+**Refuted, and why.**
+- Harness²'s per-task propose–probe–compose as the crown optimizer: its selector sees no rubric or
+  score by design (Appendix H), one rollout per candidate, the paper's own regressions (a 55 chosen
+  over a 95), and every INV candidate is "how the agent works", which T-930 keeps out of board
+  text. Its retention shape and evidence bar transfer; its loop does not.
+- GEPA over the board's crown text: the text is facts by decision, and "Do Agent Optimizers
+  Compound?" (RELAI, 2607.14004) reports GEPA's optimised agent transferring below baseline. It
+  fits the person's own workflow files, run by the person.
+- An LLM judge for crown decisions: refuted again on T-940/T-942's grounds.
+- Inferring regressions from BUG tags filed after a merge: most BUG tickets on this board are about
+  mesimon itself and name no cause; only a link counts.
+- Counting prompts as corrections; "fewer prompts is better"; the feed holds no words (D11).
+- A SQLite store (D34.10 chose JSONL and nothing here needs a query engine); sampling resources on
+  the tick (T-857); a model judging samples (deterministic rules).
+- The Dashboard artifact type for the page: it is a proposal to read, not a page of data.
+
+**New or missed since the catalogue**: KARMA (2610.39884, 29 Oct: regression-gated knowledge
+modules with restore, failed trajectories kept), RuHarness (2610.36826, 27 Oct: criteria lifecycle,
+ε = 0.05 commit gate), RRSI (2609.24972: edit caps and a cost-bounded admission), "Do Agent
+Optimizers Compound?" (2607.14004), "Rethinking the Evaluation of Harness Evolution" (2607.12227:
+equal-budget baselines), Beyond Prompts/PRISM (2609.05736: RelLift95 lower bound), AHE (2604.25850:
+a prediction per edit). Do not fit: Self-HPO and HEMO. The cs.AI listing check covers 28 and 30
+October only, 54 entries unfetched.
+
+**Unverified**: Harness² Appendices A–G read as summaries; its code's acceptance rule and harness
+format are not on its pages; Self-Evolving Agent Harness's admission inequality did not render.
+No rig or demo run was made for this ticket; cost figures are T-930's and T-1032's.
