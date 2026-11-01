@@ -40535,3 +40535,22 @@ and the agent's attempt is answered.
     A clean reading is an HP1 run once that commit has left the recent five.
   Naming the tool in the brief is promise-3 text and the person's call; not changed.
 - Codex: listed through the same shim; no Codex rig case or live run.
+
+## WSL's own sounds played the plain event: `SoundPlayer` parses its path as a Uri (T-1110, 2026-11-02)
+
+Reported: custom sounds not working on Windows WSL. Revisits T-1094, whose "`SoundPlayer` reading
+a `\\wsl$` UNC path is documented, not observed" was the hole. Given a string, `SoundPlayer`
+resolves it with `new Uri(path)`, and the Uri parser's UNC host check takes letters, digits, `-`,
+`_` and `.` only, so `\\wsl$\Ubuntu\…` throws "Invalid URI: The hostname could not be parsed"
+(reproduced with `System.Uri` on .NET 8 on the Mac; `\\wsl.localhost\…` and `C:\…` parse). The
+script's `catch` then played the system event: Chime and Tick sounded like Windows' default
+sound from WSL, while the stock files under `C:\Windows\Media` were unaffected.
+
+**Fix:** `windows_sound_argv` opens the file with `[System.IO.File]::OpenRead(…)` and hands
+`SoundPlayer` the stream, disposed in a `finally`; the file API reads the `\\wsl$` share as is.
+Stock files ride the same road, so there is one script shape. Refuted: spelling the path as
+`\\wsl.localhost\…`, which parses but exists only on newer WSL builds, and would leave the
+next unusual distro name to the Uri parser again.
+
+Unverified: not heard on a Windows machine; no PowerShell here to run the script. The tests
+pin the stream form (`OpenRead('\\wsl$\Ubuntu\…`, no `SoundPlayer '…'`).

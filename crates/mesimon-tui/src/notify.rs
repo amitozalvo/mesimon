@@ -957,6 +957,11 @@ fn linux_player(which: impl Fn(&str) -> Option<PathBuf>) -> Player {
 /// job. The script is built from constants and from `own`, which
 /// [`windows_path`] spells only when no character in it can end a
 /// single-quoted PowerShell string.
+///
+/// `SoundPlayer` is handed an open stream, never the path (T-1110): given a
+/// path it parses it as a `System.Uri`, which refuses `\\wsl$\…` ("the
+/// hostname could not be parsed"), so from WSL every own sound fell to the
+/// catch and played the plain event. The file API reads the share as is.
 fn windows_sound_argv(program: &str, sound: Sound, own: Option<&str>) -> Vec<String> {
     let Some(event) = sound.windows_event() else {
         return Vec::new();
@@ -971,7 +976,9 @@ fn windows_sound_argv(program: &str, sound: Sound, own: Option<&str>) -> Vec<Str
         fallback
     } else {
         format!(
-            "try {{ (New-Object System.Media.SoundPlayer {file}).PlaySync() }} catch {{ {fallback} }}"
+            "try {{ $f = [System.IO.File]::OpenRead({file}); \
+             try {{ (New-Object System.Media.SoundPlayer $f).PlaySync() }} \
+             finally {{ $f.Dispose() }} }} catch {{ {fallback} }}"
         )
     };
     vec![program.into(), "-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), script]
@@ -2094,7 +2101,8 @@ mod tests {
         assert_eq!(scripts.len(), 6, "six choices, six different sounds");
         // Mesimon's own: its written file, or without one its stand-in's.
         let own = windows_sound_argv("powershell.exe", Sound::Chime, Some("C:\\s\\chime-1.wav"));
-        assert!(own[4].contains("SoundPlayer 'C:\\s\\chime-1.wav'"), "{own:?}");
+        assert!(own[4].contains("OpenRead('C:\\s\\chime-1.wav')"), "{own:?}");
+        assert!(own[4].contains("SoundPlayer $f"), "a stream, never a path to parse: {own:?}");
         assert!(own[4].contains("::Asterisk.Play()"));
         let stand_in = windows_sound_argv("powershell.exe", Sound::Tick, None);
         assert!(stand_in[4].contains("Windows Notify System Generic.wav"), "{stand_in:?}");
@@ -2162,7 +2170,8 @@ mod tests {
             Player::Wsl { program: "powershell.exe".into(), fallback: Box::new(Player::Bell) };
         ch.wsl_distro = Some("Ubuntu".into());
         let host = played(&ch, Sound::Chime);
-        assert!(host[0][4].contains("SoundPlayer '\\\\wsl$\\Ubuntu\\"), "{host:?}");
+        assert!(host[0][4].contains("OpenRead('\\\\wsl$\\Ubuntu\\"), "{host:?}");
+        assert!(!host[0][4].contains("SoundPlayer '"), "a UNC path is no Uri: {host:?}");
         // Nowhere to write it: the stand-in plays rather than nothing.
         ch.icon_dir = None;
         ch.player = Player::Canberra;
