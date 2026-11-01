@@ -4427,6 +4427,19 @@ impl Daemon {
         // while an idle Claude pane exists, one `ps` for all of them, and
         // only a shell younger than the idle spell counts — the MCP servers
         // and a background task's shell are older (`bash_mode_foreground`).
+        // A process table read empty is a `ps` that failed, never a machine
+        // with no processes (`ps` lists itself): the commands seen last stay
+        // while their records stay idle, so a failed read is no edge below.
+        let rows = rows.filter(|r| !r.is_empty());
+        if rows.is_none() {
+            for (id, cmd) in &self.foregrounds {
+                if self.board.session(*id).is_some_and(|r| {
+                    r.kind == SessionKind::Claude && r.state.has_pane() && idle_at_prompt(&r.state)
+                }) {
+                    foregrounds.insert(*id, cmd.clone());
+                }
+            }
+        }
         if let Some(rows) = rows {
             let idle_claudes: Vec<(uuid::Uuid, i32, u64)> = self
                 .board
@@ -4487,6 +4500,34 @@ impl Daemon {
                 }
             }
         }
+        // A `!` command is the agent's session at work (T-1100): its start
+        // is the column's `on_working` edge and its end, while the record is
+        // still idle at its prompt, the `on_done` one, as a turn's would be.
+        // The record's state does not move (T-707): the edges are read off
+        // the foreground alone. A record that left idle meanwhile has a turn
+        // of its own, whose `Stop` is its edge.
+        let bash_mode = |id: &uuid::Uuid| {
+            self.board
+                .session(*id)
+                .is_some_and(|r| r.kind == SessionKind::Claude && r.state.has_pane())
+        };
+        let mut edges: Vec<(ulid::Ulid, uuid::Uuid, SessionState)> = Vec::new();
+        for id in foregrounds.keys().filter(|id| !self.foregrounds.contains_key(id)) {
+            if let Some(r) = self.board.session(*id).filter(|_| bash_mode(id)) {
+                edges.push((r.ticket, *id, SessionState::Running));
+            }
+        }
+        for id in self.foregrounds.keys().filter(|id| !foregrounds.contains_key(id)) {
+            if let Some(r) =
+                self.board.session(*id).filter(|r| bash_mode(id) && idle_at_prompt(&r.state))
+            {
+                edges.push((
+                    r.ticket,
+                    *id,
+                    SessionState::Idle { stop_reason: StopReason::EndTurn },
+                ));
+            }
+        }
         let repaint = foregrounds != self.foregrounds
             || terminals != self.terminals
             || attached != self.attached
@@ -4496,6 +4537,10 @@ impl Daemon {
             self.terminals = terminals;
             self.attached = attached;
             self.active_clients = active_clients;
+        }
+        for (ticket, id, to) in &edges {
+            self.auto_move(*ticket, *id, to, Confidence::High);
+            changed = true;
         }
         Panes { changed, repaint }
     }

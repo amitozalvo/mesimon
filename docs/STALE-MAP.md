@@ -40208,3 +40208,30 @@ ticket.
 ctrl+click opening a Claude Code link) — no WSL box at hand; the Debian attach with
 `-T hyperlinks` is the nearest proof. The alpha-2 "Linux ships" block's "tmux is NOT bundled for
 Linux" bullet and ARCHITECTURE's "That is macOS only" are superseded by this block.
+
+## A `!` command moves the card and holds the machine awake (T-1100, 2026-11-01, "bash in agent session not considered as running")
+
+Reported: a `!` command in a Claude session spun the card but left it in its column and let the
+machine sleep. Both were T-707's choice ("the state does not move"); the author's report reverses
+the automove half of it and adds the keep-awake. **The state still does not move**: no signal
+reaches the attention machine, so the ask queue, the crown's words and the checkout read as T-707
+left them (`quiet::is_working` is unchanged).
+
+**Built.** `absorb_panes` diffs the bash-mode foregrounds it just read against the last sample's:
+a Claude record gaining one is `auto_move(.., Running, High)`, the column's `on_working`; one
+losing it while still idle at its prompt is `auto_move(.., Idle{EndTurn}, High)`, its `on_done`.
+A record that left idle meanwhile is skipped: it is in a turn whose `Stop` is its own edge (the
+follow-on turn Claude Code runs on the output, when it calls a tool). A REVIEW card goes to
+IN PROGRESS for the command and back; a TODO card ends in REVIEW, as a typed prompt's would.
+`quiet::is_mid_turn` adds an agent with a pane and a foreground, which only a snapshot's record
+carries, so the TUI's keep-awake holds and the daemon's own reads are untouched.
+
+**A failed `ps` is no edge.** An empty process table read carries the last sample's commands for
+records still idle, where it used to clear them: a flicker would now move the card twice.
+
+**Refuted: T-707's "`! ls` would move a ticket to REVIEW".** True, and now intended: a card the
+command moved to IN PROGRESS and left there would claim work nobody is doing.
+
+**Not built:** Codex (no bash-mode probe exists for it; T-707 recorded no bash mode there, not
+re-measured). Tests: `quiet::a_bash_mode_command_holds_the_machine`; `bash_mode_e2e` now asserts
+REVIEW → IN PROGRESS on the command and back to REVIEW at its end, on both roads.

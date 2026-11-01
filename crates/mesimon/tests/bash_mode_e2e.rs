@@ -5,6 +5,8 @@
 //! command as its foreground on the snapshot (the card spins on it); a shell
 //! as old as the session — an MCP server's `sh -c`, a background task — is
 //! not a command the person typed; and the foreground is never persisted.
+//! The command is the session at work (T-1100): its start drags the card by
+//! the column's `on_working` rule and its end by `on_done`, the state idle.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -71,6 +73,10 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
             .clone()
     };
 
+    let column = |c: &mut TestClient| {
+        c.board().tickets.iter().find(|t| t.id == ticket).expect("ticket").column.clone()
+    };
+
     let stub_dir = h.stub.as_ref().unwrap().parent().unwrap().to_path_buf();
     wait_until(Duration::from_secs(30), "the stub to spawn its launch-time shell", || {
         stub_dir.join("ready").exists()
@@ -93,6 +99,7 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
         c.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
         SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
     );
+    assert_eq!(column(&mut c), "REVIEW", "the turn's own edges moved it");
 
     // The person types `! sleep 600`: a shell younger than the spell, with
     // the command under it — the foreground names the command, on the
@@ -104,6 +111,8 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
     let rec =
         board_of(c.request(Command::Snapshot)).sessions.into_iter().find(|s| s.id == sid).unwrap();
     assert!(matches!(rec.state, SessionState::Idle { .. }), "{:?}", rec.state);
+    // REVIEW's `on_working` takes the card to IN PROGRESS, as a turn's start.
+    assert_eq!(column(&mut c), "IN PROGRESS", "a `!` command is work");
     // The ticket's agent reads `working` to an agent asking about it.
     let agent = match c.request(Command::Snapshot) {
         Response::Board { board, .. } => board.sessions.into_iter().find(|s| s.id == sid).unwrap(),
@@ -122,4 +131,6 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
         c.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
         SessionState::Idle { .. }
     ));
+    // And its end is IN PROGRESS's `on_done`, as a turn's end.
+    wait_until(Duration::from_secs(5), "the card back in REVIEW", || column(&mut c) == "REVIEW");
 }

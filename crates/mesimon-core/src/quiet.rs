@@ -143,10 +143,15 @@ pub fn holds_against_accept(s: &SessionRecord) -> bool {
 /// sleep for ten hours that way. Ambient `monitor` rows never make the state
 /// (T-408), and the pane bound still holds: a record with no process holds
 /// nothing awake.
+///
+/// And an agent with a foreground (T-1100): a `!` command a person runs in
+/// Claude's composer, which leaves the record idle (T-707). Only a snapshot's
+/// record carries one; the daemon's own board never does.
 pub fn is_mid_turn(s: &SessionRecord) -> bool {
     ((is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. }))
         || (s.kind.is_agent()
-            && s.state == (SessionState::Idle { stop_reason: StopReason::Monitoring })))
+            && (s.foreground.is_some()
+                || s.state == (SessionState::Idle { stop_reason: StopReason::Monitoring }))))
         && s.state.has_pane()
 }
 
@@ -385,6 +390,25 @@ mod tests {
             assert!(!is_mid_turn(&s), "{st:?} has no process to keep awake for");
         }
         let shell = session(ulid::Ulid::new(), SessionKind::Bash, "/tmp", monitoring);
+        assert!(!is_mid_turn(&shell), "a shell is liveness, not activity");
+    }
+
+    /// A `!` command in an idle agent's composer holds the machine awake
+    /// (T-1100) and stays quiet for the checkout, as T-707 left it; a
+    /// shell's foreground holds nothing, nor a record with no pane.
+    #[test]
+    fn a_bash_mode_command_holds_the_machine() {
+        let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        let mut s = session(ulid::Ulid::new(), SessionKind::Claude, "/tmp", idle.clone());
+        assert!(!is_mid_turn(&s), "an idle agent holds nothing");
+        s.foreground = Some("cargo".into());
+        assert!(is_mid_turn(&s), "its `!` command is running");
+        assert!(!is_working(&s) && takes_words(&s), "the checkout reads as T-707 left it");
+        s.state = SessionState::Sleeping;
+        assert!(!is_mid_turn(&s), "no pane, nothing to keep awake for");
+        let mut shell =
+            session(ulid::Ulid::new(), SessionKind::Bash, "/tmp", SessionState::Running);
+        shell.foreground = Some("cargo".into());
         assert!(!is_mid_turn(&shell), "a shell is liveness, not activity");
     }
 
