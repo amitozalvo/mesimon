@@ -1,5 +1,5 @@
 // The card edits this tab sent (T-530): a rename, a move, a tag, a
-// workspace (T-642) or an archive (T-737), by command id, until the host
+// workspace (T-642), an archive (T-737) or an agent's park (T-1090), by command id, until the host
 // answers. While one waits the board wears it, so a snapshot the host took
 // before it had the edit cannot put the card back for a moment. The answer,
 // or a dropped connection, ends it, and the next snapshot is the truth.

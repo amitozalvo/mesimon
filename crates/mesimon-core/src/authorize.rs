@@ -57,6 +57,12 @@ pub enum Action {
     /// (T-737): the fifth card edit, under the same rule. Only what the
     /// desk's `a a` would take: the daemon's own gates still apply.
     ArchiveTicket,
+    /// Park one idle agent session (T-1090), the desk's `x` from the
+    /// owner's paired phone: the conversation is kept and a start wakes it.
+    /// Only what `SleepSession` would park: the daemon's sleep gate still
+    /// refuses a working agent. For every other principal it is the `Mutate`
+    /// on the session it always was, so no agent reaches a session by it.
+    ParkAgent,
     /// Write, add or delete one note on one ticket (T-532): the owner's
     /// paired phone edits notes without `Mutate` on the ticket, which would
     /// also move, rename and merge it. An agent's `write_note` stays a
@@ -135,6 +141,7 @@ impl Decision {
 /// edits, on the ticket (and a move's destination column), and
 /// `ChooseWorkspace` the fourth (T-642), `ArchiveTicket` the fifth (T-737);
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
+/// `ParkAgent` is its one lifecycle write, on a session (T-1090).
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
     if let Action::SampleAgent { crown } = action {
@@ -173,6 +180,13 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
                 "a paired device edits one ticket: its column, its title, its tags, its \
                  workspace and whether it is archived",
             ),
+        };
+    }
+    if *action == Action::ParkAgent {
+        return match (principal, resource) {
+            (Principal::Paired { .. }, Resource::Session { .. }) => Decision::Allow,
+            (Principal::Paired { .. }, _) => deny("a paired device parks one agent session"),
+            _ => authorize(principal, &Action::Mutate, resource),
         };
     }
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
@@ -229,8 +243,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             Action::Read => Decision::Allow,
             _ => deny(
                 "paired devices only read, prompt, answer existing permissions, file tickets, \
-                 start agents, move, rename, tag and archive tickets, choose their workspace \
-                 and write notes",
+                 start and park agents, move, rename, tag and archive tickets, choose their \
+                 workspace and write notes",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -480,6 +494,35 @@ mod tests {
                         "{by:?} {edit:?} {resource:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// The phone parks one agent session (T-1090) and gains nothing a
+    /// session `Mutate` would add; for everyone else the park is answered
+    /// exactly as `Mutate` is, so an agent still never reaches a session.
+    #[test]
+    fn a_phone_parks_one_session_and_others_keep_mutate() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        let elsewhere = [
+            Resource::Board,
+            Resource::Ticket { id: ulid::Ulid::nil() },
+            Resource::Column { name: "TODO".into() },
+        ];
+        assert_eq!(authorize(&paired, &Action::ParkAgent, &session), Decision::Allow);
+        for resource in &elsewhere {
+            assert!(authorize(&paired, &Action::ParkAgent, resource).denied(), "{resource:?}");
+        }
+        assert!(authorize(&paired, &Action::Mutate, &session).denied());
+        assert!(authorize(&agent(), &Action::ParkAgent, &session).denied());
+        for by in [Principal::Local, agent(), remote(), automation()] {
+            for resource in elsewhere.iter().chain([&session]) {
+                assert_eq!(
+                    authorize(&by, &Action::ParkAgent, resource),
+                    authorize(&by, &Action::Mutate, resource),
+                    "{by:?} {resource:?}"
+                );
             }
         }
     }

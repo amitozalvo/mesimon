@@ -942,6 +942,8 @@ impl Daemon {
                     "workspace",
                     // A ticket into the archive and back (T-737).
                     "archive",
+                    // An idle agent parked, the desk's `x` (T-1090).
+                    "park",
                     // Notes read and written from the ticket page (T-532).
                     "notes",
                     // A batch or several-choice question answered whole,
@@ -1187,6 +1189,7 @@ impl Daemon {
             api::Request::Archive { ticket, restore } => {
                 self.control_archive(&by, &ticket, restore)
             }
+            api::Request::Park { ticket, session } => self.control_park(&by, &ticket, &session),
             api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
             api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
             api::Request::WriteNote { ticket, note, text, rev, uploads } => {
@@ -3407,6 +3410,32 @@ impl Daemon {
         }
         self.feed.board(by.actor(), rule, Some(id));
         Reply::Edited { ticket: id.to_string() }
+    }
+
+    /// The ticket's agent parked from the owner's phone (T-1090), the desk's
+    /// `x` on it: `sleep_one` as a deliberate park, so a working agent, or
+    /// one waiting on a question, refuses in the desk's words, and a queued
+    /// ask is dropped as at the desk. The session must be the one the
+    /// phone's card shows; a parked one wakes through `Start`.
+    fn control_park(&mut self, by: &Principal, ticket: &str, session: &str) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_target(ticket, session) else {
+            return reject("session changed; open the ticket again");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::ParkAgent, &Resource::Session { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if let Err(message) = self.sleep_one(id, false, Park::Deliberate) {
+            return reject(&message);
+        }
+        self.feed.board(by.actor(), "mesophon_park_agent", ulid::Ulid::from_string(ticket).ok());
+        self.persist_and_notify();
+        Reply::Edited { ticket: ticket.into() }
     }
 
     /// A ticket's workspace as the phone's board reads it (T-642): the TUI

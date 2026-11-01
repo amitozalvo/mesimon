@@ -327,16 +327,35 @@ function WorkspaceChoice({ store, ticket }) {
   </fieldset>`;
 }
 
+// Whether the sheet offers to park this ticket's agent (T-1090), the
+// board's `x`: only an agent that is not running, which the host's sleep
+// gate takes (an idle one, or one stopped on a limit).
+const PARKS = ["idle", "rate limited"];
+export const parksAgent = (store, ticket) => store.canEdit("park") && PARKS.includes(ticket?.agent?.state);
+
+// Park the agent (T-1090): its pane closes and its conversation is kept,
+// and the ticket page's start field wakes it. A working agent offers no
+// park; it waits for its turn to end, as at the desk.
+function ParkChoice({ store, ticket }) {
+  if (!parksAgent(store, ticket)) return null;
+  const waiting = store.editWaiting(ticket, "park");
+  return html`<div class="card-archive">
+    <button id="card-park" type="button" class="btn btn-quiet" disabled=${waiting}
+      onClick=${() => store.parkAgent(ticket.id)}><${Icon} name="moon" size=${16} /><span>Park ${ticket.agent.provider}</span></button>
+  </div>`;
+}
+
 // Into the archive (T-737), the board's `a a`: off the board until the
 // toast's Restore, or the desk's, brings it back. An awake agent holds it
-// on the board, as at the desk, and a phone cannot put one to sleep.
+// on the board, as at the desk; an idle one is parked first (T-1090).
 function ArchiveChoice({ store, ticket }) {
   if (!store.canEdit("archive")) return null;
   const awake = !!ticket.agent && ticket.agent.state !== "sleeping";
+  const why = parksAgent(store, ticket) ? "Its agent is awake. Park it first." : "Its agent is awake. Archive it once the agent sleeps.";
   return html`<div class="card-archive">
     <button id="card-archive" type="button" class="btn btn-quiet" disabled=${awake}
       onClick=${() => store.archiveTicket(ticket.id)}><${Icon} name="archive" size=${16} /><span>Archive</span></button>
-    ${awake && html`<p class="field-note">Its agent is awake. Archive it once the agent sleeps.</p>`}
+    ${awake && html`<p class="field-note">${why}</p>`}
   </div>`;
 }
 
@@ -359,7 +378,7 @@ function WorkspaceLine({ ticket }) {
 // A ticket's column and tags (T-530), opened from the ticket page's line:
 // each press goes to the board as it is made, as the board's own keys do,
 // and Done closes the sheet. Only the board's own tags are offered. Its
-// foot archives the ticket (T-737).
+// foot parks an idle agent (T-1090) and archives the ticket (T-737).
 export function CardSheet({ store }) {
   const ref = useRef();
   const board = store.board;
@@ -400,6 +419,7 @@ export function CardSheet({ store }) {
         <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
           onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
         <${WorkspaceChoice} store=${store} ticket=${ticket} />
+        <${ParkChoice} store=${store} ticket=${ticket} />
         <${ArchiveChoice} store=${store} ticket=${ticket} />
       </div>
       ${store.editError && html`<footer class="compose-foot"><p class="compose-error" role="alert">${store.editError}</p></footer>`}

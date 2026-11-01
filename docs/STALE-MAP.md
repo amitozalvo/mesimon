@@ -40258,3 +40258,41 @@ when to use a tier — a worker reading "write a STALE-MAP block" there could ta
 - **Refuted.** An empty `tiers: []` for a worker (it still says the field exists for it); a
   second, crown-only `list_board` description (the tool list is static per session, and one
   clause says it).
+
+## Remote Control parks an idle agent (T-1090, 2026-11-01, "allow users to park agents from remote control … only for non running agents, think where best to put")
+
+The trigger: a crown could not start a ticket because another ticket's idle agent, which the
+person had started, held the folder; only the person may park it, and from a phone there was no
+way to. T-737 had written "a phone has no sleep" into the archive's disabled note.
+
+**Built.** The card sheet's foot (the sheet the ticket page's line opens) carries **Park
+<provider>** (moon glyph) above **Archive**, only while the phone's card reads the agent `idle`
+or `rate limited` — the two words `quiet::sleep_eligible` accepts. A working agent, one waiting
+on a question or permission, a starting one or a sleeping one offers nothing; Archive's note
+then still says "Archive it once the agent sleeps", and while Park is offered it says "Park it
+first." The press wears the agent asleep on the card, keeps the sheet open (so the archive the
+agent held is one more press), and the toast says `Parked <provider> on T-n`; a refusal says
+`Not parked: <the host's words>`. The wake is the ticket page's existing start field (T-709).
+
+The wire: op `park { ticket, session }`, feature `park`, answered `edited`. The host's
+`control_park` resolves the session as `control_target` (the pane target the card shows),
+authorizes `Action::ParkAgent` on `Resource::Session`, refuses a viewer's seat, then runs
+`sleep_one(id, false, Park::Deliberate)`: the desk's `x`, so the daemon's sleep gate is the
+one judge and a queued ask is dropped as at the desk. Feed rule `mesophon_park_agent`.
+
+**Placement, chosen over:** a Park button on the ticket page's transcript (an idle agent is the
+common state, so a line there would sit over most pages; the sleeping seat's Wake line stays the
+page's one lifecycle line), and a press on the Board's card (no sheet, no room for the reason).
+The sheet is where Archive already asked for a sleep.
+
+**Authorization.** `ParkAgent` is a new action: `Paired` on a session only; every other
+principal answers it as `Mutate`, so an agent still never reaches a session through it (the
+crown's park stays `sleep_agent`, limited to agents it started). `Paired` gains no `Mutate`.
+
+Verified: core units (op shape, `ParkAgent` vs `Mutate` for every principal), `cargo ut`,
+clippy on core and daemon with `-D warnings`, `cargo build --workspace`; the UX suite in
+Chromium and WebKit at every size (no park while working, park offered once idle, the wire
+request, the toast, the archive opened). Not run: the full workspace suite — the authorize
+change is one new action no other caller constructs, held equal to `Mutate` by its unit test.
+No harness drives a phone's control op against a real daemon (as T-737); `control_park` has no
+test of its own here.

@@ -298,6 +298,7 @@ function fixture() {
       const ticket = this.tickets[at];
       if (request.op === "archive") this.inArchive.push({ at, ticket: this.tickets.splice(at, 1)[0] });
       if (request.op === "rename") ticket.title = request.title;
+      if (request.op === "park") ticket.agent = { ...ticket.agent, state: "sleeping" };
       if (request.op === "workspace")
         ticket.workspace = request.worktree
           ? { kind: "worktree", open: true, state: "planned" }
@@ -477,7 +478,7 @@ function fixture() {
               state.begin(request.ticket, id);
             }
           }
-          if (["rename", "move", "tag", "workspace", "archive"].includes(request.op)) {
+          if (["rename", "move", "tag", "workspace", "archive", "park"].includes(request.op)) {
             state.edits.push(request);
             if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
             else if (state.editDisposition !== "hold") {
@@ -2228,12 +2229,13 @@ async function workspaceFlow(browser, engineName, size, viewport) {
 
 // A ticket into the archive from its card sheet (T-737), the board's `a a`:
 // the card leaves at once and the page with it, the toast's Restore brings
-// it back, an awake agent holds it on the board, a refusal is said in the
-// host's words, and an older host offers nothing.
+// it back, an awake agent holds it on the board, an idle one is parked
+// first (T-1090), a refusal is said in the host's words, and an older host
+// offers nothing.
 async function archiveFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
-  await context.addInitScript(() => window.fixture.features.push("rename", "move", "tag", "archive"));
+  await context.addInitScript(() => window.fixture.features.push("rename", "move", "tag", "archive", "park"));
   await context.route("**/pkg/mesimon_web.js", (route) =>
     route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
   );
@@ -2270,6 +2272,30 @@ async function archiveFlow(browser, engineName, size, viewport) {
     await open("ticket-5");
     assert(await page.locator("#card-archive").isDisabled());
     assert.equal(await page.locator(".card-archive .field-note").textContent(), "Its agent is awake. Archive it once the agent sleeps.");
+    assert.equal(await page.locator("#card-park").count(), 0, "a working agent offers no park");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+
+    // Its turn ended: the sheet parks it (T-1090), the card wears it asleep,
+    // and the archive the agent held is open in the same sheet.
+    await page.evaluate(() => {
+      fixture.tickets[5].agent.state = "idle";
+      fixture.update();
+    });
+    await open("ticket-5");
+    assert.equal((await page.locator("#card-park").textContent()).trim(), "Park codex");
+    assert.equal(await page.locator(".card-archive .field-note").textContent(), "Its agent is awake. Park it first.");
+    if (size === "phone") {
+      const height = await page.locator("#card-park").evaluate((n) => n.getBoundingClientRect().height);
+      assert(height >= 44, `the park press is ${height}px`);
+    }
+    await shot("park-sheet");
+    await page.locator("#card-park").click();
+    assert.deepEqual(await lastEdit(), { op: "park", ticket: "ticket-5", session: "session-5" });
+    await until(page, () => document.querySelector("#toast")?.textContent.includes("Parked codex on T-5"));
+    await page.locator("#card-park").waitFor({ state: "detached" });
+    assert.equal(await page.locator("#card-archive").isDisabled(), false);
+    assert.equal(await page.locator(".card-archive .field-note").count(), 0);
     await page.locator("#card-done").click();
     await sheet.waitFor({ state: "hidden" });
 
@@ -2326,7 +2352,7 @@ async function archiveFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket");
     await page.locator("#card-done").click();
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: archive held by an awake agent, archived, restored, refused, and an older host passed`);
+    console.log(`${engineName} ${size}: archive held by an awake agent, an idle one parked, archived, restored, refused, and an older host passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-archive-failure.png`) });
     throw error;

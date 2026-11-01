@@ -2,8 +2,8 @@
 
 Remote Control (Mesophon) lets your own browser **view tickets, read an agent’s
 conversation or its screen, send a prompt, answer supported Claude dialogs, file new tickets, move, rename,
-tag and archive tickets, start an agent on a ticket, and read and edit a ticket's notes**. It works on
-desktop and phone.
+tag and archive tickets, start an agent on a ticket and park an idle one, and read and edit a
+ticket's notes**. It works on desktop and phone.
 Open **Esc → Remote Control**, sign in to your relay, and enable this board.
 
 Signing in registers this Mac with the relay once; the sign-in rows are the relay's address
@@ -146,7 +146,7 @@ tag the board has since lost, it lands in the default column, without that tag. 
 terminal that has never been live with this version keeps no tickets for later, and
 the sheet says so.
 
-## Moving, renaming, tagging and archiving a ticket
+## Moving, renaming, tagging, parking and archiving a ticket
 
 On a ticket's page, press its **title** to write over it: **Enter** or **Save** sends the
 new title, **Escape** or **Cancel** puts the old one back. Press the **line under the title**
@@ -156,7 +156,12 @@ tag in the same group; pressing a tag the ticket wears takes it off. Each press 
 board as you make it, and **Done** closes the sheet. On a desktop's Board you can also drag
 a card to another column, or to another place in its own.
 
-**Archive**, at the foot of the same sheet, takes the ticket off the board as **a a** does at
+**Park**, at the foot of the same sheet, parks the ticket's agent as **x** does at your
+terminal: its pane closes and its conversation is kept, and starting it again from the
+ticket's page wakes it. It is offered only while the agent is not working; a working agent
+finishes its turn first.
+
+**Archive**, under it, takes the ticket off the board as **a a** does at
 your terminal, and the page goes back to the list. The message that says so has a
 **Restore** button for a few seconds; after that, restore it from the archive at your
 terminal. A ticket whose agent is awake stays on the board until the agent sleeps, and the

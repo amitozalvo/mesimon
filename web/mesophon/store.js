@@ -753,10 +753,12 @@ export class Store {
         tag: "Tags not changed",
         workspace: "Workspace not changed",
         archive: item.restore ? "Not restored" : "Not archived",
+        park: "Not parked",
       }[item.op];
       this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
       this.say(this.editError);
     } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
+    else if (reply.result === "edited" && item.op === "park") this.say(`Parked ${item.provider} on ${item.key}`, "two");
     else if (reply.result === "edited" && item.op === "archive")
       this.say(`${item.restore ? "Restored" : "Archived"} ${item.key}`, "two", item.restore ? undefined : {
         label: "Restore",
@@ -839,6 +841,17 @@ export class Store {
     if (this.detailOpen && this.board.selected === id) this.back();
     this.emit();
   }
+  // Park the ticket's agent (T-1090), the board's `x`: the card wears it
+  // asleep until the host answers, and the sheet stays open, so an archive
+  // can follow. The host refuses an agent that is working again.
+  parkAgent(id) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    const agent = ticket?.agent;
+    if (!agent || agent.state === "sleeping" || this.editWaiting(ticket, "park")) return;
+    if (!this.edit(ticket, "park", { session: agent.session }, { agent: { ...agent, state: "sleeping" } }, { provider: agent.provider }))
+      return;
+    this.emit();
+  }
   // Back from the archive (T-737), the archive toast's Restore: the card
   // returns to the column it left when the host's board says so.
   restoreTicket(id, key) {
@@ -850,7 +863,7 @@ export class Store {
   openCardSheet(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
     const workspace = this.canEdit("workspace") && !!ticket?.workspace?.open;
-    const edits = this.canEdit("move") || this.canEdit("tag") || this.canEdit("archive");
+    const edits = this.canEdit("move") || this.canEdit("tag") || this.canEdit("archive") || this.canEdit("park");
     if (!ticket || !(edits || workspace)) return;
     this.cardSheet = id;
     this.editError = "";

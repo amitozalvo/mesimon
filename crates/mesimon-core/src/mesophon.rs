@@ -228,6 +228,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         restore: bool,
     },
+    /// Park the ticket's agent (T-1090), the desk's `x` from a phone: the
+    /// session the phone's card names, kept to be woken by a `Start`. The
+    /// desk's gate applies: only an idle agent, or one stopped on a limit,
+    /// parks. Answered `edited`.
+    Park {
+        ticket: String,
+        session: String,
+    },
     /// A ticket's notes (T-532): every note's row, the description first,
     /// and the description's body, which the ticket page shows.
     Notes {
@@ -1418,7 +1426,14 @@ mod tests {
             panic!("restore")
         };
         assert!(restore);
+        let Request::Park { session, .. } =
+            serde_json::from_str(r#"{"op":"park","ticket":"01J","session":"0b"}"#).unwrap()
+        else {
+            panic!("park")
+        };
+        assert_eq!(session, "0b");
         for bad in [
+            r#"{"op":"park","ticket":"01J"}"#,
             r#"{"op":"rename","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J","column":"DONE","force":true}"#,
