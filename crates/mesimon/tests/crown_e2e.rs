@@ -10881,6 +10881,71 @@ fn the_crown_watches_a_ticket_a_person_started() {
         ask_ends(&worker).iter().any(|l| landed(l))
     });
 
+    // ---- 11. the watch carries the park (T-1104) ----------------------------
+    // Watched and working: refused in the words a person's `z` reads.
+    // Unwatched and idle: refused by provenance, in the words before the
+    // watch had a park. Watched and idle: the archive's refusal names
+    // sleep_agent, and sleep_agent parks it — Sleeping, the record and its
+    // person provenance kept, the seat's pane given up.
+    let sleep = |c: &mut TestClient, key: &str| {
+        let v = c.agent_read(sa, key).unwrap();
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentSleepTicket { key: key.into(), seen: v.seen },
+        )
+    };
+    assert!(c.agent_read(sa, &kw).unwrap().watched, "step 10 left W watched");
+    start(&mut c, ws);
+    match sleep(&mut c, &kw) {
+        Response::Err { message } => {
+            assert!(message.contains("still awake"), "{message}");
+            assert!(message.contains("only idle sessions sleep"), "{message}");
+        }
+        other => panic!("sleeping a watched working agent: {other:?}"),
+    }
+    assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "untouched");
+    stop(&mut c, ws);
+    h.one_turn(&mut c, sa);
+    assert!(matches!(watch(&mut c, &kw, true), Response::AgentTicketUpdated { .. }));
+    match sleep(&mut c, &kw) {
+        Response::Err { message } => assert_eq!(
+            message,
+            format!(
+                "{kw}'s agent was started by a person, and a person parks it (x on its card); \
+                 sleep_agent is for an agent the crown started"
+            )
+        ),
+        other => panic!("sleeping an unwatched person's agent: {other:?}"),
+    }
+    assert!(c.board().live_agent(w).unwrap().state.has_pane(), "the unwatched agent is untouched");
+    assert!(matches!(watch(&mut c, &kw, false), Response::AgentTicketUpdated { .. }));
+    assert!(matches!(c.request(Command::SetCrownArchives { on: true }), Response::Ok));
+    let v = c.agent_read(sa, &kw).unwrap();
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentArchiveTicket { key: kw.clone(), restore: false, seen: v.seen },
+    ) {
+        Response::Err { message } => {
+            assert!(message.contains("sleep_agent parks it, then archive_ticket"), "{message}")
+        }
+        other => panic!("archiving over a watched awake seat: {other:?}"),
+    }
+    match sleep(&mut c, &kw) {
+        Response::AgentTicketUpdated {
+            key, change: AgentTicketChange::Sleep { state }, ..
+        } => {
+            assert_eq!(key, kw);
+            assert_eq!(state.as_ref().map(|s| s.state.as_str()), Some("sleeping"));
+        }
+        other => panic!("sleep_agent on a watched person's agent: {other:?}"),
+    }
+    let rec = c.board().sessions.iter().find(|s| s.id == ws).cloned().expect("W's record");
+    assert_eq!(rec.state, SessionState::Sleeping, "parked, not killed: the conversation is kept");
+    assert!(rec.started_by.is_none(), "still the person's agent");
+    wait_until(std::time::Duration::from_secs(5), "the sleep_agent feed line", || {
+        feed_has("sleep_agent", w)
+    });
+
     // Nothing of the crown's reached W's pane but its asks: its other words
     // there are the wake lines, which name W and land at the crown.
     let feed = std::fs::read_to_string(&feed_path).unwrap();

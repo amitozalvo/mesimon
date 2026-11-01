@@ -9353,11 +9353,13 @@ impl Daemon {
     }
 
     /// The session `sleep_agent` may park on `target` (T-539), or why none:
-    /// the ticket's agent seat, held by a record the crown started, with a
-    /// pane to give up. The idle gate is `sleep_one`'s, judged after this,
-    /// so a working agent reads the same `still awake — …` words a person's
-    /// `z` would. A person's agent is refused by provenance alone, whatever
-    /// its state: the one who started it is the one who parks it.
+    /// the ticket's agent seat, held by a record the crown started or on a
+    /// ticket the crown watches (T-1104), with a pane to give up. The idle
+    /// gate is `sleep_one`'s, judged after this, so a working agent reads
+    /// the same `still awake — …` words a person's `z` would. An unwatched
+    /// person's agent is refused by provenance alone, whatever its state:
+    /// the one who started it parks it, unless they handed its follow-through
+    /// to the crown with a watch — and unwatch takes the right away again.
     fn crown_sleep_target(
         &self,
         target: ulid::Ulid,
@@ -9366,7 +9368,7 @@ impl Daemon {
         let Some(rec) = self.board.live_agent(target) else {
             return Err(format!("{key} has no agent to park"));
         };
-        if rec.started_by.is_none() {
+        if rec.started_by.is_none() && !self.crown_watched.contains(&target) {
             return Err(format!(
                 "{key}'s agent was started by a person, and a person parks it (x on its card); \
                  sleep_agent is for an agent the crown started"
@@ -9381,11 +9383,12 @@ impl Daemon {
     /// Why the crown's `archive_ticket` is refused over an awake seat, in
     /// the crown's own words (T-539): the generic gate's "sleep them first"
     /// is a person's instruction, and the crown has one road for a seat it
-    /// started and none for a person's. `None` when nothing is awake, or a
-    /// shell is — the generic gate then answers as before.
+    /// started or a ticket it watches (T-1104), and none for any other
+    /// person's. `None` when nothing is awake, or a shell is — the generic
+    /// gate then answers as before.
     fn crown_archive_refusal(&self, target: ulid::Ulid, key: &str) -> Option<String> {
         let rec = self.board.live_agent(target).filter(|r| r.state.has_pane())?;
-        Some(if rec.started_by.is_some() {
+        Some(if rec.started_by.is_some() || self.crown_watched.contains(&target) {
             format!(
                 "{key}'s agent is still awake ({}); sleep_agent parks it, then archive_ticket",
                 agent_state_word(&rec.state)

@@ -40427,3 +40427,34 @@ cost the roads little); running the mod pass only on tests that launch a stub (a
 the person's). Open, for their own tickets: the 120 s cliff on T-974's `a_crown_ask_says_one_
 true_word…` (118 s at 6 threads is a release-time flake waiting to happen); the relay side,
 where `ship.sh all` repeats the dry run's checks and builds the relay's image cold.
+
+## A watch hands the crown the park (T-1104, 2026-11-01, "sleep_agent parks a watched ticket's agent too")
+
+On 2026-11-01 the person watched T-1092 through the crown and asked it to park the agent once
+done; `sleep_agent` refused, since T-539 scoped it to `started_by`. A watch (T-712) is the person
+handing the ticket's follow-through to the crown, so the park goes with it.
+
+- **What changed.** `crown_sleep_target` admits a person's seat while `crown_watched` holds the
+  ticket; the rest of the gate is T-539's (idle only, a working agent refused in `still_awake`'s
+  words, the crown's own ticket refused, an asleep one "already asleep").
+  `crown_archive_refusal` names `sleep_agent` for a watched ticket as for a crown-started one.
+  The person's `x` is unchanged; unwatch (or the watch's end at the merge, the row turned off,
+  the crown's end) takes the right away again. Waking stays the person's: `crown::start_choice`
+  still refuses `start_agent` on a person's parked agent, and the park keeps `started_by` none.
+- **Authorization scope.** Moves by one fact: the crown may park a person's idle agent on a
+  ticket its session watches. Nothing else crosses; no full workspace suite.
+- **Text.** `sleep_agent`: "Only an agent the crown started or one on a ticket it watches", and
+  "a person's c wakes it, or start_agent one the crown started" (the old "c or start_agent wakes
+  it" was already wrong for a person's agent); "any other is refused in words" replaced the list
+  to stay under `MAX_TOOL_BYTES`. `watch_ticket`: "gets ask_agent's words and sleep_agent's park
+  as one the crown started does". `CROWN_WAKES`: "while watched, sleep_agent parks its agent as
+  one this session started." The unwatched refusal keeps its words.
+- **Tests.** `the_crown_watches_a_ticket_a_person_started` step 11: watched and working →
+  `still awake`; unwatched and idle → the T-539 words exactly; watched and idle → the archive
+  names `sleep_agent`, then the park lands (Sleeping, `started_by` none, feed line). Rig W3: the
+  person starts, the crown watches, then is asked to park it naming no tool.
+  Live, once (2026-11-01, Claude Code 2.1.316, crown claude-opus-5-5 high): PASS in 61 s,
+  watch_ticket×1 then sleep_agent×1, the card working → idle → sleeping. `cargo ut` and the
+  whole `crown_e2e` binary (117) green on the first run.
+- **Refuted.** Granting the park on a hold too (a hold is the train's, not the person's handing
+  over); letting the crown wake a watched person's parked agent (not asked; `c` stays theirs).

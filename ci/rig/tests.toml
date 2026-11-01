@@ -1035,6 +1035,25 @@ checks = ["road:mod", "started_by_person", "crown:watch_ticket", "crown:ask_agen
   wake = true
 
 [[test]]
+id = "W3"
+title = "W3 · a ticket a person started is the crown's to park once the crown watches it: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the person starts the agent; asked to wait for its ticket, the crown watches it (watch_ticket); asked to park that agent once it is done, naming no tool, the crown calls sleep_agent, which parks a person's agent on a ticket the crown watches (T-1104): the card reads sleeping, the conversation kept."
+checks = ["road:mod", "started_by_person", "crown:watch_ticket", "crown:sleep_agent", "words:working,idle,sleeping", "replies:done"]
+
+  [[test.steps]]
+  rig = "person_start"
+
+  [[test.steps]]
+  crown = "W3: the person started {key}'s agent themselves. Wait for {key} to finish, and end your turn now with the single line: W3 waiting."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  crown = "W3: {key}'s agent is done; park it, keeping its conversation. Then end your turn with the single line: W3 parked."
+  until = { state = "sleeping" }
+
+[[test]]
 id = "W2"
 title = "W2 · a watch on a ticket a person started lasts until its next merge: do the steps below"
 workspace = "worktree"

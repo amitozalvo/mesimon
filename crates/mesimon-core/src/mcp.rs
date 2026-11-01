@@ -269,7 +269,8 @@ pub const CROWN_WAKES: &str = concat!(
      ask of its own, asked then reading it and earlier the one still out. A steer leaves an \
      earlier submitted prompt in place; the board has no recall for it. \
      A ticket a person started wakes this session only once watch_ticket watches it or \
-     hold_ticket holds it. A ticket with no agent that carries a pull request (one \
+     hold_ticket holds it; while watched, sleep_agent parks its agent as one this session \
+     started. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
      and the merge the same way, with no watch asked. \
      A linked board's answer arrives as this session's next prompt beginning with that \
@@ -948,15 +949,15 @@ pub fn tools() -> Vec<Value> {
         // stays in the never-tier; a park keeps the conversation and a
         // person's `c` undoes it. Scoped to `started_by` so a person's own
         // agent — the one they may be mid-conversation with — is never
-        // parked under them by an agent.
+        // parked under them by an agent, unless the person handed that
+        // ticket's follow-through to the crown with a watch (T-1104).
         json!({
             "name": "sleep_agent",
             "description": "Parks another mesimon ticket's agent (crown only), as x on its \
-                            card does: the conversation is kept, and a person's c or \
-                            start_agent wakes it. \
-                            Only an agent the crown started, once idle or stopped on a \
-                            usage limit; a working agent, a person's agent and this session's own are \
-                            refused in words. A parked agent holds no seat in the crown's \
+                            card does: the conversation is kept, and a person's c wakes \
+                            it, or start_agent one the crown started. Only an agent the \
+                            crown started or one on a ticket it watches, once idle or \
+                            stopped on a usage limit; any other is refused in words. A parked agent holds no seat in the crown's \
                             budget until it is woken, so parking a finished worker frees its \
                             seat; move_ticket then closes its ticket in the done column, and \
                             archive_ticket, where the board lets it, reclaims its worktree.",
@@ -1125,9 +1126,9 @@ pub fn tools() -> Vec<Value> {
                             one a person started: the board then wakes this session when \
                             it delivers, finishes a turn, raises its hand or is merged, as \
                             for an agent the crown started; the watch ends at the merge or \
-                            with unwatch. Its agent gets ask_agent's words as one the \
-                            crown started does, nothing more; its question or plan \
-                            stays the person's. A loop that polls holds the merge train \
+                            with unwatch. Its agent gets ask_agent's words and \
+                            sleep_agent's park as one the crown started does, nothing \
+                            more; its question or plan stays the person's. A loop that polls holds the merge train \
                             and the wake.",
             "inputSchema": {
                 "type": "object",
@@ -3433,6 +3434,9 @@ mod tests {
         let sleep = sleep["description"].as_str().unwrap();
         assert!(sleep.contains("move_ticket then closes its ticket in the done column"), "{sleep}");
         assert!(sleep.contains("where the board lets it"), "{sleep}");
+        // T-1104: a watch hands the park to the crown with the wake.
+        assert!(sleep.contains("an agent the crown started or one on a ticket it watches"));
+        assert!(CROWN_WAKES.contains("while watched, sleep_agent parks its agent"));
         for words in [
             "A merged branch's ticket is admitted to the board's done column",
             "Settings → Agents → Crown archives tickets is off, archiving it is a person's",
@@ -3686,7 +3690,7 @@ mod tests {
             "crown only",
             "Crown watches tickets",
             "on unless a person turned it off",
-            "gets ask_agent's words as one the crown started does",
+            "gets ask_agent's words and sleep_agent's park as one the crown started does",
             "delivers, finishes a turn, raises its hand or is merged",
             "ends at the merge or with unwatch",
             "A loop that polls holds the merge train and the wake",
