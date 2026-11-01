@@ -187,7 +187,7 @@ else
 step "link the test binaries"
 # Compiled before the bounded run below, so its deadline is spent on tests
 # and never on a relink.
-cargo test --workspace --no-run
+cargo nextest run --workspace --no-run
 
 step "tests (driven by the bundled tmux)"
 # Test what actually ships. The suite used to run against whatever tmux the
@@ -207,7 +207,9 @@ step "tests (driven by the bundled tmux)"
 # --exclusive: ticket worktrees' bounded runs overlap one another (T-830),
 # but this one waits for them to end and holds new ones off, so the gate is
 # timed on a quiet machine.
-MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --exclusive --timeout 2400 -- cargo test --workspace
+# Both roads run side by side (T-1101): the deadline covers one road's time
+# under load plus the build, not two roads in a row.
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --exclusive --timeout 2400 -- cargo nextest run --workspace
 fi
 
 step "the mod against this machine's Claude Code"

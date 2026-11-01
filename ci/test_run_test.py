@@ -170,42 +170,73 @@ class DiskBudgetTests(unittest.TestCase):
             self.assertIn("Low disk space", errors.getvalue())
             stamp.assert_not_called()
 
+class FakeGuard:
+    """A supervisor that answers by request, not by position: passes run side
+    by side (T-1101), so spawns and polls interleave. Each spawned pass exits
+    with its code in turn; a code of None is a pass that never exits."""
+
+    def __init__(self, root, codes):
+        self.replies = [json.dumps({"ok": str(root)}) + "\n"]
+        self.codes = list(codes)
+        self.exit = {}
+        self.spawned = []
+        self.spawned_env = []
+        self.ops = []
+        self.stdin = self.stdout = self
+        self.closed = False
+
+    def write(self, text):
+        for line in text.splitlines():
+            request = json.loads(line)
+            self.ops.append(request["op"])
+            if request["op"] == "spawn":
+                pid = 100 + len(self.spawned)
+                self.exit[pid] = self.codes[len(self.spawned)]
+                self.spawned.append(request["argv"])
+                self.spawned_env.append(request["env"])
+                self.replies.append(json.dumps({"ok": pid}) + "\n")
+            elif request["op"] == "poll":
+                self.replies.append(json.dumps({"ok": self.exit[request["pid"]]}) + "\n")
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        return self.replies.pop(0) if self.replies else ""
+
+    def close(self):
+        self.closed = True
+
+    def wait(self, timeout):
+        return 0
+
+
 class PassTests(unittest.TestCase):
-    def passes_run(self, command, codes, flags=()):
+    def passes_run(self, command, codes, flags=(), logs=()):
         """The argv of every pass a fake supervisor was asked to spawn, and
-        the run's result, when each pass exits with its code in turn."""
+        the run's result, when each pass exits with its code in turn. `logs`
+        is what each pass's child-N.log already holds."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for index in range(len(codes)):
-                (root / f"child-{index}.log").touch()
-            values = [str(root)]
-            for index, code in enumerate(codes):
-                values += [100 + index, code]
-            replies = "\n".join(json.dumps({"ok": value}) for value in values) + "\n"
-            guard = SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(replies), wait=lambda timeout: 0)
-            spawned = []
-            self.spawned_env = []
-            real_write = guard.stdin.write
-            def write(text):
-                for line in text.splitlines():
-                    request = json.loads(line)
-                    if request.get("op") == "spawn":
-                        spawned.append(request["argv"])
-                        self.spawned_env.append(request["env"])
-                return real_write(text)
-            guard.stdin.write = write
+                (root / f"child-{index}.log").write_text(logs[index] if index < len(logs) else "")
+            guard = self.guard = FakeGuard(root, codes)
+            self.spawned_env = guard.spawned_env
             real_mkdtemp = tempfile.mkdtemp
+            self.stdout = io.StringIO()
             with patch.object(runner.sys, "argv", ["test-run.py", "--min-free-gib", "0", *flags, "--", *command]), \
                  patch.object(runner, "build_output", return_value=[]), \
                  patch.object(runner, "lock_dir", return_value=root), \
                  patch.object(runner.Claims, "take"), \
                  patch.object(runner.tempfile, "mkdtemp", side_effect=lambda **kw: real_mkdtemp(dir=root, prefix=kw["prefix"])), \
-                 patch.object(runner.subprocess, "Popen", return_value=guard), \
+                 patch.object(runner.subprocess, "Popen", return_value=guard) as popen, \
                  patch.object(runner.subprocess, "run"), \
                  patch.object(runner, "stamp_pass"), \
-                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stdout(self.stdout), \
                  contextlib.redirect_stderr(io.StringIO()):
-                return runner.main(), spawned
+                result = runner.main()
+            self.guard_argv = popen.call_args.args[0]
+            return result, guard.spawned
 
     def test_a_red_suite_asked_past_its_first_red_still_runs_the_mod_road(self):
         result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [1, 0],
@@ -214,10 +245,37 @@ class PassTests(unittest.TestCase):
         self.assertEqual(spawned, [["cargo", "test", "--workspace", "--no-fail-fast"],
                                    ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"]])
 
-    def test_a_red_suite_otherwise_ends_the_run(self):
-        result, spawned = self.passes_run(["cargo", "test", "--workspace"], [1], flags=["--both-roads"])
+    def test_a_red_suite_otherwise_ends_the_run_without_waiting_for_the_mod_road(self):
+        # The mod pass never exits here: the run ends on the first red all
+        # the same, and the supervisor's cleanup ends the pass with it.
+        result, spawned = self.passes_run(["cargo", "test", "--workspace"], [1, None], flags=["--both-roads"])
         self.assertEqual(result, 1)
-        self.assertEqual(spawned, [["cargo", "test", "--workspace"]])
+        self.assertEqual(spawned, [["cargo", "test", "--workspace"],
+                                   ["cargo", "test", "-p", "mesimon", "--tests"]])
+        self.assertEqual(self.guard.ops[-1], "finish")
+
+    def test_both_roads_start_together_and_the_mod_road_s_lines_carry_a_prefix(self):
+        result, spawned = self.passes_run(["cargo", "nextest", "run", "--workspace"], [0, 0],
+                                          flags=["--both-roads"],
+                                          logs=["Starting 3339 tests\n", "Starting 419 tests\nhalf a"])
+        self.assertEqual(result, 0)
+        self.assertEqual(len(spawned), 2)
+        # Both spawned before either is asked how it is doing.
+        self.assertEqual(self.guard.ops[:3], ["spawn", "spawn", "poll"])
+        self.assertEqual(self.spawned_env[1]["MESIMON_TEST_ROAD"], "mod")
+        self.assertNotIn("MESIMON_TEST_ROAD", self.spawned_env[0])
+        out = self.stdout.getvalue()
+        self.assertIn("\nStarting 3339 tests\n", out)
+        self.assertIn("\nmod | Starting 419 tests\n", out)
+        self.assertIn("\nmod | half a\n", out)
+
+    def test_the_deadline_covers_both_roads_unless_given(self):
+        self.passes_run(["cargo", "nextest", "run", "--workspace"], [0])
+        self.assertEqual(self.guard_argv[-2:], ["--timeout", "1200"])
+        self.passes_run(["cargo", "nextest", "run", "--workspace"], [0, 0], flags=["--both-roads"])
+        self.assertEqual(self.guard_argv[-2:], ["--timeout", "2400"])
+        self.passes_run(["cargo", "nextest", "run", "--workspace"], [0, 0], flags=["--both-roads", "--timeout", "50"])
+        self.assertEqual(self.guard_argv[-2:], ["--timeout", "50"])
 
     def test_a_red_mod_road_fails_the_run(self):
         result, spawned = self.passes_run(["cargo", "test", "--workspace", "--no-fail-fast"], [0, 1],

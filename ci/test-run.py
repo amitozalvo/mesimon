@@ -3,10 +3,15 @@
 
 Default: cargo nextest run --workspace (cargo's own parallelism; --jobs N caps
 build jobs and test threads together). Checks run once by default. --both-roads
-adds the mod road's pass after a recognized full-workspace suite: the `mesimon`
-integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine. Release
-verification requests both explicitly; a one-road stamp is not a release gate.
---one-road remains an explicit spelling of the default for existing callers.
+adds the mod road's pass to a recognized full-workspace suite: the `mesimon`
+integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine. The two
+passes run side by side (T-1101): the mod pass waits on cargo's own lock while
+the first pass builds, then both run their tests at once, each at --jobs N
+threads, so both roads take about one road's time (the e2es wait on their own
+timers and barely use the CPU, T-1023). Release verification requests both
+explicitly; a one-road stamp is not a release gate. --one-road remains an
+explicit spelling of the default for existing callers. The deadline is 1200 s
+for one pass and 2400 s for both unless --timeout says otherwise.
 Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test hook_e2e.
 Runs in independent checkouts overlap (T-830): a run holds a lock on each
 Cargo build directory it writes (target dir and build-dir, however
@@ -152,7 +157,7 @@ PHASE_WORDS = {
     "starting": "starting",
     "draining": "waiting for the runs before it to finish",
     "tests": "running tests",
-    "mod road": "running the mod road's pass",
+    "both roads": "running both roads' passes",
     "audit": "auditing its fixtures",
     "pruning": "pruning the build cache",
 }
@@ -393,9 +398,32 @@ def stamp_pass(command, env, roads, target=None):
     print(f"Suite passed at {sha[:7]} against {tmux}; stamped {stamp}.", flush=True)
 
 
+class PassLog:
+    """A pass's output, relayed as it is written. Passes run side by side,
+    so each is relayed a whole line at a time, and every pass after the
+    first carries a prefix, so the two roads' lines never mix mid-line."""
+
+    def __init__(self, pid, file, prefix):
+        self.pid = pid
+        self.file = file
+        self.prefix = prefix
+        self.partial = ""
+
+    def relay(self, final=False):
+        text = self.partial + self.file.read()
+        if final:
+            lines, self.partial = text.splitlines(keepends=True), ""
+        else:
+            whole, sep, self.partial = text.rpartition("\n")
+            lines = (whole + sep).splitlines(keepends=True)
+        for line in lines:
+            print(self.prefix + line, end="" if line.endswith("\n") else "\n", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=int, default=1200, help="whole command deadline in seconds")
+    parser.add_argument("--timeout", type=int,
+                        help="whole command deadline in seconds (default: 1200, or 2400 with --both-roads)")
     parser.add_argument("--jobs", type=int, help="cap cargo build jobs and test threads (default: cargo's own)")
     parser.add_argument("--min-free-gib", type=int, default=5,
                         help="stop below this free disk reserve (default: 5 GiB; 0 disables)")
@@ -407,7 +435,7 @@ def main():
                         help="wait for every other bounded run to end and hold new ones off (the release gate)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.timeout < 1:
+    if args.timeout is not None and args.timeout < 1:
         parser.error("timeout must be positive")
     if args.jobs is not None and args.jobs < 1:
         parser.error("jobs must be positive")
@@ -428,6 +456,11 @@ def main():
                      "run a targeted mod check with MESIMON_TEST_ROAD=mod instead")
     if mod:
         passes.append((mod, {"MESIMON_TEST_ROAD": "mod"}))
+    if args.timeout is None:
+        # One road under load has taken ~1000 s (T-1099); both, side by
+        # side, take about one road's time plus the build, and the room
+        # stays so a loaded machine finishes late rather than dying late.
+        args.timeout = 1200 * len(passes)
     os.umask(0o077)
     held = [k for k in os.environ.get("MESIMON_TEST_HELD", "").split(",") if k]
     claims = Claims(None, command, held)
@@ -491,7 +524,7 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
         guard.stdin.close()
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
     result = 1
-    log = None
+    logs = []
     try:
         root = Path(json.loads(guard.stdout.readline())["ok"])
         workers = f", {args.jobs} build/test workers" if args.jobs else ""
@@ -499,41 +532,36 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
         if build_dirs:
             print(f"Build output held by this run: {', '.join(map(str, build_dirs))}", flush=True)
         last_disk_check = time.monotonic()
-        # One supervisor and one deadline for every pass; a failing pass ends
-        # the run, unless the suite was asked to run past its first red: then
-        # the mod road's pass runs too, and the run fails if either did.
+        # One supervisor and one deadline for every pass, and every pass at
+        # once (T-1101): the mod road's pass waits on cargo's own lock while
+        # the first pass builds, then both run their tests side by side. A
+        # red pass ends the run, and the supervisor's cleanup ends the other
+        # pass with it, unless the suite was asked to run past its first
+        # red: then every pass finishes, and the run fails if any did.
         result = 0
+        claims.phase("both roads" if len(passes) > 1 else "tests")
         for index, (argv, extra) in enumerate(passes):
-            if index:
-                claims.phase("mod road")
-                print(f"\n== the mod road's pass (T-574): {' '.join(argv)}", flush=True)
-            else:
-                claims.phase("tests")
-                print(f"== tests: {' '.join(argv)}", flush=True)
+            label = "the mod road's pass (T-574)" if index else "tests"
+            print(f"== {label}: {' '.join(argv)}", flush=True)
             pid = request(dict(op="spawn", argv=argv, env=dict(env, **extra)))
-            if log:
-                log.close()
-            log = open(root / f"child-{index}.log")
-            code = None
-            while not interrupted:
-                output = log.read()
-                if output:
-                    print(output, end="", flush=True)
-                code = request(dict(op="poll", pid=pid))
+            logs.append(PassLog(pid, open(root / f"child-{index}.log"), "mod | " if index else ""))
+        running = list(logs)
+        while running and not interrupted:
+            for log in list(running):
+                log.relay()
+                code = request(dict(op="poll", pid=log.pid))
                 if code is not None:
+                    log.relay(final=True)
+                    running.remove(log)
                     if code != 0:
                         result = 1
-                    check_disk_space(watched_paths, args.min_free_gib)
-                    break
-                if time.monotonic() - last_disk_check >= 1:
-                    check_disk_space(watched_paths, args.min_free_gib)
-                    last_disk_check = time.monotonic()
-                time.sleep(0.2)
-            if interrupted or (result and not keeps_going(command)):
+            if not running or (result and not keeps_going(command)):
+                check_disk_space(watched_paths, args.min_free_gib)
                 break
-            output = log.read()
-            if output:
-                print(output, end="", flush=True)
+            if time.monotonic() - last_disk_check >= 1:
+                check_disk_space(watched_paths, args.min_free_gib)
+                last_disk_check = time.monotonic()
+            time.sleep(0.2)
         if interrupted:
             result = 128 + interrupted[0]
     except (RuntimeError, ValueError, OSError) as exc:
@@ -557,9 +585,9 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
             print("Cleanup supervisor still running; retained audit registry.", file=sys.stderr)
             result = 1
         guard.stdout.close()
-        if log:
-            print(log.read(), end="", flush=True)
-            log.close()
+        for log in logs:
+            log.relay(final=True)
+            log.file.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         claims.phase("audit")
