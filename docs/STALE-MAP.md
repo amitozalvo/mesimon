@@ -40489,6 +40489,12 @@ and the agent's attempt is answered.
   naming the note (`hand:review`, as before). Codex: a new extended case `read-other` — a code
   word only another ticket's note holds must be in the worker's reply, and its keyed
   `write_note` must leave that note as it was.
+- **Live, 2026-11-01:** Claude RH1 PASS (crown claude-opus-5-5 high, worker the rig's
+  claude-sonnet-5-5, Claude Code 2.1.316): the worker's keyed `read_note` was answered under
+  tool text still reading crown only, its keyed `write_note` refused, its hand named the note.
+  Codex `read-other` (gpt-6-luna low): run 1 never left the fixture (filed into a BACKLOG the
+  disposable board lacks, fixed to TODO); run 2 inconclusive, the model silent 50 s after the
+  prompt with 0 tokens (the untouched `mcp` case passed right after); rerun #1 PASS.
 - **Refuted:** reads limited to keys the worker's brief names (the daemon would have to parse
   briefs, and the crown's `ask_agent` names keys too); changing the tool text to "with key,
   another ticket's facts and notes; read only" (the person: not advertised).

@@ -1204,7 +1204,7 @@ def adapter(base):
             names by key, and its keyed write there changes nothing. The code
             word lives only in that note, so the reply proves the read."""
             word = "MESIMON_OTHER_" + uuid.uuid4().hex[:8].upper()
-            other = self.request("create_ticket", column="BACKLOG", title="Earlier findings",
+            other = self.request("create_ticket", column="TODO", title="Earlier findings",
                                  workspace=None)["id"]
             text = "## Findings\n\nThe code word is " + word + ".\n"
             note = self.request("write_note", ticket=other, note=None, text=text)["note"]
