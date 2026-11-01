@@ -2370,14 +2370,16 @@ checks = ["road:mod", "started_by_crown", "woke:finished", "crown_never:sleep,Mo
 # T-1105: a person's question about mesimon itself, in their words, with no
 # word of the tool: the worker finds `help` among the board's tools (deferred
 # behind tool search on Claude Code) and answers from it, naming the column's
-# Workspace row. No file and no command, so the docs in the checkout are not
-# the road; a person's own repository has none.
+# Workspace row. The rig's checkout is mesimon's own source, so its files are
+# put off limits: a person's own repository holds no mesimon docs. Tools stay
+# allowed (the first wording also said "run no command", and the worker read
+# it as no tool call at all, get_ticket included, so it never saw a name).
 [[test]]
 id = "HP1"
 title = "HP1 · answer the person's question below"
 blind = true
 workspace = "worktree"
-brief = "How can I change the default workspace for new tickets to a worktree in mesimon? Answer in one or two sentences naming the setting and where it is, then end your turn. Read no file and run no command."
+brief = "How can I change the default workspace for new tickets to a worktree in mesimon? Leave this repository's files alone: I mean the mesimon on my machine. Answer in one or two sentences naming the setting and where it is, then end your turn."
 expect = "asked how to make new tickets use a worktree, the worker calls the board's help tool, which it was never told of, and answers that it is a column's Workspace setting (enter on the column's heading opens its settings), served with no error."
 checks = ["road:mod", "started_by_crown", "tools:help", "reply:Workspace", "reply:column"]
 

@@ -40515,16 +40515,23 @@ and the agent's attempt is answered.
 - **Drift it found:** USING.md still sent a person to *Behaviour › Worktrees*, removed
   in the T-1053 follow-up. Corrected: new tickets' workspace is each column's
   *New tickets › Workspace* row; the composer's `shift-tab` sets one ticket.
-- **Rig, measured 2026-11-01 (claude 2.1.316, mod road, Opus crown, Sonnet worker):**
-  HP1 (blind, the person's question with no word of the tool) FAILED: the worker made
-  no tool call and answered wrongly from priors, saying no mesimon tool was among its
-  tools (it skipped `get_ticket` too, which the brief names). The transcripts say why:
+- **Rig, measured 2026-11-01 (claude 2.1.316, mod road, Opus crown, Sonnet worker).**
   Claude Code defers every MCP and mod tool behind ToolSearch (a description loads only
-  on a search), and on 2.1.316 even the deferred NAMES (155, 25 of them mesimon's) reach
-  the model in a `deferred_tools_delta` attached after its first tool call. HP1 made
-  none, so it never saw `mcp__mesimon__help`; HP2 (the person says "ask mesimon's help
-  tool") searched first, got the names, called `get_ticket` and `help`, and answered with
-  the column's Workspace row: PASSED. A session past its first tool call has the name in
-  view, never the description. Naming the tool in the brief is promise-3 text and the
-  person's call; not changed here.
+  on a search), and the deferred NAMES (155, 25 of them mesimon's) reach the model in a
+  `deferred_tools_delta` after its first tool call, so a first turn sees no board tool.
+  - HP1 as first worded ("…Read no file and run no command") FAILED: the worker read the
+    ban as no tool call at all, so it neither searched for the `get_ticket` the brief
+    names nor saw `help`, and answered wrongly from priors. **The test's wording caused
+    the skip, not mesimon:** the last 60 sessions on the author's board show every
+    mesimon-started agent searching for and calling `get_ticket` within its first three
+    tool calls; the 26 that never did are automated security-review runs, which carry
+    no brief.
+  - HP2 (the person says "ask mesimon's help tool") PASSED: search, `get_ticket`,
+    `help`, the column's Workspace row.
+  - HP1 reworded (files off limits, tools allowed) PASSED with the same three calls and
+    the right row, but it is **not a blind result**: the worker said it saw the help
+    tool "mentioned in ticket T-1105", i.e. this ticket's commit among the five recent
+    commits Claude Code puts in a session (the rig's checkout is mesimon's own source).
+    A clean reading is an HP1 run once that commit has left the recent five.
+  Naming the tool in the brief is promise-3 text and the person's call; not changed.
 - Codex: listed through the same shim; no Codex rig case or live run.
