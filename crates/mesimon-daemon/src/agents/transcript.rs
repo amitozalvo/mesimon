@@ -165,22 +165,6 @@ pub fn conversation(path: &str) -> String {
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Slash commands as Claude Code and Codex record them, `<command-name>/x
-/// </command-name>…<command-args>y</command-args>`, as the person typed
-/// them: `/x y`. `None` for words that are not one.
-pub fn command_words(text: &str) -> Option<String> {
-    let inner = |tag: &str| {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let at = text.find(&open)? + open.len();
-        let to = text[at..].find(&close)? + at;
-        Some(text[at..to].trim())
-    };
-    let name = inner("command-name")?;
-    let args = inner("command-args").unwrap_or("");
-    Some(if args.is_empty() { name.to_string() } else { format!("{name} {args}") })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,22 +321,5 @@ mod tests {
         assert_eq!(words(&pg.rows), ["row 0", "row 2"]);
         assert_eq!(pg.from, 0);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn a_command_reads_as_typed() {
-        assert_eq!(
-            command_words(
-                "<command-name>/effort</command-name>\n  <command-message>effort</command-message>\n  <command-args>xhigh</command-args>"
-            )
-            .as_deref(),
-            Some("/effort xhigh")
-        );
-        assert_eq!(
-            command_words("<command-name>/clear</command-name><command-args></command-args>")
-                .as_deref(),
-            Some("/clear")
-        );
-        assert_eq!(command_words("plain words"), None);
     }
 }

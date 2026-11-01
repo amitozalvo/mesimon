@@ -6,7 +6,7 @@
 use crate::agents::{AgentActivity, AgentPreview, PreviewRead};
 use mesimon_core::adopt::{
     assistant_text, is_compact_summary, is_interrupt, narration, record_ms, tool_activity,
-    tool_label, user_prompt,
+    tool_label, user_prompt, user_said, user_text, Said,
 };
 use mesimon_core::mesophon::{RowKind, TranscriptRow};
 use serde_json::Value;
@@ -269,22 +269,21 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
         // harness's words; the boundary record above it is the row.
         Some("user") if is_compact_summary(v) => Vec::new(),
         Some("user") => {
-            let Some(words) = user_prompt(v) else { return Vec::new() };
-            if let Some(command) = super::super::transcript::command_words(&words) {
-                let said = if command == "/clear" { "conversation cleared" } else { &command };
-                return row(RowKind::Notice, said).into_iter().collect();
+            // `user_prompt` reads a command as typed; the row's kind needs
+            // to know a command from words, so this reads the record's text
+            // the same way one step earlier. A command's output is no row.
+            let Some(words) = user_text(v) else { return Vec::new() };
+            match user_said(words) {
+                Some(Said::Command(command)) => {
+                    let said = if command == "/clear" { "conversation cleared" } else { &command };
+                    row(RowKind::Notice, said).into_iter().collect()
+                }
+                Some(Said::Shell(shell)) => {
+                    row(RowKind::Prompt, &format!("! {shell}")).into_iter().collect()
+                }
+                Some(Said::Words(words)) => row(RowKind::Prompt, &words).into_iter().collect(),
+                None => Vec::new(),
             }
-            if let Some(shell) = tagged(&words, "bash-input") {
-                return row(RowKind::Prompt, &format!("! {shell}")).into_iter().collect();
-            }
-            // A local command's or a shell's output: the terminal's, not words.
-            if ["<local-command-", "<bash-stdout>", "<bash-stderr>"]
-                .iter()
-                .any(|t| words.starts_with(t))
-            {
-                return Vec::new();
-            }
-            row(RowKind::Prompt, &words).into_iter().collect()
         }
         Some("assistant") => {
             let Some(blocks) =
@@ -307,12 +306,6 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
         }
         _ => Vec::new(),
     }
-}
-
-/// The words between `<tag>` and `</tag>` when `text` opens with the tag.
-fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let rest = text.strip_prefix(&format!("<{tag}>"))?;
-    Some(rest.split(&format!("</{tag}>")).next().unwrap_or(rest).trim())
 }
 
 /// A record's identity as a number the board can compare and keep.
@@ -404,6 +397,29 @@ mod tests {
         assert_eq!(pk.text.as_deref(), Some("Committed as d5d114e."));
         assert!(pk.reply_key.is_some(), "a closing reply is a reply, and has a key");
         assert_eq!(pk.activity, None);
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-1103: a `!` command lands as `<bash-input>` and its output as
+    /// `<bash-stdout>`, both `user` records with no flag. The card read
+    /// `> <bash-input> sleep 30</bash-input>`; it reads `> ! sleep 30`, as the
+    /// `last-prompt` latch spells it, and the output record is nobody's words.
+    #[test]
+    fn a_bash_command_previews_as_typed() {
+        let p = tmp("bashinput");
+        std::fs::write(
+            &p,
+            format!(
+                "{}{}{}",
+                "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}]}}\n",
+                "{\"uuid\":\"b1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-input>sleep 30</bash-input>\"}}\n",
+                "{\"uuid\":\"b2\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-stdout></bash-stdout><bash-stderr></bash-stderr>\"}}\n",
+            ),
+        )
+        .unwrap();
+        let pk = latest_preview(&p).expect("peek");
+        assert_eq!(pk.text.as_deref(), Some("> ! sleep 30"));
+        assert_eq!(pk.activity, Some(AgentActivity::Thinking));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

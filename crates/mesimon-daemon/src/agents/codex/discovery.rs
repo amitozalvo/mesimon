@@ -186,7 +186,7 @@ pub fn rows(at: u64, v: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
             match p["role"].as_str() {
                 Some("assistant") => row(RowKind::Reply, text),
                 Some("user") => {
-                    if let Some(command) = super::super::transcript::command_words(text) {
+                    if let Some(command) = mesimon_core::adopt::command_words(text) {
                         row(RowKind::Notice, &command)
                     } else if text.starts_with('<')
                         || text.starts_with("# AGENTS.md")

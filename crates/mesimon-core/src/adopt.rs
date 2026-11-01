@@ -440,6 +440,17 @@ pub fn tool_label(b: &Value) -> String {
 /// agent "thinking" under it (dogfood 2026-09-02). It is skipped by its tag,
 /// so the walk continues to the agent's real last words.
 pub fn user_prompt(v: &Value) -> Option<String> {
+    Some(match user_said(user_text(v)?)? {
+        Said::Words(words) => words,
+        Said::Command(command) => command,
+        Said::Shell(shell) => format!("! {shell}"),
+    })
+}
+
+/// The text of one of the person's own records, before `user_said` reads
+/// what it says: `user_prompt`'s first half, for a reader that needs the
+/// kind of thing said and not only the words.
+pub fn user_text(v: &Value) -> Option<&str> {
     if v.get("type").and_then(Value::as_str) != Some("user")
         || v.get("uuid").is_none()
         || v.get("toolUseResult").is_some()
@@ -468,7 +479,64 @@ pub fn user_prompt(v: &Value) -> Option<String> {
     if text.is_empty() || text.starts_with(TASK_NOTIFICATION_TAG) {
         return None;
     }
-    Some(unwrap_pasted(text))
+    Some(text)
+}
+
+/// What the person typed, read off a prompt record's text. Claude Code writes
+/// a slash command and a `!` command as the harness's tags, and their output
+/// as records of their own; the `last-prompt` latch spells the same `!`
+/// command `! ls`, which is what a card shows (T-1103: a `!` command's card
+/// read `> <bash-input> sleep 30</bash-input>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Said {
+    /// A prompt, with the pasted-block wrapper taken off (`unwrap_pasted`).
+    Words(String),
+    /// A slash command as typed: `/effort xhigh`.
+    Command(String),
+    /// A `!` command's shell words, without the `!`.
+    Shell(String),
+}
+
+/// `text` as the person typed it, or `None` when it is the terminal's: a
+/// `!` command's `<bash-stdout>`/`<bash-stderr>` or a slash command's
+/// `<local-command-stdout>`/`<local-command-stderr>`, which the harness
+/// records as `user` and which the person never wrote.
+pub fn user_said(text: &str) -> Option<Said> {
+    if let Some(command) = command_words(text) {
+        return Some(Said::Command(command));
+    }
+    if let Some(shell) = tagged(text, "bash-input") {
+        return Some(Said::Shell(shell.to_string()));
+    }
+    if OUTPUT_TAGS.iter().any(|t| text.starts_with(t)) {
+        return None;
+    }
+    Some(Said::Words(unwrap_pasted(text)))
+}
+
+/// The opening tags of the records that carry a command's output.
+const OUTPUT_TAGS: [&str; 3] = ["<local-command-", "<bash-stdout>", "<bash-stderr>"];
+
+/// Slash commands as Claude Code and Codex record them, `<command-name>/x
+/// </command-name>…<command-args>y</command-args>`, as the person typed
+/// them: `/x y`. `None` for words that are not one.
+pub fn command_words(text: &str) -> Option<String> {
+    let inner = |tag: &str| {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let at = text.find(&open)? + open.len();
+        let to = text[at..].find(&close)? + at;
+        Some(text[at..to].trim())
+    };
+    let name = inner("command-name")?;
+    let args = inner("command-args").unwrap_or("");
+    Some(if args.is_empty() { name.to_string() } else { format!("{name} {args}") })
+}
+
+/// The words between `<tag>` and `</tag>` when `text` opens with the tag.
+fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(&format!("<{tag}>"))?;
+    Some(rest.split(&format!("</{tag}>")).next().unwrap_or(rest).trim())
 }
 
 /// `text` without the `<pasted_content id=…>` and `</pasted_content>` lines
@@ -858,6 +926,38 @@ mod tests {
             r#"{"uuid":"u9","type":"user","message":{"content":"why does <pasted_content id=x> show?"}}"#,
         );
         assert_eq!(user_prompt(&v).as_deref(), Some("why does <pasted_content id=x> show?"));
+    }
+
+    /// A `!` command and a slash command read as the person typed them, the
+    /// way the `last-prompt` latch spells them; their output is nobody's
+    /// words (T-1103).
+    #[test]
+    fn user_prompt_reads_a_command_as_typed_and_skips_its_output() {
+        let v = val(
+            r#"{"uuid":"b1","type":"user","message":{"content":"<bash-input>sleep 30</bash-input>"}}"#,
+        );
+        assert_eq!(user_prompt(&v).as_deref(), Some("! sleep 30"));
+        let v = val(
+            r#"{"uuid":"b2","type":"user","message":{"content":"<bash-stdout>done</bash-stdout><bash-stderr></bash-stderr>"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+        let v = val(
+            r#"{"uuid":"c1","type":"user","message":{"content":"<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>xhigh</command-args>"}}"#,
+        );
+        assert_eq!(user_prompt(&v).as_deref(), Some("/effort xhigh"));
+        let v = val(
+            r#"{"uuid":"c2","type":"user","message":{"content":"<local-command-stdout>Set effort</local-command-stdout>"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+
+        assert_eq!(
+            user_said("<command-name>/clear</command-name><command-args></command-args>"),
+            Some(Said::Command("/clear".into()))
+        );
+        assert_eq!(user_said("<bash-input>ls</bash-input>"), Some(Said::Shell("ls".into())));
+        assert_eq!(user_said("plain words"), Some(Said::Words("plain words".into())));
+        assert_eq!(user_said("<local-command-stderr>x</local-command-stderr>"), None);
+        assert_eq!(command_words("plain words"), None);
     }
 
     #[test]

@@ -40296,3 +40296,24 @@ request, the toast, the archive opened). Not run: the full workspace suite — t
 change is one new action no other caller constructs, held equal to `Mutate` by its unit test.
 No harness drives a phone's control op against a real daemon (as T-737); `control_park` has no
 test of its own here.
+## A `!` command's card reads as typed (T-1103, 2026-11-01, "bash tags showing in transcript")
+
+Reported with a picture: a card under a `!` command read `> <bash-input> sleep 30</bash-input>`.
+Two readers make a card's words. The census reads the `last-prompt` latch, which Claude Code
+spells `! sleep 30` already; the live peek (`history::walk`) reads the person's record through
+`adopt::user_prompt`, which handed the harness's tags through verbatim. The phone transcript
+(`history::rows`) already read a `<bash-input>` as `! …`, a `<command-name>` as `/x y` and an
+output record as no row, in its own code.
+
+**Built.** That reading moved into core: `adopt::user_said` gives `Said::Words | Command | Shell`
+off a record's text (`user_text`), and `user_prompt` renders it as the person typed it, `! ls` or
+`/effort xhigh`, and `None` for `<bash-stdout>`, `<bash-stderr>` and `<local-command-*>` output.
+`history::rows` and Codex's `discovery` read the same `command_words`, now in core. The card and
+the latch agree; the peek's walk steps past the output record to the command, so the card reads
+`> ! sleep 30` with the thinking mark, the same as a typed prompt.
+
+**What else changed under it.** `user_prompt`'s `is_some()` is three readers' "a person spoke"
+(`prompted_since`, the open-dialog walk, recovery's newer-turn rule); an output record no longer
+says so, its `<bash-input>` beside it still does (the two land together, T-707), so none of them
+moves. Tests: `adopt::user_prompt_reads_a_command_as_typed_and_skips_its_output`,
+`history::a_bash_command_previews_as_typed`.
