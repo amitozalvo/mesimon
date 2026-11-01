@@ -24,6 +24,8 @@
 #                     (ci/test-run.py --jobs; default: nextest's own)
 #   MESIMON_TMUX_BIN  the tmux that drives the suite; default the bundled
 #                     vendor/tmux/tmux, in a worktree the main checkout's
+#   MESIMON_RELEASE_PREPARE_BUILDS=1
+#                     the release builds in a worktree too (to measure them)
 #
 # Run it where ci/release.sh will run — the main checkout — for the warm builds
 # to count: cargo keys its artifacts by source path, so a worktree's builds
@@ -115,7 +117,7 @@ warm() {
 warm clippy cargo clippy --workspace --all-targets -- -D warnings
 warm dup-deps ./ci/check-dup-deps.sh
 warm site ci/site.sh
-if [ "$worktree" = 0 ]; then
+if [ "$worktree" = 0 ] || [ "${MESIMON_RELEASE_PREPARE_BUILDS:-0}" = 1 ]; then
   warm build-macos env MESIMON_RELEASE=1 cargo build --release --locked --target aarch64-apple-darwin
   warm build-linux env MESIMON_RELEASE=1 ./ci/build-linux.sh
 else
