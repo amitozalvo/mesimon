@@ -345,11 +345,14 @@ teardown. A timeout, a cleanup failure or a skipped test is reported as what it 
 pass**.
 
 `python3 -B ci/test-run.py [-- cargo test ...]` is the bounded entry point CI and the release
-gate use: a 20-minute deadline, a lock per build output, and an audit that every fixture reported
-`cleaned`. `--jobs N` caps build jobs and test threads; unbounded by default, so the plain cargo
-commands stay the inner loop at their usual speed. Checks run once by default;
-release verification uses `--both-roads` to add the full mod pass. A single-road
-stamp does not satisfy the release gate.
+gate use: a 20-minute deadline (40 with `--both-roads`), a lock per build output, and an audit
+that every fixture reported `cleaned`. `--jobs N` caps build jobs and test threads; unbounded by
+default, so the plain cargo commands stay the inner loop at their usual speed. Checks run once by
+default; release verification uses `--both-roads` to add the full mod pass, which runs **beside**
+the first pass (T-1101): it waits on cargo's lock while the suite builds, then both roads run
+their tests at once, each at `--jobs N` threads, the mod road's lines prefixed `mod | `. A
+single-road stamp does not satisfy the release gate. `ci/release-prepare.sh` wraps the gate for
+a release and warms the release builds beside it (the release skill has the order).
 **Bounded runs in different worktrees overlap** (T-830): a run locks each Cargo target/build
 directory it writes (as cargo resolves them, config included), so only runs sharing build output
 take turns, and the waiting one prints `== waiting (not testing yet)` with the holder's pid,

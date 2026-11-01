@@ -7,15 +7,25 @@ description: Cutting a mesimon release — the order (bump, CHANGELOG, test run,
 
 See `AGENTS.md` for the shared development contract. Production deploys — `deploy/ship.sh`, the tag, the push, `ci/release.sh` — are the author's.
 
-**Release order**: bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3
--B ci/test-run.py --both-roads` → tag → push → `ci/release.sh`. Never verify before the bump — the bump
-relinks every crate and the run is thrown away. From the tag on, the author runs **one
-command, the relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the
-relay, then the tag, push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses
-while the live relay lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps `target/suite-passed.json`
-(HEAD sha + the tmux that drove it, by path and hash) and `release.sh` skips its own suite when
-the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locally, not on a
-runner. **Both Docker gate steps are paused by the author** until they say Windows/WSL2 is
+**Release order**: bump + CHANGELOG (`cargo update --workspace --offline` for the lock) → commit →
+`ci/release-prepare.sh` → the relay's lock commit + `deploy/ship.sh all --dry-run` → hand the author
+`deploy/ship.sh all`. Never verify before the bump — the bump relinks every crate and the run is
+thrown away. `ci/release-prepare.sh` (T-1101) is the one command after the commit: it refuses a
+dirty tree or a CHANGELOG whose top heading is not the version's, runs the stamped gate
+(`ci/test-run.py --both-roads`, the two roads **side by side**, the mod pass waiting on cargo's
+lock while the suite builds, so both take about one road's time), and once the tests are running
+warms beside them, niced, what `release.sh` and the ship will run again on the same commit: the
+gate's clippy (a red one stops the gate: the commit will change), the drift check, the site, and
+in the main checkout the macOS and two Linux release builds with `MESIMON_RELEASE=1`, so the
+author's ship finds them built. In a worktree the release builds are skipped (cargo keys
+artifacts by source path) and the stamp is the deliverable. `--jobs N` is each road's thread
+count; logs land in `target/release-prepare/`. From the tag on, the author runs **one command, the
+relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the relay, then the tag,
+push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses while the live relay
+lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps
+`target/suite-passed.json` (HEAD sha + the tmux that drove it, by path and hash) and `release.sh`
+skips its own suite when the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are
+cut locally, not on a runner. **Both Docker gate steps are paused by the author** until they say Windows/WSL2 is
 operational — the script prints `SKIPPED` and `MESIMON_RELEASE_DOCKER=1` runs them. Docker is
 still needed for the release itself since T-1097: the two Linux tmux binaries build in an Alpine
 container and are verified in a Debian one (`ci/build-tmux.sh <target>`, cached under
