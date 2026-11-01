@@ -339,9 +339,10 @@ fn multiplexer(repo: &Path, verbose: bool) -> Section {
         rec(Level::Note, "tmux binary", format!("{shown} (shipped with mesimon)"))
     } else {
         // The ladder resolves PATH to an absolute path too, so "absolute"
-        // does not mean "ours": only the sibling's NAME does. On macOS a
-        // release ships one and PATH means a source build or a missing
-        // sibling; on Linux PATH is where the release expects to find it.
+        // does not mean "ours": only the sibling's NAME does. Every release
+        // ships one (Linux since T-1097), so PATH means a source build, a
+        // missing sibling, or a Linux install from before the bundle that
+        // `U` updates never plant one into (release.rs).
         rec(Level::Note, "tmux binary", format!("{shown} (from PATH)"))
     });
     match tool_version(&bin.display().to_string(), &["-V"]) {
@@ -350,7 +351,7 @@ fn multiplexer(repo: &Path, verbose: bool) -> Section {
             if cfg!(target_os = "macos") {
                 "A release build ships one; if you built from source, install tmux: brew install tmux".to_string()
             } else {
-                format!("The Linux build does not bundle one. Install it: {}", tmux_pkg_line("install"))
+                format!("A release build ships one; if you built from source, install tmux: {}", tmux_pkg_line("install"))
             }
         ))),
         Some(v) => records.push(tmux_verdict(&v)),
@@ -515,10 +516,16 @@ fn private_server(
 }
 
 /// The line that installs or upgrades tmux here. Advice only — doctor prints
-/// fixes and never applies them (16 §8).
+/// fixes and never applies them (16 §8). An upgrade on Linux names the
+/// install line too: a distro's tmux may stop short of the floor (Ubuntu
+/// 22.04 packages 3.2a), and a Linux install from before T-1097 has no
+/// `mesimon-tmux` beside it until the install line is run again.
 fn tmux_pkg_line(verb: &str) -> String {
     if cfg!(target_os = "macos") {
         format!("brew {verb} tmux")
+    } else if verb == "upgrade" {
+        "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager), or re-run mesimon's install line, which places its own tmux 3.6a beside mesimon"
+            .into()
     } else {
         "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager)"
             .into()

@@ -308,7 +308,8 @@ the terminal's (iTerm2, kitty, tmux's XTVERSION) in `crates/mesimon-tui/CLAUDE.m
 - **A tmux pane id is unique per server, and the server exits with its last session.** A wake
   that kills the only session restarts the server, and the new pane is `%0` like the old one;
   a pane identity must carry the server pid (`#{pid}`) beside `#{pane_id}`.
-- **A distro tmux before 3.6 can lose a pane's exit** (T-917): with libutempter (Debian, Ubuntu),
+- **A distro tmux before 3.6 can lose a pane's exit** (T-917; a reason Linux bundles its own
+  since T-1097, reachable still under `MESIMON_TMUX_BIN`): with libutempter (Debian, Ubuntu),
   a fast-exiting pane can read `pane_dead=1` with no status, stay a zombie and fire no
   `pane-died`. `nudge_unreaped` raises SIGCHLD at the server; a GitHub runner also has `gh` in
   `/usr/bin`, ahead of a test stub that only the daemon's PATH carries.

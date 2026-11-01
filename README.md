@@ -52,8 +52,7 @@ brew install amitozalvo/tap/mesimon
 Then run `mesimon doctor`. It checks your setup and prints fixes, and changes nothing.
 
 You need macOS on Apple Silicon or Linux (x86_64 or aarch64, WSL2 included), git, and Claude
-Code or Codex, signed in. On Linux you also need tmux 3.3 or newer; on macOS mesimon brings its
-own. [Requirements in detail](docs/USING.md#requirements) covers the rest, and
+Code or Codex, signed in. mesimon brings its own tmux on every platform. [Requirements in detail](docs/USING.md#requirements) covers the rest, and
 [Updating](docs/USING.md#updating) says how new versions arrive.
 
 ## First run

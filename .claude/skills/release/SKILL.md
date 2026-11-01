@@ -15,9 +15,12 @@ relay, then the tag, push and `ci/release.sh`, which publishes the site. `ci/rel
 while the live relay lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps `target/suite-passed.json`
 (HEAD sha + the tmux that drove it, by path and hash) and `release.sh` skips its own suite when
 the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are cut locally, not on a
-runner. **Both Docker steps are paused by the author** until they say Windows/WSL2 is
-operational — the script prints `SKIPPED`, `MESIMON_RELEASE_DOCKER=1` runs them, and you should
-not open Docker Desktop for a release.
+runner. **Both Docker gate steps are paused by the author** until they say Windows/WSL2 is
+operational — the script prints `SKIPPED` and `MESIMON_RELEASE_DOCKER=1` runs them. Docker is
+still needed for the release itself since T-1097: the two Linux tmux binaries build in an Alpine
+container and are verified in a Debian one (`ci/build-tmux.sh <target>`, cached under
+`vendor/tmux-<target>/` across releases, a verify of seconds when cached). Say so before opening
+Docker Desktop.
 **Release channels (T-946)**: a version `<last stable>.unstable.N` (from 0.1.0 final,
 `0.2.0-unstable.N`) is an unstable release, tagged `unstable-<version>` in the same repository,
 which no picker since T-877 takes (beta.12's updater on, and the served `install.sh`). The order is the same, the channel is the version's, and

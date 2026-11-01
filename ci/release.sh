@@ -17,11 +17,14 @@
 #     (ci/check-relay.sh), so a release never talks to a relay that predates it
 #   * the full suite and clippy must pass, with tmux REQUIRED (a skipped e2e
 #     suite is a gate that certifies nothing)
-#   * the suite must pass on Linux too, in Docker, against the tmux a distro
-#     ships rather than the one we bundle (ci/test-linux.sh) — Docker is
-#     required here, not skipped, for the same reason tmux is. PAUSED
-#     (author, 2026-09-02): both Docker steps are off until the author says
-#     Windows/WSL2 is operational; MESIMON_RELEASE_DOCKER=1 runs them.
+#   * the suite must pass on Linux too, in Docker, on the tmux the Linux
+#     tarballs bundle (ci/test-linux.sh) — Docker is required here, not
+#     skipped, for the same reason tmux is. PAUSED (author, 2026-09-02): both
+#     Docker gate steps are off until the author says Windows/WSL2 is
+#     operational; MESIMON_RELEASE_DOCKER=1 runs them. The Linux tmux BUILD
+#     (ci/build-tmux.sh, an Alpine container per target, since T-1097) is not
+#     a gate step and always needs Docker: without it there is no Linux tmux
+#     to package.
 #   * the macOS binary is never stripped, and its signature is verified
 #   * every packaged artifact is executed before it is published, the Linux
 #     ones inside a Debian container of their own architecture
@@ -139,11 +142,18 @@ step "duplicate dependency drift"
 ./ci/check-dup-deps.sh
 
 step "bundled tmux"
-# Shipped beside mesimon so a fresh machine needs nothing installed, and so
-# every tester runs the same tmux the author does. Cached across releases;
-# the script verifies a cached binary rather than trusting it.
+# Shipped beside mesimon on every target so a fresh machine needs nothing
+# installed, and so every tester runs the same tmux the author does. Cached
+# across releases; the script verifies a cached binary rather than trusting
+# it. The Linux ones build and verify in Docker (an Alpine container builds,
+# a Debian one of the same architecture runs the result), which is why
+# Docker is required of a release even while the gate steps below are paused.
 ./ci/build-tmux.sh
 [ -x vendor/tmux/tmux ] || die "vendor/tmux/tmux missing after build"
+for t in $LINUX_TARGETS; do
+  ./ci/build-tmux.sh "$t"
+  [ -x "vendor/tmux-$t/tmux" ] || die "vendor/tmux-$t/tmux missing after build"
+done
 
 # The suite may already have run at this very commit, against this very tmux:
 # ci/test-run.py stamps a clean full-workspace pass with the HEAD it ran at
@@ -208,12 +218,15 @@ step "the mod against this machine's Claude Code"
 # (T-598) the test half says SKIPPED with Claude Code's words, shown here.
 MESIMON_REQUIRE_CLAUDE=1 cargo test -p mesimon --test mod_plugin -- --nocapture
 
-step "tests on Linux (Docker, the distro's own tmux)"
+step "tests on Linux (Docker, the bundled Linux tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the
-# tmux a `sudo apt install tmux` gives people — 3.3a on Debian 12 — which is
-# where a 3.6-only assumption (a tab in `-F` output) first failed with every
-# pane alive. The script dies without Docker rather than skipping: a Linux
-# gate that ran nothing would certify a Linux build nobody had tested.
+# tmux those artifacts carry (T-1097) — what a Linux board runs since the
+# install plants `mesimon-tmux` beside the binary there too. Before that it
+# ran on Debian 12's own 3.3a, which is where a 3.6-only assumption (a tab in
+# `-F` output) first failed with every pane alive; MESIMON_TEST_LINUX_TMUX=
+# distro still runs that leg. The script dies without Docker rather than
+# skipping: a Linux gate that ran nothing would certify a Linux build nobody
+# had tested.
 if [ "$DOCKER_GATE" = "1" ]; then
   ./ci/test-linux.sh
 else
@@ -269,15 +282,17 @@ cat "dist/$name.tar.gz.sha256"
 ls -lh "dist/$name.tar.gz"
 assets+=("dist/$name.tar.gz" "dist/$name.tar.gz.sha256")
 
-# The Linux packages carry no tmux (ci/build-linux.sh says why) and so no
-# bundled licenses; everything else is the layout install.sh unpacks. The
-# checksum file is `shasum`'s `<hex>  <name>` line, which Linux's `sha256sum
-# -c` reads unchanged.
+# The Linux packages have the same layout, with the static tmux of their own
+# architecture beside the binary (T-1097); install.sh unpacks both the same
+# way. The checksum file is `shasum`'s `<hex>  <name>` line, which Linux's
+# `sha256sum -c` reads unchanged.
 for t in $LINUX_TARGETS; do
   lname="mesimon-$tag-$t"
   mkdir -p "dist/$lname"
   cp "target/$t/release/mesimon" "dist/$lname/"
+  cp "vendor/tmux-$t/tmux" "dist/$lname/mesimon-tmux"
   cp README.md LICENSE NOTICE TRADEMARK.md "dist/$lname/"
+  cp -R "vendor/tmux-$t/licenses" "dist/$lname/licenses-bundled"
   # bsdtar records every file's `com.apple.provenance` xattr, and GNU tar on
   # the other end prints a warning per file while unpacking it. Measured on
   # Debian 12: five warnings before "installed". Strip the Mac metadata here;
@@ -320,12 +335,13 @@ $checks" "MESIMON_RELEASE=1 must be set on the cargo build above" ;;
       "mesimon doctor install must report it — see crates/mesimon-tui/src/release.rs" ;;
 esac
 
-# The same two proofs for each Linux artifact — it runs, and it is stamped —
-# from inside a Debian container of its own architecture (the x86_64 one
-# under Docker's emulation, which is exactly enough for `--version`). The
-# checker's build-tree guard is exercised for real here too: /pkg has no
-# `target` component, so `off` can only mean a missing stamp or a target the
-# checker does not know.
+# The same proofs for each Linux artifact — it runs, it is stamped, and its
+# bundled tmux runs and is the one mesimon picks from that layout — from
+# inside a Debian container of its own architecture (the x86_64 one under
+# Docker's emulation, which is exactly enough for `--version`). The checker's
+# build-tree guard is exercised for real here too: /pkg has no `target`
+# component, so `off` can only mean a missing stamp or a target the checker
+# does not know.
 step "verify the Linux artifacts (Docker)"
 [ "$DOCKER_GATE" = "1" ] || \
   echo "SKIPPED: the Linux artifacts were not executed (MESIMON_RELEASE_DOCKER=1 runs them)"
@@ -340,12 +356,17 @@ for t in $LINUX_TARGETS; do
   esac
   said=$(docker run --rm --platform "$plat" -v "$tmp/$lname:/pkg:ro" -e HOME=/root \
       debian:bookworm-slim \
-      sh -c '/pkg/mesimon --version && /pkg/mesimon doctor install --verbose | grep "update checks"') \
-    || die "the packaged $t binary would not run in a $plat container, or printed no 'update checks' line"
+      sh -c '/pkg/mesimon --version && /pkg/mesimon-tmux -V && /pkg/mesimon doctor install --verbose | grep "update checks" && /pkg/mesimon doctor multiplexer --verbose | grep "tmux binary"') \
+    || die "the packaged $t binary or its tmux would not run in a $plat container, or a doctor line is missing"
   echo "$said"
   case "$said" in
     *"off ∙"*) die "the packaged $t mesimon will not check for updates:
 $said" "MESIMON_RELEASE=1 must reach ci/build-linux.sh, and release.rs must name $t" ;;
+  esac
+  case "$said" in
+    *"/pkg/mesimon-tmux"*) ;;
+    *) die "the packaged $t mesimon did not resolve its bundled tmux:
+$said" ;;
   esac
 done
 

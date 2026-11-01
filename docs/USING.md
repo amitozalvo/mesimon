@@ -22,9 +22,11 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
   builds are `aarch64-apple-darwin` and a static-musl pair for Linux, so one binary runs on any
   distro. The code is Unix-only by design (unix sockets, tmux): on Windows, WSL2 is the way in,
   and keep the repo in the Linux filesystem, not under `/mnt/c` (`mesimon doctor` says so too).
-- **git**. On macOS tmux is *not* required — mesimon ships its own, installed as `mesimon-tmux`
-  so it never shadows yours. On Linux, install the distro's (`sudo apt install tmux`, 3.3 or
-  newer; `mesimon doctor` names the floor).
+- **git**. tmux is *not* required — mesimon ships its own, tmux 3.6a built statically, installed
+  as `mesimon-tmux` beside the binary so it never shadows yours. `MESIMON_TMUX_BIN` runs the
+  board on a tmux of your choosing instead (3.3 or newer; `mesimon doctor` names the floor). A
+  Linux install from before the bundle keeps the distro's tmux through `U` updates; re-running
+  the install line plants the bundled one.
 - **On macOS, one permission prompt.** The first agent you start asks whether `mesimon-tmux`
   may access the folder your repository is in, when that is Documents, Desktop or Downloads.
   Allow it: the private tmux server then keeps that access after the terminal that opened the
@@ -48,8 +50,8 @@ Or with Homebrew, on macOS (Apple Silicon) or Linux:
 brew install amitozalvo/tap/mesimon
 ```
 
-The formula installs the same published binaries, and on macOS the same bundled tmux as
-`mesimon-tmux`. Homebrew updates it: `brew upgrade mesimon`.
+The formula installs the same published binaries and the same bundled tmux as `mesimon-tmux`.
+Homebrew updates it: `brew upgrade mesimon`.
 
 Binaries are published from
 [amitozalvo/mesimon-releases](https://github.com/amitozalvo/mesimon-releases), a public repo that

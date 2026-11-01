@@ -33,8 +33,7 @@ cd <a git repo> && mesimon
 ```
 
 You need macOS on Apple Silicon or Linux (x86_64 or aarch64, WSL2 included), git, and Claude
-Code or Codex, signed in. On Linux you also need tmux 3.3 or newer; on macOS mesimon brings its
-own. [Requirements in detail](https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md#requirements).
+Code or Codex, signed in. mesimon brings its own tmux on every platform. [Requirements in detail](https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md#requirements).
 
 Re-running the install line is how you update. With Homebrew, `brew upgrade mesimon`.
 

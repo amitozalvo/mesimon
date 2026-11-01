@@ -67,14 +67,6 @@ command -v curl >/dev/null 2>&1 || die "curl is required" \
 command -v git >/dev/null 2>&1 || die "git is required" \
   "$([ "$os" = Darwin ] && echo 'xcode-select --install' || echo 'sudo apt install git')"
 
-# macOS gets a bundled tmux (below). The Linux build does not carry one: every
-# distro packages a tmux mesimon runs on, and `mesimon doctor` names the
-# version floor. Not fatal here — you can browse a board without an agent.
-if [ "$os" = Linux ] && ! command -v tmux >/dev/null 2>&1; then
-  echo "note: tmux is not on your PATH. mesimon needs it to run agents:"
-  echo "      sudo apt install tmux      (3.3 or newer; mesimon doctor checks)"
-fi
-
 # Not fatal: you can browse a board without ever spawning an agent.
 command -v claude >/dev/null 2>&1 || {
   echo "note: 'claude' is not on your PATH. mesimon will run, but spawning a"
@@ -243,7 +235,9 @@ mv "$PREFIX/mesimon.new" "$PREFIX/mesimon"
 
 # tmux goes NEXT TO mesimon, under a name that will not shadow yours on PATH.
 # mesimon prefers this sibling over whatever `tmux` means to your shell, so
-# your own tmux, its version, and its config are left completely alone.
+# your own tmux, its version, and its config are left completely alone. Every
+# published tarball carries one (Linux since T-1097); the guard keeps an
+# older release installable.
 if [ -x "$unpacked/mesimon-tmux" ]; then
   mv "$unpacked/mesimon-tmux" "$PREFIX/mesimon-tmux.new"
   chmod +x "$PREFIX/mesimon-tmux.new"

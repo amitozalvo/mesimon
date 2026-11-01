@@ -62,27 +62,31 @@ cargo test -p mesimon-core attention # one module's tests
 cargo test -p mesimon --test hook_e2e # one e2e (real hook binary + in-process daemon + real tmux; skips without tmux)
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy; tests are exempt from unwrap_used via clippy.toml
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
-ci/test-linux.sh                     # the whole suite on Linux (Docker, Debian 12, the DISTRO's tmux 3.3a); ~90 s warm. Docker Desktop must be up — SAY SO before `open -a Docker`
+ci/test-linux.sh                     # the whole suite on Linux (Docker, Debian 12, the BUNDLED aarch64 tmux; MESIMON_TEST_LINUX_TMUX=distro for Debian's 3.3a); ~90 s warm. Docker Desktop must be up — SAY SO before `open -a Docker`
 ci/build-linux.sh                    # the two Linux release binaries, cross-linked from this Mac (static musl, rust-lld, no Docker)
+ci/build-tmux.sh <target>            # the bundled tmux: aarch64-apple-darwin natively, the two Linux musl targets in an Alpine container, verified on Debian (Docker)
 MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B ci/test-run.py  # the RELEASE's suite, once, on a clean committed tree: stamps target/suite-passed.json, then prunes deps/
 python3 -B ci/prune-deps.py             # delete the split-debuginfo objects no current binary references (test-run.py does it after every run); `--dry-run` counts
 ci/release.sh --dry-run              # the full release gate, minus the upload; honours the stamp and skips its own suite
 ```
 
-**mesimon ships its own tmux** (alpha-2): `ci/build-tmux.sh` builds a static tmux 3.6a
-(libevent/ncursesw/utf8proc static, system terminfo, pinned+checksummed sources) into
-`vendor/tmux/`, and the release packages it beside the binary as `mesimon-tmux` — NOT `tmux`,
+**mesimon ships its own tmux** (alpha-2; Linux too since T-1097): `ci/build-tmux.sh` builds a
+static tmux 3.6a (libevent/ncursesw/utf8proc static, system terminfo, pinned+checksummed
+sources) into `vendor/tmux/` for macOS and `vendor/tmux-<target>/` for each Linux target (an
+Alpine container builds, a Debian one verifies), and the release packages it beside the binary
+on every target as `mesimon-tmux` — NOT `tmux`,
 which would shadow the user's own on PATH and would also mean an install into a directory that
 already has tmux silently "bundles" that one. `mesimon_backend_tmux::tmux_bin()` is the ladder
 (`MESIMON_TMUX_BIN` → sibling `mesimon-tmux` → PATH) and BOTH the server commands and
 `attach_argv` must use it: a client from a different tmux build refuses the server over protocol
 version. `ci/release.sh` runs the e2e suite against the bundled binary, so what ships is what was
-tested. **That is macOS only. Linux ships no tmux** and runs the distro's (3.2a on Ubuntu 22.04
-up to 3.5a on Debian 13) — and **every tmux before 3.6 rewrites a control character in `-F`
-format OUTPUT as `_`**, which is why `SEP` in `backend-tmux/src/lib.rs` is a printable `|` and
-why the suite has to run on a distro tmux, not the bundled one (`ci/test-linux.sh`). Doctor's
-floor is 3.3 (`allow-passthrough`; 3.1–3.2 runs but WARNs that T-10's containment is off).
-(STALE-MAP "Linux ships, and every tmux before 3.6 rewrites a tab".)
+tested, and `ci/test-linux.sh` does the same on the bundled Linux one. A board still runs on
+a tmux of the user's under `MESIMON_TMUX_BIN` (3.2a on Ubuntu 22.04 up to 3.5a on Debian 13),
+and **every tmux before 3.6 rewrites a control character in `-F` format OUTPUT as `_`**, which
+is why `SEP` in `backend-tmux/src/lib.rs` is a printable `|` and why
+`MESIMON_TEST_LINUX_TMUX=distro ci/test-linux.sh` keeps a leg on Debian's 3.3a. Doctor's floor
+is 3.3 (`allow-passthrough`; 3.1–3.2 runs but WARNs that T-10's containment is off). (STALE-MAP
+"Linux ships, and every tmux before 3.6 rewrites a tab", then "Linux bundles tmux 3.6a".)
 
 **Releases are cut locally**, not on a runner (`ci/release.sh`): GitHub's macOS
 runners bill at 10x on a private repo and the macOS target is this machine; the two

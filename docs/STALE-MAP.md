@@ -40130,3 +40130,81 @@ Heard on the author's Mac the day it merged: "the first (2 notes) is finishing e
 length now follows the decay (`rings_for`: the slowest partial 60 dB down, ~1.9 s for the chime,
 ~0.4 s for the tick), with the bell's decay shortened from 0.34 s to 0.26 s so the ring stays
 near Glass's length; a test holds the 100 ms before the fade under -40 dB and fails on 0.95 s.
+
+## Linux bundles tmux 3.6a (T-1097, 2026-11-01)
+
+Revisits "Linux ships, and every tmux before 3.6 rewrites a tab (2026-09-02)", whose deferred
+item this was: a bundled Linux tmux "would need `build-tmux.sh` ported to an alpine/musl
+container". T-1095's `-T hyperlinks` attach helps only on tmux 3.4+ (older tmux keeps no OSC 8),
+Ubuntu 22.04 — the common WSL distro — ships 3.2a, and on 3.1–3.2 `allow-passthrough` does not
+exist, so T-10's containment was a line tmux ignored.
+
+**Built.** `ci/build-tmux.sh [target]` is one recipe for the three published targets: the same
+pinned, checksummed libevent 2.1.12 / ncurses 6.5 / utf8proc 2.9.0 / tmux 3.6a sources, run
+natively for `aarch64-apple-darwin` (unchanged output, `vendor/tmux/tmux`) and inside an
+`alpine:3.21` container of the target's platform for `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` (`vendor/tmux-<target>/tmux`, with `licenses/` beside each). The
+container runs this very script with `--inside`; the host fetches and checks the tarballs, mounts
+the cache read-only and only `/out` is written. Linux differences: `--enable-static` on tmux's
+configure (musl honours `-static`; macOS has no static libSystem), the ncurses search list names
+every distro family's terminfo directory (`/etc/terminfo:/lib/terminfo:/usr/share/terminfo:
+/usr/lib/terminfo:/usr/local/share/terminfo` — Debian keeps xterm-256color in `/lib/terminfo`,
+Fedora and Alpine in `/usr/share/terminfo`) with the eight common entries compiled in as
+fallbacks for a box with no database, and the result is stripped (no signature to break, half the
+file: 1.8 MB). Verified twice: inside the build container (`file` says statically linked, `-V`,
+and `Hls=` is in the binary — tty-features.c compiles OSC 8 only when it sees ncurses > 5.8, the
+capability the bundle exists for) and then in a `debian:bookworm-slim` of the same platform: a
+server on a private socket, and a real client attach under `script` with `TERM=xterm-256color`
+and `-T hyperlinks`, which is where a static ncurses that cannot find Debian's database fails
+with `open terminal failed`. Measured: aarch64 builds in ~1 min natively; x86_64 in ~4 min under
+Docker's emulation; a cached binary re-verifies in seconds. Trap met on the way: the Docker VM
+disk (58 GB) was 93 % full, with `msmn-linux-target` at 10.7 GB two weeks stale, and
+`ci/test-run.py`'s 5 GiB guard stopped the Linux suite mid-compile twice; `docker builder prune`
+plus removing that cache volume freed 18 GB, and the cold rebuild on 2 CPUs needs more than the
+script's 900 s deadline (run by hand at 2400 s here; the deadline fits a warm cache only, left as
+is).
+
+`ci/release.sh` builds all three in its "bundled tmux" step and packages `mesimon-tmux` plus
+`licenses-bundled` into the Linux tarballs with the same layout as the macOS one; its Docker
+verify of each Linux artifact now also runs `mesimon-tmux -V` and checks `doctor multiplexer`
+resolves `/pkg/mesimon-tmux`. `ci/test-linux.sh` drives the suite with the bundled aarch64 tmux
+(`MESIMON_TMUX_BIN=/work/vendor/tmux-aarch64-unknown-linux-musl/tmux`, built first when
+missing); `MESIMON_TEST_LINUX_TMUX=distro` keeps the old leg on Debian's 3.3a, which is what a
+user on `MESIMON_TMUX_BIN` gets. `install.sh` loses its Linux "apt install tmux" note (the
+sibling guard already handled a tarball with one); the Homebrew formula installs `mesimon-tmux`
+and the licenses on every OS, drops the Linux caveat and tests the sibling everywhere. The backend
+and doctor needed no change: `tmux_bin()`'s sibling rung already outranks PATH and the `tmux
+binary` line reads `(shipped with mesimon)` off the sibling's name.
+
+**Kept on purpose:** the updater (`release.rs`) still replaces `mesimon-tmux` only where one
+already exists, so a Linux install from before this keeps its distro tmux through `U` updates —
+a new sibling would switch the server binary under live panes, and a 3.6a client refuses a 3.2a
+server over protocol version. Re-running the install line plants it; USING.md says so. A newer
+distro tmux is kept with `MESIMON_TMUX_BIN`, as before; whether a Linux `U` update should plant
+the sibling is the person's call.
+
+**Docker.** The release's two Docker *gate* steps stay paused (`MESIMON_RELEASE_DOCKER=1`); the
+Linux tmux *build* is not a gate and needs Docker on every release — without it there is no
+Linux tmux to package. Cached under `vendor/tmux-<target>/` across releases, so the cost after
+the first is the Debian verify.
+
+**Refuted:** cross-compiling tmux from the aarch64 container for x86_64 (a second toolchain for
+a four-minute saving); bundling terminfo (every distro's ncurses-base is Essential and has
+xterm-256color; the fallbacks cover a bare container); a separate `build-tmux-linux.sh` (two
+recipes drift — the pins, the pc-file workaround and the licenses are shared).
+
+**Linux suite result, reported separately:** every e2e binary that ran passed on the bundled
+tmux except one test, `a_crown_a_person_stopped_holds_its_wake_and_its_hand` (T-936, a mod-road
+crown wake pasted into an empty box, 10 s wait), which fails on Linux 4/4 — in both full runs and
+alone, and alone on Debian's own 3.3a too (`MESIMON_TEST_LINUX_TMUX=distro`) — while passing on
+macOS; so it is Linux-specific and not the bundled tmux's, pre-existing since the Docker gate
+paused Linux runs, and not touched by this diff (doctor strings only). Both full runs were also
+cut short: the cold one by `ci/test-run.py`'s 1200 s default deadline (the compile inside it),
+the warm one by `ci/test-linux.sh`'s own 900 s `timeout` with `--both-roads` — the container's
+deadline predates the second road and no longer fits a full run on 2 CPUs; left for its own
+ticket.
+
+**Not verified here:** the WSL + Windows Terminal path (`mesimon doctor` naming the shipped 3.6a,
+ctrl+click opening a Claude Code link) — no WSL box at hand; the Debian attach with
+`-T hyperlinks` is the nearest proof. The alpha-2 "Linux ships" block's "tmux is NOT bundled for
+Linux" bullet and ARCHITECTURE's "That is macOS only" are superseded by this block.

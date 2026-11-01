@@ -12,10 +12,9 @@
 # and a WSL box is as likely to be Ubuntu 22.04 (glibc 2.35) as anything.
 # One binary per architecture runs on every distro, and under WSL2.
 #
-# tmux is NOT bundled for Linux (it is for macOS, `ci/build-tmux.sh`): every
-# distro packages a tmux that mesimon now runs on (3.2a up — see the tab note
-# on `SEP` in crates/mesimon-backend-tmux/src/lib.rs), and `mesimon doctor`
-# names the version floor and the apt line.
+# tmux is bundled for Linux too, since T-1097, but not here: `ci/build-tmux.sh
+# <target>` builds it in an Alpine container, and `ci/release.sh` packages it
+# beside the binary as `mesimon-tmux`. This script is the Rust build alone.
 #
 # Usage:  ci/build-linux.sh [target ...]     default: both targets below
 #

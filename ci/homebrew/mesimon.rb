@@ -44,33 +44,18 @@ class Mesimon < Formula
 
   def install
     bin.install "mesimon"
-    # The macOS tarball carries mesimon's own tmux. It goes beside mesimon,
-    # where tmux_bin() looks first, and never as `tmux`, which would shadow
-    # the user's own on PATH. The Linux tarballs carry none: mesimon runs the
-    # distro's tmux there.
-    return unless OS.mac?
-
+    # Every tarball carries mesimon's own tmux. It goes beside mesimon, where
+    # tmux_bin() looks first, and never as `tmux`, which would shadow the
+    # user's own on PATH.
     bin.install "mesimon-tmux"
     doc.install "licenses-bundled"
-  end
-
-  def caveats
-    return unless OS.linux?
-
-    <<~EOS
-      mesimon runs agents on tmux 3.3 or newer, from your distro:
-        sudo apt install tmux
-      `mesimon doctor` checks it.
-    EOS
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/mesimon --version")
     # The bundled tmux runs, and it is the one mesimon resolves rather than a
     # tmux on PATH.
-    if OS.mac?
-      assert_match "tmux", shell_output("#{bin}/mesimon-tmux -V")
-      assert_match "/mesimon-tmux", shell_output("#{bin}/mesimon doctor multiplexer --verbose")
-    end
+    assert_match "tmux", shell_output("#{bin}/mesimon-tmux -V")
+    assert_match "/mesimon-tmux", shell_output("#{bin}/mesimon doctor multiplexer --verbose")
   end
 end
