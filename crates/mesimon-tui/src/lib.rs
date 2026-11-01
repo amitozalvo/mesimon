@@ -26,6 +26,7 @@ mod glide;
 mod glyphs;
 mod handover;
 mod layout;
+mod loader;
 mod localtime;
 mod mascot;
 mod mouse;
@@ -174,9 +175,15 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let theme = theme::Theme::new(flavor, detected.profile).for_terminal(term_program.as_deref());
 
+    // A `U` hands its screen over with the board still on it (T-1102).
+    let from = loader::take_reload_from();
+
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
         if w < layout::MIN_W || h < layout::MIN_H {
+            if from.is_some() {
+                let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+            }
             eprintln!(
                 "mesimon needs {}x{}; this terminal is {w}x{h}",
                 layout::MIN_W,
@@ -186,18 +193,33 @@ pub fn run(repo_root: &Path) -> Result<()> {
         }
     }
 
-    // From here to `init_terminal` the primary screen is what shows, and
-    // after a `U` it holds whatever was last printed there (tmux's
-    // `[detached …]` line, on a board that has been into a session). The
-    // connect and the first snapshot are the whole wait; a second of it
-    // earns a sentence (`client::LateWord`).
-    let word = client::LateWord::new(
-        std::time::Duration::from_secs(1),
-        "mesimon: connecting to the daemon…",
-    );
+    // The wait for the daemon, on the board's own screen in the board's own
+    // colours (T-1102): the connect and the first snapshot block this thread,
+    // so the screen plays on one of its own until `finish`. After a `U` the
+    // alternate screen is already up with the old image's last frame on it,
+    // so it is taken over, not entered.
+    let mode = match from {
+        Some(from) => {
+            loader::step(loader::Step::Switch);
+            loader::Mode::Reload { from }
+        }
+        None => {
+            loader::step(loader::Step::Dial);
+            loader::Mode::Open
+        }
+    };
+    let inherited = matches!(mode, loader::Mode::Reload { .. });
+    let mut terminal = init_terminal_with(!inherited)?;
+    // A theme that paints no ground repaints nothing blank, so what the old
+    // image drew would stay under the new frame.
+    if inherited && theme.bg.is_none() {
+        quiet::clear(&mut terminal)?;
+    }
+    let show = loader::Loader::start(terminal, loader::Inks::of(&theme), mode, give_back);
     let client = Client::connect(repo_root)?;
+    let connected = client.connected();
+    loader::step(loader::Step::Read);
     let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
-    drop(word);
     app.ground = detected.ground;
     app.forced = detected.forced;
     // The OS probe, handed over here and never in `App::new`, so no test
@@ -232,7 +254,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // beside them rather than under them (T-946).
     app.follow_release_channel();
 
-    let mut terminal = init_terminal()?;
+    let mut terminal =
+        show.finish(if connected { loader::End::Ready } else { loader::End::Failed })?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —
     // asking before raw mode is on gets a false negative. This is the single
     // gate on extended keys; Escape + Return is supported independently.
@@ -319,10 +342,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // reads closes on the `exec` anyway; this is the road that does not
     // depend on that.)
     drop(app.caffeine.take());
-    restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
-        return reexec(repo_root, app.ground);
+        return reexec(repo_root, app.ground, terminal, loader::Inks::of(&app.theme));
     }
+    restore_terminal()?;
     if let (Ok(()), Some(root)) = (&result, app.pending_switch.take()) {
         return switch_board(&root);
     }
@@ -345,32 +368,51 @@ fn switch_board(root: &Path) -> Result<()> {
 /// U on `update ready`: swap this process for the new binary at our own
 /// path. The daemon was asked to shut down first; wait for it to be gone so
 /// the fresh TUI's connect-spawn doesn't race the old flock.
-fn reexec(repo_root: &Path, ground: theme::Ground) -> Result<()> {
-    // The primary screen is on display from here to the new client's first
-    // draw, and it still holds whatever was last printed there — tmux's
-    // `[detached (from session …)]` line, after any focus. Under a busy box
-    // that line sat alone for a minute and read as a hang (dogfood
-    // 2026-09-05). Blank it, as before an attach, and say what this is; the
-    // new client adds its own word if the connect runs long (`run`).
-    let _ = blank_primary_screen();
-    eprintln!("mesimon: reloading…");
+///
+/// The board's screen stays up the whole way (T-1102): the reload screen
+/// plays its first station here while the old daemon finishes, and the new
+/// image takes the same alternate screen over from the next. Before this the
+/// terminal went back to the primary screen, which held whatever was last
+/// printed there, under a line of text.
+fn reexec(
+    repo_root: &Path,
+    ground: theme::Ground,
+    terminal: Term,
+    inks: loader::Inks,
+) -> Result<()> {
+    loader::step(loader::Step::Stop);
+    let from = loader::Mode::Reload { from: loader::VERSION.to_string() };
+    let show = loader::Loader::start(terminal, inks, from, give_back);
     // Socket unlinked AND lock released, up to `HANDOVER_MAX` — the fresh
     // client only tolerates a few seconds of no daemon, and a shutdown
     // (every pending settle committed through automove) is not bounded by
     // that. Two seconds of socket-polling here was what a `U` during a
-    // parallel e2e run overran (2026-09-04).
-    if !client::await_daemon_gone(repo_root) {
-        eprintln!("mesimon: the daemon is still shutting down; starting the new client anyway");
-    }
+    // parallel e2e run overran (2026-09-04). A daemon still going past it
+    // is the new client's to wait for, at the same station.
+    let _ = client::await_daemon_gone(repo_root);
+    loader::step(loader::Step::Switch);
+    drop(show.stop()?);
+    leave_for_exec()?;
     use std::os::unix::process::CommandExt;
-    let exe = mesimon_core::exe::current_exe()?;
     // The terminal is the same one: its ground goes along, so the new image
-    // asks nothing a late reply could answer (T-953).
-    let err = std::process::Command::new(exe)
-        .args(std::env::args_os().skip(1))
-        .env(detect::RELOAD_GROUND, ground.word())
-        .exec();
+    // asks nothing a late reply could answer (T-953), and so does the
+    // version it came from, which also says the screen is already up.
+    let err = match mesimon_core::exe::current_exe() {
+        Ok(exe) => std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(detect::RELOAD_GROUND, ground.word())
+            .env(loader::RELOAD_FROM, loader::VERSION)
+            .exec(),
+        Err(e) => e,
+    };
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen, SetCursorStyle::DefaultUserShape);
     Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
+}
+
+/// The reload screen's way out (Ctrl+C, an error mid-wait): the terminal
+/// back the way it was found.
+fn give_back() {
+    let _ = restore_terminal();
 }
 
 fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
@@ -530,6 +572,13 @@ impl Capture {
 }
 
 fn init_terminal() -> Result<Term> {
+    init_terminal_with(true)
+}
+
+/// `fresh`: enter the alternate screen and clear it. A `U`'s new image
+/// passes false: the screen is already up, and its last frame stays on it
+/// until the first draw replaces it (T-1102).
+fn init_terminal_with(fresh: bool) -> Result<Term> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     // No EnableMouseCapture here: the Mouse setting decides, and the loop's
@@ -542,13 +591,10 @@ fn init_terminal() -> Result<Term> {
     // away, which is what decides whether a notification is a banner or only
     // a sound (T-282). A terminal that ignores it sends nothing and the
     // presence rule falls back to the keyboard — never to silence.
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        SetCursorStyle::SteadyBar,
-        EnableBracketedPaste,
-        EnableFocusChange
-    )?;
+    if fresh {
+        execute!(stdout, EnterAlternateScreen)?;
+    }
+    execute!(stdout, SetCursorStyle::SteadyBar, EnableBracketedPaste, EnableFocusChange)?;
     // Kitty keyboard protocol distinguishes Shift+Enter and reports key
     // releases/repeats, so a fresh Up can leave the first ticket immediately.
     // The support probe is a terminal query, so it runs once per
@@ -563,8 +609,24 @@ fn init_terminal() -> Result<Term> {
         )?;
     }
     let mut t = ratatui::Terminal::new(quiet::Quiet::new(stdout))?;
-    quiet::clear(&mut t)?;
+    if fresh {
+        quiet::clear(&mut t)?;
+    }
     Ok(t)
+}
+
+/// `restore_terminal` short of leaving the alternate screen, before a `U`'s
+/// exec (T-1102): the keyboard flags popped and fenced, raw mode off (the
+/// next image's `enable_raw_mode` would keep it as the terminal's own
+/// state), and the reports the next image turns back on for itself.
+fn leave_for_exec() -> Result<()> {
+    if kitty_keyboard_supported() {
+        execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+        settle_key_reports();
+    }
+    disable_raw_mode()?;
+    execute!(std::io::stdout(), DisableBracketedPaste, DisableFocusChange, DisableMouseCapture)?;
+    Ok(())
 }
 
 /// Cached kitty-protocol probe (crossterm writes CSI ? u and reads the reply,

@@ -380,6 +380,11 @@ impl Client {
         }
     }
 
+    /// Whether a daemon answered: what the reload screen ends on (T-1102).
+    pub fn connected(&self) -> bool {
+        self.conn.is_some()
+    }
+
     /// Connect, or come up DISCONNECTED with the reason as a notice.
     ///
     /// A daemon that cannot be reached at launch used to be fatal — the
@@ -498,56 +503,16 @@ pub fn await_daemon_gone(repo_root: &Path) -> bool {
     let sock = paths.orch_sock();
     let lock = paths.lock_file();
     let start = Instant::now();
-    let mut said = false;
     loop {
         if !sock.exists() && !lock_held(&lock) {
             return true;
         }
-        let waited = start.elapsed();
-        if waited >= HANDOVER_MAX {
+        // The reload screen says what this is, and counts it when it is
+        // slow (T-1102).
+        if start.elapsed() >= HANDOVER_MAX {
             return false;
         }
-        // The terminal is the user's again while this runs; a second of
-        // nothing on it deserves a sentence.
-        if !said && waited >= Duration::from_secs(1) {
-            eprintln!("mesimon: waiting for the daemon to finish shutting down…");
-            said = true;
-        }
         std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// A sentence said only if a wait outlasts `delay`, on stderr, where
-/// `await_daemon_gone`'s already goes. Drop it when the wait ends: dropped in
-/// time, nothing is said; kept past the delay, it is said once.
-///
-/// It exists for the connect. From `run`'s connect to its `init_terminal`
-/// the PRIMARY screen is what the user sees, and after a `U` that screen
-/// holds whatever was last printed there — on a board that has been into a
-/// session, tmux's `[detached (from session …)]` line. On an idle box the
-/// connect is milliseconds and the line flashes; under two parallel e2e
-/// suites it ran for a minute and that line was the only thing on screen
-/// (dogfood 2026-09-05). A quick connect still says nothing, a slow one
-/// says what it is doing, and a stuck one says the same instead of looking
-/// dead.
-pub struct LateWord {
-    _cancel: Sender<()>,
-}
-
-impl LateWord {
-    pub fn new(delay: Duration, sentence: &'static str) -> Self {
-        Self::with(delay, move || eprintln!("{sentence}"))
-    }
-
-    fn with(delay: Duration, say: impl FnOnce() + Send + 'static) -> Self {
-        let (tx, rx) = channel::<()>();
-        std::thread::spawn(move || {
-            // The sender dropping ends the wait: `Disconnected`, not a word.
-            if rx.recv_timeout(delay) == Err(RecvTimeoutError::Timeout) {
-                say();
-            }
-        });
-        Self { _cancel: tx }
     }
 }
 
@@ -595,6 +560,7 @@ fn restart_daemon(repo_root: &Path, conn: Conn) -> std::result::Result<Conn, Str
     let old_pid = conn.daemon.pid;
 
     let mut conn = conn;
+    crate::loader::step(crate::loader::Step::Stop);
     let _ = conn.request(Command::Shutdown);
     drop(conn); // release our fd so the daemon can finish hanging up
 
@@ -652,6 +618,7 @@ fn connect_or_spawn(repo_root: &Path, sock: &Path, budget: Duration) -> Result<U
         };
         let now = Instant::now();
         if lock_held(&lock) {
+            crate::loader::step(crate::loader::Step::Stop);
             if now >= start + HANDOVER_MAX {
                 bail!(
                     "a daemon still holds {} after {} s — it did not finish shutting down",
@@ -669,6 +636,7 @@ fn connect_or_spawn(repo_root: &Path, sock: &Path, budget: Duration) -> Result<U
             bail!("daemon did not come up: {last}");
         }
         if now >= next_spawn {
+            crate::loader::step(crate::loader::Step::Spawn);
             mesimon_daemon::spawn_detached(repo_root)?;
             next_spawn = now + Duration::from_millis(400);
         }
@@ -956,32 +924,6 @@ mod tests {
         });
         assert!(handshake(client).is_err());
         peer.join().unwrap();
-    }
-
-    /// Dropped inside its delay, a late word is never said; kept past it, it
-    /// is said exactly once. Driven by channels, not sleeps, so a loaded box
-    /// cannot make the quick one late.
-    #[test]
-    fn a_late_word_is_said_only_past_its_delay() {
-        let (said, heard) = channel::<&'static str>();
-        let quick = LateWord::with(Duration::from_secs(30), {
-            let said = said.clone();
-            move || {
-                let _ = said.send("quick");
-            }
-        });
-        drop(quick);
-        let slow = LateWord::with(Duration::from_millis(10), move || {
-            let _ = said.send("slow");
-        });
-        assert_eq!(heard.recv_timeout(Duration::from_secs(10)), Ok("slow"));
-        drop(slow);
-        // Every sender is gone once both threads have returned; the quick
-        // one's returned `Disconnected` the moment it was dropped.
-        assert!(matches!(
-            heard.recv_timeout(Duration::from_secs(10)),
-            Err(RecvTimeoutError::Disconnected)
-        ));
     }
 
     /// The probe reads a daemon's exclusive flock as held, and its release

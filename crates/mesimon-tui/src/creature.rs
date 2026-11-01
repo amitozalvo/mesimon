@@ -357,6 +357,10 @@ const BANG: &[Prop] = &[Prop::Bang];
 const ASK: &[Prop] = &[Prop::Ask];
 const LIGHT: &[Prop] = &[Prop::Light];
 
+/// The reload screen's walk between stations (T-1102): eyes ahead, mouth
+/// set, the light on. Its bob is the screen's, a pixel at a time.
+pub(crate) const WALK: Frame = f(100).mouth(Mouth::Firm).props(LIGHT);
+
 /// The invitation: looks at you, blinks, waves now and then.
 const SEAT: &[Frame] = &[
     f(1500),
@@ -703,6 +707,23 @@ impl Picture {
             .then(|| self.px[(y * self.w + x) as usize])
             .flatten()
     }
+
+    /// The text marks around the body: a cell relative to the body's
+    /// top-left cell, the glyph, its role and whether it is bold.
+    pub(crate) fn marks(&self) -> impl Iterator<Item = (i16, i16, char, Role, bool)> + '_ {
+        self.marks.iter().map(|m| (m.col, m.row, m.ch, m.role, m.bold))
+    }
+}
+
+/// One frame on its own clock (the reload screen's, T-1102), composed as
+/// wide as its own scene needs.
+pub(crate) fn picture(size: Size, fr: &Frame) -> Picture {
+    let pad = match fr.scene {
+        Some(Scene::Laptop { .. }) => laptop(size).map_or(0, |l| l.pad),
+        Some(Scene::Cloud(_)) => cloud(size).map_or(0, |c| c.pad),
+        None => 0,
+    };
+    compose(size, fr, pad)
 }
 
 /// Rim light over a grid's `Body` pixels: top and left edges catch it, the

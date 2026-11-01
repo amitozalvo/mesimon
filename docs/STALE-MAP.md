@@ -40317,3 +40317,67 @@ the latch agree; the peek's walk steps past the output record to the command, so
 says so, its `<bash-input>` beside it still does (the two land together, T-707), so none of them
 moves. Tests: `adopt::user_prompt_reads_a_command_as_typed_and_skips_its_output`,
 `history::a_bash_command_previews_as_typed`.
+
+## The wait for the daemon is a scene on the board's own screen (T-1102, 2026-11-01, user: "reloading connecting to daemon screen more visually appealing … add the mascot, loading animation, showing what's happening")
+
+**Chosen.** A proposal page (artifact `RaXbBzD6KkfiTwsU9aWCK2`) animated three designs through a
+`U`, an open, a slow handover and a daemon that will not start, in six themes. The person picked
+**moving day** ("beautiful, use moving day") and asked for the board's own background. The other
+two (*wake*: one large shin centred over a dot track; *handover*: the old version's shin throws
+the board to the new one's) were not built.
+
+**What a person sees.** The shin carries a small board (a frame, a dark screen, three columns of
+cards) along a floor of stations, one per step of the wait: `old daemon`, `update`, `daemon`,
+`board` on a `U`, `daemon` and `board` on an open. A sentence above says the step in plain words
+(`stopping the old daemon`, `switching to <version>` or `starting the new build` when the version
+did not change, `connecting to the daemon`, `starting the daemon`, `reading the board`), and on a
+`U` a line under it says `your agents keep running`. Passed stations wear `✓` in `calm`. At each
+station the shin plays an existing animation: Sleeping at the old daemon, Spawning at the update,
+Thinking (the cloud) at the daemon, Monitoring at the board. Between stations it walks
+(`creature::WALK`, a pixel bob). Ready: it sets the board down to its left and hops (Done's
+intro). Failed: X eyes and the star, the board dropped to its right, `the daemon did not start`
+over `opening the board anyway ∙ it keeps trying every 2 s`, which is exactly what the client
+then does. An old daemon slower than 2.4 s turns the sentence into `the old daemon is still
+finishing up  N s` and the shin into Throttled's sweat drop. On a `U` that changes the version,
+the old and new versions stand at the floor's two ends. Mono draws the words and the floor with
+no picture. Nothing wears `attn`.
+
+**How it is wired.** `loader.rs`. `Show` is the state, a pure function of its clock and the steps
+reported, which the tests drive. `Loader` plays it on a thread that owns the terminal for the
+wait, because `Client::connect` and `App::new`'s snapshot block the main thread. The client
+reports steps through `loader::step`, a process-wide atomic: `connect_or_spawn` says Stop while
+a daemon holds the lock and Spawn before each spawn, and `restart_daemon` says Stop. `run` says
+Read after the connect and ends on `client.connected()`. A `U` no longer leaves the alternate
+screen. `reexec` hands the board's `Term` to a Loader on the first station while
+`await_daemon_gone` runs, stops it, pops the keyboard flags (fenced as before), turns raw mode
+and the reports off (`leave_for_exec`), and execs with `MESIMON_RELOAD_FROM=<version>` beside
+`RELOAD_GROUND`. The new image takes that as "the screen is up" and calls
+`init_terminal_with(false)`: no `?1049h` and no clear, so the old frame stays until the first draw
+replaces it, which it does in full because every cell is painted the theme's ground. A theme with
+no ground (`bg` None) clears first. An open enters the alternate screen as before but draws
+nothing for 300 ms (`GRACE_MS`): a quick connect is the ground and then the board, and an unseen
+scene plays no finale. Ctrl+C on the loader thread restores the terminal and exits 130, the way
+out it had on the primary screen. An error between start and finish drops the Loader, whose
+`Drop` restores the terminal before the error prints.
+
+**The hurry (a cost the person should know).** On an idle machine a whole `U` is over in about a
+tenth of a second, so the first build hopped "ready" at the old daemon's station and the walk was
+never seen (measured in a tmux smoke run). Once ready, the shin now hurries on to the board at
+200 ms a station and only then sets it down: a quick `U` takes about a second longer than
+before, at most 0.6 s of walk and 0.4 s of set-down. An open that finishes inside its grace never
+shows the scene, so it costs nothing.
+
+**Gone.** `client::LateWord` and its test (the screen says what the wait is, on the board's
+screen, from its first frame), `reexec`'s `blank_primary_screen` and `mesimon: reloading…`, and
+`await_daemon_gone`'s stderr sentence. The 2026-09-05 block's "Not done" (draw the wait on the
+alternate screen) is this.
+
+**Tests.** `loader::tests`: it walks station to station and never back (a build-skew Stop after
+the dial changes the words only); the new image picks the walk up where the old one left it;
+every moment draws inside 60×20 and 120×40 with its sentence and never in `attn`; the screen wears
+the theme's ground from its first frame; a quick open shows only the ground and ends at once; a
+seen scene sets the board down before it ends; a quick reload hurries to the board first; a failed
+start marks `✗ daemon`; a slow handover counts its seconds; the version signs stand only across a
+change; mono draws no pixels; the carried board comes down. A tmux smoke run (scratch `HOME`,
+scratch repo, `U` after a re-copied binary) showed the four stations, the hurried walk, the
+set-down and the board, every cell on Graphite's `#131417`.
