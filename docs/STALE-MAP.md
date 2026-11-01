@@ -40235,3 +40235,26 @@ command moved to IN PROGRESS and left there would claim work nobody is doing.
 **Not built:** Codex (no bash-mode probe exists for it; T-707 recorded no bash mode there, not
 re-measured). Tests: `quiet::a_bash_mode_command_holds_the_machine`; `bash_mode_e2e` now asserts
 REVIEW → IN PROGRESS on the command and back to REVIEW at its end, on both roads.
+
+## The tiers are the crown's read alone (T-1092, 2026-11-01, "list_board shows the tiers to every agent; only the crown picks a tier")
+
+The person, 2026-10-31: "the tier shouldn't reach the agent, only the crown for selecting the
+worker tier." T-584 put every tier (id, name, provider, model, effort, the person's description)
+on every agent's `list_board` as board data. A worker names no tier (`create_ticket`'s and
+`start_agent`'s `tier` are crown only), and a description is the person's words to the crown on
+when to use a tier — a worker reading "write a STALE-MAP block" there could take it as its own.
+
+- **What changed.** `agent_board_view` fills `tiers` only when the caller is crowned; a worker's
+  answer has the field absent (`skip_serializing_if = "Vec::is_empty"`), not empty. The
+  `list_board` tool text keeps naming the field, now "(crown only)": the registry is one text
+  for every caller, so a per-role description was not added. The TUI, the person's snapshot,
+  Mesophon and the rig's setup (all the person's road) are untouched.
+- **Tests.** `the_crown_picks_a_tier_by_the_persons_words` now asserts a worker's serialized
+  `list_board` has no `tiers` key and none of the person's tier words (it asserted the opposite,
+  "board data: a worker reads it too"); the mcp unit test reads "(crown only)". Rig case TB1: a
+  crown-started worker reads `list_board` and answers absent; the crown's own read names
+  rig-small. Live, once (2026-11-01, Claude Code 2.1.316, crown claude-opus-5-5 high, worker
+  claude-sonnet-5-5 low): PASS in 54 s, the worker said absent, the crown listed all eleven tiers.
+- **Refuted.** An empty `tiers: []` for a worker (it still says the field exists for it); a
+  second, crown-only `list_board` description (the tool list is static per session, and one
+  clause says it).

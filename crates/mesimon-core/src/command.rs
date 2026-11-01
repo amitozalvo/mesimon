@@ -3312,8 +3312,9 @@ pub struct AgentBoardView {
     /// The tiers a ticket may be started on (T-584), as `tier::Book`
     /// resolves them for this board (`Book::offered`), each with the
     /// person's words on when to use it: what the crown picks from for a
-    /// ticket it files or starts. Board data, not session data, so every
-    /// agent's `list_board` carries it.
+    /// ticket it files or starts. The crown's read alone (T-1092): a worker
+    /// names no tier, and the words are the person's to the crown, so a
+    /// worker's `list_board` carries none and the field is absent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiers: Vec<AgentTierView>,
     /// The other tickets whose agent holds the shared checkout (T-583):

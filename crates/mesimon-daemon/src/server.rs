@@ -11609,7 +11609,9 @@ impl Daemon {
             tickets,
             board_version: self.board_version,
             crown: self.board.crown_holder().map(|t| t.short_key.clone()),
-            tiers: self.agent_tier_views(),
+            // T-1092: the crown alone names a tier, so the person's words on
+            // each reach no worker; absent, not empty, on a worker's read.
+            tiers: if crowned { self.agent_tier_views() } else { Vec::new() },
             checkout_held_by: crown::checkout_holders(
                 &self.board,
                 &self.paths.repo_root.to_string_lossy(),
@@ -11647,8 +11649,8 @@ impl Daemon {
             .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// `list_board`'s tiers (T-584): what an agent may name for a ticket it
-    /// files or starts (`Book::offered`), each with the person's words on
+    /// `list_board`'s tiers (T-584), the crown's read alone (T-1092): what
+    /// the crown may name for a ticket it files or starts (`Book::offered`), each with the person's words on
     /// when to use it. The words are scrubbed again here, because a
     /// hand-edited `tiers.toml` never crossed `save_tier`.
     fn agent_tier_views(&self) -> Vec<mesimon_core::command::AgentTierView> {

@@ -2057,6 +2057,19 @@ checks = ["started_by_crown", "tier:rig-small", "replies:done"]
   wake = true
 
 [[test]]
+id = "TB1"
+title = "TB1 · the tiers are the crown's read alone: do the steps below"
+workspace = "worktree"
+brief = "Call the mesimon tool list_board once, loading it with ToolSearch first if it is not loaded. Reply with the single word present if its answer has a tiers field, else the single word absent, and end your turn. Read no file and run no command."
+expect = "a worker the crown started reads list_board and finds no tiers field (T-1092: the tier is the crown's to pick, so the person's words on each tier reach no worker); the crown's own list_board, read after, lists the board's tiers, rig-small among them."
+checks = ["road:mod", "started_by_crown", "tools:list_board", "reply:absent", "reply_never:present", "crown_line:TB1 tiers:rig-small"]
+
+  [[test.steps]]
+  crown = "TB1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: TB1 started. When the board wakes you for {key}, call list_board yourself and end your turn with the single line: TB1 tiers: followed by the names of the tiers it lists, comma separated, or none."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
 id = "WR1"
 title = "WR1 · a worker reports its finished turn: do the steps below"
 workspace = "worktree"

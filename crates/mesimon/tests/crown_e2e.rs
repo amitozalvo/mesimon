@@ -9647,7 +9647,8 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
 
 /// T-584: the crown picks a tier by the person's words. `list_board` lists
 /// the tiers a ticket may start on, each with the words the person wrote on
-/// when to use it, to every agent; the crown files a ticket on one and its
+/// when to use it, to the crown alone (T-1092: a worker's has no `tiers`);
+/// the crown files a ticket on one and its
 /// start launches with that tier's flags, and a start that names a tier
 /// switches the ticket to it first and says so in the receipt. A worker may
 /// not pick, a tier that does not resolve is refused with the ids it could
@@ -9694,13 +9695,13 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
 
     // ---- list_board: the tiers in the list's order, the person's words on each
-    let listed = |c: &mut TestClient, session| match c
+    let board_of = |c: &mut TestClient, session| match c
         .send(Principal::Agent { session }, Command::AgentListBoard)
     {
-        Response::AgentBoard { board } => board.tiers,
+        Response::AgentBoard { board } => board,
         other => panic!("list_board: {other:?}"),
     };
-    let tiers = listed(&mut c, sa);
+    let tiers = board_of(&mut c, sa).tiers;
     let rows: Vec<(&str, &str, bool)> =
         tiers.iter().map(|t| (t.name.as_str(), t.description.as_str(), t.is_default)).collect();
     assert_eq!(
@@ -9712,7 +9713,13 @@ fn the_crown_picks_a_tier_by_the_persons_words() {
         ]
     );
     assert_eq!((tiers[2].model.as_str(), tiers[2].effort), ("opus", Effort::Max));
-    assert_eq!(listed(&mut c, sp), tiers, "board data: a worker reads it too");
+    // T-1092: the crown alone picks a tier, so a worker's read has the field
+    // absent, not empty, and none of the person's words on any tier.
+    let worker = serde_json::to_value(board_of(&mut c, sp)).unwrap();
+    assert!(worker.get("tiers").is_none(), "a worker's list_board: {worker}");
+    for words in ["docs, renames", "cross-crate", "01QUICK", "01DEEP"] {
+        assert!(!worker.to_string().contains(words), "a worker reads {words:?}");
+    }
 
     let create_on = |c: &mut TestClient, session, title: &str, pick: &str| {
         c.send(

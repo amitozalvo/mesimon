@@ -604,7 +604,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Returns the mesimon board: every column in order, what each \
                             column is for in the user's words (column_descriptions), every \
                             ticket's key, title and column, the agent tiers a ticket may \
-                            start on, each with when to use it in the user's words (tiers: \
+                            start on (crown only), each with when to use it in the user's words (tiers: \
                             description, is_default), and the other tickets whose agent holds \
                             the shared checkout (checkout_held_by). Session information is \
                             excluded.",
@@ -2979,7 +2979,10 @@ mod tests {
         }
         let list = tool("list_board");
         let list = list["description"].as_str().unwrap();
-        for words in ["agent tiers a ticket may start on", "in the user's words (tiers"] {
+        // T-1092: the crown's read alone; a worker's list_board has none.
+        for words in
+            ["agent tiers a ticket may start on (crown only)", "in the user's words (tiers"]
+        {
             assert!(list.contains(words), "list_board says {words:?}");
         }
 

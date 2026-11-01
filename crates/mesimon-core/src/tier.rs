@@ -33,8 +33,8 @@ pub const NAME_MAX: usize = 16;
 /// `claude-opus-5-5[1m]` and bounded for both.
 pub const MODEL_MAX: usize = 64;
 /// A tier's description (T-584), in bytes: a sentence or two on when to use
-/// it, the column description's bound, since `list_board` carries every
-/// tier's to every agent that reads the board.
+/// it, the column description's bound, since the crown's `list_board`
+/// carries every tier's.
 pub const DESCRIPTION_MAX: usize = 300;
 
 /// How hard the agent thinks. `Default` passes nothing and leaves the CLI's
