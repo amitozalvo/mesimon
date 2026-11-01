@@ -556,6 +556,10 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
                     if code != 0:
                         result = 1
             if not running or (result and not keeps_going(command)):
+                if running:
+                    print("== a pass is red: the other pass is stopped with it (its summary counts "
+                          "the tests it was cancelling as failed); --no-fail-fast runs both to the end",
+                          flush=True)
                 check_disk_space(watched_paths, args.min_free_gib)
                 break
             if time.monotonic() - last_disk_check >= 1:

@@ -40381,3 +40381,49 @@ start marks `✗ daemon`; a slow handover counts its seconds; the version signs 
 change; mono draws no pixels; the carried board comes down. A tmux smoke run (scratch `HOME`,
 scratch repo, `U` after a re-copied binary) showed the four stations, the hurried walk, the
 set-down and the board, every cell on Graphite's `#131417`.
+
+## Release in under 10 minutes: the roads side by side, the builds beside the gate (T-1101, 2026-11-01)
+
+beta.14.unstable.2 took ~45 min from the ask with nothing wasted: the suite's two roads ran one
+after the other (983 + 956 s at load 12) and the author's `ship.sh all` built three release
+binaries cold (~7 min). What changed:
+
+- **`ci/test-run.py --both-roads` runs the mod road's pass beside the first pass.** It is spawned
+  with it, waits on cargo's own lock while the suite builds, then both run their tests at once,
+  each at `--jobs N` threads; the mod road's lines carry `mod | `. A red pass ends the run and the
+  supervisor's cleanup ends the other (said out loud: the stopped pass's summary counts its
+  cancelled tests as failed); `--no-fail-fast` runs both to the end. The deadline defaults to
+  2400 s with both roads (one road under load took ~1000 s and the old 1200 s killed the second
+  pass late, T-1099). `ci/release.sh`'s fallback suite is nextest.
+- **`ci/release-prepare.sh`** is the one command after the release commit: refuses a dirty tree
+  or a CHANGELOG whose top heading is not the version's; starts the gate; once nextest says the
+  tests are starting (the test build is the critical path and runs alone) warms, niced, what
+  `release.sh` and the ship run again on the same commit — clippy (a red one stops the gate: the
+  commit will change), the drift check, the site, and in the main checkout the macOS and two Linux
+  release builds with `MESIMON_RELEASE=1` as `release.sh` sets it (`build.rs` tracks the variable,
+  so the value must match for the cache to hit). In a worktree the builds are skipped: cargo keys
+  artifacts by source path, so they would never serve the checkout the release is cut from.
+  Logs in `target/release-prepare/`.
+
+Measured on the M3 Pro (11 cores), other agents' e2e runs on the box throughout:
+
+| what | result |
+|---|---|
+| the suite's build after a version bump | 58 s (the roads were the 32 min, never the build) |
+| run 1: `--jobs 6`, release builds beside, one other targeted e2e run, load 25–35 | build 53 s; hooks **3339/3339 in 1071 s** and mod **419/419 in 1038 s** side by side; stamped at 1124 s; summed test time 6011 s hooks / 5749 s mod, so 6 threads give 1002 / 958 s at best: **the roads are thread-bound, not CPU-bound** (within 9 % of their load-12 serial times with the builds beside them) |
+| run 1's warm-up beside the tests | clippy 60 s, drift + site 5 s, macOS release build 430 s, Linux clippy + build ×2 636 s; everything done at 1255 s |
+| run 2: nextest's default 11 threads a road (22 e2es at once), no builds, two other bounded runs on the box, load 61 | the mod road's `crown_e2e::a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out` hit nextest's 120 s kill at 120.4 s (it took 118 s in run 1 at 6 threads: it lives at the cliff) and the run ended on it at 314 s. Not separable from the load; the default stays 6 |
+
+Where the ten minutes stand: bump + notes ~2 min, build ~1 min, tests ~17 min at today's load
+(~10 min at 6 threads on a quiet box, by the sums), relay lock + dry run ~2 min, then the author's
+ship with warm builds (preflight, the relay image, `release.sh`'s package and publish: ~3–4 min
+by its parts; 7 min measured cold). About 25 min under this load, ~17 min quiet. Under ten needs
+more threads a road on a quiet box (16 a road ≈ 375 s of tests by the sums) — a measurement the
+box never allowed here (never below load 10).
+
+Refuted or left: verifying before the bump (the relink is 58 s, so the build is not where the
+time is); `taskpolicy -b` for the builds (E-cores only: they would outlast the gate; `nice -n 10`
+cost the roads little); running the mod pass only on tests that launch a stub (a bar decision,
+the person's). Open, for their own tickets: the 120 s cliff on T-974's `a_crown_ask_says_one_
+true_word…` (118 s at 6 threads is a release-time flake waiting to happen); the relay side,
+where `ship.sh all` repeats the dry run's checks and builds the relay's image cold.

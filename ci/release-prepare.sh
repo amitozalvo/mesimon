@@ -21,7 +21,11 @@
 #
 # Usage:  ci/release-prepare.sh [--jobs N]
 #   --jobs N          each road's test threads and cargo's build jobs
-#                     (ci/test-run.py --jobs; default: nextest's own)
+#                     (ci/test-run.py --jobs). Default 6: twelve e2es at
+#                     once ran clean beside the release builds and another
+#                     agent's e2es at load 25-35; nextest's own 11 a road
+#                     (22 at once) timed out the slowest crown_e2e test at
+#                     load 60 beside two other bounded runs (T-1101).
 #   MESIMON_TMUX_BIN  the tmux that drives the suite; default the bundled
 #                     vendor/tmux/tmux, in a worktree the main checkout's
 #   MESIMON_RELEASE_PREPARE_BUILDS=1
@@ -40,7 +44,7 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 t0=$(date +%s)
 mark() { printf '%6ss  %s\n' "$(( $(date +%s) - t0 ))" "$1"; }
 
-jobs=
+jobs=6
 while [ $# -gt 0 ]; do
   case "$1" in
     --jobs) jobs=${2:?--jobs needs a number}; shift 2 ;;
@@ -84,8 +88,8 @@ uptime
 
 # --- the gate, then the warm-up beside it ------------------------------------
 
-step "the gate: both roads, side by side (ci/test-run.py --both-roads${jobs:+ --jobs $jobs})"
-MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads ${jobs:+--jobs "$jobs"} \
+step "the gate: both roads, side by side (ci/test-run.py --both-roads --jobs $jobs)"
+MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --jobs "$jobs" \
   > "$logs/gate.log" 2>&1 &
 gate=$!
 trap 'kill -TERM $gate 2>/dev/null || true' EXIT

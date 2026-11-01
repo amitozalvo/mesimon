@@ -253,6 +253,7 @@ class PassTests(unittest.TestCase):
         self.assertEqual(spawned, [["cargo", "test", "--workspace"],
                                    ["cargo", "test", "-p", "mesimon", "--tests"]])
         self.assertEqual(self.guard.ops[-1], "finish")
+        self.assertIn("a pass is red: the other pass is stopped with it", self.stdout.getvalue())
 
     def test_both_roads_start_together_and_the_mod_road_s_lines_carry_a_prefix(self):
         result, spawned = self.passes_run(["cargo", "nextest", "run", "--workspace"], [0, 0],

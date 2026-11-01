@@ -19,7 +19,8 @@ gate's clippy (a red one stops the gate: the commit will change), the drift chec
 in the main checkout the macOS and two Linux release builds with `MESIMON_RELEASE=1`, so the
 author's ship finds them built. In a worktree the release builds are skipped (cargo keys
 artifacts by source path) and the stamp is the deliverable. `--jobs N` is each road's thread
-count; logs land in `target/release-prepare/`. From the tag on, the author runs **one command, the
+count (default 6: twelve e2es at once ran clean at load 25–35; nextest's own 11 a road timed out
+the slowest crown_e2e test at load 60); logs land in `target/release-prepare/`. From the tag on, the author runs **one command, the
 relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the relay, then the tag,
 push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses while the live relay
 lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps
