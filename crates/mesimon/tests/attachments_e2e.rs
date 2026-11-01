@@ -174,12 +174,13 @@ fn images_are_read_only_mcp_content_bound_to_the_agents_own_ticket() {
     picture(&mut c, other, foreign);
     let miss = shim.call_err("read_attachment", json!({ "attachment": foreign.to_string() }));
     assert!(miss.contains("no picture with that id on this ticket"), "{miss}");
-    // With a key (T-609): refused until this ticket wears the crown, then
-    // the other ticket's picture, whole.
+    // With a key (T-609, T-1089): the other ticket's picture, whole, for
+    // any agent, as its notes are; and for a crown as before.
     let key = c.board().ticket(other).unwrap().short_key.clone();
     let keyed = json!({ "attachment": foreign.to_string(), "key": key });
-    let refusal = shim.call_err("read_attachment", keyed.clone());
-    assert!(refusal.contains("no ticket wears the crown"), "{refusal}");
+    let result = shim.call("read_attachment", keyed.clone());
+    assert_eq!(result["isError"], false, "an uncrowned keyed read: {result}");
+    assert_eq!(result["content"][0]["data"], PNG);
     assert!(matches!(c.request(Command::CrownTicket { id: ticket }), Response::Ok));
     let result = shim.call("read_attachment", keyed);
     assert_eq!(result["isError"], false, "{result}");
