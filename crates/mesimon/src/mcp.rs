@@ -161,6 +161,9 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
         .map(str::to_string);
 
     let command = match call {
+        // T-1105: public text compiled into this binary, no board state, so
+        // there is nothing for the daemon to decide and nothing to send it.
+        ToolCall::Help { query } => return text(&mesimon_core::help::answer(&query)),
         // `get_ticket` with a key is its own command on the wire (T-411), so
         // a shim from before the crown still parses at the daemon.
         ToolCall::GetTicket { key: None, full, .. } => Command::AgentGetTicket { full },
@@ -632,6 +635,23 @@ mod tests {
             r["result"]["tools"].as_array().unwrap().len(),
             mesimon_core::mcp::tools().len()
         );
+    }
+
+    /// T-1105: `help` is answered from text compiled in, with no daemon to
+    /// ask (the socket here does not exist), on both roads' one path.
+    #[test]
+    fn help_answers_without_a_daemon() {
+        let r = line(json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                            "params":{"name":"help","arguments":{"query":"settings key"}}}))
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let body: Value =
+            serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["matched"], true, "{body}");
+        let r = line(json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
+                            "params":{"name":"help","arguments":{"query":7}}}))
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true, "{r}");
     }
 
     /// The receipt is what the ticket wears now, so the model sees the

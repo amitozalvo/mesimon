@@ -6260,7 +6260,37 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// Theme has none: its page is the picker. A row whose `avail` is false is
 /// not on the page at all (the notifications rows while they are off).
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    let verbs: &[Verb] = match ctx.settings_section {
+    section_verbs(ctx.settings_section)
+        .iter()
+        .filter_map(|v| {
+            SETTINGS_ITEMS.iter().chain(NOTIFY_ITEMS).find(|m| m.verb == *v && m.live(ctx))
+        })
+        .collect()
+}
+
+/// Every row a Settings section can show, live or not, in the page's order:
+/// what the `help` tool (T-1105) lists, so a row hidden by this board's
+/// state is still named where a person asks about it.
+pub fn section_rows(section: SettingsSection) -> Vec<&'static MenuItem> {
+    section_verbs(section)
+        .iter()
+        .filter_map(|v| SETTINGS_ITEMS.iter().chain(NOTIFY_ITEMS).find(|m| m.verb == *v))
+        .collect()
+}
+
+/// The column settings dialog's every row, live or not (T-1105).
+pub fn column_rows() -> &'static [MenuItem] {
+    COLUMN_ITEMS
+}
+
+/// The Esc menu's every row, live or not (T-1105).
+pub fn menu_rows() -> &'static [MenuItem] {
+    MENU_ITEMS
+}
+
+/// The verbs of a Settings section's rows, in the page's order.
+fn section_verbs(section: SettingsSection) -> &'static [Verb] {
+    match section {
         SettingsSection::Theme => &[],
         SettingsSection::Appearance => &[
             Verb::StatusLine,
@@ -6345,13 +6375,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::UsageCodex,
         ],
         SettingsSection::About => &[Verb::ProjectPage, Verb::ReleaseChannel],
-    };
-    verbs
-        .iter()
-        .filter_map(|v| {
-            SETTINGS_ITEMS.iter().chain(NOTIFY_ITEMS).find(|m| m.verb == *v && m.live(ctx))
-        })
-        .collect()
+    }
 }
 
 /// The heading drawn over a Settings row (T-610, T-717): a quiet line the

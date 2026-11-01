@@ -2366,3 +2366,38 @@ checks = ["road:mod", "started_by_crown", "woke:finished", "crown_never:sleep,Mo
   crown = "WT1: start {key}'s agent with workspace worktree, no tier and no plan. I need to know when its work is finished: when it is, end your turn with the single line: WT1 finished, followed by the word it replied."
   until = { stops = 1, state = "idle" }
   wake = true
+
+# T-1105: a person's question about mesimon itself, in their words, with no
+# word of the tool: the worker finds `help` among the board's tools (deferred
+# behind tool search on Claude Code) and answers from it, naming the column's
+# Workspace row. No file and no command, so the docs in the checkout are not
+# the road; a person's own repository has none.
+[[test]]
+id = "HP1"
+title = "HP1 · answer the person's question below"
+blind = true
+workspace = "worktree"
+brief = "How can I change the default workspace for new tickets to a worktree in mesimon? Answer in one or two sentences naming the setting and where it is, then end your turn. Read no file and run no command."
+expect = "asked how to make new tickets use a worktree, the worker calls the board's help tool, which it was never told of, and answers that it is a column's Workspace setting (enter on the column's heading opens its settings), served with no error."
+checks = ["road:mod", "started_by_crown", "tools:help", "reply:Workspace", "reply:column"]
+
+  [[test.steps]]
+  crown = "HP1: start {key}'s agent with workspace worktree, no tier and no plan, then end your turn with the single line: HP1 started. When the board wakes you for it, end your turn with the single line: HP1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+# T-1105: the same question from a person who knows the tool is there and
+# names it: the road that works whatever the session lists up front.
+[[test]]
+id = "HP2"
+title = "HP2 · answer the person's question below"
+blind = true
+workspace = "worktree"
+brief = "How can I change the default workspace for new tickets to a worktree in mesimon? Ask mesimon's help tool, then answer in one or two sentences naming the setting and where it is, and end your turn. Read no file and run no command."
+expect = "asked to use mesimon's help tool, the worker finds and calls it, and answers that it is a column's Workspace setting (enter on the column's heading opens its settings), served with no error."
+checks = ["road:mod", "started_by_crown", "tools:help", "reply:Workspace", "reply:column"]
+
+  [[test.steps]]
+  crown = "HP2: start {key}'s agent with workspace worktree, no tier and no plan, then end your turn with the single line: HP2 started. When the board wakes you for it, end your turn with the single line: HP2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true

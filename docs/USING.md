@@ -158,8 +158,8 @@ behind main up to date, with pull requests the board's columns (to merged, or on
 and a worktree for each ticket where the folder holds several repositories. The recommended
 answer is marked and is the default, and `s` leaves a question on it. `q` or `esc` leaves Setup
 with nothing applied, on the board as it starts, and Setup asks again the next time mesimon opens
-the folder; `ctrl-c` quits. Each answer is a setting afterwards: *Behaviour › Worktrees*, *Merge into* and *Auto
-merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
+the folder; `ctrl-c` quits. Each answer is a setting afterwards: each column's *Workspace*, and
+*Behaviour › Merge into* and *Auto merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
 column's *Tools* and *Agents › Agent brief* change that. *Settings › About* opens mesimon's
 project page.
 
@@ -180,9 +180,12 @@ anchor at the row's ends.
 
 <sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
 
-A new ticket works in its own worktree, unless Setup or *Behaviour › Worktrees* says otherwise
-or its column's *Workspace* row chose for it. In the new-ticket composer, `shift-tab` cycles
-between the shared checkout and a dedicated worktree; that choice locks once a session exists. On the board or a ticket page, `c` copies the
+A new ticket works in its own worktree, unless Setup said otherwise or its column's *Workspace*
+row chose for it. To change the default for new tickets, put the cursor on a column's heading,
+press `enter` for its settings, and set *New tickets › Workspace* to `worktree` or `shared
+checkout`, in each column you file tickets into; tickets already filed keep theirs. In the
+new-ticket composer, `shift-tab` cycles one ticket between the shared checkout and a dedicated
+worktree; that choice locks once a session exists. On the board or a ticket page, `c` copies the
 ticket's id; press it again for the title, and a third time for the id and title together. On a
 ticket page: `enter` on `+ agent session` starts an agent session and on a sleeping one wakes it,
 `!` opens a terminal in the ticket's worktree or checkout, and `enter` steps into a live session:
@@ -1000,6 +1003,12 @@ your Claude Code configuration. A session you start yourself never sees them, an
 servers still load alongside. Through the mod, Claude Code asks no permission before a board tool
 runs, in any mode, plan mode included: the board checks the tier and the ticket at every call,
 and that check is the whole gate.
+
+One tool is about mesimon rather than the board: `help` searches this build's docs and its key,
+Settings, column settings and Esc menu tables, so an agent can answer "how do I make new tickets
+use a worktree?" from the board as it is. Its answer is sent only when the tool is called; it
+reads no ticket and changes nothing. On Claude Code an agent finds it by name, so the sure way is
+to say so: "ask mesimon's help tool how to …".
 
 There is no tool, at any tier, to kill a session, delete a ticket, merge a branch, or read a
 session, a transcript or a cost. Those commands are refused by the daemon, not merely absent from

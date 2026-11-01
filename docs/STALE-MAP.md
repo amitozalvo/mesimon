@@ -40498,3 +40498,33 @@ and the agent's attempt is answered.
 - **Refuted:** reads limited to keys the worker's brief names (the daemon would have to parse
   briefs, and the crown's `ask_agent` names keys too); changing the tool text to "with key,
   another ticket's facts and notes; read only" (the person: not advertised).
+
+### T-1105 — `help`: mesimon's docs as a read-tier tool
+
+- **What shipped.** A `help` tool on the read rung (pre-approved, `readOnlyHint`), listed
+  to every session with tools. `core/help.rs` ranks passages (BM25, crude stem, a short
+  synonym table, headings counted twice) from two sources: the user docs compiled in
+  (README, USING, PROMISES, REMOTE-CONTROL, cut under their headings) and tables read off
+  `keymap` itself — every screen's keys with each state's hint, every Settings section's
+  rows with their choices and details (`section_rows`, live or not), the column settings
+  rows by heading (`column_rows`), the Esc menu (`menu_rows`). The tables cannot drift
+  from the build; the prose can. At most 6 passages / 9,000 bytes; an empty or unmatched
+  query returns the topics. The shim answers it from the binary (`ToolCall::Help` never
+  becomes a `Command`): no ticket, no board state, nothing for the daemon to authorize.
+- **The context cost** is the one definition; passages travel only in a call's result.
+- **Drift it found:** USING.md still sent a person to *Behaviour › Worktrees*, removed
+  in the T-1053 follow-up. Corrected: new tickets' workspace is each column's
+  *New tickets › Workspace* row; the composer's `shift-tab` sets one ticket.
+- **Rig, measured 2026-11-01 (claude 2.1.316, mod road, Opus crown, Sonnet worker):**
+  HP1 (blind, the person's question with no word of the tool) FAILED: the worker made
+  no tool call and answered wrongly from priors, saying no mesimon tool was among its
+  tools (it skipped `get_ticket` too, which the brief names). The transcripts say why:
+  Claude Code defers every MCP and mod tool behind ToolSearch (a description loads only
+  on a search), and on 2.1.316 even the deferred NAMES (155, 25 of them mesimon's) reach
+  the model in a `deferred_tools_delta` attached after its first tool call. HP1 made
+  none, so it never saw `mcp__mesimon__help`; HP2 (the person says "ask mesimon's help
+  tool") searched first, got the names, called `get_ticket` and `help`, and answered with
+  the column's Workspace row: PASSED. A session past its first tool call has the name in
+  view, never the description. Naming the tool in the brief is promise-3 text and the
+  person's call; not changed here.
+- Codex: listed through the same shim; no Codex rig case or live run.

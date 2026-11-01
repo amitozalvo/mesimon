@@ -1191,6 +1191,29 @@ pub fn tools() -> Vec<Value> {
             },
             "annotations": { "readOnlyHint": true }
         }),
+        // T-1105: mesimon's own docs and key and settings tables, searched.
+        // The one tool about the program rather than the board, answered by
+        // the shim from text compiled in (`help::answer`): no ticket, no
+        // session, no daemon. What it costs a session that never asks is
+        // this definition alone.
+        json!({
+            "name": "help",
+            "description": "Answers questions about mesimon itself, the program running this \
+                            board, from its docs and this build's key, Settings, column \
+                            settings and Esc menu tables: keys, settings, workspaces and \
+                            worktrees, merging, the crown, notifications, themes, Remote \
+                            Control, installing, updating and stopping. Returns the passages \
+                            matching query, ranked, or the topics for an empty one. Reads no \
+                            ticket and changes nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "The question, in the person's words." },
+                },
+                "additionalProperties": false,
+            },
+            "annotations": { "readOnlyHint": true }
+        }),
     ]
 }
 
@@ -1293,6 +1316,11 @@ pub enum ToolCall {
     /// The crown's sample of an agent it started (T-973).
     SampleAgent {
         key: String,
+    },
+    /// mesimon's docs, searched (T-1105). Answered by the shim from text
+    /// compiled in; it never becomes a `Command`.
+    Help {
+        query: String,
     },
     /// The crown's watch (T-712), or with `unwatch` its end.
     WatchTicket {
@@ -1568,6 +1596,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             Ok(ToolCall::MergeTicket { key: word(args, "key")?, seen: word(args, "seen")? })
         }
         "sample_agent" => Ok(ToolCall::SampleAgent { key: word(args, "key")? }),
+        "help" => Ok(ToolCall::Help { query: opt_word(args, "query")?.unwrap_or_default() }),
         "watch_ticket" => Ok(ToolCall::WatchTicket {
             key: word(args, "key")?,
             unwatch: flag(args, "unwatch")?,
@@ -2167,7 +2196,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
 pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
     Some(match name {
         "get_ticket" | "list_board" | "read_note" | "read_attachment" | "read_shell"
-        | "sample_agent" => AgentTools::Read,
+        | "sample_agent" | "help" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket"
         | "create_ticket"
@@ -2286,7 +2315,8 @@ mod tests {
                 "read_shell",
                 "read_note",
                 "read_attachment",
-                "sample_agent"
+                "sample_agent",
+                "help"
             ]
         );
         assert_eq!(
@@ -2300,7 +2330,8 @@ mod tests {
                 "write_note",
                 "tag_ticket",
                 "raise_hand",
-                "sample_agent"
+                "sample_agent",
+                "help"
             ]
         );
         assert_eq!(tools_for(AgentTools::Full).len(), tools().len(), "full is everything");
@@ -2452,6 +2483,7 @@ mod tests {
             "mcp__mesimon__read_note",
             "mcp__mesimon__read_attachment",
             "mcp__mesimon__sample_agent",
+            "mcp__mesimon__help",
         ];
         assert!(allowed_tool_names(AgentTools::Off).is_empty());
         for tier in [AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
@@ -2481,7 +2513,7 @@ mod tests {
     #[test]
     fn exactly_twenty_two_tools() {
         let t = tools();
-        assert_eq!(t.len(), 24);
+        assert_eq!(t.len(), 25);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -2509,7 +2541,8 @@ mod tests {
                 "merge_ticket",
                 "watch_ticket",
                 "hold_ticket",
-                "sample_agent"
+                "sample_agent",
+                "help"
             ]
         );
     }
@@ -4095,8 +4128,9 @@ mod tests {
             assert!(agent_allows(c), "{c:?} should be in the tier");
         }
         // `get_ticket` with a key, and `accept_plan` with a change (T-943),
-        // are commands of their own.
-        assert_eq!(allowed.len(), tools().len() + 2);
+        // are commands of their own; `help` (T-1105) is none, answered by
+        // the shim from text compiled in.
+        assert_eq!(allowed.len(), tools().len() + 2 - 1);
         // The peer carrier and the links are nobody's tool (T-733).
         assert!(!agent_allows(&Command::PeerAsk {
             crown_key: "T-1".into(),

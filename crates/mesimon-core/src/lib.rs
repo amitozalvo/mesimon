@@ -27,6 +27,7 @@ pub mod diff;
 pub mod exe;
 pub mod forge;
 pub mod fracindex;
+pub mod help;
 pub mod keymap;
 pub mod links;
 pub mod mcp;

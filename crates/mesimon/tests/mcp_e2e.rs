@@ -420,9 +420,21 @@ fn agent_board_tools_tier_and_collisions() {
             "merge_ticket",
             "watch_ticket",
             "hold_ticket",
-            "sample_agent"
+            "sample_agent",
+            // mesimon's docs (T-1105), answered by the shim itself.
+            "help"
         ]
     );
+
+    // T-1105: the ticket's own question finds the row that answers it, and
+    // an empty query lists the topics; the daemon is asked nothing.
+    let h =
+        shim.call_ok("help", json!({ "query": "how can I change default workspace to worktree" }));
+    let text = h["passages"].to_string();
+    assert!(text.contains("Workspace [worktree | shared checkout]"), "{h}");
+    let h = shim.call_ok("help", json!({}));
+    assert_eq!(h["matched"], false);
+    assert!(h["topics"].as_array().is_some_and(|t| !t.is_empty()), "{h}");
 
     let t = shim.call_ok("get_ticket", json!({}));
     assert_eq!(t["key"], key.as_str());

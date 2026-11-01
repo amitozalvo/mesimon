@@ -80,7 +80,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         let at = rec.argv.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
         assert_eq!(
             rec.argv[at + 1],
-            "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_shell,mcp__mesimon__read_note,mcp__mesimon__read_attachment,mcp__mesimon__sample_agent"
+            "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_shell,mcp__mesimon__read_note,mcp__mesimon__read_attachment,mcp__mesimon__sample_agent,mcp__mesimon__help"
         );
     }
     let mut shim = Shim::start(&sock, s_full);
@@ -88,7 +88,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     shim.notify("notifications/initialized");
     assert_eq!(listed(&mut shim).len(), mesimon_core::mcp::tools().len());
 
-    // ---- read: six listed, the rest refused by the daemon ------------------
+    // ---- read: seven listed, the rest refused by the daemon ------------------
     tier_of(&mut c, "TODO", AgentTools::Read);
     let t_read = create(&mut c, "TODO", "read only");
     let s_read = spawn(&mut c, t_read);
@@ -99,8 +99,19 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     shim_r.notify("notifications/initialized");
     assert_eq!(
         listed(&mut shim_r),
-        ["get_ticket", "list_board", "read_shell", "read_note", "read_attachment", "sample_agent"]
+        [
+            "get_ticket",
+            "list_board",
+            "read_shell",
+            "read_note",
+            "read_attachment",
+            "sample_agent",
+            "help"
+        ]
     );
+    // T-1105: the docs answer at the lowest rung that lists anything.
+    let h = shim_r.call_ok("help", json!({ "query": "column workspace" }));
+    assert_eq!(h["matched"], true, "{h}");
     let t = shim_r.call_ok("get_ticket", json!({}));
     assert_eq!(t["allowed_columns"], json!([]), "no move is offered below full");
     // Straight at the daemon, past the shim: the refusal names the tier.
@@ -174,7 +185,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         Response::Err { message } => assert!(message.contains("annotate"), "{message}"),
         other => panic!("annotate admits no move: {other:?}"),
     }
-    assert_eq!(listed(&mut shim_r).len(), 6, "the shim lists what it was born with");
+    assert_eq!(listed(&mut shim_r).len(), 7, "the shim lists what it was born with");
 
     // ---- a hand move to a full column widens the session --------------------
     assert!(matches!(
