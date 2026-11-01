@@ -1851,9 +1851,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
-        // a token entering its conversation. A `key` on these three is the
-        // crown's road (T-411, T-609): the daemon's `crown_target` refuses
-        // it for every caller not wearing the crown.
+        // a token entering its conversation. A `key` on a write or a shell
+        // is the crown's road (T-411, T-609): the daemon's `crown_target`
+        // refuses it for every caller not wearing the crown. A `key` on a
+        // note or attachment read is every agent's (T-1089, `read_target`).
         | Command::AgentReadAttachment { .. }
         | Command::AgentReadShell { .. }
         | Command::AgentRequestCloseShell { .. }

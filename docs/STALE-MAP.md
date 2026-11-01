@@ -40458,3 +40458,37 @@ handing the ticket's follow-through to the crown, so the park goes with it.
   whole `crown_e2e` binary (117) green on the first run.
 - **Refuted.** Granting the park on a hold too (a hold is the train's, not the person's handing
   over); letting the crown wake a watched person's parked agent (not asked; `c` stays theirs).
+
+## A worker reads another ticket's facts and notes by key (T-1089, 2026-11-01, "A worker cannot read the notes of tickets its brief names")
+
+Found on T-1084: a crown's brief named four earlier tickets to read with `get_ticket`/`read_note`,
+`get_ticket key=` was crown only, the worker raised its hand and the crown copied about 40 KB of
+notes onto the ticket by hand. **The person's decision (note on the ticket):** a ticket's agent
+may read other tickets' notes, *silently* — not advertised; a crown or the person names the key
+and the agent's attempt is answered.
+
+- **Daemon:** the three keyed reads (`AgentReadTicket`, `AgentReadNote`, `AgentReadAttachment`)
+  resolve their key through `read_target` (any ticket on the board, archived included, as the
+  crown's reads always admitted) instead of `crown_target`. Each still crosses `authorize()` as
+  `Action::Read` on the target with the agent principal. Note bodies leave by the same
+  `read_note` as the crown's. Every keyed **write** and the keyed shell reads and sample stay on
+  `crown_target` and its T-908 refusal. The README's write allowlist is untouched.
+- **What stays the crown's on a worker's keyed read:** `asked` (the crown's asks of that ticket),
+  `watched`, `told_hand` (already the board's crown alone) and `crown_reads` (context, cost,
+  compaction). A worker reading its own ticket by key still reads its own `asked`. `seen` is on
+  every read; a worker has no keyed writer to spend it on.
+- **Tool text unchanged, on purpose:** `get_ticket`, `read_note` and `read_attachment` still say
+  `(crown only)` for the key. That is the "not advertised" half of the decision: a worker is not
+  told it may browse the board; one told a key tries it (the T-1084 worker did) and is answered.
+  The words now overstate the bound; dropping them is the advertising the person declined.
+  The refusal sentence (`crown_refused`, "only the crown reads or changes …") now reaches a
+  worker only on a write, a shell read or a sample, and stays as it is for the same reason.
+- **Rig:** Claude RH1 changed from the T-908 read refusal to this: the crown asks the worker to
+  read the Review note on the crown's ticket by key (`keyed:read_note:ok`, a new check), the note
+  asks it to add a line there (`keyed:write_note:refused`), and the worker raises its hand
+  naming the note (`hand:review`, as before). Codex: a new extended case `read-other` — a code
+  word only another ticket's note holds must be in the worker's reply, and its keyed
+  `write_note` must leave that note as it was.
+- **Refuted:** reads limited to keys the worker's brief names (the daemon would have to parse
+  briefs, and the crown's `ask_agent` names keys too); changing the tool text to "with key,
+  another ticket's facts and notes; read only" (the person: not advertised).

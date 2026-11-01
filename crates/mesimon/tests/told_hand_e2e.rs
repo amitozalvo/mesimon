@@ -94,8 +94,10 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert!(c.board().raised_tickets().is_empty(), "nothing counts a told hand");
 
     // ---- 2. only the crown reads it ---------------------------------------
-    let refused = c.agent_read(sb, &kw).expect_err("another agent's keyed read is refused");
-    assert!(!refused.contains("mesimon-secret-81"), "{refused}");
+    // Another agent reads the ticket (T-1089), never the crown's told hand.
+    let other = c.agent_read(sb, &kw).expect("another agent's keyed read");
+    assert_eq!(other.told_hand, None, "{other:?}");
+    assert!(!format!("{other:?}").contains("mesimon-secret-81"), "{other:?}");
     match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
             assert_eq!(ticket.told_hand, None, "the worker's own read carries none")

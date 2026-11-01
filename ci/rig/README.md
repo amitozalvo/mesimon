@@ -107,7 +107,8 @@ python3 -B ci/rig.py --provider codex --live --only guard,plan,plan-launch,inter
 python3 -B ci/rig.py --provider codex --live --only child,stop,compact,identity,question
 python3 -B ci/rig.py --provider codex --live --only delegate
 python3 -B ci/rig.py --provider codex --live --only forge
-python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 33
+python3 -B ci/rig.py --provider codex --live --only read-other
+python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 34
 ```
 
 These reuse the native gate, plan, interruption, child and lifecycle checks.
@@ -116,6 +117,9 @@ The plan-launch case starts a ticket in plan mode the way `^p` does and checks t
 accept moved the same thread on. The steer case sends words into a running turn the way the board and Remote
 Control's Steer do, and checks that the same turn replies to them; its manifest
 records when the model read them against the running command's end.
+The read-other case (T-1089) names another ticket's key and note id in a worker's prompt:
+the reply must carry the code word only that note holds, and the worker's keyed
+`write_note` must leave the note as it was.
 Only the child case enables model-created child agents. The question case
 (three turns) starts its worker from a crowned Codex seat kept busy on a `sleep`
 turn, and the crown's `answer_agent` walks the real `request_user_input` dialog

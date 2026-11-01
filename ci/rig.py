@@ -417,6 +417,30 @@ def once(rows):
     return out
 
 
+def keyed_calls(rows, tool, key):
+    """The results of every `tool` call in a transcript whose input names
+    `key` (T-1089): a worker's keyed reach for another ticket."""
+    rows = once(rows)
+    ids = []
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if (isinstance(b, dict) and b.get("type") == "tool_use"
+                    and (b.get("name") or "").endswith(f"__{tool}")
+                    and (b.get("input") or {}).get("key") == key):
+                ids.append(b.get("id"))
+    out = []
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") in ids:
+                body = b.get("content")
+                text = body if isinstance(body, str) else " ".join(
+                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                out.append({"is_error": bool(b.get("is_error")), "text": text})
+    return out
+
+
 def tool_calls(rows):
     """(tool name, its result) for every tool use in a transcript, in order;
     a result is `{is_error, text}`, or None while none came."""
@@ -4301,6 +4325,17 @@ Reply with the single word ready and end your turn."""
                           and "raise_hand" in response.get("message", ""), str(response))
                 except (OSError, KeyError, ValueError) as error:
                     check(c, False, str(error))
+            elif name == "keyed":
+                # T-1089: the worker's `tool` calls keyed to the crown's
+                # ticket, read (`ok`: one answered without the crown's
+                # refusal) or written (`refused`: one refused in its words).
+                tool, _, want = arg.partition(":")
+                got = keyed_calls(rows, tool, self.crown_key)
+                refused = [r for r in got if "only the crown" in r["text"]]
+                answered = [r for r in got if not r["is_error"] and r not in refused]
+                ok = answered if want == "ok" else refused
+                check(c, ok, f"{len(got)} keyed {tool} calls, {len(answered)} answered, "
+                      f"{len(refused)} refused: {[r['text'][:60] for r in got[-2:]]}")
             elif name == "hand":
                 # The worker's own hand (T-908), its reason naming `arg`,
                 # case aside: what the worker wrote, from its transcript.

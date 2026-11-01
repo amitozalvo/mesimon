@@ -297,7 +297,7 @@ class Verification:
         lab.wait_for(lambda: (self.runtime / "orch.sock").exists(), timeout=15)
         self.client = lab.Client(self.repo)
         self.client.request("set_agent_provider", provider="codex")
-        self.client.request("set_mcp_tools", on=args.case in ("mcp", "brief"))
+        self.client.request("set_mcp_tools", on=args.case in ("mcp", "brief", "read-other"))
         if args.case == "brief":
             self.client.request("set_system_prompt", on=True)
         self.sessions = []
@@ -475,6 +475,13 @@ class Verification:
         if self.args.case in ("mcp", "brief") and "get_ticket" in screen and "mesimon" in screen.lower() and "Allow" in screen:
             self.tm("send-keys", "-t", target, "Enter")
             self.mark(action="native_allow_scoped_get_ticket_once", session=sid)
+            time.sleep(0.3)
+        # T-1089: the two note tools the read-other prompt names, keyed to
+        # another ticket; the daemon, not this dialog, judges each.
+        elif (self.args.case == "read-other" and ("read_note" in screen or "write_note" in screen)
+              and "mesimon" in screen.lower() and "Allow" in screen):
+            self.tm("send-keys", "-t", target, "Enter")
+            self.mark(action="native_allow_keyed_note_tool", session=sid)
             time.sleep(0.3)
 
     def wait(self, sid, description, predicate, timeout=55, consent=True):

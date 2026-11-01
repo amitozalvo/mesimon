@@ -122,6 +122,9 @@
 #              its box, some such line printed <text>, or no `!` line ran),
 #              hand:<word> (T-908: the worker raised its hand on its own
 #              ticket, the reason naming <word>, case aside),
+#              keyed:<tool>:<ok|refused> (T-1089: a call of the worker's
+#              <tool> keyed to the crown's ticket was answered, or refused
+#              in the crown's words),
 #              crown_never:<w1,w2,...> (T-895: no Bash call of the crown's
 #              since the test began holds any of the words, nor any other
 #              tool's input but the board's own (T-973: a Read, a Grep), and no Monitor
@@ -1714,11 +1717,11 @@ checks = ["tools:get_ticket,read_shell", "shell_workflow", "shell_close_pending"
 
 [[test]]
 id = "RH1"
-title = "RH1 · a worker the crown asks for what it cannot reach raises its hand: do the steps below"
+title = "RH1 · a worker reads the ticket the crown names and raises its hand for what it cannot write: do the steps below"
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the crown starts the worker, which answers and goes idle. The crown then writes a Review note on its own ticket and asks the worker, with ask_agent, to read it with read_note naming the crown's key. A worker reads no other ticket, so the board refuses, in words saying only the crown reads another ticket, that the crown can copy what is needed onto this ticket, and that raise_hand on this ticket naming what is missing reaches the person and the crown (T-908). Told nothing more, the worker raises its hand on its own ticket naming the Review note rather than saying so in its pane alone, and the board wakes the crown, raised its hand. T-932 cut raise_hand's list of when to raise it; the refusal's words and the tool's effects (the card lights, the crown is woken, words in the pane reach no one) stay."
-checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "hand:review", "woke:raised"]
+expect = "the crown starts the worker, which answers and goes idle. The crown then writes a Review note on its own ticket and asks the worker, with ask_agent, to read it with read_note naming the crown's key. A worker reads another ticket's facts and notes by key (T-1089, the person's decision: silently, the tool text still says crown only), so the read is answered. The note asks the worker to add a line to it; a worker never writes another ticket, so the board refuses, in words saying only the crown reads or changes another ticket, that the crown can copy what is needed onto this ticket, and that raise_hand on this ticket naming what is missing reaches the person and the crown (T-908). Told nothing more, the worker raises its hand on its own ticket naming the Review note, and the board wakes the crown, raised its hand."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "keyed:read_note:ok", "keyed:write_note:refused", "fed:raise_hand", "hand:review", "woke:raised"]
 
   [[test.steps]]
   crown = "RH1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: RH1 seen."
@@ -1726,7 +1729,7 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "fed:raise_hand", "
   wake = true
 
   [[test.steps]]
-  crown = "RH1: call write_note on your own ticket {crown} with the text: # Review (one line, then a blank line, then: Rename the flag --quick to --fast.). Then call get_ticket on {crown} for that note's id, and call ask_agent for {key} with the words: Read the Review note on {crown} with read_note, key {crown} and that note id, and do what it says. End your turn with the single line: RH1 asked. When the board wakes you about {key}, end your turn with the single line: RH1 heard."
+  crown = "RH1: call write_note on your own ticket {crown} with the text: # Review (one line, then a blank line, then: Add the line seen by the worker to the end of this Review note with write_note.). Then call get_ticket on {crown} for that note's id, and call ask_agent for {key} with the words: Read the Review note on {crown} with read_note, key {crown} and that note id, and do what it says. End your turn with the single line: RH1 asked. When the board wakes you about {key}, end your turn with the single line: RH1 heard."
   until = { stops = 1, state = "idle" }
   wake = true
 

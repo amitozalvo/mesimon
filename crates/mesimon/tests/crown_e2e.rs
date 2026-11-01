@@ -84,8 +84,37 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let sa = c.spawn_claude(a);
     let sb = c.spawn_claude(b);
 
-    // ---- uncrowned: another ticket is refused, and the refusal teaches ----
-    let refusal = c.agent_read(sa, &kb).expect_err("no crown yet");
+    // ---- uncrowned: another ticket reads, and never writes (T-1089) -------
+    // The person's decision: a worker reads another ticket's facts and
+    // notes by key, so a brief that names one costs no copy.
+    let note_b = match c.request(Command::WriteNote {
+        ticket: b,
+        note: None,
+        text: "## Findings\nthe thing is in parse()".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { note: Some(note) } => note,
+        other => panic!("a person's note on B: {other:?}"),
+    };
+    let other = c.agent_read(sa, &kb).expect("a worker reads another ticket");
+    assert_eq!(other.key, kb);
+    assert_eq!(other.crowned, None, "another ticket's read says nothing of a crown");
+    assert!(other.notes.iter().any(|n| n.id == note_b), "{:?}", other.notes);
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentReadNote { note: note_b, key: Some(kb.clone()) },
+    ) {
+        Response::Note { text, .. } => assert!(text.contains("in parse()"), "{text}"),
+        other => panic!("a worker's keyed read_note: {other:?}"),
+    }
+    // A write by key is refused, and the refusal teaches.
+    let refusal = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentWriteNote { note: Some(note_b), text: "x".into(), key: Some(kb.clone()) },
+    ) {
+        Response::Err { message } => message,
+        other => panic!("a worker's keyed write_note: {other:?}"),
+    };
     for word in ["crown", "^o", "raise_hand", &ka] {
         assert!(refusal.contains(word), "the refusal names {word}: {refusal}");
     }
@@ -127,9 +156,6 @@ fn the_crown_lets_one_agent_edit_the_others() {
     let reach = |key: &str| -> Vec<Command> {
         let key = Some(key.to_string());
         vec![
-            Command::AgentReadTicket { key: key.clone().unwrap(), full: false, plan: false },
-            Command::AgentReadNote { note: ulid::Ulid::new(), key: key.clone() },
-            Command::AgentReadAttachment { attachment: ulid::Ulid::new(), key: key.clone() },
             Command::AgentReadShell { shell: uuid::Uuid::new_v4(), key: key.clone() },
             Command::AgentWriteNote { note: None, text: "x".into(), key: key.clone() },
             Command::AgentTagTicket { name: "x".into(), group: None, remove: false, key },
@@ -149,6 +175,17 @@ fn the_crown_lets_one_agent_edit_the_others() {
             ),
             other => panic!("{what}: {other:?}"),
         }
+    }
+    // T-1089: the reads are every agent's under a crown too, and a worker
+    // reads none of what the crown alone reads (its watch, its asks).
+    let worker_view = c.agent_read(sb, &kd).expect("a worker reads another ticket");
+    assert!(!worker_view.watched && worker_view.asked.is_none());
+    match c.send(
+        Principal::Agent { session: sb },
+        Command::AgentReadNote { note: ulid::Ulid::new(), key: Some(kd.clone()) },
+    ) {
+        Response::Err { message } => assert!(message.contains("no such note"), "{message}"),
+        other => panic!("an unknown note on another ticket: {other:?}"),
     }
     let own = c.agent_read(sa, &ka).unwrap();
     assert_eq!(own.crowned, Some(true), "get_ticket says the caller wears it");
@@ -588,13 +625,13 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // its raised hand wakes the crown as well as reaching the person.
     match c.send(
         Principal::Agent { session: started.id },
-        Command::AgentReadNote { note: ulid::Ulid::new(), key: Some(kb.clone()) },
+        Command::AgentWriteNote { note: None, text: "x".into(), key: Some(kb.clone()) },
     ) {
         Response::Err { message } => {
             assert!(message.starts_with(&format!("only the crown ({ka})")), "{message}");
             assert!(message.ends_with("reaches the person and the crown."), "{message}");
         }
-        other => panic!("a worker reading another ticket's note: {other:?}"),
+        other => panic!("a worker writing another ticket's note: {other:?}"),
     }
     // A second start on the same ticket is refused by the seat.
     let v1 = c.agent_read(sa, &k1).unwrap();
@@ -955,7 +992,8 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // ---- uncrown, and the crown leaves with its ticket ------------------------
     assert!(matches!(c.request(Command::Uncrown), Response::Ok));
     assert!(c.board().crown.is_none());
-    assert!(c.agent_read(sa, &kb).is_err(), "uncrowned again");
+    let after = c.agent_read(sa, &kb).expect("a read is every agent's (T-1089)");
+    assert!(after.context.is_none() && after.cost.is_none(), "the crown's reads left with it");
     // Any agent may file a ticket; only the crown's filing is a touch.
     let plain_filing = filed(&mut c, "filed uncrowned", None);
     assert!(!c.crown_touches().iter().any(|t| t.ticket == plain_filing), "not the crown's");
@@ -966,7 +1004,13 @@ fn the_crown_lets_one_agent_edit_the_others() {
     // A second crown displaces the first.
     assert!(matches!(c.request(Command::CrownTicket { id: d }), Response::Ok));
     assert_eq!(c.board().crown, Some(d));
-    assert!(c.agent_read(sa, &kb).is_err(), "A no longer wears it");
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentRenameTicket { key: kb.clone(), title: "x".into(), seen: None },
+    ) {
+        Response::Err { message } => assert!(message.contains("only the crown"), "{message}"),
+        other => panic!("A no longer wears it: {other:?}"),
+    }
     // Deleting the holder takes the crown with it.
     assert!(matches!(
         c.request(Command::DeleteTicket { id: d, discard_worktree: false }),

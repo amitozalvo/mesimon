@@ -21,10 +21,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question", "delegate", "forge")
+            "identity", "question", "delegate", "forge", "read-other")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
-         "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1}
+         "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1,
+         "read-other": 1}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 # T-916: a crowned Codex seat asked one thing by the person, in words a person
 # would use. Everything after that one submission is the crown's own doing and
@@ -1198,6 +1199,32 @@ def adapter(base):
             if self.args.case in CROWN:
                 (self.out / "snapshot.json").write_text(json.dumps(self.snapshot(), indent=1) + "\n")
 
+        def read_other(self):
+            """T-1089: a worker reads the note of another ticket its prompt
+            names by key, and its keyed write there changes nothing. The code
+            word lives only in that note, so the reply proves the read."""
+            word = "MESIMON_OTHER_" + uuid.uuid4().hex[:8].upper()
+            other = self.request("create_ticket", column="BACKLOG", title="Earlier findings",
+                                 workspace=None)["id"]
+            text = "## Findings\n\nThe code word is " + word + ".\n"
+            note = self.request("write_note", ticket=other, note=None, text=text)["note"]
+            key = next(t for t in self.client.board()["tickets"] if t["id"] == other)["short_key"]
+            sid = self.start(
+                f"Call mesimon read_note with key {key} and note {note}. Then call mesimon "
+                f"write_note with key {key}, note {note} and the text seen. Then reply with the "
+                "code word that note holds, followed by WRITE_REFUSED if the write was refused "
+                "or WRITE_ACCEPTED if it was not. Modify no file.")
+            session, _, _ = self.completed(sid, word)
+            preview = json.loads(Path(session["agent_preview_path"]).read_text()).get("text") or ""
+            body = self.request("read_note", ticket=other, note=note)
+            notes = next(t for t in self.client.board()["tickets"] if t["id"] == other).get("notes", [])
+            if body.get("text") != text or len(notes) != 1:
+                raise AssertionError("a worker's keyed write changed another ticket: " + str(body)[:200])
+            if "WRITE_REFUSED" not in preview:
+                raise AssertionError("the worker did not report the keyed write refused: " + preview[:200])
+            self.mark(assertion="a worker read another ticket's note by key; its keyed write was refused",
+                      passed=True)
+
         def run(self):
             if self.args.case in CROWN:
                 return getattr(self, self.args.case)()
@@ -1213,6 +1240,8 @@ def adapter(base):
                 return
             if self.args.case == "steer":
                 return self.steer()
+            if self.args.case == "read-other":
+                return self.read_other()
             if self.args.case == "plan-launch":
                 return self.plan_launch()
             if self.args.case != "queue":

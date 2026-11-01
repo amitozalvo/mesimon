@@ -1067,9 +1067,9 @@ pub enum Command {
         key: String,
     },
     /// ANOTHER ticket, by key, as `get_ticket` renders it with a `key`
-    /// (T-411). The one read the crown admits and nothing else does: the
-    /// daemon refuses it unless the caller's ticket wears the crown, and the
-    /// refusal says how a person grants one. A separate command rather than
+    /// (T-411). Every agent's since T-1089 (a worker reads, never writes,
+    /// another ticket); what only the crown reads of it (cost, asks, its
+    /// watch, a told hand) stays the crown's. A separate command rather than
     /// a field on `AgentGetTicket` so a shim from before the crown still
     /// parses on the wire.
     AgentReadTicket {

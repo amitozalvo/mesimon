@@ -8009,9 +8009,10 @@ impl Daemon {
                     None => no_such_ticket(),
                 }
             }
-            // Another ticket, by key (T-411): the crown's one read.
+            // Another ticket, by key (T-411): any agent's read since T-1089;
+            // what the crown alone reads of it rides `crowned` below.
             Command::AgentReadTicket { key, plan, full } => {
-                let target = match self.crown_target(ticket, &key, true) {
+                let target = match self.read_target(&key) {
                     Ok(t) => t,
                     Err(message) => return Response::Err { message },
                 };
@@ -8023,12 +8024,18 @@ impl Daemon {
                 }
                 match self.agent_ticket_view(target) {
                     Some(mut view) => {
-                        view.asked = self.crown_asked_view(target);
+                        // The crown's asks and watches are its own (T-1089):
+                        // a worker reading another ticket reads the ticket.
+                        let crowned = self.board.is_crowned(ticket);
+                        if crowned || target == ticket {
+                            view.asked = self.crown_asked_view(target);
+                        }
                         view.told_hand = self.told_hand_view(ticket, target);
                         if target == ticket {
-                            view.crowned = Some(self.board.is_crowned(ticket));
+                            view.crowned = Some(crowned);
                         }
-                        view.watched = target != ticket && self.crown_watched.contains(&target);
+                        view.watched =
+                            crowned && target != ticket && self.crown_watched.contains(&target);
                         if plan {
                             view.needs_you = self.agent_needs_you(target, true);
                         }
@@ -8121,7 +8128,7 @@ impl Daemon {
             Command::AgentReadAttachment { attachment, key } => {
                 let target = match key {
                     None => ticket,
-                    Some(k) => match self.crown_target(ticket, &k, true) {
+                    Some(k) => match self.read_target(&k) {
                         Ok(t) => t,
                         Err(message) => return Response::Err { message },
                     },
@@ -8157,7 +8164,7 @@ impl Daemon {
             Command::AgentReadNote { note, key } => {
                 let target = match key {
                     None => ticket,
-                    Some(k) => match self.crown_target(ticket, &k, true) {
+                    Some(k) => match self.read_target(&k) {
                         Ok(t) => t,
                         Err(message) => return Response::Err { message },
                     },
@@ -9427,6 +9434,18 @@ impl Daemon {
             return Err(format!("{key} is archived; archive_ticket with restore brings it back"));
         }
         Ok(t.id)
+    }
+
+    /// The ticket a keyed READ is about (T-1089): any ticket on the board,
+    /// archived ones included, for every agent. The person's decision:
+    /// another ticket's facts and notes are readable, never writable, by a
+    /// worker, and the tool text does not advertise it (a brief names the
+    /// key). What only the crown reads of it stays behind `is_crowned`.
+    fn read_target(&self, key: &str) -> std::result::Result<ulid::Ulid, String> {
+        match self.board.ticket_by_key(key) {
+            Some(t) => Ok(t.id),
+            None => Err(format!("no such ticket: {key} (list_board lists every key)")),
+        }
     }
 
     /// `crown_target` plus the freshness check every keyed WRITER makes:
