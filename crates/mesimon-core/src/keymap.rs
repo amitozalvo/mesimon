@@ -11534,7 +11534,10 @@ mod tests {
         assert_eq!(resolve(Scope::Transcript, Key::Tab, &Ctx::default()), None);
         assert_eq!(resolve(Scope::Transcript, Key::Char('l'), &linked), None, "l is free");
         assert_eq!(resolve(Scope::Transcript, Key::Char('h'), &linked), None, "h is free");
-        assert_eq!(hint_for(Scope::Transcript, Verb::TranscriptLinkNext, &linked), Some(("tab", "link")));
+        assert_eq!(
+            hint_for(Scope::Transcript, Verb::TranscriptLinkNext, &linked),
+            Some(("tab", "link"))
+        );
         assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), None);
         let selected = Ctx { transcript_link_selected: true, ..linked };
         assert_eq!(

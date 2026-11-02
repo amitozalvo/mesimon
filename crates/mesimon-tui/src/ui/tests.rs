@@ -7619,7 +7619,6 @@ fn golden_editor_compose_120() {
 
 #[test]
 fn the_composer_dialog_grows_out_of_its_card() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     // The one-line composer, in the first column: the board records where
     // its phantom card landed.
     let mut app = app_graphite(fixture(false));
@@ -7651,7 +7650,11 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
     // Tab grows it: the editor carries the card's rectangle as its origin.
-    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Tab,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor") };
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
     assert!(app.animating(), "the frame after Tab is in motion");
@@ -8025,7 +8028,6 @@ fn golden_editor_ask_column_120() {
 /// description gets the fresh note that becomes it.
 #[test]
 fn the_description_dialog_grows_out_of_the_card() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
     app.cursor_row = Some(0);
@@ -8037,7 +8039,11 @@ fn the_description_dialog_grows_out_of_the_card() {
     assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
-    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Tab,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor: {:?}", app.mode) };
     assert!(matches!(ed.purpose, crate::app::EditorPurpose::Note { note: None, .. }));
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
@@ -13366,7 +13372,6 @@ fn a_drag_selects_text_and_the_release_copies_it() {
 /// in its title and in the body, which takes the keys from the title.
 #[test]
 fn a_click_places_the_cursor_in_text_being_typed() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
     let buffer = crate::text::EditBuffer::from_text(
@@ -13390,7 +13395,11 @@ fn a_click_places_the_cursor_in_text_being_typed() {
     let Mode::Input { buffer, .. } = &app.mode else { panic!("still typing") };
     assert_eq!(buffer.width_before_cursor(), "Ship the ".len(), "before the word clicked");
 
-    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Tab,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("tab");
     if let Mode::Editor(ed) = &mut app.mode {
         ed.grow =
             Some((ratatui::layout::Rect::default(), std::time::Instant::now() - crate::app::GROW));
