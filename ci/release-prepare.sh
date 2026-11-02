@@ -110,7 +110,10 @@ warm() {
   local name=$1
   shift
   mark "$name: $*"
-  if ! ( renice -n 10 -p $BASHPID >/dev/null 2>&1; "$@" ) > "$logs/$name.log" 2>&1; then
+  # macOS's /bin/bash is 3.2, without BASHPID: the exec'd sh's parent is
+  # the subshell.
+  if ! ( renice -n 10 -p "${BASHPID:-$(exec sh -c 'echo $PPID')}" >/dev/null 2>&1
+    "$@" ) > "$logs/$name.log" 2>&1; then
     mark "$name FAILED"
     tail -n 40 "$logs/$name.log"
     kill -TERM "$gate" 2>/dev/null || true
