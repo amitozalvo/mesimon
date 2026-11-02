@@ -35,12 +35,16 @@ use crate::hook_settings::HookSet;
 use crate::modroad::{self, Probe, RoadVerdict, Verdict};
 use mesimon_core::road::{
     ModCommand, ModFrame, NativeCompaction, Road, RoadPref, MOD_ANSWER, MOD_FILL, MOD_LOAD_FAILED,
-    MOD_PONG, MOD_SUBMIT, MOD_USAGE,
+    MOD_PONG, MOD_SAID, MOD_SUBMIT, MOD_USAGE,
 };
 use std::collections::VecDeque;
 
 /// How long a ping waits for its pong.
 pub(super) const PING_TIMEOUT_MS: u64 = 5_000;
+/// The most of a sentence the record keeps (T-1111): a card shows two rows
+/// and the ticket page's preview a screen, and the transcript's own copy
+/// takes over whole. 16 KiB holds any sentence and most whole answers.
+const SAID_MAX_BYTES: usize = 16 * 1024;
 /// The most frames one session's mod may have waiting; past it the oldest
 /// go, with a journal line.
 pub(super) const OUTBOX_CAP: usize = 256;
@@ -904,9 +908,37 @@ impl Daemon {
             self.on_mod_usage(session, &frame);
             return;
         }
+        if frame.event == MOD_SAID {
+            self.on_mod_said(session, &frame);
+            return;
+        }
         if by_mod {
             self.on_hook(frame);
         }
+    }
+
+    /// A sentence the session's model wrote, as the mod heard Claude Code
+    /// display it (T-1111): kept on the record for every preview reader to
+    /// lay over the transcript's words until the file's copy is as new
+    /// (`AgentPreview::with_said`). The text is the model's, so it is
+    /// capped here and scrubbed where it is drawn; a subagent's message, or
+    /// an empty one, is nothing said. The transport is untrusted: the mod
+    /// skips a subagent's message too, and the daemon reads the field again.
+    fn on_mod_said(&mut self, session: uuid::Uuid, frame: &HookFrame) {
+        if frame.payload.get("agent_id").is_some_and(|a| a.is_string()) {
+            return;
+        }
+        let Some(text) = frame.payload.get("text").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let text = mesimon_core::text::cap_bytes(text, SAID_MAX_BYTES).trim();
+        if text.is_empty() {
+            return;
+        }
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == session) else { return };
+        rec.said = Some(mesimon_core::board::Said { text: text.to_string(), at_ms: now_ms() });
+        self.feed.hook_event_by(&frame.session, &frame.event, None, Road::Mod);
+        self.broadcast();
     }
 
     /// A turn's end as the mod reports it (T-581): the account's windows go

@@ -490,7 +490,7 @@ fn peek_of(app: &App, sessions: &[&SessionRecord]) -> Option<std::rc::Rc<crate::
     let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
     ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
     ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
-        let pk = app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?)?;
+        let pk = app.peek_cache.peek_of(s)?;
         Some(if s.state == mesimon_core::board::SessionState::Running || pk.activity.is_none() {
             pk
         } else {

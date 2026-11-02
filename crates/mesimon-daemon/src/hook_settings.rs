@@ -389,6 +389,7 @@ mod tests {
             (mesimon_core::road::MOD_ANSWER, "'nothing_held'"),
             (mesimon_core::road::MOD_LOAD_FAILED, "'recovered'"),
             (mesimon_core::road::MOD_USAGE, "String(e?.reason ?? 'answer')"),
+            (mesimon_core::road::MOD_SAID, "undefined"),
         ] {
             assert!(src.contains(&format!("relay($, '{event}', {reason},")), "{event} {reason}");
         }

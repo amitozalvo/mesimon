@@ -74,6 +74,13 @@ and the plan accept (T-579). **Each turn's end goes up as `ModUsage` (T-581)**: 
 count of the turn and the main loop's rate-limit windows. A mod session's ticket is counted from
 those reports past a per-conversation fence, the transcript read beside them into a check and
 never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`.
+**A sentence goes up as `ModSaid` as Claude Code displays it (T-1111)**: the mod joins a
+message's `classic.MessageDisplay` flushes and relays the main loop's text once, at the `final`
+flush; the daemon caps it onto `SessionRecord::said` with its clock, and every preview reader
+(the card and ticket page through `PeekCache::peek_of`, the phone through `control_words`) lays
+it over the transcript's words by one rule, `AgentPreview::with_said`: the file wins once it
+holds the same text or a record dated at or after the words. The step and the spoke mark stay
+the file's. Classic-road, native-road and Codex sessions have no such report.
 
 ## Traps that were measured
 
@@ -174,7 +181,13 @@ never the hours (`cost::Ledger::count_mod`); the windows merge into `usage.json`
   (that one is auto mode's classifier). The agent's next `PreToolUse` is the first frame that
   says the dialog is gone, and it is the refusal road (`Signal::ToolStarted`, T-447).
 - **A tool in flight keeps the transcript still for its whole duration**, so an mtime-quiet rule
-  reads a 3.5-minute `cargo` call as a dead turn.
+  reads a 3.5-minute `cargo` call as a dead turn. **And the text before it waits too** (2.1.316,
+  T-1109/T-1111): a message's `thinking` and `text` records are appended only once the tool call
+  after them has finished streaming, dated at the block's end, so a sentence the pane shows is in
+  the file minutes later on a long `Write`. `classic.MessageDisplay` fires `final` as the text
+  ends (82 s before the file on an 84 s `Write`), carrying the text block verbatim and no private
+  thinking; `turn.step` sees the same text as chunks but cannot tell a narration note's
+  `thinking` chunks from private reasoning.
 - **Claude Code's session file flips `idle` at the end of every turn**, milliseconds before the
   `Stop` hook fires, so a status probe races the hook on every turn.
 - **Async hooks are absent from `Stop.background_tasks` and the mod lifecycle (2.1.310).**

@@ -344,3 +344,37 @@ fn a_parks_session_end_lands_by_the_mod_after_the_pane_is_gone() {
     let rec = c.board().sessions.into_iter().find(|r| r.id == sid).unwrap();
     assert_eq!(rec.state, mesimon_core::board::SessionState::Sleeping, "the park stands");
 }
+
+/// T-1111: a sentence the mod heard Claude Code display is on the record
+/// before the transcript holds it, with its feed line; a subagent's message
+/// and an empty one are nothing said. The card lays the words over the
+/// file's (`AgentPreview::with_said`, unit-tested) until the file is as new.
+#[test]
+fn a_sentence_the_mod_heard_is_on_the_record_before_the_transcript_has_it() {
+    let Some(h) = boot("modbridge-said") else { return };
+    let mut c = h.client("said");
+    let (_, sid) = spawn(&mut c, "the sentence", SessionKind::Claude);
+    let s = sid.to_string();
+    let sock = h.paths.hook_sock();
+    let said = |body: &str| hook_send_road(&sock, &s, "ModSaid", None, None, body, Some("mod"));
+    said(r#"{"turnId":"t1","messageId":"m0","agent_id":"a7","text":"the subagent's words"}"#);
+    said(r#"{"turnId":"t1","messageId":"m1","text":"  \n"}"#);
+    said(r#"{"turnId":"t1","messageId":"m2","text":"Understood: building it now.\n"}"#);
+    let words = |c: &mut TestClient| {
+        c.board().sessions.into_iter().find(|x| x.id == sid).and_then(|x| x.said)
+    };
+    wait_until(Duration::from_secs(10), "the words on the record", || words(&mut c).is_some());
+    let got = words(&mut c).unwrap();
+    assert_eq!(got.text, "Understood: building it now.", "capped and trimmed, never a subagent's");
+    assert!(got.at_ms > 0);
+    wait_until(Duration::from_secs(5), "the feed line", || {
+        hook_lines(&h, &s).iter().any(|(e, _, _)| e == "ModSaid")
+    });
+    let lines = hook_lines(&h, &s);
+    assert_eq!(
+        lines.iter().filter(|(e, _, _)| e == "ModSaid").count(),
+        1,
+        "one feed line, for the one message that said something: {lines:?}"
+    );
+    assert!(lines.contains(&("ModSaid".to_string(), None, Some("mod".to_string()))), "{lines:?}");
+}

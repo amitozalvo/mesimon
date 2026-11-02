@@ -38,6 +38,9 @@ pub(crate) struct Peek {
     pub reply_key: Option<u64>,
     /// `card_words` of `text`, `None` exactly when `text` is.
     pub card: Option<String>,
+    /// The date of the record `text` is from (`AgentPreview::said_ms`), for
+    /// the live words' overlay (T-1111).
+    pub said_ms: Option<u64>,
 }
 
 /// Read cache, one entry per transcript path. It was one slot — only the
@@ -45,7 +48,23 @@ pub(crate) struct Peek {
 /// claude's transcript a once-a-second read; see the module doc for what
 /// that costs.
 #[derive(Default)]
-pub(crate) struct PeekCache(RefCell<HashMap<String, Entry>>, RefCell<HashMap<String, Rc<Peek>>>);
+pub(crate) struct PeekCache(
+    RefCell<HashMap<String, Entry>>,
+    RefCell<HashMap<String, Rc<Peek>>>,
+    /// The file's peek with the record's live words laid over it (T-1111),
+    /// by path: worked out once per (file read, words) pair, since the
+    /// overlay's `card_words` is a markdown parse and a card asks per frame.
+    RefCell<HashMap<String, Overlaid>>,
+);
+
+struct Overlaid {
+    /// The file read the overlay was laid on, held so its identity is its
+    /// own: a dropped read's address could be a new read's.
+    over: Rc<Peek>,
+    /// The words it laid, by their arrival.
+    said_at_ms: u64,
+    peek: Rc<Peek>,
+}
 
 struct Entry {
     kind: SessionKind,
@@ -78,6 +97,49 @@ impl PeekCache {
         self.read(kind, path, true)
     }
 
+    /// A session's peek as the board draws it: its transcript's words with
+    /// the sentence its mod heard live laid over them (T-1111,
+    /// `SessionRecord::said`), until the file's copy is as new
+    /// (`AgentPreview::with_said`, the one rule, shared with the phone).
+    /// The step and the reply key stay the file's. `None` as `peek_for`.
+    pub(crate) fn peek_of(&self, s: &SessionRecord) -> Option<Rc<Peek>> {
+        let path = preview_path(s)?;
+        let file = self.peek_for(s.kind, path)?;
+        let Some(said) = s.said.as_ref() else { return Some(file) };
+        if let Some(o) = self.2.borrow().get(path) {
+            if Rc::ptr_eq(&o.over, &file) && o.said_at_ms == said.at_ms {
+                return Some(Rc::clone(&o.peek));
+            }
+        }
+        // The file's words are sanitized already; the live ones are compared
+        // and laid in the same cells, so the same sentence is the same text.
+        let clean = mesimon_core::board::Said { text: sanitize(&said.text), at_ms: said.at_ms };
+        let laid = mesimon_daemon::agents::AgentPreview {
+            text: file.text.clone(),
+            activity: None,
+            reply_key: file.reply_key,
+            said_ms: file.said_ms,
+        }
+        .with_said(Some(&clean));
+        let peek = if laid.text == file.text {
+            Rc::clone(&file)
+        } else {
+            let text = laid.text;
+            Rc::new(Peek {
+                card: text.as_deref().map(card_words),
+                text,
+                activity: file.activity.clone(),
+                reply_key: file.reply_key,
+                said_ms: file.said_ms,
+            })
+        };
+        self.2.borrow_mut().insert(
+            path.to_string(),
+            Overlaid { over: file, said_at_ms: said.at_ms, peek: Rc::clone(&peek) },
+        );
+        Some(peek)
+    }
+
     /// `peek_for` without the stat window: the once-a-second spoke scan
     /// (`App::scan_spoke`) always asks the disk, which is what makes it the
     /// bound on how late a reply can show. Its stat renews the entry, so the
@@ -91,7 +153,7 @@ impl PeekCache {
     pub(crate) fn stage(&self, path: &str, text: &str) {
         let text = sanitize(text);
         let card = Some(card_words(&text));
-        let peek = Peek { text: Some(text), activity: None, reply_key: None, card };
+        let peek = Peek { text: Some(text), activity: None, reply_key: None, card, said_ms: None };
         self.1.borrow_mut().insert(path.to_string(), Rc::new(peek));
     }
 
@@ -133,6 +195,7 @@ impl PeekCache {
                 Doing::Thinking => Doing::Thinking,
             }),
             reply_key: raw.reply_key,
+            said_ms: raw.said_ms,
         });
         map.insert(
             path.to_string(),
@@ -146,6 +209,7 @@ impl PeekCache {
     /// left the board takes its 64 KiB of cached tail with it.
     pub(crate) fn retain(&self, keep: impl Fn(&str) -> bool) {
         self.0.borrow_mut().retain(|p, _| keep(p));
+        self.2.borrow_mut().retain(|p, _| keep(p));
     }
 
     #[cfg(test)]
@@ -301,6 +365,7 @@ mod tests {
             text: Some("Reply with https://example.com\u{1b}[31m".into()),
             activity: Some(AgentActivity::Tool("checking\nfiles".into())),
             reply_key: Some(42),
+            said_ms: None,
         };
         std::fs::write(&path, serde_json::to_vec(&preview).unwrap()).unwrap();
         let cache = PeekCache::default();
@@ -328,6 +393,55 @@ mod tests {
         format!(
             "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
         )
+    }
+
+    /// T-1111: the words the mod heard live sit on the card over the file's,
+    /// with the file's step and key, until the file holds them; then the
+    /// file's own read is handed back, the same text, nothing redrawn.
+    #[test]
+    fn live_words_lay_over_the_card_until_the_file_has_them() {
+        use mesimon_core::board::{Said, SessionState};
+        let p = tmp("said");
+        let dated = |uuid: &str, text: &str, at: &str| {
+            format!(
+                "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"timestamp\":\"{at}\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
+            )
+        };
+        std::fs::write(&p, dated("u1", "one", "2026-11-02T10:00:00.000Z")).unwrap();
+        let cache = PeekCache::default();
+        let mut s = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec![],
+            "/".into(),
+            SessionState::Running,
+        );
+        s.transcript_path = Some(p.to_string_lossy().to_string());
+        let file = cache.peek_of(&s).unwrap();
+        assert_eq!(file.text.as_deref(), Some("one"));
+        let key = file.reply_key.expect("a reply has a key");
+        let at_ms = mesimon_core::adopt::iso_ms("2026-11-02T10:00:30.000Z").unwrap();
+        s.said = Some(Said { text: "two **bold**".into(), at_ms });
+        let live = cache.peek_of(&s).unwrap();
+        assert_eq!(live.text.as_deref(), Some("two **bold**"));
+        assert_eq!(live.card.as_deref(), Some("two bold"), "the card's words are parsed once");
+        assert_eq!(live.reply_key, Some(key), "the spoke mark moves with the file");
+        assert!(Rc::ptr_eq(&live, &cache.peek_of(&s).unwrap()), "laid once per read and words");
+        // The file lands the same block, dated at its end a moment before
+        // the words arrived: the file's read is the peek again, same text.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{}", dated("u2", "two **bold**", "2026-11-02T10:00:29.800Z")).unwrap();
+        f.flush().unwrap();
+        cache.expire();
+        let landed = cache.peek_of(&s).unwrap();
+        assert_eq!(landed.text.as_deref(), Some("two **bold**"));
+        assert_ne!(landed.reply_key, Some(key), "a new record, a new key");
+        assert!(Rc::ptr_eq(
+            &landed,
+            &cache.peek_for(SessionKind::Claude, &s.transcript_path.clone().unwrap()).unwrap()
+        ));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
     #[test]

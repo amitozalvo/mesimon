@@ -252,6 +252,20 @@ pub const MOD_LOAD_FAILED: &str = "ModLoadFailed";
 /// the machine's quota reading (`UsageState::merge_mod`).
 pub const MOD_USAGE: &str = "ModUsage";
 
+/// The event the mod reports a sentence the session's model wrote with
+/// (T-1111), as Claude Code shows it and before the transcript holds it:
+/// `{ turnId, messageId, text }`, relayed once per assistant message, at the
+/// `final` flush of its `MessageDisplay`. Claude Code (2.1.316) writes a
+/// message's text to the `.jsonl` only once the tool call after it has
+/// finished streaming, so a sentence the pane shows reaches a transcript
+/// reader minutes later on a long `Write`; the display hook fires as the
+/// text ends (measured: 82 s before the file, T-1111). The daemon keeps the
+/// words on the record (`SessionRecord::said`), and the board lays them over
+/// the transcript's until the file's copy is as new (`AgentPreview::with_said`).
+/// A subagent's message (`agent_id`) is not relayed; a private thinking block
+/// is not displayed, so it never rides here.
+pub const MOD_SAID: &str = "ModSaid";
+
 /// The event a refused structured write is reported with, its rule's tag
 /// (`RuleId::tag`) as the reason and `{ "file_path" }` as the body: `mesimon
 /// gate`'s frame on the hook set, and the mod's own on the mod road (T-577),

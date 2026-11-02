@@ -217,7 +217,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
             ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
-                let pk = app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?)?;
+                let pk = app.peek_cache.peek_of(s)?;
                 // The activity row is a claim about NOW: a parked, finished
                 // or waiting session's last tool call is history.
                 Some(if s.state == SessionState::Running || pk.activity.is_none() {

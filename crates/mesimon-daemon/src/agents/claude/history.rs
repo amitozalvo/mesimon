@@ -176,6 +176,10 @@ struct Tail {
     assistant_key: Option<u64>,
     /// The user's newest message, when it is newer than any reply.
     prompt: Option<String>,
+    /// When the record `assistant` or `prompt` came from was written, by
+    /// its own `timestamp` (T-1111): the date a sentence heard live is
+    /// measured against. A latch has none.
+    said_ms: Option<u64>,
     /// The `last-prompt` latch — a turn stale, so only ever a last resort.
     latch_prompt: Option<String>,
     activity: Option<AgentActivity>,
@@ -192,6 +196,7 @@ impl Tail {
             },
             activity: self.activity,
             reply_key: self.assistant_key,
+            said_ms: self.said_ms,
         }
     }
 }
@@ -229,6 +234,7 @@ fn walk(text: &str) -> Tail {
         // message means nothing has happened yet: it is thinking.
         if let Some(p) = user_prompt(&v) {
             tail.prompt = Some(p);
+            tail.said_ms = record_ms(&v);
             tail.activity.get_or_insert(AgentActivity::Thinking);
             return tail;
         }
@@ -244,6 +250,7 @@ fn walk(text: &str) -> Tail {
         if let Some(text) = assistant_text(&v) {
             tail.assistant = Some(text.to_string());
             tail.assistant_key = v.get("uuid").and_then(serde_json::Value::as_str).map(record_key);
+            tail.said_ms = record_ms(&v);
             return tail;
         }
     }
@@ -397,6 +404,8 @@ mod tests {
         assert_eq!(pk.text.as_deref(), Some("Committed as d5d114e."));
         assert!(pk.reply_key.is_some(), "a closing reply is a reply, and has a key");
         assert_eq!(pk.activity, None);
+        // The reply's own date rides along (T-1111): what live words are dated against.
+        assert_eq!(pk.said_ms, mesimon_core::adopt::iso_ms("2026-09-11T11:39:00.203Z"));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

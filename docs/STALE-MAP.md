@@ -40621,3 +40621,58 @@ stray-key test each match the direction atom; a second family would add a twin t
 them for the same move. **Given up:** Shift+arrow off a nudge (ticket page, diff, lists) used to
 act as the bare arrow and is now inert, as Alt+arrow already was there.
 Tests: `keys::shift_arrows_are_the_nudge_atom`, `app::shift_arrows_move_the_card`.
+## An agent's sentence shows before its tool call finishes (T-1111, 2026-11-02)
+
+Filed from T-1109: Claude Code 2.1.316 appends an assistant message's `thinking` and `text`
+records only once the tool call after them has finished streaming, dated at the block's end, so
+a sentence the pane showed at 23:29 reached the `.jsonl`, and the card, at ~23:33 with a 55 KB
+`Write`. Only the mod road has anything earlier.
+
+**Measured (Opus 5.5, `claude -p --plugin-dir`, 2.1.316).** A probe hooking `turn.step` and
+`classic.MessageDisplay` on a turn that writes one sentence and then a 400-line `Write`: the
+`text` chunks and the one `MessageDisplay` flush (`final: true`, the sentence whole, verbatim)
+came as the text ended, at +48.6 s from the step's start (a 48 s thinking block came first); the
+`Write`'s `input` chunks streamed until +131 s; the file grew with the sentence at +131 s. The
+first message's thinking (private, `thinking` kind in its signature) was not in the display
+flush; `MessageDisplay` fires per message, `message_id` stable, `index` per flush. Then the real
+mod on the same engine with a logging stand-in for `mesimon`: `ModSaid` left the mod 41 ms after
+the text record's own date and 82.4 s before the file held it, text identical to the record's;
+the closing sentence's `ModSaid` led the file by 185 ms.
+
+**Shipped.** The mod hooks `classic.MessageDisplay`, joins a message's flushes (whole lines
+each, so a joint keeps one line break) and relays `ModSaid { turnId, messageId, text }` once at
+`final`, main loop only (`agent_id` skipped). The daemon (`bridge::on_mod_said`) caps the text at
+16 KiB, trims it, drops a subagent's or an empty one, keeps it on `SessionRecord::said` (`text`,
+`at_ms` from the daemon's clock; `#[serde(default)]`, persisted, never cleared) with a feed
+line, and broadcasts. One rule lays it over the transcript, `AgentPreview::with_said`: the live
+words show unless the file's words are the same text (trimmed) or the file's record is dated at
+or after `at_ms - 2 s` (the text block itself is dated at its end, a relay before the report; a
+later reply or prompt is newer news). `AgentPreview::said_ms` carries the record's `timestamp`
+out of the walk for that (a latch, Codex: none). The TUI reads sessions through
+`PeekCache::peek_of` (the card's peek, the ticket page's PREVIEW, search, `^k`), cached per
+(file read, words); the phone's `control_words` lays the same rule over its cached read. The
+step and `reply_key` stay the file's: a tool call is the file's to report, and the spoke mark and
+a banner's quote move when the file does, so no second "spoke" when the file's copy lands, and
+an equal text is equal cells — the handover draws nothing.
+
+**Refuted: `turn.step`.** Its `text` chunks arrive as early, but a narration note (the common
+Claude 5 mid-turn shape, T-604) streams as `thinking` chunks that carry index and text alone,
+indistinguishable from private reasoning until the signature lands, and `$.session.messages()`
+holds text blocks only. `MessageDisplay` is what the person sees, which is what `assistant_text`
+will read from the file. **Not measured:** a narration note in `MessageDisplay` — two `-p` runs
+on Opus 5.5 produced text blocks and private thinking, never a narration block (that beta rides
+the interactive CLI); its text is displayed as prose, so it is expected in the flush, and if it
+is not, that message keeps today's lag and nothing else changes. **Not built:** a hook-set
+`MessageDisplay` entry for the classic road (the verbose tier: a `mesimon hook` process per
+flush, a long answer's dozens; the mod joins flushes in-process, a hook set cannot), the native
+road (the security default passes every `classic.*` event over a person's mod), the live tool
+step (the `tool_use` record waits the same way; the name is in the `tool` chunk but the label
+needs its arguments). Nothing here waits on the relay: the display hook returns `next(e)` at
+once, the relay is a fire-and-forget `mesimon hook`.
+
+Tests: the mod's `register.test.ts` (one relay at `final`, joined whole; a subagent's and an
+empty flush say nothing), `hook_settings` twin test names `ModSaid`, `agents::tests::
+live_words_lay_over_the_file_until_it_catches_up`, `history` reads the date, `peek::tests::
+live_words_lay_over_the_card_until_the_file_has_them`, `mod_bridge_e2e::
+a_sentence_the_mod_heard_is_on_the_record_before_the_transcript_has_it`. Full workspace suite
+once (a new hook event is a wire change), `mod_plugin` on this machine's 2.1.316.

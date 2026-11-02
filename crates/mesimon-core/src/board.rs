@@ -581,6 +581,24 @@ pub struct SessionRecord {
     /// a restart's machine starts with none, and the record is reset with it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub compacting: bool,
+    /// The newest sentence this seat's model wrote, as the mod heard Claude
+    /// Code display it (T-1111, `road::MOD_SAID`): on the mod road a text
+    /// block the pane already shows reaches the transcript only once the
+    /// tool call after it has finished, so the board shows these words
+    /// until the file's own copy is as new (`AgentPreview::with_said`,
+    /// which every preview reader applies). Set by the daemon from the mod's
+    /// report, capped, never cleared: the file's words take over by date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<Said>,
+}
+
+/// Words a session's model wrote, heard live (T-1111): the text and the
+/// daemon's clock when the mod's report arrived, which the transcript's
+/// record dates are measured against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Said {
+    pub text: String,
+    pub at_ms: u64,
 }
 
 /// What a launch road meant to submit and did not (T-570). The ticket's
@@ -730,6 +748,7 @@ impl SessionRecord {
             hook_wait: None,
             unprompted: false,
             compacting: false,
+            said: None,
         }
     }
 

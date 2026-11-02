@@ -3,7 +3,7 @@
 // `process.spawn`). What the live Claude Code does is measured in STALE-MAP
 // (T-573, T-574); these hold the hooks' shapes.
 import { expect, mock, test } from 'claude-code/testing'
-import { rowNotified } from './register'
+import { joinFlush, rowNotified } from './register'
 
 const ENV = {
   MESIMON_MOD_BIN: '/bin/mesimon',
@@ -1322,4 +1322,45 @@ test('native: tool.check is not hooked: the verdict beneath passes through and n
   await settle()
   expect(r.decision).toBe('ask')
   expect(eventsOf(runs)).toEqual([])
+})
+
+// ---- The words (T-1111).
+
+test('a displayed message goes up as ModSaid once, at its final flush, whole', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('classic.MessageDisplay', () => ({}) as any)
+  const flush = (index: number, final: boolean, delta: string) =>
+    $.classic.MessageDisplay({ turn_id: 't-1', message_id: 'm-1', index, final, delta } as any)
+  await flush(0, false, 'Understood: the gate stays.\n')
+  await flush(1, false, 'Building it now.')
+  await settle()
+  expect(eventsOf(runs)).toEqual([])
+  await flush(2, true, 'One test first')
+  await settle()
+  expect(eventsOf(runs)).toEqual(['ModSaid'])
+  expect(runs[0].argv.slice(7)).toEqual(['ModSaid', '--road', 'mod'])
+  // Each flush before the last is whole lines, so the next begins a line.
+  expect(bodyOf(runs[0])).toEqual({
+    turnId: 't-1',
+    messageId: 'm-1',
+    text: 'Understood: the gate stays.\nBuilding it now.\nOne test first',
+  })
+})
+
+test('a subagent\'s display, and an empty final flush, say nothing', async ($, on) => {
+  mock.env(on, ENV)
+  const runs = recordRuns(on)
+  on('classic.MessageDisplay', () => ({}) as any)
+  await $.classic.MessageDisplay({ turn_id: 't-1', message_id: 'm-2', agent_id: 'a7', index: 0, final: true, delta: 'the subagent' } as any)
+  await $.classic.MessageDisplay({ turn_id: 't-1', message_id: 'm-3', index: 0, final: true, delta: '  \n' } as any)
+  await settle()
+  expect(eventsOf(runs)).toEqual([])
+})
+
+test('joinFlush keeps one line break between flushes', () => {
+  expect(joinFlush('', 'a')).toBe('a')
+  expect(joinFlush('a\n', 'b')).toBe('a\nb')
+  expect(joinFlush('a', 'b')).toBe('a\nb')
+  expect(joinFlush('a', '')).toBe('a')
 })

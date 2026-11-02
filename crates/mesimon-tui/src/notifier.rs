@@ -1256,6 +1256,7 @@ mod tests {
             text: Some("Codex completed\nthe change".into()),
             activity: None,
             reply_key: Some(7),
+            said_ms: None,
         };
         std::fs::write(&path, serde_json::to_vec(&preview).unwrap()).unwrap();
         let rig = rig(on());

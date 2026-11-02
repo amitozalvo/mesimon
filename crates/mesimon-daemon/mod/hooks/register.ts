@@ -47,6 +47,12 @@
 //    read whole; a read that fails is tried again by the next event, and the
 //    one that succeeds reports the failures before it as `ModLoadFailed`
 //    (T-594).
+//  - WORDS (T-1111): a sentence the session's model wrote, as Claude Code
+//    displays it, goes up as `ModSaid` once per assistant message, at the
+//    last flush of its `classic.MessageDisplay`: the transcript gets the
+//    text only once the tool call after it has finished, and the board
+//    shows these words until the file's copy is as new. The main loop's
+//    messages alone; a subagent's are not relayed.
 //  - NATIVE (T-657): under `MESIMON_MOD_NATIVE=1` the classic relays go
 //    silent and the same frames, by the hook set's names and shapes, are
 //    built from the engine's own events (`session.*`, `turn.*`, `tool.call`,
@@ -218,6 +224,10 @@ const ledger = new Map<string, Row>()
 const spawned = new Map<string, string>()
 const boardAnswered = new Set<string>()
 let typedCompact: { closed: boolean } | undefined
+// The words of each assistant message being displayed (T-1111), by its
+// `message_id`, until its last flush sends them up.
+const shown = new Map<string, string>()
+const SHOWN_MAX = 16
 
 /**
  * The four variables, read at once, and the native road's switch beside
@@ -630,6 +640,21 @@ export function compactBody(event: string, trigger: unknown, agentId?: string): 
   const body: Record<string, unknown> = { hook_event_name: event, trigger }
   if (typeof agentId === 'string') body.agent_id = agentId
   return body
+}
+
+/**
+ * The `ModSaid` report's body (T-1111): the turn, the message and its words
+ * as displayed. A flush is whole lines, the last one may end mid-line, and
+ * the joint between two keeps a line break where the first left none.
+ */
+export function saidBody(e: any, text: string): Record<string, unknown> {
+  return { turnId: e?.turn_id, messageId: e?.message_id, text }
+}
+
+/** `text` with the next flush's `delta` after it. */
+export function joinFlush(text: string, delta: string): string {
+  if (!text || !delta || text.endsWith('\n')) return text + delta
+  return `${text}\n${delta}`
 }
 
 // ---- The task ledger (T-657): the one adapter the native road keeps, where
@@ -1319,6 +1344,28 @@ export const register: Register = on => {
     return theirs
   })
   on('classic.PermissionDenied', relaySingle)
+  // ---- The words (T-1111). `MessageDisplay` is the verbose tier the hook
+  // set never registers (a process per flush); here one relay carries a
+  // whole message's displayed text at its `final` flush, which comes as
+  // the text ends and before the tool call after it is even streamed
+  // (measured on 2.1.316: 82 s before the transcript held the sentence).
+  // What is displayed is what the transcript will call the agent's words
+  // (a text block, a progress note); private thinking is not displayed.
+  // Observed only: the event passes on as it came.
+  on('classic.MessageDisplay', async ($, e, next) => {
+    const { message_id: id, agent_id: agent, delta, final } = e as any
+    if (typeof id === 'string' && typeof agent !== 'string') {
+      const text = joinFlush(shown.get(id) ?? '', typeof delta === 'string' ? delta : '')
+      if (final === true) {
+        shown.delete(id)
+        if (text.trim() !== '') void relay($, 'ModSaid', undefined, saidBody(e, text), false)
+      } else {
+        shown.set(id, text)
+        if (shown.size > SHOWN_MAX) shown.delete(shown.keys().next().value as string)
+      }
+    }
+    return next(e)
+  })
   on('classic.Notification', relaySingle)
   on('classic.Elicitation', relaySingle)
   on('classic.ElicitationResult', relaySingle)

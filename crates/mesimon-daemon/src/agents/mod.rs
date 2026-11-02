@@ -15,6 +15,40 @@ pub struct AgentPreview {
     pub text: Option<String>,
     pub activity: Option<AgentActivity>,
     pub reply_key: Option<u64>,
+    /// When the record `text` came from was written, by its own `timestamp`
+    /// (T-1111): what a sentence heard live is dated against. `None` for a
+    /// record without one, a latch, or a provider that keeps no dates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said_ms: Option<u64>,
+}
+
+/// A record dated this close before the live words is the block they were
+/// heard from: Claude Code dates a record at its block's end, and the mod's
+/// report of the same block arrives a relay later.
+const SAID_SAME_BLOCK_MS: u64 = 2_000;
+
+impl AgentPreview {
+    /// The transcript's words with a sentence the mod heard live laid over
+    /// them (T-1111, `SessionRecord::said`): the live words show while the
+    /// file has nothing as new, and the file's copy takes over once it
+    /// holds the same text or a record dated at or after the words — the
+    /// text block itself, dated at its end a relay before the words
+    /// arrived, or anything later: a newer reply, a newer prompt. Equal
+    /// text means equal cells on the card, so the handover draws nothing.
+    /// The step and the reply key stay the file's: a tool call is the file's
+    /// to report, and the spoke mark moves when the file does.
+    pub fn with_said(mut self, said: Option<&mesimon_core::board::Said>) -> Self {
+        let Some(said) = said else { return self };
+        let caught_up = match (&self.text, self.said_ms) {
+            (Some(text), _) if text.trim() == said.text.trim() => true,
+            (Some(_), Some(ms)) => ms.saturating_add(SAID_SAME_BLOCK_MS) >= said.at_ms,
+            _ => false,
+        };
+        if !caught_up {
+            self.text = Some(said.text.clone());
+        }
+        self
+    }
 }
 
 /// A preview and where its read stood in the file, so the next read of a
@@ -354,6 +388,53 @@ pub trait AgentAdapter {
 mod tests {
     use super::*;
     use mesimon_core::board::SessionState;
+
+    /// T-1111: the mod's live words show until the transcript is as new,
+    /// by the one rule the card and the phone share.
+    #[test]
+    fn live_words_lay_over_the_file_until_it_catches_up() {
+        use mesimon_core::board::Said;
+        let said = Said { text: "Building it now.".into(), at_ms: 10_000 };
+        let file = |text: Option<&str>, ms: Option<u64>| AgentPreview {
+            text: text.map(str::to_string),
+            activity: Some(AgentActivity::Tool("Read x".into())),
+            reply_key: Some(7),
+            said_ms: ms,
+        };
+        // Nothing said yet, or an older reply, or the turn's own prompt:
+        // the live words, over the file's step and key.
+        for older in [
+            file(None, None),
+            file(Some("done before"), Some(1_000)),
+            file(Some("> go"), Some(2_000)),
+        ] {
+            let laid = older.clone().with_said(Some(&said));
+            assert_eq!(laid.text.as_deref(), Some("Building it now."), "{older:?}");
+            assert_eq!(laid.activity, older.activity);
+            assert_eq!(laid.reply_key, Some(7));
+        }
+        // The file holds the same text (dated at the block's end, before the
+        // report arrived): the file, unchanged, so the handover draws nothing.
+        let same = file(Some("Building it now.\n"), Some(9_800));
+        assert_eq!(same.clone().with_said(Some(&said)), same);
+        // A record dated inside the block's own window is that block in
+        // another spelling; one dated after the words is newer news.
+        for caught in [
+            file(Some("Building it now"), Some(8_500)),
+            file(Some("Done."), Some(12_000)),
+            file(Some("> next"), Some(10_001)),
+        ] {
+            assert_eq!(caught.clone().with_said(Some(&said)), caught, "{caught:?}");
+        }
+        // An undated reply that differs is older: dates are what Claude
+        // Code writes, and the live words came after whatever had none.
+        assert_eq!(
+            file(Some("earlier"), None).with_said(Some(&said)).text.as_deref(),
+            Some("Building it now.")
+        );
+        // No words: the file.
+        assert_eq!(file(Some("x"), Some(1)).with_said(None), file(Some("x"), Some(1)));
+    }
 
     #[test]
     fn capabilities_and_conversation_identity_follow_the_session_provider() {

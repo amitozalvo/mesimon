@@ -405,8 +405,9 @@ struct Words {
     len: u64,
     mtime_ms: u64,
     doing: Option<String>,
-    said: Option<String>,
-    /// The read both came from; the next one resumes there (T-755).
+    /// The read it came from; the next one resumes there (T-755), and the
+    /// reply's line is read off it at each ask, under the words the mod
+    /// heard live (T-1111), which move without the file.
     read: crate::agents::PreviewRead,
 }
 impl Control {
@@ -4320,14 +4321,14 @@ impl Daemon {
                 Some(crate::agents::AgentActivity::Thinking) => Some("thinking".into()),
                 None => None,
             };
-            let said = preview.text.as_deref().and_then(api::reply_line);
-            words.insert(path.to_string(), Words { len: meta.len(), mtime_ms, doing, said, read });
+            words.insert(path.to_string(), Words { len: meta.len(), mtime_ms, doing, read });
         }
         let w = &words[path];
         // A step is only news while the turn runs; a finished turn's
         // transcript still ends in the last tool it ran.
         let working = matches!(s.state, SessionState::Running);
-        (w.doing.clone().filter(|_| working), w.said.clone())
+        let said = w.read.preview.clone().with_said(s.said.as_ref()).text;
+        (w.doing.clone().filter(|_| working), said.as_deref().and_then(api::reply_line))
     }
     fn control_target(&self, ticket: &str, session: &str) -> Option<uuid::Uuid> {
         let ticket = ulid::Ulid::from_string(ticket).ok()?;

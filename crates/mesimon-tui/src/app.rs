@@ -15465,21 +15465,17 @@ impl App {
     /// spoke mark and Enter all pick) while a pane lives, and the newest
     /// claude record it has otherwise, because what an agent said last
     /// outlives its pane.
-    fn latest_transcript(&self, ticket: ulid::Ulid) -> Option<(SessionKind, &str)> {
+    fn latest_transcript(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::board::SessionRecord> {
         let named =
             |s: &&mesimon_core::board::SessionRecord| crate::peek::preview_path(s).is_some();
-        self.board
-            .pane_target(ticket)
-            .filter(named)
-            .or_else(|| {
-                self.board
-                    .sessions
-                    .iter()
-                    .filter(|s| s.ticket == ticket && s.kind.is_agent())
-                    .filter(named)
-                    .max_by_key(|s| s.state_changed_at.unwrap_or(0))
-            })
-            .and_then(|s| Some((s.kind, crate::peek::preview_path(s)?)))
+        self.board.pane_target(ticket).filter(named).or_else(|| {
+            self.board
+                .sessions
+                .iter()
+                .filter(|s| s.ticket == ticket && s.kind.is_agent())
+                .filter(named)
+                .max_by_key(|s| s.state_changed_at.unwrap_or(0))
+        })
     }
 
     /// Is there anywhere `^k` could look — a description, or a transcript?
@@ -15497,8 +15493,7 @@ impl App {
     /// `None` for a ticket with no claude, no transcript, or an unreadable
     /// one.
     fn latest_words(&self, ticket: ulid::Ulid) -> Option<String> {
-        let (kind, path) = self.latest_transcript(ticket)?;
-        self.peek_cache.peek_for(kind, path)?.text.clone()
+        self.peek_cache.peek_of(self.latest_transcript(ticket)?)?.text.clone()
     }
 
     /// Resolve every link in one body and append the ones that lead

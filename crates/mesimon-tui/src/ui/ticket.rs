@@ -865,7 +865,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }),
             _ => None,
         };
-        let peek = sel.and_then(|s| app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?));
+        let peek = sel.and_then(|s| app.peek_cache.peek_of(s));
         // A mid-turn agent keeps composing past whatever the preview shows,
         // so the zone says so (bash panes work too, but have no transcript
         // for the line to qualify — Claude only).

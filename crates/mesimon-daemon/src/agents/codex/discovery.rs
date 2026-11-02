@@ -242,6 +242,7 @@ pub fn read_preview(path: &Path) -> Option<super::super::AgentPreview> {
         text: parsed.assistant,
         activity: None,
         reply_key: parsed.key,
+        said_ms: None,
     })
 }
 
