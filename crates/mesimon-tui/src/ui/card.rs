@@ -1232,13 +1232,22 @@ pub(super) fn render(
         // A compaction in flight (T-894) is the step running now, and the
         // peek's last call is history until it ends; the row says so in
         // the step's own place, pulse and all.
+        // A `!` command at an idle prompt (T-1106) is the step running now
+        // too: the transcript holds nothing of it until it ends, so the row
+        // reads the command off the pane's process, `! sleep 30`, the way
+        // the reply above will read it once it lands (T-1103).
         let compacting = sessions.iter().any(|s| glyphs::is_compacting(s));
+        let bang = sessions.iter().find_map(|s| glyphs::bash_mode_command(s)).map(|cmd| {
+            let line = cmd.lines().find(|l| !l.trim().is_empty()).unwrap_or_default();
+            format!("! {}", mesimon_core::text::scrub_cells(line.trim(), false))
+        });
         let act = peek.and_then(|pk| pk.activity.as_ref());
-        if compacting || act.is_some() {
-            let word = match act {
+        if compacting || bang.is_some() || act.is_some() {
+            let word = match (&bang, act) {
                 _ if compacting => glyphs::COMPACTING_WORDS,
-                Some(crate::peek::Doing::Tool(t)) => t.as_str(),
-                Some(crate::peek::Doing::Thinking) | None => "thinking",
+                (Some(bang), _) => bang.as_str(),
+                (None, Some(crate::peek::Doing::Tool(t))) => t.as_str(),
+                (None, Some(crate::peek::Doing::Thinking) | None) => "thinking",
             };
             let row = crate::text::truncate(word, t_cells.saturating_sub(4));
             let mark = if glyphs::pulse_lit(ctx.spin) { quiet } else { faint };

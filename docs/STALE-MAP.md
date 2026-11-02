@@ -40564,3 +40564,32 @@ Tab walks forward, Shift+Tab back, and `directional` maps BackTab and `N` to
 in the dialog. One item instead of two leaves the footer more room. The keymap test pins
 all four keys, the free `l`/`h` and the hint; the transcript link tests in `ui/tests.rs`
 press Tab and Shift+Tab. No golden showed the transcript footer, so none changed.
+
+## A running `!` command is the card's step row (T-1106, 2026-11-02, "Card shows the `!` command while it runs")
+
+While a `!` command ran, the card showed the previous reply, a spinner and the age (T-1100): Claude
+Code writes the `<bash-input>` record only when the command ends (T-707, T-1103), so the transcript
+reader has nothing. The pane's process table was the only live fact, and the foreground it gave was
+a name (`sleep`, from `ps comm=`).
+
+**Built.** `process_rows` reads `ps axww -o pid=,ppid=,etime=,args=` (whole command lines, as the
+hook rows already did); `ProcRow.comm` became `args`, with `ProcRow::name()` taking argv[0]'s
+basename for the shell match. `bash_mode_foreground` now names the command by the person's words:
+Claude Code 2.1.316 runs a `!` (and its own Bash tool) as `/bin/zsh -c source <snapshot> && <prelude>
+&& eval '<words>' < /dev/null && pwd -P >| …`, measured off a live session's own shell, and
+`evaluated_words` unquotes the shell word after the first ` eval ` (`'…'`, `"…"` with its escapes,
+`\x`, ending at a blank or an unquoted operator). Any other shape, or a quote `ps` cut short, falls
+back to the old name. The card's step-running-now row (`ui/card.rs`, where a tool or `compacting
+context` goes) reads `● ! sleep 30` from `glyphs::bash_mode_command` (an agent, idle, with a pane and
+a foreground): first line only, `scrub_cells`, cut to the card. The rail row and anything else that
+draws `foreground` now read `sleep 30` for an idle Claude too; a shell's foreground (T-366) is
+unchanged. The words stay in memory and on the person's snapshot; the crown's `get_ticket` reads
+only `working`, and Mesophon projects shells' foregrounds alone.
+
+**Refuted: the command's own argv** (`sleep 30` off the shell's child): a pipeline or `cd x && make`
+shows its first process only. **Refuted: a second probe.** The shell's line already holds the words.
+
+Tests: `board::bash_mode_tests::a_claude_shell_names_the_command_by_the_persons_words` (quotes,
+operators, a cut line, an unknown shape), `golden_bash_mode_command_board_120` (golden
+`board_bash_mode_120x30`, plus a long two-line command cut to one row), and `bash_mode_e2e`, whose
+stub now spawns the shell in Claude's shape and asserts `sleep 60` on the snapshot, on both roads.

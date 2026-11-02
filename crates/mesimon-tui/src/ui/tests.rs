@@ -832,6 +832,37 @@ fn golden_ticket_compacting_120() {
     golden("ticket_compacting_120x30", &lines);
 }
 
+/// A `!` command at an idle seat's prompt (T-1106): the transcript holds
+/// nothing of it until it ends, so the step row reads it off the pane's
+/// process as the person typed it, and the card spins (T-707). A command
+/// wider than the card is cut, and only its first line is drawn.
+#[test]
+fn golden_bash_mode_command_board_120() {
+    let mut b = fixture(false);
+    let mut s = session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::EndTurn },
+    );
+    s.foreground = Some("sleep 30".into());
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    app.cursor_row = Some(1);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("● ! sleep 30")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("✓ Keymap")), "the done mark gives way: {lines:?}");
+    golden("board_bash_mode_120x30", &lines);
+
+    let long = "cargo test --workspace --all-targets -- --nocapture 2>&1 | tee /tmp/out\nexit";
+    app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(21)).unwrap().foreground =
+        Some(long.into());
+    let lines = render(&app, 120, 30);
+    let row = lines.iter().find(|l| l.contains("● ! cargo test")).expect("the step row");
+    assert!(!row.contains("tee") && !row.contains("exit"), "cut to the card, one line: {row}");
+}
+
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));

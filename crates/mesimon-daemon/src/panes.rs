@@ -192,10 +192,12 @@ pub fn take(backend: &TmuxBackend, repo: &Path, q: Query, gen: u64, at: u64) -> 
     }
 }
 
-/// The process table, as `bash_mode_foreground` reads it (T-707).
+/// The process table, as `bash_mode_foreground` reads it (T-707): whole
+/// command lines, since a `!` shell's carries the person's words (T-1106).
+/// Like the hook rows' argv, they stay in memory and never reach the feed.
 pub fn process_rows() -> Vec<ProcRow> {
     let Ok(out) =
-        std::process::Command::new("ps").args(["axo", "pid=,ppid=,etime=,comm="]).output()
+        std::process::Command::new("ps").args(["axww", "-o", "pid=,ppid=,etime=,args="]).output()
     else {
         return Vec::new();
     };
@@ -230,7 +232,7 @@ fn hook_process_rows(facts: &[PaneFacts]) -> Option<Vec<HookProcess>> {
             Err(Unread::Gone) => continue,
             Err(Unread::Failed) => return None,
         };
-        rows.push(HookProcess { pid: row.pid, ppid: row.ppid, pgid, born_ms, argv: row.comm });
+        rows.push(HookProcess { pid: row.pid, ppid: row.ppid, pgid, born_ms, argv: row.args });
     }
     Some(rows)
 }

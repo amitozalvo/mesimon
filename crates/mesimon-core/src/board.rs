@@ -881,16 +881,25 @@ pub fn foreground_of(current_command: &str, shell: &str) -> Option<String> {
     Some(cmd.to_string())
 }
 
-/// One row of the process table, as `ps -axo pid=,ppid=,etime=,comm=`
-/// prints it: the pid, its parent, how long it has run and its command name
-/// (a path on macOS, a bare name on Linux; `bash_mode_foreground` takes the
-/// basename of either).
+/// One row of the process table, as `ps -axww -o pid=,ppid=,etime=,args=`
+/// prints it: the pid, its parent, how long it has run and its command line
+/// (argv joined by spaces; argv[0] a path or a bare name).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcRow {
     pub pid: i32,
     pub ppid: i32,
     pub age_secs: u64,
-    pub comm: String,
+    pub args: String,
+}
+
+impl ProcRow {
+    /// The process's name: argv[0]'s basename, a login shell's `-` dropped.
+    /// A path holding a space names its last word, which is never a shell.
+    pub fn name(&self) -> &str {
+        let s = self.args.split_whitespace().next().unwrap_or_default();
+        let s = s.rsplit('/').next().unwrap_or(s);
+        s.strip_prefix('-').unwrap_or(s)
+    }
 }
 
 /// `ps`'s `etime` — `[[dd-]hh:]mm:ss` on BSD and procps alike — as seconds.
@@ -913,9 +922,8 @@ pub fn parse_etime(s: &str) -> Option<u64> {
     Some(days * 86_400 + secs)
 }
 
-/// `ps -axo pid=,ppid=,etime=,comm=` output into rows; a line that does not
-/// parse is skipped. `comm` is the last field, taken whole: a macOS path may
-/// hold a space.
+/// `ps -o pid=,ppid=,etime=,args=` output into rows; a line that does not
+/// parse is skipped. `args` is the last field, taken whole.
 pub fn parse_ps_rows(out: &str) -> Vec<ProcRow> {
     out.lines()
         .filter_map(|l| {
@@ -923,8 +931,8 @@ pub fn parse_ps_rows(out: &str) -> Vec<ProcRow> {
             let pid = f.next()?.parse().ok()?;
             let ppid = f.next()?.parse().ok()?;
             let age_secs = parse_etime(f.next()?)?;
-            let comm = f.collect::<Vec<_>>().join(" ");
-            (!comm.is_empty()).then_some(ProcRow { pid, ppid, age_secs, comm })
+            let args = f.collect::<Vec<_>>().join(" ");
+            (!args.is_empty()).then_some(ProcRow { pid, ppid, age_secs, args })
         })
         .collect()
 }
@@ -940,30 +948,72 @@ pub fn parse_ps_rows(out: &str) -> Vec<ProcRow> {
 /// `sh -c`, a Monitor watch, a background Bash task the last `Stop` reported —
 /// and every one of them is older than the idle spell the record is in,
 /// while a `!` command is typed into it. So only a shell younger than
-/// `spell_secs` counts, the youngest when several, and the foreground is
-/// named by that shell's own first child (`cargo` for `! cargo test`), or by
-/// the shell while it has none.
+/// `spell_secs` counts, the youngest when several.
+///
+/// The foreground is the person's words as typed (T-1106): Claude Code runs
+/// them as `<shell> -c source <snapshot> && … && eval '<words>' …`, so the
+/// shell's own command line carries them (`sleep 30`). A line in any other
+/// shape names the command by the shell's first child (`cargo` for
+/// `! cargo test`), or by the shell while it has none.
 pub fn bash_mode_foreground(pane_pid: i32, spell_secs: u64, rows: &[ProcRow]) -> Option<String> {
-    fn name(comm: &str) -> &str {
-        let s = comm.trim();
-        let s = s.rsplit('/').next().unwrap_or(s);
-        s.strip_prefix('-').unwrap_or(s)
-    }
     let shell = rows
         .iter()
-        .filter(|r| r.ppid == pane_pid && SHELL_NAMES.contains(&name(&r.comm)))
+        .filter(|r| r.ppid == pane_pid && SHELL_NAMES.contains(&r.name()))
         .filter(|r| r.age_secs < spell_secs)
         .min_by_key(|r| (r.age_secs, r.pid))?;
+    if let Some(words) = evaluated_words(&shell.args) {
+        return Some(words);
+    }
     let child = rows.iter().filter(|r| r.ppid == shell.pid).min_by_key(|r| r.pid);
-    Some(name(&child.unwrap_or(shell).comm).to_string())
+    Some(child.unwrap_or(shell).name().to_string())
+}
+
+/// The words a Claude Code shell line `eval`s: the shell word after the
+/// first ` eval ` (Claude's own prelude before it holds none), unquoted as
+/// the shell would — `'…'` literal, `"…"` with its backslash escapes, a bare
+/// `\x` as `x` — up to the first unquoted blank or operator. `None` when there is no
+/// such word, it is empty, or a quote never closes (a line `ps` cut short).
+fn evaluated_words(args: &str) -> Option<String> {
+    let (_, rest) = args.split_once(" eval ")?;
+    let mut words = String::new();
+    let mut chars = rest.trim_start().chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => words.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => words.push(c),
+                        '\n' => {}
+                        c => {
+                            words.push('\\');
+                            words.push(c);
+                        }
+                    },
+                    c => words.push(c),
+                }
+            },
+            '\\' => words.push(chars.next()?),
+            c if c.is_whitespace() || ";&|<>()".contains(c) => break,
+            c => words.push(c),
+        }
+    }
+    let words = words.trim();
+    (!words.is_empty()).then(|| words.to_string())
 }
 
 #[cfg(test)]
 mod bash_mode_tests {
     use super::{bash_mode_foreground, parse_etime, parse_ps_rows, ProcRow};
 
-    fn row(pid: i32, ppid: i32, age_secs: u64, comm: &str) -> ProcRow {
-        ProcRow { pid, ppid, age_secs, comm: comm.into() }
+    fn row(pid: i32, ppid: i32, age_secs: u64, args: &str) -> ProcRow {
+        ProcRow { pid, ppid, age_secs, args: args.into() }
     }
 
     #[test]
@@ -1024,6 +1074,54 @@ mod bash_mode_tests {
         // a command either.
         let hook = [row(33759, 100, 600, "claude"), row(40000, 33759, 1, "mesimon")];
         assert_eq!(bash_mode_foreground(33759, 60, &hook), None);
+    }
+
+    /// Claude Code 2.1.316's shell line, measured off a live session's own
+    /// shell child (T-1106): the snapshot, the prelude, then the words.
+    fn claude_shell(words: &str) -> String {
+        format!(
+            "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1-a.sh 2>/dev/null \
+             || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && {{ \\builtin \
+             unalias -- 'which'; \\builtin unset -f -- 'which'; }} >/dev/null 2>&1 || true && eval \
+             {words} < /dev/null && pwd -P >| /tmp/claude-f2be-cwd"
+        )
+    }
+
+    #[test]
+    fn a_claude_shell_names_the_command_by_the_persons_words() {
+        let at = |words: &str| {
+            let rows = [
+                row(1, 0, 600, "claude"),
+                row(2, 1, 4, &claude_shell(words)),
+                row(3, 2, 4, "sleep 30"),
+            ];
+            bash_mode_foreground(1, 60, &rows)
+        };
+        assert_eq!(at("'sleep 30'").as_deref(), Some("sleep 30"));
+        // A quote in the words: the shell's `'\''` and `"…"` spellings.
+        assert_eq!(
+            at(r#"'echo '\''hi'\'' | tr a-z A-Z'"#).as_deref(),
+            Some("echo 'hi' | tr a-z A-Z")
+        );
+        assert_eq!(at(r#""say \"\$HOME\" \x""#).as_deref(), Some(r#"say "$HOME" \x"#));
+        // The person's own `eval` and `&&` are words like any other.
+        assert_eq!(at("'eval ls && eval pwd'").as_deref(), Some("eval ls && eval pwd"));
+        // The word ends at an unquoted operator, as the shell's does.
+        assert_eq!(at("'sleep 30';").as_deref(), Some("sleep 30"));
+        assert_eq!(at("'sleep 30'&&").as_deref(), Some("sleep 30"));
+        // A line `ps` cut short, or a shape this reader does not know: the
+        // child's name, as before.
+        assert_eq!(at("'sleep 3").as_deref(), Some("sleep"));
+        assert_eq!(at("''").as_deref(), Some("sleep"));
+        let rows = [row(1, 0, 600, "claude"), row(2, 1, 4, "/bin/zsh -c sleep 30")];
+        assert_eq!(bash_mode_foreground(1, 60, &rows).as_deref(), Some("zsh"));
+    }
+
+    #[test]
+    fn a_name_is_argv0s_basename() {
+        assert_eq!(row(1, 0, 1, "/bin/zsh -c x").name(), "zsh");
+        assert_eq!(row(1, 0, 1, "-zsh").name(), "zsh");
+        assert_eq!(row(1, 0, 1, "sleep 30").name(), "sleep");
     }
 
     #[test]

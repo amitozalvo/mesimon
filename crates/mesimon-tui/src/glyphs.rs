@@ -531,6 +531,14 @@ pub(crate) fn is_working(rec: &SessionRecord) -> bool {
     }
 }
 
+/// The `!` command an idle agent's pane is running (T-707), as the person
+/// typed it (T-1106): the daemon fills `foreground` on an idle Claude record
+/// only for that, and a shell's foreground rides a `Running` state instead.
+pub(crate) fn bash_mode_command(rec: &SessionRecord) -> Option<&str> {
+    let idle = matches!(rec.state, SessionState::Idle { .. });
+    (rec.kind.is_agent() && idle && rec.state.has_pane()).then_some(rec.foreground.as_deref())?
+}
+
 /// Is this session still in its launch window — the pane opening, or the
 /// composed prompt typed and not yet accepted?
 ///
