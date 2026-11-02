@@ -7460,26 +7460,18 @@ static TRANSCRIPT: &[Binding] = &[
         prio: 10,
     },
     Binding {
-        keys: &[Key::Char('l'), Key::Char('n')],
+        // Tab walks the links forward and `shift+tab` back (T-1112), one
+        // binding so the footer spends one item on it; `n`/`N` are the same
+        // walk, unshown (`directional` tells the ways apart).
+        keys: &[Key::Tab, Key::BackTab, Key::Char('n'), Key::Char('N')],
         verb: Verb::TranscriptLinkNext,
-        show: "ln",
-        hint: |_| "next link",
+        show: "tab",
+        hint: |_| "link",
         avail: |c| c.transcript_links,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 12,
-    },
-    Binding {
-        keys: &[Key::Char('h'), Key::Char('N')],
-        verb: Verb::TranscriptLinkPrev,
-        show: "hN",
-        hint: |_| "previous link",
-        avail: |c| c.transcript_links,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 13,
     },
     Binding {
         keys: &[Key::Enter],
@@ -8592,6 +8584,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::PageDown, Key::Char('{')) => Verb::HalfPageUp,
         (Verb::PageDown, Key::PageUp) => Verb::PageUp,
         (Verb::TranscriptNewer, Key::Char('{')) => Verb::TranscriptOlder,
+        (Verb::TranscriptLinkNext, Key::BackTab | Key::Char('N')) => Verb::TranscriptLinkPrev,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
         (v, _) => v,
     }
@@ -11521,10 +11514,18 @@ mod tests {
         assert_eq!(resolve(Scope::Transcript, Key::Char('}'), &Ctx::default()), None);
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &Ctx::default()), None);
         let linked = Ctx { transcript_links: true, ..Default::default() };
-        assert_eq!(
-            resolve(Scope::Transcript, Key::Char('l'), &linked),
-            Some(Verb::TranscriptLinkNext)
-        );
+        for (key, verb) in [
+            (Key::Tab, Verb::TranscriptLinkNext),
+            (Key::Char('n'), Verb::TranscriptLinkNext),
+            (Key::BackTab, Verb::TranscriptLinkPrev),
+            (Key::Char('N'), Verb::TranscriptLinkPrev),
+        ] {
+            assert_eq!(resolve(Scope::Transcript, key, &linked), Some(verb), "{key}");
+        }
+        assert_eq!(resolve(Scope::Transcript, Key::Tab, &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Transcript, Key::Char('l'), &linked), None, "l is free");
+        assert_eq!(resolve(Scope::Transcript, Key::Char('h'), &linked), None, "h is free");
+        assert_eq!(hint_for(Scope::Transcript, Verb::TranscriptLinkNext, &linked), Some(("tab", "link")));
         assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), None);
         let selected = Ctx { transcript_link_selected: true, ..linked };
         assert_eq!(

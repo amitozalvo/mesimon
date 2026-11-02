@@ -40554,3 +40554,13 @@ next unusual distro name to the Uri parser again.
 
 Unverified: not heard on a Windows machine; no PowerShell here to run the script. The tests
 pin the stream form (`OpenRead('\\wsl$\Ubuntu\…`, no `SoundPlayer '…'`).
+
+## Transcript links cycle on Tab (T-1112, 2026-11-02)
+
+The ask: "use tab to cycle links of transcript … lh … not intuitive". The transcript's
+two link bindings (`ln` next, `hN` previous, T-1018) are now one footer item, `tab link`:
+Tab walks forward, Shift+Tab back, and `directional` maps BackTab and `N` to
+`TranscriptLinkPrev`. `n`/`N` stay as the same walk, unshown; `l` and `h` are unbound
+in the dialog. One item instead of two leaves the footer more room. The keymap test pins
+all four keys, the free `l`/`h` and the hint; the transcript link tests in `ui/tests.rs`
+press Tab and Shift+Tab. No golden showed the transcript footer, so none changed.

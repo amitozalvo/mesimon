@@ -123,6 +123,17 @@ fn press(app: &mut App, c: char) {
     app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("key");
 }
 
+/// The transcript's link walk: Tab forward, Shift+Tab back (T-1112).
+fn next_link(app: &mut App) {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+}
+
+fn prev_link(app: &mut App) {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).expect("shift+tab");
+}
+
 fn render(app: &App, w: u16, h: u16) -> Vec<String> {
     lines_of(&cells(app, w, h))
 }
@@ -7013,8 +7024,8 @@ fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
     press(&mut app, '}');
     transcript_enter(&mut app);
     assert!(app.pending_open.is_none(), "opening the dialog selects nothing");
-    press(&mut app, 'l');
-    press(&mut app, 'l');
+    next_link(&mut app);
+    next_link(&mut app);
     let buf = cells(&app, 120, 30);
     transcript_mark(&buf, "prose same", "same", false);
     transcript_mark(&buf, "first same", "same", false);
@@ -7044,9 +7055,9 @@ fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
         app.opener = Some("open".into());
         press(&mut app, '}');
         let _ = cells(&app, 120, 30);
-        press(&mut app, 'l');
+        next_link(&mut app);
         let _ = cells(&app, 120, 30);
-        press(&mut app, 'l');
+        next_link(&mut app);
         let buf = cells(&app, 120, 30);
         assert!(app.open_transcript_view().unwrap().pager.view.get().offset > 0);
         let lines = lines_of(&buf);
@@ -7093,8 +7104,8 @@ fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
             press(&mut app, '}');
             let _ = cells(&app, 120, 30);
             let baseline = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
-            press(&mut app, 'l');
-            press(&mut app, 'l');
+            next_link(&mut app);
+            next_link(&mut app);
             let buf = cells(&app, 120, 30);
             assert!(
                 app.open_transcript_view().unwrap().pager.view.get().offset > 0,
@@ -7127,7 +7138,7 @@ fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
 fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);
     press(&mut app, '}');
-    press(&mut app, 'l');
+    next_link(&mut app);
     assert_eq!(app.link_hovered(), Some(ulid_n(2)));
     let _ = cells(&app, 120, 30);
     press(&mut app, '{');
@@ -7139,13 +7150,13 @@ fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     transcript_enter(&mut app);
     assert!(matches!(app.mode, Mode::Transcript { .. }));
     assert_eq!(app.selected_ticket().unwrap().id, ulid_n(3));
-    press(&mut app, 'h'); // backward from unselected chooses the last link
+    prev_link(&mut app); // backward from unselected chooses the last link
     assert_eq!(app.link_hovered(), Some(ulid_n(1)));
     press(&mut app, '}');
     assert!(app.transcript_cursor_link().is_none());
     transcript_enter(&mut app);
     assert!(matches!(app.mode, Mode::Transcript { .. }));
-    press(&mut app, 'l');
+    next_link(&mut app);
     transcript_enter(&mut app);
     assert!(matches!(app.mode, Mode::Normal));
     assert_eq!(app.selected_ticket().unwrap().id, ulid_n(2));
@@ -7159,7 +7170,7 @@ fn transcript_links_load_archived_ids_and_keep_them_across_snapshots() {
     assert!(app.board.ticket(ulid_n(2)).is_none(), "the normal snapshot omits it");
     press(&mut app, '}');
     assert_eq!(app.transcript_links().len(), 1);
-    press(&mut app, 'l');
+    next_link(&mut app);
     app.refresh().unwrap();
     app.poll_archive();
     assert_eq!(app.transcript_cursor_link().unwrap().text, "T-2");
@@ -7168,7 +7179,7 @@ fn transcript_links_load_archived_ids_and_keep_them_across_snapshots() {
     app.refresh().unwrap();
     assert!(app.board.ticket(ulid_n(2)).is_none(), "leaving the dialog releases the archive");
     press(&mut app, '}');
-    press(&mut app, 'l');
+    next_link(&mut app);
     transcript_enter(&mut app);
     assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(2)));
     app.refresh().unwrap();
@@ -7609,7 +7620,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
     // Tab grows it: the editor carries the card's rectangle as its origin.
-    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor") };
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
     assert!(app.animating(), "the frame after Tab is in motion");
@@ -7995,7 +8006,7 @@ fn the_description_dialog_grows_out_of_the_card() {
     assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
-    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor: {:?}", app.mode) };
     assert!(matches!(ed.purpose, crate::app::EditorPurpose::Note { note: None, .. }));
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
@@ -13348,7 +13359,7 @@ fn a_click_places_the_cursor_in_text_being_typed() {
     let Mode::Input { buffer, .. } = &app.mode else { panic!("still typing") };
     assert_eq!(buffer.width_before_cursor(), "Ship the ".len(), "before the word clicked");
 
-    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    app.handle_key(ratatui::crossterm::event::KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE).expect("tab");
     if let Mode::Editor(ed) = &mut app.mode {
         ed.grow =
             Some((ratatui::layout::Rect::default(), std::time::Instant::now() - crate::app::GROW));
