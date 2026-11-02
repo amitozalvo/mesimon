@@ -10,6 +10,14 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
     let alt = mods.contains(KeyModifiers::ALT) && !ctrl;
+    // Shift on an ARROW is the third spelling of the same atom (T-1118):
+    // `HJKL` already is the shifted letter, so `⇧←` carrying the card is the
+    // same bargain on the arrows. Unlike Alt, every terminal this runs in
+    // reports it (xterm's `CSI 1;2D`, or the kitty tier's own report), and
+    // one that did not would send a plain arrow — a cursor step, not a
+    // wrong verb. A text field strips it (`to_key_text`), where it is
+    // still the arrow.
+    let shift = mods.contains(KeyModifiers::SHIFT) && !ctrl;
     Some(match code {
         // Option/Alt on a direction, either spelling, is one atom. Whether it
         // arrives at all is the terminal's call and nothing detects it in
@@ -23,6 +31,10 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
         KeyCode::Char('l') | KeyCode::Right if alt => Key::AltRight,
         KeyCode::Char('k') | KeyCode::Up if alt => Key::AltUp,
         KeyCode::Char('j') | KeyCode::Down if alt => Key::AltDown,
+        KeyCode::Left if shift => Key::AltLeft,
+        KeyCode::Right if shift => Key::AltRight,
+        KeyCode::Up if shift => Key::AltUp,
+        KeyCode::Down if shift => Key::AltDown,
         // Shift held on a ctrl+letter is its own atom, uppercase — only the
         // kitty tier reports it (a legacy terminal sends the bare control
         // byte, no modifier), and the keymap gates every such binding on
@@ -108,7 +120,16 @@ pub fn to_key_text(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     {
         return Some(Key::Ctrl('v'));
     }
-    to_key(text_code(code, mods), mods - KeyModifiers::ALT)
+    let code = text_code(code, mods);
+    // Shift+arrow is the board's nudge (`to_key`), never a text field's: a
+    // field reads it as the arrow it always was.
+    let mods = match code {
+        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+            mods - KeyModifiers::ALT - KeyModifiers::SHIFT
+        }
+        _ => mods - KeyModifiers::ALT,
+    };
+    to_key(code, mods)
 }
 
 /// Some terminal profiles send Option+Left/Right as ESC b/f (Alt+b/f).
@@ -247,6 +268,24 @@ mod tests {
         // Unmodified, they are the plain atoms they always were.
         assert_eq!(to_key(KeyCode::Char('h'), KeyModifiers::NONE), Some(Key::Char('h')));
         assert_eq!(to_key(KeyCode::Left, KeyModifiers::NONE), Some(Key::Left));
+    }
+
+    /// T-1118: Shift on an arrow is the same atom as Alt on it, so every
+    /// nudge the Alt atom reaches (the board's card and column, the tag
+    /// picker's carry, the tiers list) moves on `⇧←↓↑→` too. Shift on a
+    /// letter stays the uppercase letter, and ctrl+shift+arrow is no nudge.
+    #[test]
+    fn shift_arrows_are_the_nudge_atom() {
+        let s = KeyModifiers::SHIFT;
+        assert_eq!(to_key(KeyCode::Left, s), Some(Key::AltLeft));
+        assert_eq!(to_key(KeyCode::Right, s), Some(Key::AltRight));
+        assert_eq!(to_key(KeyCode::Up, s), Some(Key::AltUp));
+        assert_eq!(to_key(KeyCode::Down, s), Some(Key::AltDown));
+        assert_eq!(to_key(KeyCode::Char('H'), s), Some(Key::Char('H')));
+        assert_eq!(to_key(KeyCode::Left, s | KeyModifiers::CONTROL), Some(Key::Left));
+        // In a text field it is the arrow, as it always was.
+        assert_eq!(to_key_text(KeyCode::Left, s), Some(Key::Left));
+        assert_eq!(to_key_text(KeyCode::Down, s), Some(Key::Down));
     }
 
     /// A text field reads Alt as "by word": the arrows must stay arrows there

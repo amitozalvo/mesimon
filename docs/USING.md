@@ -164,7 +164,7 @@ column's *Tools* and *Agents › Agent brief* change that. *Settings › About* 
 project page.
 
 On the board: `o` adds a ticket, `space` opens its page, `enter` goes to its agent (or opens the
-page when it has none), `HJKL` moves the card (`>` or `<` twice does too), `p` shows each agent's
+page when it has none), `HJKL` or shift+arrows move the card (`>` or `<` twice does too), `p` shows each agent's
 latest reply under its card, `,` opens Settings, `q` quits.
 
 `/` searches. Type any part of a ticket's title, its key, its column or a tag it wears and the

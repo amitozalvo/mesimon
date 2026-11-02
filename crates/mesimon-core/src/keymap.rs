@@ -64,7 +64,9 @@ pub enum Key {
     Down,
     /// Option/Alt held on a direction. `alt+h` and `alt+←` are the SAME atom,
     /// the way the two spellings of `ctrl+]` are — the keymap wants a
-    /// direction, and the terminal may spell it either way.
+    /// direction, and the terminal may spell it either way. Shift on an
+    /// arrow is a third spelling (T-1118, `tui/src/keys.rs::to_key`): `⇧←`
+    /// carries the card the way `H` does, outside a text field.
     ///
     /// The second family off the legacy floor, and it is admitted on a
     /// different clause from [`Key::ShiftEnter`]. That atom is *ambiguous*: a

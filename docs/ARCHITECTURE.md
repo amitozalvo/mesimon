@@ -696,7 +696,8 @@ it sends a plain `Enter`, which is another verb — so every binding on it is ga
 `Ctx::rich_keys`, the cached kitty-protocol probe set on `App` by `lib.rs` after `init_terminal`,
 and the key is unbound AND unhinted where the terminal cannot spell it
 (`shift_enter_is_inert_without_rich_keys`). The four Alt directions (`AltLeft`/`Right`/`Up`/`Down`
-— `alt+h` and `alt+←` are one atom, the way the two spellings of `ctrl+]` are) fail the other
+— `alt+h`, `alt+←` and, since T-1118, `shift+←` are one atom, the way the two spellings of
+`ctrl+]` are; `to_key_text` strips Shift on an arrow, so a text field still reads the arrow) fail the other
 way: the modifier is eaten and NOTHING arrives, so the key is inert rather than wrong. That is
 affordable exactly while no CAPABILITY stands behind the atom, and that — not the count — is what
 `alt_is_admitted_only_for_a_nudge` holds. Every Alt binding must be a NUDGE (it moves the thing

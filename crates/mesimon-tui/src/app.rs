@@ -26125,6 +26125,27 @@ mod tests {
         assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
     }
 
+    /// T-1118: Shift on an arrow is the same nudge — across columns and
+    /// along one — and the cursor rides with the card.
+    #[test]
+    fn shift_arrows_move_the_card() {
+        let mut app = app_three_columns();
+        let shift = |app: &mut App, code| app.handle_key(code, KeyModifiers::SHIFT).unwrap();
+        shift(&mut app, KeyCode::Down);
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
+        shift(&mut app, KeyCode::Up);
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        shift(&mut app, KeyCode::Right);
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
+        shift(&mut app, KeyCode::Left);
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
+    }
+
     /// Up and down reorder inside the column, and the cursor stays on the
     /// card it is carrying.
     #[test]

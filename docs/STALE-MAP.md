@@ -40608,3 +40608,16 @@ editor no longer sets an open workspace. A lone note, a new note, the composer, 
 and the ticket page keep the pick, and the context row only spells `shift+tab` beside `⎇`
 where it still picks. The dirty-note refusal and the rail-follow are shared with Tab.
 Tests: the keymap ring test, `shift_tab_in_the_editor_walks_the_notes_back`.
+
+## Shift+arrows move the card (T-1118, 2026-11-02)
+
+The ask: "use shift + arrow keys to move tickets". `keys::to_key` now spells Shift on an arrow
+(without Ctrl) as the existing nudge atom, `Key::AltLeft`…`AltDown`, so every nudge that atom
+reaches moves with it, through the same binding as `HJKL`: the board's card and column header,
+the tag picker's carry, the tiers list. `to_key_text` strips Shift on an arrow, so every text
+field still reads a plain arrow. No hint changed: the footer still teaches `HJKL`.
+**Refuted: four new `ShiftLeft`… atoms.** The nudge handlers, `directional` and the picker's
+stray-key test each match the direction atom; a second family would add a twin to every one of
+them for the same move. **Given up:** Shift+arrow off a nudge (ticket page, diff, lists) used to
+act as the bare arrow and is now inert, as Alt+arrow already was there.
+Tests: `keys::shift_arrows_are_the_nudge_atom`, `app::shift_arrows_move_the_card`.
