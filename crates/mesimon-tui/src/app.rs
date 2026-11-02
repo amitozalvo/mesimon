@@ -12691,7 +12691,12 @@ impl App {
         ed.tab_refused = false;
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
-            Some(Verb::NextNote) => return self.editor_next_note(ed),
+            Some(Verb::NextNote) => return self.editor_walk_notes(ed, 1),
+            // Shift+Tab on a ring of notes is the walk back (T-1113), ahead
+            // of the workspace pick the same key is everywhere else.
+            Some(Verb::CycleWorkspace) if self.note_ring(&ed).is_some() => {
+                return self.editor_walk_notes(ed, -1)
+            }
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
             // The field's `^p` in the room (T-434).
@@ -13418,11 +13423,12 @@ impl App {
 
     /// `tab` in the note editor (T-440): the ticket's next note, round
     /// again from the description, in the same room — no grow, since the
-    /// dialog is already open. Unsaved words hold it where it is: the
-    /// status says the two ways out and the row's `unsaved` goes full ink,
-    /// and nothing is ever discarded by this key. On the ticket page the
-    /// rail follows, so leaving the editor lands on the note it was on.
-    fn editor_next_note(&mut self, mut ed: Editor) -> Result<()> {
+    /// dialog is already open; `shift+tab` (T-1113, `step` -1) the previous
+    /// one, round again from the last. Unsaved words hold it where it is:
+    /// the status says the two ways out and the row's `unsaved` goes full
+    /// ink, and nothing is ever discarded by this key. On the ticket page
+    /// the rail follows, so leaving the editor lands on the note it was on.
+    fn editor_walk_notes(&mut self, mut ed: Editor, step: isize) -> Result<()> {
         if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
             self.status = "clipboard read pending".into();
             self.mode = Mode::Editor(ed);
@@ -13436,7 +13442,8 @@ impl App {
         }
         let next = match (&ed.purpose, self.note_ring(&ed)) {
             (EditorPurpose::Note { ticket, .. }, Some((at, n))) => {
-                self.board.ticket(*ticket).map(|t| (t.id, t.notes[(at + 1) % n].id))
+                let to = (at as isize + step).rem_euclid(n as isize) as usize;
+                self.board.ticket(*ticket).map(|t| (t.id, t.notes[to].id))
             }
             _ => None,
         };
@@ -19006,6 +19013,33 @@ mod tests {
         tab(&mut app);
         assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "and round again");
         assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
+    }
+
+    /// T-1113: `shift+tab` walks the same ring the other way — from the
+    /// description round to the last note — and takes the key from the
+    /// workspace pick there: nothing goes on the wire but the read, and the
+    /// context row stops spelling a key that now walks.
+    #[test]
+    fn shift_tab_in_the_editor_walks_the_notes_back() {
+        let (mut app, sent) = app_with_three_notes();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        assert!(app.ctx().workspace_open, "the pick would have had the key");
+        let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        sent.borrow_mut().clear();
+        back(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
+        assert!(sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.board.tickets[0].workspace, None);
+        back(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "tab is forward again");
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        back(&mut app);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "a draft holds it");
+        assert_eq!(app.status, "unsaved ∙ ^s saves ∙ esc discards");
     }
 
     /// T-440: unsaved words hold the editor where it is. The status says

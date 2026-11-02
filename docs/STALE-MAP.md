@@ -40593,3 +40593,18 @@ Tests: `board::bash_mode_tests::a_claude_shell_names_the_command_by_the_persons_
 operators, a cut line, an unknown shape), `golden_bash_mode_command_board_120` (golden
 `board_bash_mode_120x30`, plus a long two-line command cut to one row), and `bash_mode_e2e`, whose
 stub now spawns the shell in Claude's shape and asserts `sleep 60` on the snapshot, on both roads.
+
+## Shift+Tab walks the note editor's ring back (T-1113, 2026-11-02)
+
+The ask: "shift+tab to cycle back notes of ticket … currently can only cycle forward".
+T-440 left no backwards key because Shift+Tab in the editor was the workspace pick and
+`no_key_bound_twice_in_a_chain` allows one binding per atom per scope. That law stands: the
+editor's single BackTab binding (`Verb::CycleWorkspace`) is now also live on
+`Ctx::editor_cycles`, and `key_editor` sends it to `editor_walk_notes(ed, -1)` when
+`App::note_ring` holds, ahead of the pick (the ask room's now/queued toggle already shares
+the binding the same way). **Refuted:** a separate `PrevNote` verb on the `NextNote`
+binding, which trips the one-atom law. **Given up:** on a ring of notes, Shift+Tab in the
+editor no longer sets an open workspace. A lone note, a new note, the composer, the card
+and the ticket page keep the pick, and the context row only spells `shift+tab` beside `⎇`
+where it still picks. The dirty-note refusal and the rail-follow are shared with Tab.
+Tests: the keymap ring test, `shift_tab_in_the_editor_walks_the_notes_back`.

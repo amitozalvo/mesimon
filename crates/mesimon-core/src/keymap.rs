@@ -8191,9 +8191,11 @@ static EDITOR: &[Binding] = &[
     },
     Binding {
         // The ticket's next note, in the same room (T-440, user request:
-        // "allow user to cycle the notes on tab"). Forward only and round
-        // again: Shift+Tab is the workspace pick here (T-163), and one atom
-        // is one binding in a scope. Live on a dirty note too — the press
+        // "allow user to cycle the notes on tab"), round again. Shift+Tab
+        // walks back (T-1113), but one atom is one binding in a scope and
+        // Shift+Tab is the workspace pick's here (T-163), so the walk back
+        // rides that binding: see `CycleWorkspace` below. Live on a dirty
+        // note too — the press
         // is refused there, and the refusal is the answer (the status says
         // `^s` or `esc`, the row's `unsaved` goes full ink) — so the edge
         // does not reflow on the first keystroke. Never a discard: Tab is
@@ -8300,7 +8302,11 @@ static EDITOR: &[Binding] = &[
         // In the ask room (T-380) it is the field's own toggle, now /
         // queued, spelled on the same context row, and offered exactly
         // where the one-line field offers it — never by the ticket's
-        // workspace being open, which is another verb's reason.
+        // workspace being open, which is another verb's reason. On a ring
+        // of notes (`editor_cycles`) it is the walk back, Tab's other way
+        // (T-1113, user request: "shift+tab to cycle back notes"): the
+        // ring outranks the pick there, which keeps the key on a lone note,
+        // a new one, the card and the ticket page.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
@@ -8310,7 +8316,7 @@ static EDITOR: &[Binding] = &[
                 && if c.editor_asking {
                     c.ask_queueable
                 } else {
-                    c.editor_composing || c.workspace_open
+                    c.editor_composing || c.workspace_open || c.editor_cycles
                 }
         },
         class: Class::Plain,
@@ -10082,11 +10088,13 @@ mod tests {
     /// the next note — dirty or clean, since the refusal is the handler's
     /// and the edge must not reflow on the first keystroke. Nowhere else:
     /// not composing, not asking, not on a new note or a lone description.
-    /// Shift+Tab stays the workspace pick.
+    /// T-1113: `shift+tab` is live on the same ring, open workspace or not
+    /// — the editor's handler walks back there instead of picking.
     #[test]
     fn tab_walks_the_notes_in_the_editor() {
         let ring = Ctx { editing: true, editor_cycles: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Tab, &ring), Some(Verb::NextNote));
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &ring), Some(Verb::CycleWorkspace));
         assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &ring), Some(("tab", "next note")));
         let dirty = Ctx { editor_dirty: true, ..ring.clone() };
         assert_eq!(resolve(Scope::Editor, Key::Tab, &dirty), Some(Verb::NextNote));
@@ -10098,6 +10106,7 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Tab, &composing), None);
         let asking = Ctx { editing: true, editor_asking: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Tab, &asking), None);
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &lone), None);
         let open = Ctx { workspace_open: true, ..ring };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
     }

@@ -447,8 +447,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             if let Some(t) = t {
                 parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
                 // Spelled only while Shift+Tab can still change it — the
-                // choice locks with the first session or worktree.
-                if app.frame_ctx().workspace_open {
+                // choice locks with the first session or worktree — and
+                // never on a ring of notes, where Shift+Tab walks back
+                // (T-1113).
+                let cx = app.frame_ctx();
+                if cx.workspace_open && !cx.editor_cycles {
                     parts.push(Span::styled("shift+tab".to_string(), dim2));
                 }
             }
