@@ -2,66 +2,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 use common::*;
-use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::SessionState;
 use mesimon_core::command::{Command, Response};
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
-
-fn branch_exists(repo: &Path, branch: &str) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
-        .output()
-        .unwrap()
-        .status
-        .success()
-}
-
-/// A worktree ticket with a spawned (stub) claude and one commit on its branch.
-fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(c, id);
-    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", &format!("{title}.txt")]);
-    git(&path, &["commit", "-qm", title]);
-    (id, sid, wt.branch, path)
-}
-
-/// Kill the ticket's claude and wait for the reaper: the archive gate wants
-/// nothing on the ticket holding a pane.
-fn quiet(c: &mut TestClient, id: ulid::Ulid, sid: uuid::Uuid) {
-    let _ = c.request(Command::KillSession { id: sid });
-    wait_until(Duration::from_secs(15), "the ticket to go quiet", || {
-        c.board().sessions.iter().filter(|s| s.ticket == id).all(|s| !s.state.has_pane())
-    });
-}
 
 fn arrive(c: &mut TestClient, id: ulid::Ulid, column: &str) {
     let response = c.request(Command::MoveTicket { id, column: column.into(), before: None });
@@ -93,9 +38,7 @@ fn arrival_waits_for_a_parked_live_pane_then_wake_recuts_the_same_branch() {
     arrive(&mut c, id, "DONE");
     await_refusal(&mut c, id, "waiting for agents");
     assert!(path.join("landed.txt").exists());
-    hook_send(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    hook_send(&h.paths.hook_sock(), &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    h.one_turn(&mut c, sid);
     // Hooks can automove out of DONE only if explicitly configured; its template stays.
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
     c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);

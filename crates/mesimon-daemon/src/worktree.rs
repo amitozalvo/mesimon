@@ -78,6 +78,27 @@ pub struct Leg {
 }
 
 impl Binding {
+    /// A single-repo binding with nothing provisioned beyond its fields: not
+    /// locked, no legs, no init run.
+    pub fn new(
+        path: PathBuf,
+        branch: String,
+        base_oid: String,
+        branch_oid: String,
+        status: BindingStatus,
+    ) -> Binding {
+        Binding {
+            path,
+            branch,
+            base_oid,
+            branch_oid,
+            status,
+            locked: false,
+            repos: Vec::new(),
+            init: None,
+        }
+    }
+
     pub fn is_workspace(&self) -> bool {
         !self.repos.is_empty()
     }
@@ -645,18 +666,8 @@ pub fn cut_words(base: &str, cut: &Cut) -> Option<String> {
 /// filesystem work). Returns the ready binding, or the failing stage.
 /// `upstream`: the board merges through pull requests (T-810), so a fresh
 /// branch is cut where `cut_point` says; else at the local base.
+/// `base_override`: the board's configured base branch, where it names one.
 pub fn provision(
-    repo: &Path,
-    root: &Path,
-    ticket_id: ulid::Ulid,
-    short_key: &str,
-    title: &str,
-    upstream: bool,
-) -> std::result::Result<Binding, (String, String)> {
-    provision_on(repo, root, ticket_id, short_key, title, upstream, None)
-}
-
-pub fn provision_on(
     repo: &Path,
     root: &Path,
     ticket_id: ulid::Ulid,
@@ -815,32 +826,6 @@ fn checked_out(repo: &Path) -> std::result::Result<(String, String), String> {
 /// takes every leg already added with it, branches included.
 #[allow(clippy::too_many_arguments)]
 pub fn provision_workspace(
-    root: &Path,
-    worktrees_root: &Path,
-    census: &[String],
-    is_meta: bool,
-    ticket_id: ulid::Ulid,
-    short_key: &str,
-    title: &str,
-    upstream: bool,
-    progress: &mut dyn FnMut(u32, u32),
-) -> std::result::Result<Binding, (String, String)> {
-    provision_workspace_on(
-        root,
-        worktrees_root,
-        census,
-        is_meta,
-        ticket_id,
-        short_key,
-        title,
-        upstream,
-        None,
-        progress,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn provision_workspace_on(
     root: &Path,
     worktrees_root: &Path,
     census: &[String],
@@ -1370,6 +1355,12 @@ pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// `is_merged` over two local branch names, qualified so a tag or a remote
+/// branch of the same name cannot answer for them.
+pub fn branch_merged(repo: &Path, branch: &str, base: &str) -> bool {
+    is_merged(repo, &format!("refs/heads/{branch}"), &format!("refs/heads/{base}"))
 }
 
 /// Git config a user could set that would move a patch-id on ONE side of the
@@ -2216,8 +2207,7 @@ pub fn delete_branch(repo: &Path, branch: &str, force: bool) -> Result<()> {
 /// and a folder container is a plain directory removed last. Returns
 /// whether any leg's branch survived. Callers kill the sessions first
 /// (step 0) and never call this while a live process has a leg as cwd.
-pub fn teardown(repo_root: &Path, b: &Binding, delete: &dyn Fn(&Leg) -> Option<bool>) -> bool {
-    let legs = b.legs(repo_root, "");
+pub fn teardown(b: &Binding, legs: &[Leg], delete: &dyn Fn(&Leg) -> Option<bool>) -> bool {
     let mut kept = false;
     for leg in legs.iter().rev() {
         if leg.path.is_dir() {
@@ -2876,19 +2866,18 @@ mod tests {
         Some(dir)
     }
 
+    /// A `staging` branch one commit ahead of `main`, `main` checked out.
+    fn staged(repo: &Path) {
+        testrepo::run(repo, &["branch", "staging"]);
+        testrepo::run(repo, &["checkout", "-q", "staging"]);
+        testrepo::commit(repo, "stage.txt", "staged\n", "staging change");
+        testrepo::run(repo, &["checkout", "-q", "main"]);
+    }
+
     #[test]
     fn promotion_fast_forwards_default_and_refuses_dirty_or_diverged_destinations() {
         let Some(repo) = scratch_repo("promote") else { return };
-        let run = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        run(&repo, &["branch", "staging"]);
-        run(&repo, &["checkout", "-q", "staging"]);
-        std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
-        run(&repo, &["add", "."]);
-        run(&repo, &["commit", "-qm", "staging change"]);
-        run(&repo, &["checkout", "-q", "main"]);
+        staged(&repo);
         let result = promote_to_main(std::slice::from_ref(&repo), "staging");
         assert!(result.refusal.is_none(), "{result:?}");
         assert_eq!(result.promoted.len(), 1);
@@ -2904,8 +2893,8 @@ mod tests {
         std::fs::remove_file(repo.join("a.txt")).unwrap();
 
         // A moved destination that is not an ancestor of staging is refused.
-        run(&repo, &["add", "a.txt"]);
-        run(&repo, &["commit", "-qm", "main only"]);
+        testrepo::run(&repo, &["add", "a.txt"]);
+        testrepo::run(&repo, &["commit", "-qm", "main only"]);
         let result = promote_to_main(std::slice::from_ref(&repo), "staging");
         assert!(result.refusal.as_deref().unwrap().contains("must fast-forward"));
         std::fs::remove_dir_all(&repo).ok();
@@ -2915,18 +2904,8 @@ mod tests {
     fn promotion_preflights_all_repository_legs_before_writing_any() {
         let Some(first) = scratch_repo("promote-first") else { return };
         let Some(second) = scratch_repo("promote-second") else { return };
-        let run = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        for repo in [&first, &second] {
-            run(repo, &["branch", "staging"]);
-            run(repo, &["checkout", "-q", "staging"]);
-            std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
-            run(repo, &["add", "."]);
-            run(repo, &["commit", "-qm", "staging change"]);
-            run(repo, &["checkout", "-q", "main"]);
-        }
+        staged(&first);
+        staged(&second);
         std::fs::write(second.join("a.txt"), "dirty\n").unwrap();
         let before = branch_tip(&first, "main");
         let result = promote_to_main(&[first.clone(), second.clone()], "staging");
@@ -3003,24 +2982,14 @@ mod tests {
     fn promotion_reports_a_later_leg_race_after_an_earlier_leg_landed() {
         let Some(first) = scratch_repo("promote-race-first") else { return };
         let Some(second) = scratch_repo("promote-race-second") else { return };
-        let run = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        for repo in [&first, &second] {
-            run(repo, &["branch", "staging"]);
-            run(repo, &["checkout", "-q", "staging"]);
-            std::fs::write(repo.join("stage.txt"), "staged\n").unwrap();
-            run(repo, &["add", "."]);
-            run(repo, &["commit", "-qm", "staging change"]);
-            run(repo, &["checkout", "-q", "main"]);
-        }
+        staged(&first);
+        staged(&second);
         let result =
             promote_to_main_with(&[first.clone(), second.clone()], "staging", |index, repo| {
                 if index == 1 {
                     std::fs::write(repo.join("raced.txt"), "main moved after preflight\n").unwrap();
-                    run(repo, &["add", "."]);
-                    run(repo, &["commit", "-qm", "concurrent main change"]);
+                    testrepo::run(repo, &["add", "."]);
+                    testrepo::run(repo, &["commit", "-qm", "concurrent main change"]);
                 }
             });
         assert_eq!(
@@ -3045,7 +3014,7 @@ mod tests {
         let Some(repo) = scratch_repo("rebuild") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false, None).unwrap();
 
         let rebuilt = rebuild_from_disk(&repo, &repo.join("_wtroot"));
         let got = rebuilt.get(&ulid::Ulid(1)).expect("ticket recovered from its marker");
@@ -3103,12 +3072,12 @@ mod tests {
 
         // Fully-landed provision, but the binding was persisted still
         // Provisioning (daemon died between the worktree add and the ack).
-        let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed", false).unwrap();
+        let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed", false, None).unwrap();
         let mut bindings = Bindings::new();
         bindings
             .insert(ulid::Ulid(1), Binding { status: BindingStatus::Provisioning, ..done.clone() });
         // Branch exists, dir never landed → replay via the evicted path.
-        let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half", false).unwrap();
+        let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half", false, None).unwrap();
         remove(&repo, &evicted.path).unwrap();
         bindings
             .insert(ulid::Ulid(2), Binding { status: BindingStatus::Queued, ..evicted.clone() });
@@ -3143,7 +3112,7 @@ mod tests {
             },
         );
         // Attached stays untouched.
-        let ok = provision(&repo, &root, ulid::Ulid(5), "T-5", "Fine", false).unwrap();
+        let ok = provision(&repo, &root, ulid::Ulid(5), "T-5", "Fine", false, None).unwrap();
         bindings.insert(ulid::Ulid(5), ok.clone());
 
         assert!(reconcile_interrupted(&repo, &mut bindings));
@@ -3173,13 +3142,13 @@ mod tests {
         run(&["checkout", "-q", "--detach"]);
         run(&["branch", "-q", "-D", "main"]);
         let (stage, message) =
-            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false).unwrap_err();
+            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false, None).unwrap_err();
         assert_eq!((stage.as_str(), message.as_str()), ("precheck", DETACHED_HEAD));
 
         // Unborn: HEAD names a branch with no commits on it.
         run(&["checkout", "-q", "--orphan", "trunk"]);
         let (stage, message) =
-            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false).unwrap_err();
+            provision(&repo, &root, ulid::Ulid(1), "T-1", "x", false, None).unwrap_err();
         assert_eq!(stage, "precheck");
         assert_eq!(message, "no commits on trunk yet — make a first commit, then start again");
         assert!(std::fs::read_dir(&root).unwrap().next().is_none(), "nothing written");
@@ -3192,7 +3161,7 @@ mod tests {
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
 
-        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false, None).unwrap();
         assert_eq!(b.branch, "msmn/T-1-fix-thing");
         assert!(b.path.join("a.txt").is_file());
         assert_eq!(b.status, BindingStatus::Attached);
@@ -3204,7 +3173,8 @@ mod tests {
         assert!(std::fs::read_to_string(mp).unwrap().starts_with(&ulid::Ulid(1).to_string()));
 
         // Same branch again refuses at precheck.
-        let e = provision(&repo, &root, ulid::Ulid(2), "T-1", "Fix thing", false).unwrap_err();
+        let e =
+            provision(&repo, &root, ulid::Ulid(2), "T-1", "Fix thing", false, None).unwrap_err();
         assert_eq!(e.0, "precheck");
 
         // The same ticket again adopts its own tree (T-793): a daemon that
@@ -3224,7 +3194,8 @@ mod tests {
         bindings.insert(ulid::Ulid(1), blank);
         reconcile_interrupted(&repo, &mut bindings);
         assert!(!bindings.contains_key(&ulid::Ulid(1)), "a blank binding is dropped");
-        let again = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false).unwrap();
+        let again =
+            provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing", false, None).unwrap();
         assert_eq!(
             (&again.path, &again.branch, &again.base_oid, &again.branch_oid),
             (&b.path, &b.branch, &b.base_oid, &b.branch_oid)
@@ -3260,7 +3231,7 @@ mod tests {
         let Some(repo) = scratch_repo("conf") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(3), "T-3", "clash", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(3), "T-3", "clash", false, None).unwrap();
 
         // Diverge: same file changed on main and on the branch.
         std::fs::write(repo.join("a.txt"), "main side\n").unwrap();
@@ -3268,7 +3239,7 @@ mod tests {
             let ok = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
             assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
         };
-        run(&repo, &["commit", "-aqm", "main change"]);
+        testrepo::run(&repo, &["commit", "-aqm", "main change"]);
         std::fs::write(b.path.join("a.txt"), "branch side\n").unwrap();
         run(&b.path, &["commit", "-aqm", "branch change"]);
 
@@ -3308,7 +3279,7 @@ mod tests {
         let Some(repo) = scratch_repo("dirtymain") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "dirty", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "dirty", false, None).unwrap();
         let run = |d: &Path, args: &[&str]| {
             let ok = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
             assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
@@ -3329,7 +3300,7 @@ mod tests {
         let Some(repo) = scratch_repo("lock") else { return };
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(4), "T-4", "locked", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(4), "T-4", "locked", false, None).unwrap();
 
         // Foreign lock reason survives the sweep.
         let wt_s = b.path.to_string_lossy().into_owned();
@@ -3389,7 +3360,7 @@ mod tests {
 
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(5), "T-5", "env", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(5), "T-5", "env", false, None).unwrap();
         assert_eq!(std::fs::read_to_string(b.path.join(".env")).unwrap(), "SECRET=1\n");
         // Not in .worktreeinclude → not copied.
         assert!(!b.path.join("node_modules/big.js").exists());
@@ -3851,12 +3822,13 @@ mod tests {
         r.run(&["reset", "-q", "--hard", &a]);
         let root = r.dir.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let bound = provision(&r.dir, &root, ulid::Ulid(1), "T-1", "Cut", true).unwrap();
+        let bound = provision(&r.dir, &root, ulid::Ulid(1), "T-1", "Cut", true, None).unwrap();
         assert_eq!(bound.base_oid, b, "the cut point is the binding's base");
         assert_eq!(tip(&bound.branch), b);
         assert_eq!(tip("main"), a, "the local base never moves");
         // A board that merges into main cuts at its local base (T-810).
-        let local_cut = provision(&r.dir, &root, ulid::Ulid(2), "T-2", "Main", false).unwrap();
+        let local_cut =
+            provision(&r.dir, &root, ulid::Ulid(2), "T-2", "Main", false, None).unwrap();
         assert_eq!(local_cut.base_oid, a, "into main: where the branch lands");
         std::fs::remove_dir_all(&r.dir).ok();
     }
@@ -4333,6 +4305,7 @@ mod tests {
             "T-1",
             "Fix",
             false,
+            None,
             progress,
         )
     }
@@ -4512,7 +4485,7 @@ mod tests {
         let Some(root) = workspace_scratch("wsreplay") else { return };
         let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
         testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
-        let kept = teardown(&root, &b, &|_| None);
+        let kept = teardown(&b, &b.legs(&root, ""), &|_| None);
         assert!(kept, "no branch deleted");
         assert!(!b.path.exists());
         let again = provision_existing(&root, ulid::Ulid(1), &b).unwrap();
@@ -4535,7 +4508,7 @@ mod tests {
         let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
         testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
         ff_merge(&root.join("api"), &b.branch, "main").unwrap();
-        let kept = teardown(&root, &b, &|leg| {
+        let kept = teardown(&b, &b.legs(&root, ""), &|leg| {
             Some(!(leg.name == "api" || branch_tip(&leg.repo, "msmn/T-1-fix") == leg.base_oid))
         });
         assert!(!kept);
@@ -4551,7 +4524,7 @@ mod tests {
         // A folder container is a plain directory, removed last.
         std::fs::remove_dir_all(root.join(".git")).unwrap();
         let b = ws_provision(&root, false, &mut |_, _| {}).unwrap();
-        assert!(!teardown(&root, &b, &|_| Some(true)));
+        assert!(!teardown(&b, &b.legs(&root, ""), &|_| Some(true)));
         assert!(!b.path.exists());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -4916,16 +4889,26 @@ mod eviction_tests {
     use super::*;
     use crate::testrepo;
 
-    #[test]
-    fn eviction_preserves_untracked_and_modified_files_but_frees_ignored_builds() {
+    /// A repository holding `file`, and T-1's worktree provisioned under
+    /// `worktrees` beside it, with its legs.
+    fn evictable(
+        file: &str,
+        body: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, ulid::Ulid, Binding, Vec<Leg>) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
-        testrepo::init(&repo, ".gitignore", "target/\n");
+        testrepo::init(&repo, file, body);
         let root = dir.path().join("worktrees");
         std::fs::create_dir(&root).unwrap();
         let id = ulid::Ulid(1);
-        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
+        let b = provision(&repo, &root, id, "T-1", "test", false, None).unwrap();
         let legs = b.legs(&repo, "main");
+        (dir, repo, root, id, b, legs)
+    }
+
+    #[test]
+    fn eviction_preserves_untracked_and_modified_files_but_frees_ignored_builds() {
+        let (_dir, repo, root, id, b, legs) = evictable(".gitignore", "target/\n");
         std::fs::create_dir_all(b.path.join("stray/nested")).unwrap();
         std::fs::write(b.path.join("stray/nested/precious"), "mine").unwrap();
         let result = evict(&repo, &root, id, &b, &legs);
@@ -4952,14 +4935,7 @@ mod eviction_tests {
     #[test]
     fn eviction_distinguishes_a_failed_detach_from_partial_staged_cleanup() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        testrepo::init(&repo, ".gitignore", "target/\n");
-        let root = dir.path().join("worktrees");
-        std::fs::create_dir(&root).unwrap();
-        let id = ulid::Ulid(1);
-        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
-        let legs = b.legs(&repo, "main");
+        let (_dir, repo, root, id, b, legs) = evictable(".gitignore", "target/\n");
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
         let result = evict(&repo, &root, id, &b, &legs);
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4987,14 +4963,7 @@ mod eviction_tests {
 
     #[test]
     fn eviction_refuses_foreign_paths_ownership_and_changed_tips() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        testrepo::init(&repo, "file", "one");
-        let root = dir.path().join("worktrees");
-        std::fs::create_dir(&root).unwrap();
-        let id = ulid::Ulid(1);
-        let b = provision(&repo, &root, id, "T-1", "test", false).unwrap();
-        let legs = b.legs(&repo, "main");
+        let (dir, repo, root, id, b, legs) = evictable("file", "one");
         assert!(!evict(&repo, dir.path(), id, &b, &legs).evicted);
         assert!(!evict(&repo, &root, ulid::Ulid(2), &b, &legs).evicted);
         testrepo::commit(&b.path, "file", "two", "external commit");
@@ -5024,6 +4993,7 @@ mod eviction_tests {
                 "T-1",
                 "workspace",
                 false,
+                None,
                 &mut |_, _| {},
             )
             .unwrap();

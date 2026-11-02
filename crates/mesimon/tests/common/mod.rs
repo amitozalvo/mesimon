@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, SessionState};
+use mesimon_core::board::{Board, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{
-    AgentTicketView, Command, CrownTouch, Deliver, Envelope, Event, ExternalItem, GraceItem,
-    Pending, RepoGit, Resources, Response, WorktreeItem,
+    AgentBoardView, AgentTicketView, Command, CrownTouch, Deliver, Envelope, Event, ExternalItem,
+    GraceItem, Pending, RepoGit, Resources, Response, WorktreeItem,
 };
 use mesimon_core::diff::FileEntry;
 use mesimon_core::Principal;
@@ -426,6 +426,23 @@ impl TestClient {
             Response::Board { crown_touches, .. } => crown_touches,
             other => panic!("snapshot: {other:?}"),
         }
+    }
+
+    /// `session`'s `list_board`.
+    pub fn crown_board(&mut self, session: uuid::Uuid) -> AgentBoardView {
+        match self.send(Principal::Agent { session }, Command::AgentListBoard) {
+            Response::AgentBoard { board } => board,
+            other => panic!("list_board: {other:?}"),
+        }
+    }
+
+    /// The crown's `sleep_agent` on `key`, judged against a fresh read's stamp.
+    pub fn crown_sleep(&mut self, crown: uuid::Uuid, key: &str) -> Response {
+        let v = self.agent_read(crown, key).unwrap();
+        self.send(
+            Principal::Agent { session: crown },
+            Command::AgentSleepTicket { key: key.into(), seen: v.seen },
+        )
     }
 
     /// A person's prompt to `ticket`'s agent, every option off.
@@ -890,6 +907,18 @@ while True:
 
 /// A claude stub that appends every line it reads to `got.txt` beside it,
 /// so a test reads what reached the pane ([`Harness::got`]).
+/// A Claude stub that reads its launch words and says nothing.
+pub const SILENT_STUB: &str =
+    "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+
+/// The seams a crown e2e sets: no tag seed, panes never read quiet, the
+/// worktree flags on a 1 s cadence.
+pub const CROWN_ENV: &[(&str, &str)] = &[
+    ("MESIMON_NO_TAG_SEED", "1"),
+    ("MESIMON_PANE_QUIET_MS", "600000"),
+    ("MESIMON_WT_REFRESH_TICKS", "4"),
+];
+
 pub const RECORDING_STUB: &str =
     "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do \
                               printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
@@ -1038,6 +1067,16 @@ impl Harness {
         std::fs::read_to_string(self.dir.join("got.txt")).unwrap_or_default()
     }
 
+    /// `a`'s claude, crowned and walked through one turn to idle: the stub
+    /// emits no `SessionStart`, so it sits at `Spawning` until then.
+    pub fn crown_idle(&self, c: &mut TestClient, a: ulid::Ulid) -> uuid::Uuid {
+        let sa = c.spawn_claude(a);
+        assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+        std::thread::sleep(Duration::from_millis(500));
+        self.one_turn(c, sa);
+        sa
+    }
+
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
         assert!(matches!(
@@ -1092,6 +1131,72 @@ pub fn commit(repo: &Path, file: &str) -> String {
     git(repo, &["add", file]);
     git(repo, &["commit", "-qm", file]);
     git(repo, &["rev-parse", "--short=7", "HEAD"]).trim().to_string()
+}
+
+/// Whether `repo` has a local branch `branch`.
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Proc::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+/// The lines a recording stub appended to `got` that hold `needle`.
+pub fn lines_in(got: &Path, needle: &str) -> Vec<String> {
+    std::fs::read_to_string(got)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A worktree ticket with a spawned (stub) claude, its branch as it was cut:
+/// the ticket, its session, its branch and its path.
+pub fn cut(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
+    let id = c.create_ticket(title);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: id,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+            plan: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_attached(c, id);
+    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
+    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
+        c.board().sessions.iter().any(|s| s.ticket == id)
+    });
+    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
+    (id, sid, wt.branch, path)
+}
+
+/// [`cut`], then one commit (`<title>.txt`) on the branch.
+pub fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
+    let (id, sid, branch, path) = cut(c, title);
+    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", title]);
+    (id, sid, branch, path)
+}
+
+/// Kill the ticket's claude and wait for the reaper: the archive gate wants
+/// nothing on the ticket holding a pane.
+pub fn quiet(c: &mut TestClient, id: ulid::Ulid, sid: uuid::Uuid) {
+    let _ = c.request(Command::KillSession { id: sid });
+    wait_until(Duration::from_secs(15), "the ticket to go quiet", || {
+        c.board().sessions.iter().filter(|s| s.ticket == id).all(|s| !s.state.has_pane())
+    });
 }
 
 // ------------------------------------------------------------- time

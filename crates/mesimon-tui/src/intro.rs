@@ -25,7 +25,7 @@ use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::Terminal;
 
 use crate::creature::{self, Anim, Eyes, Frame, Mouth, Role, Size};
@@ -406,36 +406,11 @@ const TAGLINE: &str = "a terminal kanban board that runs your coding agents";
 const OPENS: &str = "enter opens your board";
 const SKIPS: &str = "any key skips";
 
-/// A frame's pixels, inked: one column and half a row each.
-struct Canvas {
-    w: i16,
-    h: i16,
-    px: Vec<Option<Color>>,
-}
-
-impl Canvas {
-    fn put(&mut self, x: i16, y: i16, c: Color) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = Some(c);
-        }
-    }
-
-    fn get(&self, x: i16, y: i16) -> Option<Color> {
-        (x >= 0 && y >= 0 && x < self.w && y < self.h)
-            .then(|| self.px[(y * self.w + x) as usize])
-            .flatten()
-    }
-}
-
 /// Draw `beat` into `area`, the block centred in it.
 fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &CreatureInk) {
     let rows = ROWS;
     let top = area.y + area.height.saturating_sub(rows) / 2;
-    let mut cv = Canvas {
-        w: area.width as i16,
-        h: rows as i16 * 2,
-        px: vec![None; area.width as usize * rows as usize * 2],
-    };
+    let mut cv = creature::Canvas::new(area.width as i16, rows as i16 * 2);
     let mut put = |g: &Glyph, x0: i16, y0: i16, keep: f32| {
         for y in 0..g.h {
             for x in 0..g.w {
@@ -494,18 +469,7 @@ fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &Creatu
         }
     }
     // Pixels to half blocks, as the shin's own stage does.
-    for r in 0..rows as i16 {
-        for c in 0..cv.w {
-            let (t, b) = (cv.get(c, 2 * r), cv.get(c, 2 * r + 1));
-            let Some((ch, style)) = creature::pixel_cell(t, b, ink, theme.block_gaps) else {
-                continue;
-            };
-            let at = Position::new(area.x + c as u16, top + r as u16);
-            if buf.area.contains(at) {
-                buf[at].set_char(ch).set_style(style);
-            }
-        }
-    }
+    cv.blit(buf, Position::new(area.x, top), ink, theme.block_gaps);
     for (c, r, ch) in marks {
         if c < 0 || r < 0 {
             continue;
@@ -701,6 +665,7 @@ pub(crate) fn comparison_frames(theme: &Theme, w: u16, h: u16) -> Vec<(String, u
 mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
+    use ratatui::style::Color;
 
     fn screen(beat: &Beat, w: u16, h: u16) -> String {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);

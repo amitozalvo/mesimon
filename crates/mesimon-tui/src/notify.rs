@@ -596,6 +596,24 @@ pub struct Channels {
 /// The two ladders. The group is not resolved here — this function knows no
 /// repo — and [`Notifier::start`](crate::notifier::Notifier::start) fills it
 /// in beside the board's own name, the other per-board constant.
+#[cfg(test)]
+impl Channels {
+    /// No banner and nothing resolved beside `player`: the shape every test
+    /// starts from.
+    fn quiet(player: Player) -> Channels {
+        Channels {
+            banner: Banner::Off,
+            player,
+            group: None,
+            click: None,
+            icon_dir: None,
+            notifier_app: None,
+            poster: None,
+            wsl_distro: None,
+        }
+    }
+}
+
 pub fn find() -> Channels {
     Channels {
         banner: find_banner(
@@ -926,7 +944,7 @@ fn find_player_for(
     let fallback = linux_player(&which);
     if wsl {
         if let Some(program) =
-            which("powershell.exe").or_else(|| which(crate::caffeine::WSL_POWERSHELL))
+            which("powershell.exe").or_else(|| which(crate::opener::WSL_POWERSHELL))
         {
             return Player::Wsl {
                 program: program.to_string_lossy().into_owned(),
@@ -1429,13 +1447,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("msmn-no-icon-{}", uuid::Uuid::new_v4()));
         let mut ch = Channels {
             banner: Banner::TerminalNotifier,
-            player: Player::Off,
-            group: None,
-            click: None,
             icon_dir: Some(dir.clone()),
-            notifier_app: None,
-            poster: None,
-            wsl_distro: None,
+            ..Channels::quiet(Player::Off)
         };
         post(&ch, &Post::sound_only(Sound::Off), &Console::default(), Delivery::default()).unwrap();
         ch.banner = Banner::Off;
@@ -1459,13 +1472,11 @@ mod tests {
         std::fs::create_dir_all(&source).unwrap();
         let ch = Channels {
             banner: Banner::TerminalNotifier,
-            player: Player::Off,
             group: Some("mesimon-fallback".into()),
             click: Some(click(ITERM2_ID)),
             icon_dir: Some(root.join("notifications")),
             notifier_app: Some(source),
-            poster: None,
-            wsl_distro: None,
+            ..Channels::quiet(Player::Off)
         };
         let p = Post {
             needs_you: false,
@@ -1526,13 +1537,8 @@ mod tests {
             std::env::temp_dir().join(format!("msmn-notify-applet-{}", uuid::Uuid::new_v4()));
         let ch = Channels {
             banner: Banner::Osascript,
-            player: Player::Off,
-            group: None,
-            click: None,
             icon_dir: Some(root.join("notifications")),
-            notifier_app: None,
-            poster: None,
-            wsl_distro: None,
+            ..Channels::quiet(Player::Off)
         };
         let p = Post {
             needs_you: true,
@@ -2130,14 +2136,8 @@ mod tests {
     fn an_own_sound_is_written_once_and_played_by_path_or_stands_in() {
         let root = std::env::temp_dir().join(format!("msmn-own-sound-{}", uuid::Uuid::new_v4()));
         let mut ch = Channels {
-            banner: Banner::Off,
-            player: Player::Paplay,
-            group: None,
-            click: None,
             icon_dir: Some(root.join("notifications")),
-            notifier_app: None,
-            poster: None,
-            wsl_distro: None,
+            ..Channels::quiet(Player::Paplay)
         };
         let played = |ch: &Channels, sound: Sound| {
             let launched = std::cell::RefCell::new(Vec::new());
@@ -2191,7 +2191,7 @@ mod tests {
             let which = |n: &str| (n == name).then(|| PathBuf::from(format!("/bin/{n}")));
             assert_eq!(find_player_for(None, false, true, which), expected);
         }
-        for host in ["powershell.exe", crate::caffeine::WSL_POWERSHELL] {
+        for host in ["powershell.exe", crate::opener::WSL_POWERSHELL] {
             let which = |name: &str| {
                 if name == host {
                     Some(PathBuf::from("/resolved/host/powershell.exe"))
@@ -2250,16 +2250,7 @@ mod tests {
                 (name == "powershell.exe" || (linux_available && name == "canberra-gtk-play"))
                     .then(|| PathBuf::from(format!("/bin/{name}")))
             });
-            let ch = Channels {
-                banner: Banner::Off,
-                player,
-                group: None,
-                click: None,
-                icon_dir: None,
-                notifier_app: None,
-                poster: None,
-                wsl_distro: None,
-            };
+            let ch = Channels::quiet(player);
             let console = Console::default();
             console.set_held(held);
             let launched = std::cell::RefCell::new(Vec::new());
@@ -2300,16 +2291,7 @@ mod tests {
             let player = find_player_for(Some(env), false, true, |_| {
                 panic!("explicit choice probes no helpers")
             });
-            let ch = Channels {
-                banner: Banner::Off,
-                player,
-                group: None,
-                click: None,
-                icon_dir: None,
-                notifier_app: None,
-                poster: None,
-                wsl_distro: None,
-            };
+            let ch = Channels::quiet(player);
             for sound in [Sound::Glass, Sound::Off] {
                 let launched = std::cell::Cell::new(0);
                 let result = post_with(
@@ -2335,16 +2317,7 @@ mod tests {
     fn a_silent_post_runs_nothing() {
         // Off on both channels with a real body: `post` must not try to spawn,
         // and `Off` is the one rung that writes no escape either.
-        let ch = Channels {
-            banner: Banner::Off,
-            player: Player::Off,
-            group: None,
-            click: None,
-            icon_dir: None,
-            notifier_app: None,
-            poster: None,
-            wsl_distro: None,
-        };
+        let ch = Channels::quiet(Player::Off);
         let p = Post {
             needs_you: false,
             title: "t".into(),
@@ -2493,13 +2466,8 @@ mod tests {
     fn doctor_names_the_terminal_or_says_none_will_show() {
         let mut ch = Channels {
             banner: Banner::TerminalNotifier,
-            player: Player::Off,
-            group: None,
-            click: None,
-            icon_dir: None,
-            notifier_app: None,
             poster: Some(Poster::Osc99),
-            wsl_distro: None,
+            ..Channels::quiet(Player::Off)
         };
         assert_eq!(banner_words(&ch, false), "terminal-notifier");
         assert_eq!(banner_words(&ch, true), "your terminal, kitty (OSC 99)");

@@ -18,6 +18,7 @@
 //! backends terminate when our pipe closes. The WSL bridge also has a
 //! four-hour cap and a taskkill fallback; it remains opt-in and unverified.
 
+use crate::opener::WSL_POWERSHELL;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -33,11 +34,6 @@ const WHY: &str = "mesimon: an agent is working";
 /// guarantee from here. Four hours: longer than any turn, shorter than a
 /// night.
 const WSL_MAX_HOLD_MS: u64 = 4 * 60 * 60 * 1000;
-
-/// Where WSL's PATH usually has it, for the case where interop is on but the
-/// System32 directory is not on PATH.
-pub(crate) const WSL_POWERSHELL: &str =
-    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
 /// What the ladder answered: how this machine can be held awake, if it can.
 #[derive(Debug, Clone, PartialEq, Eq)]

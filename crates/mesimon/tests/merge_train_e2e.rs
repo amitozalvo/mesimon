@@ -15,11 +15,11 @@
 mod common;
 use common::*;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command as Proc;
 use std::time::Duration;
 
-use mesimon_core::board::{MergeInto, SessionKind, SessionState, WorkspaceStrategy};
+use mesimon_core::board::{MergeInto, SessionState};
 use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response};
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
@@ -37,40 +37,6 @@ fn automation_of(c: &mut TestClient) -> AutomationStatus {
         Response::Board { automation, .. } => automation,
         other => panic!("not a board: {other:?}"),
     }
-}
-
-/// A worktree ticket with a spawned agent and one commit on its branch.
-fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(c, id);
-    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
-    git(&path, &["commit", "-qm", title]);
-    (id, sid, wt.branch, path)
 }
 
 /// `t` on the card (T-227): a REVIEW ticket the armed train would merge is
@@ -724,12 +690,8 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     // one it does not know about.
     let base_before = git(&repo, &["rev-parse", "main"]);
     let key_a = c.board().ticket(a).unwrap().short_key.clone();
-    let read_merge = |c: &mut TestClient| match c.send(
-        mesimon_core::Principal::Agent { session: sa },
-        Command::AgentReadTicket { key: key_a.clone(), full: false, plan: false },
-    ) {
-        Response::AgentTicket { ticket } => ticket.merge.expect("a branch has a merger"),
-        other => panic!("get_ticket: {other:?}"),
+    let read_merge = |c: &mut TestClient| {
+        c.agent_read(sa, &key_a).unwrap().merge.expect("a branch has a merger")
     };
     std::fs::write(repo.join("alpha.txt"), "not mine\n").unwrap();
     std::thread::sleep(Duration::from_millis(500));

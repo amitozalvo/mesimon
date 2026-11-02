@@ -655,7 +655,7 @@ mod tests {
 
         let root = repo.join("_wtroot");
         std::fs::create_dir_all(&root).unwrap();
-        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "diff me", false).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "diff me", false, None).unwrap();
 
         // Agent work on the branch: edit, rename, chmod, binary, Hebrew name.
         let wt = b.path.clone();
@@ -1141,6 +1141,7 @@ mod tests {
             "T-1",
             "Fix",
             false,
+            None,
             &mut |_, _| {},
         )
         .unwrap();

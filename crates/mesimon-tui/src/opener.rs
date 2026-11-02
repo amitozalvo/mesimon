@@ -23,6 +23,19 @@ use std::process::{Command, Stdio};
 /// rung for a WSL whose PATH leaves the Windows directories out
 /// (`appendWindowsPath=false`). `image_paste.rs` finds PowerShell the same way.
 const WSL_EXPLORER: &str = "/mnt/c/Windows/explorer.exe";
+/// Where WSL's PATH usually has PowerShell, for the case where interop is on
+/// but the System32 directory is not on PATH.
+pub(crate) const WSL_POWERSHELL: &str =
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+
+/// Windows PowerShell as a WSL guest finds it: on PATH, or at its usual
+/// place when that is a file.
+pub(crate) fn powershell() -> Option<PathBuf> {
+    which_on_path("powershell.exe").or_else(|| {
+        let path = PathBuf::from(WSL_POWERSHELL);
+        path.is_file().then_some(path)
+    })
+}
 
 /// The program that opens a URL or a file here, if there is one.
 pub fn find() -> Option<String> {

@@ -16,67 +16,12 @@
 mod common;
 use common::*;
 
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{ColumnOffers, SessionKind, WorkspaceStrategy};
+use mesimon_core::board::{ColumnOffers, SessionKind};
 use mesimon_core::command::{Command, MergeOutcome, Response};
 
 const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n";
-
-fn branch_exists(repo: &Path, branch: &str) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
-        .output()
-        .unwrap()
-        .status
-        .success()
-}
-
-/// A worktree ticket with a spawned (stub) claude and one commit on its branch.
-fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(c, id);
-    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
-    git(&path, &["commit", "-qm", title]);
-    (id, sid, wt.branch, path)
-}
-
-/// Kill the ticket's claude and wait for the reaper: the archive gate wants
-/// nothing on the ticket holding a pane.
-fn quiet(c: &mut TestClient, id: ulid::Ulid, sid: uuid::Uuid) {
-    let _ = c.request(Command::KillSession { id: sid });
-    wait_until(Duration::from_secs(15), "the ticket to go quiet", || {
-        c.board().sessions.iter().filter(|s| s.ticket == id).all(|s| !s.state.has_pane())
-    });
-}
 
 /// `m` until the merge goes through (the sample may still be catching up).
 fn merge(c: &mut TestClient, id: ulid::Ulid) {

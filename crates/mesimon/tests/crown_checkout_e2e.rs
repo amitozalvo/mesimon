@@ -9,25 +9,17 @@ use mesimon_core::Principal;
 use std::time::Duration;
 
 fn holders(c: &mut TestClient, crown: uuid::Uuid) -> Vec<String> {
-    match c.send(Principal::Agent { session: crown }, Command::AgentListBoard) {
-        Response::AgentBoard { board } => board.checkout_held_by,
-        other => panic!("list_board: {other:?}"),
-    }
+    c.crown_board(crown).checkout_held_by
 }
 
 fn park(c: &mut TestClient, crown: uuid::Uuid, key: &str) {
-    let seen = c.agent_read(crown, key).unwrap().seen;
-    let reply = c.send(
-        Principal::Agent { session: crown },
-        Command::AgentSleepTicket { key: key.into(), seen },
-    );
+    let reply = c.crown_sleep(crown, key);
     assert!(matches!(reply, Response::AgentTicketUpdated { .. }), "{reply:?}");
 }
 
 #[test]
 fn a_parked_done_worker_releases_a_non_git_checkout_without_archive() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let Some(h) = Harness::boot("crown-checkout-release", Some(STUB)) else { return };
     assert!(!h.repo.join(".git").exists(), "the reported case has no Git worktrees");
     let mut c = h.client("crown-checkout-release");
@@ -36,9 +28,7 @@ fn a_parked_done_worker_releases_a_non_git_checkout_without_archive() {
     let next = c.create_ticket("next worker");
     let first_key = c.key_of(first);
     let next_key = c.key_of(next);
-    let crown = c.spawn_claude(crown_ticket);
-    assert!(matches!(c.request(Command::CrownTicket { id: crown_ticket }), Response::Ok));
-    h.one_turn(&mut c, crown);
+    let crown = h.crown_idle(&mut c, crown_ticket);
     let reply = c.crown_start(crown, &first_key, "shared_checkout");
     assert!(matches!(reply, Response::AgentStarted { woken: false, .. }), "{reply:?}");
     let first_session = c.board().live_agent(first).unwrap().id;
@@ -111,7 +101,7 @@ fn a_failed_reap_keeps_the_checkout_until_pane_absence_is_confirmed() {
     let unknown = scratch.0.join("fail-list");
     let attempts = scratch.0.join("attempts");
     let wrapper = scratch.0.join("tmux.sh");
-    let tmux = mesimon_backend_tmux::tmux_bin();
+    let tmux_bin = mesimon_backend_tmux::tmux_bin();
     std::fs::write(
         &wrapper,
         format!(
@@ -122,7 +112,7 @@ fn a_failed_reap_keeps_the_checkout_until_pane_absence_is_confirmed() {
             failed.display(),
             attempts.display(),
             unknown.display(),
-            tmux.display(),
+            tmux_bin.display(),
         ),
     )
     .unwrap();
@@ -143,9 +133,7 @@ fn a_failed_reap_keeps_the_checkout_until_pane_absence_is_confirmed() {
     let next = c.create_ticket("next worker");
     let key = c.key_of(worker);
     let next_key = c.key_of(next);
-    let mut crown = c.spawn_claude(crown_ticket);
-    assert!(matches!(c.request(Command::CrownTicket { id: crown_ticket }), Response::Ok));
-    h.one_turn(&mut c, crown);
+    let mut crown = h.crown_idle(&mut c, crown_ticket);
     assert!(matches!(c.crown_start(crown, &key, "shared_checkout"), Response::AgentStarted { .. }));
     let session = c.board().live_agent(worker).unwrap().id;
     h.one_turn(&mut c, session);
@@ -155,14 +143,7 @@ fn a_failed_reap_keeps_the_checkout_until_pane_absence_is_confirmed() {
     let count = || std::fs::read_to_string(&attempts).unwrap_or_default().lines().count();
     wait_until(Duration::from_secs(12), "the first failed removal", || count() > 0);
     assert!(holders(&mut c, crown).contains(&key));
-    let real = |args: &[&str]| {
-        std::process::Command::new(&tmux)
-            .arg("-S")
-            .arg(h.paths.tmux_sock())
-            .args(args)
-            .output()
-            .unwrap()
-    };
+    let real = |args: &[&str]| tmux(&h.paths.tmux_sock()).args(args).output().unwrap();
     let pane = real(&["display-message", "-p", "-t", &sid, "#{pane_dead}"]);
     assert!(pane.status.success());
     assert_eq!(String::from_utf8_lossy(&pane.stdout).trim(), "0", "the old process is alive");

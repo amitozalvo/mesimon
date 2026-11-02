@@ -454,8 +454,10 @@ def main():
     if args.both_roads and mod is None:
         parser.error("--both-roads needs an unfiltered full workspace suite starting on hooks; "
                      "run a targeted mod check with MESIMON_TEST_ROAD=mod instead")
+    pass_roads = [first_road]
     if mod:
         passes.append((mod, {"MESIMON_TEST_ROAD": "mod"}))
+        pass_roads.append("mod")
     if args.timeout is None:
         # One road under load has taken ~1000 s (T-1099); both, side by
         # side, take about one road's time plus the build, and the room
@@ -482,12 +484,12 @@ def main():
         print("Check not started: interrupted while waiting", file=sys.stderr)
         return 128 + signal.SIGINT
     try:
-        return run_claimed(args, command, passes, build_dirs, watched_paths, claims)
+        return run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, claims)
     finally:
         claims.release()
 
 
-def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
+def run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, claims):
     # Containers can retain audit metadata on their build volume even after
     # their process namespace and temporary fixture directories disappear.
     audit_root = Path(os.environ.get("MESIMON_TEST_AUDIT_ROOT", "/tmp"))
@@ -613,9 +615,7 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims):
             # Evidence is for a failure; a clean pass leaves nothing in /tmp.
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
-            stamp_pass(command, env, [env.get("MESIMON_TEST_ROAD", "hooks"), "mod"] if len(passes) > 1
-                       else [env.get("MESIMON_TEST_ROAD", "hooks")],
-                       build_dirs[0] if build_dirs else None)
+            stamp_pass(command, env, pass_roads, build_dirs[0] if build_dirs else None)
         # Every relink leaves its split-debuginfo objects behind and cargo
         # collects none of them; a week of that made deps/ 879k entries and
         # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned

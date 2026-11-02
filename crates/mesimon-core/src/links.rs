@@ -32,6 +32,20 @@ pub enum Found {
     },
 }
 
+impl Found {
+    /// The target as a body spells it: the address itself, a path with its
+    /// `:LINE` back on, an attachment's `attachment:` word.
+    pub fn spelling(&self) -> String {
+        match self {
+            Found::Url(s) | Found::Ticket(s) => s.clone(),
+            Found::Path { path, line } => {
+                line.map_or_else(|| path.clone(), |n| format!("{path}:{n}"))
+            }
+            Found::Attachment(id) => crate::attachment::target(*id),
+        }
+    }
+}
+
 /// One link in document order: the markdown label when there was one, and
 /// the target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,12 +121,22 @@ fn markdown_link(chars: &[char], open: usize) -> Option<(Option<Link>, usize)> {
     }
     let label: String = chars[open + 1..close].iter().collect();
     let raw: String = chars[close + 2..end].iter().collect();
-    let target = raw.split_whitespace().next().unwrap_or("");
-    let target = target.strip_prefix('<').and_then(|t| t.strip_suffix('>')).unwrap_or(target);
     let label = label.trim();
-    let link = classify(target)
+    let link = classify_target(&raw)
         .map(|target| Link { label: (!label.is_empty()).then(|| label.to_string()), target });
     Some((link, end + 1))
+}
+
+/// What a markdown link's `(target)` points at, if anything: the first
+/// word of it, its `<angle>` brackets off, classified as a word of prose
+/// is. A target broken across lines is no link, as `extract` reads it.
+pub fn classify_target(raw: &str) -> Option<Found> {
+    if raw.contains('\n') {
+        return None;
+    }
+    let target = raw.split_whitespace().next().unwrap_or("");
+    let target = target.strip_prefix('<').and_then(|t| t.strip_suffix('>')).unwrap_or(target);
+    classify(target)
 }
 
 const LEAD: &[char] = &['(', '[', '<', '{', '"', '\'', '`', '*', '_'];

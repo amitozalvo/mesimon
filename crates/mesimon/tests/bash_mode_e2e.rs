@@ -74,9 +74,7 @@ fn a_bash_mode_command_under_an_idle_claude_is_its_foreground() {
             .clone()
     };
 
-    let column = |c: &mut TestClient| {
-        c.board().tickets.iter().find(|t| t.id == ticket).expect("ticket").column.clone()
-    };
+    let column = |c: &mut TestClient| c.board().ticket(ticket).expect("ticket").column.clone();
 
     let stub_dir = h.stub.as_ref().unwrap().parent().unwrap().to_path_buf();
     wait_until(Duration::from_secs(30), "the stub to spawn its launch-time shell", || {

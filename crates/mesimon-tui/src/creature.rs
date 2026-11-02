@@ -718,12 +718,16 @@ impl Picture {
 /// One frame on its own clock (the reload screen's, T-1102), composed as
 /// wide as its own scene needs.
 pub(crate) fn picture(size: Size, fr: &Frame) -> Picture {
-    let pad = match fr.scene {
-        Some(Scene::Laptop { .. }) => laptop(size).map_or(0, |l| l.pad),
-        Some(Scene::Cloud(_)) => cloud(size).map_or(0, |c| c.pad),
-        None => 0,
-    };
-    compose(size, fr, pad)
+    compose(size, fr, scene_pad(size, fr).unwrap_or(0))
+}
+
+/// The room a frame's prop asks for beside the body, when it has one that
+/// fits this size.
+fn scene_pad(size: Size, fr: &Frame) -> Option<i16> {
+    match fr.scene? {
+        Scene::Laptop { .. } => laptop(size).map(|l| l.pad),
+        Scene::Cloud(_) => cloud(size).map(|c| c.pad),
+    }
 }
 
 /// Rim light over a grid's `Body` pixels: top and left edges catch it, the
@@ -1117,15 +1121,7 @@ impl Cloud {
 /// How much wider than the body an animation draws: its widest scene.
 fn anim_pad(size: Size, anim: Anim) -> i16 {
     let (intro, cycle) = anim.timeline();
-    intro
-        .iter()
-        .chain(cycle)
-        .filter_map(|fr| match fr.scene? {
-            Scene::Laptop { .. } => laptop(size).map(|l| l.pad),
-            Scene::Cloud(_) => cloud(size).map(|c| c.pad),
-        })
-        .max()
-        .unwrap_or(0)
+    intro.iter().chain(cycle).filter_map(|fr| scene_pad(size, fr)).max().unwrap_or(0)
 }
 
 // -- the stage ------------------------------------------------------------------
@@ -1175,6 +1171,53 @@ pub(crate) fn pixel_cell(
         (Some(t), None) => Some(('▀', Style::default().fg(t))),
         (None, Some(b)) => Some(('▄', Style::default().fg(b))),
         (None, None) => None,
+    }
+}
+
+/// A scene's pixels, inked: one column and half a row each. The intro and
+/// the loader paint into one and `blit` it as half blocks, the way `stage`
+/// lays a picture.
+pub(crate) struct Canvas {
+    w: i16,
+    h: i16,
+    px: Vec<Option<Color>>,
+}
+
+impl Canvas {
+    pub(crate) fn new(w: i16, h: i16) -> Canvas {
+        Canvas { w, h, px: vec![None; w.max(0) as usize * h.max(0) as usize] }
+    }
+
+    pub(crate) fn put(&mut self, x: i16, y: i16, c: Color) {
+        if x >= 0 && y >= 0 && x < self.w && y < self.h {
+            self.px[(y * self.w + x) as usize] = Some(c);
+        }
+    }
+
+    pub(crate) fn get(&self, x: i16, y: i16) -> Option<Color> {
+        (x >= 0 && y >= 0 && x < self.w && y < self.h)
+            .then(|| self.px[(y * self.w + x) as usize])
+            .flatten()
+    }
+
+    /// Pixels to half blocks from `origin`, inside the buffer's area.
+    pub(crate) fn blit(
+        &self,
+        buf: &mut Buffer,
+        origin: Position,
+        ink: &CreatureInk,
+        block_gaps: bool,
+    ) {
+        for r in 0..self.h / 2 {
+            for c in 0..self.w {
+                let (t, b) = (self.get(c, 2 * r), self.get(c, 2 * r + 1));
+                let Some((ch, style)) = pixel_cell(t, b, ink, block_gaps) else { continue };
+                let at = Position::new(origin.x + c as u16, origin.y + r as u16);
+                if buf.area.contains(at) {
+                    buf[at].set_char(ch).set_style(style);
+                }
+            }
+        }
     }
 }
 

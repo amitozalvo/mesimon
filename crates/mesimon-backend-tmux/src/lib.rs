@@ -643,13 +643,17 @@ impl TmuxBackend {
     /// Live pane directories, including terminals without session records.
     /// A failed read is not evidence that a worktree is unused.
     pub fn live_directories(&self) -> Result<Vec<PathBuf>> {
-        if !self.server_alive() {
-            if self.endpoint_absent() {
-                return Ok(Vec::new());
+        // As `pane_facts`: the liveness forks only on a failure (T-838).
+        let out = match self.list_panes(&["pane_dead", "pane_current_path"]) {
+            Ok(out) => out,
+            Err(_) if !self.server_alive() => {
+                if self.endpoint_absent() {
+                    return Ok(Vec::new());
+                }
+                bail!("cannot verify tmux pane directories");
             }
-            bail!("cannot verify tmux pane directories");
-        }
-        let out = self.list_panes(&["pane_dead", "pane_current_path"])?;
+            Err(e) => return Err(e),
+        };
         out.lines()
             .map(|line| {
                 let (dead, path) = line.split_once(SEP).context("unreadable pane directory")?;

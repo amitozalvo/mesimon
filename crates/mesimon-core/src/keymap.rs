@@ -6271,12 +6271,7 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// Theme has none: its page is the picker. A row whose `avail` is false is
 /// not on the page at all (the notifications rows while they are off).
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    section_verbs(ctx.settings_section)
-        .iter()
-        .filter_map(|v| {
-            SETTINGS_ITEMS.iter().chain(NOTIFY_ITEMS).find(|m| m.verb == *v && m.live(ctx))
-        })
-        .collect()
+    section_rows(ctx.settings_section).into_iter().filter(|m| m.live(ctx)).collect()
 }
 
 /// Every row a Settings section can show, live or not, in the page's order:
@@ -6492,11 +6487,8 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         }),
         Verb::CrownMode => choice(&["autonomous", "supervised"], c.crown_mode.word()),
         Verb::MergeInto => match c.merge_into {
-            crate::board::MergeInto::Main => choice(&["main", "pull requests"], "main"),
-            crate::board::MergeInto::PullRequests => {
-                choice(&["main", "pull requests"], "pull requests")
-            }
             crate::board::MergeInto::Branch(_) => Value::Word(c.merge_into.word()),
+            _ => choice(&["main", "pull requests"], &c.merge_into.word()),
         },
         Verb::SetMergeBranch => {
             Value::Word(c.merge_into.integration_branch().unwrap_or("not set").to_string())

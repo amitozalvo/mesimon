@@ -76,26 +76,22 @@ pub fn checkout_holders(
     reserved: &[ulid::Ulid],
 ) -> Vec<Holder> {
     let mut out: Vec<Holder> = Vec::new();
-    for s in &board.sessions {
-        if !(s.kind.is_agent() && s.holds_process())
-            || s.cwd != checkout
-            || besides.contains(&s.ticket)
-        {
-            continue;
+    let mut hold = |id: ulid::Ulid, state: &'static str| {
+        if besides.contains(&id) {
+            return;
         }
-        let Some(t) = board.ticket(s.ticket) else { continue };
+        let Some(t) = board.ticket(id) else { return };
         if !out.iter().any(|h| h.key == t.short_key) {
-            out.push(Holder { key: t.short_key.clone(), state: s.state_word() });
+            out.push(Holder { key: t.short_key.clone(), state });
+        }
+    };
+    for s in &board.sessions {
+        if s.kind.is_agent() && s.holds_process() && s.cwd == checkout {
+            hold(s.ticket, s.state_word());
         }
     }
     for id in reserved {
-        if besides.contains(id) {
-            continue;
-        }
-        let Some(t) = board.ticket(*id) else { continue };
-        if !out.iter().any(|h| h.key == t.short_key) {
-            out.push(Holder { key: t.short_key.clone(), state: "reserved" });
-        }
+        hold(*id, "reserved");
     }
     out
 }

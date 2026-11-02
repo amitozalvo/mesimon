@@ -8,6 +8,7 @@ use mesimon_core::board::{
 };
 use mesimon_core::keymap::HeaderChip;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
@@ -119,18 +120,15 @@ fn fixture(waiting: bool) -> Board {
 }
 
 fn press(app: &mut App, c: char) {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("key");
 }
 
 /// The transcript's link walk: Tab forward, Shift+Tab back (T-1112).
 fn next_link(app: &mut App) {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
 }
 
 fn prev_link(app: &mut App) {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).expect("shift+tab");
 }
 
@@ -947,11 +945,7 @@ fn help_groups_sit_side_by_side_when_they_fit() {
 fn golden_archive_armed_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Char('a'),
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE).unwrap();
     let lines = render(&app, 120, 30);
     // Armed, and saying so — not silently waiting.
     assert!(
@@ -970,11 +964,7 @@ fn golden_archive_armed_120() {
 fn golden_snooze_armed_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Char('z'),
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Char('z'), KeyModifiers::NONE).unwrap();
     let lines = render(&app, 120, 30);
     assert!(
         lines.last().is_some_and(|l| l.contains("enter snooze 1h")),
@@ -986,11 +976,7 @@ fn golden_snooze_armed_120() {
         "the card must carry the preset while armed"
     );
     golden("board_snooze_armed_120x30", &lines);
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Char('z'),
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Char('z'), KeyModifiers::NONE).unwrap();
     let lines = render(&app, 120, 30);
     assert!(lines.last().is_some_and(|l| l.contains("enter snooze 4h")), "{:?}", lines.last());
     assert!(lines.iter().any(|l| l.contains("snooze 4h")));
@@ -1129,7 +1115,6 @@ fn golden_settings_crown_page() {
 /// once, and nothing moves otherwise.
 #[test]
 fn the_appearance_preview_strikes_once_when_the_row_turns_lightning_on() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     fn at_turn() -> u64 {
         10_000
     }
@@ -1268,7 +1253,6 @@ fn rebase_dialog_names_the_selected_integration_target() {
 #[test]
 fn integration_branch_entry_draws_text_and_cursor_and_cancel_returns_to_settings() {
     use mesimon_core::keymap::{SettingsSection, Verb};
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     for (w, h) in [(60, 20), (120, 30)] {
         let mut app = app_graphite(fixture_archived());
@@ -1351,11 +1335,7 @@ fn golden_agent_prompts_120() {
 fn golden_agent_prompt_editing_120() {
     let mut app = app_graphite(fixture_archived());
     app.mode = Mode::Prompts { idx: 0, editing: None };
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("enter");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
     assert!(matches!(app.mode, Mode::Prompts { editing: Some(_), .. }), "{:?}", app.mode);
     golden("agent_prompt_editing_120x30", &render(&app, 120, 30));
 }
@@ -1376,7 +1356,6 @@ fn golden_sharing_signed_out_120() {
 /// says what a self-hoster types over it.
 #[test]
 fn golden_sharing_editing_120() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     app.team_name_draft = "Dana".into();
     app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
@@ -1390,7 +1369,6 @@ fn golden_sharing_editing_120() {
 /// and the checkout under it.
 #[test]
 fn golden_license_key_signing_in_120() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     app.team_name_draft = "Dana".into();
     let sign_in = app.sharing_rows().iter().position(|r| *r == SharingRow::SignIn).expect("row");
@@ -1404,7 +1382,6 @@ fn golden_license_key_signing_in_120() {
 /// key, the checkout and the sign-out, armed, saying what it costs.
 #[test]
 fn golden_license_key_signed_in_120() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     let mut device = crate::app::shared_team_fixture().device.expect("device");
     device.relay = mesimon_core::team::HOSTED_RELAY.into();
@@ -1474,7 +1451,6 @@ fn golden_sharing_joined_120() {
 /// field and the edge reads the text field's keys.
 #[test]
 fn golden_sharing_joining_120() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     app.team = crate::app::joined_team_fixture();
     app.seed_team_drafts_for_test();
@@ -1956,11 +1932,7 @@ fn golden_column_settings_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let lines = render(&app, 120, 32);
     assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
@@ -1973,11 +1945,7 @@ fn golden_column_free_worktree_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let row = mesimon_core::keymap::column_items(&app.ctx())
         .iter()
         .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnFreeWorktree)
@@ -1999,11 +1967,7 @@ fn golden_column_settings_60_scrolls_to_the_cursor() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let door = mesimon_core::keymap::column_items(&app.ctx()).len() - 1;
     if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
         *idx = door;
@@ -2021,11 +1985,7 @@ fn golden_column_agent_behaviour_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let row = mesimon_core::keymap::column_items(&app.ctx())
         .iter()
         .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnAgentBehaviour)
@@ -2033,11 +1993,7 @@ fn golden_column_agent_behaviour_120() {
     if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
         *idx = row;
     }
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let lines = render(&app, 120, 30);
     assert!(
         lines.iter().any(|l| l.contains(" Mode ") && l.contains("inherit (auto)")),
@@ -2055,11 +2011,7 @@ fn golden_codex_column_agent_behaviour() {
     let mut app = app_graphite(board);
     app.cursor_col = 1;
     app.cursor_row = None;
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let row = mesimon_core::keymap::column_items(&app.ctx())
         .iter()
         .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnAgentBehaviour)
@@ -2067,11 +2019,7 @@ fn golden_codex_column_agent_behaviour() {
     if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
         *idx = row;
     }
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     for (width, height, name) in
         [(120, 30, "column_codex_agent_120x30"), (60, 20, "column_codex_agent_60x20")]
     {
@@ -2215,11 +2163,7 @@ fn golden_ticket_terminal_120() {
 
     // Armed: the row says what the next Enter does, and a busy terminal
     // names its command in place of the word.
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     app.terminals[0].foreground = Some("cargo".into());
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("$ cargo")), "{lines:#?}");
@@ -2706,7 +2650,6 @@ fn test_diff_pane_lays_out_once() {
 #[test]
 fn half_page_jumps_round_small_views_and_preserve_full_page_keys() {
     use crate::app::View;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     for screen in
         [Screen::Diff, Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 }, Screen::Releases]
@@ -2903,7 +2846,6 @@ fn checkout_commits_show_both_directions_and_empty_states() {
 #[test]
 fn a_commit_row_is_picked_and_opens_to_its_own_diff() {
     use mesimon_core::command::GitCommit;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     install_checkout_diff(&mut app);
     app.diff.as_mut().unwrap().commits = true;
@@ -2952,7 +2894,6 @@ fn a_commit_row_is_picked_and_opens_to_its_own_diff() {
 #[test]
 fn a_workspace_lists_each_repo_and_opens_a_commit_in_it() {
     use mesimon_core::command::{DiffTarget, GitCommit, RepoGit, RepoSync};
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let commit =
         |oid: &str, subject: &str| GitCommit { oid: oid.repeat(40), subject: subject.into() };
     let repo = |name: &str| RepoSync {
@@ -3312,7 +3253,6 @@ fn enter_on_the_header_bar_opens_the_checkout_diff() {
     press(&mut app, 'k');
     press(&mut app, 'k');
     assert_eq!(app.scope(), mesimon_core::keymap::Scope::Header);
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
     assert!(matches!(app.screen, Screen::Diff));
     let d = app.diff.as_ref().unwrap();
@@ -3410,7 +3350,6 @@ fn golden_releases_160() {
 #[test]
 fn test_release_notes_from_the_menu() {
     use mesimon_core::keymap::{self, Verb};
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     let ctx = app.ctx();
     let idx = keymap::menu_items(&ctx)
@@ -5225,7 +5164,6 @@ fn golden_ticket_held_move_120() {
 /// cursor's link on the row above the footer.
 #[test]
 fn golden_ticket_prs_dialog_120() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_prs_titled();
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let page = render(&app, 120, 30).join("\n");
@@ -5395,7 +5333,6 @@ fn the_dialog_says_closed_alone_and_names_a_cancelled_pipeline() {
 /// was open says so rather than drawing nothing.
 #[test]
 fn ctrl_h_is_inert_without_prs_and_the_empty_dialog_says_why() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     app.handle_key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
@@ -5675,7 +5612,6 @@ fn golden_train_manual_120() {
 #[test]
 fn test_an_empty_prompt_field_names_itself() {
     use mesimon_core::board::AgentProvider;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     for (kind, placeholder) in
         [(SessionKind::Claude, "› ask agent"), (SessionKind::Codex, "› ask agent")]
@@ -6978,7 +6914,6 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     press(&mut app, 'c');
     assert!(app.status.contains("message"), "{}", app.status);
     {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
     }
     assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
@@ -7024,7 +6959,6 @@ fn linked_transcript(name: &str, messages: &[&str], archived: bool) -> (App, std
 }
 
 fn transcript_enter(app: &mut App) {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
 }
 
@@ -7196,7 +7130,6 @@ fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
 
 #[test]
 fn transcript_links_load_archived_ids_and_keep_them_across_snapshots() {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let (mut app, dir) = linked_transcript("archived-links", &["archived T-2"], true);
     assert!(app.board.ticket(ulid_n(2)).is_none(), "the normal snapshot omits it");
     press(&mut app, '}');
@@ -7650,11 +7583,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
     // Tab grows it: the editor carries the card's rectangle as its origin.
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Tab,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("tab");
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor") };
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
     assert!(app.animating(), "the frame after Tab is in motion");
@@ -7809,7 +7738,6 @@ fn golden_editor_note_100() {
 #[test]
 fn golden_editor_wrapped_description_and_visual_navigation() {
     use crate::app::{EditorPurpose, Field};
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     let body = "A description can be a long paragraph with several sentences. The editor wraps these words within the dialog and keeps the cursor on the same text when the terminal changes size.\n\n    Indentation and explicit line breaks stay in the saved note.\n你好 cafe\u{301} — Unicode text stays whole.";
@@ -8039,11 +7967,7 @@ fn the_description_dialog_grows_out_of_the_card() {
     assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Tab,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("tab");
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor: {:?}", app.mode) };
     assert!(matches!(ed.purpose, crate::app::EditorPurpose::Note { note: None, .. }));
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
@@ -8983,12 +8907,7 @@ fn test_no_banned_sgr() {
         // and the ticket-level attn mark, both new paint (T-74).
         let mut armed = App::for_test(fixture_woke(), Theme::new(flavor, profile));
         armed.cursor_col = 0;
-        armed
-            .handle_key(
-                ratatui::crossterm::event::KeyCode::Char('z'),
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            )
-            .unwrap();
+        armed.handle_key(KeyCode::Char('z'), KeyModifiers::NONE).unwrap();
         // The ticket page renders markdown on two surfaces, and since T-344
         // they are never on screen together: the band's description block
         // while the zone reads something that is not a note, and the note
@@ -9212,20 +9131,10 @@ fn test_no_drawn_structure() {
     let mut coldlg = app_graphite(fixture(false));
     coldlg.cursor_col = 1;
     coldlg.cursor_row = None;
-    coldlg
-        .handle_key(
-            ratatui::crossterm::event::KeyCode::Enter,
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        )
-        .unwrap();
+    coldlg.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     let mut armed = app_graphite(fixture_woke());
     armed.cursor_col = 0;
-    armed
-        .handle_key(
-            ratatui::crossterm::event::KeyCode::Char('z'),
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        )
-        .unwrap();
+    armed.handle_key(KeyCode::Char('z'), KeyModifiers::NONE).unwrap();
     // The Remote Control dialog with a live pairing code: its QR is the
     // one picture a dialog draws (T-497).
     let mut pairing = app_graphite(fixture(false));
@@ -9278,11 +9187,7 @@ fn test_no_drawn_structure() {
             for _ in 0..columns {
                 press(&mut tour, 'j');
             }
-            tour.handle_key(
-                ratatui::crossterm::event::KeyCode::Enter,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            )
-            .unwrap();
+            tour.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             press(&mut tour, 'O');
             let lines = sweep(&tour);
             assert!(
@@ -12774,7 +12679,6 @@ fn golden_usage_dialog() {
     assert_eq!(order, [ulid_n(3), ulid_n(1), ulid_n(5)]);
     press(&mut app, 'j');
     assert!(matches!(app.mode, Mode::Usage { idx: 1 }));
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(1)));
 }
@@ -12826,7 +12730,6 @@ fn golden_usage_settings() {
     assert!(rows.iter().any(|r| r.contains("Show") && r.contains("near a limit")), "{all}");
     assert!(all.contains("r read now"), "{all}");
     golden("usage_settings_120x30", &rows);
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     assert!(matches!(app.mode, Mode::Usage { idx: 0 }), "{:?}", app.mode);
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -12884,7 +12787,6 @@ fn header_chips_record_their_cells_and_the_ends_step_down_under_them() {
 #[test]
 fn test_a_dialog_tick_starts_the_cards_pulse() {
     use mesimon_core::summary::Count;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
         t.title = "Fix OSC-11".into();
@@ -12928,7 +12830,7 @@ fn mouse(app: &mut App, kind: ratatui::crossterm::event::MouseEventKind, at: (u1
         kind,
         column: at.0,
         row: at.1,
-        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        modifiers: KeyModifiers::NONE,
     };
     app.on_mouse(ev).expect("mouse");
 }
@@ -12947,12 +12849,7 @@ fn a_pointer_sweep_draws_one_frame_and_a_click_inside_it_lands_in_place() {
     use ratatui::crossterm::event::{Event, MouseButton, MouseEvent, MouseEventKind};
     use std::collections::VecDeque;
     let ev = |kind, at: (u16, u16)| {
-        Event::Mouse(MouseEvent {
-            kind,
-            column: at.0,
-            row: at.1,
-            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
-        })
+        Event::Mouse(MouseEvent { kind, column: at.0, row: at.1, modifiers: KeyModifiers::NONE })
     };
     // The loop's shape: a frame, then a tick takes one event.
     let run = |app: &mut App, events: Vec<Event>| -> usize {
@@ -13077,7 +12974,6 @@ fn a_click_off_a_dialog_closes_it_and_a_row_click_is_its_enter() {
 #[test]
 fn a_click_picks_a_section_a_row_and_a_theme() {
     use mesimon_core::keymap::SettingsSection;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.mode = Mode::Sections;
     let at = spot_of(&render(&app, 120, 30), "Behaviour");
@@ -13108,7 +13004,6 @@ fn a_click_picks_a_section_a_row_and_a_theme() {
 #[test]
 fn a_click_changes_the_column_workspace_where_tickets_can_be_filed() {
     use mesimon_core::board::WorkspaceStrategy;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.cursor_row = None;
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -13334,11 +13229,7 @@ fn a_card_the_pointer_rests_on_opens_its_reply() {
     mouse(&mut app, MouseEventKind::Moved, at);
     rest(&app);
     assert_eq!(app.hover_peek(), Some(ulid_n(3)));
-    app.on_key(
-        ratatui::crossterm::event::KeyCode::Char('j'),
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("key");
+    app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).expect("key");
     assert!(app.hover_peek().is_none(), "a key gives the board back");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
@@ -13395,11 +13286,7 @@ fn a_click_places_the_cursor_in_text_being_typed() {
     let Mode::Input { buffer, .. } = &app.mode else { panic!("still typing") };
     assert_eq!(buffer.width_before_cursor(), "Ship the ".len(), "before the word clicked");
 
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Tab,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("tab");
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
     if let Mode::Editor(ed) = &mut app.mode {
         ed.grow =
             Some((ratatui::layout::Rect::default(), std::time::Instant::now() - crate::app::GROW));
@@ -13478,11 +13365,11 @@ fn setting_up(keys: &str) -> App {
     assert!(matches!(app.mode, Mode::Setup), "a board that waits for Setup opens it");
     for c in keys.chars() {
         let code = match c {
-            '\n' => ratatui::crossterm::event::KeyCode::Enter,
-            '<' => ratatui::crossterm::event::KeyCode::Esc,
-            c => ratatui::crossterm::event::KeyCode::Char(c),
+            '\n' => KeyCode::Enter,
+            '<' => KeyCode::Esc,
+            c => KeyCode::Char(c),
         };
-        app.handle_key(code, ratatui::crossterm::event::KeyModifiers::NONE).expect("key");
+        app.handle_key(code, KeyModifiers::NONE).expect("key");
     }
     app
 }
@@ -13540,11 +13427,7 @@ fn golden_setup_ready_narrow() {
 /// stepped `beats` keys in.
 fn touring(n: usize) -> App {
     let mut app = app_graphite(fixture(false));
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Esc,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("menu");
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).expect("menu");
     let row = mesimon_core::keymap::menu_items(&app.ctx())
         .iter()
         .position(|m| m.verb == mesimon_core::keymap::Verb::Tour)
@@ -13552,11 +13435,7 @@ fn touring(n: usize) -> App {
     for _ in 0..row {
         press(&mut app, 'j');
     }
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("open");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("open");
     assert!(matches!(app.mode, Mode::Tour), "the row opens the tour");
     for _ in 0..n {
         press(&mut app, 'j');
@@ -13578,11 +13457,9 @@ fn golden_tour_narrow_90() {
 
 #[test]
 fn the_tour_closes_on_esc_and_q_back_to_the_board() {
-    for key in
-        [ratatui::crossterm::event::KeyCode::Esc, ratatui::crossterm::event::KeyCode::Char('q')]
-    {
+    for key in [KeyCode::Esc, KeyCode::Char('q')] {
         let mut app = touring(1);
-        app.handle_key(key, ratatui::crossterm::event::KeyModifiers::NONE).expect("key");
+        app.handle_key(key, KeyModifiers::NONE).expect("key");
         assert!(matches!(app.mode, Mode::Normal), "{key:?}");
         assert!(app.tour.is_none(), "{key:?}: the practice board went with it");
     }
@@ -13592,21 +13469,13 @@ fn the_tour_closes_on_esc_and_q_back_to_the_board() {
 fn trying_hands_the_practice_board_the_keys_and_the_real_board_keeps_its_own() {
     let mut app = touring(0);
     let before = app.board.tickets.len();
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("try");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("try");
     assert!(app.tour.as_ref().is_some_and(|t| t.trying));
     press(&mut app, 'o');
     for c in "Practice".chars() {
         press(&mut app, c);
     }
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Enter,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("file");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("file");
     let tour = app.tour.as_ref().expect("tour");
     assert!(tour.is_done(0), "filing a ticket on the practice board is the lesson done");
     assert_eq!(app.board.tickets.len(), before, "the real board got nothing");
@@ -13839,7 +13708,6 @@ fn open_arcade(app: &mut App) {
 }
 
 fn ctrl_g(app: &mut App) {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     app.handle_key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap();
 }
 
@@ -13897,7 +13765,6 @@ fn arcade_preserves_every_card_cell_and_the_header_in_every_profile() {
 #[test]
 fn arcade_input_cannot_mutate_tickets_or_start_agents_and_escape_restores_navigation() {
     use mesimon_core::keymap::Scope;
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let (mut app, sent) = App::for_test_logged(
         fixture(false),
         Theme::new(Flavor::Graphite, Profile::TrueColor),
@@ -13955,7 +13822,7 @@ fn arcade_keeps_playing_through_every_phase_of_a_card_move() {
 #[test]
 fn arcade_help_and_mouse_exit_use_the_same_keys() {
     use mesimon_core::keymap::Scope;
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = app_graphite(fixture(false));
     open_arcade(&mut app);
     render(&app, 120, 30);
@@ -13987,7 +13854,7 @@ fn arcade_help_and_mouse_exit_use_the_same_keys() {
 #[test]
 fn the_snake_comes_out_idle_on_a_calm_board_and_nowhere_else() {
     use mesimon_core::keymap::{Key, Scope, Verb};
-    use ratatui::crossterm::event::{Event as TermEvent, KeyCode, KeyModifiers};
+    use ratatui::crossterm::event::Event as TermEvent;
     use std::time::{Duration, Instant};
     let mut app = app_graphite(fixture(false));
     let now = Instant::now();

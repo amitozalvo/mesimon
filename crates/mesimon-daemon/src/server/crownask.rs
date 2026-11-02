@@ -1611,15 +1611,8 @@ pub(in crate::server) mod ledger_tests {
     /// before.
     #[test]
     fn a_watch_ends_on_each_road_that_says_a_merge() {
-        use super::super::crownwake::{Told, WakeCause};
-        let told = |tip: &str, merge: &'static str| Told {
-            tip: tip.into(),
-            merge: Some(merge),
-            ahead: 1,
-            legs: Vec::new(),
-            column: "REVIEW".into(),
-            forge: None,
-        };
+        use super::super::crownwake::{tests::branch, WakeCause};
+        let told = |tip: &str, merge: &'static str| branch(tip, merge, 1, "REVIEW");
         let watched = |name: &str| {
             let mut b = bed(name);
             b.d.board.sessions[0].started_by = None;

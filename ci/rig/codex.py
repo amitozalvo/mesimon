@@ -1083,7 +1083,7 @@ def adapter(base):
             the news on waits on the pull request (a watch, a sleep, a poll)
             or fixes it itself (`implemented`)."""
             ticket = self.request("create_ticket", column="TODO", title=FORGE_WORKER, workspace=None)["id"]
-            key = next(t for t in self.client.board()["tickets"] if t["id"] == ticket)["short_key"]
+            key = self.board_ticket(ticket)["short_key"]
             self.crown_seat()
             start = len(self.feed())
             ask = FORGE_ASK.format(key=key)
@@ -1199,6 +1199,10 @@ def adapter(base):
             if self.args.case in CROWN:
                 (self.out / "snapshot.json").write_text(json.dumps(self.snapshot(), indent=1) + "\n")
 
+        def board_ticket(self, tid):
+            """The board's ticket `tid`, read now."""
+            return next(t for t in self.client.board()["tickets"] if t["id"] == tid)
+
         def read_other(self):
             """T-1089: a worker reads the note of another ticket its prompt
             names by key, and its keyed write there changes nothing. The code
@@ -1208,7 +1212,7 @@ def adapter(base):
                                  workspace=None)["id"]
             text = "## Findings\n\nThe code word is " + word + ".\n"
             note = self.request("write_note", ticket=other, note=None, text=text)["note"]
-            key = next(t for t in self.client.board()["tickets"] if t["id"] == other)["short_key"]
+            key = self.board_ticket(other)["short_key"]
             sid = self.start(
                 f"Call mesimon read_note with key {key} and note {note}. Then call mesimon "
                 f"write_note with key {key}, note {note} and the text seen. Then reply with the "
@@ -1217,7 +1221,7 @@ def adapter(base):
             session, _, _ = self.completed(sid, word)
             preview = json.loads(Path(session["agent_preview_path"]).read_text()).get("text") or ""
             body = self.request("read_note", ticket=other, note=note)
-            notes = next(t for t in self.client.board()["tickets"] if t["id"] == other).get("notes", [])
+            notes = self.board_ticket(other).get("notes", [])
             if body.get("text") != text or len(notes) != 1:
                 raise AssertionError("a worker's keyed write changed another ticket: " + str(body)[:200])
             if "WRITE_REFUSED" not in preview:

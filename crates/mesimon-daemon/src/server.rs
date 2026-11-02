@@ -1318,7 +1318,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // server, and after a reboot none runs until the first spawn, so a
     // reservation seeded here would hold every parked ticket's teardown,
     // eviction and shared-checkout start until a person launched something.
-    let inspected = matches!(&panes, Ok(Some(_))) || backend.endpoint_absent();
+    let inspected = absence_proven(&panes, &backend, |_| true);
     let parked_unverified = unverified_parked(&board.sessions, inspected);
     let snap = panes.ok().flatten().unwrap_or_default();
     let rec = reconcile(&board.sessions, &snap);
@@ -1851,6 +1851,23 @@ pub fn run(paths: Paths) -> Result<()> {
 /// A tick stage, timed (T-856): the slowest is remembered under its name,
 /// so a slow tick's journal line can name the probe that took the second.
 /// `on_tick`'s stages and `on_pane_sampled`'s absorbs ride it alike.
+/// Whether a pane listing proves panes absent: a listing that answered
+/// proves whatever `gone` reads off it; no server behind the socket is proof
+/// too (a pane cannot outlive its server); a server that exists and does not
+/// answer, or a failed inspection, proves nothing. Startup's reconcile and
+/// the reaper's sweep judge by this one rule.
+fn absence_proven(
+    panes: &Result<Option<Vec<mesimon_core::reconcile::PaneSnapshot>>>,
+    backend: &TmuxBackend,
+    gone: impl FnOnce(&[mesimon_core::reconcile::PaneSnapshot]) -> bool,
+) -> bool {
+    match panes {
+        Ok(Some(panes)) => gone(panes),
+        Ok(None) => backend.endpoint_absent(),
+        Err(_) => false,
+    }
+}
+
 /// The parked agents whose live pane could not be inspected at startup:
 /// each gets a reaper reservation until a pane listing (or the absence of
 /// any server) proves it gone. `inspected` is that proof already in hand.
@@ -8442,7 +8459,7 @@ impl Daemon {
                 // before replacing any already queued words.
                 if deliver != Deliver::Idle
                     && matches!(seat, QueuedSeat::Wake(_))
-                    && self.crown_checkout_reaping().contains(&target)
+                    && self.checkout_reaping(target)
                 {
                     return Response::Err {
                         message: format!(
@@ -8764,9 +8781,7 @@ impl Daemon {
                 };
                 let checkout = self.paths.repo_root.to_string_lossy().into_owned();
                 let has_worktree = self.worktrees.contains_key(&target);
-                if wanted == WorkspaceStrategy::SharedCheckout
-                    && self.crown_checkout_reaping().contains(&target)
-                {
+                if wanted == WorkspaceStrategy::SharedCheckout && self.checkout_reaping(target) {
                     return Response::Err {
                         message: format!(
                             "{key}'s previous pane is still stopping; wait for cleanup"
@@ -9182,6 +9197,17 @@ impl Daemon {
             })
             .map(|s| s.ticket)
             .collect()
+    }
+
+    /// `crown_checkout_reaping` for one ticket, with no list built.
+    fn checkout_reaping(&self, ticket: ulid::Ulid) -> bool {
+        let checkout = self.paths.repo_root.to_string_lossy();
+        self.board.sessions.iter().any(|s| {
+            s.ticket == ticket
+                && s.kind.is_agent()
+                && s.cwd == checkout
+                && self.reaping.contains_key(&s.sid16())
+        })
     }
 
     /// Accepted starts and wakes reserve the checkout before they have a
@@ -11176,6 +11202,7 @@ impl Daemon {
                 ),
             });
         };
+        let base = self.worktree_base_cached();
         match state.as_str() {
             "merged" => Some(format!("{key}'s branch is already merged")),
             "clean" => Some(format!("{key}'s branch has no commits to merge yet")),
@@ -11189,8 +11216,7 @@ impl Daemon {
                     .get(&target)
                     .map(|a| a.counted.as_str())
                     .filter(|c| !c.is_empty())
-                    .or(self.board.merge_into.integration_branch())
-                    .or(self.base_branch.as_deref())
+                    .or(base.as_deref())
                     .unwrap_or("main"),
                 rebase_first()
             )),
@@ -13598,13 +13624,7 @@ impl Daemon {
         legs.iter().all(|leg| {
             // Fresh check on gate paths (the 10 s cache may lag a just-made
             // merge).
-            if !leg.base.is_empty()
-                && worktree::is_merged(
-                    &leg.repo,
-                    &format!("refs/heads/{}", b.branch),
-                    &format!("refs/heads/{}", leg.base),
-                )
-            {
+            if !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base) {
                 return true;
             }
             // The forge's word (T-739), at the branch's tip as it stands: a
@@ -13672,6 +13692,25 @@ impl Daemon {
 
     /// The binding's legs, with the daemon's base branch for a single-repo
     /// one (a workspace leg carries its own).
+    /// Every ticket's flags, forgotten: the target moved, or no binding is
+    /// left to sample. The upstream memo is the caller's to clear.
+    fn forget_worktree_flags(&mut self) {
+        self.wt_agg.clear();
+        self.wt_answered.clear();
+        self.wt_repos.clear();
+        self.wt_conflicts.clear();
+        self.wt_fresh.clear();
+    }
+
+    /// One torn-down ticket's flags, forgotten with its binding.
+    fn forget_ticket_flags(&mut self, ticket: ulid::Ulid) {
+        self.wt_agg.remove(&ticket);
+        self.wt_answered.remove(&ticket);
+        self.wt_repos.remove(&ticket);
+        self.wt_progress.remove(&ticket);
+        self.wt_fresh.remove(&ticket);
+    }
+
     fn legs_of(&self, id: ulid::Ulid) -> Vec<worktree::Leg> {
         self.worktrees.get(&id).map(|b| self.binding_legs(b)).unwrap_or_default()
     }
@@ -13717,7 +13756,7 @@ impl Daemon {
     /// `base_branch` alone sat still on such a board: no leg ever read
     /// ahead or merged, by git or by the forge, and nothing said so.
     fn needs_root_base(&self) -> bool {
-        if self.board.merge_into.integration_branch().is_some() {
+        if self.configured_worktree_base().is_some() {
             return false;
         }
         self.worktrees.values().any(|b| !b.branch.is_empty() && !b.is_workspace())
@@ -16069,20 +16108,25 @@ impl Daemon {
     /// through it), on the 1 s bucket, and at enqueue. A target that is not
     /// the pane it was queued at is dropped, not redirected.
     fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
+        self.queued_target_ready_in(q, &self.crown_checkout_reaping())
+    }
+
+    /// `queued_target_ready` with the checkout's reaping tickets read once
+    /// for a whole drain pass (`drain_queued` reads nothing it changes).
+    fn queued_target_ready_in(&self, q: &QueuedAsk, reaping: &[ulid::Ulid]) -> bool {
         // A person may have started another worker since a crown wake
         // or start queued. Recheck live ownership at delivery, even if it is idle.
         // Other queued reservations are ordered by the queue, not blockers
         // of its head. A person's own queued start keeps its existing policy.
         if let (Some(crown), QueuedSeat::Wake(_) | QueuedSeat::Start(_)) = (q.by, &q.seat) {
             let checkout = self.paths.repo_root.to_string_lossy();
-            let reaping = self.crown_checkout_reaping();
             if q.cwd == checkout
                 && (reaping.contains(&q.ticket)
                     || !crown::checkout_holders(
                         &self.board,
                         &checkout,
                         &[crown, q.ticket],
-                        &reaping,
+                        reaping,
                     )
                     .is_empty())
             {
@@ -16255,6 +16299,7 @@ impl Daemon {
         }
         let mut seen: Vec<String> = Vec::new();
         let mut take: Vec<usize> = Vec::new();
+        let reaping = self.crown_checkout_reaping();
         for i in self.queue_order() {
             // A held ask (T-413) is a person's to send; it neither goes nor
             // takes the checkout's turn from the ask behind it. The same
@@ -16267,7 +16312,7 @@ impl Daemon {
             let quiet = !seen.contains(&cwd)
                 && self.ask_holders(&self.queued[i]).is_empty()
                 && !self.checkout_unresolved(&cwd)
-                && self.queued_target_ready(&self.queued[i]);
+                && self.queued_target_ready_in(&self.queued[i], &reaping);
             seen.push(cwd);
             if quiet {
                 take.push(i);
@@ -17448,11 +17493,7 @@ impl Daemon {
             }
             self.wt_gen = self.wt_gen.wrapping_add(1);
             self.merge_target_gen = self.merge_target_gen.wrapping_add(1);
-            self.wt_agg.clear();
-            self.wt_answered.clear();
-            self.wt_repos.clear();
-            self.wt_conflicts.clear();
-            self.wt_fresh.clear();
+            self.forget_worktree_flags();
             self.upstreams.clear();
             self.refresh_worktree_flags();
             self.persist_and_notify();
@@ -17460,7 +17501,9 @@ impl Daemon {
         Response::Ok
     }
 
-    fn validate_integration_branch(&self, branch: &str) -> Result<(), String> {
+    /// The repositories a worktree can be cut from, named: the root when it
+    /// is one, then its census (T-368), each with its path.
+    fn repo_legs(&self) -> Vec<(String, std::path::PathBuf)> {
         let root = &self.paths.repo_root;
         let mut repos = Vec::new();
         if root.join(".git").exists() {
@@ -17469,6 +17512,11 @@ impl Daemon {
         for name in crate::gitstatus::census(root) {
             repos.push((name.clone(), root.join(name)));
         }
+        repos
+    }
+
+    fn validate_integration_branch(&self, branch: &str) -> Result<(), String> {
+        let repos = self.repo_legs();
         if repos.is_empty() {
             return Err("no git repositories are available for an integration branch".into());
         }
@@ -17494,12 +17542,8 @@ impl Daemon {
             return self
                 .refuse_promotion("choose an integration branch before promoting to main".into());
         };
-        let root = &self.paths.repo_root;
-        let mut repos = Vec::new();
-        if root.join(".git").exists() {
-            repos.push(root.clone());
-        }
-        repos.extend(crate::gitstatus::census(root).into_iter().map(|name| root.join(name)));
+        let repos: Vec<std::path::PathBuf> =
+            self.repo_legs().into_iter().map(|(_, path)| path).collect();
         if repos.is_empty() {
             return self.refuse_promotion("no git repositories are available to promote".into());
         }
@@ -17552,8 +17596,7 @@ impl Daemon {
 
     /// A worktree can be cut here: the root is a repository, or holds some.
     fn has_repo(&self) -> bool {
-        let root = &self.paths.repo_root;
-        root.join(".git").exists() || !crate::gitstatus::census(root).is_empty()
+        !self.repo_legs().is_empty()
     }
 
     /// `Command::ApplySetup` (T-816): Setup's answers in one turn. The
@@ -18169,25 +18212,18 @@ impl Daemon {
             // landed leg's branch goes while an unmerged sibling's stays.
             let discard = matches!(why, TeardownWhy::Deleted { discard: true });
             let workspace = b.is_workspace();
-            let targets = self.binding_legs(&b);
+            // The legs as the daemon reads them, each with its base (a
+            // teardown needs only their paths and repos).
+            let legs = self.binding_legs(&b);
             let branch = b.branch.clone();
-            let repo_root = self.paths.repo_root.clone();
             let tx = self.tx.clone();
             self.tearing_down.insert(ticket);
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let branch_kept = worktree::teardown(&repo_root, &b, &|leg| {
+                let branch_kept = worktree::teardown(&b, &legs, &|leg| {
                     let leg_merged = if workspace {
-                        targets.iter().find(|target| target.name == leg.name).is_some_and(
-                            |target| {
-                                !target.base.is_empty()
-                                    && worktree::is_merged(
-                                        &leg.repo,
-                                        &format!("refs/heads/{branch}"),
-                                        &format!("refs/heads/{}", target.base),
-                                    )
-                            },
-                        )
+                        !leg.base.is_empty()
+                            && worktree::branch_merged(&leg.repo, &branch, &leg.base)
                     } else {
                         merged
                     };
@@ -18239,11 +18275,7 @@ impl Daemon {
                 self.feed.board("automation", "worktree_torn_down", Some(ticket));
             }
             self.worktrees.remove(&ticket);
-            self.wt_agg.remove(&ticket);
-            self.wt_answered.remove(&ticket);
-            self.wt_repos.remove(&ticket);
-            self.wt_progress.remove(&ticket);
-            self.wt_fresh.remove(&ticket);
+            self.forget_ticket_flags(ticket);
         }
         self.persist_worktrees();
         if self.pending_spawns.iter().any(|s| s.ticket == ticket)
@@ -18557,15 +18589,14 @@ impl Daemon {
     /// never run on the writer thread).
     fn queue_provision(&mut self, ticket: ulid::Ulid) {
         let prior = self.worktrees.get(&ticket).cloned();
-        let entry = self.worktrees.entry(ticket).or_insert_with(|| Binding {
-            path: std::path::PathBuf::new(),
-            branch: String::new(),
-            base_oid: String::new(),
-            branch_oid: String::new(),
-            status: BindingStatus::Queued,
-            locked: false,
-            repos: Vec::new(),
-            init: None,
+        let entry = self.worktrees.entry(ticket).or_insert_with(|| {
+            Binding::new(
+                std::path::PathBuf::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                BindingStatus::Queued,
+            )
         });
         entry.status = BindingStatus::Queued;
         let in_flight =
@@ -18613,7 +18644,7 @@ impl Daemon {
             let ptx = tx.clone();
             let result = match evicted {
                 Some(prior) => worktree::provision_existing(&repo, ticket, &prior),
-                None if census.is_empty() => worktree::provision_on(
+                None if census.is_empty() => worktree::provision(
                     &repo,
                     &root,
                     ticket,
@@ -18622,7 +18653,7 @@ impl Daemon {
                     upstream,
                     base_override.as_deref(),
                 ),
-                None => worktree::provision_workspace_on(
+                None => worktree::provision_workspace(
                     &repo,
                     &root,
                     &census,
@@ -18960,11 +18991,7 @@ impl Daemon {
     fn refresh_worktree_flags(&mut self) {
         self.wt_gen = self.wt_gen.wrapping_add(1);
         if self.worktrees.is_empty() {
-            self.wt_agg.clear();
-            self.wt_answered.clear();
-            self.wt_repos.clear();
-            self.wt_conflicts.clear();
-            self.wt_fresh.clear();
+            self.forget_worktree_flags();
             return;
         }
         // A workspace leg carries its own base, so a folder root with no
@@ -19342,7 +19369,6 @@ impl Daemon {
             others: self.board.reviewed_prs,
             envs,
             commit_pipelines: self.forge.commit_pipelines.clone(),
-            commit_runs: self.forge.commit_runs.clone(),
             deployed: self.forge.deployed.clone(),
             landed: self.forge.landed.clone(),
             carried: self.forge.carried.clone(),
@@ -19987,7 +20013,7 @@ impl Daemon {
         if gen != self.wt_gen || samples.is_empty() {
             return;
         }
-        if self.board.merge_into.integration_branch().is_none() && self.base_branch.is_none() {
+        if self.worktree_base_cached().is_none() {
             if let Some(root) = samples.iter().find(|s| s.name.is_empty()) {
                 self.base_branch = Some(root.base.clone());
             }
@@ -21266,6 +21292,9 @@ impl Daemon {
         let now = Instant::now();
         let due: Vec<String> =
             self.reaping.iter().filter(|(_, t)| **t <= now).map(|(s, _)| s.clone()).collect();
+        // One listing answers every due session; taken only when a kill
+        // fails, so a quiet sweep forks nothing beyond the kills.
+        let mut panes = None;
         for sid in due {
             // Removing the terminal must not kill the supervisor before it
             // proves its separate app-server and tool process group stopped.
@@ -21276,14 +21305,11 @@ impl Daemon {
             // failure would admit a second writer beside a surviving pane.
             // No server answer is unknown, not evidence of an absent pane.
             let removed = self.backend.kill_session(&sid).is_ok()
-                || match self.backend.panes() {
-                    Ok(Some(panes)) => !panes.iter().any(|pane| pane.session_name == sid),
-                    // No server behind the socket is proof: a pane cannot
-                    // outlive its server. A server that exists and does not
-                    // answer is not.
-                    Ok(None) => self.backend.endpoint_absent(),
-                    Err(_) => false,
-                };
+                || absence_proven(
+                    panes.get_or_insert_with(|| self.backend.panes()),
+                    &self.backend,
+                    |panes| !panes.iter().any(|pane| pane.session_name == sid),
+                );
             if removed {
                 self.reaping.remove(&sid);
             } else {
@@ -22262,6 +22288,15 @@ mod queued_person_push_tests {
         }
     }
 
+    /// A ticket `T-1` titled `worker`, as the board's JSON reads it.
+    pub(super) fn worker_ticket(id: ulid::Ulid, column: &str, order: &str) -> Ticket {
+        serde_json::from_value(serde_json::json!({
+            "id": id.to_string(), "short_key": "T-1", "title": "worker",
+            "column": column, "order": order, "created_at": "@0"
+        }))
+        .unwrap()
+    }
+
     /// A daemon assembled as `run` assembles one, on a temporary state dir
     /// and a tmux socket nothing listens on, with one idle Claude pane and an
     /// ask queued at it.
@@ -22859,32 +22894,16 @@ mod shell_archive_regressions {
         let dir = tempfile::tempdir().unwrap();
         let (mut d, _, rx) = queued_person_push_tests::daemon(dir.path());
         let repo = d.paths.repo_root.clone();
-        let git = |args: &[&str]| {
-            let out =
-                std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        git(&["init", "-q", "-b", "main"]);
-        git(&["config", "user.email", "test@mesimon"]);
-        git(&["config", "user.name", "Mesimon test"]);
-        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "base"]);
+        let git = |args: &[&str]| crate::testrepo::read(&repo, args).trim().to_string();
+        crate::testrepo::init(&repo, "base.txt", "base\n");
         git(&["branch", "target-b"]);
         git(&["branch", "target-a"]);
         git(&["checkout", "-q", "target-b"]);
-        std::fs::write(repo.join("target-b.txt"), "target B\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "target B moves"]);
+        crate::testrepo::commit(&repo, "target-b.txt", "target B\n", "target B moves");
         git(&["checkout", "-q", "target-a"]);
-        std::fs::write(repo.join("target-a.txt"), "target A\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "target A moves"]);
+        crate::testrepo::commit(&repo, "target-a.txt", "target A\n", "target A moves");
         git(&["checkout", "-q", "-b", "topic"]);
-        std::fs::write(repo.join("topic.txt"), "ticket work\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "ticket work"]);
+        crate::testrepo::commit(&repo, "topic.txt", "ticket work\n", "ticket work");
         let tip = git(&["rev-parse", "topic"]);
         git(&["checkout", "-q", "main"]);
 
@@ -22902,16 +22921,13 @@ mod shell_archive_regressions {
         d.board.sessions[0].ticket = ticket;
         d.worktrees.insert(
             ticket,
-            worktree::Binding {
-                path: repo.join(".wt/stale-flags"),
-                branch: "topic".into(),
-                base_oid: git(&["rev-parse", "main"]),
-                branch_oid: tip,
-                status: worktree::BindingStatus::Attached,
-                locked: false,
-                repos: Vec::new(),
-                init: None,
-            },
+            worktree::Binding::new(
+                repo.join(".wt/stale-flags"),
+                "topic".into(),
+                git(&["rev-parse", "main"]),
+                tip,
+                worktree::BindingStatus::Attached,
+            ),
         );
         for name in ["missing", "bad name", "@{-1}", "target-a~1", "-option"] {
             assert!(
@@ -23029,13 +23045,7 @@ mod crown_checkout_tests {
         let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
         let ticket = d.board.sessions[0].ticket;
         let session = d.board.sessions[0].id;
-        d.board.tickets.push(
-            serde_json::from_value(serde_json::json!({
-                "id": ticket.to_string(), "short_key": "T-1", "title": "worker",
-                "column": "DONE", "order": "a", "created_at": "@0"
-            }))
-            .unwrap(),
-        );
+        d.board.tickets.push(queued_person_push_tests::worker_ticket(ticket, "DONE", "a"));
         d.board.sessions[0].set_state(SessionState::Sleeping);
         d.queued.clear();
         let crown = ulid::Ulid::new();

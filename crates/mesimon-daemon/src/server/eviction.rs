@@ -10,6 +10,11 @@
 //! the worker refuses a tip that has moved since.
 use super::*;
 
+/// The card's word for a refused eviction, over the reason.
+fn kept(why: &str) -> String {
+    format!("worktree kept: {why}")
+}
+
 /// How long an asked sample may stay out before the arrival is judged afresh.
 const PROBE_GRACE: Duration = Duration::from_secs(10);
 /// How soon a refused arrival is judged again.
@@ -100,7 +105,7 @@ impl Daemon {
         let Some(e) = self.column_evictions.get_mut(&id) else { return false };
         e.due = now + RETRY;
         e.probing = false;
-        let refusal = refusal.map(|why| format!("worktree kept: {why}"));
+        let refusal = refusal.map(|why| kept(&why));
         let changed = e.refusal != refusal;
         e.refusal = refusal;
         changed
@@ -233,11 +238,7 @@ impl Daemon {
                 &message,
             );
             if let Some(e) = self.column_evictions.get_mut(&ticket) {
-                e.refusal = Some(if outcome.evicted {
-                    message
-                } else {
-                    format!("worktree kept: {message}")
-                });
+                e.refusal = Some(if outcome.evicted { message } else { kept(&message) });
                 e.due = Instant::now() + Duration::from_secs(10);
             }
         } else {
@@ -265,11 +266,6 @@ mod tests {
     use super::*;
 
     fn bed(dir: &std::path::Path) -> (Daemon, ulid::Ulid, std::sync::mpsc::Receiver<Msg>) {
-        let (d, id, rx) = bed_with_rx(dir);
-        (d, id, rx)
-    }
-
-    fn bed_with_rx(dir: &std::path::Path) -> (Daemon, ulid::Ulid, std::sync::mpsc::Receiver<Msg>) {
         let (mut d, _, rx) = super::super::queued_person_push_tests::daemon(dir);
         crate::testrepo::init(&d.paths.repo_root, "file", "base");
         let id = match d.create_ticket(
@@ -289,6 +285,7 @@ mod tests {
             "T-1",
             "eviction",
             false,
+            None,
         )
         .unwrap();
         d.board.sessions[0].ticket = id;

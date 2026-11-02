@@ -1217,6 +1217,10 @@ pub enum LinkTarget {
 
 /// One row of the links dialog: the markdown label when there was one,
 /// the target as written (`text` — what `c` copies) and where it goes.
+/// The open transcript's links: each candidate the message held beside
+/// what it resolved to on the live board.
+pub(crate) type TranscriptLinks = Vec<(mesimon_core::links::Found, TicketLink)>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketLink {
     pub label: Option<String>,
@@ -1975,6 +1979,12 @@ pub struct App {
     /// The PREVIEW zone's markdown, rendered once per document and width
     /// rather than once per frame (see `ui::ticket::rendered`).
     pub rich_cache: std::cell::RefCell<Option<crate::ui::RichCache>>,
+    /// The open transcript's links resolved against the live board, once
+    /// per frame rather than per reader (`ctx()`, the hover test and the
+    /// dialog each ask; a path candidate costs a stat). Dropped with the
+    /// frame's `Ctx`, with `rich_cache`, and when a snapshot or the archive
+    /// lands.
+    transcript_links_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<TranscriptLinks>)>>,
     /// Where the board last drew the cursor card — the composer's phantom
     /// card, or the ticket under the cursor — which is the rectangle Tab's
     /// dialog grows out of. Draw-side, like `preview.view`: the card's place
@@ -2420,6 +2430,7 @@ impl App {
             burnt: Vec::new(),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
+            transcript_links_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
             hits: std::cell::RefCell::new(crate::mouse::Map::default()),
@@ -2772,16 +2783,33 @@ impl App {
 
     /// Resolve the cached candidates against the live board, just as Links
     /// does. Parsing the whole message belongs to Transcript's message cache.
-    pub(crate) fn transcript_links(&self) -> Vec<(mesimon_core::links::Found, TicketLink)> {
-        let Some(t) = self.open_transcript_view() else { return Vec::new() };
+    pub(crate) fn transcript_links(&self) -> std::rc::Rc<TranscriptLinks> {
+        let Some(t) = self.open_transcript_view() else { return std::rc::Rc::new(Vec::new()) };
+        // The memo is the message's: a turn of the page misses it.
+        let key = t.message().map_or(0, crate::transcript::doc_key);
+        if let Some((at, links)) = self.transcript_links_cache.borrow().as_ref() {
+            if *at == key {
+                return std::rc::Rc::clone(links);
+            }
+        }
         let dir = self.link_dir(t.ticket);
-        t.links()
+        let links: TranscriptLinks = t
+            .links()
             .iter()
             .filter_map(|link| {
                 self.resolve_link(t.ticket, &dir, link)
                     .map(|resolved| (link.target.clone(), resolved))
             })
-            .collect()
+            .collect();
+        let links = std::rc::Rc::new(links);
+        *self.transcript_links_cache.borrow_mut() = Some((key, std::rc::Rc::clone(&links)));
+        links
+    }
+
+    /// Forget the resolved links: the next `transcript_links` read resolves
+    /// them again.
+    fn transcript_links_dirty(&self) {
+        self.transcript_links_cache.borrow_mut().take();
     }
 
     pub(crate) fn transcript_cursor_link(&self) -> Option<TicketLink> {
@@ -2807,6 +2835,7 @@ impl App {
                 self.transcript = Some(t);
                 self.mode = Mode::Transcript { ticket, link_idx: None };
                 self.rich_cache.borrow_mut().take();
+                self.transcript_links_dirty();
                 self.poll_archive();
             }
             None => self.status = format!("nothing in {key}'s transcript yet"),
@@ -2829,6 +2858,7 @@ impl App {
         if changed {
             let same_message = before == t.message().map(crate::transcript::doc_key);
             self.rich_cache.borrow_mut().take();
+            self.transcript_links_dirty();
             let idx = selected.filter(|_| same_message).and_then(|source| {
                 self.transcript_links().iter().position(|(target, _)| *target == source)
             });
@@ -3664,6 +3694,7 @@ impl App {
         self.lay_held(&mut board);
         self.note_lowered_hands(&board);
         self.board = Arc::new(board);
+        self.transcript_links_dirty();
         self.reindex_columns();
         self.grace = grace;
         self.external = external;
@@ -3980,6 +4011,7 @@ impl App {
     /// after writing a cell that `ctx()` reads.
     pub(crate) fn ctx_dirty(&self) {
         *self.frame_ctx.borrow_mut() = None;
+        self.transcript_links_dirty();
     }
 
     /// The draw measured (or cleared) the preview zone, through
@@ -7257,6 +7289,7 @@ impl App {
             return false;
         };
         Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets);
+        self.transcript_links_dirty();
         // An open picker ranks what it has: the archived rows join it now.
         self.research(true);
         true
@@ -15526,26 +15559,24 @@ impl App {
         link: &mesimon_core::links::Link,
     ) -> Option<TicketLink> {
         use mesimon_core::links::Found;
-        let (text, target) = match &link.target {
-            Found::Attachment(attachment) => (
-                mesimon_core::attachment::target(*attachment),
-                LinkTarget::Attachment { ticket, attachment: *attachment },
-            ),
-            Found::Url(u) => (u.clone(), LinkTarget::Url(u.clone())),
+        let target = match &link.target {
+            Found::Attachment(attachment) => {
+                LinkTarget::Attachment { ticket, attachment: *attachment }
+            }
+            Found::Url(u) => LinkTarget::Url(u.clone()),
             Found::Ticket(key) => {
                 let other = self.board.ticket_by_key(key).filter(|other| other.id != ticket)?;
-                (key.clone(), LinkTarget::Ticket(other.id))
+                LinkTarget::Ticket(other.id)
             }
             Found::Path { path, line } => {
                 let full = resolve_link_path(dir, path);
                 if !full.is_file() {
                     return None;
                 }
-                let text = line.map_or_else(|| path.clone(), |n| format!("{path}:{n}"));
-                (text, LinkTarget::File { path: full, line: *line })
+                LinkTarget::File { path: full, line: *line }
             }
         };
-        Some(TicketLink { label: link.label.clone(), text, target })
+        Some(TicketLink { label: link.label.clone(), text: link.target.spelling(), target })
     }
 
     /// The keypress road: fetch every note body the cache lacks (the board

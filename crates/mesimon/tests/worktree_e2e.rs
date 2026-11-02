@@ -86,9 +86,7 @@ fn promotion_is_person_local_fast_forward_and_refuses_a_diverged_main() {
     let mut c = h.client("promotion-restarted");
     assert!(pending_of(&mut c, Some(crown)).iter().any(|p| p.action == PendingAction::CrownWake
         && p.text.as_deref().is_some_and(|text| text.contains(&tip))));
-    std::fs::write(repo.join("main-only.txt"), "main\n").unwrap();
-    git(&repo, &["add", "main-only.txt"]);
-    git(&repo, &["commit", "-qm", "main moved"]);
+    commit(&repo, "main-only.txt");
     let before = git(&repo, &["rev-parse", "main"]);
     let refused = c.request(Command::PromoteMain);
     assert!(
@@ -184,9 +182,7 @@ fn m4_worktree_lifecycle() {
     git(&repo, &["commit", "-qm", "init"]);
     let main_tip = git(&repo, &["rev-parse", "main"]);
     git(&repo, &["checkout", "-qb", "staging"]);
-    std::fs::write(repo.join("integration.txt"), "integration baseline\n").unwrap();
-    git(&repo, &["add", "integration.txt"]);
-    git(&repo, &["commit", "-qm", "integration baseline"]);
+    commit(&repo, "integration.txt");
 
     let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();

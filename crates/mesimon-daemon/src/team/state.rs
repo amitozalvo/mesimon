@@ -55,6 +55,19 @@ pub struct LocalSnapshot {
 }
 
 impl PendingRecord {
+    /// A record held back for a later retry: nothing published, nothing applied.
+    pub fn deferred(record: StoredRecord) -> PendingRecord {
+        PendingRecord {
+            record,
+            publication: None,
+            note_rev: None,
+            local_before: None,
+            local_after: None,
+            local_intermediate: Vec::new(),
+            applied_at: None,
+        }
+    }
+
     pub fn matches(&self, record: &StoredRecord) -> bool {
         self.record.object == record.object
             && self.record.revision == record.revision
@@ -277,7 +290,6 @@ impl TeamState {
             state.verified_members.clear();
             state.verified_owner = None;
             state.needs_rejoin = !state.is_owner();
-            state.schema_version = TEAM_SCHEMA;
         }
         // A state written by a content-floors-only build may already have
         // schema 2 without identity pins. Version alone is not proof of trust.

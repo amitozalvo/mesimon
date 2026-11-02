@@ -106,6 +106,12 @@ pub fn backoff() -> Duration {
     seam_ms("MESIMON_FORGE_BACKOFF_MS", BACKOFF)
 }
 
+/// The backoff in whole minutes, at least one: the "read again in N min"
+/// a person is told.
+fn backoff_minutes() -> u64 {
+    backoff().as_secs().div_ceil(60).max(1)
+}
+
 /// `MESIMON_FORGE_BURST_MS`: the floor between two reads of one repository
 /// off the minute, a test seam.
 pub fn burst_ms() -> u64 {
@@ -290,11 +296,10 @@ pub struct Query {
     /// where one is asked for.
     pub envs: Vec<String>,
     /// Merge commits' pipelines as earlier passes read them, by repository
-    /// path and oid: a passed or failed one is not asked again.
-    pub commit_pipelines: HashMap<(String, String), Pipeline>,
-    /// The run each of those was read from, where the forge gave one
-    /// (T-1065): a pipeline kept from an earlier pass keeps its run.
-    pub commit_runs: HashMap<(String, String), u64>,
+    /// path and oid, each with the run it was read from where the forge
+    /// gave one (T-1065, 0 otherwise): a passed or failed one is not asked
+    /// again, and a pipeline kept from an earlier pass keeps its run.
+    pub commit_pipelines: HashMap<(String, String), (Pipeline, u64)>,
     /// The environments each merge commit was deployed to as the last pass
     /// read it (T-801): what stands where this pass cannot say otherwise.
     pub deployed: HashMap<(String, String), Vec<String>>,
@@ -970,10 +975,12 @@ pub fn merged_reads(
         let young = now_ms.saturating_sub(pr.merged_order()) < SUPERSEDED_READ_MS;
         let live = !superseded || young;
         let key = (pr.repo.clone(), pr.merge_oid.clone());
-        let last = q.commit_pipelines.get(&key);
         // A pipeline kept from an earlier pass keeps the run it was read
         // from (T-1065); the list's row knows none.
-        let last_run = q.commit_runs.get(&key).copied().unwrap_or(0);
+        let (last, last_run) = match q.commit_pipelines.get(&key) {
+            Some((p, run)) => (Some(p), *run),
+            None => (None, 0),
+        };
         (pr.pipeline, pr.pipeline_run) = match last {
             Some(p @ Pipeline::Passed) => (p.clone(), last_run),
             Some(p @ (Pipeline::Failed(_) | Pipeline::Cancelled(_))) if !young => {
@@ -1193,7 +1200,7 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
             {
                 Ok(viewer) => Some(viewer),
                 Err(why) => {
-                    let minutes = backoff().as_secs().div_ceil(60).max(1);
+                    let minutes = backoff_minutes();
                     return HostProbe {
                         cli: Some(c.clone()),
                         at: Instant::now(),
@@ -1745,10 +1752,9 @@ pub struct State {
     /// The repositories whose last call failed, with the CLI's words.
     pub errors: Vec<(String, String)>,
     /// Merge commits' pipelines as last read, by repository path and oid
-    /// (T-771): settled once passed or failed.
-    pub commit_pipelines: HashMap<(String, String), Pipeline>,
-    /// The run each was read from, where the forge gave one (T-1065).
-    pub commit_runs: HashMap<(String, String), u64>,
+    /// (T-771), each with the run it was read from where the forge gave one
+    /// (T-1065, 0 otherwise): settled once passed or failed.
+    pub commit_pipelines: HashMap<(String, String), (Pipeline, u64)>,
     /// The environments each merge commit was deployed to as last read
     /// (T-801): a rollback takes one away, so it is the last read's word,
     /// never a sum of every read's.
@@ -2035,12 +2041,7 @@ impl State {
         }
         let key = (pr.repo.clone(), pr.merge_oid.clone());
         if pr.pipeline != Pipeline::Unknown {
-            self.commit_pipelines.insert(key.clone(), pr.pipeline.clone());
-            if pr.pipeline_run == 0 {
-                self.commit_runs.remove(&key);
-            } else {
-                self.commit_runs.insert(key.clone(), pr.pipeline_run);
-            }
+            self.commit_pipelines.insert(key.clone(), (pr.pipeline.clone(), pr.pipeline_run));
         }
         if pr.deployed.is_empty() {
             self.deployed.remove(&key);
@@ -2073,7 +2074,6 @@ impl State {
             .map(|p| (p.repo.clone(), p.merge_oid.clone()))
             .collect();
         self.commit_pipelines.retain(|k, _| named.contains(k));
-        self.commit_runs.retain(|k, _| named.contains(k));
         self.deployed.retain(|k, _| named.contains(k));
     }
 
@@ -2164,7 +2164,7 @@ impl State {
         // The forge's rate limit (T-895): named, with when the repository
         // is read again, in place of the CLI's paragraph.
         if rate_limited(why) {
-            let minutes = backoff().as_secs().div_ceil(60).max(1);
+            let minutes = backoff_minutes();
             return Some(format!("{key}: rate limited by the forge ∙ read again in {minutes} min"));
         }
         Some(format!("{key}: {why}"))
@@ -2322,13 +2322,16 @@ impl ForgeFile {
         let commits = keys
             .into_iter()
             .map(|key| {
-                let pipeline = state.commit_pipelines.get(key);
+                let (pipeline, run) = match state.commit_pipelines.get(key) {
+                    Some((p, run)) => (Some(p), *run),
+                    None => (None, 0),
+                };
                 CommitRecord {
                     repo: key.0.clone(),
                     oid: key.1.clone(),
                     pipeline: pipeline.map(|p| p.word().to_string()).unwrap_or_default(),
                     job: pipeline.and_then(Pipeline::job).unwrap_or_default().into(),
-                    pipeline_run: state.commit_runs.get(key).copied().unwrap_or(0),
+                    pipeline_run: run,
                     deployed: state.deployed.get(key).cloned().unwrap_or_default(),
                 }
             })
@@ -2393,10 +2396,7 @@ impl State {
             match Pipeline::from_words(&c.pipeline, &c.job) {
                 Pipeline::Unknown => {}
                 p => {
-                    self.commit_pipelines.insert(key.clone(), p);
-                    if c.pipeline_run != 0 {
-                        self.commit_runs.insert(key.clone(), c.pipeline_run);
-                    }
+                    self.commit_pipelines.insert(key.clone(), (p, c.pipeline_run));
                 }
             }
             if !c.deployed.is_empty() {
@@ -2531,6 +2531,14 @@ mod tests {
         super::edge(old, new, &held, true)
     }
 
+    /// A restart: the state as `forge.json` brings it back.
+    fn restarted(s: &State) -> State {
+        let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
+        let mut back = State::default();
+        back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
+        back
+    }
+
     fn pr(number: u64, state: PrState, pipeline: Pipeline) -> Pr {
         Pr {
             forge: Forge::GitHub,
@@ -2651,7 +2659,7 @@ mod tests {
         let key = |oid: &str| ("o/r".to_string(), oid.to_string());
         let mut q =
             Query { envs: vec!["staging".into(), "production".into()], ..Default::default() };
-        q.commit_pipelines.insert(key("m1"), Pipeline::Passed);
+        q.commit_pipelines.insert(key("m1"), (Pipeline::Passed, 0));
         q.deployed.insert(key("m1"), vec!["staging".into(), "production".into()]);
         let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - 2000)];
         let mut asked: Vec<String> = Vec::new();
@@ -2683,7 +2691,7 @@ mod tests {
 
         // An unsettled older PR is read while its merge is recent, and keeps
         // what was read once the day is past; a failed read is no reading.
-        q.commit_pipelines.insert(key("m1"), Pipeline::Running(String::new()));
+        q.commit_pipelines.insert(key("m1"), (Pipeline::Running(String::new()), 0));
         q.deployed.insert(key("m1"), vec!["staging".into()]);
         let mut set = [merged(2, "m2", now - 1000), merged(1, "m1", now - 2000)];
         let mut asked = 0;
@@ -2841,7 +2849,7 @@ mod tests {
         let key = |oid: &str| ("o/r".to_string(), oid.to_string());
         let mut q = Query::default();
         for last in [Pipeline::Failed("deploy".into()), Pipeline::Cancelled(String::new())] {
-            q.commit_pipelines.insert(key("m1"), last.clone());
+            q.commit_pipelines.insert(key("m1"), (last.clone(), 0));
             let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
             merged_reads(&mut set, &q, now, |_| (Pipeline::Passed, 0), |_| Vec::new(), |_, _| None);
             assert_eq!(set[0].pipeline, Pipeline::Passed, "{last:?} retried green reads green");
@@ -2870,7 +2878,7 @@ mod tests {
             );
             assert_eq!((asked, &set[0].pipeline), (0, &last), "settled a day after its merge");
         }
-        q.commit_pipelines.insert(key("m1"), Pipeline::Passed);
+        q.commit_pipelines.insert(key("m1"), (Pipeline::Passed, 0));
         let mut set = [merged(1, "m1", now - 60_000, now - 60_000)];
         merged_reads(
             &mut set,
@@ -3241,10 +3249,7 @@ mod tests {
             let t = ulid::Ulid::new();
             let mut s = State::default();
             s.sets.insert(t, set.to_vec());
-            let text = serde_json::to_string(&ForgeFile::of(&s)).unwrap();
-            let mut back = State::default();
-            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
-            back.sets.remove(&t).unwrap()
+            restarted(&s).sets.remove(&t).unwrap()
         };
         for state in [PrState::Open, PrState::Merged] {
             let named = gl(state, job, 44);
@@ -3330,11 +3335,7 @@ mod tests {
         };
         let pass = |s: &mut State, read: (Pipeline, u64)| -> Vec<String> {
             let held = s.sets.get(&t).cloned().unwrap_or_default();
-            let q = Query {
-                commit_pipelines: s.commit_pipelines.clone(),
-                commit_runs: s.commit_runs.clone(),
-                ..Query::default()
-            };
+            let q = Query { commit_pipelines: s.commit_pipelines.clone(), ..Query::default() };
             let mut set = vec![merged(Pipeline::Unknown, 0)];
             merged_reads(&mut set, &q, now, |_| read.clone(), |_| Vec::new(), |_, _| None);
             keep_waiting_jobs(&held, &mut set);
@@ -3345,24 +3346,18 @@ mod tests {
             s.sets.insert(t, set);
             words
         };
-        let restart = |s: &State| {
-            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
-            let mut back = State::default();
-            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
-            back
-        };
         let named = Pipeline::Waiting(job.into());
         let bare = Pipeline::Waiting(String::new());
 
         let mut s = State::default();
         pass(&mut s, (named.clone(), 44));
-        assert_eq!(s.commit_runs.get(&key), Some(&44));
+        assert_eq!(s.commit_pipelines[&key].1, 44);
         // The whole pipeline read fails: the kept pipeline keeps run 44.
         assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty());
         assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&named, 44));
-        assert_eq!(s.commit_runs.get(&key), Some(&44));
-        let mut s = restart(&s);
-        assert_eq!(s.commit_runs.get(&key), Some(&44), "forge.json keeps the commit's run");
+        assert_eq!(s.commit_pipelines[&key].1, 44);
+        let mut s = restarted(&s);
+        assert_eq!(s.commit_pipelines[&key].1, 44, "forge.json keeps the commit's run");
         assert_eq!(s.sets[&t][0].pipeline_run, 44, "and the PR's");
         // Run 44 again, its jobs read missing: the same wait.
         assert!(pass(&mut s, (bare.clone(), 44)).is_empty());
@@ -3372,7 +3367,7 @@ mod tests {
         assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&bare, 45));
         // Its read failing, and a restart, keep it bare and run 45's.
         assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty());
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert_eq!((&s.sets[&t][0].pipeline, s.sets[&t][0].pipeline_run), (&bare, 45));
         // Its own name, when a read gives it, is news.
         assert_eq!(pass(&mut s, (named.clone(), 45)), [format!("waiting on {job} !1")]);
@@ -3381,9 +3376,9 @@ mod tests {
         // run read bare, whatever the merge commit.
         let mut s = State::default();
         s.sets.insert(t, vec![merged(named.clone(), 0)]);
-        s.commit_pipelines.insert(key.clone(), named.clone());
-        let mut s = restart(&s);
-        assert!(!s.commit_runs.contains_key(&key));
+        s.commit_pipelines.insert(key.clone(), (named.clone(), 0));
+        let mut s = restarted(&s);
+        assert_eq!(s.commit_pipelines[&key].1, 0);
         assert!(pass(&mut s, (Pipeline::Unknown, 0)).is_empty(), "a failed read keeps it");
         assert_eq!(s.sets[&t][0].pipeline_run, 0);
         assert_eq!(pass(&mut s, (bare.clone(), 45)), ["waiting on a manual job !1"]);
@@ -3446,13 +3441,6 @@ mod tests {
             s.sets.insert(t, vec![new.clone()]);
             e.news(std::slice::from_ref(new))
         };
-        // A restart: the state as `forge.json` brings it back.
-        let restart = |s: &State| {
-            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
-            let mut back = State::default();
-            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
-            back
-        };
         // D1: the set held !4 in conflict from a read whose edge said
         // nothing; its clear is no news.
         assert!(said(&mut s, &stuck, &clean).is_empty(), "a phantom clear");
@@ -3463,26 +3451,26 @@ mod tests {
         // Lab run 3's D1: said, a restart, still in conflict on the first
         // read, then clear: the clear is said, once.
         assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert!(said(&mut s, &stuck, &stuck).is_empty(), "the first read after it");
         assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert!(said(&mut s, &stuck, &clean).is_empty(), "cleared once, across a restart");
         // Said, and cleared while the daemon was down: the first read says
         // it, inside the ticket's recovery window (T-937); a partial read
         // leaves the window open, the first whole read closes it.
         assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert!(s.since_restart(t, false), "a partial read");
         assert!(s.since_restart(t, true), "the first whole read");
         assert!(!s.since_restart(t, true), "and only it");
         assert_eq!(said(&mut s, &stuck, &clean), ["conflict cleared #4"]);
         // Never said: a restart does not make its clear news.
         s.sets.insert(t, vec![stuck.clone()]);
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert!(said(&mut s, &stuck, &clean).is_empty(), "never said, never cleared");
         // A conflict that came while the daemon was down is news.
-        let mut s = restart(&s);
+        let mut s = restarted(&s);
         assert_eq!(said(&mut s, &clean, &stuck), ["conflict #4"]);
         // A PR bound since: its conflict is said, and said once.
         let mut s = State::default();
@@ -3502,16 +3490,10 @@ mod tests {
     #[test]
     fn the_recovery_window_survives_a_partial_read_and_a_second_restart() {
         let t = ulid::Ulid::new();
-        let round = |s: &State| {
-            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
-            let mut back = State::default();
-            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
-            back
-        };
         let mut s = State::default();
         s.sets.insert(t, vec![pr(4, PrState::Open, Pipeline::Running(String::new()))]);
         assert!(!s.since_restart(t, false), "a live set is no recovery");
-        let mut s = round(&s);
+        let mut s = restarted(&s);
         assert!(s.restored.contains(&t));
         // A partial read updates the set and leaves the window open.
         assert!(s.since_restart(t, false));
@@ -3520,7 +3502,7 @@ mod tests {
         assert!(s.restored.contains(&t), "still open");
         // Saved and restored again before any whole read: the window is
         // rebuilt from the set that survived, the partial read's.
-        let mut s = round(&s);
+        let mut s = restarted(&s);
         assert_eq!(s.sets.get(&t).map(Vec::as_slice), Some(std::slice::from_ref(&updated)));
         assert!(s.restored.contains(&t));
         // The first whole read is inside it and closes it.
@@ -3530,7 +3512,7 @@ mod tests {
         assert!(!s.since_restart(t, false));
         assert!(!s.since_restart(t, true));
         // And a ticket the board no longer holds leaves it.
-        let mut s = round(&s);
+        let mut s = restarted(&s);
         s.keep_tickets(&HashSet::new());
         assert!(s.restored.is_empty());
     }
@@ -3574,7 +3556,6 @@ mod tests {
             let q = Query {
                 envs: envs.to_vec(),
                 commit_pipelines: s.commit_pipelines.clone(),
-                commit_runs: s.commit_runs.clone(),
                 deployed: s.deployed.clone(),
                 ..Default::default()
             };
@@ -3612,12 +3593,6 @@ mod tests {
             }
             out
         };
-        let restart = |s: &State| {
-            let text = serde_json::to_string(&ForgeFile::of(s)).unwrap();
-            let mut back = State::default();
-            back.restore(crate::store::parse_versioned(&text, FORGE_SCHEMA).unwrap(), |_| true);
-            back
-        };
         let mut s = State::default();
         assert!(pass(&mut s, "m10", "", &history, true).is_empty(), "a first read is a baseline");
         // Staging runs !12's merge commit, production !10's: !10 reaches
@@ -3634,32 +3609,35 @@ mod tests {
 
         // Restored, the same environments: nothing, where git can say and
         // where it cannot (no fetch, and the read's page has moved on).
-        let mut r = restart(&s);
-        assert_eq!(r.commit_runs, s.commit_runs, "each commit's run comes back beside its facts");
+        let mut r = restarted(&s);
+        assert_eq!(
+            r.commit_pipelines, s.commit_pipelines,
+            "each commit's run comes back beside its facts"
+        );
         assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
-        let mut r = restart(&s);
+        let mut r = restarted(&s);
         assert!(pass(&mut r, "m12", "m10", &|_, _| None, false).is_empty());
         // A handover after a handover.
-        let mut r = restart(&restart(&s));
+        let mut r = restarted(&restarted(&s));
         assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
         // The first read after it finds no successful deployment on
         // production (a page that answered empty): what was held stands, and
         // the read that finds it again says nothing.
-        let mut r = restart(&s);
+        let mut r = restarted(&s);
         assert!(pass(&mut r, "m12", "", &history, false).is_empty());
         assert!(r.sets[&a][0].deployed.contains(&"production".to_string()), "held, not dropped");
         assert!(pass(&mut r, "m12", "m10", &history, true).is_empty());
 
         // Production moved on to !13's merge while no daemon read: !12 is
         // there now, said once and late; !10, there already, is not said.
-        let mut r = restart(&s);
+        let mut r = restarted(&s);
         let heard = pass(&mut r, "m12", "m13", &history, true);
         assert_eq!(heard, [(b, vec!["deployed to production !12".to_string()], true)]);
         assert!(pass(&mut r, "m12", "m13", &history, true).is_empty(), "and once only");
 
         // A rollback read after the restart takes production off !10; the
         // redeploy after it is a deployment, said again, outside the window.
-        let mut r = restart(&s);
+        let mut r = restarted(&s);
         assert!(pass(&mut r, "m12", "old", &history, true).is_empty(), "a loss is no edge");
         let heard = pass(&mut r, "m12", "m10", &history, true);
         assert_eq!(heard, [(a, vec!["deployed to production !10".to_string()], false)]);
@@ -4740,7 +4718,7 @@ mod tests {
         // written, nor a ticket the board no longer has.
         s.conflicted.insert(a, vec![("o/r".into(), 4), ("o/r".into(), 99)]);
         s.conflicted.insert(gone, vec![("o/r".into(), 5)]);
-        s.commit_pipelines.insert(("o/r".into(), "m".into()), Pipeline::Passed);
+        s.commit_pipelines.insert(("o/r".into(), "m".into()), (Pipeline::Passed, 0));
         s.deployed.insert(("o/r".into(), "m".into()), vec!["staging".into()]);
         s.deployed.insert(("o/r".into(), "n".into()), vec!["prod".into()]);
         let text = serde_json::to_string_pretty(&ForgeFile::of(&s)).unwrap();
@@ -4808,7 +4786,7 @@ mod tests {
             ("!1".into(), PrState::Merged, Pipeline::Passed)
         );
         assert_eq!(set[0].deployed, vec!["production".to_string()]);
-        assert_eq!(s.commit_pipelines[&("g/p".to_string(), "m".to_string())], Pipeline::Passed);
+        assert_eq!(s.commit_pipelines[&("g/p".to_string(), "m".to_string())].0, Pipeline::Passed);
         let dir = PathBuf::from("/repo");
         s.remotes.insert(dir.clone(), Remote::parse("https://gitlab.com/g/p"));
         assert!(s.merged_at(t, &dir, "h").is_some());

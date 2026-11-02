@@ -135,40 +135,6 @@ case "$1 $2" in
 esac
 "#;
 
-/// A worktree ticket with a spawned agent and one commit on its branch.
-fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let (id, sid, branch, path) = cut(c, title);
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
-    git(&path, &["commit", "-qm", title]);
-    (id, sid, branch, path)
-}
-
-/// A worktree ticket with a spawned agent, its branch as it was cut.
-fn cut(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let id = c.create_ticket(title);
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(c, id);
-    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    (id, sid, wt.branch, path)
-}
-
 /// The board's branches land through pull requests (T-810): every test
 /// here but the one about main reads the forge.
 fn through_prs(c: &mut TestClient) {
@@ -246,8 +212,7 @@ fn write(path: &Path, body: &str) {
 
 #[test]
 fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-stub-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -412,8 +377,7 @@ fn a_pull_request_binds_pipelines_gate_and_the_forges_merge_lands() {
 /// turn's lines, until its pipeline reads passed.
 #[test]
 fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-nopr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -613,8 +577,7 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
 /// merge, and leaves with the board's switch.
 #[test]
 fn a_reviewed_pull_request_is_read_by_itself_shown_and_never_judged() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-named-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -820,14 +783,7 @@ fn the_crown_hears_the_forges_edges() {
     ));
     let got = h.dir.join("got.txt");
     let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let turn = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
         c.await_state(sid, "running", |s| *s == SessionState::Running);
@@ -840,10 +796,7 @@ fn the_crown_hears_the_forges_edges() {
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "forge worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -888,17 +841,7 @@ fn the_crown_hears_the_forges_edges() {
         }
         other => panic!("get_ticket: {other:?}"),
     }
-    let forge_wakes = || {
-        std::fs::read_to_string(&feed_path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| {
-                l.contains("\"kind\":\"crown_wake\"")
-                    && l.contains(&format!("\"worker\":\"{w}\""))
-                    && l.contains("\"cause\":\"forge\"")
-            })
-            .count()
-    };
+    let forge_wakes = || wakes(&h, w, "forge");
     assert_eq!(forge_wakes(), 0, "an opening is the worker's turn end's to say");
     // The edge's words close the bracket; a column the worker's turn moved
     // may stand before them.
@@ -1043,8 +986,7 @@ fn the_crown_hears_the_forges_edges() {
 /// daemon was down is the one feed line the first live pass adds.
 #[test]
 fn the_prs_survive_a_restart_and_the_first_pass_lists() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-keep-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -1167,8 +1109,7 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
 /// a ticket opened meanwhile binds and the row clears.
 #[test]
 fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let name = "forge_lost";
     let (stub_dir, path_var) = gh_stub(name);
     let gh = stub_dir.join("gh");
@@ -1369,14 +1310,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     let mut c = h.client("forge_folder");
     through_prs(&mut c);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let turn = |c: &mut TestClient, sid: uuid::Uuid| {
         hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
         c.await_state(sid, "running", |s| *s == SessionState::Running);
@@ -1389,10 +1323,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "lab worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1464,13 +1395,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     // neither a bare wait nor the named one again.
     let jobs = pipelines.with_extension("jobs");
     let named = std::fs::read_to_string(&jobs).unwrap();
-    let job_reads = || {
-        std::fs::read_to_string(stub_dir.join("calls.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("/jobs"))
-            .count()
-    };
+    let job_reads = || calls_with(&stub_dir.join("calls.log"), "/jobs");
     std::fs::remove_file(&jobs).unwrap();
     let from = job_reads();
     wait_until(Duration::from_secs(20), "two job reads that name nothing", || {
@@ -1489,13 +1414,7 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     // run. Then run 45 at the same merge commit, read bare, is news and
     // never run 44's job; its own name, when a read gives it, is news too.
     let at_merge = pipelines.with_extension(merge_sha);
-    let pipeline_reads = || {
-        std::fs::read_to_string(stub_dir.join("calls.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(&format!("sha={merge_sha}")))
-            .count()
-    };
+    let pipeline_reads = || calls_with(&stub_dir.join("calls.log"), &format!("sha={merge_sha}"));
     write(&at_merge, "not json");
     let from = pipeline_reads();
     wait_until(Duration::from_secs(20), "two pipeline reads that fail", || {
@@ -1646,10 +1565,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     let a = create(&mut c, "coordinate");
     let w = create(&mut c, "two repos");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -1744,8 +1660,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
 /// pull requests on is what starts the reads.
 #[test]
 fn a_board_that_merges_into_main_never_calls_the_forge() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let name = "forge_main";
     let (stub_dir, path_var) = gh_stub(name);
     let prs_file = stub_dir.join("prs.json");
@@ -1960,8 +1875,7 @@ esac
 /// commit is not on staging, and takes the ticket once both are.
 #[test]
 fn a_deployed_arrival_waits_for_every_repositorys_pr() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-two-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -2101,8 +2015,7 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
 /// deployment stands (T-801).
 #[test]
 fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-older-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -2218,8 +2131,7 @@ fn an_older_pr_keeps_its_pipeline_and_deployments_after_a_newer_one_merges() {
 /// minute.
 #[test]
 fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minute() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-busy");
     let prs_file = stub_dir.join("prs.json");
     let checks_file = stub_dir.join("checks.json");
@@ -2409,14 +2321,7 @@ fn a_freshly_bound_prs_state_is_news_and_its_merge_comes_before_its_deployment()
     ));
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     // The ticket's set has been read empty: the PR binds on a later read.
     std::thread::sleep(Duration::from_millis(1500));
 
@@ -2516,14 +2421,7 @@ fn a_later_deploy_carrying_every_merged_mr_moves_the_ticket_to_prod() {
     ));
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let column = |c: &mut TestClient| c.board().ticket(k.worker).unwrap().column.clone();
     let deployed = |c: &mut TestClient, number: u64| {
         prs_of(c)
@@ -2743,8 +2641,7 @@ fn a_conflict_said_before_a_restart_says_its_clear_after_it() {
 /// and the conflict the rebase fixed clears on the board.
 #[test]
 fn a_train_rebase_turn_is_read_at_its_end() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-rebase-read");
     let prs_file = stub_dir.join("prs.json");
     let log = stub_dir.join("calls.log");
@@ -2869,8 +2766,7 @@ fn follow_up(path: &Path, branch: &str) -> String {
 
 #[test]
 fn an_open_pr_holds_done_and_a_ticket_there_reads_unmerged() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-done");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -2995,14 +2891,7 @@ fn a_turn_end_wake_waits_for_the_turns_forge_read() {
     let key = c.board().ticket(k.worker).unwrap().short_key.clone();
     let got = h.dir.join("got.txt");
     let finished = format!("{} finished its turn (", k.named);
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     // The ticket's set has been read empty.
     std::thread::sleep(Duration::from_millis(1500));
 
@@ -3101,8 +2990,7 @@ fn an_opening_read_mid_turn_rides_the_turns_wake() {
 /// is the forge's as well: no train merge, and `m` asks for a PR.
 #[test]
 fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-carried");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -3254,8 +3142,7 @@ fn a_ticket_whose_work_went_through_a_pr_is_never_the_trains() {
 /// first is named by the PR once the forge says it merged.
 #[test]
 fn the_pipeline_gate_judges_the_branchs_tip() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-tip");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -3354,8 +3241,7 @@ fn the_pipeline_gate_judges_the_branchs_tip() {
 /// when: pipeline passes` takes the ticket with the list still stale.
 #[test]
 fn an_open_mrs_head_and_pipeline_are_read_from_the_mr_itself() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-mr-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -3491,32 +3377,12 @@ fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
     };
     init_repo(&h.repo, "a.txt", "hello\n");
     git(&h.repo, &["remote", "add", "origin", "https://gitlab.example.com/lab/api.git"]);
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("forge_wait");
     through_prs(&mut c);
     let got = h.dir.join("got.txt");
-    let feed_path = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
-    let turn = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let job_reads = || {
-        std::fs::read_to_string(&calls)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("/jobs"))
-            .count()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let turn = |c: &mut TestClient, sid: uuid::Uuid| h.one_turn(c, sid);
+    let job_reads = || calls_with(&calls, "/jobs");
     let jobs = pipelines.with_extension("jobs");
     let manual = |job: &str| {
         format!(r#"[{{"name":"build","status":"success"}},{{"name":"{job}","status":"manual"}}]"#)
@@ -3526,10 +3392,7 @@ fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("wait worker");
     let kw = c.board().ticket(w).unwrap().short_key.clone();
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
@@ -3551,17 +3414,7 @@ fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
         lines_with(&format!("{worker} delivered")).len() == 1
     });
     turn(&mut c, sa);
-    let forge_wakes = || {
-        std::fs::read_to_string(&feed_path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| {
-                l.contains("\"kind\":\"crown_wake\"")
-                    && l.contains(&format!("\"worker\":\"{w}\""))
-                    && l.contains("\"cause\":\"forge\"")
-            })
-            .count()
-    };
+    let forge_wakes = || wakes(&h, w, "forge");
     // The MR's own read, its head pipeline run `run` at `status`.
     let read = mr_json("api", 9, &wt.branch, &tip, None);
     let read = read.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('}');
@@ -3652,8 +3505,7 @@ fn an_open_mrs_wait_its_job_read_missed_is_no_news_across_a_restart() {
 /// pass, DONE's `merged` takes the ticket, and REVIEW never does.
 #[test]
 fn an_open_mrs_state_is_read_from_the_mr_itself() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -3761,8 +3613,7 @@ fn squashed_pr(n: u64, branch: &str, head: &str, squash: &str) -> String {
 /// commits are asked once, not on every pass.
 #[test]
 fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-past");
     let prs_file = stub_dir.join("prs.json");
     let commits = stub_dir.join("commits");
@@ -3888,8 +3739,7 @@ fn lists(log: &Path) -> usize {
 /// `fix/alpha`), keeps it after the base took the merge.
 #[test]
 fn a_ticket_cut_at_a_fast_forward_merge_binds_nothing_of_it() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let stub_dir = std::env::temp_dir().join(format!("msmn-forge-cut-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stub_dir);
     std::fs::create_dir_all(&stub_dir).unwrap();
@@ -4111,8 +3961,7 @@ fn a_pr_opened_before_the_ledger_looked_binds_quietly_after_the_backfill() {
 /// snapshot's `forge.trouble` carries the same line.
 #[test]
 fn a_cli_never_signed_in_is_trouble_with_its_fix() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let name = "forge_unsigned";
     let (stub_dir, path_var) = gh_stub(name);
     std::fs::write(
@@ -4173,8 +4022,7 @@ fn a_cli_never_signed_in_is_trouble_with_its_fix() {
 /// backoff.
 #[test]
 fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let name = "forge_account";
     let (stub_dir, path_var) = gh_stub(name);
     let offline = stub_dir.join("offline");
@@ -4457,21 +4305,11 @@ fn a_pull_request_on_a_ticket_with_no_agent_wakes_the_crown() {
         Response::Ok
     ));
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let create = |c: &mut TestClient, title: &str| c.create_ticket(title);
     // The crown, idle.
     let a = create(&mut c, "coordinate");
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    h.one_turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
 
     // ---- a ticket with no agent, its PR named under its Summary ----------
     let b = create(&mut c, "named");
@@ -4610,14 +4448,7 @@ fn a_deploy_to_an_earlier_environment_never_moves_the_card_back() {
     }
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     let column = |c: &mut TestClient| c.board().ticket(k.worker).unwrap().column.clone();
     let deployed = |c: &mut TestClient| {
         prs_of(c)
@@ -4715,6 +4546,11 @@ fn calls(log: &Path, what: &str) -> usize {
     std::fs::read_to_string(log).unwrap_or_default().lines().filter(|l| l.starts_with(what)).count()
 }
 
+/// The stub's calls since the log was last cleared that hold `needle`.
+fn calls_with(log: &Path, needle: &str) -> usize {
+    std::fs::read_to_string(log).unwrap_or_default().lines().filter(|l| l.contains(needle)).count()
+}
+
 /// T-895, the author's report: a PR named on a plain line under a ticket's
 /// `Summary` took the minute's pass to show on the card. Here the minute
 /// never comes (60 s): the write asks the forge at once, and the PR is on
@@ -4761,14 +4597,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
     through_prs(&mut c);
     let k = crowned(&h, &mut c);
     let got = h.dir.join("got.txt");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     wait_until(Duration::from_secs(20), "the first pass", || forge_of(&mut c).sampled_at_ms > 0);
     // Past the burst's floor from the look after the worker's turn.
     std::thread::sleep(Duration::from_millis(1500));
@@ -4890,8 +4719,7 @@ fn a_summary_address_and_news_on_a_warm_pull_request_are_read_within_seconds() {
 /// train unarmed, the minute at 60 s.
 #[test]
 fn a_pr_create_is_read_mid_turn_and_at_a_gated_turn_end() {
-    const STUB: &str =
-        "#!/bin/sh\nstty -icanon 2>/dev/null\ncat | while IFS= read -r line; do :; done\n";
+    const STUB: &str = SILENT_STUB;
     let (stub_dir, path_var) = gh_stub("forge-create");
     let prs_file = stub_dir.join("prs.json");
     write(&prs_file, "[]");
@@ -5220,20 +5048,10 @@ fn a_watched_tickets_later_pr_merge_wakes_the_crown() {
     through_prs(&mut c);
     let got = h.dir.join("got.txt");
     let feed = h.paths.state_dir.join("activity.jsonl");
-    let lines_with = |needle: &str| -> Vec<String> {
-        std::fs::read_to_string(&got)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains(needle))
-            .map(str::to_string)
-            .collect()
-    };
+    let lines_with = |needle: &str| lines_in(&got, needle);
     // The crown, idle.
     let a = c.create_ticket("coordinate");
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(Duration::from_millis(500));
-    h.one_turn(&mut c, sa);
+    let sa = h.crown_idle(&mut c, a);
 
     // A person's worker on a worktree, one commit on its branch.
     let (w, _ws, branch, path) = ready(&mut c, "person");

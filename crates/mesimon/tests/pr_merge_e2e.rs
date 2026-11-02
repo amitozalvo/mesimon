@@ -14,45 +14,9 @@
 mod common;
 use common::*;
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, WorkspaceStrategy};
 use mesimon_core::command::{Command, MergeOutcome, Response};
-
-/// A worktree ticket with a spawned agent and one commit on its branch.
-fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: title.into(),
-        workspace: None,
-        tier: None,
-    });
-    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(c, id);
-    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-    git(&path, &["add", "."]);
-    git(&path, &["commit", "-qm", title]);
-    (id, sid, wt.branch, path)
-}
 
 /// The author's workflow: claude opens the PR, the forge squashes it, the
 /// author pulls. mesimon must then stop calling the ticket unmerged — the

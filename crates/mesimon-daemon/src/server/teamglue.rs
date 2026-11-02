@@ -16,7 +16,7 @@ use crate::team::state::{
 };
 use crate::team::sync::{Done, Job, Tag};
 use mesimon_core::board::{
-    note_name, sanitize_note, sanitize_title, Archived, ExecutionPolicy, NoteMeta,
+    note_name, sanitize_note, sanitize_title, Archived, ExecutionPolicy, NoteMeta, Ticket,
 };
 use mesimon_core::team::{
     RecordBody, SharedObject, SyncState, TeamBoard, TeamBoardSummary, TeamDevice, TeamInfo,
@@ -424,19 +424,12 @@ impl Daemon {
                 .members
                 .iter()
                 .map(|m| {
-                    let verified = s
-                        .verified_members
-                        .get(&m.device.to_hex())
-                        .is_some_and(|p| p.active && p.public == m.public);
+                    let pin = s.verified_members.get(&m.device.to_hex());
+                    let verified = pin.is_some_and(|p| p.active && p.public == m.public);
                     TeamMember {
                         device: m.device.to_hex(),
                         display_name: m.display_name.clone(),
-                        role: s
-                            .verified_members
-                            .get(&m.device.to_hex())
-                            .map_or(m.role, |p| p.role)
-                            .word()
-                            .into(),
+                        role: pin.map_or(m.role, |p| p.role).word().into(),
                         status: m.status.word().into(),
                         pending: m.status == MemberStatus::Active
                             && m.epochs.is_empty()
@@ -1606,10 +1599,7 @@ impl Daemon {
     /// Shared ingress/finalization for content and the authenticated directory.
     /// Only this layer retains deferred input and finishes its publication.
     fn team_receive_record(&mut self, record: StoredRecord) -> ApplyOutcome {
-        let board_before = self.board.clone();
-        let notes_before = self.team.note_revs.clone();
         let mut outcome = self.team_apply_record(&record);
-        let content_succeeded = outcome == ApplyOutcome::Applied;
         #[cfg(test)]
         if outcome == ApplyOutcome::Applied {
             if let Some(fail) = self.team.before_record_finish.take() {
@@ -1621,15 +1611,7 @@ impl Daemon {
         match outcome {
             ApplyOutcome::Deferred => {
                 if can_retain && !state.pending_records.iter().any(|p| p.matches(&record)) {
-                    state.pending_records.push(PendingRecord {
-                        record: record.clone(),
-                        publication: None,
-                        note_rev: None,
-                        local_before: None,
-                        local_after: None,
-                        local_intermediate: Vec::new(),
-                        applied_at: None,
-                    });
+                    state.pending_records.push(PendingRecord::deferred(record.clone()));
                 }
                 self.team.state_dirty = true;
             }
@@ -1658,13 +1640,10 @@ impl Daemon {
             }
         }
         if outcome == ApplyOutcome::Deferred {
-            // Failed content work restores its visible snapshot. Successful
-            // content stays visible if only finalization failed; the saved
-            // intent/floor already protects it across a restart.
-            if !content_succeeded {
-                self.board = board_before;
-                self.team.note_revs = notes_before;
-            }
+            // Failed content work restored its visible snapshot in
+            // `team_apply_record`. Successful content stays visible if only
+            // finalization failed; the saved intent/floor already protects
+            // it across a restart.
             self.team_capture_blocked_digests();
         } else if !self.team.state.as_ref().is_some_and(|s| {
             s.pending_records
@@ -1678,6 +1657,15 @@ impl Daemon {
 
     fn team_capture_blocked_digests(&mut self) {
         let Some(state) = self.team.state.as_ref() else { return };
+        // The projection is a walk of the whole board: only for a retained
+        // publication whose digest is not held yet.
+        let wanted = state.pending_records.iter().any(|p| {
+            p.publication.is_some()
+                && !self.team.blocked_digests.contains_key(&p.record.object.to_hex())
+        });
+        if !wanted {
+            return;
+        }
         let title = self.board_title();
         let me = self.team.device.as_ref().map(|d| d.display_name.clone()).unwrap_or_default();
         let objects =
@@ -1690,19 +1678,19 @@ impl Daemon {
         }
     }
 
-    fn team_local_body(&self, object: ObjectId, body: &RecordBody) -> Option<RecordBody> {
+    /// A ticket as this daemon shares it: its notes unless withheld, its
+    /// author's name this device's.
+    fn team_ticket_body(&self, t: &Ticket) -> RecordBody {
         let me = self.team.device.as_ref().map(|d| d.display_name.as_str()).unwrap_or_default();
+        project::ticket_body(t, self.team.state.as_ref().is_none_or(|s| !s.notes_withheld), me)
+    }
+
+    fn team_local_body(&self, object: ObjectId, body: &RecordBody) -> Option<RecordBody> {
         match &body.object {
             SharedObject::Ticket(shared) => Some(
                 self.board
                     .ticket(ulid::Ulid::from(object))
-                    .map(|t| {
-                        project::ticket_body(
-                            t,
-                            self.team.state.as_ref().is_none_or(|s| !s.notes_withheld),
-                            me,
-                        )
-                    })
+                    .map(|t| self.team_ticket_body(t))
                     .unwrap_or_else(|| project::ticket_tombstone(shared)),
             ),
             SharedObject::Note(note) => {
@@ -1725,13 +1713,8 @@ impl Daemon {
         match &body.object {
             SharedObject::Ticket(_) => {
                 let local = self.team_local_body(object, body)?;
-                let path = self.board.ticket(id).map(|t| {
-                    self.paths
-                        .board_dir
-                        .join("board/tickets")
-                        .join(&t.short_key)
-                        .join("ticket.toml")
-                });
+                let path =
+                    self.board.ticket(id).map(|t| store::ticket_path(&self.paths, &t.short_key));
                 Some(LocalSnapshot {
                     digest: project::digest(&local),
                     stamp: file_stamp(path.as_deref()),
@@ -1740,17 +1723,11 @@ impl Daemon {
             SharedObject::Note(note) => {
                 let Some(ticket) = self.board.ticket(note.ticket) else {
                     return Some(LocalSnapshot {
-                        digest: local_fingerprint(&(None::<String>, None::<NoteMeta>)),
+                        digest: project::digest(&(None::<String>, None::<NoteMeta>)),
                         stamp: "missing".into(),
                     });
                 };
-                let path = self
-                    .paths
-                    .board_dir
-                    .join("board/tickets")
-                    .join(&ticket.short_key)
-                    .join("notes")
-                    .join(format!("{id}.md"));
+                let path = store::note_path(&self.paths, &ticket.short_key, id);
                 let text = match store::read_note(&self.paths, &ticket.short_key, id) {
                     Ok(text) => Some(text),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -1758,7 +1735,7 @@ impl Daemon {
                 };
                 let meta = ticket.notes.iter().find(|n| n.id == id);
                 Some(LocalSnapshot {
-                    digest: local_fingerprint(&(text, meta)),
+                    digest: project::digest(&(text, meta)),
                     stamp: file_stamp(Some(&path)),
                 })
             }
@@ -1783,7 +1760,7 @@ impl Daemon {
                     .and_then(|t| t.notes.iter().find(|n| n.id == id))
                     .cloned();
                 let text = (!note.deleted).then(|| sanitize_note(&note.body));
-                let intermediate = local_fingerprint(&(text.clone(), old.clone()));
+                let intermediate = project::digest(&(text.clone(), old.clone()));
                 let meta = if note.deleted {
                     None
                 } else {
@@ -1804,20 +1781,12 @@ impl Daemon {
                         edited_by: author,
                     })
                 };
-                (Some(local_fingerprint(&(text, meta))), vec![intermediate])
+                (Some(project::digest(&(text, meta))), vec![intermediate])
             }
             SharedObject::Ticket(shared) => {
                 let current = self.board.ticket(id);
-                let me =
-                    self.team.device.as_ref().map(|d| d.display_name.as_str()).unwrap_or_default();
                 let mut next = if let Some(t) = current {
-                    let SharedObject::Ticket(t) = project::ticket_body(
-                        t,
-                        self.team.state.as_ref().is_none_or(|s| !s.notes_withheld),
-                        me,
-                    )
-                    .object
-                    else {
+                    let SharedObject::Ticket(t) = self.team_ticket_body(t).object else {
                         unreachable!()
                     };
                     t
@@ -2103,6 +2072,11 @@ impl Daemon {
         if pending || already_applied {
             return ApplyOutcome::Applied;
         }
+        // The content write alone touches the board and the note revisions:
+        // every refusal above left both as they were, so the snapshot a
+        // failed write restores is taken here, not per record received.
+        let board_before = self.board.clone();
+        let notes_before = self.team.note_revs.clone();
         self.team.applying = true;
         let result = match body.object {
             SharedObject::Ticket(shared) => {
@@ -2139,6 +2113,8 @@ impl Daemon {
         match result {
             Ok(()) => ApplyOutcome::Applied,
             Err(error) => {
+                self.board = board_before;
+                self.team.note_revs = notes_before;
                 self.team.error = Some(format!("applying shared object {key}: {error}"));
                 ApplyOutcome::Deferred
             }
@@ -2381,11 +2357,6 @@ fn viewer_edit(command: &Command) -> bool {
     }
     let meta = command.meta();
     meta.subject.is_some() && !matches!(meta.action, mesimon_core::authorize::Action::Read)
-}
-
-fn local_fingerprint(value: &impl serde::Serialize) -> String {
-    use sha2::Digest;
-    mesimon_team::hex::encode(&sha2::Sha256::digest(serde_json::to_vec(value).unwrap_or_default()))
 }
 
 fn file_stamp(path: Option<&std::path::Path>) -> String {

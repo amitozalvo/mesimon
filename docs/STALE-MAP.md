@@ -40721,3 +40721,122 @@ on the old `seat_of` at "the crashed record is the one resumed"). `cargo ut`, cl
 four crates, and the ask/wake e2es: ask_queue, column_ask, exit_parks, ask_after_park, brief,
 plan_mode, sleep_offer, external_provider, crown, hook, m3, mod_turns, mcp, provider,
 spawn_ready, prompt, worktree.
+
+## The eighth simplify pass (T-1116, 2026-11-03)
+
+Six reviewers over the 137 commits since the seventh pass (`d90489d4..7f59efc0`, T-1058 to
+T-1118), one per area — `server.rs` and its modules, the rest of the daemon, the TUI, core with
+the tmux backend and the binary, the e2e tests, and `ci/` with the web client — each reading all
+four angles (reuse, simplification, efficiency, altitude), each finding checked against the live
+file before it was applied. Appliers worked by file ownership (seven forks: daemon, ci, core,
+crown-wake/team-glue, TUI, tests, `server.rs`); the lead took the cross-module leftovers.
+Behaviour, the wire, every state file and every word an agent, the crown or the phone reads are
+unchanged; no golden moved. 48 files, −2,347 +1,504.
+
+**Applied, hot paths.**
+- **The transcript dialog resolves its links once per message, not four times per frame.**
+  `transcript_links()` cloned the parsed `Found`s and stat'd every path-like word on each call,
+  and the draw called it from `ctx()` twice, the board's hover test and the transcript's source
+  read; it is now memoised on the shown message's key, cleared where `rich_cache` is taken.
+- **A received team record no longer clones the board.** `team_receive_record` cloned `Board`
+  and `note_revs` for every sync-page record and every retry before any check ran; the snapshot
+  is taken in `team_apply_record` right before `applying = true`, restored on `Err`, so the
+  author/floor/revision refusals pay nothing. `team_capture_blocked_digests` projects the board
+  only when a pending record has a publication and no digest yet.
+- **The reaper sweep forks `tmux list-panes` once**, lazily, instead of once per due session
+  whose kill failed; the "pane proven gone" judgement (`Ok(Some)`/`Ok(None)` + endpoint absent/
+  `Err`) is `absence_proven`, shared with the startup inspection. `live_directories` lists panes
+  first and asks liveness only on failure (the T-838 order), one fork fewer per directory sample.
+- **`crown_checkout_reaping` is a predicate** where two sites only asked `.contains`, and the
+  drain pass reads the reservations once rather than per queued ask per tick.
+- **The rig reads the crown's transcript once per ticket**, not fourteen times (`judge` reads
+  it, `check_ticket` filters by `t0_ms` once), and one `calls(rows)` view replaces thirteen
+  content walkers and nine `tool_result` joins.
+- **Smaller:** `help.rs` computes each term's idf once, not per document; `search::pr_excerpt`
+  clones a PR's text once after the loop instead of per better candidate; `is_merged` is
+  `worktree::branch_merged`, qualifying refs once instead of four `format!`s per leg, and
+  `teardown` takes the daemon's legs instead of recomputing them and re-finding each by name.
+
+**Applied, structure.**
+- **Daemon.** `commit_runs` folded into `commit_pipelines`' value (eight paired sites, one
+  invariant; `forge.json` unchanged, a run read absent-as-zero everywhere); `provision`/
+  `provision_workspace` are the production names again (the `_on` pair and the test-only
+  wrappers are gone); `Binding::new`; `repo_legs`; `forget_worktree_flags`/`forget_ticket_flags`
+  for the two reset lists and `on_torn_down`'s removes; the three hand-written forms of
+  `worktree_base_cached`; `backoff_minutes`; `project::digest` generic (the `local_fingerprint`
+  copy deleted); `team_ticket_body`; `PendingRecord::deferred`; `store::{ticket_path, note_path}`
+  for the three hand-built paths; a dead schema assignment in `team::state::load` and the two
+  adjacent `found < 4` tests in `store.rs`.
+- **The crown's wake.** `merged_since_from(absent_from)` under `says_merge`/`reports_merge`
+  (the `from: None` asymmetry stays explicit), `plain()` for the five-field bare-wake test,
+  `CrownWake::owed()` for the three `Owed` rebuilds (the partial sites spell their drops),
+  `sampled_merged_told`; `note_promotion_wake` is `owe_said` with a promotion detail — the
+  cause override it did after `enter_wake` was redundant, `Promotion` already wins `fold`'s
+  `max`.
+- **Core.** `Found::spelling()` and `links::classify_target` (two hand-derived spellings and a
+  `format!("[link]({url})")` built per link only to reach the private `classify`);
+  `settings_items` is `section_rows` filtered by `live`; the `MergeInto` value arm on `word()`;
+  `adopt::between` for the two tag readers (a missing close tag takes the rest, as `tagged`
+  did; `command_words` now reads a truncated record's command too); `checkout_holders`' one
+  `hold` closure; `search::{bare_hit, matched}`; `help::push_new`.
+- **The TUI.** One `creature::Canvas` with `blit` for the three half-block loops (intro, loader,
+  stage keeps its own target); `rich::render_with` under `render_on` and `render_all_with_link`;
+  `WSL_POWERSHELL` once in `opener.rs` with `powershell()`; `scene_pad`; `Channels::quiet` for
+  eight test literals; one `KeyCode`/`KeyModifiers` import in `ui/tests.rs` for 28 local ones.
+- **ci.** `ci/release-lib.sh`, sourced by `release.sh` and `release-prepare.sh`: the version
+  read, the clean-tree guard and the five gate/build steps spelled once, so the warm build is
+  the release's by construction (cargo keys artifacts by the exact flag set; the warm-up had
+  re-typed each command by hand). `rig.py`: `patched_mod` for the three mod patchers,
+  `crown_turn_on` for six pasted waits, `pr_json`/`ROLLUPS`/`write_prs_file`, `claude_wrapper`
+  and `restart_on` for the four shell wrappers, `pr_rows`, `forge_read_pass`; `codex.py`
+  `board_ticket`; `test-run.py` computes the roads once; `build-tmux.sh` one `run` driver.
+  The `crown_never` fallback message printed the card words after the rename; it prints `never`.
+- **The e2e tests** (−770 +321; each migrated test checks the same facts with the same waits,
+  two tightenings named below). New in `common/mod.rs`, added only: `cut`, `ready`,
+  `branch_exists`, `quiet` (five `ready` copies, four hand-writing `CreateTicket` and re-finding
+  by title), `lines_in` (38 closures), `TestClient::{crown_board, crown_sleep}`,
+  `Harness::crown_idle` (crown_e2e's, now six forge preludes and two crown_checkout ones too),
+  `SILENT_STUB` (22 copies), `CROWN_ENV` (16 triples). In files: `crown_starts_on_worktree`
+  and the shared T-1064 bed, `past_teardown`, `calls_with`, `one_turn` for forge's `turn`
+  closure and column_reclaim's hand-written turn. **Tightened, not loosened:** column_reclaim's
+  turn now also waits for `running`; crown_checkout's two crown preludes gain `crown_idle`'s
+  500 ms settle.
+
+**Checked and kept.** `keep_waiting_jobs` beside `carry` (different match keys); `board_detail`
+beside `board_outcome` (a fold changes feed lines); `consume_merge_news`' second `stepped` check
+(for `finished` wakes); the three `enabled()` gates (a test seam); `Bed::reload` vs
+`combined_reload` and `ticket()` vs `peer_ticket()` (bodies differ); `Bed::new` on
+`queued_person_push_tests::daemon` (that bed seeds a session and a queued ask the team bed must
+not have); `init_terminal()` (three callers); the per-keystroke PR search strings (small, not
+per frame); `bounded_output` vs `clipboard.rs`'s loop (opposite I/O, two copies); the loader's
+40 ms redraw (a bounded wait screen); the changelog-heading checks of the two release scripts
+(different questions: the top heading vs any dated heading); a `ci/lib.sh` for `die`/`step`
+(`build-tmux.sh` is mounted alone into the Alpine container, `install.sh` is curl-piped, and
+`release.rs`'s unit test pins the target names to `release.sh`/`build-linux.sh`); the help
+`Index` struct (the corpus is built once per tool call already); `help.rs`'s compiled-in docs;
+`WINDOWS_NAMES`; the notify `Channels` literal that sets seven fields; the 23 older crown
+`start` closures (migrate one by one); forge's `git rev-parse HEAD` commit (needs the sha).
+
+**Found and left open (each a behaviour, wire or design decision):**
+- **A directories sample is two `list-panes` forks.** `pane_facts` and `live_directories` read
+  the same panes; `pane_current_path` on `PaneFacts` (a `mesimon-backend-tmux` struct change)
+  would derive `Sample::directories` from one read. The "server did not answer" error would then
+  come from `pane_facts`. Bounded today: only while an arrival is probing.
+- **`endpoint_absent` is a second Unix-socket probe** beside codex's non-blocking
+  `connect_probe`, and the new one blocks on `UnixStream::connect` on the writer (the reaper
+  sweep, startup). Lifting the codex probe into the backend crate removes both the copy and a
+  possible writer block.
+- **Two shell-quote state machines in core**: `board::evaluated_words` (operator stop, unclosed-
+  quote signal) and `forge::shell_words` (word splitting). One tokenizer in `text.rs` that
+  learns both keeps behaviour but touches forge's reader of `gh pr comment` lines; folding onto
+  either as it is moves a tested edge.
+- **Promotion's `advance` walks `merge_destination` twice per leg** because `ff_merge` skips
+  the clean check on the main checkout; lifting the check into `ff_merge` changes `merge_legs`'
+  refusal on a dirty main checkout from overlapping-files-only to any change.
+- **Three "is the tree clean" probes with three flag sets** (`evict`, `audit`,
+  `merge_destination`): unifying picks which stray files block an eviction or a merge.
+- `image_paste::decode_wsl_png` is the daemon's `attachments::validate` with a tighter decode
+  allocation (`MAX_PIXELS * 4` vs `* 8`) and the status line's own error words; sharing changes
+  one or the other. `notify::windows_path` onto `opener::windows_path` would hand PowerShell
+  `C:\…` for a notification directory under `/mnt/<drive>`, which the state dir never is.
+  `--one-road` in `test-run.py` is a no-op alias (removing it changes the CLI).

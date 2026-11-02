@@ -1041,14 +1041,44 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(!file.contains("crown ="), "{file}");
 }
 
-/// `a`'s claude, crowned and walked through one turn to idle: the stub
-/// emits no `SessionStart`, so it sits at `Spawning` until then.
+/// `a`'s claude, crowned and walked through one turn to idle.
 fn crown_idle(h: &Harness, c: &mut TestClient, a: ulid::Ulid) -> uuid::Uuid {
-    let sa = c.spawn_claude(a);
-    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    h.one_turn(c, sa);
-    sa
+    h.crown_idle(c, a)
+}
+
+/// The crown `sa` starts `w` (key `kw`) on a worktree and the start lands:
+/// the worker's session, its path and its branch.
+fn crown_starts_on_worktree(
+    c: &mut TestClient,
+    sa: uuid::Uuid,
+    w: ulid::Ulid,
+    kw: &str,
+) -> (uuid::Uuid, std::path::PathBuf, String) {
+    match c.crown_start(sa, kw, "worktree") {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = c.agent_read(sa, kw).unwrap().branch.expect("a branch");
+    (ws, path, branch)
+}
+
+/// `call` until its refusal no longer says `still stopping` (T-1080): the
+/// daemon refuses in words until a parked pane's cleanup is confirmed.
+fn past_teardown(what: &str, mut call: impl FnMut() -> Response) -> Response {
+    let mut got = None;
+    wait_until(std::time::Duration::from_secs(15), what, || match call() {
+        Response::Err { message } if message.contains("still stopping") => false,
+        response => {
+            got = Some(response);
+            true
+        }
+    });
+    got.expect(what)
 }
 
 /// A mod-road seat up: its bridge polled, then its `SessionStart`.
@@ -1062,16 +1092,6 @@ fn mod_up(h: &Harness, sid: uuid::Uuid) {
         Some("startup"),
         r#"{"session_id":"x","transcript_path":"/tmp/t-mod.jsonl","cwd":"/tmp"}"#,
     );
-}
-
-/// The lines a recording stub appended to `got` that hold `needle`.
-fn lines_in(got: &std::path::Path, needle: &str) -> Vec<String> {
-    std::fs::read_to_string(got)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.contains(needle))
-        .map(str::to_string)
-        .collect()
 }
 
 /// The crown wakes owed on `t`.
@@ -3689,15 +3709,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
 #[test]
 fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     // The flags every second rather than every ten.
-    let Some(h) = Harness::boot_with_env(
-        "crown_merge",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) = Harness::boot_with_env("crown_merge", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -3825,15 +3838,9 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
 /// `after a restart`. A restart with nothing new to say is silent.
 #[test]
 fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_restart",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_restart", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -3911,6 +3918,45 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     assert!(c.board().ticket(w).is_some());
 }
 
+/// The T-1064 bed: a recording stub per ticket, a crown idle on
+/// `coordinate`, and `another crown` filed beside it (the harness, its
+/// client, the crown's session, its ticket and the second crown's).
+fn t1064_bed(name: &str) -> Option<(Harness, TestClient, uuid::Uuid, ulid::Ulid, ulid::Ulid)> {
+    let h = Harness::boot_with_env(name, Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)?;
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client(name);
+    let a = c.create_ticket("coordinate");
+    let b = c.create_ticket("another crown");
+    let sa = crown_idle(&h, &mut c, a);
+    Some((h, c, sa, a, b))
+}
+
+/// A worker titled `title`, filed on a worktree and started by the crown
+/// `sa`, settled 500 ms: its ticket, key, session, path, branch and the
+/// `key "title"` words the crown's wake names it by.
+fn t1064_start(
+    c: &mut TestClient,
+    sa: uuid::Uuid,
+    title: &str,
+) -> (ulid::Ulid, String, uuid::Uuid, std::path::PathBuf, String, String) {
+    let w = c.create_ticket(title);
+    let kw = c.key_of(w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let (ws, path, branch) = crown_starts_on_worktree(c, sa, w, &kw);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let worker = format!("{kw} \"{title}\"");
+    (w, kw, ws, path, branch, worker)
+}
+
+/// `branch` squash-merged onto the base.
+fn t1064_squash(h: &Harness, branch: &str) {
+    git(&h.repo, &["merge", "--squash", "-q", branch]);
+    git(&h.repo, &["commit", "-qm", &format!("{branch} (squash)")]);
+}
+
 /// Merges the crown already heard are not heard again when a restart
 /// finds them anew (T-1064). The crown heard three workers delivered and
 /// squash-merged, then left and came back (which forgets what it heard),
@@ -3921,53 +3967,15 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
 /// Nor is a crown's sleep and wake news. A genuinely new merge still is.
 #[test]
 fn old_squash_merges_found_again_after_a_restart_are_not_news() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_stale",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
-        return;
-    };
-    init_repo(&h.repo, "a.txt", "hello\n");
-    let mut c = h.client("crown_stale");
+    let Some((h, mut c, sa, a, b)) = t1064_bed("crown_stale") else { return };
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| lines_in(&got, needle);
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
-
-    let a = c.create_ticket("coordinate");
-    let b = c.create_ticket("another crown");
-    let sa = crown_idle(&h, &mut c, a);
     let start = |c: &mut TestClient, title: &str| {
-        let w = c.create_ticket(title);
-        let kw = c.key_of(w);
-        assert!(matches!(
-            c.request(Command::SetWorkspace {
-                id: w,
-                workspace: Some(WorkspaceStrategy::Worktree)
-            }),
-            Response::Ok
-        ));
-        match c.crown_start(sa, &kw, "worktree") {
-            Response::AgentStarted { .. } => {}
-            other => panic!("start_agent: {other:?}"),
-        }
-        let path = std::path::PathBuf::from(wait_attached(c, w).path.expect("a path"));
-        wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-            c.board().live_agent(w).is_some()
-        });
-        let ws = c.board().live_agent(w).unwrap().id;
-        let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        (w, kw.clone(), ws, path, branch, format!("{kw} \"{title}\""))
+        let (w, kw, ws, path, branch, worker) = t1064_start(c, sa, title);
+        (w, kw, ws, path, branch, worker)
     };
-    let squash = |branch: &str| {
-        git(&h.repo, &["merge", "--squash", "-q", branch]);
-        git(&h.repo, &["commit", "-qm", &format!("{branch} (squash)")]);
-    };
+    let squash = |branch: &str| t1064_squash(&h, branch);
     let merge_state = |c: &mut TestClient, kw: &str| c.agent_read(sa, kw).unwrap().merge_state;
 
     // ---- 1. three deliveries, three squash merges, each heard once --------
@@ -4096,48 +4104,13 @@ enum Landing {
 /// squash-merged in one move of the base as `landing` says, and each merge
 /// said exactly once.
 fn squash_merges_past_the_budget(name: &str, landing: Landing) {
-    let Some(h) = Harness::boot_with_env(
-        name,
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
-        return;
-    };
-    init_repo(&h.repo, "a.txt", "hello\n");
-    let mut c = h.client(name);
+    let Some((h, mut c, sa, a, b)) = t1064_bed(name) else { return };
     let got = h.dir.join("got.txt");
     let lines_with = |needle: &str| lines_in(&got, needle);
     let read_got = || std::fs::read_to_string(&got).unwrap_or_default();
-
-    let a = c.create_ticket("coordinate");
-    let b = c.create_ticket("another crown");
-    let sa = crown_idle(&h, &mut c, a);
     let start = |c: &mut TestClient, title: &str| {
-        let w = c.create_ticket(title);
-        let kw = c.key_of(w);
-        assert!(matches!(
-            c.request(Command::SetWorkspace {
-                id: w,
-                workspace: Some(WorkspaceStrategy::Worktree)
-            }),
-            Response::Ok
-        ));
-        match c.crown_start(sa, &kw, "worktree") {
-            Response::AgentStarted { .. } => {}
-            other => panic!("start_agent: {other:?}"),
-        }
-        let path = std::path::PathBuf::from(wait_attached(c, w).path.expect("a path"));
-        wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-            c.board().live_agent(w).is_some()
-        });
-        let ws = c.board().live_agent(w).unwrap().id;
-        let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        (kw.clone(), ws, path, branch, format!("{kw} \"{title}\""))
+        let (_w, kw, ws, path, branch, worker) = t1064_start(c, sa, title);
+        (kw, ws, path, branch, worker)
     };
     let merge_state = |c: &mut TestClient, kw: &str| c.agent_read(sa, kw).unwrap().merge_state;
     // Three workers, each delivered and heard, each branch read ahead.
@@ -4163,8 +4136,7 @@ fn squash_merges_past_the_budget(name: &str, landing: Landing) {
     let squash_all = |workers: &[(String, uuid::Uuid, String, String)]| {
         git(&h.repo, &["checkout", "-q", "-b", "land"]);
         for (_, _, branch, _) in workers {
-            git(&h.repo, &["merge", "--squash", "-q", branch]);
-            git(&h.repo, &["commit", "-qm", &format!("{branch} (squash)")]);
+            t1064_squash(&h, branch);
         }
         git(&h.repo, &["checkout", "-q", "main"]);
         git(&h.repo, &["merge", "--ff-only", "-q", "land"]);
@@ -4343,15 +4315,8 @@ fn owed_across_a_restart(name: &str, took: bool) {
 /// end either. The crown hears the turn when it really ends.
 #[test]
 fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_think",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) = Harness::boot_with_env("crown_think", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -4467,15 +4432,9 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
 /// restart`.
 #[test]
 fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_midturn",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_midturn", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -4568,15 +4527,9 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
 #[test]
 fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     // The flags (and the train) every second rather than every ten.
-    let Some(h) = Harness::boot_with_env(
-        "crown_unknown",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_unknown", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -5219,10 +5172,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let _ = c.request(Command::KillSession { id: sq });
     assert!(c.board().live_agent(q).is_none(), "Q's agent gone, the checkout is free");
     wait_until(std::time::Duration::from_secs(10), "Q's teardown to release the checkout", || {
-        match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
-            Response::AgentBoard { board } => !board.checkout_held_by.contains(&kq),
-            other => panic!("list_board: {other:?}"),
-        }
+        !c.crown_board(sa).checkout_held_by.contains(&kq)
     });
     // With a seat free, the words go — and while they wait on the checkout
     // (the crown mid-turn holds it), the wake holds the seat they need.
@@ -5262,10 +5212,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     }
     c.await_state(ws, "sleeping", |s| *s == SessionState::Sleeping);
     wait_until(std::time::Duration::from_secs(10), "W's teardown before an immediate wake", || {
-        match c.send(Principal::Agent { session: sa }, Command::AgentListBoard) {
-            Response::AgentBoard { board } => !board.checkout_held_by.contains(&kw),
-            other => panic!("list_board: {other:?}"),
-        }
+        !c.crown_board(sa).checkout_held_by.contains(&kw)
     });
     let (held, why, wake) = ask_as(&mut c, &kw, "mesimon-probe-97b woken by words", Deliver::Now);
     assert!(!held, "{why}");
@@ -6121,17 +6068,9 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         // An explicit send waits for the parked pane's reaper (T-1080): the
         // daemon refuses it in words until cleanup is confirmed, so the ask
         // is retried on that word, as the start above is.
-        let mut sent = None;
-        wait_until(std::time::Duration::from_secs(15), "the parked pane's cleanup", || {
-            match ask(&mut c, "mesimon-probe-9399 to a parked seat", Deliver::Now) {
-                Response::Err { message } if message.contains("still stopping") => false,
-                response => {
-                    sent = Some(response);
-                    true
-                }
-            }
-        });
-        let parked = receipt(sent.expect("the ask after cleanup"));
+        let parked = receipt(past_teardown("the parked pane's cleanup", || {
+            ask(&mut c, "mesimon-probe-9399 to a parked seat", Deliver::Now)
+        }));
         assert_eq!(parked.status, "sent", "{parked:?}");
         hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
         let mod_record = h.dir.join(format!("mod-{ws}.ndjson"));
@@ -6853,15 +6792,8 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
 #[test]
 fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     // The flags (and the train) every second rather than every ten.
-    let Some(h) = Harness::boot_with_env(
-        "crown_train",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) = Harness::boot_with_env("crown_train", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -6998,15 +6930,9 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
 #[test]
 fn the_merged_wake_waits_for_the_notice_turn() {
     // The flags (and the train) every second rather than every ten.
-    let Some(h) = Harness::boot_with_env(
-        "crown_notice",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_notice", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -10202,15 +10128,9 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
 /// read by the daemon at the merge), no notice and the wake comes at once.
 #[test]
 fn the_crown_merges_where_the_train_will_not() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_merges",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_merges", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -10478,15 +10398,9 @@ fn the_crown_merges_where_the_train_will_not() {
 /// notice goes until the person's second `m`.
 #[test]
 fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_hand_merge",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_hand_merge", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -10635,15 +10549,8 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
 /// watch.
 #[test]
 fn the_crown_watches_a_ticket_a_person_started() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_watch",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) = Harness::boot_with_env("crown_watch", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -10931,13 +10838,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     // watch had a park. Watched and idle: the archive's refusal names
     // sleep_agent, and sleep_agent parks it — Sleeping, the record and its
     // person provenance kept, the seat's pane given up.
-    let sleep = |c: &mut TestClient, key: &str| {
-        let v = c.agent_read(sa, key).unwrap();
-        c.send(
-            Principal::Agent { session: sa },
-            Command::AgentSleepTicket { key: key.into(), seen: v.seen },
-        )
-    };
+    let sleep = |c: &mut TestClient, key: &str| c.crown_sleep(sa, key);
     assert!(c.agent_read(sa, &kw).unwrap().watched, "step 10 left W watched");
     start(&mut c, ws);
     match sleep(&mut c, &kw) {
@@ -11351,15 +11252,9 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
 /// is heard (`a_worker_mid_turn_across_a_restart_delivers_at_its_real_end`).
 #[test]
 fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_parked_news",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_parked_news", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -11504,15 +11399,9 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
 /// start adds no second paste.
 #[test]
 fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_wake_words",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_wake_words", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     let repo = h.repo.clone();
@@ -11589,19 +11478,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     });
     // The pane can exit before the daemon reaches its reaper deadline.
     // Wait for the daemon's confirmation without bypassing that reservation.
-    let mut started = None;
-    wait_until(
-        std::time::Duration::from_secs(15),
-        "daemon confirms cleanup",
-        || match start_agent(&mut c, &kw, "shared_checkout") {
-            Response::Err { message } if message.contains("still stopping") => false,
-            response => {
-                started = Some(response);
-                true
-            }
-        },
-    );
-    match started.unwrap() {
+    match past_teardown("daemon confirms cleanup", || start_agent(&mut c, &kw, "shared_checkout")) {
         Response::AgentStarted { session_started: true, woken: true, prompt, .. } => {
             assert_eq!(prompt, Some(StartPrompt::Queued), "the crown's words wait for it");
         }
@@ -15037,15 +14914,9 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
 /// words go in, the turn they begin wakes the crown exactly once.
 #[test]
 fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_overrun_rebuild",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_overrun_rebuild", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     let repo = h.repo.clone();
@@ -15161,11 +15032,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     let Some(h) = Harness::boot_with_env(
         "crown_overrun_rebuild_owned",
         Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
+        CROWN_ENV,
     ) else {
         return;
     };
@@ -16061,15 +15928,9 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
 /// makes that stamp stale as before.
 #[test]
 fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_merge_stamp",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_merge_stamp", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -16213,12 +16074,7 @@ fn a_worker_read_during_the_crowns_turn_is_not_a_second_wake() {
     let w = c.create_ticket("mesimon-probe-1036 observed worker");
     let kw = c.key_of(w);
     let sa = crown_idle(&h, &mut c, a);
-    assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
-    wait_attached(&mut c, w);
-    wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
+    let (ws, _, _) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     h.prompt_turn(&mut c, sa);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the queued worker wake", || {
@@ -16829,15 +16685,9 @@ fn a_crown_s_filing_receipt_starts_its_ticket_with_no_read() {
 /// crown started and nobody woke stays the new crown's (T-927).
 #[test]
 fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
-    let Some(h) = Harness::boot_with_env(
-        "crown_person_woke",
-        Some(RECORDING_STUB_PER_TICKET),
-        &[
-            ("MESIMON_NO_TAG_SEED", "1"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_WT_REFRESH_TICKS", "4"),
-        ],
-    ) else {
+    let Some(h) =
+        Harness::boot_with_env("crown_person_woke", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
         return;
     };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -16861,19 +16711,8 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
     let sa = crown_idle(&h, &mut c, a);
 
     // ---- 1. the first crown starts both workers ---------------------------
-    let seat = |c: &mut TestClient, key: &str, t: ulid::Ulid| {
-        match c.crown_start(sa, key, "worktree") {
-            Response::AgentStarted { .. } => {}
-            other => panic!("start_agent {key}: {other:?}"),
-        }
-        wait_attached(c, t);
-        wait_until(std::time::Duration::from_secs(15), "the crown's start to land", || {
-            c.board().live_agent(t).is_some()
-        });
-        c.board().live_agent(t).unwrap().id
-    };
-    let ws = seat(&mut c, &kw, w);
-    let ks = seat(&mut c, &kk, k);
+    let ws = crown_starts_on_worktree(&mut c, sa, w, &kw).0;
+    let ks = crown_starts_on_worktree(&mut c, sa, k, &kk).0;
     std::thread::sleep(std::time::Duration::from_millis(500));
     h.one_turn(&mut c, ws);
     h.one_turn(&mut c, ks);

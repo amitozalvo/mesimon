@@ -125,13 +125,25 @@ pub(crate) fn render_on(
     surface: Surface,
     newline: Newline,
 ) -> Vec<Line<'static>> {
+    render_with(src, width, max_lines, theme, surface, newline, None)
+}
+
+fn render_with(
+    src: &str,
+    width: usize,
+    max_lines: usize,
+    theme: &Theme,
+    surface: Surface,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Line<'static>> {
     if width == 0 || max_lines == 0 {
         return Vec::new();
     }
     let paint = Paint::of(theme, surface);
     let mut out =
-        Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false, selected: None };
-    out.blocks(blocks(src, newline, None));
+        Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false, selected };
+    out.blocks(blocks(src, newline, selected));
     out.finish()
 }
 
@@ -157,21 +169,7 @@ pub(crate) fn render_all_with_link(
     newline: Newline,
     selected: &mesimon_core::links::Found,
 ) -> Vec<Line<'static>> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let paint = Paint::of(theme, Surface::Ground);
-    let mut out = Out {
-        lines: Vec::new(),
-        max: usize::MAX,
-        width,
-        theme,
-        paint,
-        cut: false,
-        selected: Some(selected),
-    };
-    out.blocks(blocks(src, newline, Some(selected)));
-    out.finish()
+    render_with(src, width, usize::MAX, theme, Surface::Ground, newline, Some(selected))
 }
 
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
@@ -674,13 +672,9 @@ fn list_marker(body: &str) -> Option<(Option<String>, &str)> {
 /// Split bare targets before wrapping. Classification is the Links parser's;
 /// punctuation and neighboring prose retain their original styling.
 fn target_runs(text: &str, emph: Emph, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
-    use mesimon_core::links::{extract, Found};
+    use mesimon_core::links::extract;
     let Some(selected) = selected else { return vec![Run { text: text.into(), emph }] };
-    let needle = match selected {
-        Found::Url(s) | Found::Ticket(s) => s.clone(),
-        Found::Path { path, line } => line.map_or_else(|| path.clone(), |n| format!("{path}:{n}")),
-        Found::Attachment(id) => mesimon_core::attachment::target(*id),
-    };
+    let needle = selected.spelling();
     let mut out = Vec::new();
     let mut from = 0;
     let mut offset = 0;
@@ -963,11 +957,8 @@ fn link(
     let label: String = chars[open + 1..close].iter().collect();
     let url: String = chars[close + 2..end].iter().collect();
     let url = url.trim().to_string();
-    let marked = selected.is_some_and(|target| {
-        mesimon_core::links::extract(&format!("[link]({url})"))
-            .first()
-            .is_some_and(|link| &link.target == target)
-    });
+    let marked = selected
+        .is_some_and(|target| mesimon_core::links::classify_target(&url).as_ref() == Some(target));
     if mesimon_core::attachment::parse_target(&url).is_some() {
         return Some((
             vec![Run {

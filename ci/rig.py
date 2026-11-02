@@ -67,6 +67,7 @@ import sys
 import threading
 import time
 import tomllib
+from typing import NamedTuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "rig"))
@@ -97,6 +98,31 @@ SMALL_TIER_DESCRIPTION = "a one-line edit to a single file"
 ALT_TIER_NAME = "rig-alt"
 ALT_TIER_DESCRIPTION = "a worker the crown moves off a usage limit (L2)"
 STEP_TIMEOUT = 600
+
+# The stub forge's statusCheckRollup per pipeline state (`write_pr`).
+ROLLUPS = {
+    "running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
+    "failed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"FAILURE"}]',
+    "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]',
+}
+
+
+def pr_json(number, branch, head, state, checks, mergeable="MERGEABLE", at="2026-10-13T06:00:00Z"):
+    """One PR of the stub forge's prs.json, as `gh pr list --json` prints it."""
+    merge = f'{{"oid":"{head}"}}' if state == "MERGED" else "null"
+    return (f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
+            f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
+            f'"headRefOid":"{head}","mergeCommit":{merge},"mergeable":"{mergeable}",'
+            f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"{at}",'
+            f'"statusCheckRollup":{checks}}}')
+
+
+def write_prs_file(d, prs):
+    """The stub forge's prs.json under `d`, whole or not at all."""
+    path = os.path.join(d, "prs.json")
+    with open(path + ".tmp", "w") as f:
+        f.write("[" + ",".join(prs) + "]")
+    os.replace(path + ".tmp", path)
 # The stub forge CLI a rig test puts first on the daemon's PATH (T-739).
 GH_STUB = """#!/bin/sh
 case "$1 $2" in
@@ -417,50 +443,67 @@ def once(rows):
     return out
 
 
+def blocks(rows):
+    """(row, block) for every dict block of every row's message content, in
+    order, each tool use and result kept once (`once`)."""
+    for row in once(rows):
+        content = (row.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
+            if isinstance(b, dict):
+                yield row, b
+
+
+def result_text(b):
+    """A tool_result block's text: its string body, or its text parts joined."""
+    body = b.get("content")
+    return body if isinstance(body, str) else " ".join(
+        x.get("text", "") for x in body or [] if isinstance(x, dict))
+
+
+class Call(NamedTuple):
+    """One tool use in a transcript: its full name, id, input, and its
+    result as `{is_error, text}`, or None while none came."""
+    name: str
+    id: str
+    input: dict
+    result: dict | None
+
+    @property
+    def tool(self):
+        return (self.name or "").rsplit("__", 1)[-1]
+
+    @property
+    def key(self):
+        return str(self.input.get("key", "")).strip()
+
+    @property
+    def text(self):
+        return self.result["text"] if self.result else None
+
+
+def calls(rows):
+    """Every tool use in a transcript as a `Call`, in order."""
+    results = {}
+    uses = []
+    for _, b in blocks(rows):
+        if b.get("type") == "tool_result":
+            results[b.get("tool_use_id")] = {"is_error": bool(b.get("is_error")), "text": result_text(b)}
+        elif b.get("type") == "tool_use":
+            uses.append(b)
+    return [Call(b.get("name"), b.get("id"), b.get("input") or {}, results.get(b.get("id"))) for b in uses]
+
+
 def keyed_calls(rows, tool, key):
     """The results of every `tool` call in a transcript whose input names
     `key` (T-1089): a worker's keyed reach for another ticket."""
-    rows = once(rows)
-    ids = []
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if (isinstance(b, dict) and b.get("type") == "tool_use"
-                    and (b.get("name") or "").endswith(f"__{tool}")
-                    and (b.get("input") or {}).get("key") == key):
-                ids.append(b.get("id"))
-    out = []
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") in ids:
-                body = b.get("content")
-                text = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
-                out.append({"is_error": bool(b.get("is_error")), "text": text})
-    return out
+    return [c.result for c in calls(rows)
+            if (c.name or "").endswith(f"__{tool}") and c.input.get("key") == key and c.result]
 
 
 def tool_calls(rows):
     """(tool name, its result) for every tool use in a transcript, in order;
     a result is `{is_error, text}`, or None while none came."""
-    rows = once(rows)
-    results = {}
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_result":
-                body = b.get("content")
-                text = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
-                results[b.get("tool_use_id")] = {"is_error": bool(b.get("is_error")), "text": text}
-    out = []
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                out.append((b.get("name"), results.get(b.get("id"))))
-    return out
+    return [(c.name, c.result) for c in calls(rows)]
 
 
 # The words of `CrownAsk::refusal` (T-938): a second ask refused because the
@@ -473,21 +516,7 @@ def second_ask_refusal(rows, key):
     its own tool results, never its summary (T-938, round 3): the first's
     receipt names its ask, and the second's answer is the outstanding-ask
     refusal naming that same ask."""
-    results, asks = {}, []
-    for row in once(rows):
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if not isinstance(b, dict):
-                continue
-            if b.get("type") == "tool_result":
-                body = b.get("content")
-                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
-            elif (b.get("type") == "tool_use"
-                  and (b.get("name") or "").rsplit("__", 1)[-1] == "ask_agent"
-                  and str((b.get("input") or {}).get("key", "")).strip() == key):
-                asks.append(b.get("id"))
-    said = [results.get(i) for i in asks]
+    said = [c.text for c in calls(rows) if c.tool == "ask_agent" and c.key == key]
     if len(said) < 2 or said[0] is None or said[1] is None:
         return False, f"{len(said)} ask_agent call(s) on {key} with results"
     try:
@@ -509,34 +538,19 @@ def receipt_ask_outcome(rows, key):
     carries the seen the start's receipt returned, no get_ticket of `key`
     came between the two, and the ask's answer is its receipt (its `asked`
     record), not the stale refusal."""
-    rows = once(rows)
-    results = {}
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_result":
-                body = b.get("content")
-                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
     start_seen, reads, ask = None, 0, None
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if not isinstance(b, dict) or b.get("type") != "tool_use":
-                continue
-            tool = (b.get("name") or "").rsplit("__", 1)[-1]
-            args = b.get("input") or {}
-            if str(args.get("key", "")).strip() != key:
-                continue
-            if tool == "start_agent" and start_seen is None:
-                try:
-                    start_seen = json.loads(results.get(b.get("id")) or "")["seen"]
-                except (ValueError, KeyError, TypeError):
-                    return False, f"the start's receipt names no seen: {results.get(b.get('id'), '')[:120]!r}"
-            elif tool == "get_ticket" and start_seen is not None and ask is None:
-                reads += 1
-            elif tool == "ask_agent" and start_seen is not None and ask is None:
-                ask = (str(args.get("seen", "")).strip(), results.get(b.get("id")))
+    for c in calls(rows):
+        if c.key != key:
+            continue
+        if c.tool == "start_agent" and start_seen is None:
+            try:
+                start_seen = json.loads(c.text or "")["seen"]
+            except (ValueError, KeyError, TypeError):
+                return False, f"the start's receipt names no seen: {(c.text or '')[:120]!r}"
+        elif c.tool == "get_ticket" and start_seen is not None and ask is None:
+            reads += 1
+        elif c.tool == "ask_agent" and start_seen is not None and ask is None:
+            ask = (str(c.input.get("seen", "")).strip(), c.text)
     if start_seen is None:
         return False, "no start_agent on the ticket with a receipt"
     if ask is None:
@@ -562,38 +576,23 @@ def create_start_outcome(rows):
     start_agent on the key it returned (T-1072): the start carries the seen
     the create's receipt returned, no get_ticket of that key came between
     the two, and the start's answer is its receipt, not a refusal."""
-    rows = once(rows)
-    results = {}
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_result":
-                body = b.get("content")
-                results[b.get("tool_use_id")] = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
     filed, reads, start = None, 0, None
-    for row in rows:
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if not isinstance(b, dict) or b.get("type") != "tool_use":
-                continue
-            tool = (b.get("name") or "").rsplit("__", 1)[-1]
-            args = b.get("input") or {}
-            if tool == "create_ticket" and filed is None:
-                try:
-                    # The first call after a crowning carries the rules after
-                    # its receipt (T-930): the receipt is the leading object.
-                    receipt = json.JSONDecoder().raw_decode((results.get(b.get("id")) or "").lstrip())[0]
-                    filed = (receipt["key"], receipt["seen"])
-                except (ValueError, KeyError, TypeError):
-                    return False, f"the create's receipt names no key and seen: {results.get(b.get('id'), '')[:120]!r}"
-                continue
-            if filed is None or start is not None or str(args.get("key", "")).strip() != filed[0]:
-                continue
-            if tool == "get_ticket":
-                reads += 1
-            elif tool == "start_agent":
-                start = (str(args.get("seen", "")).strip(), results.get(b.get("id")))
+    for c in calls(rows):
+        if c.tool == "create_ticket" and filed is None:
+            try:
+                # The first call after a crowning carries the rules after
+                # its receipt (T-930): the receipt is the leading object.
+                receipt = json.JSONDecoder().raw_decode((c.text or "").lstrip())[0]
+                filed = (receipt["key"], receipt["seen"])
+            except (ValueError, KeyError, TypeError):
+                return False, f"the create's receipt names no key and seen: {(c.text or '')[:120]!r}"
+            continue
+        if filed is None or start is not None or c.key != filed[0]:
+            continue
+        if c.tool == "get_ticket":
+            reads += 1
+        elif c.tool == "start_agent":
+            start = (str(c.input.get("seen", "")).strip(), c.text)
     if filed is None:
         return False, "no create_ticket with a receipt"
     if start is None:
@@ -616,42 +615,36 @@ def create_start_outcome(rows):
 def budget_reused(rows, first, second):
     """T-1048: the zero receipt, a successful park, then a successful start;
     no hand. Refused calls remain evidence, but do not satisfy a step."""
-    calls, phase, observed = {}, 0, []
-    for row in once(rows):
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if not isinstance(b, dict):
+    called, phase, observed = {}, 0, []
+    for _, b in blocks(rows):
+        if b.get("type") == "tool_use":
+            name = (b.get("name") or "").rsplit("__", 1)[-1]
+            key = (b.get("input") or {}).get("key")
+            if name == "raise_hand":
+                return False, "the crown raised its hand"
+            called[b.get("id")] = (name, key, phase)
+        elif b.get("type") == "tool_result":
+            name, key, called_at = called.get(b.get("tool_use_id"), (None, None, None))
+            if name not in ("start_agent", "sleep_agent"):
                 continue
-            if b.get("type") == "tool_use":
-                name = (b.get("name") or "").rsplit("__", 1)[-1]
-                key = (b.get("input") or {}).get("key")
-                if name == "raise_hand":
-                    return False, "the crown raised its hand"
-                calls[b.get("id")] = (name, key, phase)
-            elif b.get("type") == "tool_result":
-                name, key, called_at = calls.get(b.get("tool_use_id"), (None, None, None))
-                if name not in ("start_agent", "sleep_agent"):
-                    continue
-                body = b.get("content")
-                text = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
-                if b.get("is_error"):
-                    observed.append(f"{name} {key} refused")
-                    continue
-                observed.append(f"{name} {key}")
-                if name == "start_agent":
-                    try:
-                        receipt = json.loads(text)
-                    except ValueError:
-                        return False, f"no start receipt: {text[:120]}"
-                    if receipt.get("status") not in ("started", "waiting_for_worktree"):
-                        return False, f"no fresh start: {text[:120]}"
-                    if key == first and phase == 0 and receipt.get("budget_left") == 0:
-                        phase = 1
-                    elif key == second and called_at == 2:
-                        phase = 3
-                elif key == first and called_at == 1:
-                    phase = 2
+            text = result_text(b)
+            if b.get("is_error"):
+                observed.append(f"{name} {key} refused")
+                continue
+            observed.append(f"{name} {key}")
+            if name == "start_agent":
+                try:
+                    receipt = json.loads(text)
+                except ValueError:
+                    return False, f"no start receipt: {text[:120]}"
+                if receipt.get("status") not in ("started", "waiting_for_worktree"):
+                    return False, f"no fresh start: {text[:120]}"
+                if key == first and phase == 0 and receipt.get("budget_left") == 0:
+                    phase = 1
+                elif key == second and called_at == 2:
+                    phase = 3
+            elif key == first and called_at == 1:
+                phase = 2
     return phase == 3, " → ".join(observed) or "no start receipt"
 
 
@@ -675,11 +668,8 @@ def plan_read_order(rows, key, word):
     whole, done, bad = None, False, False
 
     def reading(b):
-        body = b.get("content")
-        text = body if isinstance(body, str) else " ".join(
-            x.get("text", "") for x in body or [] if isinstance(x, dict))
         try:
-            got = json.loads(text)
+            got = json.loads(result_text(b))
         except ValueError:
             return None
         return None if b.get("is_error") or not isinstance(got, dict) else got
@@ -687,8 +677,8 @@ def plan_read_order(rows, key, word):
     for r in once(rows):
         if r.get("type") not in ("assistant", "user") or done:
             continue
-        blocks = (r.get("message") or {}).get("content")
-        for b in blocks if isinstance(blocks, list) else []:
+        content = (r.get("message") or {}).get("content")
+        for b in content if isinstance(content, list) else []:
             if not isinstance(b, dict) or done:
                 continue
             if b.get("type") == "tool_use":
@@ -749,12 +739,7 @@ def plan_read_order(rows, key, word):
 
 def row_ms(row):
     """A transcript row's time in epoch ms, or None."""
-    import datetime
-    try:
-        return int(datetime.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
-                   .timestamp() * 1000)
-    except (KeyError, TypeError, ValueError):
-        return None
+    return iso_ms(row.get("timestamp") or "")
 
 
 # A result that carries the crown's rules: `CROWN_WAKES`'s first words, in
@@ -861,10 +846,7 @@ def rules_after_compaction(rows, since_ms):
                 names[b.get("id")] = b.get("name") or ""
             elif b.get("type") == "tool_result" and names.get(b.get("tool_use_id"), "").startswith(
                     "mcp__mesimon__"):
-                body = b.get("content")
-                text = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
-                seq.append(("result", CROWN_RULES_MARK in text))
+                seq.append(("result", CROWN_RULES_MARK in result_text(b)))
     at = next((i for i, (k, _) in enumerate(seq) if k == "boundary"), None)
     if at is None:
         return False, "no compact boundary in the crown's transcript"
@@ -909,6 +891,13 @@ def context_read(text):
     return int(tokens.group(1)), int(window.group(1))
 
 
+def forge_read_pass(line, tid):
+    """A feed line where the forge read a pipeline pass on `tid`."""
+    return (line.get("kind") == "board" and line.get("actor") == "forge"
+            and line.get("cmd") == "pr" and line.get("ticket") == tid
+            and "pipeline passed" in (line.get("outcome") or ""))
+
+
 def archived_quiet(lines, tid, since, until=None):
     """`archived_quiet:<rig step>` (AF1, T-1076), over the feed: from that
     step's start the forge read a pipeline pass on the ticket (a `forge pr`
@@ -921,9 +910,7 @@ def archived_quiet(lines, tid, since, until=None):
         return False, "the step never ran"
     archived = until is not None
     late = [l for l in lines if since <= l.get("at_ms", 0) < (until or float("inf"))]
-    read = [l.get("outcome") for l in late if l.get("kind") == "board" and l.get("actor") == "forge"
-            and l.get("cmd") == "pr" and l.get("ticket") == tid
-            and "pipeline passed" in (l.get("outcome") or "")]
+    read = [l.get("outcome") for l in late if forge_read_pass(l, tid)]
     woke = [l.get("cause") for l in late if l.get("kind") == "crown_wake" and l.get("worker") == tid]
     where = "archived" if archived else "on the board"
     seen = f"{where}; forge read {read or 'nothing'}; wakes {woke or 'none'}"
@@ -965,9 +952,7 @@ def sampled_before(rows, key, prefix):
                     and (b.get("input") or {}).get("key") == key:
                 calls.add(b.get("id"))
             elif kind == "tool_result" and stage == "sample" and b.get("tool_use_id") in calls:
-                body = b.get("content")
-                text = body if isinstance(body, str) else " ".join(
-                    x.get("text", "") for x in body or [] if isinstance(x, dict))
+                text = result_text(b)
                 try:
                     reading = json.loads(text)
                 except ValueError:
@@ -1055,13 +1040,7 @@ def findings_first(lines, sid, tid, runs, rows, landed):
 
 def tool_inputs(rows):
     """(tool name, its input) for every tool use in a transcript, in order."""
-    out = []
-    for row in once(rows):
-        content = (row.get("message") or {}).get("content")
-        for b in content if isinstance(content, list) else []:
-            if isinstance(b, dict) and b.get("type") == "tool_use":
-                out.append((b.get("name"), b.get("input") or {}))
-    return out
+    return [(c.name, c.input) for c in calls(rows)]
 
 
 def user_prompts(rows, at=False):
@@ -1805,80 +1784,88 @@ class Rig:
         return subprocess.run([tmux, "-S", self.paths.tmux_sock, *args],
                               capture_output=True, text=True)
 
-    def enterprise_claude(self):
-        """T-1069: the real Claude Code, but for `auth status`, which says an
-        enterprise account: the probe's own reason for a native road."""
-        wrapper = os.path.join(self.out, "claude-enterprise")
+    def claude_wrapper(self, name, comment, body, d=None):
+        """An executable `name` under `d` (the run's out dir): a sh script
+        that runs `body` and then execs the real Claude Code with its
+        arguments."""
+        wrapper = os.path.join(d or self.out, name)
         with open(wrapper, "w") as f:
-            f.write("#!/bin/sh\n# The rig's NX tests (T-1069): an enterprise account to the probe.\n"
-                    'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then\n'
-                    "  echo '{\"loggedIn\":true,\"subscriptionType\":\"enterprise\"}'; exit 0\n"
-                    "fi\n"
-                    f'exec "{self.claude}" "$@"\n')
+            f.write(f"#!/bin/sh\n# {comment}\n{body}" f'exec "{self.claude}" "$@"\n')
         os.chmod(wrapper, 0o755)
         return wrapper
 
-    def passed_over_mod(self):
-        """T-1069's simulation: the laid sources, with the mod's
-        `session.compact` hook passing the event on before it reads it, as a
-        seated security default's `next.to(e, "append")` keeps it from a
-        person's mod. Everything else is the mod as shipped."""
+    def restart_on(self, wrapper, want_probe, record, failure):
+        """Restart the daemon on `wrapper` as its Claude Code; `failure` is
+        recorded when it never comes up."""
+        ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe=want_probe)
+        self.restarted = True
+        if not ok:
+            record["failures"].append(failure)
+        return ok
+
+    def enterprise_claude(self):
+        """T-1069: the real Claude Code, but for `auth status`, which says an
+        enterprise account: the probe's own reason for a native road."""
+        return self.claude_wrapper(
+            "claude-enterprise", "The rig's NX tests (T-1069): an enterprise account to the probe.",
+            'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then\n'
+            "  echo '{\"loggedIn\":true,\"subscriptionType\":\"enterprise\"}'; exit 0\n"
+            "fi\n")
+
+    def patched_mod(self, name, edits, what):
+        """The laid mod's sources copied under the rig's state dir as `name`
+        (every load writes Claude Code's types and tsconfig into the folder,
+        never a checkout), each `(anchor, patched, moved)` of `edits` applied
+        to hooks/register.ts (the anchor, found once, becomes `patched`;
+        `moved` is the word when it is not there), its test dropped and the
+        result validated as `what`. Everything else is the mod as shipped."""
         src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
-        dst = os.path.join(self.paths.state_dir, "rig", "mod-compact-passed-over")
+        dst = os.path.join(self.paths.state_dir, "rig", name)
         if os.path.exists(dst):
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
         path = os.path.join(dst, "hooks", "register.ts")
         with open(path) as f:
             text = f.read()
-        head = "  on('session.compact', async ($, e, next) => {\n"
-        if text.count(head) != 1:
-            die("the mod's session.compact hook moved: the NX simulation cannot be patched in")
-        text = text.replace(head, head + "    if (RIG_PASSED_OVER) return next(e)\n", 1)
-        anchor = "let typedCompact: { closed: boolean } | undefined\n"
-        if anchor not in text:
-            die("the mod's typedCompact moved: the NX simulation's switch cannot be declared")
-        text = text.replace(anchor, anchor + "const RIG_PASSED_OVER = true\n", 1)
+        for anchor, patched, moved in edits:
+            if text.count(anchor) != 1:
+                die(moved)
+            text = text.replace(anchor, patched, 1)
         os.remove(os.path.join(dst, "hooks", "register.test.ts"))
         with open(path, "w") as f:
             f.write(text)
         out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
         if out.returncode != 0:
-            die(f"the NX simulation's mod does not validate:\n{out.stdout}{out.stderr}")
+            die(f"{what} does not validate:\n{out.stdout}{out.stderr}")
         return dst
 
+    def passed_over_mod(self):
+        """T-1069's simulation: the mod's `session.compact` hook passing the
+        event on before it reads it, as a seated security default's
+        `next.to(e, "append")` keeps it from a person's mod."""
+        head = "  on('session.compact', async ($, e, next) => {\n"
+        anchor = "let typedCompact: { closed: boolean } | undefined\n"
+        return self.patched_mod("mod-compact-passed-over", [
+            (head, head + "    if (RIG_PASSED_OVER) return next(e)\n",
+             "the mod's session.compact hook moved: the NX simulation cannot be patched in"),
+            (anchor, anchor + "const RIG_PASSED_OVER = true\n",
+             "the mod's typedCompact moved: the NX simulation's switch cannot be declared"),
+        ], "the NX simulation's mod")
+
     def drop_mod(self):
-        """P4's mod: the laid sources, with the first submit of each session
-        reported dropped. Under the rig's state dir: every load writes
-        Claude Code's types and tsconfig into the folder, never a checkout."""
-        src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
-        dst = os.path.join(self.paths.state_dir, "rig", "mod-drop")
-        if os.path.exists(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        path = os.path.join(dst, "hooks", "register.ts")
-        with open(path) as f:
-            text = f.read()
+        """P4's mod: the first submit of each session reported dropped."""
         head = "async function submitPrompt($: any, id: string, text: string) {\n"
-        if head not in text:
-            die("the mod's submitPrompt moved: P4's drop cannot be patched in")
-        text = text.replace(head, head + (
-            "  if (!rigDropped) {\n"
-            "    rigDropped = true\n"
-            "    await relay($, 'ModSubmit', id, { outcome: 'dropped', reason: 'the rig dropped it (P4)' }, false)\n"
-            "    return\n"
-            "  }\n"), 1)
         anchor = "const seen: string[] = []\n"
-        if anchor not in text:
-            die("the mod's `seen` list moved: P4's flag cannot be declared")
-        text = text.replace(anchor, anchor + "let rigDropped = false\n", 1)
-        os.remove(os.path.join(dst, "hooks", "register.test.ts"))
-        with open(path, "w") as f:
-            f.write(text)
-        out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
-        if out.returncode != 0:
-            die(f"P4's mod does not validate:\n{out.stdout}{out.stderr}")
-        return dst
+        return self.patched_mod("mod-drop", [
+            (head, head + (
+                "  if (!rigDropped) {\n"
+                "    rigDropped = true\n"
+                "    await relay($, 'ModSubmit', id, { outcome: 'dropped', reason: 'the rig dropped it (P4)' }, false)\n"
+                "    return\n"
+                "  }\n"), "the mod's submitPrompt moved: P4's drop cannot be patched in"),
+            (anchor, anchor + "let rigDropped = false\n",
+             "the mod's `seen` list moved: P4's flag cannot be declared"),
+        ], "P4's mod")
 
     def phone_sock(self):
         """The stand-in phone's socket: in this board's runtime dir, beside
@@ -1890,25 +1877,11 @@ class Rig:
         the rig's phone instead of the board's hook.sock. Nothing else moves:
         the hold, the relay of PermissionRequest and the decision's return
         are the mod's own."""
-        src = os.path.join(self.repo, "crates/mesimon-daemon/mod")
-        dst = os.path.join(self.paths.state_dir, "rig", "mod-phone")
-        if os.path.exists(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        path = os.path.join(dst, "hooks", "register.ts")
-        with open(path) as f:
-            text = f.read()
         line = "const argv = [c.bin, 'approve', '--sock', c.hookSock, '--session', c.session,"
-        if line not in text:
-            die("the mod's approve moved: the phone cannot be patched in")
-        text = text.replace(line, line.replace("c.hookSock", repr(self.phone_sock())), 1)
-        os.remove(os.path.join(dst, "hooks", "register.test.ts"))
-        with open(path, "w") as f:
-            f.write(text)
-        out = subprocess.run([self.claude, "plugin", "validate", dst], capture_output=True, text=True)
-        if out.returncode != 0:
-            die(f"the phone mod does not validate:\n{out.stdout}{out.stderr}")
-        return dst
+        return self.patched_mod("mod-phone", [
+            (line, line.replace("c.hookSock", repr(self.phone_sock())),
+             "the mod's approve moved: the phone cannot be patched in"),
+        ], "the phone mod")
 
     def env_of(self, pid):
         out = subprocess.run(["ps", "-wwE", "-o", "command=", "-p", str(pid)],
@@ -3264,41 +3237,29 @@ Reply with the single word ready and end your turn."""
             self.restarted = True
             return True
         if what == "restart_old_claude":
-            wrapper = os.path.join(self.out, "claude-2.1.286")
-            with open(wrapper, "w") as f:
-                f.write("#!/bin/sh\n# The rig's R7 (T-588): a Claude Code that says it is 2.1.286.\n"
-                        'if [ "$1" = "--version" ]; then echo "2.1.286 (Claude Code)"; exit 0; fi\n'
-                        f'exec "{self.claude}" "$@"\n')
-            os.chmod(wrapper, 0o755)
-            ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe="older than 2.1.287")
-            self.restarted = True
-            if not ok:
-                record["failures"].append("the daemon never came up with the old Claude Code")
-            return ok
+            wrapper = self.claude_wrapper(
+                "claude-2.1.286", "The rig's R7 (T-588): a Claude Code that says it is 2.1.286.",
+                'if [ "$1" = "--version" ]; then echo "2.1.286 (Claude Code)"; exit 0; fi\n')
+            return self.restart_on(wrapper, "older than 2.1.287", record,
+                                   "the daemon never came up with the old Claude Code")
         if what == "restart_mods_off":
             # R9 (T-598): a Claude Code whose mods are off. It runs the real
             # one, which validates the mod and passes the load probe, and
             # starts a session with no `--plugin-dir`, so the mod never
             # loads: what 2.1.288's remote flag did to the mod road, whether
             # or not that flag is off today.
-            wrapper = os.path.join(self.out, "claude-mods-off")
-            with open(wrapper, "w") as f:
-                f.write("#!/bin/sh\n# The rig's R9 (T-598): a Claude Code whose mods are off.\n"
-                        'case "$1" in --version|plugin) exec "' + self.claude + '" "$@" ;; esac\n'
-                        "skip=0\n"
-                        "for a do\n"
-                        "  shift\n"
-                        '  if [ "$skip" = 1 ]; then skip=0; continue; fi\n'
-                        '  if [ "$a" = "--plugin-dir" ]; then skip=1; continue; fi\n'
-                        '  set -- "$@" "$a"\n'
-                        "done\n"
-                        f'exec "{self.claude}" "$@"\n')
-            os.chmod(wrapper, 0o755)
-            ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe="the mod validated")
-            self.restarted = True
-            if not ok:
-                record["failures"].append("the daemon never came up on the mods-off Claude Code")
-            return ok
+            wrapper = self.claude_wrapper(
+                "claude-mods-off", "The rig's R9 (T-598): a Claude Code whose mods are off.",
+                'case "$1" in --version|plugin) exec "' + self.claude + '" "$@" ;; esac\n'
+                "skip=0\n"
+                "for a do\n"
+                "  shift\n"
+                '  if [ "$skip" = 1 ]; then skip=0; continue; fi\n'
+                '  if [ "$a" = "--plugin-dir" ]; then skip=1; continue; fi\n'
+                '  set -- "$@" "$a"\n'
+                "done\n")
+            return self.restart_on(wrapper, "the mod validated", record,
+                                   "the daemon never came up on the mods-off Claude Code")
         if what == "async_review":
             # AH1 (T-1075): the real Claude Code, whose launch for this test's
             # ticket alone also takes `--settings` naming one Stop hook with
@@ -3338,20 +3299,14 @@ Reply with the single word ready and end your turn."""
             with open(settings, "w") as f:
                 json.dump({"hooks": {"Stop": [{"hooks": [
                     {"type": "command", "command": command, "asyncRewake": True, "timeout": 60}]}]}}, f)
-            wrapper = os.path.join(d, "claude-review")
-            with open(wrapper, "w") as f:
-                f.write("#!/bin/sh\n# The rig's AH1 (T-1075): the fixture's review hook on one ticket.\n"
-                        f'if [ "$MESIMON_TICKET" = {shlex.quote(test["key"])} ]; then\n'
-                        f'  exec "{self.claude}" --settings {shlex.quote(settings)} "$@"\n'
-                        "fi\n"
-                        f'exec "{self.claude}" "$@"\n')
-            os.chmod(wrapper, 0o755)
+            wrapper = self.claude_wrapper(
+                "claude-review", "The rig's AH1 (T-1075): the fixture's review hook on one ticket.",
+                f'if [ "$MESIMON_TICKET" = {shlex.quote(test["key"])} ]; then\n'
+                f'  exec "{self.claude}" --settings {shlex.quote(settings)} "$@"\n'
+                "fi\n", d)
             record["review_log"] = log
-            ok = self.restart({"MESIMON_CLAUDE_BIN": wrapper}, want_probe="the mod validated")
-            self.restarted = True
-            if not ok:
-                record["failures"].append("the daemon never came up with the review hook's Claude Code")
-            return ok
+            return self.restart_on(wrapper, "the mod validated", record,
+                                   "the daemon never came up with the review hook's Claude Code")
         if what == "restart_plain":
             ok = self.restart(want_probe="the mod validated")
             self.restarted = True
@@ -3498,13 +3453,7 @@ Reply with the single word ready and end your turn."""
             if not wake:
                 record["failures"].append("the board never woke the crown for the bound PR")
                 return False
-            self.quiet_since = None
-            if not self.wait_for("the crown's turn on the forge's news",
-                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                 STEP_TIMEOUT, self.watch):
-                record["failures"].append("the crown's turn on the forge's news never ended")
-                return False
-            return True
+            return self.crown_turn_on(wake, record)
         if what == "forge_fail":
             # The pipeline fails on the forge: the next read sees the edge,
             # the board wakes the crown, and the crown tells the worker.
@@ -3552,13 +3501,7 @@ Reply with the single word ready and end your turn."""
             if not wake:
                 record["failures"].append("the board never woke the crown for the passed pipeline")
                 return False
-            self.quiet_since = None
-            if not self.wait_for("the crown's turn on the forge's news",
-                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                 STEP_TIMEOUT, self.watch):
-                record["failures"].append("the crown's turn on the forge's news never ended")
-                return False
-            return True
+            return self.crown_turn_on(wake, record)
         if what == "forge_merge":
             # PR 42 merges on the forge at the branch's tip (T-757): the
             # forge folds it into the flags, which wake the crown with the
@@ -3602,13 +3545,7 @@ Reply with the single word ready and end your turn."""
             if not wake:
                 record["failures"].append("the board never woke the crown for the later merge")
                 return False
-            self.quiet_since = None
-            if not self.wait_for("the crown's turn on the forge's news",
-                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                 STEP_TIMEOUT, self.watch):
-                record["failures"].append("the crown's turn on the forge's news never ended")
-                return False
-            return True
+            return self.crown_turn_on(wake, record)
         if what in ("forge_conflict", "forge_clear"):
             # The PR turns conflicting, or clears (T-785): the board wakes
             # the crown with the edge, and the step ends when the crown's
@@ -3621,13 +3558,7 @@ Reply with the single word ready and end your turn."""
             if not wake:
                 record["failures"].append(f"the board never woke the crown for {what}")
                 return False
-            self.quiet_since = None
-            if not self.wait_for("the crown's turn on the forge's news",
-                                 lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                 STEP_TIMEOUT, self.watch):
-                record["failures"].append("the crown's turn on the forge's news never ended")
-                return False
-            return True
+            return self.crown_turn_on(wake, record)
         if what == "forge_restart":
             # The daemon restarts on the same stub forge (T-785), once
             # forge.json holds the conflict said, and the step ends at the
@@ -3680,11 +3611,7 @@ Reply with the single word ready and end your turn."""
                     said = "the merge" if news["state"] == "MERGED" else "the pipeline"
                     record["failures"].append(f"the board never woke the crown for {said} of #43")
                     return False
-                self.quiet_since = None
-                if not self.wait_for("the crown's turn on the forge's news",
-                                     lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                     STEP_TIMEOUT, self.watch):
-                    record["failures"].append("the crown's turn on the forge's news never ended")
+                if not self.crown_turn_on(wake, record):
                     return False
             return True
         if what == "forge_later_open":
@@ -3753,11 +3680,9 @@ Reply with the single word ready and end your turn."""
             # own branch at its tip; `forge_prs` opens them on the stub and
             # restarts the daemon onto it, `forge_merge_all` merges them all
             # at once and ends at the crown's turn on the last merge's wake.
-            branches = {w["ticket"]: w["branch"] for w in self.snapshot().get("worktrees", [])}
-            rows = [(42 + i, branches.get(tid)) for i, (tid, _, _) in
-                    enumerate(self.test_tickets(test))]
-            if not all(b for _, b in rows):
-                record["failures"].append("a worker has no worktree branch to open a PR from")
+            rows = self.pr_rows([tid for tid, _, _ in self.test_tickets(test)], record,
+                                "a worker has no worktree branch to open a PR from")
+            if rows is None:
                 return False
             d = self.forge_stub()
             merged = what == "forge_merge_all"
@@ -3822,10 +3747,8 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append(f"forge_archived: {e}")
                 return False
             self.log(f"archived {self.test_tickets(test)[-1][1]}")
-            branches = {w["ticket"]: w["branch"] for w in self.snapshot().get("worktrees", [])}
-            rows = [(42 + i, branches.get(tid)) for i, tid in enumerate(tickets)]
-            if not all(b for _, b in rows):
-                record["failures"].append("a ticket has no worktree branch left to read")
+            rows = self.pr_rows(tickets, record, "a ticket has no worktree branch left to read")
+            if rows is None:
                 return False
             d = self.forge_stub()
             mark = len(self.feed_lines)
@@ -3835,10 +3758,7 @@ Reply with the single word ready and end your turn."""
                 return False
             self.restarted = True
             def read(tid):
-                return any(l.get("kind") == "board" and l.get("actor") == "forge"
-                           and l.get("cmd") == "pr" and l.get("ticket") == tid
-                           and "pipeline passed" in (l.get("outcome") or "")
-                           for l in self.feed_lines[mark:])
+                return any(forge_read_pass(l, tid) for l in self.feed_lines[mark:])
             if not self.wait_for("the forge to read every pass", lambda: all(read(t) for t in tickets),
                                  STEP_TIMEOUT, self.watch):
                 missed = [t for t in tickets if not read(t)]
@@ -3849,11 +3769,7 @@ Reply with the single word ready and end your turn."""
                 if not wake:
                     record["failures"].append("the board never woke the crown for the ticket on the board")
                     return False
-                self.quiet_since = None
-                if not self.wait_for("the crown's turn on the forge's news",
-                                     lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
-                                     STEP_TIMEOUT, self.watch):
-                    record["failures"].append("the crown's turn on the forge's news never ended")
+                if not self.crown_turn_on(wake, record):
                     return False
             time.sleep(step.get("hold", 10))
             self.watch()
@@ -3953,6 +3869,17 @@ Reply with the single word ready and end your turn."""
         started = set(mine("start_agent"))
         return [t for t in mine("create_ticket") if t in started]
 
+    def crown_turn_on(self, wake, record):
+        """The crown's turn on the forge's news, `wake`: the step ends when
+        it settles; its failure is recorded when it never does."""
+        self.quiet_since = None
+        if self.wait_for("the crown's turn on the forge's news",
+                         lambda: self.crown_settled(after_ms=wake.get("at_ms", 0)),
+                         STEP_TIMEOUT, self.watch):
+            return True
+        record["failures"].append("the crown's turn on the forge's news never ended")
+        return False
+
     def forge_wake(self, test, mark):
         """The board's forge wake for the test's worker since `mark`."""
         return self.wait_for("the crown's forge wake", lambda: next((
@@ -4000,60 +3927,45 @@ Reply with the single word ready and end your turn."""
                 f.write('{"check_runs":[]}')
         return d
 
+    def tip(self, branch):
+        """The repository's commit at `branch`."""
+        return subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
+                              capture_output=True, text=True).stdout.strip()
+
+    def pr_rows(self, tids, record, failure):
+        """`(number, branch)` per ticket of `tids`, 42 up, each its worktree's
+        branch; None, with `failure` recorded, when one has no branch."""
+        branches = {w["ticket"]: w["branch"] for w in self.snapshot().get("worktrees", [])}
+        rows = [(42 + i, branches.get(tid)) for i, tid in enumerate(tids)]
+        if all(b for _, b in rows):
+            return rows
+        record["failures"].append(failure)
+        return None
+
     def write_prs(self, d, rows, state, pipeline):
         """One PR per `(number, branch)` of `rows`, each at its branch's tip
         (SM1, T-1064): `write_pr`'s shape, many branches."""
-        checks = {"running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
-                  "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]'}[pipeline]
-        prs = []
-        for number, branch in rows:
-            tip = subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
-                                 capture_output=True, text=True).stdout.strip()
-            merge = f'{{"oid":"{tip}"}}' if state == "MERGED" else "null"
-            prs.append(f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
-                       f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
-                       f'"headRefOid":"{tip}","mergeCommit":{merge},"mergeable":"MERGEABLE",'
-                       f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"2026-10-13T06:00:00Z",'
-                       f'"statusCheckRollup":{checks}}}')
-        path = os.path.join(d, "prs.json")
-        with open(path + ".tmp", "w") as f:
-            f.write("[" + ",".join(prs) + "]")
-        os.replace(path + ".tmp", path)
+        write_prs_file(d, [pr_json(number, branch, self.tip(branch), state, ROLLUPS[pipeline])
+                           for number, branch in rows])
 
     def write_pr(self, d, branch, state, pipeline, later=None, head=None, conflict=False):
         """PR 42 on `branch` at its tip, or at `head` (T-778), in conflict
         where `conflict` (T-785); `later` (number, head, state, and with
         `pipeline` its checks, T-1071) a newer PR on the same branch in
         front of it (T-757)."""
-        tip = head or subprocess.run(["git", "-C", self.repo, "rev-parse", branch],
-                                     capture_output=True, text=True).stdout.strip()
-        rollups = {
-            "running": '[{"__typename":"CheckRun","name":"test-linux","status":"IN_PROGRESS","conclusion":null}]',
-            "failed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"FAILURE"}]',
-            "passed": '[{"__typename":"CheckRun","name":"test-linux","status":"COMPLETED","conclusion":"SUCCESS"}]',
-        }
-        rollup = rollups[pipeline]
+        tip = head or self.tip(branch)
+
         def pr(number, head, state, at, own=None):
-            merge = f'{{"oid":"{head}"}}' if state == "MERGED" else "null"
             # The later PR opens running: its opening is no pipeline news.
-            checks = rollups["running"] if state == "OPEN" and number != 42 else rollup
-            if own:
-                checks = rollups[own]
+            checks = ROLLUPS[own] if own else ROLLUPS["running"] if state == "OPEN" and number != 42 \
+                else ROLLUPS[pipeline]
             mergeable = "CONFLICTING" if conflict and number == 42 else "MERGEABLE"
-            return (f'{{"number":{number},"url":"https://github.com/example/rig/pull/{number}",'
-                    f'"state":"{state}","isDraft":false,"headRefName":"{branch}",'
-                    f'"headRefOid":"{head}","mergeCommit":{merge},"mergeable":"{mergeable}",'
-                    f'"reviewDecision":"REVIEW_REQUIRED","updatedAt":"{at}",'
-                    f'"statusCheckRollup":{checks}}}')
+            return pr_json(number, branch, head, state, checks, mergeable, at)
         prs = [pr(42, tip, state, "2026-10-13T06:00:00Z")]
         if later:
             prs.insert(0, pr(later["number"], later["head"], later["state"], "2026-10-13T07:00:00Z",
                              later.get("pipeline")))
-        body = "[" + ",".join(prs) + "]"
-        path = os.path.join(d, "prs.json")
-        with open(path + ".tmp", "w") as f:
-            f.write(body)
-        os.replace(path + ".tmp", path)
+        write_prs_file(d, prs)
 
     def run_test(self, test):
         self.current = test
@@ -4143,12 +4055,14 @@ Reply with the single word ready and end your turn."""
         lines = self.feed_lines[mark:]
         results = []
         tickets = self.test_tickets(test)
+        board = self.board()
+        crown = self.agent_of(board, self.crown)
+        crown_all = transcript(crown) if crown else []
         for tid, key, title in tickets:
             prefix = f"{key} " if len(tickets) > 1 else ""
-            for name, ok, observed in self.check_ticket(test, tid, title, lines, record):
+            for name, ok, observed in self.check_ticket(test, tid, title, lines, record, crown, crown_all):
                 results.append((prefix + name, ok, observed))
-        rec = self.agent_of(self.board(), test["ticket"])
-        crown = self.agent_of(self.board(), self.crown)
+        rec = self.agent_of(board, test["ticket"])
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
@@ -4163,14 +4077,17 @@ Reply with the single word ready and end your turn."""
             "wakes": [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                       and l.get("worker") == test["ticket"]],
             "alive": record.get("alive"),
-            "crown": crown_measures(transcript(crown), record["t0_ms"]) if crown else None,
+            "crown": crown_measures(crown_all, record["t0_ms"]) if crown else None,
         }
 
-    def check_ticket(self, test, tid, title, lines, record):
+    def check_ticket(self, test, tid, title, lines, record, crown, crown_all):
+        """`crown` is the crown's agent record and `crown_all` its transcript,
+        read once by `judge` for every ticket and check."""
         board = self.board()
         rec = self.agent_of(board, tid)
         key = self.ticket(board, tid)["short_key"]
         rows = transcript(rec) if rec else []
+        crown_rows = [r for r in crown_all if (row_ms(r) or 0) >= record.get("t0_ms", 0)]
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
         # The card's words: the feed's `session_state` lines and the rig's
@@ -4301,16 +4218,12 @@ Reply with the single word ready and end your turn."""
                 fed_peer = self.peer.fed() if self.peer else self.peer_fed
                 check(c, arg in fed_peer, f"{arg}×{fed_peer.count(arg)}")
             elif name == "board_exchange":
-                crown = self.agent_of(board, self.crown)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (row_ms(r) or 0) >= record["t0_ms"]]
                 check(c, *board_exchange(crown_rows, arg, record.get("peer", {})))
             elif name == "crown_hand":
                 # The crown's own hand (T-744), its reason naming `arg`: a
                 # hand is on the crown's ticket, so the feed's line is not
                 # this one's; the crown's transcript says what it wrote.
-                crown = self.agent_of(board, self.crown)
-                hands = [i.get("reason", "") for n, i in tool_inputs(transcript(crown) if crown else [])
+                hands = [i.get("reason", "") for n, i in tool_inputs(crown_all)
                          if (n or "").endswith("raise_hand")]
                 said = [h for h in hands if arg in h]
                 check(c, said, repr(said[-1][:100]) if said
@@ -4350,10 +4263,6 @@ Reply with the single word ready and end your turn."""
                 # `sleep` loop), and no Monitor stood in for one: the
                 # board's wake is the wait, and a crown that polls holds the
                 # merge train and that wake.
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 # Not `words`: that is the card words `words:` reads, and a
                 # `words:` check listed after this one read these instead.
                 never = [w for w in arg.split(",") if w]
@@ -4367,7 +4276,7 @@ Reply with the single word ready and end your turn."""
                 bad = [r for r in ran + hand if any(w in r for w in never)]
                 bad += [f"<{n}>" for n, _ in calls if n == "Monitor"]
                 check(c, not bad, " → ".join(repr(b[:60]) for b in bad)
-                      or f"{len(ran)} bash calls, {len(hand)} other tool calls, none of {words}")
+                      or f"{len(ran)} bash calls, {len(hand)} other tool calls, none of {never}")
             elif name == "compacted":
                 # T-969, round 1: the worker's own transcript records a
                 # compaction of trigger `arg` with a reply on each side of
@@ -4398,10 +4307,6 @@ Reply with the single word ready and end your turn."""
                 # off get_ticket since the test began, and its last line
                 # beginning `arg` names the one whose reading there stood
                 # nearest its window.
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 keys = [k for _, k, _ in self.test_tickets(test)]
                 read = {}
                 for n, i, text in tool_uses(crown_rows):
@@ -4410,7 +4315,7 @@ Reply with the single word ready and end your turn."""
                         if got:
                             read[i["key"]] = got
                 line = ""
-                for r in reversed(replies(transcript(crown)) if crown else []):
+                for r in reversed(replies(crown_all)):
                     said = [l.strip().strip("*`").strip() for l in r.splitlines()]
                     at = next((j for j in reversed(range(len(said)))
                                if said[j].startswith(arg)), None)
@@ -4496,10 +4401,6 @@ Reply with the single word ready and end your turn."""
                 # merged from a worktree aside.
                 from codex import board_tips, command_writes, crown_changes
                 names = [n for n in arg.split(",") if n]
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 calls = tool_inputs(crown_rows)
                 signs = [f"{n} {i.get('file_path', '')}" for n, i in calls if n in ("Write", "Edit", "NotebookEdit")]
                 signs += [f"Bash {i.get('command', '')[:80]!r}" for n, i in calls
@@ -4555,13 +4456,11 @@ Reply with the single word ready and end your turn."""
                                               record.get("queued_ms"), user_prompts(rows, at=True), arg)
                 check(c, ok, seen)
             elif name == "crown_compaction_frames":
-                crown = self.agent_of(board, self.crown)
                 got = compaction_frames([l for l in lines if crown and l.get("kind") == "hook"
                                          and of_session(l, crown["id"])])
                 check(c, got == arg.split(","), " → ".join(got) or "none")
             elif name == "crown_rules_after_compact":
-                crown = self.agent_of(board, self.crown)
-                ok, seen = rules_after_compaction(transcript(crown) if crown else [], record["t0_ms"])
+                ok, seen = rules_after_compaction(crown_all, record["t0_ms"])
                 check(c, ok, seen)
             elif name == "mod_report":
                 event, _, reason = arg.partition(":")
@@ -4754,9 +4653,6 @@ Reply with the single word ready and end your turn."""
                 shells = [s for s in board.get("sessions", []) if s.get("ticket") == tid and s.get("kind") == "bash"]
                 pending = [s for s in shells if s.get("shell_close_request")]
                 alive = pending and all(self.tmux("display-message", "-p", "-t", sid16(s["id"]), "#{pane_dead}").stdout.strip() == "0" for s in pending)
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else []) if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 calls = tool_calls(crown_rows)
                 read = any(n == "mcp__mesimon__read_shell" and result and not result.get("is_error") for n, result in calls)
                 ran = [n for n, _ in tool_inputs(crown_rows) if n in ("Bash", "Write", "Edit", "Agent")]
@@ -4832,16 +4728,13 @@ Reply with the single word ready and end your turn."""
                 # T-930's review (F3): the crown's hands or its last words
                 # name the merge's owner or what blocks it, any of `arg`'s
                 # words, case aside; no call is required of it.
-                crown = self.agent_of(board, self.crown)
-                rows_c = transcript(crown) if crown else []
-                hands = [i.get("reason", "") for n, i in tool_inputs(rows_c) if (n or "").endswith("raise_hand")]
+                hands = [i.get("reason", "") for n, i in tool_inputs(crown_all) if (n or "").endswith("raise_hand")]
                 words = [w.lower() for w in arg.split(",")]
-                said = [t for t in hands + [last_reply(rows_c)] if any(w in t.lower() for w in words)]
+                said = [t for t in hands + [last_reply(crown_all)] if any(w in t.lower() for w in words)]
                 check(c, said, repr(said[0][:100]) if said else f"no hand or line names {arg}")
             elif name == "crown_reply":
                 # The crown's last words on the test (T-774), `arg` within.
-                crown = self.agent_of(board, self.crown)
-                said = last_reply(transcript(crown)) if crown else ""
+                said = last_reply(crown_all)
                 check(c, arg.lower() in said.lower(), f"said {said[:100]!r}")
             elif name == "went_past_idle_person":
                 # A3 (T-945): the wake row named the bound while the client
@@ -4892,9 +4785,8 @@ Reply with the single word ready and end your turn."""
                 if word == "{reply}":
                     word = last_reply(transcript(rec)).strip().strip("*`.").strip() if rec else ""
                     word = word or "\0"
-                crown = self.agent_of(board, self.crown)
                 line = ""
-                for r in reversed(replies(transcript(crown)) if crown else []):
+                for r in reversed(replies(crown_all)):
                     said = [l.strip().strip("*`").strip() for l in r.splitlines()]
                     at = next((i for i in reversed(range(len(said)))
                                if said[i].startswith(prefix)), None)
@@ -4911,35 +4803,27 @@ Reply with the single word ready and end your turn."""
             elif name == "plan_read":
                 # T-991 (D7): the head, then the whole with plan, then the
                 # accept, the word the worker's own last reply.
-                crown = self.agent_of(board, self.crown)
                 word = last_reply(transcript(rec)).strip().strip("*`.").strip() if rec else ""
-                ok, seen = plan_read_order(transcript(crown) if crown else [], key, word)
+                ok, seen = plan_read_order(crown_all, key, word)
                 check(c, ok, seen)
             elif name == "second_ask":
                 # `second_ask:refused_outstanding` (T-938, round 3): read off
                 # the crown's own call results, so a stale-seen refusal fails.
-                crown = self.agent_of(board, self.crown)
-                ok, seen = second_ask_refusal(transcript(crown) if crown else [], key)
+                ok, seen = second_ask_refusal(crown_all, key)
                 check(c, ok and arg == "refused_outstanding", seen)
             elif name == "budget_reused":
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 keys = self.keys_of(test)
                 ok, seen = budget_reused(crown_rows, keys["key"], keys["key2"])
                 check(c, ok, seen)
             elif name == "create_start":
                 # `create_start:accepted` (T-1072): the crown's own calls,
                 # so a read between the filing and the start fails too.
-                crown = self.agent_of(board, self.crown)
-                ok, seen = create_start_outcome(transcript(crown) if crown else [])
+                ok, seen = create_start_outcome(crown_all)
                 check(c, ok and arg == "accepted", seen)
             elif name == "receipt_ask":
                 # `receipt_ask:accepted` (T-1035): read off the crown's own
                 # calls and results, so a re-read before the ask fails too.
-                crown = self.agent_of(board, self.crown)
-                ok, seen = receipt_ask_outcome(transcript(crown) if crown else [], key)
+                ok, seen = receipt_ask_outcome(crown_all, key)
                 check(c, ok and arg == "accepted", seen)
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
@@ -4962,10 +4846,6 @@ Reply with the single word ready and end your turn."""
                 check(c, ok, seen)
             elif name == "sampled_before":
                 # `sampled_before:<prefix>` (T-973): see `sampled_before`.
-                crown = self.agent_of(board, self.crown)
-                since = record.get("t0_ms", 0)
-                crown_rows = [r for r in (transcript(crown) if crown else [])
-                              if (iso_ms(r.get("timestamp") or "") or 0) >= since]
                 ok, seen = sampled_before(crown_rows, key, arg)
                 check(c, ok, seen)
             elif name == "after_wake":
@@ -5034,12 +4914,9 @@ Reply with the single word ready and end your turn."""
                 # engine writes the blocks of one message, a line each.
                 tool, _, n = arg.partition(":")
                 by = {}
-                for row in once(rows):
-                    m = row.get("message") or {}
-                    content = m.get("content")
-                    for b in content if isinstance(content, list) else []:
-                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == tool:
-                            by.setdefault(m.get("id"), []).append(b.get("id"))
+                for row, b in blocks(rows):
+                    if b.get("type") == "tool_use" and b.get("name") == tool:
+                        by.setdefault((row.get("message") or {}).get("id"), []).append(b.get("id"))
                 most = max((len(v) for v in by.values()), default=0)
                 check(c, most == int(n), f"{sum(len(v) for v in by.values())} {tool} calls over "
                       f"{len(by)} messages, at most {most} in one")

@@ -71,11 +71,16 @@ pub fn corpus() -> Vec<Passage> {
 pub fn topics(corpus: &[Passage]) -> Vec<String> {
     let mut seen: Vec<String> = Vec::new();
     for p in corpus {
-        if !seen.contains(&p.from) {
-            seen.push(p.from.clone());
-        }
+        push_new(&mut seen, p.from.clone());
     }
     seen
+}
+
+/// `s` onto `v` unless it is there already: the order of first sight.
+fn push_new(v: &mut Vec<String>, s: String) {
+    if !v.contains(&s) {
+        v.push(s);
+    }
 }
 
 /// The tool's result: the passages matching `query`, best first, or the
@@ -119,10 +124,7 @@ pub fn search(corpus: &[Passage], query: &str) -> Vec<usize> {
     let mut terms = terms(query);
     for t in terms.clone() {
         for s in synonyms(&t) {
-            let s = stem(s);
-            if !terms.contains(&s) {
-                terms.push(s);
-            }
+            push_new(&mut terms, stem(s));
         }
     }
     if terms.is_empty() {
@@ -146,15 +148,21 @@ pub fn search(corpus: &[Passage], query: &str) -> Vec<usize> {
     let avg = lens.iter().sum::<f64>() / lens.len().max(1) as f64;
     let n = docs.len() as f64;
     let (k1, b) = (1.2, 0.75);
+    // Each term's document frequency, once: the passages holding it.
+    let idfs: Vec<f64> = terms
+        .iter()
+        .map(|t| {
+            let df = docs.iter().filter(|d| d.contains_key(t)).count() as f64;
+            ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+        })
+        .collect();
     let mut scored: Vec<(usize, f64)> = docs
         .iter()
         .enumerate()
         .map(|(i, d)| {
             let mut score = 0.0;
-            for t in &terms {
+            for (t, idf) in terms.iter().zip(&idfs) {
                 let Some(tf) = d.get(t) else { continue };
-                let df = docs.iter().filter(|d| d.contains_key(t)).count() as f64;
-                let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
                 score += idf * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * lens[i] / avg));
             }
             (i, score)
@@ -180,9 +188,7 @@ const STOPWORDS: &[&str] = &[
 fn terms(s: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in terms_of(s) {
-        if !out.contains(&t) {
-            out.push(t);
-        }
+        push_new(&mut out, t);
     }
     out
 }
@@ -352,15 +358,10 @@ fn key_passages() -> Vec<Passage> {
                     }
                     let hint =
                         if when.is_empty() { hint.to_string() } else { format!("{hint} ({when})") };
-                    if !hints.contains(&hint) {
-                        hints.push(hint);
-                    }
+                    push_new(&mut hints, hint);
                 }
                 if !hints.is_empty() {
-                    let line = format!("{}: {}", b.show, hints.join("; "));
-                    if !lines.contains(&line) {
-                        lines.push(line);
-                    }
+                    push_new(&mut lines, format!("{}: {}", b.show, hints.join("; ")));
                 }
             }
             if lines.is_empty() {
@@ -466,10 +467,7 @@ fn menu_passage() -> Passage {
         "The Esc menu (esc on the board) holds what acts on the board as a whole:".to_string(),
     ];
     for m in keymap::menu_rows() {
-        let line = row_line(m, &ctx);
-        if !lines.contains(&line) {
-            lines.push(line);
-        }
+        push_new(&mut lines, row_line(m, &ctx));
     }
     Passage { from: "Esc menu".into(), text: lines.join("\n") }
 }

@@ -410,27 +410,6 @@ fn board_role(ch: u8) -> Option<Role> {
     }
 }
 
-/// Pixels, one column and half a row each.
-struct Canvas {
-    w: i16,
-    h: i16,
-    px: Vec<Option<Color>>,
-}
-
-impl Canvas {
-    fn put(&mut self, x: i16, y: i16, c: Color) {
-        if x >= 0 && y >= 0 && x < self.w && y < self.h {
-            self.px[(y * self.w + x) as usize] = Some(c);
-        }
-    }
-
-    fn get(&self, x: i16, y: i16) -> Option<Color> {
-        (x >= 0 && y >= 0 && x < self.w && y < self.h)
-            .then(|| self.px[(y * self.w + x) as usize])
-            .flatten()
-    }
-}
-
 /// Draw the scene into `area`: the ground always, the rest once visible.
 pub(crate) fn render(buf: &mut Buffer, area: Rect, show: &Show, inks: &Inks) {
     if let Some(bg) = inks.bg {
@@ -471,8 +450,7 @@ pub(crate) fn render(buf: &mut Buffer, area: Rect, show: &Show, inks: &Inks) {
         let pic = creature::picture(Size::Medium, &fr);
         let x0 = col(show.pos) - 10;
         let y0 = SHIN_ROW * 2 - bob;
-        let mut cv =
-            Canvas { w, h: BLOCK as i16 * 2, px: vec![None; w as usize * BLOCK as usize * 2] };
+        let mut cv = creature::Canvas::new(w, BLOCK as i16 * 2);
         for y in 0..pic.h {
             for x in 0..pic.w {
                 if let Some(role) = pic.at(x, y) {
@@ -508,17 +486,7 @@ pub(crate) fn render(buf: &mut Buffer, area: Rect, show: &Show, inks: &Inks) {
                 }
             }
         }
-        for r in 0..BLOCK as i16 {
-            for c in 0..w {
-                let (t, b) = (cv.get(c, 2 * r), cv.get(c, 2 * r + 1));
-                if let Some((ch, style)) = creature::pixel_cell(t, b, &ink, inks.block_gaps) {
-                    let at = Position::new(area.x + c as u16, top + r as u16);
-                    if buf.area.contains(at) {
-                        buf[at].set_char(ch).set_style(style);
-                    }
-                }
-            }
-        }
+        cv.blit(buf, Position::new(area.x, top), &ink, inks.block_gaps);
         // Marks stand in cells no pixel touches.
         let body_row = y0.div_euclid(2);
         for (mc, mr, ch, role, bold) in pic.marks() {

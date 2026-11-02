@@ -521,21 +521,21 @@ const OUTPUT_TAGS: [&str; 3] = ["<local-command-", "<bash-stdout>", "<bash-stder
 /// </command-name>…<command-args>y</command-args>`, as the person typed
 /// them: `/x y`. `None` for words that are not one.
 pub fn command_words(text: &str) -> Option<String> {
-    let inner = |tag: &str| {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let at = text.find(&open)? + open.len();
-        let to = text[at..].find(&close)? + at;
-        Some(text[at..to].trim())
-    };
-    let name = inner("command-name")?;
-    let args = inner("command-args").unwrap_or("");
+    let name = between(text, "command-name")?;
+    let args = between(text, "command-args").unwrap_or("");
     Some(if args.is_empty() { name.to_string() } else { format!("{name} {args}") })
 }
 
 /// The words between `<tag>` and `</tag>` when `text` opens with the tag.
 fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let rest = text.strip_prefix(&format!("<{tag}>"))?;
+    text.starts_with(&format!("<{tag}>")).then(|| between(text, tag)).flatten()
+}
+
+/// The words between the first `<tag>` in `text` and its `</tag>`, or the
+/// rest of `text` when the record was cut before the close.
+fn between<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let rest = &text[text.find(&open)? + open.len()..];
     Some(rest.split(&format!("</{tag}>")).next().unwrap_or(rest).trim())
 }
 

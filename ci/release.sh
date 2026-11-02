@@ -55,6 +55,10 @@ DRY_RUN=0
 # default here; the env var is the road in the meantime.
 DOCKER_GATE="${MESIMON_RELEASE_DOCKER:-0}"
 
+# die, step and the gate and build steps the warm-up (ci/release-prepare.sh)
+# runs ahead of this script, spelled once.
+. ci/release-lib.sh
+
 TARGET="aarch64-apple-darwin"
 # Cross-linked from this Mac (ci/build-linux.sh): static musl, one binary per
 # architecture. The names are what install.sh derives from `uname` and what
@@ -69,9 +73,6 @@ DIST_REPO="amitozalvo/mesimon-releases"
 # generated from ci/homebrew/mesimon.rb and names DIST_REPO's tarballs.
 TAP_REPO="amitozalvo/homebrew-tap"
 
-die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
-step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
-
 # --- who and what -----------------------------------------------------------
 
 [ "$(uname -sm)" = "Darwin arm64" ] || \
@@ -85,7 +86,7 @@ command -v cargo >/dev/null 2>&1 || \
   die "cargo is not on PATH" "source ~/.cargo/env"
 command -v git >/dev/null 2>&1 || die "git is not on PATH"
 
-version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+version=$(release_version)
 # The channel is the version's (T-946), never a flag that could disagree
 # with it: `0.1.0-beta.13.unstable.N` is unstable and is tagged
 # `unstable-<version>`, which no updater from beta.12 on and no install.sh
@@ -97,9 +98,7 @@ heading="v$version"
 
 step "releasing $tag ($channel)"
 
-[ -z "$(git status --porcelain)" ] || \
-  die "the working tree is dirty — the artifact would not match the tag" \
-      "commit or stash first: git status"
+require_clean_tree "the artifact would not match the tag" "commit or stash first: git status"
 
 git rev-parse "$tag" >/dev/null 2>&1 || \
   die "tag $tag does not exist" "git tag $tag"
@@ -136,10 +135,10 @@ ci/check-relay.sh
 # --- the gate ---------------------------------------------------------------
 
 step "clippy"
-cargo clippy --workspace --all-targets -- -D warnings
+release_clippy
 
 step "duplicate dependency drift"
-./ci/check-dup-deps.sh
+release_dup_deps
 
 step "bundled tmux"
 # Shipped beside mesimon on every target so a fresh machine needs nothing
@@ -238,13 +237,14 @@ fi
 # --- build ------------------------------------------------------------------
 
 step "build --release --target $TARGET"
-# MESIMON_RELEASE is what stamps this build as a RELEASE, and it is set here
-# and nowhere else. The stamp is what arms the update checker (it asks the
-# dist repo for a newer tag, and can replace the binary at its own path), so
-# every other build — a `cargo run`, a plain `cargo build --release`, every
-# test binary — comes out `dev` and never checks. That gate cannot be a
-# heuristic: a wrong answer would point a download at somebody's build tree.
-MESIMON_RELEASE=1 cargo build --release --locked --target "$TARGET"
+# MESIMON_RELEASE is what stamps this build as a RELEASE, and it is set in
+# ci/release-lib.sh's build steps and nowhere else. The stamp is what arms the
+# update checker (it asks the dist repo for a newer tag, and can replace the
+# binary at its own path), so every other build — a `cargo run`, a plain
+# `cargo build --release`, every test binary — comes out `dev` and never
+# checks. That gate cannot be a heuristic: a wrong answer would point a
+# download at somebody's build tree.
+release_build_macos "$TARGET"
 bin="target/$TARGET/release/mesimon"
 
 # NOT stripped: the linker gives every arm64 binary an ad-hoc signature, strip
@@ -262,7 +262,7 @@ step "build for Linux ($LINUX_TARGETS)"
 # binary per architecture runs on every distro and under WSL2. The release
 # stamp is PASSED THROUGH, not set a second time — the note above still
 # holds; this is the same build step reaching two more targets.
-MESIMON_RELEASE=1 ./ci/build-linux.sh $LINUX_TARGETS
+release_build_linux $LINUX_TARGETS
 
 # --- package ----------------------------------------------------------------
 
@@ -396,7 +396,7 @@ awk -v want="## $heading" '
 # The site is built and checked on every run, so a broken page or an install
 # line that disagrees with the README stops the release before anything ships.
 step "build mesimon.dev"
-ci/site.sh
+release_site
 
 # GitHub lists a repo's releases by the date of the commit each tag names, not
 # by when they were published, and two releases on one commit come back in

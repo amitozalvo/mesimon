@@ -682,8 +682,9 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                             // v3 → v4 (T-117): the template columns get the
                             // rules they had as literals, once, on the way
                             // to the new stamp.
-                            let migrated = found < 4 && b.seed_template_settings();
+                            let mut migrated = false;
                             if found < 4 {
+                                migrated = b.seed_template_settings();
                                 // Migration restores historical rules, never a new destructive opt-in.
                                 for column in &mut b.columns {
                                     column.settings.free_worktree = false;
@@ -1128,17 +1129,22 @@ pub fn save_machine_file<T: MachineFile>(path: &Path, body: &T) -> Result<()> {
     write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
 }
 
+/// Where a ticket's own file lives: `board/tickets/<key>/ticket.toml`.
+pub(crate) fn ticket_path(paths: &Paths, short_key: &str) -> std::path::PathBuf {
+    paths.board_dir.join("board/tickets").join(short_key).join("ticket.toml")
+}
+
 pub fn save_ticket(paths: &Paths, t: &Ticket) -> Result<()> {
-    let dir = paths.board_dir.join("board/tickets").join(&t.short_key);
-    std::fs::create_dir_all(&dir)?;
+    let path = ticket_path(paths, &t.short_key);
+    std::fs::create_dir_all(path.parent().expect("a ticket file has a directory"))?;
     let tf = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
-    write_atomic(&dir.join("ticket.toml"), &toml::to_string_pretty(&tf)?, SHARED)
+    write_atomic(&path, &toml::to_string_pretty(&tf)?, SHARED)
 }
 
 /// Where a ticket's note bodies live: `notes/<ULID>.md` beside `ticket.toml`.
 /// The id is minted by the daemon, so the path is never built from a name
 /// anybody chose (docs/15 §4.7).
-fn note_path(paths: &Paths, short_key: &str, id: ulid::Ulid) -> std::path::PathBuf {
+pub(crate) fn note_path(paths: &Paths, short_key: &str, id: ulid::Ulid) -> std::path::PathBuf {
     paths.board_dir.join("board/tickets").join(short_key).join("notes").join(format!("{id}.md"))
 }
 

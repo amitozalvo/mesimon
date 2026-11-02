@@ -522,13 +522,17 @@ fn private_server(
 /// `mesimon-tmux` beside it until the install line is run again.
 fn tmux_pkg_line(verb: &str) -> String {
     if cfg!(target_os = "macos") {
-        format!("brew {verb} tmux")
-    } else if verb == "upgrade" {
-        "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager), or re-run mesimon's install line, which places its own tmux 3.6a beside mesimon"
-            .into()
+        return format!("brew {verb} tmux");
+    }
+    let install =
+        "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager)";
+    if verb == "upgrade" {
+        format!(
+            "{install}, or re-run mesimon's install line, which places its own tmux 3.6a beside \
+             mesimon"
+        )
     } else {
-        "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager)"
-            .into()
+        install.into()
     }
 }
 

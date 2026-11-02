@@ -132,6 +132,18 @@ impl Bed {
     }
 }
 
+/// Put a directory where the team file stands, so its next save fails;
+/// `unblock` gives the file back.
+fn block(path: &std::path::Path) {
+    std::fs::rename(path, path.with_extension("backup")).unwrap();
+    std::fs::create_dir(path).unwrap();
+}
+
+fn unblock(path: &std::path::Path) {
+    std::fs::remove_dir(path).unwrap();
+    std::fs::rename(path.with_extension("backup"), path).unwrap();
+}
+
 fn ticket(title: &str) -> RecordBody {
     RecordBody::new(SharedObject::Ticket(SharedTicket {
         title: title.into(),
@@ -475,13 +487,7 @@ fn keys_unlock_a_pending_note_and_later_parent_in_one_retry() {
 
 impl Bed {
     fn note_path(&self, ticket: ulid::Ulid, note: ulid::Ulid) -> PathBuf {
-        self.d
-            .paths
-            .board_dir
-            .join("board/tickets")
-            .join(&self.d.board.ticket(ticket).unwrap().short_key)
-            .join("notes")
-            .join(format!("{note}.md"))
+        store::note_path(&self.d.paths, &self.d.board.ticket(ticket).unwrap().short_key, note)
     }
 
     /// Restore only what a previous process actually persisted, not its memory.
@@ -540,9 +546,7 @@ fn state_save_failure_blocks_content_and_cursor_until_the_intent_is_durable() {
     let t = ulid::Ulid::new();
     b.apply(b.record(t, 1, 0, ticket("old")));
     let path = b.d.paths.team_file();
-    let backup = path.with_extension("backup");
-    std::fs::rename(&path, &backup).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    block(&path);
     let incoming = b.record(t, 3, 0, ticket("new"));
     assert_eq!(b.d.team_receive_record(incoming), ApplyOutcome::Deferred);
     assert_eq!(b.d.board.ticket(t).unwrap().title, "old");
@@ -550,8 +554,7 @@ fn state_save_failure_blocks_content_and_cursor_until_the_intent_is_durable() {
     assert!(!b.d.team_save_cursor(50));
     assert_eq!(b.state().cursor, 0);
     assert!(b.d.team.state_dirty);
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(&backup, &path).unwrap();
+    unblock(&path);
     // Even before disk recovery, a lower record cannot displace the intent in memory.
     assert_eq!(b.d.team_receive_record(b.record(t, 2, 0, ticket("older"))), ApplyOutcome::Rejected);
     assert!(b.d.team_save_cursor(50));
@@ -570,18 +573,14 @@ fn a_crash_after_content_write_recovers_from_the_saved_intent_without_double_not
     b.apply(b.record(n, 1, 0, project::note_body(t, "old body".into())));
     let before = b.d.board.ticket(t).unwrap().notes[0].rev;
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     assert_eq!(
         b.d.team_receive_record(b.record(n, 3, 0, project::note_body(t, "new body".into()))),
         ApplyOutcome::Deferred
     );
     assert_eq!(b.note(t, n), "new body", "content reached disk before finalization failed");
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     b.reload();
     assert_eq!(b.state().revision(&ObjectId::from(n).to_hex()), Some(3));
     assert_eq!(b.state().published[&ObjectId::from(n).to_hex()].revision, 1);
@@ -661,9 +660,7 @@ fn local_changes_made_during_a_failed_incoming_write_still_win() {
     let t = ulid::Ulid::new();
     b.apply(b.record(t, 1, 0, ticket("old")));
     let path = b.d.paths.team_file();
-    let backup = path.with_extension("backup");
-    std::fs::rename(&path, &backup).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    block(&path);
     assert_eq!(
         b.d.team_receive_record(b.record(t, 3, 0, ticket("remote"))),
         ApplyOutcome::Deferred
@@ -673,8 +670,7 @@ fn local_changes_made_during_a_failed_incoming_write_still_win() {
     b.d.board.ticket_mut(t).unwrap().title = "local latest".into();
     b.d.team_after_broadcast();
     assert_eq!(b.state().outbox.len(), 1);
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(&backup, &path).unwrap();
+    unblock(&path);
     b.d.team_retry_pending_records();
     assert_eq!(b.d.board.ticket(t).unwrap().title, "local latest");
     assert!(b.state().pending_records.is_empty());
@@ -687,9 +683,7 @@ fn an_unverified_high_revision_cannot_replace_a_retained_authenticated_intent() 
     let t = ulid::Ulid::new();
     b.apply(b.record(t, 1, 0, ticket("old")));
     let path = b.d.paths.team_file();
-    let backup = path.with_extension("backup");
-    std::fs::rename(&path, &backup).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    block(&path);
     let authenticated = b.record(t, 3, 0, ticket("authenticated"));
     assert_eq!(b.d.team_receive_record(authenticated.clone()), ApplyOutcome::Deferred);
     let mut unknown = b.record(t, 999, 0, ticket("untrusted"));
@@ -701,8 +695,7 @@ fn an_unverified_high_revision_cannot_replace_a_retained_authenticated_intent() 
         .pending_records
         .iter()
         .any(|p| p.matches(&authenticated) && p.publication.is_some()));
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(&backup, &path).unwrap();
+    unblock(&path);
     assert!(b.d.team_save_cursor(100));
     b.reload();
     b.d.team_retry_pending_records();
@@ -719,9 +712,7 @@ fn a_later_local_note_survives_finalization_failure_and_restart() {
     b.apply(b.record(t, 1, 0, ticket("parent")));
     b.apply(b.record(n, 1, 0, project::note_body(t, "original".into())));
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     assert_eq!(
         b.d.team_receive_record(b.record(n, 3, 0, project::note_body(t, "remote".into()))),
@@ -734,9 +725,7 @@ fn a_later_local_note_survives_finalization_failure_and_restart() {
     assert_eq!(b.d.board.ticket(t).unwrap().notes[0].rev, 3);
     assert_eq!(b.state().pending_records[0].note_rev, Some(2));
     assert!(b.state().outbox.iter().any(|o| o.object == ObjectId::from(n).to_hex()));
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     b.reload();
     assert!(b.state().outbox.is_empty(), "the unsaved outbox did not survive");
     b.d.team_retry_pending_records();
@@ -753,18 +742,14 @@ fn a_later_durable_ticket_revert_survives_restart_without_its_unsaved_outbox() {
     let t = ulid::Ulid::new();
     b.apply(b.record(t, 1, 0, ticket("original")));
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     assert_eq!(
         b.d.team_receive_record(b.record(t, 3, 0, ticket("remote"))),
         ApplyOutcome::Deferred
     );
     assert!(matches!(b.d.with_ticket(t, |ticket| ticket.title = "original".into()), Response::Ok));
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     b.reload();
     assert!(b.state().outbox.is_empty());
     b.d.team_retry_pending_records();
@@ -777,15 +762,7 @@ fn a_later_durable_ticket_revert_survives_restart_without_its_unsaved_outbox() {
 }
 
 fn deferred(record: StoredRecord) -> PendingRecord {
-    PendingRecord {
-        record,
-        publication: None,
-        note_rev: None,
-        local_before: None,
-        local_after: None,
-        local_intermediate: Vec::new(),
-        applied_at: None,
-    }
+    PendingRecord::deferred(record)
 }
 
 #[test]
@@ -862,17 +839,13 @@ fn reconciliation_preserves_inflight_bytes_and_dirty_followup_until_the_receipt(
     b.apply(b.record(t, 1, 0, ticket("parent")));
     b.apply(b.record(n, 1, 0, project::note_body(t, "original".into())));
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     assert_eq!(
         b.d.team_receive_record(b.record(n, 3, 0, project::note_body(t, "remote".into()))),
         ApplyOutcome::Deferred
     );
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     assert!(matches!(
         b.d.write_note(t, Some(n), "local A".into(), Some(2), &Principal::Local),
         Response::NoteWritten { .. }
@@ -951,16 +924,14 @@ fn a_later_note_edit_with_a_colliding_local_revision_survives_partial_write_and_
     assert_eq!(b.d.board.ticket(t).unwrap().notes[0].rev, 1);
     std::fs::remove_dir(&blocked).unwrap();
     let state_path = b.d.paths.team_file();
-    std::fs::rename(&state_path, state_path.with_extension("backup")).unwrap();
-    std::fs::create_dir(&state_path).unwrap();
+    block(&state_path);
     assert!(matches!(
         b.d.write_note(t, Some(n), "later local".into(), Some(1), &Principal::Local),
         Response::NoteWritten { .. }
     ));
     assert_eq!(b.d.board.ticket(t).unwrap().notes[0].rev, 2);
     assert_eq!(b.state().pending_records[0].note_rev, Some(2));
-    std::fs::remove_dir(&state_path).unwrap();
-    std::fs::rename(state_path.with_extension("backup"), &state_path).unwrap();
+    unblock(&state_path);
     b.reload();
     assert!(b.state().outbox.is_empty());
     b.d.team_retry_pending_records();
@@ -978,9 +949,7 @@ fn recovery_preserves_withheld_local_notes_without_queuing_their_bodies() {
     b.apply(b.record(n, 1, 0, project::note_body(t, "original".into())));
     b.d.team.state.as_mut().unwrap().notes_withheld = true;
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     assert_eq!(
         b.d.team_receive_record(b.record(n, 3, 0, project::note_body(t, "remote".into()))),
@@ -990,9 +959,7 @@ fn recovery_preserves_withheld_local_notes_without_queuing_their_bodies() {
         b.d.write_note(t, Some(n), "private local".into(), Some(2), &Principal::Local),
         Response::NoteWritten { .. }
     ));
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     b.reload();
     b.d.team_retry_pending_records();
     assert_eq!(b.note(t, n), "private local");
@@ -1006,9 +973,7 @@ fn unavailable_local_inspection_defers_without_overwriting_bytes_then_preserves_
     b.apply(b.record(t, 1, 0, ticket("parent")));
     b.apply(b.record(n, 1, 0, project::note_body(t, "original".into())));
     b.d.team.before_record_finish = Some(|d| {
-        let path = d.paths.team_file();
-        std::fs::rename(&path, path.with_extension("backup")).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        block(&d.paths.team_file());
     });
     let remote = b.record(n, 3, 0, project::note_body(t, "remote".into()));
     assert_eq!(b.d.team_receive_record(remote.clone()), ApplyOutcome::Deferred);
@@ -1016,9 +981,7 @@ fn unavailable_local_inspection_defers_without_overwriting_bytes_then_preserves_
         b.d.write_note(t, Some(n), "later local".into(), Some(2), &Principal::Local),
         Response::NoteWritten { .. }
     ));
-    let path = b.d.paths.team_file();
-    std::fs::remove_dir(&path).unwrap();
-    std::fs::rename(path.with_extension("backup"), &path).unwrap();
+    unblock(&b.d.paths.team_file());
     b.reload();
     let note_path = b.note_path(t, n);
     let unreadable = b"later local\xff";

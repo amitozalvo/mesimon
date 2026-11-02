@@ -10,7 +10,6 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use ulid::Ulid;
 
-const WSL_POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 const WSL_HELPER_TIMEOUT: Duration = Duration::from_secs(2);
 const WSL_HELPER_MAX_OUTPUT: usize = 16 * 1024 * 1024;
 const POWERSHELL_IMAGE: &str = concat!(
@@ -91,11 +90,7 @@ fn read(backend: Backend) -> Result<Pasted> {
 }
 
 fn powershell_program() -> Result<PathBuf> {
-    crate::opener::which_on_path("powershell.exe")
-        .or_else(|| {
-            let path = PathBuf::from(WSL_POWERSHELL);
-            path.is_file().then_some(path)
-        })
+    crate::opener::powershell()
         .context("Windows PowerShell was not found; check WSL Windows interop")
 }
 

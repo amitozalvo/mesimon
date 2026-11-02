@@ -60,9 +60,10 @@ pub fn note_tombstone(ticket: ulid::Ulid) -> RecordBody {
     RecordBody::new(SharedObject::Note(SharedNote { ticket, body: String::new(), deleted: true }))
 }
 
-/// The digest the writer compares to know whether an object changed.
-pub fn digest(body: &RecordBody) -> String {
-    let bytes = serde_json::to_vec(body).unwrap_or_default();
+/// The digest the writer compares to know whether an object changed: a
+/// record body's, or a local snapshot's (text and note metadata).
+pub fn digest(value: &impl serde::Serialize) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
     hex::encode(&Sha256::digest(bytes))
 }
 

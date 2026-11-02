@@ -727,16 +727,34 @@ pub(super) fn lingering_clause(l: Linger) -> String {
 }
 
 impl CrownWake {
+    /// `to` reads merged where the crown last heard the branch unmerged, or
+    /// merged at another tip. With nothing heard before, `absent_from`.
+    fn merged_since_from(&self, absent_from: bool) -> bool {
+        self.to.as_ref().is_some_and(|to| {
+            to.merge == Some("merged")
+                && self
+                    .from
+                    .as_ref()
+                    .map_or(absent_from, |from| from.merge != Some("merged") || from.tip != to.tip)
+        })
+    }
+
+    fn to_merged(&self) -> bool {
+        self.to.as_ref().is_some_and(|to| to.merge == Some("merged"))
+    }
+
+    /// Nothing rides the wake beside its cause and delta: no numbers, no
+    /// failure, no start refused, no promotion.
+    fn plain(&self) -> bool {
+        self.linger.is_none()
+            && self.overrun.is_none()
+            && self.failed.is_none()
+            && self.unstarted.is_none()
+            && self.promotion.is_none()
+    }
+
     fn says_merge(&self) -> bool {
-        self.cause == WakeCause::Merged
-            || self.merge
-            || self.to.as_ref().is_some_and(|to| {
-                to.merge == Some("merged")
-                    && self
-                        .from
-                        .as_ref()
-                        .is_some_and(|from| from.merge != Some("merged") || from.tip != to.tip)
-            })
+        self.cause == WakeCause::Merged || self.merge || self.merged_since_from(false)
     }
 
     /// A wake can cover a held merge's fact, but never another answer or
@@ -752,11 +770,7 @@ impl CrownWake {
                 .as_ref()
                 .is_some_and(|to| to.merge == Some("merged") && to.tip == tip && to.forge.is_none())
             && self.ask.is_none()
-            && self.linger.is_none()
-            && self.overrun.is_none()
-            && self.failed.is_none()
-            && self.unstarted.is_none()
-            && self.promotion.is_none()
+            && self.plain()
     }
 
     fn awaiting_forge_only(&self) -> bool {
@@ -768,14 +782,8 @@ impl CrownWake {
     /// so an answer from merged to merged may say no merge at all.
     fn reports_merge(&self) -> bool {
         !matches!(self.cause, WakeCause::Promotion | WakeCause::Unstarted)
-            && self.to.as_ref().is_some_and(|to| {
-                to.merge == Some("merged")
-                    && (self.cause == WakeCause::Merged
-                        || self
-                            .from
-                            .as_ref()
-                            .is_none_or(|from| from.merge != Some("merged") || from.tip != to.tip))
-            })
+            && ((self.cause == WakeCause::Merged && self.to_merged())
+                || self.merged_since_from(true))
     }
 
     /// A ticket read carries the worker's turn/ask and branch state. Keep
@@ -786,11 +794,7 @@ impl CrownWake {
             self.cause,
             WakeCause::Finished | WakeCause::Answered | WakeCause::Delivered | WakeCause::Merged
         ) && self.to.as_ref().is_none_or(|to| to.forge.is_none())
-            && self.linger.is_none()
-            && self.overrun.is_none()
-            && self.failed.is_none()
-            && self.unstarted.is_none()
-            && self.promotion.is_none()
+            && self.plain()
     }
 
     /// A wake owed with what rides it (`Owed`); a start's or a failure's
@@ -818,6 +822,12 @@ impl CrownWake {
             merge,
             promotion: None,
         }
+    }
+
+    /// What rides this wake, as `owe_wake` would fold it into another.
+    fn owed(&self) -> Owed {
+        let CrownWake { finished, linger, late, ask, overrun, merge, .. } = *self;
+        Owed { finished, linger, late, ask, overrun, merge }
     }
 
     /// `fold`, with what rides the second event: a flag either set stays
@@ -2161,11 +2171,10 @@ impl Daemon {
             let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
                 continue;
             };
+            let owed = Owed { linger: None, overrun: None, merge: false, ..wake.owed() };
             // The column the read's arrival left the card in.
             let mut to = wake.to;
             h.land(&mut to, column);
-            let owed =
-                Owed { finished: wake.finished, late: wake.late, ask: wake.ask, ..Owed::default() };
             self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
             woke = true;
         }
@@ -2347,13 +2356,7 @@ impl Daemon {
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(mut wake) = heard.step_over(column) else { continue };
             wake.finished &= !surviving;
-            let held = Owed {
-                finished: wake.finished,
-                late: wake.late,
-                ask: wake.ask,
-                merge: wake.merge,
-                ..Owed::default()
-            };
+            let held = Owed { linger: None, overrun: None, ..wake.owed() };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
@@ -2465,13 +2468,7 @@ impl Daemon {
     pub(super) fn note_promotion_wake(&mut self, target: &str, legs: &[String]) {
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
         let detail = format!("{target} → main ({})", legs.join(", "));
-        self.enter_wake(crown, crown, WakeCause::Promotion, None, None, Owed::default());
-        if let Some(wake) = self.crown_wakes.iter_mut().find(|wake| wake.worker == crown) {
-            wake.cause = WakeCause::Promotion;
-            wake.promotion = Some(detail);
-        }
-        self.drain_crown_wakes(None);
-        self.broadcast();
+        self.owe_said(crown, crown, WakeCause::Promotion, |w| w.promotion = Some(detail));
     }
 
     /// `note_crown_wake`'s guards: never the crown's own ticket, and, an
@@ -2879,14 +2876,15 @@ impl Daemon {
 
     /// A merge receipt handles only its merge, never unrelated turn,
     /// failure, dialog or forge news folded alongside it.
+    /// The worker's last sample where it read merged, as a `Told` in the
+    /// card's column now.
+    fn sampled_merged_told(&self, worker: ulid::Ulid) -> Option<Told> {
+        let look = self.sampled(worker).filter(|look| look.merged)?;
+        Some(look.told(self.board.ticket(worker)?.column.clone()))
+    }
+
     pub(super) fn crown_observed_merge(&mut self, worker: ulid::Ulid) {
-        let Some(now) = self
-            .sampled(worker)
-            .filter(|look| look.merged)
-            .and_then(|look| Some(look.told(self.board.ticket(worker)?.column.clone())))
-        else {
-            return;
-        };
+        let Some(now) = self.sampled_merged_told(worker) else { return };
         self.consume_merge_news(worker, &now.tip);
         self.crown_landed.retain(|w| *w != worker);
         self.end_merge_watch(worker);
@@ -2905,10 +2903,7 @@ impl Daemon {
                 && (merge == Some("merged")
                     || w.to.as_ref().is_none_or(|to| to.merge != Some("merged")))
         });
-        let now = self
-            .sampled(worker)
-            .filter(|look| look.merged && merge == Some("merged"))
-            .and_then(|look| Some(look.told(self.board.ticket(worker)?.column.clone())));
+        let now = (merge == Some("merged")).then(|| self.sampled_merged_told(worker)).flatten();
         if now.as_ref().is_some_and(|t| t.merge == Some("merged"))
             && self.crown_landed.contains(&worker)
         {
@@ -3064,19 +3059,8 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
     let since = std::mem::replace(owed, wakes);
     for w in since {
         if let Some(first) = owed.iter_mut().find(|o| o.worker == w.worker) {
-            first.absorb(
-                w.cause,
-                w.from,
-                w.to,
-                Owed {
-                    finished: w.finished,
-                    linger: w.linger,
-                    late: w.late,
-                    ask: w.ask,
-                    overrun: w.overrun,
-                    merge: w.merge,
-                },
-            );
+            let rides = w.owed();
+            first.absorb(w.cause, w.from, w.to, rides);
             first.unstarted = w.unstarted.or(first.unstarted.take());
             first.failed = w.failed.or(first.failed.take());
             first.promotion = w.promotion.or(first.promotion.take());
@@ -3087,7 +3071,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::server) mod tests {
     use super::*;
 
     #[test]
@@ -3254,7 +3238,12 @@ mod tests {
         assert_eq!(joined.asked.and_then(TurnAsk::crown), Some(old));
     }
 
-    fn branch(tip: &str, merge: &'static str, ahead: u32, column: &str) -> Told {
+    pub(in crate::server) fn branch(
+        tip: &str,
+        merge: &'static str,
+        ahead: u32,
+        column: &str,
+    ) -> Told {
         Told {
             tip: tip.into(),
             merge: Some(merge),
@@ -3957,18 +3946,9 @@ mod tests {
     #[test]
     fn a_wake_report_from_a_dead_or_replaced_pane_settles_nothing() {
         let session = uuid::Uuid::from_u128(7);
-        let e = Entering {
-            crown: ulid::Ulid::from_parts(1, 1),
-            session,
-            text: "T-2 raised its hand".into(),
-            wakes: Vec::new(),
-            telling: Telling::default(),
-            person_came: false,
-            frame: Some("01FRAME".into()),
-            pane: Some("100:%3".into()),
-            expires_ms: Some(1),
-            parked: false,
-        };
+        let mut e = in_box(ulid::Ulid::from_parts(1, 1), session, "100:%3", Vec::new());
+        e.frame = Some("01FRAME".into());
+        e.expires_ms = Some(1);
         let mut rec = SessionRecord::new(
             session,
             SessionKind::Claude,
@@ -4600,16 +4580,13 @@ mod tests {
     fn sampled_branch(b: &mut crate::server::crownask::ledger_tests::Bed, tip: &str, merged: bool) {
         b.d.worktrees.insert(
             b.worker,
-            Binding {
-                path: b.d.paths.repo_root.clone(),
-                branch: "msmn/worker".into(),
-                base_oid: "base".into(),
-                branch_oid: tip.into(),
-                status: BindingStatus::Attached,
-                locked: false,
-                repos: Vec::new(),
-                init: None,
-            },
+            Binding::new(
+                b.d.paths.repo_root.clone(),
+                "msmn/worker".into(),
+                "base".into(),
+                tip.into(),
+                BindingStatus::Attached,
+            ),
         );
         b.d.wt_agg.insert(
             b.worker,

@@ -342,24 +342,20 @@ impl Searcher {
     }
 
     fn pr_excerpt(&mut self, ticket: &Ticket, prs: &[PullRequest]) -> Option<Hit> {
-        let mut best: Option<(u32, String)> = None;
+        let mut best: Option<(u32, &PullRequest)> = None;
         for pr in prs.iter().filter(|p| p.ticket == ticket.id) {
             let Some(score) =
                 self.pattern.score(Utf32Str::new(&pr.text, &mut self.buf), &mut self.matcher)
             else {
                 continue;
             };
-            if best.as_ref().is_none_or(|(old, _)| score > *old) {
-                best = Some((score, pr.text.clone()));
+            if best.is_none_or(|(old, _)| score > old) {
+                best = Some((score, pr));
             }
         }
-        let (score, text) = best?;
-        self.indices.clear();
-        self.pattern.indices(
-            Utf32Str::new(&text, &mut self.buf),
-            &mut self.matcher,
-            &mut self.indices,
-        );
+        let (score, pr) = best?;
+        let text = pr.text.clone();
+        let mut matched = self.matched(&text);
         // Pattern indices are sparse for substring atoms in nucleo. Record
         // each positive contiguous needle's visible span explicitly.
         let folded: Vec<char> = text.chars().map(fold).collect();
@@ -369,22 +365,25 @@ impl Searcher {
                 continue;
             }
             if let Some(at) = folded.windows(needle.len()).position(|window| window == needle) {
-                self.indices.extend((at..at + needle.len()).map(|i| i as u32));
+                matched.extend((at..at + needle.len()).map(|i| i as u32));
             }
         }
+        matched.sort_unstable();
+        matched.dedup();
+        Some(Hit { pr: Some(Field { text, matched }), ..bare_hit(ticket, score) })
+    }
+
+    /// The pattern's character offsets into `text`, sorted, each once.
+    fn matched(&mut self, text: &str) -> Vec<u32> {
+        self.indices.clear();
+        self.pattern.indices(
+            Utf32Str::new(text, &mut self.buf),
+            &mut self.matcher,
+            &mut self.indices,
+        );
         self.indices.sort_unstable();
         self.indices.dedup();
-        let matched = std::mem::take(&mut self.indices);
-        Some(Hit {
-            id: ticket.id,
-            key: Field { text: ticket.short_key.clone(), matched: vec![] },
-            title: Field { text: crate::text::scrub_cells(&ticket.title, false), matched: vec![] },
-            trail: Field { text: trail_of(ticket), matched: vec![] },
-            excerpt: None,
-            pr: Some(Field { text, matched }),
-            archived: ticket.is_archived(),
-            score,
-        })
+        std::mem::take(&mut self.indices)
     }
 
     fn score(&mut self, ticket: &Ticket, query: &str) -> Option<Hit> {
@@ -456,30 +455,27 @@ impl Searcher {
             }
         }
         let (score, note, line) = best?;
-        self.indices.clear();
-        self.pattern.indices(
-            Utf32Str::new(line, &mut self.buf),
-            &mut self.matcher,
-            &mut self.indices,
-        );
-        self.indices.sort_unstable();
-        self.indices.dedup();
+        let matched = self.matched(line);
         Some(Hit {
-            id: ticket.id,
-            key: Field { text: ticket.short_key.clone(), matched: Vec::new() },
-            title: Field {
-                text: crate::text::scrub_cells(&ticket.title, false),
-                matched: Vec::new(),
-            },
-            trail: Field { text: trail_of(ticket), matched: Vec::new() },
-            excerpt: Some(Excerpt {
-                note,
-                line: Field { text: line.to_string(), matched: self.indices.clone() },
-            }),
-            pr: None,
-            archived: ticket.is_archived(),
-            score,
+            excerpt: Some(Excerpt { note, line: Field { text: line.to_string(), matched } }),
+            ..bare_hit(ticket, score)
         })
+    }
+}
+
+/// The ticket's row with nothing lit: a note or PR hit shows its match in
+/// the excerpt, and a highlight in a field that did not match would be a
+/// lie the eye catches.
+fn bare_hit(ticket: &Ticket, score: u32) -> Hit {
+    Hit {
+        id: ticket.id,
+        key: Field { text: ticket.short_key.clone(), matched: Vec::new() },
+        title: Field { text: crate::text::scrub_cells(&ticket.title, false), matched: Vec::new() },
+        trail: Field { text: trail_of(ticket), matched: Vec::new() },
+        excerpt: None,
+        pr: None,
+        archived: ticket.is_archived(),
+        score,
     }
 }
 

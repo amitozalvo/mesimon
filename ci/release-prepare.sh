@@ -39,8 +39,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
-step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+# The steps release.sh will run again, spelled once, so the warm build is the
+# release's: cargo keys its artifacts by the exact flags.
+. ci/release-lib.sh
 t0=$(date +%s)
 mark() { printf '%6ss  %s\n' "$(( $(date +%s) - t0 ))" "$1"; }
 
@@ -55,11 +56,9 @@ done
 
 # --- what would stop the release later, checked now ---------------------------
 
-[ -z "$(git status --porcelain)" ] || \
-  die "the working tree is dirty — the gate would not stamp (the commit is not what ran)" \
-      "commit first: git status"
+require_clean_tree "the gate would not stamp (the commit is not what ran)" "commit first: git status"
 
-version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+version=$(release_version)
 heading=$(grep -m1 '^## ' CHANGELOG.md || true)
 printf '%s\n' "$heading" | grep -qE "^## v$version( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" || \
   die "CHANGELOG.md's top heading is '$heading', not v$version's" \
@@ -105,11 +104,13 @@ until grep -qE '^ *Starting [0-9]+ tests' "$logs/gate.log"; do
 done
 mark "the test build is done; the tests run"
 
+# $1: the log's name; the rest: the step, a function of ci/release-lib.sh and
+# its arguments, run niced in a subshell (nice cannot run a shell function).
 warm() {
   local name=$1
   shift
   mark "$name: $*"
-  if ! nice -n 10 "$@" > "$logs/$name.log" 2>&1; then
+  if ! ( renice -n 10 -p $BASHPID >/dev/null 2>&1; "$@" ) > "$logs/$name.log" 2>&1; then
     mark "$name FAILED"
     tail -n 40 "$logs/$name.log"
     kill -TERM "$gate" 2>/dev/null || true
@@ -118,12 +119,12 @@ warm() {
   fi
   mark "$name ok"
 }
-warm clippy cargo clippy --workspace --all-targets -- -D warnings
-warm dup-deps ./ci/check-dup-deps.sh
-warm site ci/site.sh
+warm clippy release_clippy
+warm dup-deps release_dup_deps
+warm site release_site
 if [ "$worktree" = 0 ] || [ "${MESIMON_RELEASE_PREPARE_BUILDS:-0}" = 1 ]; then
-  warm build-macos env MESIMON_RELEASE=1 cargo build --release --locked --target aarch64-apple-darwin
-  warm build-linux env MESIMON_RELEASE=1 ./ci/build-linux.sh
+  warm build-macos release_build_macos aarch64-apple-darwin
+  warm build-linux release_build_linux
 else
   mark "release builds skipped: a worktree's artifacts never serve $main, where ci/release.sh builds"
 fi

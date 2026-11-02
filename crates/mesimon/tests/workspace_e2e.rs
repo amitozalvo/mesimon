@@ -266,15 +266,20 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     assert_eq!(names, ["", "api", "web"], "the root leg first, then census order");
     assert!(wt.repos.iter().all(|r| r.base == "staging"), "cut on selected target: {:?}", wt.repos);
     assert!(matches!(c.request(Command::SetMergeInto { into: MergeInto::Main }), Response::Ok));
+    let on_main = [("", "main"), ("api", "main"), ("web", "main")];
+    let bases = |c: &mut TestClient| {
+        wt_of(c, id)
+            .map(|w| w.repos.iter().map(|r| (r.name.clone(), r.base.clone())).collect::<Vec<_>>())
+    };
+    let on = |want: &[(&str, &str)], got: Option<Vec<(String, String)>>| {
+        got.is_some_and(|got| {
+            got.iter().map(|(n, b)| (n.as_str(), b.as_str())).eq(want.iter().copied())
+        })
+    };
     wait_until(
         Duration::from_secs(10),
         "named-target workspace resolves to repository defaults",
-        || {
-            wt_of(&mut c, id).is_some_and(|w| {
-                w.repos.iter().map(|r| (r.name.as_str(), r.base.as_str())).collect::<Vec<_>>()
-                    == [("", "main"), ("api", "main"), ("web", "main")]
-            })
-        },
+        || on(&on_main, bases(&mut c)),
     );
     assert!(matches!(
         c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
@@ -301,12 +306,7 @@ fn a_workspace_ticket_gets_a_worktree_per_repo() {
     wait_until(
         Duration::from_secs(10),
         "existing workspace legs return to per-repo defaults",
-        || {
-            wt_of(&mut c, id).is_some_and(|w| {
-                w.repos.iter().map(|r| (r.name.as_str(), r.base.as_str())).collect::<Vec<_>>()
-                    == [("", "main"), ("api", "main"), ("web", "main")]
-            })
-        },
+        || on(&on_main, bases(&mut c)),
     );
     assert!(!wt.merged && wt.ahead == 0, "{wt:?}");
     let container = PathBuf::from(wt.path.as_deref().expect("attached: the container's path"));

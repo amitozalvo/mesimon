@@ -283,19 +283,28 @@ $unexpected"
   smoke "$OUT/tmux"
 }
 
-run_darwin() {
-  [ "$(uname -sm)" = "Darwin arm64" ] || die "$TARGET builds on Apple Silicon macOS only (this is $(uname -sm))"
+# The driver for every target: a cached binary is verified rather than
+# trusted, --force removes what the target's build left ($2…), and a fresh
+# build ($1, a function) is verified by `verify_$OS`.
+run() {
+  local build_step=$1
+  shift
   if [ "$FORCE" = 1 ]; then
-    rm -rf "$BUILD" "$STAGE" "$OUT"
+    rm -rf "$@"
   elif [ -x "$OUT/tmux" ]; then
     echo "$REL_OUT/tmux already built; verifying rather than trusting it"
-    verify_darwin
+    "verify_$OS"
     exit 0
   fi
-  build
-  verify_darwin
+  "$build_step"
+  "verify_$OS"
   echo
   echo "built $REL_OUT/tmux"
+}
+
+run_darwin() {
+  [ "$(uname -sm)" = "Darwin arm64" ] || die "$TARGET builds on Apple Silicon macOS only (this is $(uname -sm))"
+  run build "$BUILD" "$STAGE" "$OUT"
 }
 
 # --- Linux ---------------------------------------------------------------------------
@@ -358,15 +367,7 @@ $said"
   echo "$said" | sed 's/^/  /'
 }
 
-run_linux() {
-  docker_ready
-  if [ "$FORCE" = 1 ]; then
-    rm -rf "$OUT"
-  elif [ -x "$OUT/tmux" ]; then
-    echo "$REL_OUT/tmux already built; verifying rather than trusting it"
-    verify_linux
-    exit 0
-  fi
+build_linux() {
   mkdir -p "$CACHE" "$OUT"
   fetch_all   # on the host, so the container needs no network at all
   step "build in $ALPINE_IMAGE ($PLATFORM)"
@@ -381,9 +382,11 @@ run_linux() {
       apk add -q bash build-base linux-headers pkgconf bison ncurses ncurses-terminfo file
       exec bash /build-tmux.sh --inside "$1"
     ' -- "$TARGET" || die "the $TARGET build failed in $ALPINE_IMAGE"
-  verify_linux
-  echo
-  echo "built $REL_OUT/tmux"
+}
+
+run_linux() {
+  docker_ready
+  run build_linux "$OUT"
 }
 
 # --- dispatch --------------------------------------------------------------------------

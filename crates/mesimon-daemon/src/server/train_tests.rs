@@ -7,25 +7,16 @@ fn a_merge_refusal_reaches_the_feed_and_ticket_only_while_current() {
     let id = d.board.sessions[0].ticket;
     d.board.sessions[0].confidence = Confidence::High;
     d.board.merge_into = MergeInto::Main;
-    d.board.tickets.push(
-        serde_json::from_value(serde_json::json!({
-            "id": id, "short_key": "T-1", "title": "worker", "column": "REVIEW",
-            "order": "0", "created_at": "@0"
-        }))
-        .unwrap(),
-    );
+    d.board.tickets.push(queued_person_push_tests::worker_ticket(id, "REVIEW", "0"));
     d.worktrees.insert(
         id,
-        Binding {
-            path: dir.join("worker"),
-            branch: "msmn/worker".into(),
-            base_oid: "base".into(),
-            branch_oid: "tip".into(),
-            status: BindingStatus::Attached,
-            locked: false,
-            repos: Vec::new(),
-            init: None,
-        },
+        Binding::new(
+            dir.join("worker"),
+            "msmn/worker".into(),
+            "base".into(),
+            "tip".into(),
+            BindingStatus::Attached,
+        ),
     );
     d.wt_agg.insert(
         id,
