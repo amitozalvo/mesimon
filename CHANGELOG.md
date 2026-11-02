@@ -10,6 +10,41 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.14.unstable.3 — 2026-11-02
+
+An unstable build. Nothing changes a state file's format.
+
+### Added
+
+- **Linux and WSL installs carry mesimon's own tmux 3.6a**, as macOS does, so
+  the board no longer depends on the distribution's tmux. Links in an agent's
+  pane now reach Windows Terminal on Ubuntu 22.04, whose tmux is too old to pass
+  them. An existing Linux install keeps its distribution's tmux until you run
+  the install line again: `curl -fsSL https://mesimon.dev/install.sh | sh`.
+- **Park an idle agent from your phone.** In Remote Control, a card's sheet
+  offers `Park claude` (or `codex`) above `Archive` while its agent is idle or stopped on a limit.
+- **Agents can answer questions about mesimon.** Ask an agent how a key,
+  setting or column works and it reads mesimon's own docs and the key and
+  Settings tables of the build you run.
+- **The wait for the daemon is a small scene.** While the board connects, or
+  after `U`, the mascot carries a board past one station per step and says what
+  is happening, in your theme.
+
+### Changed
+
+- **A `!` command in a Claude session counts as work.** The card moves as a
+  typed prompt would, the machine stays awake while it runs, and the card shows
+  the command as you typed it (`! sleep 30`).
+- **`Tab` and `Shift+Tab` step through a transcript's links**, in place of
+  `l` `n` and `h` `N`.
+- **`Shift+Tab` in the note editor goes to the previous note**, as `Tab` goes
+  to the next.
+
+### Fixed
+
+- **`Chime` and `Tick` play on WSL.** Before, both played the plain Windows
+  sound.
+
 ## v0.1.0-beta.14.unstable.2 — 2026-11-01
 
 An unstable build. Nothing changes a state file's format.
