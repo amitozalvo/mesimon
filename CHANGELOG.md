@@ -10,6 +10,95 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.15 — 2026-11-03
+
+Everything from the three unstable builds since beta.14, and four changes of
+its own. Nothing changes a state file's format.
+
+### Added
+
+- **Merge into a branch of your choosing.** `Settings › Behaviour › Merge into`
+  takes an existing local branch (`staging`, say) beside `main` and
+  `pull requests`; type its name in the `Integration branch` row. New worktrees
+  cut from it, the merge train and `m` land on it, and a card reads merged
+  against it. When the batch is ready, `Promote to main` in the same section
+  fast-forwards your default branch to it, after checking that every repository
+  of the board can, and never pushes. A refusal names the dirty or diverged
+  checkout.
+- **A column can free a merged ticket's worktree on arrival.** The column
+  dialog's `Free worktree` row (under `Finished tickets`) removes a clean,
+  merged worktree once its panes close and keeps the card, the branch and the
+  binding; waking the agent rebuilds the directory on its branch. Uncommitted or
+  untracked work keeps the tree, with the reason on the card. On for DONE on
+  new boards; existing boards opt in.
+- **Linux and WSL installs carry mesimon's own tmux 3.6a**, as macOS does, so
+  the board no longer depends on the distribution's tmux. Links in an agent's
+  pane now reach Windows Terminal on Ubuntu 22.04, whose tmux is too old to pass
+  them. An existing Linux install keeps its distribution's tmux until you run
+  the install line again: `curl -fsSL https://mesimon.dev/install.sh | sh`.
+- **Park an idle agent from your phone.** In Remote Control, a card's sheet
+  offers `Park claude` (or `codex`) above `Archive` while its agent is idle or
+  stopped on a limit.
+- **Agents can answer questions about mesimon.** Ask an agent how a key,
+  setting or column works and it reads mesimon's own docs and the key and
+  Settings tables of the build you run.
+- **Two sounds of mesimon's own.** `Chime` (needs you) and `Tick` (turn
+  finished) lead the sound choices in `Settings › Notifications` and are the
+  new defaults. A sound you picked before is kept.
+- **Notification sounds play on Windows and WSL.** Each choice plays its own
+  Windows sound to the end, and the rows show Windows' names for them.
+- **Links in a transcript can be opened.** In the conversation dialog (`{`
+  `}`), `Tab` and `Shift+Tab` step through the message's links and ticket keys,
+  Enter opens the selected one, and `{` `}` clear the selection.
+- **Search finds pull requests.** The board's search lists a ticket's pull
+  requests and their labels beside its cards.
+- **The merge train says why it refused a merge.** Git's own words, the
+  colliding paths included, appear in the activity feed line and on the ticket
+  page, and clear once the merge lands.
+- **`Alt+V` pastes a picture into a note**, beside `Ctrl+V`, including under
+  the Windows Claude Code convention. On WSL2, pictures are read from the
+  Windows clipboard through `powershell.exe`; Windows interop must be on. SSH
+  picture paste is still not supported.
+- **`Shift` and an arrow move the card**, as `HJKL` does.
+- **`Settings › Crown` has a `Learn more…` row** that opens the guided tour.
+
+### Changed
+
+- **The wait for the daemon is a small dialog over the board.** While the board
+  connects, or after `U`, it ticks off each step of the wait. After `U` the
+  board you pressed it on stays behind it, dimmed.
+- **An agent's newest sentence reaches its card as the pane shows it.** Before,
+  it could arrive minutes later, once the agent's next tool call finished.
+- **A `!` command in a Claude session counts as work.** The card moves as a
+  typed prompt would, the machine stays awake while it runs, and the card shows
+  the command as you typed it (`! sleep 30`).
+- **A sleeping agent no longer holds the shared checkout.** The crown may start
+  the next ticket on the checkout once the previous agent is parked; an agent
+  that is awake, or still stopping, holds it as before.
+- **`Shift+Tab` in the note editor goes to the previous note**, as `Tab` goes
+  to the next.
+- **Terminal history and board columns scroll three rows per wheel notch**,
+  instead of five in the terminal.
+- **A card's worktree glyph stays grey until the branch has work of its own**,
+  and keeps the unmerged colour when a rebase is needed.
+
+### Fixed
+
+- **`Shift+Enter` on a card whose agent crashed resumes that conversation.**
+  Before, it started a second agent on the ticket, and the crashed one was
+  reachable only from the ticket page. The footer says `resume + ask agent`.
+- **Links in an agent's pane open in Windows Terminal, kitty, WezTerm and
+  Ghostty.** A ctrl/cmd+click on a link Claude Code prints now reaches the
+  terminal; before, the link arrived as plain text.
+- **Opening a link works on a fresh WSL install.** It opens in Windows' default
+  browser, where before it said `no opener found`.
+- **A ticket you wake while no crown is worn stays yours.** The next crown no
+  longer takes it as its own worker or is woken by its finish.
+- The crown was woken twice for one merge, or once for a merge it had already
+  read on the ticket. It hears each merge and each finished turn once.
+- The weekly quota warning showed its reset time twice.
+- Paste did not reach the search box.
+
 ## v0.1.0-beta.14.unstable.3 — 2026-11-02
 
 An unstable build. Nothing changes a state file's format.
