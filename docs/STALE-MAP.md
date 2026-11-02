@@ -40840,3 +40840,64 @@ per frame); `bounded_output` vs `clipboard.rs`'s loop (opposite I/O, two copies)
   one or the other. `notify::windows_path` onto `opener::windows_path` would hand PowerShell
   `C:\…` for a notification directory under `/mnt/<drive>`, which the state dir never is.
   `--one-road` in `test-run.py` is a no-op alias (removing it changes the CLI).
+
+## The wait for the daemon is a compact dialog over the muted board (T-1120, 2026-11-03, user: "update or board loading dialog instead of the shin animation … in the background the board, muted to not distract … if no board yet, show the theme color background … no shin, but obvious loading working animation inside")
+
+**Chosen.** A proposal page (artifact `Ce7CitUmrJbPnj5vA9A5qC`) simulated three animations in
+four waits (update, open, slow update, daemon won't start) and six themes. The person picked
+**A, the sweeping bar**. Not built: B (a bar that fills per step, which looks stuck on a long
+step) and C (a light running round the frame). The faintness shown there (the board at its
+dimmest ink, a little further toward the ground) was not questioned and is what shipped.
+
+**What a person sees.** A framed dialog, 56 wide, centred: `UPDATE ∙ <from> → <to>` (a `U`
+that changes the version), `UPDATE ∙ <version>` (a rebuild), `OPENING THE BOARD` (an open), and
+`ctrl+c quit` in its bottom edge. Inside, one row per step of the wait, the words T-1102 wrote
+(`stopping the old daemon`, `switching to <version>` or `starting the new build`, `connecting
+to the daemon` or `starting the daemon`, `reading the board`): a done row wears `✓` in `calm`
+and says it in the past (`old daemon stopped`, `daemon started`), the row in progress the
+board's braille spinner and the walking dots, a row to come `·` in `dim3`. Under them the bar: a
+bright run of `━` sweeping a faint track there and back in 1.7 s, all `calm` once ready, still
+on a failure. On a `U`, `your agents keep running` under it. The slow-shutdown count, the
+failure (`✗ the daemon did not start` on the daemon's row, then `opening the board anyway` /
+`it keeps trying every 2 s`) and the 300 ms grace on an open are T-1102's. Ready holds 400 ms
+with every row ticked. Behind the dialog: on a `U`, the board the person pressed it on, every
+cell in one faint ink (`dim3` 30 % toward the ground; painted surfaces 75 % toward it; bold,
+reverse and underlines dropped, so needs-you's colour is gone too); on an open, the ground. The
+board's first two frames after the wait lift that veil (⅔, ⅓, gone), one 100 ms tick apart. Mono
+draws the dialog in ASCII (`+ - |`, `=` for the run, `+`/`x`/`-` for the marks) over its ground,
+and fades nothing.
+
+**How the board stays behind it across the exec.** The old image cannot hand the new one a
+frame, and the new one cannot know the board before its snapshot. So `run` draws the board once
+more after the loop and clones the buffer; `reexec` mutes it (`Behind::board`) and the old
+Loader draws it with the dialog over it. The new image starts its Loader on `Behind::Kept`: it
+draws only the dialog's cells, and every one of them is inked (`fg` set even on a blank), so it
+differs from an empty cell and is written while the cells around it, empty in the new buffer,
+are never written and keep the muted board. Two things make that sound: a `U`'s dialog never
+shrinks from one image to the next (the subline always takes two rows, the title edge is
+redrawn across the whole width; a failure only grows it), and a resize, which clears the
+screen, drops the loader to the ground. A theme with no ground clears once at the end of a kept
+wait, since the board repaints nothing blank. Mono keeps nothing (`Behind::kept` is the ground)
+and clears at the start, as before. `Loader::finish` returns the `Veil` beside the terminal
+when the scene was seen; `event_loop` applies it after `ui::draw` until it lifts.
+
+**Measured** in a tmux smoke run (scratch `HOME`, scratch repo, `U` after a re-copied binary,
+captures every ~30 ms): the muted board around the dialog in the old and the new image, the rows
+ticking across the exec, ready, then the board's ink stepping `79 → 87 → 94` over three frames.
+**Refuted: the old image's loader stalls.** Its frame stood still for 0.6 s; a trace showed the
+old daemon gone in 2 ms and the old loader stopped, and the still frame is the `exec` and the
+new image's start before its Loader, which nothing can draw through (T-1102 had the same gap).
+
+**Gone.** The shin, its board and the floor of stations from `loader.rs`, the hurry (a quick
+`U` no longer walks on to a station; it shows every row ticked for 400 ms), and the
+creature code only the walk used (`creature::WALK`, `picture`, `Picture::marks`).
+
+**Tests.** `loader::tests`: rows tick in order and never back (a build-skew Stop changes the
+words only); the new image picks up with the old daemon ticked; every moment, a `U`'s failure
+included, draws every row's words inside 60×20 and 120×40 over a muted board and never in
+`attn`; an open wears the ground from its first frame; a reload mutes the board's text, bold and
+surfaces behind the dialog; a kept screen draws the dialog's cells and no others; a `U`'s dialog
+never shrinks across the images; the bar's run moves and is all `calm` once ready; a quick open
+shows only the ground and is not seen; a seen scene shows every row ticked before it ends; the
+failure's words; the slow count; the title names both versions only across a change; mono is
+ASCII over no board; the veil lifts in two steps and is the board itself once lifted.

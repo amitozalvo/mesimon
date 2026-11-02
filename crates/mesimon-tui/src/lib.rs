@@ -210,12 +210,16 @@ pub fn run(repo_root: &Path) -> Result<()> {
     };
     let inherited = matches!(mode, loader::Mode::Reload { .. });
     let mut terminal = init_terminal_with(!inherited)?;
-    // A theme that paints no ground repaints nothing blank, so what the old
+    let inks = loader::Inks::of(&theme);
+    // After a `U` the old image's muted board stays around the dialog
+    // (T-1120). A screen that cannot keep one (mono) is cleared instead: a
+    // theme that paints no ground repaints nothing blank, so what the old
     // image drew would stay under the new frame.
-    if inherited && theme.bg.is_none() {
+    let behind = if inherited { loader::Behind::kept(&inks) } else { loader::Behind::Ground };
+    if inherited && theme.bg.is_none() && matches!(behind, loader::Behind::Ground) {
         quiet::clear(&mut terminal)?;
     }
-    let show = loader::Loader::start(terminal, loader::Inks::of(&theme), mode, give_back);
+    let show = loader::Loader::start(terminal, inks, mode, behind, give_back);
     let client = Client::connect(repo_root)?;
     let connected = client.connected();
     loader::step(loader::Step::Read);
@@ -254,7 +258,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // beside them rather than under them (T-946).
     app.follow_release_channel();
 
-    let mut terminal =
+    // The veil the board's first frames lift, when the wait was seen.
+    let (mut terminal, veil) =
         show.finish(if connected { loader::End::Ready } else { loader::End::Failed })?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —
     // asking before raw mode is on gets a false negative. This is the single
@@ -326,7 +331,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // The board as it stands seeds both threads (T-686): what it already
     // holds is not news, and the next push is a real edge.
     app.hand_board();
-    let result = event_loop(&mut terminal, &mut app);
+    let result = event_loop(&mut terminal, &mut app, veil);
     // The board is done with its terminal, so the notification thread's two
     // escape rungs stop writing to it NOW — taken under the same lock a
     // write takes, so nothing is half out — and then the thread itself goes.
@@ -343,7 +348,14 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // depend on that.)
     drop(app.caffeine.take());
     if result.is_ok() && app.pending_reexec {
-        return reexec(repo_root, app.ground, terminal, loader::Inks::of(&app.theme));
+        // The board as the person last saw it, for the reload's dialog to
+        // stand over, muted (T-1120).
+        let mut frame = None;
+        let _ = quiet::draw(&mut terminal, |f| {
+            ui::draw(f, &app);
+            frame = Some(f.buffer_mut().clone());
+        });
+        return reexec(repo_root, app.ground, terminal, loader::Inks::of(&app.theme), frame);
     }
     restore_terminal()?;
     if let (Ok(()), Some(root)) = (&result, app.pending_switch.take()) {
@@ -379,10 +391,12 @@ fn reexec(
     ground: theme::Ground,
     terminal: Term,
     inks: loader::Inks,
+    board: Option<ratatui::buffer::Buffer>,
 ) -> Result<()> {
     loader::step(loader::Step::Stop);
     let from = loader::Mode::Reload { from: loader::VERSION.to_string() };
-    let show = loader::Loader::start(terminal, inks, from, give_back);
+    let behind = board.map_or(loader::Behind::Ground, |b| loader::Behind::board(b, &inks));
+    let show = loader::Loader::start(terminal, inks, from, behind, give_back);
     // Socket unlinked AND lock released, up to `HANDOVER_MAX` — the fresh
     // client only tolerates a few seconds of no daemon, and a shutdown
     // (every pending settle committed through automove) is not bounded by
@@ -415,7 +429,9 @@ fn give_back() {
     let _ = restore_terminal();
 }
 
-fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
+/// `veil`: the reload's mute (or an open's ground) over the board's first
+/// frames, lifting as they draw (T-1120).
+fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>) -> Result<()> {
     // The notification thread writes an escape to this same stdout on its
     // two escape rungs, so the draw and the write take one lock (T-291).
     // Cloned out of `App` here: the guard has to outlive the borrow the draw
@@ -433,7 +449,14 @@ fn event_loop(terminal: &mut Term, app: &mut App) -> Result<()> {
             // Every tick renders, and only a frame that changed writes — an
             // idle board sends the tty nothing, so a background iTerm2 tab
             // does not spin its activity indicator (T-496).
-            quiet::draw(terminal, |f| ui::draw(f, app))?;
+            quiet::draw(terminal, |f| {
+                ui::draw(f, app);
+                if let Some(v) = veil {
+                    if !v.apply(f.buffer_mut()) {
+                        veil = None;
+                    }
+                }
+            })?;
             let mut out = std::io::stdout();
             // The shin PNGs, on the first frame the icon row wants them:
             // a write under the state dir, so it happens here and not in
