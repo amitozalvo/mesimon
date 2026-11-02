@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, Column, ColumnSettings, ExitReason, NoteMeta, SessionKind, SessionState, SortBy, TagRef,
-    Ticket, WorkspaceStrategy,
+    Board, Column, ColumnSettings, NoteMeta, SessionKind, SessionState, SortBy, TagRef, Ticket,
+    WorkspaceStrategy,
 };
 use mesimon_core::channel::Channel;
 use mesimon_core::command::{
@@ -6488,14 +6488,22 @@ impl App {
     /// Existing sessions can wait for idle; empty shared-checkout seats
     /// can wait to start. Empty worktrees still provision directly.
     pub(crate) fn ask_queueable(&self, ticket: ulid::Ulid) -> bool {
-        self.shared_checkout(ticket) || self.board.live_agent(ticket).is_some()
+        self.shared_checkout(ticket)
+            || self.board.live_agent(ticket).is_some()
+            || self.board.dead_agent(ticket).is_some()
     }
 
     /// Does the column hold a seat a blank ask could start? The one thing
     /// a blank column field can do (T-405), and what tells a blank Enter
     /// there from one the daemon would only refuse.
     pub(crate) fn column_starts(&self, column: &str) -> bool {
-        self.board.column_tickets(column).iter().any(|t| self.board.live_agent(t.id).is_none())
+        self.board.column_tickets(column).iter().any(|t| self.empty_seat(t.id))
+    }
+
+    /// No agent at all on the ticket: none live, and no corpse whose
+    /// conversation an ask would resume (T-1119). What a start fills.
+    pub(crate) fn empty_seat(&self, ticket: ulid::Ulid) -> bool {
+        self.board.live_agent(ticket).is_none() && self.board.dead_agent(ticket).is_none()
     }
 
     /// Any seat the column ask reaches that could wait: a seated agent
@@ -7565,6 +7573,9 @@ impl App {
             // and a prompt needs somewhere to be typed. Mirrors the daemon's
             // `prompt_target`, which is what actually picks the session.
             ticket_promptable: subject.is_some_and(|t| self.board.pane_target(t).is_some()),
+            // The daemon's `seat_of`, the same fact (T-1119): a corpse the
+            // rail still shows is what the ask resumes.
+            ticket_dead_agent: subject.is_some_and(|t| self.board.dead_agent(t).is_some()),
             ticket_awake: subject.map(|t| self.board.ticket_awake_sessions(t) > 0).unwrap_or(false),
             ticket_archived: subject
                 .and_then(|t| self.board.ticket(t))
@@ -13216,8 +13227,15 @@ impl App {
                         },
                         None => format!("nothing to tell {}", keymap::AGENT_WORD),
                     };
-                } else if self.board.live_agent(ticket).is_none() {
+                } else if self.empty_seat(ticket) {
                     self.start_composed(ticket, false);
+                } else if self.board.dead_agent(ticket).is_some() {
+                    // A corpse whose conversation survives (T-1119): a start
+                    // here would seat a second claude beside it unasked.
+                    self.status = format!(
+                        "{} exited ∙ shift+enter on the card resumes it",
+                        keymap::AGENT_WORD
+                    );
                 } else {
                     self.status = format!("{} is asleep ∙ c wakes it", keymap::AGENT_WORD);
                 }
@@ -14666,7 +14684,7 @@ impl App {
                 // An EMPTY seat can commit a blank field: there the prompt is
                 // the ticket's own title and brief, which is what the press
                 // does with no field at all on a quiet checkout (T-294).
-                let starts = self.board.live_agent(ticket).is_none();
+                let starts = self.empty_seat(ticket);
                 // Over a WAITING entry a blank Enter is how it comes off the
                 // board (T-241), and on the one seat that could commit
                 // instead, the toggle tells the two apart: left at `queued`
@@ -14905,8 +14923,12 @@ impl App {
         // Which seat the words are bound for, asked BEFORE they travel: the
         // daemon's answer comes back as a `Response` that cannot tell a
         // started claude from a woken one.
-        let starting = self.board.live_agent(ticket).is_none();
+        // A corpse the rail still shows (T-1119) is resumed, not started
+        // beside: the daemon's `seat_of` reads the same record.
+        let resuming = self.board.dead_agent(ticket).is_some();
+        let starting = !resuming && self.board.live_agent(ticket).is_none();
         let waking = !starting && self.board.pane_target(ticket).is_none();
+        let (wakes, woke) = if resuming { ("resumes", "resumed") } else { ("wakes", "woke") };
         let own = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
         let word = keymap::AGENT_WORD;
         // Plan mode (T-434) rides every receipt: on a claude pane it is a
@@ -14917,7 +14939,7 @@ impl App {
             self.board.pane_target(ticket).is_some_and(|s| s.kind == SessionKind::Codex);
         let (lead, first) = match (starting, waking, plan) {
             (true, _, _) => (format!("{word} starts{mode}"), format!("{word} starts next{mode}")),
-            (_, true, _) => (format!("{word} wakes{mode}"), format!("{word} wakes next{mode}")),
+            (_, true, _) => (format!("{word} {wakes}{mode}"), format!("{word} {wakes} next{mode}")),
             (_, _, true) if codex_pane => (format!("{word} plans"), format!("{word} plans next")),
             (_, _, true) => {
                 (format!("{word} restarts{mode}"), format!("{word} restarts next{mode}"))
@@ -14992,7 +15014,7 @@ impl App {
             Response::Spawned { fresh: false, .. } if plan && !waking => {
                 format!("restarted {word}{mode} ∙ {ask}")
             }
-            Response::Spawned { fresh: false, .. } => format!("woke {word}{mode} ∙ {ask}"),
+            Response::Spawned { fresh: false, .. } => format!("{woke} {word}{mode} ∙ {ask}"),
             Response::Spawned { fresh: true, .. } => {
                 format!("nothing to resume ∙ started a fresh conversation ∙ {ask}")
             }
@@ -15103,17 +15125,7 @@ impl App {
     /// `Dismissed` is the one exit the rail hides: `x` on a corpse mints it
     /// (`sleep_verb` routes `Ctx::sel_dead` to `Command::KillSession`).
     pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
-        let corpse = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| {
-                s.ticket == ticket
-                    && s.kind.is_agent()
-                    && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Dismissed)
-            })
-            .max_by_key(|s| s.state_changed_at.unwrap_or(0))
-            .map(|s| s.id);
+        let corpse = self.board.rail_corpse(ticket).map(|s| s.id);
         self.board
             .sessions
             .iter()
@@ -16243,7 +16255,8 @@ pub(crate) mod test_support {
                         (0, 0, 0, 0, 0);
                     let mut accepts = 0;
                     for t in self.board.column_tickets(&column) {
-                        let empty = self.board.live_agent(t.id).is_none();
+                        let empty = self.board.live_agent(t.id).is_none()
+                            && self.board.dead_agent(t.id).is_none();
                         let plan_able = self.board.pane_target(t.id).is_some_and(|s| {
                             s.state
                                 == (SessionState::RequiresAction {
@@ -16296,7 +16309,9 @@ pub(crate) mod test_support {
                     use mesimon_core::command::PendingAction;
                     let seat = if self.board.pane_target(ticket).is_some() {
                         PendingAction::Ask
-                    } else if self.board.live_agent(ticket).is_some() {
+                    } else if self.board.live_agent(ticket).is_some()
+                        || self.board.dead_agent(ticket).is_some()
+                    {
                         PendingAction::Wake
                     } else {
                         PendingAction::Start
@@ -17046,6 +17061,7 @@ fn held_for_a_client(why: &str) -> bool {
 mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
+    use mesimon_core::board::ExitReason;
     use mesimon_core::board::{Collapse, Column, Ticket};
 
     fn ticket(n: u128, column: &str, order: &str) -> Ticket {
@@ -24675,6 +24691,50 @@ mod tests {
         assert_eq!(app.status, "woke agent ∙ asked");
         assert_eq!(app.screen, Screen::Board);
         assert!(app.pending_attach.is_none(), "no handover");
+    }
+
+    /// A crashed claude is a conversation with no process (T-1119): the key
+    /// says `resume + ask`, and the words ride the daemon's resume of THAT
+    /// record — never a `SpawnSession` that would seat a second claude
+    /// beside the one the person was talking to.
+    #[test]
+    fn shift_enter_on_a_crashed_claude_resumes_it_and_asks() {
+        let (mut app, sent, sid) =
+            app_with_claude(SessionState::Exited { reason: ExitReason::Crashed }, false);
+        app.rich_keys = true;
+        assert!(!app.ctx().ticket_has_agent, "a corpse holds no seat");
+        assert!(app.ctx().ticket_dead_agent, "…but its conversation is still there");
+        assert!(!app.empty_seat(ulid::Ulid(1)), "so the seat is not one a start fills");
+        assert_eq!(app.rail_sessions(ulid::Ulid(1)).first().map(|s| s.id), Some(sid));
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "resume + ask agent"))
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }),
+            "the field opens on the card"
+        );
+        for c in "carry on".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "resumed agent ∙ asked");
+        assert_eq!(app.screen, Screen::Board);
+        // Dismissed off the rail, the corpse is gone for the ask too: the
+        // seat is empty and the press starts.
+        let (mut app, _, _) =
+            app_with_claude(SessionState::Exited { reason: ExitReason::Dismissed }, false);
+        app.rich_keys = true;
+        assert!(!app.ctx().ticket_dead_agent);
+        assert!(app.empty_seat(ulid::Ulid(1)));
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "start + ask agent"))
+        );
     }
 
     /// `c` copies the ticket (T-674): its id, then its title, then the two

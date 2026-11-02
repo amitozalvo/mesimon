@@ -40676,3 +40676,48 @@ live_words_lay_over_the_file_until_it_catches_up`, `history` reads the date, `pe
 live_words_lay_over_the_card_until_the_file_has_them`, `mod_bridge_e2e::
 a_sentence_the_mod_heard_is_on_the_record_before_the_transcript_has_it`. Full workspace suite
 once (a new hook event is a wire change), `mod_plugin` on this machine's 2.1.316.
+
+## Shift+Enter on a crashed claude resumes it (2026-11-02, T-1119)
+
+The board's ask read the ticket's seat off `live_agent` alone: a corpse — `Exited{Crashed}`,
+`Killed`, `LoggedOut`, `UserQuit` that the park gate left — holds no seat, so a Shift+Enter
+there was a `QueuedSeat::Start`: a second claude on the title, with the crashed conversation
+left on the rail where only the ticket page's Enter reached it, and the status saying
+`started`. The person had been talking to that conversation and expected it to go on, as a
+parked one does.
+
+**Shipped.** One definition of the corpse, `Board::rail_corpse` (the latest exited agent record
+not `Dismissed`, what `rail_sessions` always showed) and `Board::dead_agent` (that corpse while
+no live agent holds the seat). The daemon's `seat_of` returns `Wake(corpse)` for it, so every
+road through `deliver` — a send-now, a queued ask's drain, a column ask, the crown's `ask_agent`
+— resumes that record with the words parked for its first tick, the sleeper's road
+(`wake_with` admits the corpse; `resume_session_with_cleanup_ack` was already what the rail's
+Enter ran on it, `fresh` where its transcript is gone). The footer reads `resume + ask agent`
+(`Ctx::ticket_dead_agent`), the receipt `resumed agent ∙ asked`, and `App::empty_seat` is the
+one TUI reading of "a start fills this": the column's blank ask, the blank Enter, the note
+editor's save-and-ask (which says the agent exited rather than starting beside it) and the
+fake daemon read it.
+
+**Decided, not only crashes.** The seat follows the rail's corpse, every reason but
+`Dismissed`: `Killed` is mesimon's own ladder ending a process whose conversation survives
+(board.rs's own words), and a second definition — crashed yes, killed no — would have Enter on
+the rail and Shift+Enter on the card disagree about the same row. `x` on the corpse (its
+dismissal) is how a person empties the seat on purpose; `column_ask_e2e` and `prompt_e2e` now
+dismiss their killed stubs before expecting a START, and `prompt_e2e` asserts the resume first.
+A `LoggedOut` corpse resumes into Claude's auth wall, as the rail's Enter already did; a start
+would hit the same wall. A blank ask at a corpse is `nothing to send` (the brief road's
+`unprompted` reads `Idle`/`Sleeping`), not a resume on the title — unchanged from the blank
+Enter the TUI already refused there.
+
+**Not changed.** An explicit start — the ticket page's `+ agent session` row, the composer's
+Shift+Enter, `start_agent` — still seats a new claude beside a corpse: the person asked for one
+by name. Codex corpses with `codex_stopping` were already a seat (`holds_agent_seat`), and a
+corpse past it takes the same `--resume` road with its own cleanup refusals in words.
+
+Tests: `board::tests::dead_agent_is_the_rails_corpse_while_no_live_agent_holds_the_seat`,
+`app::tests::shift_enter_on_a_crashed_claude_resumes_it_and_asks`, `ask_after_crash_e2e` (a
+stub exiting 1 with a transcript: `Spawned{id: the corpse, fresh: false}`, one record; fails
+on the old `seat_of` at "the crashed record is the one resumed"). `cargo ut`, clippy on the
+four crates, and the ask/wake e2es: ask_queue, column_ask, exit_parks, ask_after_park, brief,
+plan_mode, sleep_offer, external_provider, crown, hook, m3, mod_turns, mcp, provider,
+spawn_ready, prompt, worktree.

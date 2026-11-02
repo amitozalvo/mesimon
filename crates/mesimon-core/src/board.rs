@@ -3854,6 +3854,32 @@ impl Board {
         self.sessions.iter().find(|s| s.ticket == ticket && s.holds_agent_seat())
     }
 
+    /// The ticket's corpse, the one the ticket page's rail keeps: the latest
+    /// exited agent record the person has not dismissed. Its conversation
+    /// outlived the process — a crash, a kill, a logout — and `Enter` on its
+    /// row resumes it. `None` once it is dismissed.
+    pub fn rail_corpse(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.sessions
+            .iter()
+            .filter(|s| {
+                s.ticket == ticket
+                    && s.kind.is_agent()
+                    && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Dismissed)
+            })
+            .max_by_key(|s| s.state_changed_at.unwrap_or(0))
+    }
+
+    /// The agent an ask resumes where the ticket holds no live one (T-1119):
+    /// `rail_corpse`, so Shift+Enter on a crashed session brings that
+    /// conversation back the way it wakes a parked one, and never starts a
+    /// second session beside a corpse the person expects to go on.
+    pub fn dead_agent(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        if self.live_agent(ticket).is_some() {
+            return None;
+        }
+        self.rail_corpse(ticket)
+    }
+
     /// The seats the crown's agent started and still holds (T-412): the
     /// records that carry `started_by` and hold an agent seat AWAKE —
     /// whoever wears the crown now — on a ticket the board shows. The
@@ -3991,6 +4017,40 @@ mod tests {
     }
 
     use super::*;
+
+    /// T-1119: the corpse an ask resumes is the rail's — the latest exited
+    /// agent record not dismissed — and only while no live agent holds the
+    /// seat; a shell's exit is never one.
+    #[test]
+    fn dead_agent_is_the_rails_corpse_while_no_live_agent_holds_the_seat() {
+        let ticket = ulid::Ulid(1);
+        let rec = |n: u128, kind, state, at: u64| {
+            let mut r = SessionRecord::new(
+                uuid::Uuid::from_u128(n),
+                kind,
+                ticket,
+                vec!["claude".into()],
+                "/".into(),
+                state,
+            );
+            r.state_changed_at = Some(at);
+            r
+        };
+        let exited = |reason| SessionState::Exited { reason };
+        let mut board = Board::default();
+        board.sessions.push(rec(1, SessionKind::Claude, exited(ExitReason::Crashed), 10));
+        board.sessions.push(rec(2, SessionKind::Claude, exited(ExitReason::Killed), 20));
+        board.sessions.push(rec(3, SessionKind::Claude, exited(ExitReason::Dismissed), 30));
+        board.sessions.push(rec(4, SessionKind::Bash, exited(ExitReason::Crashed), 40));
+        let id = |n: u128| Some(uuid::Uuid::from_u128(n));
+        assert_eq!(board.rail_corpse(ticket).map(|s| s.id), id(2), "latest, not dismissed, agent");
+        assert_eq!(board.dead_agent(ticket).map(|s| s.id), id(2));
+        // A parked claude holds the seat: the ask wakes it, not the corpse.
+        board.sessions.push(rec(5, SessionKind::Claude, SessionState::Sleeping, 50));
+        assert_eq!(board.rail_corpse(ticket).map(|s| s.id), id(2), "the rail keeps the corpse");
+        assert!(board.dead_agent(ticket).is_none());
+        assert!(board.dead_agent(ulid::Ulid(2)).is_none(), "another ticket's records");
+    }
 
     /// T-570: words a launch never delivered make the seat `unsent` to the
     /// crown and needs-you to the header, while it has a pane to resend

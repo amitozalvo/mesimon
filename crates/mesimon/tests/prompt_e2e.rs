@@ -186,16 +186,37 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit)
     });
 
-    // No pane, and no PARKED claude either: a dismissed record is `Exited`,
-    // which is neither live nor sleeping, so the seat is EMPTY — and since
-    // T-294 that is a seat this command fills rather than refuses. The words
-    // may even be blank there: the prompt is the ticket's own title, which
-    // the spawn types as it always has. The board's ask field is the only
-    // caller, and a blank field on an empty seat is what its Enter means.
+    // Killed, the record is a corpse the rail still offers to resume — and
+    // since T-1119 an ask RESUMES it, as it wakes a sleeper, rather than
+    // seating a second claude beside the conversation the person was in.
     let _ = c.request(Command::KillSession { id: sid });
     wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
         c.board().sessions.iter().all(|s| s.id != sid || !s.state.is_live())
     });
+    match c.prompt(ticket, "mesimon-probe-44 carry on") {
+        Response::Spawned { id, .. } => {
+            assert_eq!(id, sid, "the corpse is resumed, never a new one")
+        }
+        other => panic!("an ask at a crashed or killed claude resumes it: {other:?}"),
+    }
+    assert_eq!(
+        c.board().sessions.iter().filter(|s| s.ticket == ticket && s.kind.is_agent()).count(),
+        1,
+        "one record on the ticket"
+    );
+    let _ = c.request(Command::KillSession { id: sid });
+    wait_until(Duration::from_secs(10), "the killed record to leave the seat again", || {
+        c.board().sessions.iter().all(|s| s.id != sid || !s.state.is_live())
+    });
+
+    // No pane, and no PARKED claude, and no corpse on the rail either: a
+    // DISMISSED record (a kill on a corpse) is `Exited` and hidden, so the
+    // seat is EMPTY — and since T-294 that is a seat this command fills
+    // rather than refuses. The words may even be blank there: the prompt is
+    // the ticket's own title, which the spawn types as it always has. The
+    // board's ask field is the only caller, and a blank field on an empty
+    // seat is what its Enter means.
+    assert!(matches!(c.request(Command::KillSession { id: sid }), Response::Ok));
     match c.prompt(ticket, "   ") {
         Response::Spawned { id, .. } => {
             assert_ne!(id, sid, "a new session, never the corpse");

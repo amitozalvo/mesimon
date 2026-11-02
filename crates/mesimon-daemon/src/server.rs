@@ -15429,7 +15429,14 @@ impl Daemon {
         // `prompt_sleeping`'s own filter is the belt under it.
         match self.board.live_agent(ticket) {
             Some(rec) => QueuedSeat::Wake(rec.id),
-            None => QueuedSeat::Start(self.tier_book().start_provider(ticket)),
+            // No live agent, but a corpse whose conversation survives — a
+            // crash, a kill, a logout (T-1119): the ask resumes it the way
+            // it wakes a sleeper. A start would seat a second claude beside
+            // the one the person was talking to, with no word that it had.
+            None => match self.board.dead_agent(ticket) {
+                Some(rec) => QueuedSeat::Wake(rec.id),
+                None => QueuedSeat::Start(self.tier_book().start_provider(ticket)),
+            },
         }
     }
 
@@ -16960,12 +16967,14 @@ impl Daemon {
     /// an ask (`prompt_sleeping`), or the brief of a conversation that never
     /// took a prompt (T-603).
     fn wake_with(&mut self, ticket: ulid::Ulid, words: Parked, plan: bool, ack: Ack) -> Response {
-        let Some(id) = self
-            .board
-            .live_agent(ticket)
-            .filter(|s| matches!(s.state, SessionState::Sleeping))
-            .map(|s| s.id)
-        else {
+        let parked = match self.board.live_agent(ticket) {
+            Some(s) if matches!(s.state, SessionState::Sleeping) => Some(s.id),
+            Some(_) => None,
+            // The rail's corpse (T-1119): `--resume` brings a crashed
+            // conversation back exactly as it brings a parked one.
+            None => self.board.dead_agent(ticket).map(|s| s.id),
+        };
+        let Some(id) = parked else {
             return Response::Err {
                 message: "no live agent session on this ticket — start or wake one first".into(),
             };

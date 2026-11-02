@@ -1312,6 +1312,10 @@ pub struct Ctx {
     /// Live and not this is exactly Sleeping, which is how `c` knows to say
     /// `wake` and Shift+Enter to say `wake + ask` (2026-09-04).
     pub ticket_promptable: bool,
+    /// No live claude, but a corpse whose conversation survives — a crash,
+    /// a kill, a logout (T-1119): Shift+Enter says `resume + ask`, and the
+    /// daemon resumes that record rather than starting a second beside it.
+    pub ticket_dead_agent: bool,
     /// At least one of the selected ticket's sessions is awake.
     pub ticket_awake: bool,
     /// The selected ticket is archived.
@@ -2115,6 +2119,11 @@ fn ask_hint(c: &Ctx) -> &'static str {
         "wake + ask agent"
     } else if c.ticket_has_agent {
         "ask agent"
+    } else if c.ticket_dead_agent {
+        // A crashed (killed, logged-out) claude whose conversation is still
+        // there (T-1119): the press resumes it with the words, as a wake
+        // does, so the conversation the person was in goes on.
+        "resume + ask agent"
     } else {
         // An empty seat (T-379): the press opens the field, and the daemon
         // starts claude on the way — the words are its first prompt, a

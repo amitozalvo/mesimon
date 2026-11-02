@@ -166,8 +166,10 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
         count("mesimon-probe-81") == 3
     });
     // Both agents ack and settle, so the checkout is quiet again. The one
-    // that was just started goes back to being an empty seat — killed, so
-    // the queued pass below has a START to park beside the two asks.
+    // that was just started goes back to being an empty seat — killed, then
+    // dismissed off the rail (a second kill on the corpse): a corpse the rail
+    // still shows is a seat the ask RESUMES (T-1119), so only the dismissal
+    // leaves the queued pass below a START to park beside the two asks.
     for sid in [sa, ss] {
         start(&mut c, sid);
         stop(&mut c, sid);
@@ -176,6 +178,12 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
         c.board().sessions.iter().all(|s| s.id != sb || !s.state.is_live())
     });
+    assert!(matches!(c.request(Command::KillSession { id: sb }), Response::Ok));
+    assert!(
+        c.board().dead_agent(bare).is_none(),
+        "dismissed, the corpse is no seat: {:?}",
+        c.board().sessions.iter().find(|s| s.id == sb).map(|s| s.state.clone())
+    );
     assert!(matches!(
         c.request(Command::MoveTicket { id: bare, column: column.clone(), before: None }),
         Response::Ok
