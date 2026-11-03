@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets                                                   ◦ auto merge 1 ticket (esc)
+
+   TODO                     2    IN PROGRESS              2    REVIEW                 2 →    DONE                    0
+
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncat~ ⎇↑ >1y
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+   Keymap validator       >│ SUGGESTED                                                      │
+                           │ ◦ Auto merge 1 finished ticket                                 │
+                           │     into main while this board is open ∙ Settings turns it off │
+                           │                                                                │
+                           │   External sessions                                            │
+                           │     agent sessions in this repo that mesimon did not start     │
+                           │   Archived tickets                                             │
+                           │     off the board, still here                                  │
+                           │   Sharing: not signed in                                       │
+                           │     sign in to a relay to share this board or join one         │
+                           │   Settings                                                   , │
+                           │     theme, notifications, agents, crown, usage                 │
+                           │   Guided tour                                                  │
+                           │     every move, shown and tried on a practice board            │
+                           │   Release notes                                                │
+                           │     what changed in each version, newest first                 │
+                           │   Quit mesimon                                               q │
+                           │     sessions keep running                                      │
+                           ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
+
+
+
+ Auto merge 1 finished ticket ∙ into main while this board is open ∙ Settings turns it off
+ MENU                                                                                                            ? keys

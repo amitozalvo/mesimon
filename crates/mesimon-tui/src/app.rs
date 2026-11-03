@@ -1623,6 +1623,11 @@ pub struct App {
     pub resources: Resources,
     /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
     pub worktrees: Vec<WorktreeItem>,
+    /// The finished branches the auto-merge offer (T-1126) stood for when
+    /// the person turned auto merge off in Settings: the offer stays down
+    /// for them and comes back with the next such ticket. This run's
+    /// memory only — a declined offer is not a setting.
+    pub train_declined: std::collections::HashSet<ulid::Ulid>,
     /// Each ticket's pull requests as the forge last said (T-739), newest
     /// first per ticket; the ticket page lists them and the card's second
     /// line marks them.
@@ -2314,6 +2319,7 @@ impl App {
             external_scanning: snap.external_scanning,
             resources: snap.resources,
             worktrees: snap.worktrees,
+            train_declined: std::collections::HashSet::new(),
             prs: snap.prs,
             forge: snap.forge,
             pr_seen: std::collections::HashMap::new(),
@@ -2627,7 +2633,7 @@ impl App {
         let sent = self.client.request(Command::ApplySetup {
             template: o.template,
             noun: o.noun.into(),
-            merge_into: o.merge_into,
+            merge_into: o.merge_into.clone(),
             // Every ticket in its own worktree (T-1123): the recommended
             // answer, no longer asked.
             workspace: mesimon_core::board::WorkspaceStrategy::Worktree,
@@ -2639,6 +2645,15 @@ impl App {
         if let Response::Err { message } = sent {
             self.status = message;
             return Ok(());
+        }
+        // On your own, auto merge starts off (T-1126): the train would land
+        // an agent's branch in main with no review, and nobody chose that.
+        // The header offers it once a finished branch is waiting. With pull
+        // requests it stays on: there it only asks rebases, and the forge
+        // merges.
+        if !o.merge_into.pull_requests() {
+            self.set_board_pref("auto merge off", |b| b.set_bool(PrefKey::MergeTrain, false));
+            self.push_automation();
         }
         self.refresh_soon()?;
         self.status = "board set up ∙ Esc › Settings changes any of it".into();
@@ -2678,6 +2693,57 @@ impl App {
     /// title row) fade in and out while it is (T-545).
     pub fn archiving(&self, ticket: ulid::Ulid) -> bool {
         self.archive_armed == Some(ticket)
+    }
+
+    /// The finished branches the merge train would merge into main right
+    /// now if it were on (T-1126), in board order: the train's own `lane`
+    /// read, with this board's worktrees as its flags and each column's
+    /// reach as the daemon reads it. Empty on a board that merges through
+    /// pull requests, where the train merges nothing.
+    pub(crate) fn train_candidates(&self) -> Vec<ulid::Ulid> {
+        use mesimon_core::train::{lane, seat, Lane, Reading, WtFlags};
+        if self.board.merge_into.pull_requests() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for col in self.board.sorted_columns() {
+            for t in self.board.column_tickets(&col.name) {
+                let Some(w) = self.wt_item(t.id) else { continue };
+                let flags = WtFlags {
+                    attached: w.status == "attached",
+                    ahead: w.ahead,
+                    merged: w.merged,
+                    needs_rebase: w.needs_rebase,
+                    conflict: w.conflict,
+                    has_pr: false,
+                    pr_conflict: false,
+                };
+                let reading = Reading {
+                    merge_into: self.board.merge_into.clone(),
+                    reach: col.settings.train,
+                    flags: &flags,
+                    seat: seat(&self.board, t.id, false),
+                    base_tip: "",
+                    asked: None,
+                    conflict_asked: false,
+                    fused: false,
+                };
+                if lane(t, &reading) == Some(Lane::Merge) {
+                    out.push(t.id);
+                }
+            }
+        }
+        out
+    }
+
+    /// What the header's auto-merge offer counts (T-1126): the candidates,
+    /// while auto merge is off on this board and the person has not turned
+    /// it off in Settings with these very tickets waiting.
+    pub(crate) fn train_offer(&self) -> usize {
+        if self.prefs.merge_train || self.automation.merge_train {
+            return 0;
+        }
+        self.train_candidates().iter().filter(|t| !self.train_declined.contains(t)).count()
     }
 
     /// The board's merge workflow as its top row names it (T-811): pull
@@ -7657,6 +7723,7 @@ impl App {
             bulk_sleep_bytes: self.resources.reclaim_bytes,
             bulk_archive: self.resources.archive_tickets,
             bulk_archive_bytes: self.resources.archive_bytes,
+            train_offer: self.train_offer(),
             has_archived: self.archived_count() > 0,
             peek_on: self.peek,
             peek_all: self.peek_all,
@@ -8931,8 +8998,22 @@ impl App {
             Verb::MergeTrain => {
                 let on = !self.prefs.merge_train;
                 let word = if on { "merge train on" } else { "merge train off" };
+                if !on {
+                    // Off with finished branches waiting is the offer
+                    // declined for them (T-1126): it comes back with the
+                    // next such ticket, not on the next frame.
+                    self.train_declined = self.train_candidates().into_iter().collect();
+                }
                 self.set_pref(word, |p| p.merge_train = on);
                 self.push_automation();
+            }
+            // The header's offer (T-1126): auto merge on for this board,
+            // the board scope because Setup's off is the board's own and a
+            // machine-wide on would not reach past it.
+            Verb::MergeTrainOffer => {
+                self.set_board_pref("auto merge on", |b| b.set_bool(PrefKey::MergeTrain, true));
+                self.push_automation();
+                self.mode = Mode::Normal;
             }
             Verb::MergeTrainNotice => {
                 let on = !self.prefs.merge_train_notice;
@@ -17080,7 +17161,7 @@ mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
     use mesimon_core::board::ExitReason;
-    use mesimon_core::board::{Collapse, Column, Ticket};
+    use mesimon_core::board::{Collapse, Column, MergeInto, Ticket, TrainReach};
 
     fn ticket(n: u128, column: &str, order: &str) -> Ticket {
         Ticket {
@@ -29506,8 +29587,9 @@ mod tests {
 
     /// Setup (T-816): opened once, armed, over a board that waits for it;
     /// the answer reaches the daemon in one command with the recommended
-    /// rest (T-1123: worktrees, auto merge left as the board starts), and a
-    /// snapshot that still says pending does not open it again.
+    /// rest (T-1123: worktrees, and with pull requests auto merge left as
+    /// the board starts), and a snapshot that still says pending does not
+    /// open it again.
     #[test]
     fn setup_applies_its_answers_in_one_command() {
         let mut board = board_three_columns();
@@ -29534,6 +29616,94 @@ mod tests {
         assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None, "auto merge as it starts");
         app.refresh().unwrap();
         assert_eq!(app.mode, Mode::Normal, "applied here: not opened again");
+    }
+
+    /// The auto-merge offer (T-1126) counts what the train would merge and
+    /// nothing else: not with auto merge on, not through pull requests, not
+    /// a column whose reach stops short, not a branch behind its base or
+    /// held by `t`. Off in Settings while a branch waits declines the offer
+    /// for that branch; the next one brings it back.
+    #[test]
+    fn the_auto_merge_offer_counts_what_the_train_would_merge() {
+        let mut board = board_three_columns();
+        board.column_mut("done").unwrap().settings.train = TrainReach::Merge;
+        let (mut app, _sent) = App::for_test_logged(board, theme(), false);
+        let wt = |n: u128, needs_rebase| WorktreeItem {
+            ticket: ulid::Ulid(n),
+            branch: format!("msmn/T-{n}-work"),
+            status: "attached".into(),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 1,
+            needs_rebase,
+            counted: String::new(),
+            detail: None,
+            path: None,
+            repos: vec![],
+        };
+        app.worktrees.push(wt(3, false)); // done, no agent: the train's to merge
+        app.worktrees.push(wt(1, false)); // todo: the column's reach is off
+        assert_eq!(app.train_candidates(), [ulid::Ulid(3)]);
+        assert_eq!(app.train_offer(), 0, "auto merge is on: nothing to offer");
+        app.seed_pref(|p| p.merge_train = false);
+        assert_eq!(app.train_offer(), 1);
+        assert_eq!(app.ctx().train_offer, 1);
+        app.worktrees[0].needs_rebase = true;
+        assert_eq!(app.train_offer(), 0, "behind its base, the train would ask a rebase");
+        app.worktrees[0].needs_rebase = false;
+        std::sync::Arc::make_mut(&mut app.board).tickets[2].manual_merge = true;
+        assert_eq!(app.train_offer(), 0, "held by t");
+        std::sync::Arc::make_mut(&mut app.board).tickets[2].manual_merge = false;
+        std::sync::Arc::make_mut(&mut app.board).merge_into = MergeInto::PullRequests;
+        assert_eq!(app.train_offer(), 0, "through pull requests the train merges nothing");
+        std::sync::Arc::make_mut(&mut app.board).merge_into = MergeInto::Main;
+        assert_eq!(app.train_offer(), 1);
+        // Declined: on, then off again in Settings with T-3 waiting.
+        app.seed_pref(|p| p.merge_train = true);
+        app.dispatch(Verb::MergeTrain, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
+        assert!(!app.prefs.merge_train);
+        assert_eq!(app.train_offer(), 0, "declined for T-3");
+        std::sync::Arc::make_mut(&mut app.board).tickets[1].column = "done".into();
+        app.worktrees.push(wt(2, false));
+        assert_eq!(app.train_offer(), 1, "the next finished branch brings it back");
+    }
+
+    /// On your own (T-1126), Setup turns this board's auto merge off and
+    /// tells the daemon: the train would merge an agent's branch into main
+    /// with no review, and T-1123 stopped asking. `s` (skip) is on your
+    /// own too. The machine's preference is untouched.
+    #[test]
+    fn setup_on_your_own_starts_with_auto_merge_off() {
+        for key in ['\n', 's'] {
+            let mut board = board_three_columns();
+            board.setup_pending = true;
+            let (mut app, sent) = App::for_test_logged(board, theme(), false);
+            app.setup_armed = true;
+            app.open_setup();
+            if key == 's' {
+                press(&mut app, 's');
+            } else {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap(); // on my own
+            }
+            assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.mode, Mode::Normal);
+            let applied: Vec<String> =
+                sent.borrow().iter().filter(|s| s.contains("ApplySetup")).cloned().collect();
+            assert_eq!(applied.len(), 1, "{applied:?}");
+            assert!(applied[0].contains("merge_into: Main"), "{}", applied[0]);
+            assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), Some(false), "key {key:?}");
+            assert!(app.machine_prefs.merge_train, "the machine's copy is not the board's");
+            assert!(!app.prefs.merge_train);
+            let pushed: Vec<String> =
+                sent.borrow().iter().filter(|s| s.contains("SetAutomation")).cloned().collect();
+            assert!(
+                pushed.last().is_some_and(|p| p.contains("merge_train: false")),
+                "the daemon is told: {pushed:?}"
+            );
+        }
     }
 
     /// No board key reaches past Setup, but q and Esc leave it on any page

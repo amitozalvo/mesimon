@@ -174,7 +174,7 @@ impl Setup {
         let fix = if self.team() {
             format!("agents keep their {}s up to date", self.words().1)
         } else {
-            "merged into main for you".to_string()
+            "you merge finished work into main with m".to_string()
         };
         Some(format!("{fix} ∙ each ticket in its own copy"))
     }
@@ -191,9 +191,13 @@ impl Setup {
                 vec![o("board", "Open the board", ""), o("tour", "Take the guided tour first", "")]
             }
             Some(Ask::Work) => vec![
-                o("alone", "On my own", "finished work goes straight into main"),
-                o("team", &format!("With {noun}s"), &format!("work goes to {site} for review first")),
-                o("unsure", "I'm not sure", "start simple: straight into main, no reviews"),
+                o("alone", "On my own", "you merge finished work into main with m"),
+                o(
+                    "team",
+                    &format!("With {noun}s"),
+                    &format!("work goes to {site} for review first"),
+                ),
+                o("unsure", "I'm not sure", "start simple: into main with m, no pull requests"),
             ],
         }
     }
@@ -488,8 +492,8 @@ mod tests {
         assert_eq!(s.options()[1].label, "With merge requests");
     }
 
-    /// What `s` applies: a plain board straight into main, worktrees and
-    /// auto merge as the board starts.
+    /// What `s` applies: a plain board into main, worktrees, and auto merge
+    /// off (`finish_setup`, T-1126).
     #[test]
     fn skipping_is_the_defaults() {
         let mut s = setup();

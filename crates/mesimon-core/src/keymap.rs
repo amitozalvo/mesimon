@@ -654,6 +654,12 @@ pub enum Verb {
     ArchivePrefix,
     Archive,
     ArchiveAllDone,
+    /// The Esc-menu row that turns auto merge on for this board (T-1126),
+    /// offered — and suggested in the header — only while the train is
+    /// off on a board that merges into main and at least one finished
+    /// branch is what it would merge right now. Taking it is this board's
+    /// own `MergeTrain` on, pushed to the daemon.
+    MergeTrainOffer,
     /// `z` — arms the snooze chord on the first preset (T-74).
     SnoozePrefix,
     /// `z` inside the chord — the next preset on the ring.
@@ -1348,6 +1354,13 @@ pub struct Ctx {
     /// The disk archiving those tickets frees: their landed worktrees
     /// (T-679). Spent like `bulk_sleep_bytes`, as the row's payoff word.
     pub bulk_archive_bytes: u64,
+    /// Finished branches the merge train would merge into main right now
+    /// if it were on (T-1126): the train's own `lane` read over this
+    /// board's worktrees, counted only while the board merges into main
+    /// and auto merge is off. Zero everywhere else, which is what keeps the
+    /// offer off a board that has the train, merges through pull requests,
+    /// or declined it for these tickets in Settings.
+    pub train_offer: usize,
     pub has_archived: bool,
     pub peek_on: bool,
     /// `P` is showing every card's reply, not only the cursor card's.
@@ -5076,6 +5089,18 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.bulk_archive > 0,
         key: "",
     },
+    // Auto merge, offered when it has work (T-1126): on your own the board
+    // starts with it off, since the train lands an agent's branch in main
+    // with no review, and a finished branch waiting in REVIEW is the moment
+    // the choice is worth making. The row IS the Settings switch, one level
+    // up where a chip can take it; Settings › Behaviour turns it off again.
+    MenuItem {
+        verb: Verb::MergeTrainOffer,
+        label: |c| format!("Auto merge {}", plural(c.train_offer, "finished ticket")),
+        detail: |_| "into main while this board is open ∙ Settings turns it off".into(),
+        avail: |c| c.train_offer > 0,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ExternalDrawer,
         label: |_| "External sessions".into(),
@@ -6231,6 +6256,13 @@ static SUGGESTIONS: &[Suggestion] = &[
                 "shell env changed".into()
             }
         },
+        key: "",
+    },
+    Suggestion {
+        // Above the two tidy-ups: landing finished work is the work's own
+        // next step, and freeing memory or disk can wait for it.
+        verb: Verb::MergeTrainOffer,
+        headline: |c| format!("auto merge {}", plural(c.train_offer, "ticket")),
         key: "",
     },
     Suggestion {
@@ -11216,6 +11248,7 @@ mod tests {
             bulk_sleep: 3,
             bulk_sleep_bytes: 3 << 30,
             bulk_archive: 2,
+            train_offer: 2,
             has_archived: true,
             update_ready: true,
             release_available: true,
@@ -11231,6 +11264,7 @@ mod tests {
                 "update ready",
                 "v0.1.0-alpha.5 available",
                 "shell env changed",
+                "auto merge 2 tickets",
                 "sleep 3 agents",
                 "archive 2 tickets"
             ]
@@ -11243,16 +11277,21 @@ mod tests {
         assert_eq!(heads[0], "sessions cut off");
         assert_eq!(menu_items(&cut)[0].verb, Verb::RestartServer);
         assert!(!is_suggested(Verb::RestartServer, &all), "offered only while the notice stands");
-        let one = Ctx { bulk_sleep: 1, bulk_archive: 1, ..Default::default() };
+        let one = Ctx { bulk_sleep: 1, bulk_archive: 1, train_offer: 1, ..Default::default() };
         let heads: Vec<String> = suggestions(&one).iter().map(|s| (s.headline)(&one)).collect();
-        assert_eq!(heads, ["sleep 1 agent", "archive 1 ticket"], "counts of one read as one");
+        assert_eq!(
+            heads,
+            ["auto merge 1 ticket", "sleep 1 agent", "archive 1 ticket"],
+            "counts of one read as one"
+        );
         let rows: Vec<Verb> = menu_items(&all).iter().map(|m| m.verb).collect();
         assert_eq!(
-            &rows[..5],
+            &rows[..6],
             &[
                 Verb::Reload,
                 Verb::InstallUpdate,
                 Verb::ReloadShellEnv,
+                Verb::MergeTrainOffer,
                 Verb::SleepAllDone,
                 Verb::ArchiveAllDone
             ],
@@ -11271,6 +11310,7 @@ mod tests {
             Ctx { release_available: true, ..Default::default() },
             Ctx { shell_env_stale: true, ..Default::default() },
             Ctx { shell_env_failed: true, ..Default::default() },
+            Ctx { train_offer: 1, ..Default::default() },
         ] {
             for m in MENU_ITEMS {
                 let suggested = is_suggested(m.verb, &ctx);

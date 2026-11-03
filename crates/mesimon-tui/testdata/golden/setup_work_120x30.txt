@@ -4,9 +4,9 @@
 │                                                                                                                      │
 │  How do you usually work?                                                                                            │
 │                                                                                                                      │
-│  › On my own  finished work goes straight into main                                                                  │
+│  › On my own  you merge finished work into main with m                                                               │
 │    With pull requests  work goes to GitHub for review first                                                          │
-│    I'm not sure  start simple: straight into main, no reviews                                                        │
+│    I'm not sure  start simple: into main with m, no pull requests                                                    │
 │                                                                                                                      │
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
 │  │ BOARD   mesimon › practice   1 ticket                                                                          │  │

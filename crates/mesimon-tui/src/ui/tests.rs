@@ -1640,6 +1640,55 @@ fn golden_suggestions_120() {
     golden("menu_suggestions_120x30", &render(&app, 120, 30));
 }
 
+/// The auto-merge offer (T-1126): a board that merges into main with auto
+/// merge off, and a finished REVIEW branch the train would merge, puts the
+/// offer in the header and its row at the top of the menu. Enter on that
+/// row is this board's auto merge on, and the offer is gone with it.
+#[test]
+fn golden_train_offer_120() {
+    let mut app = train_offering_app();
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ auto merge 1 ticket (esc)"), "{head:?}");
+    golden("board_train_offer_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Menu { idx: 0 };
+    golden("menu_train_offer_120x30", &render(&app, 120, 30));
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.board_prefs.bool(mesimon_core::prefs::PrefKey::MergeTrain), Some(true));
+    assert!(app.prefs.merge_train);
+    let head = &render(&app, 120, 30)[0];
+    assert!(!head.contains("auto merge"), "taken, so no longer offered: {head:?}");
+}
+
+/// The fixture with the review column's reach at merge, auto merge off for
+/// the machine, and T-5 (review, idle claude) two commits ahead on an
+/// attached worktree: exactly one branch the train would merge.
+fn train_offering_app() -> App {
+    let mut board = fixture_archived();
+    board.column_mut("review").unwrap().settings.train = mesimon_core::board::TrainReach::Merge;
+    for s in board.sessions.iter_mut().filter(|s| s.ticket == ulid_n(5)) {
+        s.confidence = mesimon_core::board::Confidence::High;
+    }
+    let mut app = app_graphite(board);
+    app.seed_pref(|p| p.merge_train = false);
+    app.worktrees.push(mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        counted: String::new(),
+        detail: None,
+        path: None,
+        repos: vec![],
+    });
+    app
+}
+
 /// A board with all three offers standing.
 fn suggesting_app() -> App {
     let mut app = app_graphite(fixture_archived());

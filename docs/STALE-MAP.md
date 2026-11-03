@@ -41045,3 +41045,45 @@ its pane reads `Prompt from the mesimon plugin`). The demo secret the author gav
 
 **Checked.** Each new GIF looked at frame by frame (contact sheets); `cargo ut`; clippy on
 `mesimon-tui` tests.
+
+## On your own, auto merge starts off and the header offers it (T-1126, 2026-11-03, the author: "if no PR (on your own), it should start with off and show a suggestion \"enable auto merge (merge train)\"")
+
+**Why.** T-1123 stopped asking "should mesimon merge it into main?", so a new on-your-own board
+had the train on without anyone choosing it, and on your own the train lands an agent's branch
+in main with no review.
+
+**Off at Setup, for the board.** `finish_setup` sets this board's `MergeTrain` off and pushes
+`SetAutomation` when the outcome merges into main — "On my own", "I'm not sure" and `s` alike —
+the code path the removed "No" answer used. With pull requests it stays as the board starts: there
+the train only asks rebases and the forge merges. The machine preference (`prefs.merge_train`,
+default on) is untouched. Setup's words follow: "you merge finished work into main with m" on the
+option and the last page, "start simple: into main with m, no pull requests" on not sure.
+
+**The offer.** `Verb::MergeTrainOffer` is an Esc-menu row ("Auto merge N finished tickets") and a
+`keymap::SUGGESTIONS` entry ("auto merge N tickets (esc)"), gated on `Ctx::train_offer`:
+`App::train_candidates` runs the train's own `train::lane` over the board's worktrees (attached,
+ahead, not behind, not held by `t`, the column's reach at merge, the seat empty or idle), and
+`train_offer` counts them only while the board merges into main and auto merge is off. The row
+is one level up from the Settings switch because `every_suggestion_is_a_menu_row` forbids a
+chip that points into Settings; taking it is `set_board_pref(MergeTrain, true)` plus the push —
+the board scope, since Setup's off is the board's own and a machine-wide on would not reach
+past it. Priority: under the update, release and shell-env news, above sleep and archive —
+landing finished work is the work's own next step, a tidy-up can wait for it (the parent
+session guessed below; decided here).
+
+**Declined, not nagged.** Turning auto merge off in Settings while branches wait records them in
+`App::train_declined` (this run's memory, not a setting): the offer stays down for those and
+returns with the next finished branch. On a restart the offer returns if the branch is still
+unmerged, which is the cost of not adding a persisted field for a declined hint.
+
+**Not done:** the "caffeinate suggestion" the author compared it to does not exist in main (keep
+awake starts off and only shows its mark once on); the offer takes the existing suggestion
+chip's shape, and the hand went up with that question. Nothing agent-facing changed: no rig case.
+
+Tests: `keymap::every_suggestion_is_a_menu_row` (order, counts of one, offered exactly when the
+row applies); `app::the_auto_merge_offer_counts_what_the_train_would_merge` (on, pull requests,
+reach off, behind, held by `t`, declined and back); `app::setup_on_your_own_starts_with_auto_merge_off`
+(Enter and `s`, machine copy untouched, `SetAutomation` pushed); `setup_applies_its_answers_in_one_command`
+keeps a PR board's untouched. Goldens `board_train_offer_120x30`, `menu_train_offer_120x30`
+new; `setup_work_120x30`, `setup_ready_80x24` reminted for the words. `cargo ut`, clippy on
+core and tui, `cargo build --workspace`; no daemon change, so no `setup_e2e`.
