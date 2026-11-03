@@ -28,16 +28,27 @@ npm run shot:remote                # writes both into this directory, 390 px at 
 `web/mesophon/remote-shot.mjs` holds the board it seeds; the README, mesimon.dev and its
 Remote Control page (`ci/site.sh` copies them) all show these two files.
 
+The README's logo, `../logo-dark.svg` and `../logo-light.svg`, is not recorded either: it is the
+last frame of the intro (`crates/mesimon-tui/src/intro.rs`), in graphite for a dark page and
+chalk for a light one. A test fails when the intro and the logo differ, and draws them again:
+
+```sh
+MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui the_readme_logo
+```
+
 What each file does:
 
 - **`record.sh`** builds a throwaway sandbox under `/tmp`: its own `HOME`, and a small git repo
   copied from `project/`. It starts the release binary's daemon there, seeds the tape's board,
   runs the tape, then stops the daemon and removes everything, including the daemon's private
-  tmux. It also sets one timing seam: the worktree flags refresh every 2 s instead of every
+  tmux. Its prefs turn the merge train off, so a finished branch waits for the take's `m`. It
+  also sets one timing seam: the worktree flags refresh every 2 s instead of every
   10 s, so the merge offer appears soon after the agent finishes. The link opener is `true`,
   so a link a take opens reads `opening …` on the board and starts no browser.
 - **`seed.py`** creates the tickets over the daemon's socket, using the same wire protocol as
-  the TUI. `BOARDS` holds one ticket list per tape. It also starts the agent that is already at
+  the TUI. It answers Setup first, as one person on one repository would, and files each
+  ticket in TODO, then moves it where the tape wants it. `BOARDS` holds one ticket list per
+  tape. It also starts the agent that is already at
   work when the recording opens, on the ticket `AT_WORK` names for the tape, and marks the
   first step into an agent as practised, so the practice screen does not open in a take. For
   `ticket-page` it then runs a second agent that writes a note on its ticket and stops, and puts
@@ -50,14 +61,17 @@ What each file does:
   the board tools (`raise_hand` in the demo; `create_ticket`, `move_ticket`, `tag_ticket` and
   `start_agent` once crowned in the crown clip; `write_note` in the ticket-page clip). It writes
   a transcript, and the ticket page's preview reads it. Its pane has a prompt line that takes
-  typed text, under a rule that says it is a stand-in. Only the model is scripted, and what it
+  typed text, drawn the way the daemon reads Claude Code's composer (a rule, `❯ `, a rule),
+  since a launch's words go only into a composer the daemon has seen; a line over it says it
+  is a stand-in. Only the model is scripted, and what it
   does is keyed off its ticket's title. A script that fails leaves its traceback in the agent's
   pane.
 - **`kitty-term.py`** puts a pty between VHS and the board. VHS's terminal (xterm.js) does not
   answer the kitty keyboard query, so on that terminal the board correctly turns Shift+Enter
   off. The shim answers the query and delivers the tape's `Alt+Enter` as the kitty report for
   Shift+Enter. Every other byte passes through unchanged.
-- **`demo.tape`** is the README's main take: start an agent, answer it, merge its branch.
+- **`demo.tape`** is the README's main take: start an agent, answer it, merge its branch and
+  tell the agent it merged.
   Wherever the agent's timing matters, the tape waits for the screen to change instead of
   sleeping for a fixed time.
 - **`agent.tape`** is the tour's first clip: from a working agent's ticket page, step into the
@@ -96,7 +110,8 @@ claude's auto mode: without it (Haiku) claude asks before its first edit and the
 - **claude's first-run screens are answered before it starts.** `seed.py` writes the sandbox's
   `.claude.json`: onboarding done, the dark theme, the key approved (claude keeps the key's last
   20 characters there), the auto-mode and fast-mode notices seen, and the agent's worktree
-  trusted. A screen left over would stall the take as a SETUP card, so `seed.py` waits for
+  trusted. It writes them once the daemon has finished probing claude for its road, since every
+  claude that probe runs writes the same file. A screen left over would stall the take as a SETUP card, so `seed.py` waits for
   claude to take its prompt and stops the take with the pane's text if it does not.
 - **Without a key file** the tape runs on the stand-in, free and the same every time, which is
   the way to rehearse it. It writes `agent.gif` as well; do not keep that one.

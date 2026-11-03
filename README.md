@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="משימון, its ש the shin" width="415">
+  </picture>
+</p>
+
 # mesimon
 
 [mesimon.dev](https://mesimon.dev)

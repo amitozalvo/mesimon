@@ -51,19 +51,18 @@ Type "Yes, include them"
 Sleep 0.6s
 Enter
 
-# Done, and the branch line offers the merge.
+# Done, and the branch line offers the merge: `m`, and `m` again to confirm.
 Wait+Screen@30s /1 to merge ∙ m merge/
 Sleep 2s
 Type "m"
 Sleep 1.5s
 Type "m"
-Wait+Screen@20s /merged into main/
+Wait+Screen@20s /DONE just now/
 Sleep 2s
-Escape
-Sleep 0.5s
-Type "q"
-Sleep 0.8s
 
-# Merged, so DONE takes it.
-Type "L"
+# Merged, so DONE took it. The board offers to tell the agent: `m` tells it.
+Type "m"
+Wait+Screen@20s /agent notified/
+Sleep 2s
+Type "q"
 Sleep 3s

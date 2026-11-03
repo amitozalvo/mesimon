@@ -155,11 +155,25 @@ def board(repo, tape="demo", start=True):
     if key_file:
         tickets = [(c, t, g, REAL_BUSY if t == BUSY else d) for c, t, g, d in tickets]
     w = Wire(repo)
+    # A new board opens on Setup (T-816); the person on the tape has been
+    # through it, with its answers for one person on one repository.
+    w.ask({"cmd": "apply_setup", "template": "kanban", "noun": "PR",
+           "merge_into": "main", "workspace": "worktree", "agent_tools": "full"})
     ids = {}
     for column, title, tag, description in tickets:
-        made = w.ask({"cmd": "create_ticket", "column": column, "title": title,
+        # Only TODO takes a new ticket (T-764); a card further on is filed
+        # there and moved.
+        made = w.ask({"cmd": "create_ticket", "column": "TODO", "title": title,
                       "workspace": "worktree"})
         ids[title] = made["id"]
+        # An agent may not undo a move made in the last minute
+        # (daemon/src/movegate.rs), and the crown take moves an IN PROGRESS
+        # card back to TODO: that card comes by way of REVIEW, so its last
+        # move is not the one the crown reverses.
+        if column == "IN PROGRESS":
+            w.ask({"cmd": "move_ticket", "id": made["id"], "column": "REVIEW"})
+        if column != "TODO":
+            w.ask({"cmd": "move_ticket", "id": made["id"], "column": column})
         w.ask({"cmd": "write_note", "ticket": made["id"], "note": None,
                "text": description})
         if tag:
@@ -215,7 +229,24 @@ def sign_in(w, repo, key_file, ticket):
     }
     home = os.environ["CLAUDE_CONFIG_DIR"]
     os.makedirs(home, mode=0o700, exist_ok=True)
-    fd = os.open(os.path.join(home, ".claude.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # The daemon probes the claude on PATH for its road as it starts
+    # (daemon/src/modroad.rs), and each run of claude there writes this same
+    # file: wait for the probe's verdict, then put the answers on top of
+    # what the file holds.
+    verdict = os.path.join(os.environ["HOME"], ".local/state/mesimon", proj16(repo),
+                           "mod", "probe.json")
+    deadline = time.time() + 60
+    while not os.path.exists(verdict):
+        if time.time() > deadline:
+            sys.exit("seed: the daemon never finished probing claude's road")
+        time.sleep(0.2)
+    path = os.path.join(home, ".claude.json")
+    try:
+        with open(path) as f:
+            config = {**json.load(f), **config}
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(config, f, indent=2)
     # The key reaches a pane through the shell's answer, which the daemon

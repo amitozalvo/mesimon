@@ -71,8 +71,12 @@ ESCAPE = re.compile(rb"\x1b(\[[0-9;:?<>=]*[@-~]|[^\[])")
 class Pane:
     """The pane as a terminal agent keeps it: output scrolls, and under it a
     prompt line takes what is typed or pasted. Enter submits a non-empty
-    prompt. The rule over the prompt line says what this is, so a recording
-    that steps into the pane never passes the stub off as claude."""
+    prompt. The line over the box says what this is, so a recording that
+    steps into the pane never passes the stub off as claude.
+
+    The box is drawn the way the daemon reads Claude Code's composer
+    (daemon/src/agents/claude/composer.rs): a rule, the `❯ ` row, a rule. A
+    launch's words go only into a composer it has seen (T-570, T-987)."""
 
     RULE = " demo stand-in for claude · scripted, no model "
 
@@ -101,15 +105,17 @@ class Pane:
 
     def prompt(self):
         cols = os.get_terminal_size(1).columns
-        rule = ("──" + self.RULE).ljust(cols, "─")[:cols]
+        label = ("──" + self.RULE).ljust(cols - 1, "─")[: cols - 1]
+        rule = "─" * (cols - 1)
         typed = self.line.decode(errors="replace").replace("\n", " ")
-        return f"\x1b[2m{rule}\x1b[0m\r\n\x1b[1m>\x1b[0m {typed[: cols - 3]}"
+        return (f"\x1b[2m{label}\r\n{rule}\x1b[0m\r\n"
+                f"\x1b[1m❯\x1b[0m {typed[: cols - 3]}\r\n\x1b[2m{rule}\x1b[0m")
 
     def erase(self):
-        """Take the rule and the prompt line off the screen, cursor at the
-        rule's row; they are the last two rows written."""
+        """Take the box off the screen, cursor at its first row; its four
+        rows are the last ones written."""
         if self.drawn:
-            self.write("\r\x1b[1A\x1b[J")
+            self.write("\r\x1b[3A\x1b[J")
 
     def say(self, text=""):
         self.erase()
@@ -347,10 +353,12 @@ def crown(first):
     text("I wear the crown now. Filing what 1.0 is missing.")
     filed = crown_tool(board, "create_ticket", "File: health check endpoint",
                        title="Health check endpoint", column="TODO",
-                       description="GET /healthz answers 200 while the store is reachable.")
+                       description="GET /healthz answers 200 while the store is reachable.",
+                       workspace="worktree")
     notes = crown_tool(board, "create_ticket", "File: 1.0 release notes",
                        title="1.0 release notes", column="TODO",
-                       description="What changed since 0.9, for the release page.")
+                       description="What changed since 0.9, for the release page.",
+                       workspace="worktree")
     stale = keys["Custom slugs"]
     crown_tool(board, "move_ticket", f"Move {stale} back to TODO: nobody is on it",
                key=stale, to_column="TODO", seen=seen(board, stale))
@@ -358,7 +366,7 @@ def crown(first):
                key=notes["key"], name="MILESTONE")
     expire = keys["Expire old links"]
     started = crown_tool(board, "start_agent", f"Start an agent on {expire}",
-                         key=expire, seen=seen(board, expire))
+                         key=expire, seen=seen(board, expire), workspace="worktree")
     left = started["budget_left"]
     text(f"Filed {filed['key']} and {notes['key']}, moved {stale} back to TODO, tagged "
          f"{notes['key']} MILESTONE and started an agent on {expire}: "

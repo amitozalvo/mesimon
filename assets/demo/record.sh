@@ -108,6 +108,9 @@ export MESIMON_CLAUDE_HOME=$HOME/.claude
 # in the words the marker has said since T-903 (an empty one plays it).
 mkdir -p "$HOME/.local/state/mesimon" \
   && echo "skipped board demo" >"$HOME/.local/state/mesimon/welcomed"
+# The merge train (on by default) would land a finished branch before the
+# take's `m` does; the takes show the person merging.
+echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
 if [ -n "$KEY_FILE" ]; then
     # A pane's environment is what `$SHELL -l` exports (the daemon asks it,
     # daemon/src/shellenv.rs), so the sandbox's login profile signs claude

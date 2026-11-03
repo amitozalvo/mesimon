@@ -41007,3 +41007,40 @@ success means compare, and anything else stops the publish with gh's own line, s
 blip or a bad token is read as what it is and never as a new file. Verified read-only against
 the releases repository: `og.png` → empty, `index.html` and a font → their blob ids. The
 publish itself is the author's to run.
+
+## The README's clips recorded again, and the intro's last frame as its logo (T-1122, 2026-11-03, the author: "mesimon changed since then, we should reflect it on the videos. also add the "משימון" logo with the mascot (same as opening animation) on github")
+
+**What changed.** `assets/demo.gif`, `search.gif`, `crown.gif` and `ticket-page.gif` are
+recorded again from beta.15. The demo now ends by telling the agent its branch merged (`m` on
+the merge dialog's offer) instead of `esc`, and its `L` is gone (DONE takes a merged card on its
+own). The README opens with the logo: `assets/logo-dark.svg` (graphite) and `logo-light.svg`
+(chalk) under a `<picture>` that follows GitHub's colour scheme. Each is the intro's last frame
+with no words, one square per pixel, one `<path>` per ink (separate rects left hairline seams
+where a renderer antialiases). `intro::tests::the_readme_logo_is_the_intros_last_frame` fails
+when the intro and the files differ and redraws them under `MESIMON_UPDATE_GOLDEN=1`.
+
+**What the kit met, since T-486 last ran it.** Every one was the board's own change:
+- Only TODO takes a new ticket (T-764): `seed.py` files in TODO and moves. An IN PROGRESS card
+  goes by way of REVIEW, because the crown take moves it back to TODO and an agent may not undo
+  a move made in the last minute (`movegate.rs`).
+- A new board opens on Setup (T-816): `seed.py` sends `apply_setup` with Setup's answers for one
+  person on one repository.
+- A launch's words go only into a composer the daemon has read (T-570, T-987): the stand-in drew
+  `> `, so its prompt was never pasted. It now draws a rule, `❯ `, a rule, with its stand-in line
+  above.
+- The crown's `create_ticket` and `start_agent` require `workspace`.
+- The merge train is on by default and merged the demo's branch before the take's `m`, at a
+  timing the take cannot hold: the sandbox's prefs turn it off. With it off, `m` asks again, so
+  the take presses `m m`.
+- The daemon's road probe runs `claude` in the sandbox's config dir and writes `.claude.json`:
+  `seed.py` waits for `mod/probe.json`, then merges its answers into the file instead of
+  refusing an existing one.
+
+**Not done.** `agent.gif` (the real Claude Code) was not recorded again: the demo Console key in
+`~/.config/mesimon-demo.key` is refused (`Invalid API key` on the card). With a working key,
+`MESIMON_DEMO_KEY_FILE=~/.config/mesimon-demo.key assets/demo/record.sh agent` records it; the
+seeding up to claude taking its prompt was seen to work. mesimon.dev shows `demo.gif` once
+`ci/site.sh` runs at the next release.
+
+**Checked.** Each new GIF looked at frame by frame (contact sheets); `cargo ut`; clippy on
+`mesimon-tui` tests.

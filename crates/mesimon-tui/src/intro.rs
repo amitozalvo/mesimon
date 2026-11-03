@@ -991,4 +991,88 @@ mod tests {
         let p = marker_path().expect("HOME is set under test");
         assert!(p.ends_with(".local/state/mesimon/welcomed"));
     }
+
+    /// The intro's last frame as an SVG in `flavor`'s inks: one square per
+    /// pixel, runs of one ink merged, no background. Half blocks decode back
+    /// to the canvas's pixels (`creature::pixel_cell` in reverse); the words
+    /// and sparkles are not pixels and stay out.
+    fn logo_svg(flavor: Flavor) -> String {
+        let mut last = *storyboard().last().expect("beats");
+        last.tail = 0;
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let ink = theme.creature_ink(false).expect("truecolor draws the shin");
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        render(&mut buf, area, &last, &theme, &ink);
+        let hex = |c: Color| match c {
+            Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            Color::Reset => None,
+            other => panic!("the intro draws in truecolor, not {other:?}"),
+        };
+        let mut px: Vec<(i32, i32, String)> = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                let (top, bottom) = match cell.symbol() {
+                    "█" => (hex(cell.fg), hex(cell.fg)),
+                    "▀" => (hex(cell.fg), hex(cell.bg)),
+                    "▄" => (hex(cell.bg), hex(cell.fg)),
+                    _ => continue,
+                };
+                let (x, y) = (i32::from(x), i32::from(y) * 2);
+                px.extend(top.map(|c| (x, y, c)));
+                px.extend(bottom.map(|c| (x, y + 1, c)));
+            }
+        }
+        let x0 = px.iter().map(|p| p.0).min().expect("pixels");
+        let y0 = px.iter().map(|p| p.1).min().expect("pixels");
+        let w = px.iter().map(|p| p.0).max().expect("pixels") - x0 + 1;
+        let h = px.iter().map(|p| p.1).max().expect("pixels") - y0 + 1;
+        px.sort_by_key(|a| (a.1, a.0));
+        // One path per ink, a run of pixels per subpath: separate shapes
+        // side by side leave hairline seams where a renderer antialiases.
+        let mut inks: std::collections::BTreeMap<String, String> = Default::default();
+        let mut i = 0;
+        while i < px.len() {
+            let (x, y, ref c) = px[i];
+            let mut run = 1;
+            while i + run < px.len() && px[i + run] == (x + run as i32, y, c.clone()) {
+                run += 1;
+            }
+            inks.entry(c.clone()).or_default().push_str(&format!(
+                "M{} {}h{run}v1h-{run}z",
+                x - x0,
+                y - y0
+            ));
+            i += run;
+        }
+        let paths: String =
+            inks.iter().map(|(c, d)| format!("<path fill=\"{c}\" d=\"{d}\"/>\n")).collect();
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{}\" \
+             height=\"{}\" shape-rendering=\"crispEdges\" role=\"img\" \
+             aria-label=\"משימון, its ש the shin\">\n{paths}</svg>\n",
+            w * 8,
+            h * 8
+        )
+    }
+
+    /// The README's logo is the intro's last frame, in graphite for a dark
+    /// page and chalk for a light one; a change to the shin or the word
+    /// fails here until the logo is drawn again.
+    #[test]
+    fn the_readme_logo_is_the_intros_last_frame() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        for (name, flavor) in
+            [("logo-dark.svg", Flavor::Graphite), ("logo-light.svg", Flavor::Chalk)]
+        {
+            let (path, got) = (assets.join(name), logo_svg(flavor));
+            if std::env::var_os("MESIMON_UPDATE_GOLDEN").is_some() {
+                std::fs::write(&path, &got).expect("write logo");
+                continue;
+            }
+            let want = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(want == got, "{} drifted; review + MESIMON_UPDATE_GOLDEN=1", path.display());
+        }
+    }
 }
