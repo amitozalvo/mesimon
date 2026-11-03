@@ -1,6 +1,6 @@
 ╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                      │
-│   How you work   Merging   Ready                                                                                     │
+│   How you work   Ready                                                                                               │
 │                                                                                                                      │
 │  How do you usually work?                                                                                            │
 │                                                                                                                      │

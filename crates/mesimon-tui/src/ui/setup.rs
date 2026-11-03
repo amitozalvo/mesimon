@@ -51,7 +51,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         truncate(&setup.question(), w),
         theme.base().add_modifier(Modifier::BOLD),
     )));
-    if let Some((words, _)) = setup.status() {
+    if let Some(words) = setup.status() {
         lines.push(Line::from(Span::styled(truncate(&words, w), theme.dim2())));
     }
     lines.push(Line::default());
@@ -69,11 +69,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             Span::styled(mark, Style::default().fg(ramp.dim2)),
             Span::styled(label.clone(), label_style),
         ];
-        let mut used = 2 + label.width();
-        if o.recommended && used + RECOMMENDED.len() <= w {
-            spans.push(Span::styled(RECOMMENDED, Style::default().fg(ramp.dim1)));
-            used += RECOMMENDED.len();
-        }
+        let used = 2 + label.width();
         let room = w.saturating_sub(used + 2);
         if !o.detail.is_empty() && room > 8 {
             spans.push(Span::raw("  "));
@@ -107,9 +103,6 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         super::tour::lay_board(f, app, &setup.canvas, &setup.sandbox, board, false, 1);
     }
 }
-
-/// Beside the answer a question's default is.
-const RECOMMENDED: &str = " (recommended)";
 
 /// The steps across the top: the one on screen lit, a tick on each
 /// answered, a dash on each left on its default.

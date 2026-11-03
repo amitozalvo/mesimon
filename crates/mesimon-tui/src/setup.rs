@@ -1,6 +1,9 @@
-//! Setup (T-816): the first time a board opens, a few questions in a
-//! person's words, one page each, with the practice board under them
-//! showing what the answer does.
+//! Setup (T-816): the first time a board opens, one question in a
+//! person's words, how they work, with the practice board under it showing
+//! what the answer does. Everything else takes its recommended setting
+//! (T-1123): mesimon merges for you, an agent brings a behind pull request
+//! up to date, the pull request board runs to merged, and every ticket gets
+//! its own worktree.
 //!
 //! The practice board is the tour's (`tour::toy`): the real board drawn on
 //! a toy daemon that keeps its world in memory. Each page lays it out from
@@ -19,7 +22,7 @@ use std::sync::mpsc;
 
 use anyhow::Result;
 use mesimon_core::board::{
-    MergeInto, SessionKind, SessionRecord, SessionState, StopReason, Template, WorkspaceStrategy,
+    MergeInto, SessionKind, SessionRecord, SessionState, StopReason, Template,
 };
 use mesimon_core::command::PrItem;
 use mesimon_core::forge::Forge;
@@ -35,14 +38,6 @@ use crate::tour::toy::{Shared, Toy, World};
 pub(crate) enum Ask {
     /// On your own, with pull requests, or not sure (on your own).
     Work,
-    /// On your own: does the train merge into main.
-    Merge,
-    /// With pull requests: does the agent bring a behind PR up to date.
-    Fix,
-    /// With pull requests: which columns follow one.
-    Board,
-    /// A folder of several repositories: a worktree per ticket.
-    Projects,
 }
 
 /// One answer on a page: the word the code reads, and the words it shows.
@@ -50,8 +45,6 @@ pub(crate) struct Opt {
     pub key: &'static str,
     pub label: String,
     pub detail: String,
-    /// Marked `(recommended)` beside the label.
-    pub recommended: bool,
 }
 
 /// What the folder is, learned as Setup opens.
@@ -60,10 +53,6 @@ pub(crate) struct Facts {
     /// The forge `origin` is on, and whether its CLI is signed in there;
     /// `None` until the probe answers, or where there is no such remote.
     pub forge: Option<(Forge, bool)>,
-    /// The probe answered.
-    pub probed: bool,
-    /// The folder's own repositories, where it is a workspace of them.
-    pub repos: usize,
 }
 
 impl Facts {
@@ -78,9 +67,6 @@ pub(crate) struct Outcome {
     pub template: Template,
     pub noun: &'static str,
     pub merge_into: MergeInto,
-    pub workspace: WorkspaceStrategy,
-    /// This board's auto merge, where the answer turned it off.
-    pub auto_merge_off: bool,
     /// Open the guided tour after.
     pub tour: bool,
 }
@@ -103,8 +89,6 @@ pub(crate) struct Setup {
 }
 
 const LOGIN: &str = "Fix the login redirect";
-const DARK: &str = "Dark mode toggle";
-const AVATARS: &str = "Cache the avatar images";
 
 impl Setup {
     /// Setup over the board at `repo`; `probe` asks the forge off this
@@ -113,7 +97,6 @@ impl Setup {
         theme: &Theme,
         prefs: crate::prefs::Prefs,
         repo: PathBuf,
-        repos: usize,
         probe: bool,
     ) -> Result<Self> {
         let world = Rc::new(RefCell::new(World::new()));
@@ -134,7 +117,7 @@ impl Setup {
             cursor: 0,
             chosen: HashMap::new(),
             skipped: HashSet::new(),
-            facts: Facts { repos, probed: probe.is_none(), ..Default::default() },
+            facts: Facts::default(),
             probe,
             sandbox,
             world,
@@ -146,18 +129,9 @@ impl Setup {
         Ok(s)
     }
 
-    /// The pages, in order, as the answers so far shape them.
+    /// The pages, in order: how you work, then the last page.
     pub fn asks(&self) -> Vec<Ask> {
-        let mut out = vec![Ask::Work];
-        if self.team() {
-            out.extend([Ask::Fix, Ask::Board]);
-        } else {
-            out.push(Ask::Merge);
-        }
-        if self.facts.repos >= 2 {
-            out.push(Ask::Projects);
-        }
-        out
+        vec![Ask::Work]
     }
 
     /// The page's question, `None` on the last page.
@@ -170,10 +144,10 @@ impl Setup {
     }
 
     /// The forge's own words for a pull request and its site.
-    fn words(&self) -> (&'static str, &'static str, &'static str, &'static str) {
+    fn words(&self) -> (&'static str, &'static str, &'static str) {
         match self.facts.forge() {
-            Forge::GitHub => ("pull request", "PR", "GitHub", "gh"),
-            Forge::GitLab => ("merge request", "MR", "GitLab", "glab"),
+            Forge::GitHub => ("pull request", "PR", "GitHub"),
+            Forge::GitLab => ("merge request", "MR", "GitLab"),
         }
     }
 
@@ -181,68 +155,36 @@ impl Setup {
     pub fn rail(&self, ask: Ask) -> String {
         match ask {
             Ask::Work => "How you work".into(),
-            Ask::Merge => "Merging".into(),
-            Ask::Fix => format!("{}s", self.words().1),
-            Ask::Board => "Board".into(),
-            Ask::Projects => "Projects".into(),
         }
     }
 
     pub fn question(&self) -> String {
-        let (noun, ..) = self.words();
         match self.ask() {
             None => "Your board is ready".into(),
             Some(Ask::Work) => "How do you usually work?".into(),
-            Some(Ask::Merge) => {
-                "When an agent's work is ready, should mesimon merge it into main?".into()
-            }
-            Some(Ask::Fix) => {
-                format!("If a {noun} falls behind main, should its agent bring it up to date?")
-            }
-            Some(Ask::Board) => "Pick your board".into(),
-            Some(Ask::Projects) => {
-                format!(
-                    "This folder has {} projects. Give each ticket its own copy?",
-                    self.facts.repos
-                )
-            }
         }
     }
 
-    /// The line under the question, where the page has a fact to state.
-    pub fn status(&self) -> Option<(String, bool)> {
-        if self.ask() != Some(Ask::Fix) {
+    /// The line under the last page's question: what the board does
+    /// without being asked.
+    pub fn status(&self) -> Option<String> {
+        if !self.ready() {
             return None;
         }
-        let (_, _, site, cli) = self.words();
-        Some(match self.facts.forge {
-            _ if !self.facts.probed => (format!("looking for {site}…"), true),
-            None => ("no GitHub or GitLab remote here yet".into(), false),
-            Some((_, true)) => (format!("{site} ✓ signed in with {cli}"), true),
-            Some((_, false)) => (format!("{site} isn't signed in ∙ run {cli} auth login"), false),
-        })
+        let fix = if self.team() {
+            format!("agents keep their {}s up to date", self.words().1)
+        } else {
+            "merged into main for you".to_string()
+        };
+        Some(format!("{fix} ∙ each ticket in its own copy"))
     }
 
     pub fn options(&self) -> Vec<Opt> {
-        let (_, short, site, _) = self.words();
-        let nouns = format!("{}s", self.words().0);
+        let (noun, _, site) = self.words();
         let o = |key, label: &str, detail: &str| Opt {
             key,
             label: label.to_string(),
             detail: detail.to_string(),
-            recommended: false,
-        };
-        let best =
-            |key, label: &str, detail: &str| Opt { recommended: true, ..o(key, label, detail) };
-        let board = |t: Template, recommended: bool| -> Opt {
-            let names: Vec<String> =
-                t.columns(short).into_iter().map(|(n, _)| say_column(&n, short)).collect();
-            Opt {
-                key: template_key(t),
-                label: names.join(" → "),
-                detail: String::new(),
-                recommended,
-            }
         };
         match self.ask() {
             None => {
@@ -250,26 +192,8 @@ impl Setup {
             }
             Some(Ask::Work) => vec![
                 o("alone", "On my own", "finished work goes straight into main"),
-                Opt {
-                    key: "team",
-                    label: format!("With {nouns}"),
-                    detail: format!("work goes to {site} for review first"),
-                    recommended: false,
-                },
+                o("team", &format!("With {noun}s"), &format!("work goes to {site} for review first")),
                 o("unsure", "I'm not sure", "start simple: straight into main, no reviews"),
-            ],
-            Some(Ask::Merge) => vec![
-                best("yes", "Yes, once it reaches Review", ""),
-                o("no", "No, I'll press m on the card", ""),
-            ],
-            Some(Ask::Fix) => vec![best("yes", "Yes", ""), o("no", "No, I'll do it myself", "")],
-            Some(Ask::Board) => vec![
-                board(Template::PullRequests, true),
-                board(Template::PullRequestsProduction, false),
-            ],
-            Some(Ask::Projects) => vec![
-                best("own", "Yes", "agents never get in each other's way"),
-                o("shared", "No", "tickets take turns in one copy"),
             ],
         }
     }
@@ -297,9 +221,6 @@ impl Setup {
         }
         match ask {
             Ask::Work => "alone",
-            Ask::Merge | Ask::Fix => "yes",
-            Ask::Board => "prs",
-            Ask::Projects => "own",
         }
     }
 
@@ -314,31 +235,21 @@ impl Setup {
     }
 
     /// The board's columns: a plain board on your own, the pull request
-    /// board otherwise, as the Board page has it.
+    /// board (to merged) otherwise.
     fn template(&self) -> Template {
-        if !self.team() {
-            return Template::Kanban;
-        }
-        match self.pick(Ask::Board) {
-            "prod" => Template::PullRequestsProduction,
-            _ => Template::PullRequests,
+        if self.team() {
+            Template::PullRequests
+        } else {
+            Template::Kanban
         }
     }
 
     /// The answers, as the daemon and the TUI take them.
     pub fn outcome(&self) -> Outcome {
-        let team = self.team();
-        let off = if team { self.pick(Ask::Fix) == "no" } else { self.pick(Ask::Merge) == "no" };
         Outcome {
             template: self.template(),
             noun: self.words().1,
-            merge_into: if team { MergeInto::PullRequests } else { MergeInto::Main },
-            workspace: if self.facts.repos >= 2 && self.pick(Ask::Projects) == "shared" {
-                WorkspaceStrategy::SharedCheckout
-            } else {
-                WorkspaceStrategy::Worktree
-            },
-            auto_merge_off: off,
+            merge_into: if self.team() { MergeInto::PullRequests } else { MergeInto::Main },
             tour: self.ready() && self.cursor == 1,
         }
     }
@@ -403,7 +314,6 @@ impl Setup {
         if let Some(rx) = &self.probe {
             if let Ok(answer) = rx.try_recv() {
                 self.facts.forge = answer;
-                self.facts.probed = true;
                 self.probe = None;
                 self.stage()?;
                 dirty = true;
@@ -443,7 +353,7 @@ impl Setup {
     /// card or two the question is about, where the answer under the
     /// cursor puts them, their agents saying what they would say there.
     fn lay(&self, w: &mut World) {
-        let (_, short, site, _) = self.words();
+        let (_, short, site) = self.words();
         let f = self.facts.forge();
         let _ = w.board.apply_template(self.template(), short);
         w.board.merge_into = if self.team() { MergeInto::PullRequests } else { MergeInto::Main };
@@ -458,73 +368,6 @@ impl Setup {
                 let a = w.ticket(&nth(w, 1), LOGIN);
                 w.worktree(a, 1);
                 agent(w, a, SessionState::Running, "Fixing it in my own copy of the code.");
-            }
-            Some(Ask::Merge) => {
-                if self.pick(Ask::Merge) == "yes" {
-                    let a = w.ticket(&nth(w, 3), LOGIN);
-                    w.worktree(a, 2);
-                    w.merged(a);
-                    agent(w, a, idle(), "Done, tests pass. It's in main now.");
-                } else {
-                    let a = w.ticket(&nth(w, 2), LOGIN);
-                    w.worktree(a, 2);
-                    agent(w, a, idle(), "Done, tests pass. Over to you.");
-                }
-            }
-            Some(Ask::Fix) => {
-                let d = w.ticket(&nth(w, 3), DARK);
-                w.worktree(d, 1);
-                w.merged(d);
-                let a = w.ticket(&nth(w, 2), LOGIN);
-                w.worktree(a, 2);
-                let mut mine = pr_of(f, a, 412, "open", "passed");
-                mine.conflict = true;
-                w.prs = vec![pr_of(f, d, 411, "merged", "passed"), mine];
-                for wt in w.worktrees.iter_mut().filter(|t| t.ticket == a) {
-                    wt.conflict = true;
-                    wt.needs_rebase = true;
-                }
-                if self.pick(Ask::Fix) == "yes" {
-                    let says = format!("main moved on; updating {short} #412.");
-                    agent(w, a, SessionState::Running, &says);
-                } else {
-                    let says = format!("{short} #412 conflicts with main now.");
-                    agent(w, a, idle(), &says);
-                }
-            }
-            Some(Ask::Board) => {
-                if self.template() == Template::PullRequestsProduction {
-                    let c = w.ticket(&nth(w, 4), AVATARS);
-                    let mut p = pr_of(f, c, 410, "merged", "passed");
-                    p.deployed = vec!["production".into()];
-                    w.prs.push(p);
-                }
-                let d = w.ticket(&nth(w, 3), DARK);
-                w.prs.push(pr_of(f, d, 411, "merged", "passed"));
-                let a = w.ticket(&nth(w, 2), LOGIN);
-                w.worktree(a, 2);
-                w.prs.push(pr_of(f, a, 412, "open", "passed"));
-                agent(w, a, idle(), &format!("{short} #412 is open; checks pass."));
-            }
-            Some(Ask::Projects) => {
-                let col = nth(w, 1);
-                let a = w.ticket(&col, LOGIN);
-                if self.pick(Ask::Projects) == "own" {
-                    let c = w.ticket(&col, AVATARS);
-                    for id in [a, c] {
-                        w.worktree(id, 1);
-                    }
-                    agent(w, a, SessionState::Running, "Working in my own copy.");
-                    agent(w, c, SessionState::Running, "In my own copy too.");
-                } else {
-                    let c = w.ticket(&nth(w, 0), AVATARS);
-                    for id in [a, c] {
-                        if let Some(t) = w.board.ticket_mut(id) {
-                            t.workspace = Some(WorkspaceStrategy::SharedCheckout);
-                        }
-                    }
-                    agent(w, a, SessionState::Running, "Working in the folder itself.");
-                }
             }
             None => {
                 w.ticket(&nth(w, 0), LOGIN);
@@ -569,28 +412,6 @@ fn pr_of(forge: Forge, ticket: ulid::Ulid, number: u64, state: &str, pipeline: &
     }
 }
 
-/// A column's name in a sentence: `To do`, `In progress`, `PR open`.
-fn say_column(name: &str, noun: &str) -> String {
-    if name == "TODO" {
-        return "To do".into();
-    }
-    let words: Vec<String> =
-        name.split(' ').map(|w| if w == noun { w.to_string() } else { w.to_lowercase() }).collect();
-    let mut out = words.join(" ");
-    if let Some(first) = out.get(0..1).map(str::to_uppercase) {
-        out.replace_range(0..1, &first);
-    }
-    out
-}
-
-fn template_key(t: Template) -> &'static str {
-    match t {
-        Template::Kanban => "kanban",
-        Template::PullRequests => "prs",
-        Template::PullRequestsProduction => "prod",
-    }
-}
-
 fn idle() -> SessionState {
     SessionState::Idle { stop_reason: StopReason::EndTurn }
 }
@@ -606,14 +427,13 @@ mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
 
-    fn setup(repos: usize) -> Setup {
+    fn setup() -> Setup {
         Setup::new(
             &Theme::new(Flavor::Graphite, Profile::TrueColor)
                 .with_underline_colors(true)
                 .with_block_gaps(false),
             Default::default(),
             "/practice".into(),
-            repos,
             false,
         )
         .expect("setup")
@@ -624,29 +444,27 @@ mod tests {
     /// something, and nothing reaches past the practice board.
     #[test]
     fn every_page_holds_still_and_speaks() {
-        for repos in [0, 6] {
-            for forge in [Forge::GitHub, Forge::GitLab] {
-                for work in [0, 1, 2] {
-                    let mut s = setup(repos);
-                    s.facts.forge = Some((forge, true));
-                    s.cursor = work;
-                    s.next().expect("next");
-                    for at in 0..=s.asks().len() {
-                        s.go(at).expect("go");
-                        for cursor in 0..s.options().len() {
-                            s.cursor = cursor;
-                            s.stage().expect("stage");
-                            let w = s.world.borrow();
-                            let here = format!("{:?} {cursor}", s.ask());
-                            assert!(w.refused.is_empty(), "{here}: {:?}", w.refused);
-                            assert!(
-                                w.board.tickets.iter().all(|t| t.previous_column.is_none()),
-                                "{here}: a card arrived from somewhere"
-                            );
-                            for r in &w.board.sessions {
-                                let said = r.transcript_path.as_ref().and_then(|p| w.peeks.get(p));
-                                assert!(said.is_some(), "{here}: an agent with nothing to say");
-                            }
+        for forge in [Forge::GitHub, Forge::GitLab] {
+            for work in [0, 1, 2] {
+                let mut s = setup();
+                s.facts.forge = Some((forge, true));
+                s.cursor = work;
+                s.next().expect("next");
+                for at in 0..=s.asks().len() {
+                    s.go(at).expect("go");
+                    for cursor in 0..s.options().len() {
+                        s.cursor = cursor;
+                        s.stage().expect("stage");
+                        let w = s.world.borrow();
+                        let here = format!("{:?} {cursor}", s.ask());
+                        assert!(w.refused.is_empty(), "{here}: {:?}", w.refused);
+                        assert!(
+                            w.board.tickets.iter().all(|t| t.previous_column.is_none()),
+                            "{here}: a card arrived from somewhere"
+                        );
+                        for r in &w.board.sessions {
+                            let said = r.transcript_path.as_ref().and_then(|p| w.peeks.get(p));
+                            assert!(said.is_some(), "{here}: an agent with nothing to say");
                         }
                     }
                 }
@@ -654,69 +472,36 @@ mod tests {
         }
     }
 
-    /// The pages follow the first answer: on your own (or not sure) asks
-    /// about merging, pull requests about falling behind and their board,
-    /// and a folder of projects asks about them.
+    /// How you work is the only question (T-1123): whatever the answer,
+    /// the next page is the last, and nothing on it is a question.
     #[test]
-    fn the_pages_follow_how_you_work() {
-        let mut s = setup(0);
-        assert_eq!(s.asks(), [Ask::Work, Ask::Merge]);
-        s.cursor_step(true).expect("down");
-        assert_eq!(s.asks(), [Ask::Work, Ask::Fix, Ask::Board]);
-        s.cursor_step(true).expect("down");
-        assert_eq!(s.options()[s.cursor].key, "unsure");
-        assert_eq!(s.asks(), [Ask::Work, Ask::Merge], "not sure is on your own");
-        s.cursor_step(false).expect("up");
-        s.next().expect("next");
-        s.next().expect("next");
-        assert_eq!(s.ask(), Some(Ask::Board));
-        let opts = s.options();
-        assert_eq!(opts.len(), 2, "only the pull request boards");
-        assert!(opts[0].recommended && !opts[1].recommended);
-        assert_eq!(opts[0].label, "To do → In progress → PR open → Merged");
-        s.facts.forge = Some((Forge::GitLab, true));
-        assert_eq!(s.options()[0].label, "To do → In progress → MR open → Merged");
-        assert_eq!(setup(6).asks()[2], Ask::Projects);
-    }
-
-    /// Each question's recommended answer is its default, and marked.
-    #[test]
-    fn the_default_is_the_recommended_answer() {
-        let mut s = setup(6);
-        s.cursor = 1;
-        s.next().expect("team");
-        for _ in 0..3 {
-            let opts = s.options();
-            assert!(opts[0].recommended, "{:?}", s.ask());
-            assert_eq!(opts.iter().filter(|o| o.recommended).count(), 1, "{:?}", s.ask());
+    fn how_you_work_is_the_only_question() {
+        for work in [0, 1, 2] {
+            let mut s = setup();
+            s.cursor = work;
+            assert_eq!(s.asks(), [Ask::Work]);
             s.next().expect("next");
+            assert!(s.ready(), "answer {work}");
         }
-        assert!(s.ready());
-        assert!(s.options().iter().all(|o| !o.recommended), "the last page recommends nothing");
-        let mut s = setup(0);
-        assert!(s.options().iter().all(|o| !o.recommended), "how you work is the person's");
-        s.next().expect("alone");
-        assert!(s.options()[0].recommended, "merging for you");
+        let mut s = setup();
+        s.facts.forge = Some((Forge::GitLab, true));
+        assert_eq!(s.options()[1].label, "With merge requests");
     }
 
-    /// What `s` on every page applies: a plain board, worktrees, auto
-    /// merge kept.
+    /// What `s` applies: a plain board straight into main, worktrees and
+    /// auto merge as the board starts.
     #[test]
-    fn skipping_everything_is_the_defaults() {
-        let mut s = setup(0);
-        while !s.ready() {
-            s.skip().expect("skip");
-        }
+    fn skipping_is_the_defaults() {
+        let mut s = setup();
+        s.skip().expect("skip");
         assert!(s.ready());
-        assert!(s.skipped(Ask::Work) && s.skipped(Ask::Merge));
+        assert!(s.skipped(Ask::Work));
         assert_eq!(
             s.outcome(),
             Outcome {
                 template: Template::Kanban,
                 noun: "PR",
                 merge_into: MergeInto::Main,
-                workspace: WorkspaceStrategy::Worktree,
-                auto_merge_off: false,
                 tour: false,
             }
         );
@@ -725,43 +510,34 @@ mod tests {
     /// Not sure is on your own: straight into main, no pull requests.
     #[test]
     fn not_sure_goes_straight_into_main() {
-        let mut s = setup(0);
+        let mut s = setup();
         s.cursor = 2;
         s.next().expect("unsure");
-        assert_eq!(s.ask(), Some(Ask::Merge));
-        s.skip().expect("skip");
         assert!(s.ready());
         let o = s.outcome();
         assert_eq!((o.template, o.merge_into), (Template::Kanban, MergeInto::Main));
-        assert!(!o.auto_merge_off);
     }
 
-    /// Each answer lands where the daemon and the TUI read it.
+    /// Pull requests get the recommended pull request board, to merged,
+    /// and the last page says what the board does without being asked.
     #[test]
     fn the_answers_become_the_outcome() {
-        let mut s = setup(6);
+        let mut s = setup();
         s.facts.forge = Some((Forge::GitLab, false));
         s.cursor_step(true).expect("team");
         s.next().expect("work");
-        s.cursor_step(true).expect("no fix");
-        s.next().expect("fix");
-        s.cursor_step(true).expect("production");
-        s.next().expect("board");
-        s.cursor_step(true).expect("shared");
-        s.next().expect("projects");
         assert!(s.ready());
+        assert!(s.status().is_some_and(|l| l.contains("MRs up to date")), "{:?}", s.status());
         s.cursor_step(true).expect("tour");
         let o = s.outcome();
-        assert_eq!(o.template, Template::PullRequestsProduction);
+        assert_eq!(o.template, Template::PullRequests);
         assert_eq!(o.noun, "MR");
         assert_eq!(o.merge_into, MergeInto::PullRequests);
-        assert_eq!(o.workspace, WorkspaceStrategy::SharedCheckout);
-        assert!(o.auto_merge_off && o.tour);
-        // Back keeps every answer.
+        assert!(o.tour);
+        // Back keeps the answer.
         s.back().expect("back");
-        assert_eq!(s.ask(), Some(Ask::Projects));
-        s.back().expect("back");
-        assert_eq!(s.options()[s.cursor].key, "prod");
+        assert_eq!(s.options()[s.cursor].key, "team");
+        assert!(s.status().is_none(), "only the last page states it");
     }
 
     /// `MESIMON_SETUP_DUMP=<page>[,<cursor>[,team]] cargo test -p mesimon-tui
@@ -773,7 +549,7 @@ mod tests {
         let at: usize = parts[0].parse().expect("a page number");
         let cursor: usize = parts.get(1).and_then(|c| c.parse().ok()).unwrap_or(0);
         let team = parts.get(2) == Some(&"team");
-        let mut s = setup(0);
+        let mut s = setup();
         s.facts.forge = Some((Forge::GitHub, true));
         s.cursor = usize::from(team);
         s.next().expect("next");

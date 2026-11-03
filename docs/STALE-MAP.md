@@ -40901,3 +40901,29 @@ never shrinks across the images; the bar's run moves and is all `calm` once read
 shows only the ground and is not seen; a seen scene shows every row ticked before it ends; the
 failure's words; the slow count; the title names both versions only across a change; mono is
 ASCII over no board; the veil lifts in two steps and is the board itself once lifted.
+
+## Setup asks only how you work (T-1123, 2026-11-03, the author: "keep only \"how do you usually work\" in onboarding screen ∙ the rest should be recommended")
+
+**One question.** `Setup::asks` is `[Ask::Work]`, then the last page. The Merge, Fix, Board and
+Projects pages are gone with their practice scenes (`Setup::lay`), and so are what only they
+used: `Opt::recommended` and the `(recommended)` mark (how you work never recommended an
+answer), `Facts::repos` / `Facts::probed`, `Setup::new`'s `repos`, `tick_setup`'s repository
+refresh, `say_column`, `template_key`, and the forge sign-in line (`status()` was the Fix page's).
+The forge probe stays: it still names pull or merge requests, GitHub or GitLab, and the noun.
+
+**The rest is the recommended answer each page had.** On your own: Kanban, merge into main,
+auto merge as the board starts (on). With pull requests: `Template::PullRequests` (to merged),
+auto merge on. Every folder: `WorkspaceStrategy::Worktree`, sent by `finish_setup` directly
+(`Outcome` lost `workspace` and `auto_merge_off`; the wire's `ApplySetup` is unchanged). The
+last page now says what the board does unasked, one line under "Your board is ready"
+(`Setup::status`): "merged into main for you" or "agents keep their PRs up to date", and "each
+ticket in its own copy". Settings changes each of it, as before.
+
+Tests: `setup::how_you_work_is_the_only_question`, `skipping_is_the_defaults`,
+`the_answers_become_the_outcome` (status line, PR board, back keeps the answer);
+`the_pages_follow_how_you_work` and `the_default_is_the_recommended_answer` removed with the
+pages; `app::setup_applies_its_answers_in_one_command` (one Enter, `workspace: Worktree`, auto
+merge untouched), `setup_q_and_esc_leave_with_nothing_applied` (Esc on the last page). Goldens
+`setup_fix_120x30`, `setup_board_120x30`, `setup_merge_120x30` removed; `setup_ready_prs_120x30`
+new; `setup_work_120x30` and `setup_ready_80x24` reminted (two steps across the top; the narrow
+one now presses `s` alone). No rig test: nothing an agent is told changed.

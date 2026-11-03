@@ -1,21 +1,20 @@
 ╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────────────────────────────────────────────╮
 │                                                                                                                      │
-│   How you work ✓   Merging   Ready                                                                                   │
+│   How you work ✓   Ready                                                                                             │
 │                                                                                                                      │
-│  When an agent's work is ready, should mesimon merge it into main?                                                   │
+│  Your board is ready                                                                                                 │
+│  agents keep their PRs up to date ∙ each ticket in its own copy                                                      │
 │                                                                                                                      │
-│    Yes, once it reaches Review (recommended)                                                                         │
-│  › No, I'll press m on the card                                                                                      │
+│  › Open the board                                                                                                    │
+│    Take the guided tour first                                                                                        │
 │                                                                                                                      │
 │  ╭─ preview ──────────────────────────────────────────────────────────────────────────────────────────────────────╮  │
-│  │ BOARD   mesimon › practice   1 ticket                                                                          │  │
+│  │ BOARD   mesimon › practice   1 ticket ∙ pull requests                                                          │  │
 │  │                                                                                                                │  │
-│  │   TODO                 0 →    IN PROGRESS          0 →    REVIEW               1 →    DONE                0 →  │  │
+│  │   TODO                 1 →    IN PROGRESS          0 →    PR OPEN              0 →    MERGED              0 →  │  │
 │  │                                                                                                                │  │
-│  │   o  new ticket                                           ✓ Fix the login ~ ⎇↑ now                             │  │
-│  │                                                             Done, tests pass. Over                             │  │
-│  │                                                             to you.                                            │  │
-│  │                                                                                T-1                             │  │
+│  │   Fix the login redir~ now                                                                                     │  │
+│  │                        T-1                                                                                     │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
@@ -26,5 +25,6 @@
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
 │  │                                                                                                                │  │
+│  │ T-1 Fix the login redirect ∙ created just now                                                                  │  │
 │  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  │
-╰──────────────────────────────────────────────────────────── jk choose ∙ enter next ∙ s skip ∙ h back ∙ q quit setup ─╯
+╰───────────────────────────────────────────────────────────────────── jk choose ∙ enter done ∙ h back ∙ q quit setup ─╯

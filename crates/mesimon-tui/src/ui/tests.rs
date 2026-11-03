@@ -13397,28 +13397,16 @@ fn golden_setup_first_page() {
     golden("setup_work_120x30", &render(&setting_up(""), 120, 30));
 }
 
+/// With pull requests, the next page is the last (T-1123): the rest is
+/// the recommended setting, said in one line under the question.
 #[test]
 fn golden_setup_pull_requests() {
-    golden("setup_fix_120x30", &render(&setting_up("j\n"), 120, 30));
-}
-
-/// The pull request board's page: only the boards that follow one, the
-/// first recommended (T-850).
-#[test]
-fn golden_setup_board() {
-    golden("setup_board_120x30", &render(&setting_up("j\n\n"), 120, 30));
-}
-
-/// The merging page on your own: the card waits in Review, its agent
-/// saying so, and nothing moves (T-850).
-#[test]
-fn golden_setup_merging() {
-    golden("setup_merge_120x30", &render(&setting_up("\nj"), 120, 30));
+    golden("setup_ready_prs_120x30", &render(&setting_up("j\n"), 120, 30));
 }
 
 #[test]
 fn golden_setup_ready_narrow() {
-    golden("setup_ready_80x24", &render(&setting_up("s\n"), 80, 24));
+    golden("setup_ready_80x24", &render(&setting_up("s"), 80, 24));
 }
 
 // ---- the guided tour (T-763) ----------------------------------------------

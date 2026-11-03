@@ -2596,12 +2596,10 @@ impl App {
         {
             return;
         }
-        let repos = self.git.repos.len();
         match crate::setup::Setup::new(
             &self.theme,
             self.prefs.clone(),
             self.repo_root.clone(),
-            repos,
             self.setup_probes,
         ) {
             Ok(s) => {
@@ -2612,19 +2610,10 @@ impl App {
         }
     }
 
-    /// Setup's clock: its practice board, the forge probe, and the
-    /// folder's repositories as the git sample learns them.
+    /// Setup's clock: its practice board and the forge probe.
     fn tick_setup(&mut self) -> Result<bool> {
-        let repos = self.git.repos.len();
         let Some(s) = self.setup.as_mut() else { return Ok(false) };
-        let mut dirty = false;
-        if s.facts.repos != repos {
-            s.facts.repos = repos;
-            let at = s.at;
-            s.go(at)?;
-            dirty = true;
-        }
-        Ok(s.tick()? || dirty)
+        s.tick()
     }
 
     /// Setup's last page left (T-816): the answers to the daemon in one
@@ -2639,7 +2628,9 @@ impl App {
             template: o.template,
             noun: o.noun.into(),
             merge_into: o.merge_into,
-            workspace: o.workspace,
+            // Every ticket in its own worktree (T-1123): the recommended
+            // answer, no longer asked.
+            workspace: mesimon_core::board::WorkspaceStrategy::Worktree,
             // Every tool, always (T-850): a board with fewer is a choice
             // for Settings, not a question for someone who has not yet
             // seen an agent work.
@@ -2648,10 +2639,6 @@ impl App {
         if let Response::Err { message } = sent {
             self.status = message;
             return Ok(());
-        }
-        if o.auto_merge_off {
-            self.set_board_pref("auto merge off", |b| b.set_bool(PrefKey::MergeTrain, false));
-            self.push_automation();
         }
         self.refresh_soon()?;
         self.status = "board set up ∙ Esc › Settings changes any of it".into();
@@ -17164,7 +17151,6 @@ mod tests {
                 .with_block_gaps(true),
             Default::default(),
             "/practice".into(),
-            1,
             false,
         )
         .expect("setup");
@@ -29519,9 +29505,9 @@ mod tests {
     }
 
     /// Setup (T-816): opened once, armed, over a board that waits for it;
-    /// every answer reaches the daemon in one command, auto merge is this
-    /// board's own off, and a snapshot that still says pending does not
-    /// open it again.
+    /// the answer reaches the daemon in one command with the recommended
+    /// rest (T-1123: worktrees, auto merge left as the board starts), and a
+    /// snapshot that still says pending does not open it again.
     #[test]
     fn setup_applies_its_answers_in_one_command() {
         let mut board = board_three_columns();
@@ -29534,9 +29520,6 @@ mod tests {
         let enter = |app: &mut App| app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         press(&mut app, 'j'); // with pull requests
         enter(&mut app);
-        press(&mut app, 'j'); // no, I'll bring it up to date myself
-        enter(&mut app);
-        enter(&mut app); // the board
         assert!(app.setup.as_ref().is_some_and(|s| s.ready()));
         assert!(!sent.borrow().iter().any(|s| s.contains("ApplySetup")), "nothing before the end");
         enter(&mut app);
@@ -29547,7 +29530,8 @@ mod tests {
         assert_eq!(applied.len(), 1, "{applied:?}");
         assert!(applied[0].contains("template: PullRequests,"), "{}", applied[0]);
         assert!(applied[0].contains("merge_into: PullRequests"), "{}", applied[0]);
-        assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), Some(false));
+        assert!(applied[0].contains("workspace: Worktree"), "{}", applied[0]);
+        assert_eq!(app.board_prefs.bool(PrefKey::MergeTrain), None, "auto merge as it starts");
         app.refresh().unwrap();
         assert_eq!(app.mode, Mode::Normal, "applied here: not opened again");
     }
@@ -29557,7 +29541,7 @@ mod tests {
     /// opened again this run though the folder still waits for it.
     #[test]
     fn setup_q_and_esc_leave_with_nothing_applied() {
-        for (code, page) in [(KeyCode::Char('q'), 0), (KeyCode::Esc, 2)] {
+        for (code, page) in [(KeyCode::Char('q'), 0), (KeyCode::Esc, 1)] {
             let mut board = board_three_columns();
             board.setup_pending = true;
             let (mut app, sent) = App::for_test_logged(board, theme(), false);
@@ -29573,7 +29557,7 @@ mod tests {
             for _ in 0..page {
                 app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             }
-            assert_eq!(app.setup.as_ref().is_some_and(|s| s.ready()), page == 2);
+            assert_eq!(app.setup.as_ref().is_some_and(|s| s.ready()), page == 1);
             app.handle_key(code, KeyModifiers::NONE).unwrap();
             assert_eq!(app.mode, Mode::Normal, "{code:?} on page {page}");
             assert!(app.setup.is_none() && !app.quit);

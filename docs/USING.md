@@ -150,16 +150,15 @@ cd <a git repo>
 mesimon
 ```
 
-The first time mesimon opens a folder, **Setup** asks a few things, one page each, with a
-practice board under the question showing what the answer does: how you work (on your own, where
-finished work is merged into main, with pull requests on GitHub or GitLab, or not sure yet, which
-starts on your own), whether mesimon merges for you or an agent brings a pull request that fell
-behind main up to date, with pull requests the board's columns (to merged, or on to production),
-and a worktree for each ticket where the folder holds several repositories. The recommended
-answer is marked and is the default, and `s` leaves a question on it. `q` or `esc` leaves Setup
-with nothing applied, on the board as it starts, and Setup asks again the next time mesimon opens
-the folder; `ctrl-c` quits. Each answer is a setting afterwards: each column's *Workspace*, and
-*Behaviour › Merge into* and *Auto merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
+The first time mesimon opens a folder, **Setup** asks one thing, with a practice board under
+the question showing what the answer does: how you work (on your own, where finished work is
+merged into main, with pull requests on GitHub or GitLab, or not sure yet, which starts on your
+own). The rest is set to the recommended choice: mesimon merges for you, an agent brings a pull
+request that fell behind main up to date, the pull request board runs to merged, and each ticket
+gets its own worktree. `s` leaves the question on its default, on your own. `q` or `esc` leaves
+Setup with nothing applied, on the board as it starts, and Setup asks again the next time mesimon
+opens the folder; `ctrl-c` quits. Each of these is a setting afterwards: each column's
+*Workspace*, and *Behaviour › Merge into* and *Auto merge*. Agents get every board tool and the [agent brief](../README.md#three-promises); each
 column's *Tools* and *Agents › Agent brief* change that. *Settings › About* opens mesimon's
 project page.
 

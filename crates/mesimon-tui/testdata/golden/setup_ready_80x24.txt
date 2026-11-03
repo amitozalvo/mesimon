@@ -1,8 +1,9 @@
 ╭─ mesimon › setup kanban-tui ─────────────────────────────────────────────────╮
 │                                                                              │
-│   How you work –   Merging ✓   Ready                                         │
+│   How you work –   Ready                                                     │
 │                                                                              │
 │  Your board is ready                                                         │
+│  merged into main for you ∙ each ticket in its own copy                      │
 │                                                                              │
 │  › Open the board                                                            │
 │    Take the guided tour first                                                │
@@ -18,7 +19,6 @@
 │  │                                                                 I   E  │  │
 │  │                                                                 E      │  │
 │  │                                                                 W      │  │
-│  │                                                                        │  │
 │  │ T-1 Fix the login redirect ∙ created just now                          │  │
 │  ╰────────────────────────────────────────────────────────────────────────╯  │
 ╰───────────────────────────── jk choose ∙ enter done ∙ h back ∙ q quit setup ─╯
