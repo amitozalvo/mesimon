@@ -3,7 +3,8 @@
 [mesimon.dev](https://mesimon.dev)
 
 Prebuilt binaries for **mesimon**, a terminal kanban board that runs your coding agents. Like
-Kubernetes is to containers, mesimon is to Claude Code and Codex. This repository carries
+Kubernetes is to containers, mesimon is to Claude Code and Codex: a kanban for orchestrating
+coding agents, several at once, one per ticket, each on its own branch. This repository carries
 releases only. The source, and the full documentation, are at
 [amitozalvo/mesimon](https://github.com/amitozalvo/mesimon).
 

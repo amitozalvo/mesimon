@@ -40956,3 +40956,41 @@ ten-minute backoff, so their heal within twenty seconds proves the minute's pass
 the backoff rule; `forge::a_host_nothing_reads_is_trouble_never_no_forge` holds a lost probe
 stale at `EVERY` and fresh at half of it, and `..._lost_and_asked_again_on_the_minute` the
 account words.
+
+## mesimon.dev and the READMEs carry the words people search (T-1124, 2026-11-03, "let people reach mesimon by searching kanban claude code or other keywords")
+
+**Found first.** Searches for "kanban claude code", "orchestrating claude code agents" and
+"coding agents orchestrator" return vibe-kanban, kanban-code, Nimbalyst, Kagan, Claude Squad,
+kanvibe and Agent Orchestrator, and never mesimon; `site:mesimon.dev` returns nothing, so the
+site is not indexed at all, and the GitHub repository's description was empty (its topics were
+`claude-code codex coding-agents kanban rust terminal tui`). The page's words already fit
+("terminal kanban board", "Claude Code or Codex") but none of the phrases people type appeared
+in a title, a heading or a description.
+
+**Built.** `site/index.html`: the title is `mesimon — terminal kanban for Claude Code and Codex
+agents` (58 characters, inside what a result shows), the description leads with "orchestrates
+Claude Code and Codex agents" (170), a canonical link, `og:type`/`og:site_name`, a
+`summary_large_image` card, and a `SoftwareApplication` JSON-LD block (free, Apache-2.0, macOS
+and Linux, the install line as `downloadUrl`, GitHub as `sameAs`, the search phrases as
+`keywords`). The "What it does" heading is now "A kanban board that orchestrates coding agents"
+with one sentence under it; About says "written in Rust". `site/og.png` is the demo's first
+frame (the board with a card in every column, 1132×590, 90 KB) and is both pages' card picture
+in place of the 80 px favicon; `ci/site.sh` copies it and fails when a page's `og:image`
+names a file the build lacks (checked: a renamed picture dies). The README and the releases
+README add one clause after the Kubernetes line: "a kanban for orchestrating coding agents,
+several at once, one per ticket, each on its own branch".
+
+**The author's half, which no commit can do.** The repository description and topics
+(`gh repo edit`, the exact lines are in the delivery), Google Search Console ownership of
+`mesimon.dev` (a DNS TXT record at the registrar, which Claude never edits) and the sitemap
+submitted there, and `ci/site.sh --publish` or the next release, which publishes the page.
+Until the domain is verified and linked from the repository's description, the page's words
+reach no index however good they are.
+
+**Refuted: a "compared with" section or a blog.** The pages that rank for these phrases are
+roundups and comparison posts; mesimon's site is a one-screen landing page by decision (T-501)
+and comparison copy is the author's to want. Also refuted: keywords in the lede, which is the
+README's sentence verbatim and the product's own one-line name.
+
+Verified: `ci/site.sh` builds (18 files) and its new check fails on a missing picture; both
+pages' tags balance; the JSON-LD parses; `git diff --check` is clean.

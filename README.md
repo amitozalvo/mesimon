@@ -4,7 +4,8 @@
 
 **mesimon** (Hebrew משימון, "the task instrument" — pronounced me-si-**MON**) is a terminal kanban
 board that runs your coding agents. Like Kubernetes is to containers, mesimon is to Claude Code
-and Codex.
+and Codex: a kanban for orchestrating coding agents, several at once, one per ticket, each on
+its own branch.
 
 Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have the
 same prompt, the same slash commands and the same permission dialogs, and mesimon never sits

@@ -3,12 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mesimon — a terminal kanban board that runs your coding agents</title>
-<meta name="description" content="mesimon is a terminal kanban board that runs Claude Code and Codex: one key starts an agent on a ticket, each in its own worktree, a card lights when its agent needs you, and your phone can answer it.">
-<meta property="og:title" content="mesimon">
-<meta property="og:description" content="A terminal kanban board that runs your coding agents.">
+<title>mesimon — terminal kanban for Claude Code and Codex agents</title>
+<meta name="description" content="A terminal kanban board that orchestrates Claude Code and Codex agents: one key starts an agent on a ticket in its own git worktree, and a card lights when one needs you.">
+<link rel="canonical" href="https://mesimon.dev/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="mesimon">
+<meta property="og:title" content="mesimon — terminal kanban for Claude Code and Codex agents">
+<meta property="og:description" content="Orchestrate coding agents from a kanban board in your terminal: one key starts Claude Code or Codex on a ticket, and a card lights when it needs you.">
 <meta property="og:url" content="https://mesimon.dev/">
-<meta property="og:image" content="https://mesimon.dev/favicon.png">
+<meta property="og:image" content="https://mesimon.dev/og.png">
+<meta property="og:image:width" content="1132">
+<meta property="og:image:height" content="590">
+<meta property="og:image:alt" content="The mesimon board in a terminal: TODO, IN PROGRESS, REVIEW and DONE columns with a ticket card in each">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "mesimon",
+  "alternateName": "משימון",
+  "url": "https://mesimon.dev/",
+  "description": "A terminal kanban board that orchestrates coding agents: Claude Code and Codex, one agent per ticket, each in its own git worktree.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "downloadUrl": "https://mesimon.dev/install.sh",
+  "softwareHelp": {
+    "@type": "CreativeWork",
+    "url": "https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md"
+  },
+  "sameAs": [
+    "https://github.com/amitozalvo/mesimon"
+  ],
+  "screenshot": "https://mesimon.dev/og.png",
+  "keywords": "kanban for Claude Code, Codex kanban, coding agent orchestrator, orchestrating Claude Code agents, terminal kanban, TUI, git worktrees"
+}
+</script>
 <link rel="icon" href="favicon.png">
 <link rel="stylesheet" href="style.css">
 <script src="site.js" defer></script>
@@ -52,7 +87,9 @@
 </figure>
 
 <section aria-labelledby="what">
-  <h2 id="what">What it does</h2>
+  <h2 id="what">A kanban board that orchestrates coding agents</h2>
+  <p>Each ticket on the board can run its own Claude Code or Codex agent, beside the others,
+  from the terminal you already work in.</p>
   <ul>
     <li><strong>Start an agent on a ticket with one key.</strong> Your ticket's title and
     description are its first prompt. Claude Code and Codex both work.</li>
@@ -125,8 +162,8 @@
 
 <section aria-labelledby="about">
   <h2 id="about">About</h2>
-  <p>mesimon is free, open-source developer software for macOS and Linux, published under the
-  Apache-2.0 license. The source code and the issue tracker are
+  <p>mesimon is free, open-source developer software for macOS and Linux, written in Rust and
+  published under the Apache-2.0 license. The source code and the issue tracker are
   on <a href="https://github.com/amitozalvo/mesimon">GitHub</a>, and questions go to
   <a href="mailto:support@mesimon.dev">support@mesimon.dev</a>.</p>
   <p>This site has no analytics, sets no cookies and loads nothing from another site.</p>

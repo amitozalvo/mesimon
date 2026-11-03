@@ -48,6 +48,7 @@ cp site/style.css site/site.js site/CNAME site/.nojekyll site/robots.txt site/si
 cp assets/demo.gif "$out/demo.gif"
 cp assets/demo/remote.png assets/demo/remote-conversation.png "$out/"
 cp assets/mascot/resting.png "$out/favicon.png"
+cp site/og.png "$out/og.png"
 for f in plex-sans-latin.woff2 plex-sans-hebrew-500.woff2 plex-mono-400-latin.woff2 OFL.txt; do
   cp "web/mesophon/fonts/$f" "$out/fonts/"
 done
@@ -60,6 +61,12 @@ for p in $pages; do
   for r in $(grep -oE '(href|src)="[^"]+"' "site/$p" | sed -E 's/^[a-z]+="//; s/"$//' | local_refs); do
     r="${r%%#*}"
     [ -f "$dir/$r" ] || [ -f "$dir/$r/index.html" ] || die "site/$p refers to $r, which the build does not have"
+  done
+done
+# A social card names its picture by its absolute address; it is a file of the build too.
+for p in $pages; do
+  for r in $(grep -oE 'og:image" content="https://mesimon\.dev/[^"]+"' "site/$p" | sed -E 's|^.*mesimon\.dev/||; s/"$//'); do
+    [ -f "$out/$r" ] || die "site/$p names https://mesimon.dev/$r as its card picture, which the build does not have"
   done
 done
 for r in $(grep -oE 'url\([^)]+\)' site/style.css | sed -E 's/^url\(//; s/\)$//' | local_refs); do
