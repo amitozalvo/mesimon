@@ -41116,5 +41116,14 @@ peek, since a card alone does not say what its agent is doing; slower, above all
 hand. The take now stays on the board throughout: `k` onto the lit card (it lands at the top of
 REVIEW, above the crown's card, where the cursor followed the crown), Shift+Enter there, and the
 `P` peek on from `prefs.json` for this tape alone, so every card carries its agent's words from
-the first frame; holds of 3.5 to 5 s at each beat, 38 s in all. Refuted: `/` search to reach the
+the first frame; holds of 3.5 to 5 s at each beat. Refuted: `/` search to reach the
 card (two keys and a picker the viewer has to read; the cursor is one `k` away).
+
+**The second viewing**: "Custom slugs" in IN PROGRESS with no agent on it was staged (the crown
+clip's board, for a move to show), and a crown that acts the moment it is crowned is not how
+the crown works: the person tells it what to do. The take's crown agent now reads the board and
+ends its turn before the recording opens (`seed.py::settled`, its card in REVIEW with its words
+under the title), `^o` crowns it, Shift+Enter on its card asks "File what 1.0 is missing, then
+start Stats as JSON", and that ask is the turn that files, tags and starts; "Custom slugs" waits
+in TODO and the crown moves nothing. `stub-claude.py::crown` keys the two flows off the board
+("Expire old links" present: the crown clip's, acting on the crown alone). 45 s.

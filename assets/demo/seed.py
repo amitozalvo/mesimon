@@ -86,18 +86,22 @@ CROWN_BOARD = [
 
 # reddit.tape: the crown board with the demo ticket in TODO, so the agent
 # the crown starts is the demo's: it works, raises its hand, takes the
-# answer from the ticket page, commits, and the merge train lands its
-# branch, all in one take. "Expire old links" is absent, so the crown
-# starts DEMO.
+# answer from its card, commits, and the merge train lands its branch, all
+# in one take. "Expire old links" is absent, so the crown starts DEMO, and
+# "Custom slugs" waits in TODO, so the crown has nothing to move: a card in
+# IN PROGRESS with no agent on it is a staged thing (the author, T-1125).
+# The crown's agent has read the board and ended its turn before the take
+# opens (`settled`), so the person crowns an idle agent and tells it what
+# to do, as on a real board.
 REDDIT_BOARD = [
     ("TODO", DEMO, "FEATURE",
      "Scripts scrape the stats table. Print the same numbers as JSON when "
      "--json is passed, one object per link."),
+    ("TODO", "Custom slugs", "FEATURE",
+     "Let a user pick the slug instead of getting a random one."),
     ("TODO", "Document config", None,
      "Every key in shortlink.toml, its default, and an example."),
     ("IN PROGRESS", CROWN, "MILESTONE", "Decide what 1.0 needs, and file it."),
-    ("IN PROGRESS", "Custom slugs", "FEATURE",
-     "Let a user pick the slug instead of getting a random one."),
     ("REVIEW", "Fix slash 404", "BUG",
      "GET /abc/ should redirect like GET /abc."),
     ("DONE", "Set up CI", None, "Run the tests on every push."),
@@ -214,6 +218,23 @@ def board(repo, tape="demo", start=True):
         at_work_started(w, repo, at_work, tree)
     if tape == "ticket-page":
         noted(w, ids)
+    if tape == "reddit":
+        settled(w, ids[CROWN])
+
+
+def settled(w, ticket):
+    """Wait for the reddit take's crown agent to end its first turn: it
+    read the board and said what 1.0 is missing, and the column's rule
+    carried its card to REVIEW, where the take crowns it and asks."""
+    deadline = time.time() + 30
+    while True:
+        snap = w.ask({"cmd": "snapshot"})
+        t = next(t for t in snap["board"]["tickets"] if t["id"] == ticket)
+        if t["column"] == "REVIEW":
+            return
+        if time.time() > deadline:
+            sys.exit("seed: the crown's agent did not end its first turn")
+        time.sleep(0.2)
 
 
 def worktree(repo, ticket):

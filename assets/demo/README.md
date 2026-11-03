@@ -93,11 +93,11 @@ What each file does:
   `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that note's links
   and `enter` opens one.
 - **`reddit.tape`** is the clip for a Reddit post (T-1125), one take from the crown to the
-  merge, all of it on the board: `^o` crowns the agent at work, it files, moves, tags and
-  starts an agent on the demo ticket, that agent raises its hand, `k` puts the cursor on its
-  card, Shift+Enter answers it there, and the merge train lands its branch. Larger cells than
-  the README's clips, longer holds, an mp4 for Reddit's native video upload beside the gif.
-  Its outputs are ignored by git.
+  merge, all of it on the board: an agent has read the board and ended its turn, `^o` crowns
+  it, Shift+Enter on its card tells it what to do, it files, tags and starts an agent on the
+  demo ticket, that agent raises its hand, `k` puts the cursor on its card, Shift+Enter answers
+  it there, and the merge train lands its branch. Larger cells than the README's clips, longer
+  holds, an mp4 for Reddit's native video upload beside the gif. Its outputs are ignored by git.
 
 ## The agent clip is the real claude
 

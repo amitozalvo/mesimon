@@ -1,9 +1,10 @@
 # The Reddit clip: one take from the crown to the merge, all of it on the
-# board. ^o crowns the agent at work; it files two tickets, moves one, tags
-# one and starts an agent on the demo ticket. That agent works, raises its
-# hand, and is answered with Shift+Enter on its card; the merge train lands
-# its branch and DONE takes the card. The peek is on for every card, so each
-# working agent's latest words sit under its title.
+# board. An agent has read the board and said what 1.0 is missing; ^o
+# crowns it, Shift+Enter on its card tells it what to do, and it files two
+# tickets, tags one and starts an agent on the demo ticket. That agent
+# works, raises its hand, and is answered with Shift+Enter on its card; the
+# merge train lands its branch and DONE takes the card. The peek is on for
+# every card, so each agent's latest words sit under its title.
 # Run through record.sh, never alone:
 #
 #   assets/demo/record.sh reddit
@@ -31,21 +32,31 @@ Set Theme { "name": "graphite", "background": "#131417", "foreground": "#E9E7E1"
 Hide
 Type 'cd "$DEMO_REPO" && clear && exec python3 "$DEMO_TERM" "$DEMO_MESIMON"'
 Enter
-# The board is up once the agent seed.py started is spinning.
-Wait+Screen@20s /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Plan 1.0/
-# The cursor onto its card, in IN PROGRESS.
+# The board is up once the crown's card, idle in REVIEW, shows its words.
+Wait+Screen@20s /1\.0 is missing a health/
+# The cursor onto its card: right past the empty IN PROGRESS to REVIEW.
+Type "l"
+Sleep 0.3s
 Type "l"
 Sleep 0.5s
 Show
 
-# One agent at work, planning the release; its words under its title.
-Sleep 3.5s
+# An agent that read the board and said what 1.0 is missing.
+Sleep 4s
 
-# ^o crowns its ticket.
+# ^o crowns its ticket; the status line says what the crown may do.
 Ctrl+O
+Sleep 3s
 
-# The crowned agent runs the board: two tickets filed, one moved back,
-# one tagged, and an agent started on the demo ticket, whose card spins.
+# Shift+Enter on its card tells the crown what to do.
+Alt+Enter
+Sleep 1.5s
+Type "File what 1.0 is missing, then start Stats as JSON"
+Sleep 1.2s
+Enter
+
+# The crowned agent runs the board: two tickets filed, one tagged, and an
+# agent started on the demo ticket, whose card spins.
 Wait+Screen@20s /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Stats as JSON/
 Sleep 4.5s
 
