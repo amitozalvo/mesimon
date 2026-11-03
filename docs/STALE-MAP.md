@@ -41108,5 +41108,13 @@ traceback went with the sandbox) and listing each `Output` of a tape. Refuted: a
 `MESIMON_PINGPONG_MS` seam for the crown's move back (T-1122 routes an IN PROGRESS card through
 REVIEW instead, so the crown's move reverses nothing); holding the ticket from the train
 (refused on the session's own ticket). The take waits on `REVIEW +3` (the started agent's card
-arriving beside the crown's and the bug's) and then on the question's words on the page, since
-`demo.tape`'s `REVIEW +2` matches the crown's finish as readily as the raised hand.
+arriving beside the crown's and the bug's), since `demo.tape`'s `REVIEW +2` matches the crown's
+finish as readily as the raised hand.
+
+**The author's first viewing** (2026-11-03): answer from the board, not the ticket page; use the
+peek, since a card alone does not say what its agent is doing; slower, above all at the raised
+hand. The take now stays on the board throughout: `k` onto the lit card (it lands at the top of
+REVIEW, above the crown's card, where the cursor followed the crown), Shift+Enter there, and the
+`P` peek on from `prefs.json` for this tape alone, so every card carries its agent's words from
+the first frame; holds of 3.5 to 5 s at each beat, 38 s in all. Refuted: `/` search to reach the
+card (two keys and a picker the viewer has to read; the cursor is one `k` away).

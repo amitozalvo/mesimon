@@ -111,9 +111,14 @@ mkdir -p "$HOME/.local/state/mesimon" \
   && echo "skipped board demo" >"$HOME/.local/state/mesimon/welcomed"
 # The merge train (on by default) would land a finished branch before the
 # take's `m` does; the takes show the person merging. The Reddit clip
-# (reddit.tape) keeps the train: its ending is the train's own merge.
-[ "$TAPE" = reddit ] \
-  || echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
+# (reddit.tape) keeps the train, since its ending is the train's own merge,
+# and shows every card's latest reply (the `P` peek), so a feed viewer can
+# read what each agent is doing.
+if [ "$TAPE" = reddit ]; then
+    echo '{"schema_version":1,"peek":"all"}' >"$HOME/.local/state/mesimon/prefs.json"
+else
+    echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
+fi
 if [ -n "$KEY_FILE" ]; then
     # A pane's environment is what `$SHELL -l` exports (the daemon asks it,
     # daemon/src/shellenv.rs), so the sandbox's login profile signs claude

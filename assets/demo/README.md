@@ -48,8 +48,9 @@ What each file does:
   also sets one timing seam: the worktree flags refresh every 2 s instead of every
   10 s, so the merge offer appears soon after the agent finishes. The link opener is `true`,
   so a link a take opens reads `opening …` on the board and starts no browser. The `reddit`
-  take alone keeps the merge train, whose merge is its ending. A take that fails prints every
-  agent pane before the sandbox goes: the stand-in's traceback is there.
+  take alone keeps the merge train, whose merge is its ending, and runs with the `P` peek on,
+  so every card shows its agent's latest words. A take that fails prints every agent pane
+  before the sandbox goes: the stand-in's traceback is there.
 - **`seed.py`** creates the tickets over the daemon's socket, using the same wire protocol as
   the TUI. It answers Setup first, as one person on one repository would, and files each
   ticket in TODO, then moves it where the tape wants it. `BOARDS` holds one ticket list per
@@ -92,10 +93,11 @@ What each file does:
   `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that note's links
   and `enter` opens one.
 - **`reddit.tape`** is the clip for a Reddit post (T-1125), one take from the crown to the
-  merge: `^o` crowns the agent at work, it files, moves, tags and starts an agent on the demo
-  ticket, that agent raises its hand, `/` finds its card, Shift+Enter answers it from the page,
-  and the merge train lands its branch. Larger cells than the README's clips, an mp4 for
-  Reddit's native video upload beside the gif. Its outputs are ignored by git.
+  merge, all of it on the board: `^o` crowns the agent at work, it files, moves, tags and
+  starts an agent on the demo ticket, that agent raises its hand, `k` puts the cursor on its
+  card, Shift+Enter answers it there, and the merge train lands its branch. Larger cells than
+  the README's clips, longer holds, an mp4 for Reddit's native video upload beside the gif.
+  Its outputs are ignored by git.
 
 ## The agent clip is the real claude
 
