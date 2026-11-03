@@ -40927,3 +40927,32 @@ merge untouched), `setup_q_and_esc_leave_with_nothing_applied` (Esc on the last 
 `setup_fix_120x30`, `setup_board_120x30`, `setup_merge_120x30` removed; `setup_ready_prs_120x30`
 new; `setup_work_120x30` and `setup_ready_80x24` reminted (two steps across the top; the narrow
 one now presses `s` alone). No rig test: nothing an agent is told changed.
+
+## A lost forge host is asked again on the minute, not the backoff (T-1115, 2026-11-03, the author: "mesimon takes long time to heal from a fixed glab auth issue ∙ i end up switching to merge train and back to PR to get it to reset")
+
+The mechanism: a host whose CLI did not confirm its sign-in, whose GitLab account did not
+answer (T-1067) or that no CLI on PATH reads was `HostProbe::lost`, and `stale()` asked it
+again only after `backoff()` (five minutes, T-798). The minute's pass checked the probe each
+minute and found it fresh, so a `glab auth login` the person had just run healed the board
+five to six minutes later, while toggling Merge into away from pull requests and back built a
+fresh `State` whose empty probes asked at once: the toggle was the reset.
+
+**A lost host is probed on every minute's pass.** `stale()` for a lost probe is `every()`
+(sixty seconds, `MESIMON_FORGE_EVERY_MS`), `PROBE_FOR` for a host a CLI reads, as before. The
+cost while a host stays lost is one `auth status` per minute per host, plus `glab api user` on
+GitLab, each fenced by `CALL_TIMEOUT`; offline, nothing else reads anyway. The account line
+says `asked again in 1 min` (`probe_minutes`, from the pass cadence, not `backoff_minutes`).
+The repository backoff (T-800: a failed list, a rate limit) is unchanged: a sign-in the person
+fixes is the probe's, not a list's, and a timing-out repository retried every minute would hold
+the pass twenty seconds each time.
+
+**Not done:** a fix the moment it lands (watching the CLI's config file, or a retry on the
+advisory row). The minute is the pass's own cadence, the person is told the number, and the
+config files' places and keyring use differ by CLI and version.
+
+Tests: the two lost-host e2es (`a_lost_sign_in_is_said_and_asked_again_on_the_minute`,
+`a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed`) now run with a
+ten-minute backoff, so their heal within twenty seconds proves the minute's pass and fails on
+the backoff rule; `forge::a_host_nothing_reads_is_trouble_never_no_forge` holds a lost probe
+stale at `EVERY` and fresh at half of it, and `..._lost_and_asked_again_on_the_minute` the
+account words.

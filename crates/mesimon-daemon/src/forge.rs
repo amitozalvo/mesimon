@@ -15,7 +15,10 @@
 //! Every call is fenced as a fetch is (`gitstatus::fetch`): its own
 //! session, a deadline, the process group killed on overrun, every prompt
 //! door shut. A repository whose call failed is reported, not retried in a
-//! loop: that repository waits `BACKOFF` (T-800), the rest are read.
+//! loop: that repository waits `BACKOFF` (T-800), the rest are read. A
+//! host no CLI reads (its sign-in lost, its account unknown, no CLI on
+//! PATH) is asked again on every minute's pass (T-1115): a sign-in the
+//! person just fixed is found within the minute, never after the backoff.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -112,6 +115,13 @@ fn backoff_minutes() -> u64 {
     backoff().as_secs().div_ceil(60).max(1)
 }
 
+/// The minute's cadence in whole minutes, at least one: the "asked again
+/// in N min" a lost host's line says (T-1115), since a lost host is probed
+/// again on every pass.
+fn probe_minutes() -> u64 {
+    every().as_secs().div_ceil(60).max(1)
+}
+
 /// `MESIMON_FORGE_BURST_MS`: the floor between two reads of one repository
 /// off the minute, a test seam.
 pub fn burst_ms() -> u64 {
@@ -159,8 +169,10 @@ pub struct HostProbe {
     /// did not confirm its sign-in (T-798: no network yet, a timeout, a
     /// stale token, never signed in), or no CLI on PATH at all. On a board
     /// that merges through pull requests, the only one that reads a forge,
-    /// every such host is trouble (T-810): asked again on the backoff, said
-    /// on the advisory row and in `ForgeStatus.trouble`, never "no forge".
+    /// every such host is trouble (T-810): asked again on every minute's
+    /// pass (T-1115: a sign-in the person fixed heals within the minute,
+    /// where the backoff left the board lost for five), said on the
+    /// advisory row and in `ForgeStatus.trouble`, never "no forge".
     /// A GitLab host signed in whose account did not answer is lost too
     /// (`forge::account_trouble`, T-1067), its `cli` kept: glab lists by
     /// that account, so nothing lists the host (`reader`) while the host
@@ -182,8 +194,11 @@ impl HostProbe {
         self.cli.as_ref().filter(|_| self.lost.is_none())
     }
 
+    /// Whether the probe is asked again: a host read by a CLI is believed
+    /// for `PROBE_FOR`; a lost one is asked on every pass (`every()`,
+    /// T-1115), since the person's fix is a sign-in the board cannot see.
     pub fn stale(&self) -> bool {
-        self.at.elapsed() >= if self.lost.is_some() { backoff() } else { PROBE_FOR }
+        self.at.elapsed() >= if self.lost.is_some() { every() } else { PROBE_FOR }
     }
 }
 
@@ -1192,15 +1207,15 @@ fn probe_host(host: &str, candidates: &[Cli]) -> HostProbe {
             // glab lists by the account's name, and a sign-in alone lists
             // nothing (T-1067): an account the forge did not name (no
             // network yet after a wake, a 502, an answer with no username)
-            // is lost like a sign-in, asked again on the backoff and never
-            // believed for `PROBE_FOR`. The CLI stays named: the host is
-            // still the board's to read, so what it owes still waits.
+            // is lost like a sign-in, asked again on the minute (T-1115)
+            // and never believed for `PROBE_FOR`. The CLI stays named: the
+            // host is still the board's to read, so what it owes still waits.
             Forge::GitLab => match run(&c.bin, &["api", "--hostname", host, "user"], None)
                 .and_then(|answer| viewer_of(&answer))
             {
                 Ok(viewer) => Some(viewer),
                 Err(why) => {
-                    let minutes = backoff_minutes();
+                    let minutes = probe_minutes();
                     return HostProbe {
                         cli: Some(c.clone()),
                         at: Instant::now(),
@@ -3796,9 +3811,9 @@ mod tests {
 
     /// A host nothing reads is trouble, never a board of no forge (T-798,
     /// T-810): a CLI that did not confirm its sign-in, held PRs or not, and
-    /// no CLI on PATH at all. Each is asked again on the backoff, named on
-    /// the advisory row with its fix, and the trouble clears once a CLI
-    /// reads the host.
+    /// no CLI on PATH at all. Each is asked again on the minute (T-1115),
+    /// named on the advisory row with its fix, and the trouble clears once
+    /// a CLI reads the host.
     #[test]
     fn a_host_nothing_reads_is_trouble_never_no_forge() {
         let t = ulid::Ulid::new();
@@ -3839,10 +3854,12 @@ mod tests {
                  gitlab.com)"
             )
         );
-        // Asked again on the backoff.
+        // Asked again on the minute (T-1115), never the backoff.
         let mut old = failed();
-        old.at = Instant::now() - BACKOFF;
+        old.at = Instant::now() - EVERY;
         assert!(old.stale());
+        old.at = Instant::now() - EVERY / 2;
+        assert!(!old.stale(), "once a pass, not every tick");
         // Signed in again: the trouble clears.
         let mut s = board();
         s.sets.insert(t, vec![pr(7, PrState::Open, Pipeline::Passed)]);
@@ -3858,10 +3875,11 @@ mod tests {
     /// wake before the network, a 502, an answer with no username) reads
     /// nothing, since a GitLab list is the account's own or none: the
     /// host is lost, said as the account and not the sign-in, and asked
-    /// again on the backoff. Once the account answers the probe carries
-    /// it, the trouble clears and the probe is believed for `PROBE_FOR`.
+    /// again on the minute (T-1115). Once the account answers the probe
+    /// carries it, the trouble clears and the probe is believed for
+    /// `PROBE_FOR`.
     #[test]
-    fn a_gitlab_account_that_did_not_answer_is_lost_and_asked_again_on_the_backoff() {
+    fn a_gitlab_account_that_did_not_answer_is_lost_and_asked_again_on_the_minute() {
         assert_eq!(viewer_of(r#"{"id":1,"username":"me"}"#), Ok("me".into()));
         assert_eq!(viewer_of("<html>502</html>"), Err("its answer was not JSON".into()));
         for answer in [r#"{"id":1}"#, r#"{"username":""}"#, r#"{"username":null}"#, "[]"] {
@@ -3901,7 +3919,7 @@ mod tests {
         assert_eq!(probe.reader(), None, "nothing lists through it");
         assert!(!probe.reads_nothing(), "lost, never a board of no forge");
         let words = "gitlab.lab account unknown: glab api user: dial tcp: lookup gitlab.lab: no \
-                     such host ∙ asked again in 5 min";
+                     such host ∙ asked again in 1 min";
         assert_eq!(probe.lost.as_deref(), Some(words));
         let query = || Query {
             pending: vec![PendingRepo {
@@ -3914,8 +3932,8 @@ mod tests {
         list_probed(&mut q, &[("gitlab.lab".into(), probe.clone())]);
         assert!(q.repos.is_empty(), "no list, and never an unfiltered one");
         let mut old = probe.clone();
-        old.at = Instant::now() - BACKOFF;
-        assert!(old.stale(), "asked again on the backoff, not in six hours");
+        old.at = Instant::now() - EVERY;
+        assert!(old.stale(), "asked again on the minute, not in six hours");
         s.take_probe("gitlab.lab".into(), probe);
         assert_eq!(s.trouble().as_deref(), Some(words));
 
@@ -3926,7 +3944,7 @@ mod tests {
             probe.lost.as_deref(),
             Some(
                 "gitlab.lab account unknown: glab api user: its answer named no username ∙ asked \
-                  again in 5 min"
+                  again in 1 min"
             )
         );
 
@@ -3937,7 +3955,7 @@ mod tests {
         assert_eq!((probe.lost.as_ref(), probe.reader()), (None, Some(&glab)));
         let mut held = probe.clone();
         held.at = Instant::now() - BACKOFF;
-        assert!(!held.stale(), "a named account is believed past the backoff");
+        assert!(!held.stale(), "a named account is believed past the minute and the backoff");
         held.at = Instant::now() - PROBE_FOR;
         assert!(held.stale());
         let mut q = query();

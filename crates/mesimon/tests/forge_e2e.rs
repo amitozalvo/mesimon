@@ -49,9 +49,9 @@
 //! whose merge commit's pipeline runs is read again within
 //! `MESIMON_FORGE_BUSY_MS`, and once it passes the minute's cadence is back.
 //!
-//! A lost sign-in is asked again on the backoff (T-798): a restart with
-//! `auth status` failing names the host on the advisory row, and once it
-//! answers a ticket opened meanwhile binds.
+//! A lost sign-in is asked again on the minute (T-798, T-1115): a restart
+//! with `auth status` failing names the host on the advisory row, and once
+//! it answers a ticket opened meanwhile binds, with the backoff untouched.
 //!
 //! A closed PR stays the ticket's (T-797): it holds the train and `m` as a
 //! merged one does, and a PR opened here and closed, or a `pr create` on a
@@ -1105,10 +1105,12 @@ fn the_prs_survive_a_restart_and_the_first_pass_lists() {
 /// A failed sign-in is a lost host (T-798): a daemon that starts before the
 /// network finds `gh auth status` failing on a host whose PRs it holds. The
 /// advisory row names the host, the cards keep their PRs, and the probe is
-/// asked again on the backoff, not six hours on: once the sign-in answers,
-/// a ticket opened meanwhile binds and the row clears.
+/// asked again on the minute (T-1115; the backoff is ten minutes here, so
+/// a heal within the test proves the minute's pass), not six hours on:
+/// once the sign-in answers, a ticket opened meanwhile binds and the row
+/// clears.
 #[test]
-fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
+fn a_lost_sign_in_is_said_and_asked_again_on_the_minute() {
     const STUB: &str = SILENT_STUB;
     let name = "forge_lost";
     let (stub_dir, path_var) = gh_stub(name);
@@ -1133,7 +1135,7 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
         &[
             ("MESIMON_WT_REFRESH_TICKS", "4"),
             ("MESIMON_FORGE_EVERY_MS", "500"),
-            ("MESIMON_FORGE_BACKOFF_MS", "3000"),
+            ("MESIMON_FORGE_BACKOFF_MS", "600000"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs_file.display().to_string()),
@@ -1201,7 +1203,8 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_backoff() {
         "no host's list while its sign-in is lost"
     );
 
-    // The network is back: the next probe, on the backoff, finds the CLI.
+    // The network is back: the next probe, on the minute, finds the CLI;
+    // the backoff (ten minutes here) never passes.
     let _ = std::fs::remove_file(&offline);
     wait_until(Duration::from_secs(20), "the ticket opened meanwhile to bind", || {
         prs_of(&mut c).iter().any(|p| p.ticket == fresh && p.number == 43)
@@ -4017,9 +4020,9 @@ fn a_cli_never_signed_in_is_trouble_with_its_fix() {
 /// no username) on a ticket with a GitLab and a GitHub leg: no MR list is
 /// made and none unfiltered, the advisory row names the account, the
 /// GitHub leg's PR is read all along, and the account is asked again on
-/// the backoff. Once it answers the same daemon lists the ticket's MRs by
-/// it, the row clears, and the named account is not asked again on the
-/// backoff.
+/// the minute (T-1115; the backoff is ten minutes here). Once it answers
+/// the same daemon lists the ticket's MRs by it, the row clears, and the
+/// named account is not asked again on the minute.
 #[test]
 fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
     const STUB: &str = SILENT_STUB;
@@ -4055,7 +4058,7 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
         &[
             ("MESIMON_WT_REFRESH_TICKS", "4"),
             ("MESIMON_FORGE_EVERY_MS", "500"),
-            ("MESIMON_FORGE_BACKOFF_MS", "3000"),
+            ("MESIMON_FORGE_BACKOFF_MS", "600000"),
             ("MESIMON_PANE_QUIET_MS", "600000"),
             ("PATH", &path_var),
             ("MSMN_GH_PRS", &prs.display().to_string()),
@@ -4109,9 +4112,10 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
     wait_until(Duration::from_secs(20), "the GitHub leg's PR to bind", || {
         prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42)
     });
-    // Asked again on the backoff (3 s here), not six hours on.
+    // Asked again on the minute (T-1115; the backoff is ten minutes here),
+    // not six hours on.
     let first = users();
-    wait_until(Duration::from_secs(20), "the account asked again on the backoff", || {
+    wait_until(Duration::from_secs(20), "the account asked again on the minute", || {
         users() >= first + 2
     });
     assert_eq!(mr_lists(), 0, "no list without the account, never an unfiltered one");
@@ -4158,10 +4162,10 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
         glab_calls().lines().filter(|l| l.starts_with("mr list")).map(str::to_string).collect();
     assert!(!lists.is_empty());
     assert!(lists.iter().all(|l| l.contains("--author me")), "by the account alone: {lists:?}");
-    // A named account is believed: no ask on the backoff's cadence.
+    // A named account is believed: no ask on the minute's cadence.
     let named = users();
     std::thread::sleep(Duration::from_millis(4500));
-    assert_eq!(users(), named, "a named account is not asked again on the backoff");
+    assert_eq!(users(), named, "a named account is not asked again on the minute");
     assert!(mr_lists() > lists.len(), "while its MRs go on being read");
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);

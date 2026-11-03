@@ -1190,7 +1190,8 @@ pub fn sign_in_trouble(forge: Forge, host: &str, why: &str) -> String {
 /// The advisory row's line for a GitLab host signed in whose account
 /// `glab api user` did not name (T-1067): its MRs are listed by that
 /// account alone, so none are read until it answers. The sign-in held, so
-/// no sign-in fix is offered: the account is asked again in `minutes`.
+/// no sign-in fix is offered: the account is asked again in `minutes`
+/// (the minute's pass since T-1115).
 pub fn account_trouble(host: &str, why: &str, minutes: u64) -> String {
     let why = crate::text::scrub_text(why);
     format!("{host} account unknown: glab api user: {} ∙ asked again in {minutes} min", why.trim())
