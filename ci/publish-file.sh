@@ -15,14 +15,26 @@ set -euo pipefail
 repo="$1" src="$2" dest="$3" message="$4"
 [ -f "$src" ] || { echo "error: no file at $src" >&2; exit 1; }
 
-existing=$(gh api "repos/$repo/contents/$dest" --jq .sha 2>/dev/null || true)
+b64=$(mktemp) err=$(mktemp)
+trap 'rm -f "$b64" "$err"' EXIT
+
+# A path the branch lacks answers 404, and the file is created without a sha.
+# Any other failure stops the publish with gh's own words: gh prints an error's
+# body on stdout, so a swallowed failure once read as the sha and GitHub refused
+# the write with "sha wasn't supplied".
+if existing=$(gh api "repos/$repo/contents/$dest" --jq .sha 2>"$err"); then
+  :
+elif grep -q 'HTTP 404' "$err"; then
+  existing=""
+else
+  echo "error: cannot read $repo/$dest: $(tr -d '\n' <"$err")" >&2
+  exit 1
+fi
 if [ -n "$existing" ] && [ "$existing" = "$(git hash-object "$src")" ]; then
   echo "unchanged  $repo/$dest"
   exit 0
 fi
 
-b64=$(mktemp)
-trap 'rm -f "$b64"' EXIT
 base64 < "$src" | tr -d '\n' > "$b64"
 
 set -- -X PUT "repos/$repo/contents/$dest" -f message="$message" -F content="@$b64"

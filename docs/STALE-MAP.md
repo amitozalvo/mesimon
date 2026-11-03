@@ -40994,3 +40994,16 @@ README's sentence verbatim and the product's own one-line name.
 
 Verified: `ci/site.sh` builds (18 files) and its new check fails on a missing picture; both
 pages' tags balance; the JSON-LD parses; `git diff --check` is clean.
+
+## `ci/publish-file.sh` creates a new file only on a 404 (T-1124, 2026-11-03, the first publish after the merge)
+
+`ci/site.sh --publish` died with GitHub's `"sha" wasn't supplied (HTTP 422)` on this ticket's
+`og.png`, the first new file the site had published since the fonts and the phone pictures.
+The lookup `gh api repos/…/contents/$dest --jq .sha 2>/dev/null || true` swallowed the
+failure's exit code but not its words: `gh` (2.52 here) prints an error's body on stdout, so
+`existing` held `{"message":"Not Found",…}`, which was neither empty (create) nor the file's
+blob id (unchanged), and went to the PUT as `sha=`. Now a 404 on stderr means create, a
+success means compare, and anything else stops the publish with gh's own line, so a network
+blip or a bad token is read as what it is and never as a new file. Verified read-only against
+the releases repository: `og.png` → empty, `index.html` and a font → their blob ids. The
+publish itself is the author's to run.
