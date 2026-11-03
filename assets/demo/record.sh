@@ -12,7 +12,8 @@
 # the way out.
 #
 # The agent clip can run the real claude instead, signed in with a Console
-# API key kept in a file (it bills that key's credits, cents a take):
+# API key, or a `claude setup-token` token, kept in a file (an API key bills
+# that key's credits, cents a take; a token, its subscription's usage):
 #
 #   MESIMON_DEMO_KEY_FILE=~/.config/mesimon-demo.key assets/demo/record.sh agent
 #
@@ -126,8 +127,12 @@ if [ -n "$KEY_FILE" ]; then
     (
         umask 077
         cat >"$HOME/.profile" <<EOF
-read -r ANTHROPIC_API_KEY <'$KEY_FILE'
-export ANTHROPIC_API_KEY
+read -r DEMO_KEY <'$KEY_FILE'
+case \$DEMO_KEY in
+    sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="\$DEMO_KEY" ;;
+    *) export ANTHROPIC_API_KEY="\$DEMO_KEY" ;;
+esac
+unset DEMO_KEY
 export ANTHROPIC_MODEL='$MODEL'
 export CLAUDE_CONFIG_DIR="\$HOME/.claude"
 export CLAUDE_CODE_TMPDIR="\$HOME/tmp"

@@ -93,8 +93,10 @@ What each file does:
 on its timing: the demo's raised hand, the crown's tool calls, the note on the ticket page.
 `record.sh` refuses a key file for any tape but `agent`.
 
-`MESIMON_DEMO_KEY_FILE` names a file holding a Console API key and nothing else. The take bills
-that key's credits, on Sonnet unless `MESIMON_DEMO_MODEL` names another model. The model needs
+`MESIMON_DEMO_KEY_FILE` names a file holding one secret and nothing else: a Console API key
+(`sk-ant-api…`, sent as `ANTHROPIC_API_KEY`, billing that key's credits) or a token from
+`claude setup-token` (`sk-ant-oat…`, sent as `CLAUDE_CODE_OAUTH_TOKEN`, using that
+subscription). The API refuses a token sent as a key. The take runs on Sonnet unless `MESIMON_DEMO_MODEL` names another model. The model needs
 claude's auto mode: without it (Haiku) claude asks before its first edit and the take stalls.
 
 - **The key rides no command line.** A pane gets the environment the user's login shell exports:

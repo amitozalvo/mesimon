@@ -41036,10 +41036,11 @@ when the intro and the files differ and redraws them under `MESIMON_UPDATE_GOLDE
   `seed.py` waits for `mod/probe.json`, then merges its answers into the file instead of
   refusing an existing one.
 
-**Not done.** `agent.gif` (the real Claude Code) was not recorded again: the demo Console key in
-`~/.config/mesimon-demo.key` is refused (`Invalid API key` on the card). With a working key,
-`MESIMON_DEMO_KEY_FILE=~/.config/mesimon-demo.key assets/demo/record.sh agent` records it; the
-seeding up to claude taking its prompt was seen to work. mesimon.dev shows `demo.gif` once
+**agent.gif** is recorded again on the real Claude Code (2.1.317, Sonnet 5.5, the mod road:
+its pane reads `Prompt from the mesimon plugin`). The demo secret the author gave was a
+`claude setup-token` token (`sk-ant-oat…`), which the API refuses as `ANTHROPIC_API_KEY`
+(401, `Invalid API key` on the card): the sandbox's profile now exports a token as
+`CLAUDE_CODE_OAUTH_TOKEN` and anything else as the key. mesimon.dev shows `demo.gif` once
 `ci/site.sh` runs at the next release.
 
 **Checked.** Each new GIF looked at frame by frame (contact sheets); `cargo ut`; clippy on
