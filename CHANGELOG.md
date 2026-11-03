@@ -10,6 +10,36 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.16 — 2026-11-03
+
+A shorter Setup, and auto merge offered when finished work is waiting. Nothing
+changes a state file's format.
+
+### Added
+
+- **The board offers auto merge when a finished ticket is ready to land.**
+  While auto merge is off on a board that merges into main, the header reads
+  `auto merge 1 ticket` and the Esc menu offers `Auto merge 1 finished ticket`
+  as soon as a branch in REVIEW could be merged. Taking it turns auto merge on;
+  `Settings › Behaviour › Auto merge` turns it off again, and the offer stays
+  down until the next ticket finishes.
+
+### Changed
+
+- **Setup asks one question: how you work.** Everything else takes its
+  recommended answer: each ticket gets its own worktree, an agent brings a pull
+  request that fell behind up to date, and the pull request board runs to
+  merged. Each is still a setting afterwards.
+- **On your own, auto merge starts off.** Setup's last page says you merge
+  finished work into main with `m`, and the board offers auto merge when a
+  ticket is ready. Boards set up before this release keep their setting.
+
+### Fixed
+
+- **Signing in to GitHub or GitLab takes effect within a minute.** After a
+  failed sign-in, the board waited up to five minutes before asking again, so a
+  fresh `gh auth login` or `glab auth login` seemed to do nothing until then.
+
 ## v0.1.0-beta.15 — 2026-11-03
 
 Everything from the three unstable builds since beta.14, and four changes of
