@@ -11,7 +11,8 @@ MESIMON_DEMO_KEY_FILE=~/.config/mesimon-demo.key \
 assets/demo/record.sh search       # search.gif, about 8 seconds
 assets/demo/record.sh crown        # crown.gif, about 13 seconds
 assets/demo/record.sh ticket-page  # ticket-page.gif, about 11 seconds
-assets/demo/record.sh reddit       # reddit.mp4 and reddit.gif, about 36 seconds, not in the repo
+assets/demo/record.sh reddit       # reddit.mp4 and reddit.gif, about 70 seconds, not in the repo
+assets/demo/record.sh prs          # prs.mp4 and prs.gif, about 60 seconds, not in the repo
 ```
 
 `MESIMON=target/debug/mesimon` in front of a line records with the debug build instead.
@@ -47,10 +48,16 @@ What each file does:
   tmux. Its prefs turn the merge train off, so a finished branch waits for the take's `m`. It
   also sets one timing seam: the worktree flags refresh every 2 s instead of every
   10 s, so the merge offer appears soon after the agent finishes. The link opener is `true`,
-  so a link a take opens reads `opening …` on the board and starts no browser. The `reddit`
-  take alone keeps the merge train, whose merge is its ending, and runs with the `P` peek on,
-  so every card shows its agent's latest words. A take that fails prints every agent pane
-  before the sandbox goes: the stand-in's traceback is there.
+  so a link a take opens reads `opening …` on the board and starts no browser. The two Reddit
+  takes keep the merge train (the `reddit` take's ending is its merge; the `prs` take's board
+  merges on its forge) and run with the `P` peek on, so every card shows its agent's latest
+  words. What the stand-ins read (`DEMO_GO`, `DEMO_WAKES`, `DEMO_PACED`, the `prs` take's PATH
+  and `MSMN_FORGE`) goes through the sandbox's `.profile`: a pane's environment is the login
+  shell's, not the script's. For `prs` it also gives the repo a github.com remote, puts
+  `forge.py` on PATH as `gh`, and reads the forge every 2 s (1.5 s while a pipeline runs)
+  instead of every minute. A take that fails prints every agent pane before the sandbox goes
+  (the stand-in's traceback is there), the wakes the crown heard, and for `prs` where every
+  card and pull request stood.
 - **`seed.py`** creates the tickets over the daemon's socket, using the same wire protocol as
   the TUI. It answers Setup first, as one person on one repository would, and files each
   ticket in TODO, then moves it where the tape wants it. `BOARDS` holds one ticket list per
@@ -58,24 +65,43 @@ What each file does:
   work when the recording opens, on the ticket `AT_WORK` names for the tape, and marks the
   first step into an agent as practised, so the practice screen does not open in a take. For
   `ticket-page` it then runs a second agent that writes a note on its ticket and stops, and puts
-  that ticket back at the top of TODO. With the real claude it also answers claude's first-run
+  that ticket back at the top of TODO. For `reddit` it waits for the crown's agent to read the
+  board and end its turn, and turns DONE's worktree reclaim off, so a merged card carries its
+  agent's words and not an eviction line. For `prs` it sets the board to merge through pull
+  requests, renames DONE to PRODUCTION and adds STAGING, sets what moves a card into each
+  column (a passed pipeline, a deploy to the environment), collapses TODO, writes each card's
+  pull request under a Summary in a note, seeds the forge, crowns "Ship 1.1" and waits for its
+  crown to start both workers. With the real claude it also answers claude's first-run
   screens, gives that agent a task long enough to outlast the take, and waits until claude has
   taken it (see below).
 - **`stub-claude.py`** stands in for `claude` through `MESIMON_CLAUDE_BIN`. The daemon launches
   it with claude's own argv and pastes the prompt into its pane. It reports back the way claude
   does: through the hook commands in its settings file, and through the `mesimon mcp` shim for
   the board tools (`raise_hand` in the demo; `create_ticket`, `move_ticket`, `tag_ticket` and
-  `start_agent` once crowned in the crown clip; `write_note` in the ticket-page clip). It writes
+  `start_agent` once crowned in the crown clip; `write_note` in the ticket-page clip;
+  `ask_agent` and `sleep_agent` when a crown answers a wake in the Reddit clips). It writes
   a transcript, and the ticket page's preview reads it. Its pane has a prompt line that takes
   typed text, drawn the way the daemon reads Claude Code's composer (a rule, `❯ `, a rule),
   since a launch's words go only into a composer the daemon has seen; a line over it says it
   is a stand-in. Only the model is scripted, and what it
-  does is keyed off its ticket's title. A script that fails leaves its traceback in the agent's
-  pane.
+  does is keyed off its ticket's title. A crown that has ended its turn takes each wake the
+  board types into its pane as one short turn (`heard`); a finished worker rebases when the
+  train asks and answers the merge notice (`done_worker`). With `DEMO_PACED` (the `reddit`
+  take) a worker holds its question until the board is ready for it, so the clip shows one
+  thing at a time; with `DEMO_GO` (the `prs` take) a worker starts its work when the recording
+  opens. A script that fails leaves its traceback in the agent's pane.
+- **`forge.py`** stands in for `gh` in the `prs` take: one JSON file is the forge. It answers
+  what the daemon asks (`auth status`, `pr list`, `pr view`, the `api` reads of check runs, a
+  commit's status, a pull request's commits and an environment's deployments), takes the
+  stand-in's `gh pr create`, and runs each pull request on a clock from the moment the take
+  opens: a pipeline that runs and passes or fails, a teammate's merge (a real merge commit on
+  `origin/main`, so a deploy carries every merge under it), a deploy to staging, then
+  production. `seed.py` seeds it with the cards' pull requests at their own points in time.
 - **`kitty-term.py`** puts a pty between VHS and the board. VHS's terminal (xterm.js) does not
   answer the kitty keyboard query, so on that terminal the board correctly turns Shift+Enter
   off. The shim answers the query and delivers the tape's `Alt+Enter` as the kitty report for
-  Shift+Enter. Every other byte passes through unchanged.
+  Shift+Enter. Every other byte passes through unchanged. It also makes the `DEMO_GO` file as
+  the take opens, which the `prs` take's workers and forge clocks wait for.
 - **`demo.tape`** is the README's main take: start an agent, answer it, merge its branch and
   tell the agent it merged.
   Wherever the agent's timing matters, the tape waits for the screen to change instead of
@@ -92,17 +118,28 @@ What each file does:
 - **`ticket-page.tape`** is the ticket-page tour clip: `tab` writes a card's description,
   `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that note's links
   and `enter` opens one.
-- **`reddit.tape`** is the clip for a Reddit post (T-1125), one take from the crown to the
-  merge, all of it on the board: an agent has read the board and ended its turn, `^o` crowns
-  it, Shift+Enter on its card tells it what to do, it files, tags and starts an agent on the
-  demo ticket, that agent raises its hand, `k` puts the cursor on its card, Shift+Enter answers
-  it there, and the merge train lands its branch. Larger cells than the README's clips, longer
-  holds, an mp4 for Reddit's native video upload beside the gif. Its outputs are ignored by git.
+- **`reddit.tape`** is the first clip for a Reddit post (T-1125): you and the crown on one
+  board, all of it on the board. Shift+Enter on a TODO card starts an agent with your words;
+  one step right, `^o` crowns the idle agent that read the board, and Shift+Enter on its card
+  tells it what to do; it files two tickets, tags one and starts an agent on Custom slugs.
+  Your worker raises its hand, its card lights at the top of REVIEW, `k` and Shift+Enter
+  answer it there, and the train lands it; the crown's worker asks the crown, the crown
+  answers it on its own, the train asks that branch to rebase and lands it, and the crown
+  parks its worker. Larger cells than the README's clips, longer holds, an mp4 for Reddit's
+  native video upload beside the gif. Its outputs are ignored by git.
+- **`prs.tape`** is the second: a board that merges through pull requests, with STAGING and
+  PRODUCTION columns, eleven cards and a stand-in GitHub. The crown has two workers out; one
+  opens a pull request and the board follows it from IN PROGRESS (pipeline running) to REVIEW
+  (green) to STAGING and PRODUCTION as a teammate's merge is deployed; the other's pipeline
+  fails, the crown hears it and sends the worker back, the fix goes the same way, and the crown
+  parks each merged worker. Nothing is typed until the end: `^h` on the card that just arrived
+  lists its pull request, pipeline, review and deployments. Its outputs are ignored by git.
 
 ## The agent clip is the real claude
 
-`agent.gif` shows real Claude Code. The other four clips keep the stand-in, because they depend
-on its timing: the demo's raised hand, the crown's tool calls, the note on the ticket page.
+`agent.gif` shows real Claude Code. The other clips keep the stand-in, because they depend
+on its timing: the demo's raised hand, the crown's tool calls, the note on the ticket page, the
+Reddit clips' beats and the forge's clock.
 `record.sh` refuses a key file for any tape but `agent`.
 
 `MESIMON_DEMO_KEY_FILE` names a file holding one secret and nothing else: a Console API key

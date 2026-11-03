@@ -59,6 +59,10 @@ def main():
     pid, fd = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)
+    if os.environ.get("DEMO_GO"):
+        # The take has begun: the stand-in agents and forge.py's clocks
+        # wait for this file, so nothing happens before the recording.
+        open(os.environ["DEMO_GO"], "w").close()
     winsize(0, fd)
     signal.signal(signal.SIGWINCH, lambda *_: winsize(0, fd))
     saved = termios.tcgetattr(0)

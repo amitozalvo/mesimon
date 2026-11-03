@@ -12,9 +12,11 @@ What it does is keyed off the ticket title in its first prompt (seed.py):
 the demo ticket works, raises its hand with a question, takes the answer,
 commits and stops; the crown clip's ticket works until a person crowns it,
 then runs the board through the crown's tools; the ticket-page clip's
-ticket reads the code, leaves a note with two links and stops; any other
-ticket keeps working, and answers what is typed into its pane without
-stopping (agent.tape steps in and does that).
+ticket reads the code, leaves a note with two links and stops; the
+pull-request clip's crown starts two workers and answers what the forge
+says of them, and its workers open pull requests through the stand-in `gh`
+(forge.py); any other ticket keeps working, and answers what is typed into
+its pane without stopping (agent.tape steps in and does that).
 """
 
 import json
@@ -34,6 +36,11 @@ DEMO = "Stats as JSON"
 QUESTION = "Include expired links?"
 CROWN = "Plan 1.0"
 NOTED = "Retire old links"
+SLUGS = "Custom slugs"
+SLUGS_QUESTION = "Reserve admin and api?"
+SPRINT = "Ship 1.1"
+LIMITER = "Rate limiting"
+SLASH = "Fix slash 404"
 
 # The note the ticket-page take opens: markdown, one link into the repo and
 # one out of it, so `^k` has both kinds to list.
@@ -236,10 +243,12 @@ def record(kind, content, **message):
         f.write(json.dumps(line) + "\n")
 
 
-def tool(name, description, until=None, **tool_input):
+def tool(name, description, until=None, result="ok", **tool_input):
     """A tool call: its transcript lines, its hook, a line in the pane. It
     runs 1.2 s, or with `until`, up to 2 s and no longer than that is false.
-    Returns a prompt submitted while it ran, if one was."""
+    `result` is what the tool answered, as the transcript keeps it (the
+    board reads a `gh pr create`'s URL from there). Returns a prompt
+    submitted while it ran, if one was."""
     use_id = f"toolu_{uuid.uuid4().hex[:24]}"
     record("assistant", [{"type": "tool_use", "id": use_id, "name": name,
                           "input": {"description": description, **tool_input}}])
@@ -251,7 +260,7 @@ def tool(name, description, until=None, **tool_input):
         end = time.time() + 2
         while asked is None and time.time() < end and not until():
             asked = PANE.wait(0.25)
-    record("user", [{"type": "tool_result", "tool_use_id": use_id, "content": "ok"}])
+    record("user", [{"type": "tool_result", "tool_use_id": use_id, "content": result}])
     hook("PostToolUse", tool_name=name, tool_input=tool_input, tool_use_id=use_id)
     return asked
 
@@ -313,6 +322,27 @@ def raise_hand(reason):
     board.close()
 
 
+def column_of(board, title):
+    return next((t["column"] for t in board.call("list_board")["tickets"]
+                 if t["title"] == title), None)
+
+
+def paced(title, column, steps):
+    """The reddit clip (DEMO_PACED) shows one thing at a time: a worker
+    keeps working, a step at a time, until the ticket `title` is in
+    `column`, and raises its hand a beat later. Elsewhere, no wait."""
+    if not os.environ.get("DEMO_PACED"):
+        return
+    board = Board()
+    there = lambda: column_of(board, title) == column
+    n = 0
+    while not there():
+        tool(*steps[n % len(steps)], until=there)
+        n += 1
+    board.close()
+    PANE.wait(2.5)
+
+
 def demo(first):
     submitted(first)
     text("I'll add a --json flag to `shortlink stats`.")
@@ -320,6 +350,10 @@ def demo(first):
     tool("Edit", "Add the --json flag", file_path=os.path.join(CWD, "stats.py"))
     write_json_flag(expired=False)
     tool("Bash", "Run the stats tests", command="python3 -m pytest -q")
+    # On the reddit board, the hand goes up once the crown has started its
+    # own worker, so the crown's turn is over when the person answers.
+    paced(SLUGS, "IN PROGRESS", [("Edit", "Cover --json in the tests"),
+                                 ("Bash", "Run the stats tests")])
     text(f"--json works. {QUESTION} They are hidden from the table today.", last=True)
     raise_hand(QUESTION)
     hook("Stop", stop_hook_active=False)
@@ -362,7 +396,7 @@ def crown(first):
              "them and start the work once I wear the crown.", last=True)
         hook("Stop", stop_hook_active=False)
         submitted(PANE.wait())
-        text("On it: filing both, then starting Stats as JSON.")
+        text(f"On it: filing both, then starting {SLUGS}.")
     else:
         while not crowned():
             tool("Read", steps[n % len(steps)], until=crowned)
@@ -382,9 +416,9 @@ def crown(first):
                    key=stale, to_column="TODO", seen=seen(board, stale))
     crown_tool(board, "tag_ticket", f"Tag {notes['key']} MILESTONE",
                key=notes["key"], name="MILESTONE")
-    # The crown clip's board has "Expire old links"; the reddit clip's has
-    # the demo ticket instead, whose agent raises its hand and is merged.
-    expire = keys.get("Expire old links") or keys[DEMO]
+    # The crown clip's board has "Expire old links"; the reddit clip's crown
+    # starts "Custom slugs", whose agent asks the crown and is merged.
+    expire = keys.get("Expire old links") or keys[SLUGS]
     started = crown_tool(board, "start_agent", f"Start an agent on {expire}",
                          key=expire, seen=seen(board, expire), workspace="worktree")
     left = started["budget_left"]
@@ -394,6 +428,220 @@ def crown(first):
          f"{left} {'start' if left == 1 else 'starts'} left in the crown's budget.",
          last=True)
     hook("Stop", stop_hook_active=False)
+    if reddit:
+        heard(board, {
+            "hand": (f"Answered {expire}: reserve admin and api.",
+                     lambda _: crown_tool(board, "ask_agent", f"Answer {expire}",
+                                        key=expire, seen=seen(board, expire),
+                                        text="Reserve both: answer 409 for admin and api.")),
+            # A merged worker is done: parked, its worktree is reclaimed.
+            "merged": (f"{expire} merged and parked; 1.0's open work is filed in TODO.",
+                       lambda _: crown_tool(board, "sleep_agent", f"Park {expire}: merged",
+                                            key=expire, seen=seen(board, expire))),
+        }, {expire})
+
+
+def heard(board, says, workers=(), idle="Nothing else needs me."):
+    """The crown after its turn: each wake the board types into its pane
+    (an agent it started ended a turn, raised its hand, merged; the forge
+    said something of its pull request) is one short turn. `says` maps a
+    word in the wake to what the crown says, and what it does first; a
+    wake with none of them gets `idle`. A clause about one of `workers`
+    (the crown's own) is read before one about any other ticket."""
+    while True:
+        wake = PANE.wait()
+        submitted(wake)
+        if os.environ.get("DEMO_WAKES"):
+            # What the board typed, for whoever tunes the words above.
+            with open(os.environ["DEMO_WAKES"], "a") as f:
+                f.write(wake + "\n")
+        PANE.wait(0.8)
+        # One wake can speak of several tickets, one clause each (`; `
+        # between them): the key is the one in the clause with the word.
+        clauses = [c for line in wake.splitlines() for c in line.split("; ")]
+        clauses.sort(key=lambda c: not any(re.search(rf"\b{k}\b", c) for k in workers))
+        for word, (said, act) in says.items():
+            line = next((c for c in clauses if word in c), None)
+            if line is None:
+                continue
+            key = re.search(r"\bT-\d+\b", line) or re.search(r"\bT-\d+\b", wake)
+            key = key.group() if key else "it"
+            if act:
+                act(key)
+            text(said.replace("{key}", key), last=True)
+            break
+        else:
+            text(idle, last=True)
+        hook("Stop", stop_hook_active=False)
+
+
+def slugs(first):
+    """The reddit clip's crown-started worker: works, asks the crown (a
+    raised hand on an agent the crown started goes to the crown), takes the
+    answer the crown sends, commits and stops."""
+    submitted(first)
+    text("Letting /shorten take a slug of the caller's choosing.")
+    tool("Read", "Read store.py", file_path=os.path.join(CWD, "store.py"))
+    tool("Edit", "Take a slug from the request", file_path=os.path.join(CWD, "store.py"))
+    write_slugs(reserved=False)
+    tool("Bash", "Run the tests", command="python3 -m pytest -q")
+    # Its question waits for the person's worker to land: one beat at a time.
+    paced(DEMO, "DONE", [("Edit", "Cover a chosen slug in the tests"),
+                         ("Bash", "Run the tests")])
+    text(f"Custom slugs work. {SLUGS_QUESTION} Nobody should be able to take them.",
+         last=True)
+    raise_hand(SLUGS_QUESTION)
+    hook("Stop", stop_hook_active=False)
+
+    submitted(PANE.wait())
+    tool("Edit", "Reserve admin and api", file_path=os.path.join(CWD, "slugs.py"))
+    write_slugs(reserved=True)
+    tool("Bash", "Run the tests", command="python3 -m pytest -q")
+    subprocess.run(["git", "add", "-A"], cwd=CWD, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-qm", "shorten: custom slugs, admin and api reserved"],
+                   cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tool("Bash", "Commit", command="git commit -am 'shorten: custom slugs'")
+    text("Done: a request may name its slug; admin and api answer 409. Committed on "
+         "this ticket's branch.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+
+def sprint(first):
+    """The pull-request clip's crown: starts a worker on each open ticket,
+    then hears what the forge says of their pull requests. A pipeline that
+    fails sends the worker back with the job's name; the rest is noted on
+    the card."""
+    submitted(first)
+    text("Two items open for 1.1. Starting a worker on each; the board tells me what "
+         "the forge makes of their pull requests.")
+    board = Board()
+    keys = {t["title"]: t["key"] for t in board.call("list_board")["tickets"]}
+    for title in (LIMITER, SLASH):
+        crown_tool(board, "start_agent", f"Start an agent on {keys[title]} ({title})",
+                   key=keys[title], seen=seen(board, keys[title]), workspace="worktree")
+    text(f"Started {keys[LIMITER]} and {keys[SLASH]}. Waiting on the forge.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+    def send_back(key):
+        crown_tool(board, "ask_agent", f"Send {key} back to the failed job",
+                   key=key, seen=seen(board, key), deliver="idle",
+                   text="The tests job failed on your PR. Fix it and push.")
+
+    workers = {keys[LIMITER], keys[SLASH]}
+
+    def park(key):
+        # A merged worker is done: parked, its seat in the budget is free.
+        # A card with no agent (one that came with its PR) has none to park.
+        if key in workers:
+            crown_tool(board, "sleep_agent", f"Park {key}: merged",
+                       key=key, seen=seen(board, key))
+
+    # In the order the words settle a wake: a line can say merged and
+    # passed, or deployed and merged, in one breath.
+    heard(board, {
+        "pipeline failed": ("Sent {key} back: its tests job failed.", send_back),
+        "deployed to production": ("{key} is in production.", None),
+        "deployed to staging": ("{key} is on staging; production is next.", None),
+        "merged": ("{key} merged; the deploys say where it goes.", park),
+        "pipeline passed": ("{key} is green; a teammate merges it from here.", None),
+        "opened": ("{key} opened its pull request; the pipeline runs.", None),
+    }, workers, idle="Heard the forge; nothing for me to do.")
+
+
+def go(delay):
+    """Hold until the take has begun (the DEMO_GO file kitty-term.py
+    makes), plus `delay` seconds: the pull-request clip's workers are
+    started before the recording and work during it."""
+    path = os.environ.get("DEMO_GO")
+    while path and not os.path.exists(path):
+        PANE.wait(0.2)
+    PANE.wait(delay)
+
+
+def opens_pr(title, body, fails=None):
+    """Commit the work and open its pull request through `gh` (forge.py on
+    this take's PATH), as a real agent would, printing the PR's URL into
+    the transcript for the board to read."""
+    subprocess.run(["git", "add", "-A"], cwd=CWD, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-qm", title], cwd=CWD,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tool("Bash", "Commit", command=f"git commit -am '{title}'")
+    env = {**os.environ, "MSMN_FORGE_FAILS": fails} if fails else os.environ
+    url = subprocess.run(["gh", "pr", "create", "--title", title, "--body", body],
+                         cwd=CWD, capture_output=True, text=True, env=env).stdout.strip()
+    tool("Bash", "Open a pull request", result=url + "\n",
+         command=f"git push -u origin HEAD && gh pr create --title '{title}' --body '{body}'")
+    return url
+
+
+def limiter(first):
+    """The pull-request clip's clean worker: works, opens its PR, stops."""
+    submitted(first)
+    text("Adding a token bucket per client IP in front of /shorten.")
+    go(1.5)
+    tool("Read", "Read store.py", file_path=os.path.join(CWD, "store.py"))
+    tool("Edit", "Add the limiter", file_path=os.path.join(CWD, "limiter.py"))
+    with open(os.path.join(CWD, "limiter.py"), "w") as f:
+        f.write(LIMITER_PY)
+    tool("Bash", "Run the tests", command="python3 -m pytest -q")
+    url = opens_pr("Rate limit /shorten per client IP",
+                   "A token bucket per client IP: 20 a minute, 429 past that.")
+    text(f"Opened #{url.rsplit('/', 1)[-1]}: a token bucket per IP, 20 a minute, 429 "
+         "past that.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+
+def slash(first):
+    """The pull-request clip's other worker: its PR fails its pipeline, the
+    crown sends it back, it fixes and pushes."""
+    submitted(first)
+    text("A trailing slash falls through to 404. Normalising the path first.")
+    go(4)
+    tool("Read", "Read store.py", file_path=os.path.join(CWD, "store.py"))
+    tool("Grep", "Find where a slug resolves", pattern="def resolve")
+    tool("Edit", "Strip the trailing slash", file_path=os.path.join(CWD, "store.py"))
+    with open(os.path.join(CWD, "store.py"), "a") as f:
+        f.write("\n\ndef normalise(path):\n    return path.rstrip('/') or '/'\n")
+    tool("Bash", "Run the tests", command="python3 -m pytest -q")
+    tool("Edit", "Add a test for /abc/", file_path=os.path.join(CWD, "test_store.py"))
+    url = opens_pr("Redirect /abc/ like /abc", "Strip the trailing slash before resolving.",
+                   fails="tests")
+    text(f"Opened #{url.rsplit('/', 1)[-1]}: /abc/ resolves like /abc.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+    submitted(PANE.wait())
+    text("The test expects 301 for /abc/ and the redirect answers 302. Fixing it.")
+    tool("Edit", "Answer 301 for a normalised path", file_path=os.path.join(CWD, "store.py"))
+    with open(os.path.join(CWD, "store.py"), "a") as f:
+        f.write("\n\nREDIRECT = 301\n")
+    tool("Bash", "Run the tests", command="python3 -m pytest -q")
+    subprocess.run(["git", "commit", "-qam", "Answer 301 for a normalised path"], cwd=CWD,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["gh", "__push"], cwd=CWD, stdout=subprocess.DEVNULL)
+    tool("Bash", "Push the fix", command="git push")
+    text("Pushed: 301 for /abc/, tests green.", last=True)
+    hook("Stop", stop_hook_active=False)
+
+
+LIMITER_PY = '''"""A token bucket per client IP, in front of /shorten."""
+
+import time
+
+RATE = 20 / 60  # links a minute
+BURST = 20
+_buckets = {}
+
+
+def allow(ip, now=None):
+    now = time.monotonic() if now is None else now
+    level, at = _buckets.get(ip, (BURST, now))
+    level = min(BURST, level + (now - at) * RATE)
+    if level < 1:
+        _buckets[ip] = (level, now)
+        return False
+    _buckets[ip] = (level - 1, now)
+    return True
+'''
 
 
 def noted(first):
@@ -483,6 +731,27 @@ if __name__ == "__main__":
 '''
 
 
+SLUGS_PY = '''"""A slug a request names, or a random one."""
+
+import secrets
+
+RESERVED = RESERVED_VALUE
+
+
+def choose(wanted=None):
+    if wanted is None:
+        return secrets.token_urlsafe(4)
+    if wanted in RESERVED:
+        raise ValueError(f"{wanted} is reserved")  # 409 at the handler
+    return wanted
+'''
+
+
+def write_slugs(reserved):
+    with open(os.path.join(CWD, "slugs.py"), "w") as f:
+        f.write(SLUGS_PY.replace("RESERVED_VALUE", '{"admin", "api"}' if reserved else "set()"))
+
+
 def write_json_flag(expired):
     fields = '{"slug": link.slug, "clicks": link.clicks, "target": link.target'
     fields += ', "expired": link.expired}' if expired else "}"
@@ -502,19 +771,43 @@ def main():
     hook("SessionStart", reason="startup", source="startup")
     first = PANE.wait()
     try:
-        if first.startswith(DEMO):
-            demo(first)
-        elif first.startswith(CROWN):
-            crown(first)
-        elif first.startswith(NOTED):
-            noted(first)
-        else:
-            busy(first)
+        flows = {DEMO: demo, CROWN: crown, NOTED: noted, SLUGS: slugs,
+                 SPRINT: sprint, LIMITER: limiter, SLASH: slash}
+        flow = next((f for title, f in flows.items() if first.startswith(title)), None)
+        # "Rate limiting" is the busy agent of the other clips; it opens a
+        # pull request only where there is a forge to open it on.
+        if flow is limiter and not os.environ.get("MSMN_FORGE"):
+            flow = None
+        (flow or busy)(first)
     except Exception:
         # The pane stays up with the reason, for the person re-recording.
         say(traceback.format_exc())
+        while True:
+            PANE.wait()
+    done_worker()
+
+
+def done_worker():
+    """A worker whose work is done, at its prompt: the merge train asks a
+    branch that fell behind main to rebase, and that is done for real;
+    anything else typed in gets a nod."""
     while True:
-        PANE.wait()
+        words = PANE.wait()
+        submitted(words)
+        if os.environ.get("DEMO_WAKES"):
+            with open(os.environ["DEMO_WAKES"], "a") as f:
+                f.write(f"[worker] {words}\n")
+        if "rebase" in words.lower():
+            subprocess.run(["git", "rebase", "main"], cwd=CWD,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            tool("Bash", "Rebase onto main", command="git rebase main")
+            text("Rebased onto main; the tests still pass.", last=True)
+        elif "merged" in words.lower():
+            # The board's word that the branch landed.
+            text("Landed on main; nothing left on this ticket.", last=True)
+        else:
+            text("Noted.", last=True)
+        hook("Stop", stop_hook_active=False)
 
 
 if __name__ == "__main__":

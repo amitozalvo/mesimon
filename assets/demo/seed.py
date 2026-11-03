@@ -4,6 +4,8 @@
 Usage: seed.py board <repo> [tape]   create the tape's tickets (demo's by
                                      default) and start the background
                                      agent on one of them
+       seed.py prs <repo>            print where each ticket and its pull
+                                     requests stand (a failed prs take)
        seed.py stop <repo>           shut the demo daemon down
 
 Speaks the wire protocol the TUI speaks: newline-delimited JSON
@@ -84,15 +86,15 @@ CROWN_BOARD = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
-# reddit.tape: the crown board with the demo ticket in TODO, so the agent
-# the crown starts is the demo's: it works, raises its hand, takes the
-# answer from its card, commits, and the merge train lands its branch, all
-# in one take. "Expire old links" is absent, so the crown starts DEMO, and
-# "Custom slugs" waits in TODO, so the crown has nothing to move: a card in
-# IN PROGRESS with no agent on it is a staged thing (the author, T-1125).
-# The crown's agent has read the board and ended its turn before the take
-# opens (`settled`), so the person crowns an idle agent and tells it what
-# to do, as on a real board.
+# reddit.tape: the crown board with the demo ticket in TODO. The person
+# starts DEMO from its card (Shift+Enter), crowns the idle agent and tells
+# it what to do; the crown files two tickets and starts "Custom slugs". The
+# demo's agent raises its hand to the person, who answers from the card;
+# the crown's worker asks the crown, which answers it; the merge train lands
+# both. "Expire old links" is absent, so the crown starts "Custom slugs",
+# and nothing waits in IN PROGRESS with no agent on it: that is a staged
+# thing (the author, T-1125). The crown's agent has read the board and
+# ended its turn before the take opens (`settled`).
 REDDIT_BOARD = [
     ("TODO", DEMO, "FEATURE",
      "Scripts scrape the stats table. Print the same numbers as JSON when "
@@ -119,11 +121,61 @@ PAGE_BOARD = [
     for c, t, g, d in TICKETS
 ]
 
+# prs.tape: a board that merges through pull requests, read off a forge
+# that is forge.py (a stand-in `gh`), with an environment column for each
+# place a merge goes. IN PROGRESS holds a card until its pipeline passes,
+# REVIEW until a teammate merges it on the forge, STAGING and PRODUCTION
+# take it as the merge reaches them. The crown ("Ship 1.1") starts the two
+# TODO tickets with a worker each before the take opens; one worker's PR
+# fails its pipeline, which wakes the crown, which sends the worker back.
+# The cards already past REVIEW carry pull requests of their own, named
+# under a Summary in a note, as an agent names a PR it opened: PRS says
+# where each one's clock stands when the board opens.
+PRS_CROWN = "Ship 1.1"
+PRS_BOARD = [
+    ("TODO", "Rate limiting", "FEATURE",
+     "At most 20 new links a minute per client IP; answer 429 past that."),
+    ("TODO", "Fix slash 404", "BUG",
+     "GET /abc/ should redirect like GET /abc."),
+    ("TODO", "Webhook on click", "FEATURE", "POST to a URL on every click."),
+    ("TODO", "Clicks per day", "FEATURE", "A per-day breakdown in stats."),
+    ("TODO", "Document config", None,
+     "Every key in shortlink.toml, its default, and an example."),
+    ("IN PROGRESS", PRS_CROWN, "MILESTONE",
+     "Run the 1.1 sprint: start what is open, hear the forge, keep it moving."),
+    ("IN PROGRESS", "Admin login", "FEATURE", "Protect /admin with a password."),
+    ("REVIEW", "Bulk import", "FEATURE", "Shorten every URL in a text file."),
+    ("STAGING", "Export as CSV", "FEATURE",
+     "Every link with its clicks, as CSV, for the spreadsheet people."),
+    ("PRODUCTION", "QR code per link", "FEATURE", "An SVG QR code at /<slug>.svg."),
+    ("PRODUCTION", "Set up CI", None, "Run the tests on every push."),
+]
+# Each card's pull request on the stand-in forge (forge.py): `ago` is the
+# seconds since its last push when the take opens, `run_s` how long
+# its pipeline runs, `merge_after` the seconds from green to a teammate's
+# merge (None: nobody merges it in the take), `deploy` the seconds from the
+# merge to each environment. Admin login goes green, merges and deploys
+# during the take; Export as CSV reaches production during it.
+PRS = {
+    "Admin login": dict(number=40, ago=2, run_s=16, review="APPROVED", merge_after=6,
+                        deploy={"staging": 6, "production": 12}),
+    "Bulk import": dict(number=39, ago=60, run_s=5, review="REVIEW_REQUIRED",
+                        merge_after=None, deploy={}),
+    "Export as CSV": dict(number=38, ago=120, run_s=5, review="APPROVED", merge_after=1,
+                          deploy={"staging": 2, "production": 150}),
+    "QR code per link": dict(number=37, ago=600, run_s=5, review="APPROVED", merge_after=1,
+                             deploy={"staging": 2, "production": 5}),
+    "Set up CI": dict(number=35, ago=900, run_s=5, review="APPROVED", merge_after=1,
+                      deploy={"staging": 2, "production": 5}),
+}
+PR_URL = "https://github.com/demo/shortlink/pull/{}"
+
 # agent.tape steps into BUSY's agent, so it needs no board of its own.
 BOARDS = {"demo": TICKETS, "agent": TICKETS, "search": SEARCH,
-          "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD, "reddit": REDDIT_BOARD}
+          "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD, "reddit": REDDIT_BOARD,
+          "prs": PRS_BOARD}
 # The ticket whose agent is already at work, where it is not BUSY.
-AT_WORK = {"crown": CROWN, "reddit": CROWN}
+AT_WORK = {"crown": CROWN, "reddit": CROWN, "prs": PRS_CROWN}
 
 # With the real claude (record.sh with a key file), BUSY's agent works on
 # this instead: it has to still be at work when the take steps into it, and
@@ -179,9 +231,20 @@ def board(repo, tape="demo", start=True):
         tickets = [(c, t, g, REAL_BUSY if t == BUSY else d) for c, t, g, d in tickets]
     w = Wire(repo)
     # A new board opens on Setup (T-816); the person on the tape has been
-    # through it, with its answers for one person on one repository.
+    # through it, with its answers for one person on one repository, or for
+    # a team that merges through pull requests.
+    prs = tape == "prs"
     w.ask({"cmd": "apply_setup", "template": "kanban", "noun": "PR",
-           "merge_into": "main", "workspace": "worktree", "agent_tools": "full"})
+           "merge_into": "pull_requests" if prs else "main",
+           "workspace": "worktree", "agent_tools": "full"})
+    if prs:
+        columns(w)
+    if tape == "reddit":
+        # DONE reclaims nothing: a person's worker stays in its worktree
+        # after the merge, and the card would say the worktree is kept.
+        done = column_settings(w)["DONE"]
+        done.update(reclaim=False, free_worktree=False)
+        w.ask({"cmd": "set_column_settings", "name": "DONE", "settings": done})
     ids = {}
     for column, title, tag, description in tickets:
         # Only TODO takes a new ticket (T-764); a card further on is filed
@@ -201,6 +264,13 @@ def board(repo, tape="demo", start=True):
                "text": description})
         if tag:
             w.ask({"cmd": "set_tag", "id": made["id"], "group": 1, "name": tag})
+        if title in PRS and prs:
+            # The PR the card already carries, named as an agent names one
+            # it opened: under a Summary heading in a note.
+            w.ask({"cmd": "write_note", "ticket": made["id"], "note": None,
+                   "text": f"## Summary\n{PR_URL.format(PRS[title]['number'])}\n"})
+    if prs:
+        forge(repo, tickets)
     # The first-run offer to write an agent brief would sit in the header.
     w.ask({"cmd": "ignore_brief_offer"})
     # The first step into an agent practises the way back first; the person
@@ -211,6 +281,10 @@ def board(repo, tape="demo", start=True):
         return
     # One agent already at work, so the board opens with a spinner on it.
     at_work = ids[AT_WORK.get(tape, BUSY)]
+    # The pull-request take's crown was crowned before the take, as the
+    # person's ^o does; its first turn runs the board.
+    if tape == "prs":
+        w.ask({"cmd": "crown_ticket", "id": at_work})
     tree = sign_in(w, repo, key_file, at_work) if key_file else None
     w.ask({"cmd": "spawn_session", "ticket": at_work, "kind": "claude",
            "submit_prompt": True, "plan": False})
@@ -220,6 +294,67 @@ def board(repo, tape="demo", start=True):
         noted(w, ids)
     if tape == "reddit":
         settled(w, ids[CROWN])
+    if tape == "prs":
+        sprinting(w, repo, ids)
+
+
+def columns(w):
+    """The pull-request board's columns: DONE becomes PRODUCTION, STAGING
+    goes in after REVIEW, and each column takes a card when the forge says
+    so (`arrives_on`, T-739): REVIEW once the pipeline passes, STAGING and
+    PRODUCTION once the merge is deployed there. A turn's end moves nothing
+    out of IN PROGRESS and a working agent nothing out of REVIEW: the
+    forge places the cards from there."""
+    w.ask({"cmd": "rename_column", "name": "DONE", "to": "PRODUCTION"})
+    w.ask({"cmd": "add_column", "name": "STAGING", "after": "REVIEW"})
+    settings = column_settings(w)
+    for name, change in [
+        # TODO collapsed to its count: four columns fit the take's 120
+        # cells, and the sprint is what the clip is about.
+        ("TODO", {"collapsed": True}),
+        ("IN PROGRESS", {"on_done": None}),
+        ("REVIEW", {"on_working": None, "arrives_on": "pipeline_passes"}),
+        ("STAGING", {"arrives_on": "deployed", "arrives_env": "staging"}),
+        ("PRODUCTION", {"arrives_on": "deployed", "arrives_env": "production"}),
+    ]:
+        s = {**settings[name], **change}
+        s = {k: v for k, v in s.items() if v is not None}
+        w.ask({"cmd": "set_column_settings", "name": name, "settings": s})
+
+
+def column_settings(w):
+    """Each column's settings, which sit beside its name and order in the
+    snapshot, whole: set_column_settings takes the whole struct."""
+    return {c["name"]: {k: v for k, v in c.items() if k not in ("name", "order")}
+            for c in w.ask({"cmd": "snapshot"})["board"]["columns"]}
+
+
+def forge(repo, tickets):
+    """Seed the stand-in forge (forge.py, on PATH as `gh`) with the pull
+    requests the cards carry, each at its own point in time."""
+    spec = {"repo": repo, "prs": []}
+    for _, title, _, _ in tickets:
+        if title in PRS:
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+            spec["prs"].append({**PRS[title], "title": title, "branch": f"feature/{slug}"})
+    subprocess.run(["gh", "__seed"], input=json.dumps(spec), text=True, check=True)
+
+
+def sprinting(w, repo, ids):
+    """Wait for the pull-request take's crown to end its first turn, with
+    a worker at work on each of the two tickets it starts."""
+    workers = {ids["Rate limiting"], ids["Fix slash 404"]}
+    deadline = time.time() + 40
+    while True:
+        snap = w.ask({"cmd": "snapshot"})["board"]
+        running = {s["ticket"] for s in snap["sessions"] if s["state"]["state"] == "running"}
+        crown = next((s for s in snap["sessions"] if s["ticket"] == ids[PRS_CROWN]), None)
+        if workers <= running and crown and crown["state"]["state"] == "idle":
+            return
+        if time.time() > deadline:
+            sys.exit("seed: the crown did not start both workers:\n"
+                     + (pane(repo, crown) if crown else "(no crown session)"))
+        time.sleep(0.2)
 
 
 def settled(w, ticket):
@@ -352,6 +487,21 @@ def noted(w, ids):
     w.ask({"cmd": "move_ticket", "id": ticket, "column": "TODO", "before": ids[DEMO]})
 
 
+def prs(repo):
+    """What the board knows of its tickets' pull requests, for tuning the
+    pull-request take: the column each card is in, and each PR's state,
+    pipeline, review and the environments its merge reached."""
+    snap = Wire(repo, wait=0).ask({"cmd": "snapshot"})
+    cols = {t["id"]: (t["short_key"], t["title"], t["column"]) for t in snap["board"]["tickets"]}
+    for key, title, column in sorted(cols.values()):
+        print(f"{key:5} {column:12} {title}")
+    for p in snap.get("prs", []):
+        key, title, column = cols.get(p["ticket"], ("?", "?", "?"))
+        print(f"{key:5} #{p['number']} {p['state']} pipeline={p['pipeline']} "
+              f"review={p['review']} deployed={p.get('deployed', [])} "
+              f"merged={p.get('merged_oid', '')[:7]} reviewed={p.get('reviewed', False)}")
+
+
 def stop(repo):
     try:
         Wire(repo, wait=0).ask({"cmd": "shutdown"})
@@ -365,6 +515,8 @@ if __name__ == "__main__":
         if args[2:] and args[2] not in BOARDS:
             sys.exit(f"seed: no board for tape {args[2]!r}; add one to BOARDS")
         board(*args[1:])
+    elif args[:1] == ["prs"] and len(args) == 2:
+        prs(args[1])
     elif args[:1] == ["stop"] and len(args) == 2:
         stop(args[1])
     else:

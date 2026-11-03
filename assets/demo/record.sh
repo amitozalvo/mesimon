@@ -1,6 +1,8 @@
 #!/bin/sh
 # Re-record one of the README's clips with VHS: the demo (assets/demo.gif)
 # by default, or the tape named, e.g. `search` for assets/demo/search.gif.
+# The `prs` tape adds a stand-in `gh` (forge.py) on the sandbox's PATH, so
+# the board reads a forge that is one JSON file and calls no network.
 #
 #   cargo build --release -p mesimon && assets/demo/record.sh [tape]
 #
@@ -110,14 +112,32 @@ export MESIMON_CLAUDE_HOME=$HOME/.claude
 mkdir -p "$HOME/.local/state/mesimon" \
   && echo "skipped board demo" >"$HOME/.local/state/mesimon/welcomed"
 # The merge train (on by default) would land a finished branch before the
-# take's `m` does; the takes show the person merging. The Reddit clip
-# (reddit.tape) keeps the train, since its ending is the train's own merge,
-# and shows every card's latest reply (the `P` peek), so a feed viewer can
-# read what each agent is doing.
-if [ "$TAPE" = reddit ]; then
-    echo '{"schema_version":1,"peek":"all"}' >"$HOME/.local/state/mesimon/prefs.json"
-else
-    echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
+# take's `m` does; the takes show the person merging. The Reddit clips
+# (reddit.tape, prs.tape) keep the train, since the first one's ending is
+# the train's own merge and the second's board merges on its forge, and
+# show every card's latest reply (the `P` peek), so a feed viewer can read
+# what each agent is doing.
+case $TAPE in
+    reddit | prs) echo '{"schema_version":1,"peek":"all"}' >"$HOME/.local/state/mesimon/prefs.json" ;;
+    *) echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json" ;;
+esac
+# The reddit clip's workers raise their hands one at a time (stub-claude.py,
+# `paced`): a feed viewer follows one beat at a time.
+[ "$TAPE" = reddit ] && export DEMO_PACED=1 || true
+if [ "$TAPE" = prs ]; then
+    # A github.com remote names the forge; forge.py answers for it as `gh`,
+    # first on PATH for the daemon and, through the sandbox's login shell,
+    # for every agent pane. Nothing is fetched (the fetch setting is off).
+    git -C "$REPO" remote add origin https://github.com/demo/shortlink.git
+    mkdir -p "$SANDBOX/bin" "$SANDBOX/forge"
+    ln -s "$HERE/forge.py" "$SANDBOX/bin/gh"
+    export PATH=$SANDBOX/bin:$PATH
+    export MSMN_FORGE=$SANDBOX/forge
+    # The forge is read every 2 s, not every minute, and 1.5 s while a
+    # pipeline runs: a take cannot wait a minute between beats.
+    export MESIMON_FORGE_EVERY_MS=2000
+    export MESIMON_FORGE_BUSY_MS=1500
+    export MESIMON_FORGE_BURST_MS=1000
 fi
 if [ -n "$KEY_FILE" ]; then
     # A pane's environment is what `$SHELL -l` exports (the daemon asks it,
@@ -133,7 +153,7 @@ if [ -n "$KEY_FILE" ]; then
     mkdir -m 700 "$HOME/tmp"
     (
         umask 077
-        cat >"$HOME/.profile" <<EOF
+        cat >>"$HOME/.profile" <<EOF
 read -r DEMO_KEY <'$KEY_FILE'
 case \$DEMO_KEY in
     sk-ant-oat*) export CLAUDE_CODE_OAUTH_TOKEN="\$DEMO_KEY" ;;
@@ -162,6 +182,21 @@ export MESIMON_COLOR=truecolor
 export DEMO_MESIMON=$MESIMON
 export DEMO_REPO=$REPO
 export DEMO_TERM=$HERE/kitty-term.py
+# Made by kitty-term.py as the take opens: the stand-in agents of the
+# pull-request clip, and forge.py's clocks, wait for it.
+export DEMO_GO=$SANDBOX/go
+# Every wake the board types into a crown's pane, for tuning its answers.
+export DEMO_WAKES=$SANDBOX/wakes.log
+# A pane's environment is what the sandbox's login shell exports
+# (daemon/src/shellenv.rs), not this script's: what the stand-ins and the
+# stand-in forge read goes through its profile. The profile is written
+# before the key-file case appends claude's sign-in below.
+{
+    echo "export DEMO_GO='$DEMO_GO' DEMO_WAKES='$DEMO_WAKES'"
+    [ -n "${DEMO_PACED:-}" ] && echo "export DEMO_PACED=1"
+    [ -n "${MSMN_FORGE:-}" ] && echo "export PATH='$SANDBOX/bin':\"\$PATH\" MSMN_FORGE='$MSMN_FORGE'"
+    true
+} >"$HOME/.profile"
 
 "$MESIMON" daemon --repo "$REPO" >"$SANDBOX/daemon.out" 2>&1 &
 DAEMON=$!
@@ -177,7 +212,17 @@ if ! vhs "$TAPE.tape"; then
             tmux -S "$RT/tmux.sock" capture-pane -p -t "$pane" >&2 || true
         done
     fi
+    [ -f "$DEMO_WAKES" ] && { echo "--- wakes the crown heard ---" >&2; cat "$DEMO_WAKES" >&2; }
+    if [ "$TAPE" = prs ]; then
+        echo "--- the board's pull requests ---" >&2
+        python3 -B "$HERE/seed.py" prs "$REPO" >&2 || true
+        echo "--- the forge's state ---" >&2; cat "$MSMN_FORGE/state.json" >&2 || true
+        echo "--- git log origin/main ---" >&2; git -C "$REPO" log --oneline refs/remotes/origin/main >&2 || true
+        echo "--- daemon.out (forge) ---" >&2; grep -i "forge\|deploy" "$SANDBOX/daemon.out" | tail -40 >&2 || true
+    fi
     exit 1
 fi
 # A tape may name more than one Output (reddit.tape: an mp4 and a gif).
 sed -n 's/^Output //p' "$TAPE.tape" | while read -r out; do ls -l "$out"; done
+[ -f "$DEMO_WAKES" ] && { echo "--- wakes the crown heard ---"; cat "$DEMO_WAKES"; }
+true

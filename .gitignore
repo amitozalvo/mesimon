@@ -25,6 +25,8 @@ __pycache__/
 
 .playwright-mcp/
 
-# the Reddit clip (assets/demo/reddit.tape), not shipped in the repo
+# the Reddit clips (assets/demo/reddit.tape, prs.tape), not shipped in the repo
 /assets/demo/reddit.mp4
 /assets/demo/reddit.gif
+/assets/demo/prs.mp4
+/assets/demo/prs.gif

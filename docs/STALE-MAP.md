@@ -41127,3 +41127,48 @@ under the title), `^o` crowns it, Shift+Enter on its card asks "File what 1.0 is
 start Stats as JSON", and that ask is the turn that files, tags and starts; "Custom slugs" waits
 in TODO and the crown moves nothing. `stub-claude.py::crown` keys the two flows off the board
 ("Expire old links" present: the crown clip's, acting on the crown alone). 45 s.
+
+**The third viewing** (2026-11-04): a raised hand on an agent the crown started goes to the
+crown, not to the person, so the lit card never came; and "think of a better story: mix crown
+and manual starts". The clip is now you and the crown: Shift+Enter on a TODO card starts your
+own agent with your words (`launch_words` puts them under the title and brief), the crown is
+asked to file and start "Custom slugs", your worker's hand lights its card and you answer from
+it, the crown's worker asks the crown and the crown answers it with `ask_agent`, the train asks
+the second branch to rebase and lands both, and the crown parks its merged worker. 71 s. What
+it took: the two hands one beat apart, paced off the board (`stub-claude.py::paced` waits on
+`list_board` for a column, not a clock, since a clock races the crown's turn, whose card goes
+to IN PROGRESS and comes back to the top of REVIEW and moves the cursor's row); the tape waits
+for `REVIEW +3` before `k`, since the peek shows the question a tick before the card moves and
+a `k` from row 0 lands on the column header, whose Shift+Enter is a column ask that started the
+bug's seat; a finished worker rebasing on the train's ask and answering the merge notice
+(`done_worker`), or the second branch never lands and the card shows the notice as its words;
+DONE's reclaim off for this board, or the merged card reads "worktree kept: waiting for agents
+and their reaper"; and every flag the stand-ins read through the sandbox's `.profile`, since a
+pane's environment is the login shell's (`shellenv.rs`), which is also why `DEMO_PACED` did
+nothing on the first two takes.
+
+**A second clip, a pull-request board with environments** (the author: "I would add a PR story
+video as well, with environments and many tickets on the board, to show how it can help
+programmers in regular workspaces that require a high level of agent orchestration").
+`prs.tape`, 60 s, no typing until a `^h` at the end: eleven cards, Merge into pull requests,
+STAGING and PRODUCTION after REVIEW (DONE renamed), each column taking a card when the forge
+says so (`arrives_on`: a passed pipeline for REVIEW, a deploy for the two environments),
+IN PROGRESS's turn-end move and REVIEW's working move off so the forge places the cards, TODO
+collapsed because five expanded columns do not fit 120 cells. `forge.py` is `gh` on the
+sandbox's PATH: one JSON file, every pull request on a clock from the moment the take opens
+(`DEMO_GO`, made by `kitty-term.py`), merges as real merge commits on `origin/main` in time
+order so a deploy of a later commit carries the earlier merges and never the other way
+(`forge::deployed_after` judges by `merge-base --is-ancestor`), deployments listed newest first
+as GitHub lists them. The seeded cards carry their pull requests under a Summary in a note
+(`T-895`'s road), and the crown ("Ship 1.1", crowned over the wire before its first turn)
+starts two workers whose stand-ins open pull requests through the stand-in `gh` with the URL
+in the tool result (`cost.rs` reads it from the transcript): one goes green and is merged and
+deployed; the other's pipeline fails, the crown's wake names the job, the crown sends the worker
+back with `ask_agent`, the worker pushes (`gh __push` moves the head), and the crown parks each
+merged worker with `sleep_agent`. A wake can hold several clauses (`; `), one ticket each, so
+the crown reads the clause about its own worker first. Refuted: anchoring the forge's clocks on
+the seed (the seeded merges were already deployed to production at the first read, by
+ancestry); `MESIMON_FORGE_EVERY_MS` left at a minute (a take cannot wait between beats);
+waiting on an exact column count (`PRODUCTION +4` was skipped when two cards arrived in one
+pass; the waits take a range). Nothing in Rust changed; the forge e2e's stub `gh` was the model
+for `forge.py`.
