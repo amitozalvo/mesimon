@@ -41087,3 +41087,26 @@ reach off, behind, held by `t`, declined and back); `app::setup_on_your_own_star
 keeps a PR board's untouched. Goldens `board_train_offer_120x30`, `menu_train_offer_120x30`
 new; `setup_work_120x30`, `setup_ready_80x24` reminted for the words. `cargo ut`, clippy on
 core and tui, `cargo build --workspace`; no daemon change, so no `setup_e2e`.
+
+## A Reddit clip from the crown to the merge (T-1125, 2026-11-03, the author: "reddit post to showcase mesimon … research similar posts that worked … maximize engagement", then "I want this ticket to record the clip")
+
+The research is a proposal page (the ticket's note links it), nothing in the repo. The clip is
+`assets/demo/reddit.tape`: one take from `^o` on the crown's card to the merge train landing the
+started agent's branch, 36 s, 120×30 cells at 18 px, an mp4 beside the gif, both ignored by git
+(`assets/demo/README.md`). Its board is the crown clip's with the demo ticket in TODO
+(`REDDIT_BOARD`), so the crown's `start_agent` lands on the ticket whose stand-in raises its hand
+and commits; `crown()` starts "Expire old links" where the board has it and the demo ticket
+otherwise.
+
+Found on the way, and fixed on main first by T-1122 the same day: four product changes since
+T-542 had stopped `record.sh` (Setup on a new board, TODO-only filing, the composer shape the
+daemon reads before it pastes, `workspace` on the crown's tools, the train on by default). The
+rebase took T-1122's versions; this ticket's leftovers are the train kept on for the `reddit`
+tape alone (`prefs.json` is written for every other tape), the stand-in emptying its box on
+Ctrl+C as claude does, `record.sh` printing every agent pane when a take fails (the stand-in's
+traceback went with the sandbox) and listing each `Output` of a tape. Refuted: a
+`MESIMON_PINGPONG_MS` seam for the crown's move back (T-1122 routes an IN PROGRESS card through
+REVIEW instead, so the crown's move reverses nothing); holding the ticket from the train
+(refused on the session's own ticket). The take waits on `REVIEW +3` (the started agent's card
+arriving beside the crown's and the bug's) and then on the question's words on the page, since
+`demo.tape`'s `REVIEW +2` matches the crown's finish as readily as the raised hand.

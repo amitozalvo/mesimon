@@ -84,6 +84,25 @@ CROWN_BOARD = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
+# reddit.tape: the crown board with the demo ticket in TODO, so the agent
+# the crown starts is the demo's: it works, raises its hand, takes the
+# answer from the ticket page, commits, and the merge train lands its
+# branch, all in one take. "Expire old links" is absent, so the crown
+# starts DEMO.
+REDDIT_BOARD = [
+    ("TODO", DEMO, "FEATURE",
+     "Scripts scrape the stats table. Print the same numbers as JSON when "
+     "--json is passed, one object per link."),
+    ("TODO", "Document config", None,
+     "Every key in shortlink.toml, its default, and an example."),
+    ("IN PROGRESS", CROWN, "MILESTONE", "Decide what 1.0 needs, and file it."),
+    ("IN PROGRESS", "Custom slugs", "FEATURE",
+     "Let a user pick the slug instead of getting a random one."),
+    ("REVIEW", "Fix slash 404", "BUG",
+     "GET /abc/ should redirect like GET /abc."),
+    ("DONE", "Set up CI", None, "Run the tests on every push."),
+]
+
 # ticket-page.tape: the demo's board, with one card whose agent has already
 # left a note on it. The title is this board's own: stub-claude.py keys the
 # note-writing turn off it, and the crown clip starts a working agent on
@@ -98,9 +117,9 @@ PAGE_BOARD = [
 
 # agent.tape steps into BUSY's agent, so it needs no board of its own.
 BOARDS = {"demo": TICKETS, "agent": TICKETS, "search": SEARCH,
-          "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD}
+          "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD, "reddit": REDDIT_BOARD}
 # The ticket whose agent is already at work, where it is not BUSY.
-AT_WORK = {"crown": CROWN}
+AT_WORK = {"crown": CROWN, "reddit": CROWN}
 
 # With the real claude (record.sh with a key file), BUSY's agent works on
 # this instead: it has to still be at work when the take steps into it, and

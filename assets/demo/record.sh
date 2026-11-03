@@ -110,8 +110,10 @@ export MESIMON_CLAUDE_HOME=$HOME/.claude
 mkdir -p "$HOME/.local/state/mesimon" \
   && echo "skipped board demo" >"$HOME/.local/state/mesimon/welcomed"
 # The merge train (on by default) would land a finished branch before the
-# take's `m` does; the takes show the person merging.
-echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
+# take's `m` does; the takes show the person merging. The Reddit clip
+# (reddit.tape) keeps the train: its ending is the train's own merge.
+[ "$TAPE" = reddit ] \
+  || echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json"
 if [ -n "$KEY_FILE" ]; then
     # A pane's environment is what `$SHELL -l` exports (the daemon asks it,
     # daemon/src/shellenv.rs), so the sandbox's login profile signs claude
@@ -161,5 +163,16 @@ DAEMON=$!
 DEMO_KEY_FILE=$KEY_FILE python3 -B "$HERE/seed.py" board "$REPO" "$TAPE"
 
 cd "$HERE"
-vhs "$TAPE.tape"
-ls -l "$(sed -n 's/^Output //p' "$TAPE.tape")"
+if ! vhs "$TAPE.tape"; then
+    # The stand-in leaves its traceback in its pane; the sandbox goes with
+    # the take, so print every agent pane before it does.
+    if [ -S "$RT/tmux.sock" ]; then
+        for pane in $(tmux -S "$RT/tmux.sock" list-panes -a -F '#{pane_id}' 2>/dev/null); do
+            echo "--- agent pane $pane ---" >&2
+            tmux -S "$RT/tmux.sock" capture-pane -p -t "$pane" >&2 || true
+        done
+    fi
+    exit 1
+fi
+# A tape may name more than one Output (reddit.tape: an mp4 and a gif).
+sed -n 's/^Output //p' "$TAPE.tape" | while read -r out; do ls -l "$out"; done

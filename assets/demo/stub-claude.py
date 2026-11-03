@@ -174,6 +174,10 @@ class Pane:
             elif self.buf[:1] in (b"\x7f", b"\x08"):
                 self.buf = self.buf[1:]
                 self.line = self.line[:-1]
+            elif self.buf[:1] == b"\x03":
+                # Ctrl+C empties the box, as it does claude's (T-570).
+                self.buf = self.buf[1:]
+                self.line = b""
             else:
                 if self.buf[0] >= 0x20:
                     self.line += self.buf[:1]
@@ -364,7 +368,9 @@ def crown(first):
                key=stale, to_column="TODO", seen=seen(board, stale))
     crown_tool(board, "tag_ticket", f"Tag {notes['key']} MILESTONE",
                key=notes["key"], name="MILESTONE")
-    expire = keys["Expire old links"]
+    # The crown clip's board has "Expire old links"; the reddit clip's has
+    # the demo ticket instead, whose agent raises its hand and is merged.
+    expire = keys.get("Expire old links") or keys[DEMO]
     started = crown_tool(board, "start_agent", f"Start an agent on {expire}",
                          key=expire, seen=seen(board, expire), workspace="worktree")
     left = started["budget_left"]
