@@ -2165,6 +2165,37 @@ fn golden_board_pinned_120() {
     assert!(lines[2].contains("DONE"), "the cursor expands it: {:?}", lines[2]);
 }
 
+/// A pending move opens the column its ghost stands in (T-1133, user: "open
+/// collapsed column when a ticket is pending move into there"): pinned, or
+/// squeezed out of the window at 100 columns. The column it left stays open,
+/// and the drop or the cancel folds the target again.
+#[test]
+fn golden_move_opens_a_folded_column() {
+    let header = |lines: &[String]| lines[2].clone();
+    let mut board = fixture(false);
+    board.columns[3].settings.collapsed = true;
+    let mut app = app_graphite(board);
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    assert!(!header(&render(&app, 120, 30)).contains("DONE"));
+    press(&mut app, '>');
+    assert!(matches!(app.mode, Mode::Move { col: 3, .. }), "{:?}", app.mode);
+    let lines = render(&app, 120, 30);
+    assert!(header(&lines).contains("DONE") && header(&lines).contains("REVIEW"), "{lines:?}");
+    press(&mut app, 'x');
+    assert!(!header(&render(&app, 120, 30)).contains("DONE"), "the cancel folds it again");
+
+    // Squeezed: at 100 the window holds three columns and DONE is the spine.
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    assert!(!header(&render(&app, 100, 24)).contains("DONE"));
+    press(&mut app, '>');
+    let lines = render(&app, 100, 24);
+    assert!(header(&lines).contains("DONE") && header(&lines).contains("REVIEW"), "{lines:?}");
+    golden("board_move_into_spine_100x24", &lines);
+}
+
 #[test]
 fn golden_archived_dialog_120() {
     let mut app = app_graphite(fixture_archived());

@@ -4050,6 +4050,15 @@ impl App {
         &self.columns_pinned
     }
 
+    /// The column a pending move's ghost stands in (T-1133): the board
+    /// keeps it open, as it keeps the cursor's.
+    pub(crate) fn move_target(&self) -> Option<usize> {
+        match self.mode {
+            Mode::Move { col, .. } => Some(col),
+            _ => None,
+        }
+    }
+
     /// Recompute what `columns()` and `pinned_columns()` return from
     /// `board`. `absorb` calls it; so must anything else that rewrites
     /// `board.columns` or moves a ticket between columns.

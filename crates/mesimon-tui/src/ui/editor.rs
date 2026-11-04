@@ -253,6 +253,7 @@ fn dialog_rect(app: &App, cards: Rect) -> Rect {
         cards.width,
         app.columns().len(),
         app.cursor_col,
+        app.move_target(),
         pinned,
         &mut window,
     );

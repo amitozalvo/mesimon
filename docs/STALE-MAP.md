@@ -41217,3 +41217,16 @@ open-head shapes, the target off the list, the read and `gh`), clippy clean, the
 suite (42) under `ci/test-run.py`; the folder-workspace GitLab e2e's last fixture is now the
 lab's shape (a trigger on `deploy` running newest, the push on main passed) and was run once
 against the old pick, where it timed out waiting for `passed`.
+
+## A pending move opens the column its ghost stands in (T-1133, 2026-11-04, "open collapsed column when a ticket is pending move into there")
+
+`>`/`<` put the ghost in the neighbour column, but `layout::board_geometry` kept open only the
+cursor's column, and the cursor stays home during a move. So a ghost going into a column pinned
+collapsed (T-117) or squeezed out of the window (a narrow terminal) landed in a one-cell spine,
+where nothing of it showed. `board_geometry` now takes `target` (`App::move_target`, the
+`Mode::Move` column): it counts as a live column beside the cursor's, and the window slides to
+hold both. It is always the cursor's neighbour, so one more slide keeps both open; when only one
+column fits, the ghost's column wins. The drop or the cancel folds it again: the open column
+lasts only while the move is pending. The composer's `dialog_rect` passes the same target so its
+geometry matches the board's. Pinned by `a_pending_moves_column_is_open` (layout) and
+`golden_move_opens_a_folded_column` (`board_move_into_spine_100x24`).

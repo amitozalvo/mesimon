@@ -7,8 +7,8 @@
 //! spine. The cursor's column is always expanded; a contiguous window of
 //! expanded columns slides to contain it, and collapsed columns pin to the
 //! edge they fell off (07 §3.1). A column PINNED collapsed (its `collapsed`
-//! setting, T-117) is a spine at any width unless it holds the cursor; the
-//! window runs over the live columns only.
+//! setting, T-117) is a spine at any width unless it holds the cursor or a
+//! pending move's ghost (T-1133); the window runs over the live columns only.
 
 pub(crate) const GUT: u16 = 1;
 pub(crate) const LPAD: u16 = 1;
@@ -81,10 +81,17 @@ fn fit(w: u16, n_total: usize, pinned: usize) -> (usize, Vec<u16>) {
 /// the column is a spine unless it holds the cursor (T-117); `window` is an
 /// index into the LIVE columns — the unpinned ones plus the cursor's — and
 /// the clamp absorbs a pin set that changed under it.
+///
+/// `target` is a pending move's column (T-1133, user: "open collapsed column
+/// when a ticket is pending move into there"): it is expanded beside the
+/// cursor's for as long as the ghost stands in it, pinned or squeezed out.
+/// It is always the cursor's neighbour, so one slide more keeps both; when
+/// only one column fits, the ghost's wins — it is where the eye has to be.
 pub(crate) fn board_geometry(
     w: u16,
     n_total: usize,
     cursor_col: usize,
+    target: Option<usize>,
     pinned: &[bool],
     window: &mut usize,
 ) -> BoardGeometry {
@@ -92,16 +99,20 @@ pub(crate) fn board_geometry(
         return BoardGeometry { slots: vec![], window: 0, visible: 0 };
     }
     let live: Vec<usize> = (0..n_total)
-        .filter(|&c| c == cursor_col || !pinned.get(c).copied().unwrap_or(false))
+        .filter(|&c| {
+            c == cursor_col || Some(c) == target || !pinned.get(c).copied().unwrap_or(false)
+        })
         .collect();
-    let cursor_live = live.iter().position(|&c| c == cursor_col).unwrap_or(0);
     let (visible, widths) = fit(w, live.len(), n_total - live.len());
-    // Slide the window to contain the cursor.
+    // Slide the window to contain the cursor, then the ghost's column.
     *window = (*window).min(live.len() - visible);
-    if cursor_live < *window {
-        *window = cursor_live;
-    } else if cursor_live >= *window + visible {
-        *window = cursor_live + 1 - visible;
+    let at = |col: usize| live.iter().position(|&c| c == col);
+    for i in [at(cursor_col).or(Some(0)), target.and_then(at)].into_iter().flatten() {
+        if i < *window {
+            *window = i;
+        } else if i >= *window + visible {
+            *window = i + 1 - visible;
+        }
     }
 
     let mut slots = Vec::with_capacity(n_total);
@@ -133,7 +144,7 @@ mod tests {
     fn default_board_at_120() {
         // D33i's published number: 4 columns at 120 → T floor 25.
         let mut win = 0;
-        let g = board_geometry(120, 4, 0, &[], &mut win);
+        let g = board_geometry(120, 4, 0, None, &[], &mut win);
         assert_eq!(g.visible, 4);
         let widths: Vec<u16> = g
             .slots
@@ -153,7 +164,7 @@ mod tests {
     fn default_board_at_100_grows_one_spine() {
         // 4×MIN_COL doesn't fit at 100 — the far column collapses.
         let mut win = 0;
-        let g = board_geometry(100, 4, 0, &[], &mut win);
+        let g = board_geometry(100, 4, 0, None, &[], &mut win);
         assert_eq!(g.visible, 3);
         assert!(matches!(g.slots[3], Slot::Spine { .. }));
         assert!(g.slots[..3].iter().all(|s| matches!(s, Slot::Expanded { .. })));
@@ -162,12 +173,12 @@ mod tests {
     #[test]
     fn window_slides_to_cursor_and_spines_swap_edges() {
         let mut win = 0;
-        let g = board_geometry(100, 4, 3, &[], &mut win);
+        let g = board_geometry(100, 4, 3, None, &[], &mut win);
         assert_eq!(g.window, 1);
         assert!(matches!(g.slots[0], Slot::Spine { x } if x == LPAD + SPINE_GAP));
         assert!(g.slots[1..].iter().all(|s| matches!(s, Slot::Expanded { .. })));
         // Sliding back left restores the original window.
-        let g = board_geometry(100, 4, 0, &[], &mut win);
+        let g = board_geometry(100, 4, 0, None, &[], &mut win);
         assert_eq!(g.window, 0);
         assert!(matches!(g.slots[3], Slot::Spine { .. }));
     }
@@ -176,7 +187,7 @@ mod tests {
     fn window_is_sticky_between_edges() {
         // Cursor inside the window does not move it.
         let mut win = 1;
-        let g = board_geometry(100, 4, 2, &[], &mut win);
+        let g = board_geometry(100, 4, 2, None, &[], &mut win);
         assert_eq!(g.window, 1);
         assert!(matches!(g.slots[0], Slot::Spine { .. }));
         assert!(matches!(g.slots[3], Slot::Spine { .. }) || g.visible == 3);
@@ -185,7 +196,7 @@ mod tests {
     #[test]
     fn wide_terminals_clamp_column_width() {
         let mut win = 0;
-        let g = board_geometry(300, 4, 0, &[], &mut win);
+        let g = board_geometry(300, 4, 0, None, &[], &mut win);
         for s in &g.slots {
             if let Slot::Expanded { width, .. } = s {
                 assert!(*width <= MAX_COL);
@@ -196,7 +207,7 @@ mod tests {
     #[test]
     fn single_column_survives_any_width() {
         let mut win = 0;
-        let g = board_geometry(60, 1, 0, &[], &mut win);
+        let g = board_geometry(60, 1, 0, None, &[], &mut win);
         assert_eq!(g.visible, 1);
         assert!(matches!(g.slots[0], Slot::Expanded { .. }));
     }
@@ -207,7 +218,7 @@ mod tests {
         // everything within bounds.
         let mut win = 0;
         for cursor in 0..8 {
-            let g = board_geometry(60, 8, cursor, &[], &mut win);
+            let g = board_geometry(60, 8, cursor, None, &[], &mut win);
             assert!(g.visible >= 1);
             assert!(matches!(g.slots[cursor], Slot::Expanded { .. }), "cursor col expanded");
             // No slot may run past the right pad.
@@ -224,7 +235,7 @@ mod tests {
     #[test]
     fn empty_board() {
         let mut win = 0;
-        let g = board_geometry(120, 0, 0, &[], &mut win);
+        let g = board_geometry(120, 0, 0, None, &[], &mut win);
         assert!(g.slots.is_empty());
     }
 
@@ -234,7 +245,7 @@ mod tests {
     fn a_spine_breathes_on_both_sides() {
         let mut win = 0;
         let pinned = [false, true, false];
-        let g = board_geometry(120, 3, 0, &pinned, &mut win);
+        let g = board_geometry(120, 3, 0, None, &pinned, &mut win);
         let (
             Slot::Expanded { x: x0, width: w0 },
             Slot::Spine { x: sx },
@@ -253,11 +264,11 @@ mod tests {
     fn pinned_column_is_a_spine_at_any_width() {
         let mut win = 0;
         let pinned = [false, false, false, true];
-        let g = board_geometry(120, 4, 0, &pinned, &mut win);
+        let g = board_geometry(120, 4, 0, None, &pinned, &mut win);
         assert_eq!(g.visible, 3);
         assert!(matches!(g.slots[3], Slot::Spine { .. }));
         assert!(g.slots[..3].iter().all(|s| matches!(s, Slot::Expanded { .. })));
-        let g = board_geometry(120, 4, 3, &pinned, &mut win);
+        let g = board_geometry(120, 4, 3, None, &pinned, &mut win);
         assert!(matches!(g.slots[3], Slot::Expanded { .. }), "the cursor expands it");
         assert_eq!(g.visible, 4);
         // A pinned spine off the window's edge still costs its cell: no slot
@@ -265,7 +276,7 @@ mod tests {
         let mut win = 0;
         let pinned = [true, true, true, true, true, false, false, false];
         for cursor in 0..8 {
-            let g = board_geometry(60, 8, cursor, &pinned, &mut win);
+            let g = board_geometry(60, 8, cursor, None, &pinned, &mut win);
             assert!(matches!(g.slots[cursor], Slot::Expanded { .. }), "cursor col expanded");
             for s in &g.slots {
                 let end = match s {
@@ -275,5 +286,35 @@ mod tests {
                 assert!(end <= 60 - RPAD);
             }
         }
+    }
+
+    /// A pending move's column opens while the ghost stands in it (T-1133):
+    /// a pinned column for the visit, a squeezed-out one by sliding the
+    /// window — and the cursor's column stays open beside it.
+    #[test]
+    fn a_pending_moves_column_is_open() {
+        let expanded = |g: &BoardGeometry, c: usize| matches!(g.slots[c], Slot::Expanded { .. });
+        // Pinned: DONE is a spine until a ghost enters it.
+        let pinned = [false, false, false, true];
+        let mut win = 0;
+        let g = board_geometry(120, 4, 2, Some(3), &pinned, &mut win);
+        assert!(expanded(&g, 3) && expanded(&g, 2), "{:?}", g.slots);
+        // The drop or the cancel folds it again.
+        let g = board_geometry(120, 4, 2, None, &pinned, &mut win);
+        assert!(!expanded(&g, 3), "{:?}", g.slots);
+        // Squeezed out at 100: the window slides one to take the ghost in.
+        let mut win = 0;
+        let g = board_geometry(100, 4, 2, Some(3), &[], &mut win);
+        assert!(expanded(&g, 3) && expanded(&g, 2), "{:?}", g.slots);
+        assert_eq!(g.window, 1);
+        // Leftward the same, across a pinned column and the window's edge.
+        let mut win = 1;
+        let g = board_geometry(100, 4, 1, Some(0), &[true, false, false, false], &mut win);
+        assert!(expanded(&g, 0) && expanded(&g, 1), "{:?}", g.slots);
+        // One column fits: the ghost's is the one shown.
+        let mut win = 0;
+        let g = board_geometry(60, 8, 4, Some(5), &[], &mut win);
+        assert_eq!(g.visible, 1);
+        assert!(expanded(&g, 5), "{:?}", g.slots);
     }
 }
