@@ -1252,7 +1252,7 @@ esac
 fn merged_mr_json(branch: &str, tip: &str, merge_sha: &str, squash_sha: &str) -> String {
     format!(
         r#"[{{"iid":1,"web_url":"https://gitlab.example.com/lab/forge-lab-api/-/merge_requests/1","state":"merged",
-          "source_branch":"{branch}","sha":"{tip}","merge_commit_sha":"{merge_sha}","squash_commit_sha":"{squash_sha}",
+          "source_branch":"{branch}","target_branch":"main","sha":"{tip}","merge_commit_sha":"{merge_sha}","squash_commit_sha":"{squash_sha}",
           "draft":false,"has_conflicts":false,"detailed_merge_status":"not_open","updated_at":"2026-10-13T12:00:00Z"}}]"#
     )
 }
@@ -1453,7 +1453,16 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     let names: Vec<(&str, Option<&str>)> =
         view.repos.iter().map(|r| (r.name.as_str(), r.merged_in.as_deref())).collect();
     assert_eq!(names, [("api", Some("main (MR !1)")), ("web", None)]);
-    write(&pipelines.with_extension(merge_sha), r#"[{"id":44,"status":"success"}]"#);
+    // T-1130: the commit's own pipeline passed, and a definitions
+    // repository's trigger then ran at the same sha on `deploy`, a branch
+    // kept at main's head. The card says passed: the push on main, never
+    // the trigger's running job (which the jobs file, `named`, would not
+    // name either, so the wrong pick would read `running` bare).
+    write(
+        &pipelines.with_extension(merge_sha),
+        r#"[{"id":46,"status":"running","ref":"deploy","source":"trigger"},
+            {"id":44,"status":"success","ref":"main","source":"push"}]"#,
+    );
     wait_until(Duration::from_secs(20), "the merge commit's pipeline", || {
         prs_of(&mut c).iter().any(|p| p.ticket == w && p.number == 1 && p.pipeline == "passed")
     });

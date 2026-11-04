@@ -63,7 +63,7 @@ const REFLOG_CAP: &str = "2000";
 /// read by itself (`unlisted`).
 const LIST_LIMIT: usize = 100;
 /// The fields one GitHub PR is read with, listed or viewed.
-const GH_FIELDS: &str = "number,title,url,state,isDraft,headRefName,headRefOid,mergeCommit,\
+const GH_FIELDS: &str = "number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeCommit,\
                          mergeable,reviewDecision,updatedAt,mergedAt,statusCheckRollup";
 /// How long a merge commit a newer one superseded is still read (T-771): a
 /// day is past any deploy run, and the PR keeps what was read by then.
@@ -879,7 +879,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
             }
             (pr.pipeline, pr.pipeline_run) = match head {
                 Some((pipeline, id)) => (named_job(r, pipeline, id), id),
-                None => gitlab_pipeline(r, &pr.head_oid),
+                None => gitlab_pipeline(r, &pr.head_oid, ""),
             };
         }
         if read {
@@ -892,7 +892,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
             &q,
             now_ms,
             |pr| match q.repos.iter().find(|r| r.remote.path == pr.repo) {
-                Some(r) => commit_pipeline(r, &pr.merge_oid),
+                Some(r) => commit_pipeline(r, &pr.merge_oid, &pr.target_ref),
                 None => (Pipeline::Unknown, 0),
             },
             |pr| {
@@ -1384,13 +1384,23 @@ fn gitlab_mr(r: &RepoQuery, iid: u64) -> Result<forge::MrRead, Missing> {
     forge::parse_glab_mr(&r.remote.path, &out).filter(|m| m.pr.number == iid).ok_or(Missing::Failed)
 }
 
-/// A GitLab commit's newest pipeline, by sha, with its run's id (zero
-/// where none is). `Unknown` when the call fails: never read as green.
-fn gitlab_pipeline(r: &RepoQuery, sha: &str) -> (Pipeline, u64) {
-    let Ok(out) = r.api(&format!("projects/{}/pipelines?sha={sha}&per_page=1", r.project())) else {
+/// How many of a commit's pipelines one read lists (T-1130): the commit's
+/// own is found among a few triggers and schedules at the same sha.
+const GITLAB_PIPELINES_PAGE: usize = 20;
+
+/// A GitLab commit's newest own pipeline, by sha and, where known, on
+/// `target` (T-1130: the MR's target branch for a merge commit; empty for
+/// an open head, whose merge request pipelines run on a ref of their own),
+/// with its run's id (zero where none is). `Unknown` when the call fails:
+/// never read as green.
+fn gitlab_pipeline(r: &RepoQuery, sha: &str, target: &str) -> (Pipeline, u64) {
+    let on = if target.is_empty() { String::new() } else { format!("&ref={}", query_word(target)) };
+    let path =
+        format!("projects/{}/pipelines?sha={sha}{on}&per_page={GITLAB_PIPELINES_PAGE}", r.project());
+    let Ok(out) = r.api(&path) else {
         return (Pipeline::Unknown, 0);
     };
-    match forge::parse_gitlab_pipelines(&out) {
+    match forge::parse_gitlab_pipelines(&out, target) {
         (pipeline, Some(id)) => (named_job(r, pipeline, id), id),
         (pipeline, None) => (pipeline, 0),
     }
@@ -1410,9 +1420,9 @@ fn named_job(r: &RepoQuery, pipeline: Pipeline, id: u64) -> Pipeline {
 
 /// A merge commit's pipeline on the forge, with its run's id where the
 /// forge has one: GitHub's check runs for the commit and its commit
-/// statuses, the worse of the two (T-800); GitLab's newest pipeline by
-/// sha. `Unknown` when a call fails.
-fn commit_pipeline(r: &RepoQuery, oid: &str) -> (Pipeline, u64) {
+/// statuses, the worse of the two (T-800); GitLab's newest own pipeline by
+/// sha on the target branch (T-1130). `Unknown` when a call fails.
+fn commit_pipeline(r: &RepoQuery, oid: &str, target: &str) -> (Pipeline, u64) {
     match r.cli.forge {
         Forge::GitHub => {
             let path = &r.remote.path;
@@ -1426,7 +1436,7 @@ fn commit_pipeline(r: &RepoQuery, oid: &str) -> (Pipeline, u64) {
             };
             (forge::gh_commit_pipeline(runs, statuses), 0)
         }
-        Forge::GitLab => gitlab_pipeline(r, oid),
+        Forge::GitLab => gitlab_pipeline(r, oid, target),
     }
 }
 
@@ -2204,6 +2214,10 @@ pub struct PrRecord {
     pub state: String,
     pub head_oid: String,
     pub head_ref: String,
+    /// The branch it targets (T-1130). Absent in an older file; the next
+    /// list fills it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target_ref: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub merge_oid: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -2247,6 +2261,7 @@ impl PrRecord {
             state: p.state.word().into(),
             head_oid: p.head_oid.clone(),
             head_ref: p.head_ref.clone(),
+            target_ref: p.target_ref.clone(),
             merge_oid: p.merge_oid.clone(),
             conflict: p.conflict,
             review: p.review.word().into(),
@@ -2274,6 +2289,7 @@ impl PrRecord {
             url: self.url,
             head_oid: self.head_oid,
             head_ref: self.head_ref,
+            target_ref: self.target_ref,
             merge_oid: self.merge_oid,
             conflict: self.conflict,
             updated_ms: self.updated_ms,
@@ -2564,6 +2580,7 @@ mod tests {
             state,
             head_oid: "h".into(),
             head_ref: "b".into(),
+            target_ref: "main".into(),
             merge_oid: String::new(),
             conflict: false,
             review: Default::default(),

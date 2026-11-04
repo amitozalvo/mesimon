@@ -251,6 +251,10 @@ pub struct Pr {
     /// worktree wrote.
     pub head_oid: String,
     pub head_ref: String,
+    /// The branch the PR targets, as the forge names it (T-1130): what
+    /// the merge commit's pipeline is read on. Empty in an older build's
+    /// file, where the read then judges by source alone.
+    pub target_ref: String,
     /// The commit the merge landed as, once merged: a squash's, a merge
     /// commit's, or the head itself under a fast-forward.
     pub merge_oid: String,
@@ -375,6 +379,7 @@ pub fn parse_gh(repo: &str, json: &str) -> Vec<Pr> {
                 state,
                 head_oid: str_of(v, "headRefOid"),
                 head_ref: str_of(v, "headRefName"),
+                target_ref: str_of(v, "baseRefName"),
                 merge_oid,
                 conflict: v.get("mergeable").and_then(Value::as_str) == Some("CONFLICTING"),
                 review,
@@ -481,6 +486,9 @@ impl Pr {
         }
         self.state = read.state;
         self.head_oid = read.head_oid.clone();
+        if !read.target_ref.is_empty() {
+            self.target_ref = read.target_ref.clone();
+        }
         self.conflict = read.conflict;
         self.review = read.review;
         self.merge_oid = read.merge_oid.clone();
@@ -534,6 +542,7 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
         state,
         head_oid: str_of(v, "sha"),
         head_ref: str_of(v, "source_branch"),
+        target_ref: str_of(v, "target_branch"),
         merge_oid,
         conflict,
         review,
@@ -548,14 +557,29 @@ fn glab_mr(repo: &str, v: &Value) -> Option<Pr> {
 }
 
 /// The one `pipeline` word for GitLab's `pipelines?sha=` answer: the newest
-/// pipeline's status, and its id for the read of its jobs (T-772). GitLab
-/// names no job on this road: a wait or a failure reads bare until the
-/// pipeline's jobs are read (`parse_gitlab_job`).
-pub fn parse_gitlab_pipelines(json: &str) -> (Pipeline, Option<u64>) {
+/// pipeline of the commit itself, and its id for the read of its jobs
+/// (T-772). GitLab names no job on this road: a wait or a failure reads
+/// bare until the pipeline's jobs are read (`parse_gitlab_job`).
+///
+/// The commit's own pipeline is the one its push (or its merge request
+/// event) ran on `target` (T-1130): a downstream project's trigger, a
+/// schedule or a run from the web at the same sha is another thing's
+/// pipeline, and one on another ref (a `deploy` branch kept at main's
+/// head) is another branch's, however new. Either outranked the MR's own
+/// merge pipeline on the card. A pipeline that names no `source` or no
+/// `ref` (an older GitLab) is taken as the commit's. An empty `target`
+/// judges by source alone.
+pub fn parse_gitlab_pipelines(json: &str, target: &str) -> (Pipeline, Option<u64>) {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else {
         return (Pipeline::Unknown, None);
     };
-    let Some(first) = items.first() else { return (Pipeline::None, None) };
+    let own = |p: &&Value| {
+        let source = p.get("source").and_then(Value::as_str);
+        let on_ref = p.get("ref").and_then(Value::as_str);
+        source.is_none_or(|s| matches!(s, "push" | "merge_request_event"))
+            && (target.is_empty() || on_ref.is_none_or(|r| r == target))
+    };
+    let Some(first) = items.iter().find(own) else { return (Pipeline::None, None) };
     let status = gitlab_status(first.get("status").and_then(Value::as_str).unwrap_or_default());
     (status, first.get("id").and_then(Value::as_u64))
 }
@@ -1801,6 +1825,7 @@ mod tests {
             state,
             head_oid: head.into(),
             head_ref: "fix/x".into(),
+            target_ref: "main".into(),
             merge_oid: String::new(),
             conflict: false,
             review: Review::None,
@@ -2187,14 +2212,14 @@ mod tests {
         assert_eq!(gitlab_status("canceling"), Pipeline::Cancelled(String::new()));
         assert_eq!(gitlab_status("canceled"), Pipeline::Cancelled(String::new()));
         assert_eq!(
-            parse_gitlab_pipelines(r#"[{"status":"manual"}]"#).0,
+            parse_gitlab_pipelines(r#"[{"status":"manual"}]"#, "").0,
             Pipeline::Waiting(String::new())
         );
         assert_eq!(
-            parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#).0,
+            parse_gitlab_pipelines(r#"[{"status":"success"},{"status":"failed"}]"#, "").0,
             Pipeline::Passed
         );
-        assert_eq!(parse_gitlab_pipelines("[]"), (Pipeline::None, None));
+        assert_eq!(parse_gitlab_pipelines("[]", ""), (Pipeline::None, None));
         assert_eq!(gitlab_status("running"), Pipeline::Running(String::new()));
         assert_eq!(gitlab_status("failed"), Pipeline::Failed(String::new()));
     }
@@ -2287,10 +2312,66 @@ mod tests {
         assert_eq!(deploy_order(untimed, &envs), ["staging", "production"], "the columns' order");
     }
 
+    /// T-1130: !216 merged on main with its push pipeline running
+    /// `apply:dev`; a definitions repository's trigger then ran on `deploy`,
+    /// a branch kept at main's head, and the card named its job. The
+    /// commit's own pipeline is the push on the target branch, whatever
+    /// is newer at the sha.
+    #[test]
+    fn a_merge_commits_pipeline_is_its_own_push_on_the_target_branch() {
+        let at_sha = r#"[{"id":3027095594,"status":"running","ref":"deploy","source":"trigger"},
+            {"id":3027095000,"status":"failed","ref":"main","source":"schedule"},
+            {"id":3027094000,"status":"failed","ref":"main","source":"web"},
+            {"id":3027070361,"status":"success","ref":"main","source":"push"},
+            {"id":3027070000,"status":"failed","ref":"main","source":"push"}]"#;
+        assert_eq!(
+            parse_gitlab_pipelines(at_sha, "main"),
+            (Pipeline::Passed, Some(3027070361)),
+            "the push on main, past the trigger on deploy and the schedule"
+        );
+        assert_eq!(
+            parse_gitlab_pipelines(at_sha, ""),
+            (Pipeline::Passed, Some(3027070361)),
+            "an older file's record has no target: by source alone"
+        );
+        let triggers_only = r#"[{"id":9,"status":"running","ref":"deploy","source":"trigger"},
+            {"id":8,"status":"success","ref":"main","source":"pipeline"}]"#;
+        assert_eq!(
+            parse_gitlab_pipelines(triggers_only, "main"),
+            (Pipeline::None, None),
+            "a commit no push ran on has no pipeline, never a trigger's"
+        );
+        let mr_event = r#"[{"id":7,"status":"running","ref":"refs/merge-requests/4/head","source":"merge_request_event"}]"#;
+        assert_eq!(
+            parse_gitlab_pipelines(mr_event, ""),
+            (Pipeline::Running(String::new()), Some(7)),
+            "an open head's merge request pipeline, on its own ref"
+        );
+        assert_eq!(
+            parse_gitlab_pipelines(r#"[{"id":6,"status":"success"}]"#, "main"),
+            (Pipeline::Passed, Some(6)),
+            "an older GitLab names neither: the commit's"
+        );
+        // The target branch, off the list and off the single read.
+        let listed = r#"[{"iid":216,"web_url":"https://gitlab.example.com/g/p/-/merge_requests/216","state":"merged",
+          "source_branch":"feat/x","target_branch":"main","sha":"h","merge_commit_sha":"54997247",
+          "squash_commit_sha":null,"updated_at":"2026-11-04T12:00:00Z"}]"#;
+        let mut pr = parse_glab("g/p", listed).remove(0);
+        assert_eq!(pr.target_ref, "main");
+        let retargeted = r#"{"iid":216,"web_url":"https://gitlab.example.com/g/p/-/merge_requests/216","state":"opened",
+          "source_branch":"feat/x","target_branch":"release/1","sha":"h2","merge_commit_sha":null,
+          "squash_commit_sha":null,"updated_at":"2026-11-04T12:00:00Z"}"#;
+        pr.take_read(&parse_glab_mr("g/p", retargeted).unwrap().pr);
+        assert_eq!(pr.target_ref, "release/1", "a read's target wins");
+        let gh = r#"[{"number":1,"url":"https://github.com/o/r/pull/1","state":"OPEN","headRefName":"b","headRefOid":"h",
+          "baseRefName":"main","mergeCommit":null,"updatedAt":"2026-11-04T12:00:00Z"}]"#;
+        assert_eq!(parse_gh("o/r", gh)[0].target_ref, "main");
+    }
+
     #[test]
     fn a_gitlab_pipeline_names_the_job_it_stopped_on() {
         assert_eq!(
-            parse_gitlab_pipelines(r#"[{"id":44,"status":"manual"},{"id":43}]"#),
+            parse_gitlab_pipelines(r#"[{"id":44,"status":"manual"},{"id":43}]"#, "main"),
             (Pipeline::Waiting(String::new()), Some(44))
         );
         let jobs = r#"[{"name":"test","status":"success"},

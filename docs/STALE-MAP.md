@@ -41185,3 +41185,35 @@ it, `None` for the default) the way a digit lays its tag (T-911), and steps thro
 board. The ticket page's tier clause reads the same laid board. `repeated_presses_each_step_once…`
 no longer scripts a wait for the second press. Pinned by `ctrl_n_reveals_its_tier_before_the_board_lands`.
 Refuted: hiding the reveal's first frame, which would only shorten the wrong word.
+
+## A merged MR's pipeline is its own push on the target branch (T-1130, 2026-11-04, the author: "incorrect pipeline advertised in mesimon ticket … investigate, this happened on my work computer using gitlab")
+
+**Seen.** On the author's work GitLab, !216's card named `run:dev:max-defs-publish…` from
+pipeline 3027095594 while the MR's own merge pipeline 3027070361 was running `apply:dev` on
+main. The other pipeline was a definitions repository's trigger at the same sha on `deploy`, a
+branch a sync job keeps at main's head. The merge commit's pipeline was read as
+`pipelines?sha=<merge commit>&per_page=1`: GitLab's newest pipeline at the sha, whatever ref or
+source, so any trigger, schedule or web run at main's head outranked the MR's own push pipeline.
+Nothing a person does in GitLab changes that; the MR widget itself shows the push on main.
+
+**Changed.** `Pr` carries `target_ref` (GitLab `target_branch`, GitHub `baseRefName`, kept in
+`forge.json` as `target_ref`, absent in an older file and filled by the next list; a single MR
+read's target wins in `take_read`). A merge commit's GitLab pipeline is read
+`pipelines?sha=…&ref=<target>&per_page=20`, and `parse_gitlab_pipelines(json, target)` takes
+the newest whose `source` is `push` or `merge_request_event` and whose `ref` is the target: a
+`trigger`, `pipeline`, `schedule`, `web` or `api` run at the sha is another thing's, and a run
+on another ref is another branch's. A pipeline naming neither key (an older GitLab) is the
+commit's; an empty target (an older file's record, an open head's fallback read, whose merge
+request pipelines run on `refs/merge-requests/N/head`) judges by source alone. A commit only
+triggers ran on reads `none`, never a trigger's word.
+
+**Refuted.** Keeping GitLab's newest and only skipping `trigger`: a nightly `schedule` on main at
+the same sha is the same class of wrong pipeline, so the rule is an allowlist of the commit's
+own sources. A GitHub change: check runs are read per commit and the report named GitLab alone;
+`baseRefName` is read so the record is one shape, and nothing on GitHub uses it yet.
+
+**Verified.** `cargo ut` (a core case with the lab's five pipelines, the older-file and
+open-head shapes, the target off the list, the read and `gh`), clippy clean, the forge e2e
+suite (42) under `ci/test-run.py`; the folder-workspace GitLab e2e's last fixture is now the
+lab's shape (a trigger on `deploy` running newest, the push on main passed) and was run once
+against the old pick, where it timed out waiting for `passed`.

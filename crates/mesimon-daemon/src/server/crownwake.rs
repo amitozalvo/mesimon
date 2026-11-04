@@ -4733,6 +4733,7 @@ pub(in crate::server) mod tests {
             state: PrState::Open,
             head_oid: "h".into(),
             head_ref: "b".into(),
+            target_ref: "main".into(),
             merge_oid: String::new(),
             conflict: false,
             review: Default::default(),
