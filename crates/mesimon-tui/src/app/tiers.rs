@@ -145,20 +145,28 @@ impl App {
 
     /// `^n` on the board or the ticket page: the ticket's next tier, at
     /// once. The status says what the press did to the seat.
+    ///
+    /// The step is laid on the card at once (T-1131), as a digit's tag is
+    /// (T-911): the reveal read the board before its landing and flashed
+    /// the tier the press was leaving.
     pub(crate) fn cycle_tier(&mut self) -> Result<()> {
         // The tier as the daemon has it (T-812 review): a second press
-        // before the first's board lands steps from the first's answer.
-        if !self.catch_up()? {
+        // before the first's board lands steps from the first's laid pick.
+        let on = self.subject();
+        let laid = |e: &Edit| matches!(e, Edit::Tier { ticket, .. } if Some(*ticket) == on);
+        if !self.catch_up_unless_laid(laid)? {
             return Ok(());
         }
         let Some(id) = self.subject() else { return Ok(()) };
         let book = self.tiers();
         let current = book.of_ticket(id).id;
         let Some(next) = book.next_after(id, &current) else { return Ok(()) };
+        let stored = book.stored_pick(&next.id);
         let words = self.tier_press_words(id, &next);
         match self.req(Command::SetTicketTier { id, tier: Some(next.id.clone()) }) {
             Response::Err { message } => self.status = message,
             _ => {
+                self.lay(Edit::Tier { ticket: id, tier: stored });
                 self.refresh_soon()?;
                 self.status = words;
                 self.tier_flash = Some((id, Instant::now()));

@@ -649,6 +649,9 @@ pub(crate) enum Edit {
     Tag { ticket: ulid::Ulid, group: u8, name: Option<String> },
     /// A registry tag's tint.
     TagColor { group: u8, name: String, color: u8 },
+    /// `ticket`'s tier pick as the daemon stores it (T-1131): `None` for
+    /// the default.
+    Tier { ticket: ulid::Ulid, tier: Option<String> },
 }
 
 /// An `Edit` and `need`, the count of the first board asked after it: the
@@ -673,6 +676,11 @@ impl Edit {
             }
             Edit::TagColor { group, name, color } => {
                 let _ = board.set_tag_color(*group, name, *color);
+            }
+            Edit::Tier { ticket, tier } => {
+                if let Some(t) = board.ticket_mut(*ticket) {
+                    t.tier = tier.clone();
+                }
             }
         }
     }
@@ -17883,12 +17891,17 @@ mod tests {
         let hold = slow(&mut app);
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
+        // The first press waits for the push's board; the second steps
+        // from the first's laid pick (T-1131) and waits for none.
         release_late(&hold, LATE);
         app.cycle_tier().unwrap();
-        release_late(&hold, LATE);
         app.cycle_tier().unwrap();
-        release(&hold);
-        app.pump().unwrap();
+        assert_eq!(app.tiers().of_ticket(id).id, twice, "drawn at once");
+        while !hold.borrow().replies.is_empty() {
+            release(&hold);
+            app.pump().unwrap();
+        }
+        assert!(app.laid.is_empty());
         assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps, not one");
         // The tag sheet: colour forward twice is two tints on; toggling
         // twice is on and off again, not on twice.
@@ -21814,6 +21827,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `^n`'s reveal names the tier the press landed on from its first
+    /// frame (T-1131): before its board lands, the card read the old board
+    /// and flashed the tier it was leaving. Quick presses step from the
+    /// laid tier without a wait, as quick digits do (T-911).
+    #[test]
+    fn ctrl_n_reveals_its_tier_before_the_board_lands() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        let mut board = board_three_columns();
+        board.tiers.push(Tier {
+            id: "01QUICK".into(),
+            name: "quick".into(),
+            provider: AgentProvider::ClaudeCode,
+            model: "sonnet".into(),
+            effort: Effort::High,
+            description: String::new(),
+        });
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        // A wait would give up here and send nothing.
+        app.catch_up_wait = Duration::from_millis(20);
+        let one = ulid::Ulid(1);
+        let hold = slow(&mut app);
+        let ctrl_n =
+            |app: &mut App| app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        ctrl_n(&mut app);
+        assert!(app.snapshot_in_flight(), "its board is out");
+        assert_eq!(app.card_tier_word(one).as_deref(), Some("quick"), "never the tier it left");
+        hold.borrow_mut().pushes = 1;
+        app.pump().unwrap();
+        ctrl_n(&mut app);
+        assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"), "the second steps on");
+        let picks: Vec<String> =
+            sent.borrow().iter().filter(|c| c.starts_with("SetTicketTier ")).cloned().collect();
+        assert_eq!(picks.len(), 2, "{picks:?}");
+        assert!(picks[0].contains("01QUICK") && !picks[1].contains("01QUICK"), "{picks:?}");
+        while !hold.borrow().replies.is_empty() {
+            release(&hold);
+            app.pump().unwrap();
+        }
+        assert!(app.laid.is_empty(), "the board that shows it retires the edit");
+        assert_eq!(app.board.ticket(one).unwrap().tier, None, "the default, stored as inherit");
     }
 
     /// `^n` (T-443): on a card it picks the ticket's next tier at once —

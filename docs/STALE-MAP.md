@@ -41172,3 +41172,16 @@ ancestry); `MESIMON_FORGE_EVERY_MS` left at a minute (a take cannot wait between
 waiting on an exact column count (`PRODUCTION +4` was skipped when two cards arrived in one
 pass; the waits take a range). Nothing in Rust changed; the forge e2e's stub `gh` was the model
 for `forge.py`.
+
+## `^n` is drawn at once, so its reveal never flashes the tier it left (T-1131, 2026-11-04, "^n on a ticket skips the first tier ... the first tier is presented for a split second and reaches the 2nd tier")
+
+Not a double step and not by design: one press sends one `SetTicketTier`. T-562's reveal opens the
+card for `TIER_FLASH` on the tier the press landed on, but since T-812 the board arrives on a
+later tick, so the first frames read the board from before the press and named the tier being
+left (on a default ticket that is the default, which a card at rest never names), then the
+landing showed the right one. `cycle_tier` now lays `Edit::Tier` (the pick as the daemon stores
+it, `None` for the default) the way a digit lays its tag (T-911), and steps through
+`catch_up_unless_laid`, so a quick second `^n` steps from the laid pick without waiting for a
+board. The ticket page's tier clause reads the same laid board. `repeated_presses_each_step_once…`
+no longer scripts a wait for the second press. Pinned by `ctrl_n_reveals_its_tier_before_the_board_lands`.
+Refuted: hiding the reveal's first frame, which would only shorten the wrong word.
