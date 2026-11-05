@@ -732,6 +732,10 @@ pub struct Editor {
     /// `unsaved` goes full ink until the next key, so the reason is said
     /// where the eye is and the status line says what to press.
     pub tab_refused: bool,
+    /// When `^s` or `^S` was refused for a blank title: the title row
+    /// shakes from that instant, the board's refusal shake (T-423) on the
+    /// composer's own title.
+    pub title_shake: Option<Instant>,
     /// First visible wrapped body row; the draw follows the cursor and writes back.
     pub top: Cell<usize>,
     /// Body width from the last draw, shared by wrapping and vertical motion.
@@ -1142,6 +1146,7 @@ impl Editor {
             esc_armed: false,
             delete_armed: false,
             tab_refused: false,
+            title_shake: None,
             top: Cell::new(0),
             body_width: Cell::new(usize::MAX),
             grow: None,
@@ -1156,6 +1161,11 @@ impl Editor {
     /// leaves the card fast and settles gently.
     pub fn grow_progress(&self) -> Option<f32> {
         eased(self.grow?.1, GROW)
+    }
+
+    /// The title row's refusal-shake offset this frame, 0 at rest.
+    pub fn title_dx(&self) -> i16 {
+        self.title_shake.map_or(0, shake_offset)
     }
 
     /// The one field the keys type into.
@@ -1534,6 +1544,12 @@ const SPOKE_EVERY: Duration = Duration::from_secs(1);
 /// blink is a card in hand, and a refusal is neither.
 const SHAKE_OFFSETS: [i16; 6] = [1, -1, 1, -1, 1, -1];
 const SHAKE_STEP: Duration = Duration::from_millis(60);
+
+/// A refusal shake's offset in cells, `at` its start: 0 once it settled.
+fn shake_offset(at: Instant) -> i16 {
+    let step = (at.elapsed().as_millis() / SHAKE_STEP.as_millis()) as usize;
+    SHAKE_OFFSETS.get(step).copied().unwrap_or(0)
+}
 /// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
 /// the rendered height; a screenful is approximated.
 const EDITOR_PAGE: usize = 20;
@@ -3175,7 +3191,9 @@ impl App {
 
     /// Is a refusal shake still running?
     fn shaking(&self) -> bool {
-        self.refused.is_some_and(|(_, at)| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32)
+        let running = |at: Instant| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32;
+        self.refused.is_some_and(|(_, at)| running(at))
+            || matches!(&self.mode, Mode::Editor(ed) if ed.title_shake.is_some_and(running))
     }
 
     /// How far `ticket` is drawn off its place this frame: the refusal
@@ -3184,10 +3202,7 @@ impl App {
     /// row moves within its band.
     pub fn shake_dx(&self, ticket: ulid::Ulid) -> i16 {
         match self.refused {
-            Some((t, at)) if t == ticket => {
-                let step = (at.elapsed().as_millis() / SHAKE_STEP.as_millis()) as usize;
-                SHAKE_OFFSETS.get(step).copied().unwrap_or(0)
-            }
+            Some((t, at)) if t == ticket => shake_offset(at),
             _ => 0,
         }
     }
@@ -13301,8 +13316,8 @@ impl App {
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
-    /// title, picks and description all riding along: `^s`'s road, and a
-    /// clean Esc's. A blank body is no description.
+    /// title, picks and description all riding along: a clean Esc's road,
+    /// and a refused mint's. A blank body is no description.
     fn fold_composer(&mut self, ed: Editor) {
         let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose else {
             self.mode = Mode::Normal;
@@ -13320,6 +13335,36 @@ impl App {
             },
             buffer: ed.title,
         };
+    }
+
+    /// The composer dialog files its ticket: `^s` is the one-line
+    /// composer's Enter, `^S` its Shift+Enter (`start`). A blank title
+    /// files nothing: the dialog stays, the cursor goes to the title, and
+    /// the title row shakes where the eye is (2026-11-05, user request).
+    fn mint_composed(&mut self, mut ed: Editor, start: bool) -> Result<()> {
+        let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose.clone() else {
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        };
+        let title = ed.title.as_str().trim().to_string();
+        if title.is_empty() {
+            self.status = "a ticket needs a title".into();
+            ed.focus = Field::Title;
+            ed.title_shake = Some(Instant::now());
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
+        self.mode = Mode::Normal;
+        self.mint_ticket_with_images(
+            title,
+            workspace,
+            tags,
+            body,
+            ed.images,
+            start.then_some(plan),
+            tier,
+        )
     }
 
     /// `^S` (ctrl+shift+s): save, leave, and put the words in front of
@@ -13341,25 +13386,7 @@ impl App {
         match ed.purpose.clone() {
             // Unbound in the ask room; the one thing the press could mean.
             EditorPurpose::Ask { .. } => self.editor_send(ed),
-            EditorPurpose::Compose { workspace, tags, plan, tier } => {
-                let title = ed.title.as_str().trim().to_string();
-                if title.is_empty() {
-                    self.status = "a ticket needs a title".into();
-                    self.mode = Mode::Editor(ed);
-                    return Ok(());
-                }
-                let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
-                self.mode = Mode::Normal;
-                self.mint_ticket_with_images(
-                    title,
-                    workspace,
-                    tags,
-                    body,
-                    ed.images,
-                    Some(plan),
-                    tier,
-                )
-            }
+            EditorPurpose::Compose { .. } => self.mint_composed(ed, true),
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
                 let mut note = note;
@@ -13472,12 +13499,11 @@ impl App {
     }
 
     /// `^s`: save and leave the dialog, either way (2026-09-04, user request
-    /// — "^s should just save, and exit the composer to go back to the small
-    /// composer" … "either way ^s saves and exits the dialog"). Composing,
-    /// nothing leaves for the daemon: the description is kept and the dialog
-    /// folds back into the one-line composer, where Enter mints and
-    /// Shift+Enter mints and asks. A note is written and the editor closes; a
-    /// clean one just closes. Telling the ticket's claude is `^S`'s.
+    /// — "either way ^s saves and exits the dialog"). Composing, saving is
+    /// filing (2026-11-05, user request — "^s should create the ticket"):
+    /// the one-line composer's Enter, title, picks and description in one
+    /// press. A note is written and the editor closes; a clean one just
+    /// closes. Telling the ticket's claude is `^S`'s.
     fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
         if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
             self.status = "clipboard read pending".into();
@@ -13486,12 +13512,7 @@ impl App {
         }
         match ed.purpose.clone() {
             EditorPurpose::Ask { .. } => self.editor_send(ed),
-            EditorPurpose::Compose { .. } => {
-                let described = !ed.body.as_str().trim().is_empty();
-                self.fold_composer(ed);
-                self.status = if described { "description kept".into() } else { String::new() };
-                Ok(())
-            }
+            EditorPurpose::Compose { .. } => self.mint_composed(ed, false),
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
                 let blank = body.trim().is_empty();
@@ -18923,14 +18944,12 @@ mod tests {
         }
     }
 
-    /// `^s` composing keeps the description and folds back into the small
-    /// composer, where Enter mints the ticket AND writes the description
-    /// (2026-09-04, user request: "^s should just save, and exit the
-    /// composer to go back to the small composer"). Nothing leaves for the
-    /// daemon until that Enter, and `Tab` reopens the editor on the kept
-    /// text.
+    /// `^s` composing files the ticket: the one-line composer's Enter, from
+    /// the bigger room (2026-11-05, user request: "^s should create the
+    /// ticket"). One command carries the title and the description (T-243),
+    /// nobody is asked, and the board's Enter window opens on the new card.
     #[test]
-    fn editor_save_keeps_the_description_and_folds_into_the_composer() {
+    fn editor_save_mints_the_ticket_with_its_description() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         press(&mut app, 'o');
         for c in "Ship it".chars() {
@@ -18944,36 +18963,20 @@ mod tests {
         for c in "and how".chars() {
             press(&mut app, c);
         }
-        let before = sent.borrow().len();
         ctrl(&mut app, 's');
-        match &app.mode {
-            Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
-                assert_eq!(buffer.as_str(), "Ship it");
-                assert_eq!(description.as_deref(), Some("why\nand how"));
-            }
-            other => panic!("{other:?}"),
-        }
-        assert_eq!(sent.borrow().len(), before, "nothing sent: {:?}", sent.borrow());
-        assert_eq!(app.status, "description kept");
-        // Tab reopens the editor on the kept text, clean.
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(editor(&app).body.as_str(), "why\nand how");
-        assert!(!editor(&app).dirty());
-        ctrl(&mut app, 's');
-        // Enter on the small composer mints with the description — one
-        // command carrying it (T-243), no note written afterwards.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         let log = sent.borrow().join("\n");
         let create = log.find("CreateTicketWithNote").expect("minted");
+        assert!(log[create..].contains("Ship it"), "the title rides the mint: {log}");
         assert!(log[create..].contains("why\\nand how"), "the description rides the mint: {log}");
         assert!(!log.contains("WriteNote"), "no second trip for the note: {log}");
-        assert!(!log.contains("SpawnSession"), "Enter asks nothing: {log}");
+        assert!(!log.contains("SpawnSession"), "^s asks nothing: {log}");
+        assert!(app.just_created.is_some(), "the Enter window opens");
         assert!(app.status.contains("enter starts agent"), "{}", app.status);
     }
 
     /// Without the kitty tier ctrl+shift+s ARRIVES as ctrl+s, and the press
-    /// degrades to exactly `^s`: the draft is kept, nothing is minted.
+    /// degrades to exactly `^s`: the ticket is filed, nobody is asked.
     #[test]
     fn ctrl_shift_s_degrades_to_ctrl_s_on_the_legacy_floor() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
@@ -18983,16 +18986,17 @@ mod tests {
             press(&mut app, c);
         }
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        // A Shift that arrives without the tier resolves to nothing.
         let before = sent.borrow().len();
-        // What a legacy terminal sends: the bare control byte, no Shift.
-        ctrl(&mut app, 's');
-        assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. }));
-        assert_eq!(sent.borrow().len(), before);
-        // And a Shift that does arrive without the tier resolves to nothing.
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
         assert!(matches!(app.mode, Mode::Editor(_)), "inert, not wrong");
         assert_eq!(sent.borrow().len(), before);
+        // What a legacy terminal sends: the bare control byte, no Shift.
+        ctrl(&mut app, 's');
+        assert_eq!(app.mode, Mode::Normal);
+        let log = sent.borrow().join("\n");
+        assert!(log.contains("CreateTicketWithNote"), "filed: {log}");
+        assert!(!log.contains("SpawnSession"), "nobody asked: {log}");
     }
 
     /// `^S` composing is the one-line composer's Shift+Enter: the ticket,
@@ -19086,19 +19090,34 @@ mod tests {
         for c in "why".chars() {
             press(&mut app, c);
         }
-        app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        // Neither save files a ticket with no title: the dialog stays with
+        // its description, the cursor goes to the title, and the title row
+        // shakes (2026-11-05, user request).
+        let saves: [fn(&mut App); 2] = [
+            |app: &mut App| ctrl(app, 's'),
+            |app: &mut App| {
+                app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                    .unwrap()
+            },
+        ];
+        for press_save in saves {
+            if let Mode::Editor(ed) = &mut app.mode {
+                ed.focus = Field::Body;
+                ed.title_shake = None;
+            }
+            press_save(&mut app);
+            let ed = editor(&app);
+            assert_eq!(app.status, "a ticket needs a title");
+            assert_eq!(ed.body.as_str(), "why", "the description stays");
+            assert_eq!(ed.focus, Field::Title, "the cursor goes where the title is typed");
+            assert!(ed.title_shake.is_some(), "the title row shakes");
+            assert!(app.animating(), "the shake asks for frames");
+        }
+        // A spaces-only title is no title either.
+        press(&mut app, ' ');
+        ctrl(&mut app, 's');
         assert!(matches!(app.mode, Mode::Editor(_)));
         assert_eq!(app.status, "a ticket needs a title");
-        // `^s` mints nothing, so it has no title to need: the draft folds
-        // back into the composer, description kept, for the title to be typed.
-        ctrl(&mut app, 's');
-        match &app.mode {
-            Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
-                assert_eq!(buffer.as_str(), "");
-                assert_eq!(description.as_deref(), Some("why"));
-            }
-            other => panic!("{other:?}"),
-        }
     }
 
     #[test]
@@ -23980,13 +23999,13 @@ mod tests {
         assert!(app.ctx().composing && app.ctx().plan_able);
         app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(app.ctx().plan_armed);
-        // Grown and folded, the flag survives.
+        // Grown and folded (a clean Esc), the flag survives.
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(matches!(
             app.mode,
             Mode::Editor(Editor { purpose: EditorPurpose::Compose { plan: true, .. }, .. })
         ));
-        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(
             app.mode,
             Mode::Input { purpose: InputPurpose::Create { plan: true, .. }, .. }
@@ -25128,7 +25147,6 @@ mod tests {
             press(&mut app, c);
         }
         ctrl(&mut app, 's');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "CreateTicketWithNote"), "{:?}", sent.borrow());
         match &app.mode {
             Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
@@ -29657,8 +29675,9 @@ mod tests {
         ));
         queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2])));
         app.poll_image_paste();
+        // Folded (a clean Esc's road, and a refused mint's), the picture rides.
         let ed = editor(&app).clone();
-        app.editor_save(ed).unwrap();
+        app.fold_composer(ed);
         let Mode::Input { purpose, buffer } = app.mode.clone() else { panic!("composer folded") };
         let InputPurpose::Create { images, .. } = &purpose else { panic!() };
         assert_eq!(images[0].png.as_deref(), Some(&[1, 2][..]));

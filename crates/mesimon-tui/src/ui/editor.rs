@@ -98,8 +98,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
                 (area.width as usize).saturating_sub(PAGE_PAD as usize + 1),
                 &theme.rest,
             );
-            spans.insert(0, Span::raw(" ".repeat(PAGE_PAD as usize)));
-            cursor = cx.map(|cx| ((PAGE_PAD + cx).min(area.width.saturating_sub(1)), area.y + 2));
+            // A refused `^s` shakes the title within its pad.
+            let pad = (i32::from(PAGE_PAD) + i32::from(ed.title_dx())).max(0) as u16;
+            spans.insert(0, Span::raw(" ".repeat(pad as usize)));
+            cursor = cx.map(|cx| ((pad + cx).min(area.width.saturating_sub(1)), area.y + 2));
             title_spot(app, ed, Rect { x: area.x + PAGE_PAD, y: area.y + 2, ..area }, cx);
             vec![Line::default(), Line::default(), Line::from(spans), ctx]
         }
@@ -218,12 +220,20 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     let inner =
         Rect { x: area.x + lead, y: area.y, width: area.width - chrome, height: area.height };
     let (spans, cx) = title_spans(ed, inner.width as usize, ink);
-    let mut cursor = cx.map(|cx| ((inner.x + cx).min(area.x + area.width - 1), inner.y));
     title_spot(app, ed, inner, cx);
-    let head = vec![Line::from(spans), context_line(app, ed, ink, framed), Line::default()];
+    let head = vec![Line::default(), context_line(app, ed, ink, framed), Line::default()];
     f.render_widget(
         Paragraph::new(head),
         Rect { height: DIALOG_HEAD_ROWS.min(inner.height), ..inner },
+    );
+    // A refused `^s` shakes the title row, cursor and all, a cell either
+    // way: into the pad beside the bar and the pad at the right edge, both
+    // the dialog's own surface.
+    let tx = (i32::from(inner.x) + i32::from(ed.title_dx())).max(i32::from(area.x + bar)) as u16;
+    let mut cursor = cx.map(|cx| ((tx + cx).min(area.x + area.width - 1), inner.y));
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { x: tx, y: inner.y, width: inner.width, height: 1.min(inner.height) },
     );
 
     // ---- the body, with one breathing row under it ---------------------------

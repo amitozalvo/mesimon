@@ -316,7 +316,9 @@ stops a snake that is out.
 `ctrl-k` opens one of that note's links.</sub>
 
 `tab` on a card opens its description, the brief its agent starts from. `ctrl-s` saves it and
-closes the editor, and `ctrl-g` opens the text in your own editor instead. The description is a
+closes the editor, and `ctrl-g` opens the text in your own editor instead. In the new-ticket
+composer, `tab` opens the same editor for the new ticket's description, and `ctrl-s` files the
+ticket. The description is a
 ticket's first note. Every other note is listed under NOTES on the ticket page, whether you
 wrote it with `N` or the ticket's agent wrote it; `j` and `k` walk down to a note and show it.
 Notes are markdown.

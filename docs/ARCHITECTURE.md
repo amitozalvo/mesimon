@@ -277,9 +277,11 @@ T-309 that is a SUBJECT fact, and the board and the ticket page carry the same k
 editor's surface is the SCREEN's: over the board it is the dialog whatever it holds (`n`/`N` too),
 from the ticket page it takes the whole screen. `n`/`N` open a note. **`^s` saves and leaves the
 dialog, either way** (2026-09-04, user request): on a note the body is written and the editor
-closes (a clean one just closes); composing, the description is kept and the dialog folds back
-into the one-line composer (`InputPurpose::Create { description }`, `App::fold_composer`; `Tab`
-reopens the editor on it, Enter mints it as `notes[0]`). **`^S` (ctrl+shift+s) saves, leaves and
+closes (a clean one just closes); composing, saving is filing (2026-11-05, user request): `^s` is
+the one-line composer's Enter, minting the ticket with the description as `notes[0]`
+(`App::mint_composed`). A blank title files nothing: the dialog stays, the cursor goes to the
+title and its row shakes (`Editor::title_shake`, the board's refusal shake). A clean Esc, and a
+refused mint, fold back into the one-line composer (`App::fold_composer`). **`^S` (ctrl+shift+s) saves, leaves and
 puts the words in front of claude**: composing, it is the one-line composer's Shift+Enter in the
 bigger room (mint, write the description, spawn claude with the title submitted, stay on the
 board); on a note it follows who is on the ticket — a paned claude is told (`NoteToAgent`,

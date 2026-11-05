@@ -41326,6 +41326,7 @@ test board matches a fresh one — which is why ~70 goldens gained the cursor ca
 Open: `Prefs::body` writes `peek` on every save, so a machine that saved any setting since
 T-365 holds `peek: "off"` and keeps the old look; the default reaches only machines with no
 `peek` key.
+
 ## A column has a Width, and the cursor's column can grow (T-1135, 2026-11-05, user: "some columns are more important than others, and their tickets should be readable through the board. right now many tickets get truncated" ∙ "grow on hover i meant on movement (hjkl), not mouse hover" ∙ "build")
 
 Every open column had the same share of the terminal, capped at 40 cells: six columns at 200
@@ -41365,3 +41366,19 @@ tickets change); two-line titles for L and XL columns, since the board's longest
 cells) still cut at XL. Checks: `cargo ut`, `column_e2e`, clippy on all targets, `cargo build
 --workspace`; the Settings goldens reminted for the switch row, the column dialog's golden
 seeded on and 34 rows tall for the Width row, two board goldens added.
+
+## `^s` in the new-ticket editor files the ticket (T-1136, 2026-11-05, the author: "^s should create the ticket")
+
+`^s` in the composer's dialog was "keep the description and fold back", with a second Enter to
+file (2026-09-04: "^s should just save, and exit the composer to go back to the small
+composer"). It is now the one-line composer's Enter from the bigger room: `App::mint_composed`
+mints the ticket with its title, picks and description, opens the Enter window on the new
+card, and asks nobody; `^S` is the same road with Shift+Enter's start, unchanged. A blank (or
+spaces-only) title files nothing, for either key, on the author's answer "stay, say why and
+shake the title section": the dialog stays with its description, the status says `a ticket
+needs a title`, focus goes to the title, and the title row shakes with the board's refusal
+shake (T-423's offsets and step, `Editor::title_shake`, `shake_offset`). In the dialog the row
+swings into the pad cells either side, the dialog's own surface. `fold_composer` remains the
+road of a clean Esc and of a refused mint. Not changed: the tour's "Describe a ticket" lesson
+(`tab` on an existing card, a note, where `^s` still saves) and `ticket-page.tape` (the same);
+the editor's `^s save` key label. `crown.tape` drops its Enter after `^s`; crown.gif re-recorded.

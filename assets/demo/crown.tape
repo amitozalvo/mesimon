@@ -35,8 +35,8 @@ Show
 # The board: three tickets in TODO, one agent at work.
 Sleep 2s
 
-# `o` writes a new ticket; `tab` opens the editor for its brief, `^s`
-# keeps the brief, and Enter files the ticket in TODO.
+# `o` writes a new ticket; `tab` opens the editor for its brief, and `^s`
+# files the ticket in TODO.
 Type "o"
 Sleep 0.6s
 Type "Plan 1.0"
@@ -46,8 +46,6 @@ Sleep 0.6s
 Type@35ms "File what 1.0 is missing, then start the next feature."
 Sleep 1s
 Ctrl+S
-Sleep 1.2s
-Enter
 Sleep 1.5s
 
 # ^o crowns it before its agent starts.
