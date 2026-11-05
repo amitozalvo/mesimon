@@ -449,9 +449,12 @@ pub(crate) struct Prefs {
     /// glyph until the cursor rests on it. ON by default; per machine,
     /// as the crown's lightning is — motion is about the person watching.
     pub card_moves: bool,
+    /// Column widths (T-1135): the columns' `Width` rows and the cursor
+    /// grow apply. OFF by default; per machine, as the card moves are — it
+    /// is about the person reading.
+    pub column_widths: bool,
     /// The cursor's column takes XL's share of the board while the cursor
-    /// is in it (T-1135). OFF by default; per machine, as the card moves
-    /// are — it is about the person reading.
+    /// is in it (T-1135), under `column_widths`. OFF by default; per machine.
     pub cursor_grow: bool,
     /// The board reads the mouse (T-716): clicks, the wheel and hover. ON
     /// by default; off leaves the terminal its own text selection. Per
@@ -528,6 +531,7 @@ impl Default for Prefs {
             peek: PeekLevel::Cursor,
             crown_lightning: true,
             card_moves: true,
+            column_widths: false,
             cursor_grow: false,
             mouse: true,
             usage_line: UsageLine::Near,
@@ -582,6 +586,7 @@ const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
 const CARD_MOVES_KEY: &str = PrefKey::CardMoves.name();
+const COLUMN_WIDTHS_KEY: &str = PrefKey::ColumnWidths.name();
 const CURSOR_GROW_KEY: &str = PrefKey::CursorGrow.name();
 const MOUSE_KEY: &str = PrefKey::Mouse.name();
 const USAGE_LINE_KEY: &str = PrefKey::UsageLine.name();
@@ -823,6 +828,7 @@ impl Prefs {
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
             PrefKey::CardMoves => onoff(self.card_moves),
+            PrefKey::ColumnWidths => onoff(self.column_widths),
             PrefKey::CursorGrow => onoff(self.cursor_grow),
             PrefKey::Mouse => onoff(self.mouse),
             PrefKey::NewReplies => onoff(self.new_replies),
@@ -899,6 +905,7 @@ impl Prefs {
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         doc.insert(CARD_MOVES_KEY.into(), Value::from(self.card_moves));
+        doc.insert(COLUMN_WIDTHS_KEY.into(), Value::from(self.column_widths));
         doc.insert(CURSOR_GROW_KEY.into(), Value::from(self.cursor_grow));
         doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
         doc.insert(NEW_REPLIES_KEY.into(), Value::from(self.new_replies));
@@ -1403,6 +1410,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let card_moves = flag(CARD_MOVES_KEY, true);
+    let column_widths = flag(COLUMN_WIDTHS_KEY, false);
     let cursor_grow = flag(CURSOR_GROW_KEY, false);
     let mouse = flag(MOUSE_KEY, true);
     let new_replies = flag(NEW_REPLIES_KEY, true);
@@ -1501,6 +1509,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         peek,
         crown_lightning,
         card_moves,
+        column_widths,
         cursor_grow,
         mouse,
         new_replies,
@@ -2137,22 +2146,26 @@ mod tests {
         assert!(!PrefKey::CardMoves.board_overridable());
     }
 
-    /// The cursor's column grows (T-1135): absent is off, an on round-trips,
-    /// and it is the machine's, as the card moves are.
+    /// Column widths and the cursor's grown column (T-1135): absent is off,
+    /// an on round-trips, and both are the machine's, as the card moves are.
     #[test]
-    fn cursor_grow_default_off_and_round_trip() {
-        let p = scratch("cursor-grow");
+    fn column_widths_default_off_and_round_trip() {
+        let p = scratch("column-widths");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
-        assert!(!l.prefs.cursor_grow, "absent is the default: off");
+        assert!(!l.prefs.column_widths && !l.prefs.cursor_grow, "absent is the default: off");
+        assert_eq!(l.prefs.word(PrefKey::ColumnWidths), "off");
         assert_eq!(l.prefs.word(PrefKey::CursorGrow), "off");
+        l.prefs.column_widths = true;
         l.prefs.cursor_grow = true;
         save(&p, &l.prefs).unwrap();
         let l = load(&p);
-        assert!(l.prefs.cursor_grow);
+        assert!(l.prefs.column_widths && l.prefs.cursor_grow);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["column_widths"], true);
         assert_eq!(v["cursor_grow"], true);
+        assert!(!PrefKey::ColumnWidths.board_overridable());
         assert!(!PrefKey::CursorGrow.board_overridable());
     }
 

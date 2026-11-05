@@ -563,8 +563,13 @@ pub enum Verb {
     /// A card moved by anything but this board's own keys plays its move
     /// (T-817): a switch on the Appearance list, on by default, per machine.
     CardMoves,
+    /// Column widths (T-1135): the opt-in switch on the Appearance list, off
+    /// by default, per machine, that the `Width` rows and `CursorGrow` sit
+    /// behind.
+    ColumnWidths,
     /// The cursor's column takes XL's share while the cursor is in it
-    /// (T-1135): a switch on the Appearance list, off by default, per machine.
+    /// (T-1135): a switch on the Appearance list, shown once `ColumnWidths`
+    /// is on, off by default, per machine.
     CursorGrow,
     /// The board reads the mouse (T-716): a switch on the Behaviour list,
     /// on by default, per machine.
@@ -1194,6 +1199,7 @@ impl SettingsSection {
             | Verb::CrownLightning
             | Verb::CardMoves
             | Verb::Peek
+            | Verb::ColumnWidths
             | Verb::CursorGrow
             | Verb::SummaryShow
             | Verb::NewReplies
@@ -1395,6 +1401,8 @@ pub struct Ctx {
     pub crown_lightning: bool,
     /// A moved card plays its move (T-817).
     pub card_moves: bool,
+    /// Column widths are on (T-1135): the `Width` rows and the cursor grow.
+    pub column_widths: bool,
     /// The cursor's column grows to XL (T-1135).
     pub cursor_grow: bool,
     /// The board reads the mouse (T-716).
@@ -5320,6 +5328,22 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Column widths (T-1135, user: "gate this feature opt in in settings"):
+    // the switch the Width rows and the cursor grow sit behind, off by
+    // default so a board keeps its equal split until asked.
+    MenuItem {
+        verb: Verb::ColumnWidths,
+        label: |_| "Column widths".into(),
+        detail: |c| {
+            if c.column_widths {
+                "each column's Width row shares the board ∙ S, M, L, XL".into()
+            } else {
+                "every column takes an equal share of the board".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The cursor's column grows (T-1135, user: "grow on movement (hjkl)"):
     // off by default, since it moves an edge on every h and l.
     MenuItem {
@@ -5332,7 +5356,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "keeps the width its column was given".into()
             }
         },
-        avail: always,
+        avail: |c| c.column_widths,
         key: "",
     },
     // The terminal's own tab (T-492). Everything off by default: the tab
@@ -6373,6 +6397,7 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
             Verb::CrownLightning,
             Verb::CardMoves,
             Verb::Peek,
+            Verb::ColumnWidths,
             Verb::CursorGrow,
             Verb::SummaryShow,
             Verb::NewReplies,
@@ -6512,6 +6537,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
         Verb::CardMoves => pick(&["animated", "instant"], !c.card_moves),
         Verb::Peek => choice(&["cursor", "all", "off"], or(c.peek_word, "cursor")),
+        Verb::ColumnWidths => Value::Switch(c.column_widths),
         Verb::CursorGrow => pick(&["grows", "as set"], !c.cursor_grow),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
         Verb::FetchEvery => choice(
@@ -6638,6 +6664,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::StatusLine => PrefKey::StatusTop,
         Verb::CrownLightning => PrefKey::CrownLightning,
         Verb::CardMoves => PrefKey::CardMoves,
+        Verb::ColumnWidths => PrefKey::ColumnWidths,
         Verb::CursorGrow => PrefKey::CursorGrow,
         Verb::Mouse => PrefKey::Mouse,
         Verb::EditorChoice => PrefKey::Editor,
@@ -6787,12 +6814,13 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         avail: |c| !c.col_new,
         key: "",
     },
-    // T-1135: the column's share of the board's width.
+    // T-1135: the column's share of the board's width, behind the Settings
+    // switch.
     MenuItem {
         verb: Verb::ColumnWidth,
         label: |_| "Width".into(),
         detail: |_| "its share of the space above the floor ∙ S none, M one, L two, XL four".into(),
-        avail: |c| !c.col_new,
+        avail: |c| !c.col_new && c.column_widths,
         key: "",
     },
     MenuItem {
@@ -10611,7 +10639,12 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 17);
+        assert_eq!(column_items(&other).len(), 16);
+        // The Width row stands once column widths are on (T-1135).
+        let widths = Ctx { column_widths: true, ..Default::default() };
+        assert_eq!(column_items(&widths).len(), 17);
+        assert!(column_items(&widths).iter().any(|m| m.verb == Verb::ColumnWidth));
+        assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnWidth));
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
@@ -11206,7 +11239,7 @@ mod tests {
                     Verb::CrownLightning,
                     Verb::CardMoves,
                     Verb::Peek,
-                    Verb::CursorGrow,
+                    Verb::ColumnWidths,
                     Verb::SummaryShow,
                     Verb::NewReplies,
                     Verb::CardPrs,
@@ -12044,6 +12077,18 @@ mod tests {
         assert!(hint_for(Scope::Settings, Verb::PrefScope, &not).is_none());
     }
 
+    /// The cursor grow row sits behind the column widths switch (T-1135,
+    /// user: "gate this feature opt in in settings").
+    #[test]
+    fn the_cursor_grow_row_sits_behind_column_widths() {
+        let off = Ctx { settings_section: SettingsSection::Appearance, ..Default::default() };
+        let on = Ctx { column_widths: true, ..off.clone() };
+        let verbs = |c: &Ctx| settings_items(c).iter().map(|m| m.verb).collect::<Vec<_>>();
+        assert!(!verbs(&off).contains(&Verb::CursorGrow));
+        assert!(verbs(&off).contains(&Verb::ColumnWidths));
+        assert!(verbs(&on).contains(&Verb::CursorGrow));
+    }
+
     /// Every preference row names its key, and every door and board-state
     /// row names none — so board scope cycles exactly the preferences.
     #[test]
@@ -12053,6 +12098,7 @@ mod tests {
             Verb::CrownLightning,
             Verb::CardMoves,
             Verb::Peek,
+            Verb::ColumnWidths,
             Verb::CursorGrow,
             Verb::SummaryShow,
             Verb::NewReplies,

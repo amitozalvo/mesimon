@@ -41335,12 +41335,18 @@ and the window slide is unchanged. `ColumnSettings::summary` says `width: XL` fo
 dialog's details; no `COLUMNS_SCHEMA` bump (a build that drops the field draws the column at M,
 which widens nothing an agent gets). Remote Control ignores it: one column per swipe.
 
+**Opt-in** (user: "gate this feature opt in in settings"): Settings › Appearance › `Column
+widths` (`column_widths`, a machine pref, off by default) is the switch the whole feature sits
+behind. Off, `App::column_sizes` hands the geometry M for every column whatever a column's
+`width` says (kept, not drawn), the dialog's `Width` row is not shown, and the cursor grow row
+below is not shown either. The column dialog's golden seeds the switch on to show the row.
+
 **The cursor's column grows** (`cursor_grow`, a machine pref, off by default; Settings ›
-Appearance › `Cursor column`, `grows` / `as set`): `App::column_sizes` puts XL on the cursor's
-column and the geometry takes it from there. Measured: between two same-size columns `h`/`l` move
+Appearance › `Cursor column`, `grows` / `as set`, shown once column widths are on):
+`App::column_sizes` puts XL on the cursor's column and the geometry takes it from there. Measured: between two same-size columns `h`/`l` move
 the one edge between them and every other column keeps its x (`sizes_share_the_slack_above_the_floor`,
 `golden_board_cursor_grow_120`); `j`/`k` never reflow. Off by default so every existing board
-keeps its geometry until the person flips it; the flip is one line and a golden remint.
+keeps its geometry until the person flips it.
 
 **Refuted.** Proportional shares with a hard 26 floor (the first draft, in the simulation): at
 200 cells a S column asked for 18 and folded, so sizes folded columns the old split kept open.
@@ -41352,5 +41358,5 @@ board as the simulation: https://claude.ai/artifact/UPHLZyhwSkCE2mYnXu7zfm.
 **Not done, offered.** An `auto` size fitting a column's longest title (recomputed only when its
 tickets change); two-line titles for L and XL columns, since the board's longest titles (110
 cells) still cut at XL. Checks: `cargo ut`, `column_e2e`, clippy on all targets, `cargo build
---workspace`; four dialog goldens reminted for the two new rows (the column dialog's golden is
-34 rows tall now), two board goldens added.
+--workspace`; the Settings goldens reminted for the switch row, the column dialog's golden
+seeded on and 34 rows tall for the Width row, two board goldens added.

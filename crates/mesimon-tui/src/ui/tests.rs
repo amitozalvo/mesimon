@@ -1976,10 +1976,11 @@ fn golden_board_header_automated_120() {
 /// The column settings dialog over the board (T-117): every row, the
 /// selected row's detail under them, `esc back` in its edge. 34 lines tall
 /// with workspace choices belonging only to the column (T-1053) and the
-/// Width row (T-1135).
+/// Width row (T-1135), which stands once column widths are on.
 #[test]
 fn golden_column_settings_120() {
     let mut app = app_graphite(fixture(false));
+    app.seed_pref(|p| p.column_widths = true);
     app.cursor_col = 1;
     app.cursor_row = None;
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -2175,7 +2176,11 @@ fn golden_board_widths_120() {
     let mut board = fixture(false);
     board.columns[1].settings.width = ColumnWidth::Xl;
     board.columns[3].settings.width = ColumnWidth::S;
-    let app = app_graphite(board);
+    let mut app = app_graphite(board);
+    // Off the switch, a Width is kept and not drawn: the equal split.
+    let equal = render(&app, 120, 30);
+    assert_eq!(equal[2], render(&app_graphite(fixture(false)), 120, 30)[2]);
+    app.seed_pref(|p| p.column_widths = true);
     let lines = render(&app, 120, 30);
     assert!(lines[2].contains("DONE"), "nothing folds: {:?}", lines[2]);
     golden("board_widths_120x30", &lines);
@@ -2187,7 +2192,10 @@ fn golden_board_widths_120() {
 #[test]
 fn golden_board_cursor_grow_120() {
     let mut app = app_graphite(fixture(false));
-    app.seed_pref(|p| p.cursor_grow = true);
+    app.seed_pref(|p| {
+        p.column_widths = true;
+        p.cursor_grow = true;
+    });
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);

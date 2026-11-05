@@ -5,7 +5,7 @@
   │  Crown's actions          ● lightning   ○ still      │
   │  Card moves               ● animated    ○ instant    │
   │  Replies on cards         cursor                     │
-  │  Cursor column            ○ grows       ● as set     │
+  │  Column widths            ○ off                      │
   │  Summary on cards         full                       │
   │  New replies              ● on                       │
   │  Pull requests on cards   always                     │

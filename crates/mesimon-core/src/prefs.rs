@@ -80,9 +80,13 @@ pub enum PrefKey {
     /// cursor rests on it. On by default; off lets the card simply be
     /// where it went.
     CardMoves,
+    /// Column widths (T-1135, user: "gate this feature opt in in settings"):
+    /// the switch that turns the columns' `Width` rows and the cursor's
+    /// grown column on. Off by default, so a board keeps its equal split
+    /// until the person asks. The machine's alone, as the card moves are.
+    ColumnWidths,
     /// The cursor's column takes XL's share of the board while the cursor
-    /// is in it (T-1135): a switch, off by default. About the person
-    /// reading, so the machine's alone, as the card moves are.
+    /// is in it (T-1135): a switch under `ColumnWidths`, off by default.
     CursorGrow,
     /// The subscription quota line above the board's keys (T-327): a named
     /// value — `near` (only while a provider warns, the default), `every`
@@ -132,7 +136,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 47] = [
+    pub const ALL: [PrefKey; 48] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -164,6 +168,7 @@ impl PrefKey {
         PrefKey::Peek,
         PrefKey::CrownLightning,
         PrefKey::CardMoves,
+        PrefKey::ColumnWidths,
         PrefKey::CursorGrow,
         PrefKey::UsageLine,
         PrefKey::UsageFiveHour,
@@ -216,6 +221,7 @@ impl PrefKey {
             PrefKey::Peek => "peek",
             PrefKey::CrownLightning => "crown_lightning",
             PrefKey::CardMoves => "card_moves",
+            PrefKey::ColumnWidths => "column_widths",
             PrefKey::CursorGrow => "cursor_grow",
             PrefKey::UsageLine => "usage_line",
             PrefKey::UsageFiveHour => "usage_5h",
@@ -267,6 +273,7 @@ impl PrefKey {
                 | PrefKey::Peek
                 | PrefKey::CrownLightning
                 | PrefKey::CardMoves
+                | PrefKey::ColumnWidths
                 | PrefKey::CursorGrow
                 | PrefKey::UsageLine
                 | PrefKey::UsageFiveHour
@@ -322,6 +329,7 @@ impl PrefKey {
             PrefKey::NewReplies => "new replies on cards",
             PrefKey::CrownLightning => "crown lightning",
             PrefKey::CardMoves => "card moves",
+            PrefKey::ColumnWidths => "column widths",
             PrefKey::CursorGrow => "cursor column grows",
             PrefKey::UsageLine => "usage line",
             PrefKey::UsageFiveHour => "usage line's 5-hour window",
@@ -401,6 +409,7 @@ mod tests {
                 PrefKey::Peek,
                 PrefKey::CrownLightning,
                 PrefKey::CardMoves,
+                PrefKey::ColumnWidths,
                 PrefKey::CursorGrow,
                 PrefKey::UsageLine,
                 PrefKey::UsageFiveHour,

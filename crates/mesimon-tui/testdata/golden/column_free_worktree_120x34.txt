@@ -4,8 +4,7 @@
                   │                                                                                  │
    Decay treatment│ LOOK                                                                             │ accent bar  >1y
                   │  Collapsed               ● off   ○ always   ○ when empty                         │
-   Keymap validato│  Width                   ○ S     ● M        ○ L            ○ XL                  │
-                  │  Sort once               newest first                                            │
+   Keymap validato│  Sort once               newest first                                            │
                   │                                                                                  │
                   │ NEW TICKETS                                                                      │
                   │  Filed here              ● on                                                    │
@@ -31,4 +30,5 @@
                   │                                                                                  │
                   │  on arrival ∙ merged and clean, after panes close ∙ keeps card and branch        │
                   ╰──────────────────────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
  COLUMN                                                                                                          ? keys

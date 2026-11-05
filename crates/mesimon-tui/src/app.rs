@@ -4057,8 +4057,12 @@ impl App {
     }
 
     /// Each column's size for the geometry (T-1135): its own `Width`, and
-    /// XL for the cursor's column while the cursor-grow switch is on.
+    /// XL for the cursor's column while the cursor-grow switch is on — both
+    /// behind the column-widths switch, off which every column is M.
     pub(crate) fn column_sizes(&self) -> Vec<ColumnWidth> {
+        if !self.prefs.column_widths {
+            return vec![ColumnWidth::M; self.columns_width.len()];
+        }
         let mut sizes = self.columns_width.clone();
         if self.prefs.cursor_grow {
             if let Some(s) = sizes.get_mut(self.cursor_col) {
@@ -7776,6 +7780,7 @@ impl App {
             theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
             card_moves: self.prefs.card_moves,
+            column_widths: self.prefs.column_widths,
             cursor_grow: self.prefs.cursor_grow,
             mouse: self.prefs.mouse,
             new_replies: self.prefs.new_replies,
@@ -9412,6 +9417,15 @@ impl App {
                 self.set_pref(word, |p| p.card_moves = on);
             }
             // T-1135. Read on every frame; nothing to push.
+            Verb::ColumnWidths => {
+                let on = !self.prefs.column_widths;
+                let word = if on {
+                    "each column's Width row shares the board"
+                } else {
+                    "every column takes an equal share"
+                };
+                self.set_pref(word, |p| p.column_widths = on);
+            }
             Verb::CursorGrow => {
                 let on = !self.prefs.cursor_grow;
                 let word = if on {
@@ -27055,6 +27069,7 @@ mod tests {
     #[test]
     fn the_width_row_cycles_the_sizes() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.seed_pref(|p| p.column_widths = true);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         // Width is the third row, under Collapsed.
