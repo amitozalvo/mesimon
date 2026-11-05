@@ -10,6 +10,46 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.17 — 2026-11-05
+
+Wider columns when you want them, a footer that names what the card holds, and
+`ctrl-s` files a new ticket. Nothing changes a state file's format.
+
+### Added
+
+- **Columns can have their own width.** Turn on `Settings › Appearance ›
+  Column widths`, then give a column a `Width` of S, M, L or XL in its dialog;
+  a wider column takes more of the spare room, and no column narrows below its
+  usual floor. `Settings › Appearance › Cursor column` widens whichever column
+  the cursor is in. Both are off by default, and off, every column is drawn as
+  before.
+- **`ctrl-s` in the new-ticket composer files the ticket.** A blank title files
+  nothing: the composer stays open and says why.
+- **A card shows `↗` when its notes hold a link.** The board's footer names the
+  cursor card's own dialogs while it has something for them: `^k` links, `^h`
+  pull requests, `^j` summary.
+
+### Changed
+
+- **The board's footer is shorter and follows the card.** It reads `enter`
+  agent, `space` ticket and `tab` description, drops `o`, `r` and `t` on a card,
+  and stops at the first key that does not fit; `?` lists the rest. `m` names
+  what it will do for the branch in front of it: merge, ask the agent to
+  rebase, or tell the agent it merged.
+- **The agent's latest words show on cards by default.** `p` no longer toggles
+  them: use `Settings › Appearance › Replies on cards`. `P` still widens them.
+
+### Fixed
+
+- **A merged GitLab merge request shows its own pipeline.** When a downstream
+  pipeline was triggered at the same commit, the card could show that
+  pipeline's job in place of the merge's.
+- **Moving a ticket into a collapsed column opens that column while the move is
+  pending**, so you can see where the ticket will land. It folds again on the
+  drop or the cancel.
+- **`ctrl-n` shows the tier it landed on right away**, no longer flashing the
+  tier it left for a moment.
+
 ## v0.1.0-beta.16 — 2026-11-03
 
 A shorter Setup, and auto merge offered when finished work is waiting. Nothing
