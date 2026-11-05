@@ -41254,3 +41254,12 @@ It appends now. A failed seed prints the daemon's log before the sandbox goes.
 **Not done.** mesimon.dev's hero stays `demo.gif` (there is no crown clip on the site); the board's
 merge dialog still says "stay on this page" on the board, a product wording outside this ticket.
 Checked: every take run to the end and looked at frame by frame (contact sheets); no Rust changed.
+
+**The author's next viewing** (2026-11-05, after the merge): "I wouldn't show the merge dialog. it's
+enough to show tickets running and finishing turns. the merge train can be shown by itself in a
+future video". `demo.tape` ends 4 s after the answered card ticks `✓` in REVIEW, beside the agent
+still at work: 27 s, no `m`. With the train off a finished branch lights the header's "auto merge
+1 ticket (esc)" offer once the worktree flags read it ahead, so the demo alone sets
+`MESIMON_WT_REFRESH_TICKS` past the take (100000) instead of 8. DONE's reclaim is back to the
+`reddit` board only, since the demo's card no longer reaches DONE. Every caption says the card
+moves to REVIEW when it is done; nothing says merge.

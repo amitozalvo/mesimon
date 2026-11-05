@@ -1,5 +1,6 @@
 # The README demo: start an agent from the board, watch it work, answer it
-# on its card when the card lights, merge its branch, all on the board. Run through record.sh, never
+# on its card when the card lights, and watch it finish its turn, all on
+# the board. Merging is the merge train's own clip, not this one. Run through record.sh, never
 # alone: it builds the sandbox this tape expects in DEMO_* and MESIMON_*.
 #
 # Alt+Enter below is Shift+Enter: kitty-term.py delivers it as the kitty
@@ -48,17 +49,6 @@ Type "Yes, include them"
 Sleep 0.6s
 Enter
 
-# Done: the card ticks and its branch is ahead (`⎇↑`). `m`, and `m`
-# again to confirm.
-Wait+Screen@30s /✓ Stats as JSON +⎇↑/
-Sleep 2s
-Type "m"
-Sleep 1.5s
-Type "m"
-Wait+Screen@20s /tell the agent/
-Sleep 2.5s
-
-# Merged, so DONE took it. The board offers to tell the agent: `m` tells it.
-Type "m"
-Wait+Screen@20s /agent notified/
-Sleep 3s
+# Done: the card ticks in REVIEW, beside the agent still at work.
+Wait+Screen@30s /✓ Stats as JSON/
+Sleep 4s

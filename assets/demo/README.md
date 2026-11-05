@@ -68,8 +68,8 @@ What each file does:
   first step into an agent as practised, so the practice screen does not open in a take. For
   `ticket-page` it then runs a second agent that writes a note on its ticket and stops, and puts
   that ticket back at the top of TODO. For `reddit` it waits for the crown's agent to read the
-  board and end its turn. For `reddit` and `demo` it turns DONE's worktree reclaim off, so a
-  merged card carries its agent's words and not an eviction line. For `prs` it sets the board to merge through pull
+  board and end its turn, and turns DONE's worktree reclaim off, so a merged card carries its
+  agent's words and not an eviction line. For `prs` it sets the board to merge through pull
   requests, renames DONE to PRODUCTION and adds STAGING, sets what moves a card into each
   column (a passed pipeline, a deploy to the environment), collapses TODO, writes each card's
   pull request under a Summary in a note, seeds the forge, crowns "Ship 1.1" and waits for its
@@ -105,7 +105,9 @@ What each file does:
   Shift+Enter. Every other byte passes through unchanged. It also makes the `DEMO_GO` file as
   the take opens, which the `prs` take's workers and forge clocks wait for.
 - **`demo.tape`** is the README's main take, all of it on the board: start an agent, answer it
-  with Shift+Enter on its lit card, merge its branch and tell the agent it merged.
+  with Shift+Enter on its lit card, and its card ticks in REVIEW when its turn ends. It merges
+  nothing (the merge train gets a clip of its own), so for this tape the worktree flags wait out
+  the take and the header's auto-merge offer never shows.
   Wherever the agent's timing matters, the tape waits for the screen to change instead of
   sleeping for a fixed time.
 - **`agent.tape`** is the tour's first clip: `enter` on a working agent's card steps into the

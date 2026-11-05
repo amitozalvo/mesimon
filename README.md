@@ -25,10 +25,10 @@ between you and it.
 <sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
 back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>
 
-![Starting an agent from the board, answering it on its card, and merging its branch](assets/demo.gif)
+![Starting an agent from the board, answering it on its card, and its card moving to REVIEW when it is done](assets/demo.gif)
 
 <sub>Start an agent with Shift+Enter on the board. When its card lights, answer it with
-Shift+Enter on the card, then merge its branch with `m`. Recorded with a scripted stand-in agent so the take is reproducible;
+Shift+Enter on the card, and its card moves to REVIEW when it is done. Recorded with a scripted stand-in agent so the take is reproducible;
 [`assets/demo/`](assets/demo) re-records it.</sub>
 
 **Beta.** It is used every day, and it still changes under you. Each version's changes are
