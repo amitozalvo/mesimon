@@ -563,6 +563,9 @@ pub enum Verb {
     /// A card moved by anything but this board's own keys plays its move
     /// (T-817): a switch on the Appearance list, on by default, per machine.
     CardMoves,
+    /// The cursor's column takes XL's share while the cursor is in it
+    /// (T-1135): a switch on the Appearance list, off by default, per machine.
+    CursorGrow,
     /// The board reads the mouse (T-716): a switch on the Behaviour list,
     /// on by default, per machine.
     Mouse,
@@ -580,6 +583,8 @@ pub enum Verb {
     /// shape, saved whole through `SetColumnSettings`.
     ColumnDescription,
     ColumnCollapse,
+    /// The Width row (T-1135): S, M, L or XL, the column's share of the board.
+    ColumnWidth,
     SortColumn,
     ColumnWorkspace,
     ColumnClaudeMode,
@@ -1189,6 +1194,7 @@ impl SettingsSection {
             | Verb::CrownLightning
             | Verb::CardMoves
             | Verb::Peek
+            | Verb::CursorGrow
             | Verb::SummaryShow
             | Verb::NewReplies
             | Verb::CardPrs
@@ -1389,6 +1395,8 @@ pub struct Ctx {
     pub crown_lightning: bool,
     /// A moved card plays its move (T-817).
     pub card_moves: bool,
+    /// The cursor's column grows to XL (T-1135).
+    pub cursor_grow: bool,
     /// The board reads the mouse (T-716).
     pub mouse: bool,
     /// A resting card shows its agent's new reply under its title (T-720).
@@ -1870,6 +1878,8 @@ pub struct Ctx {
     pub col_on_sort: bool,
     pub col_sort_word: &'static str,
     pub col_collapse_word: &'static str,
+    /// The column's width word (T-1135): `S`, `M`, `L` or `XL`.
+    pub col_width_word: &'static str,
     pub col_workspace_word: &'static str,
     pub col_claude_mode_word: &'static str,
     pub col_codex_sandbox_word: &'static str,
@@ -5310,6 +5320,21 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The cursor's column grows (T-1135, user: "grow on movement (hjkl)"):
+    // off by default, since it moves an edge on every h and l.
+    MenuItem {
+        verb: Verb::CursorGrow,
+        label: |_| "Cursor column".into(),
+        detail: |c| {
+            if c.cursor_grow {
+                "takes XL's share while the cursor is in it ∙ h l move one edge".into()
+            } else {
+                "keeps the width its column was given".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     // The terminal's own tab (T-492). Everything off by default: the tab
     // is the terminal's, and a board that renames it uninvited is a board
     // that wrote where it was not asked to. Per machine, the status line's
@@ -6348,6 +6373,7 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
             Verb::CrownLightning,
             Verb::CardMoves,
             Verb::Peek,
+            Verb::CursorGrow,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,
@@ -6486,6 +6512,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
         Verb::CardMoves => pick(&["animated", "instant"], !c.card_moves),
         Verb::Peek => choice(&["cursor", "all", "off"], or(c.peek_word, "cursor")),
+        Verb::CursorGrow => pick(&["grows", "as set"], !c.cursor_grow),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
         Verb::FetchEvery => choice(
             &["off", "1 min", "5 min", "15 min"],
@@ -6611,6 +6638,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::StatusLine => PrefKey::StatusTop,
         Verb::CrownLightning => PrefKey::CrownLightning,
         Verb::CardMoves => PrefKey::CardMoves,
+        Verb::CursorGrow => PrefKey::CursorGrow,
         Verb::Mouse => PrefKey::Mouse,
         Verb::EditorChoice => PrefKey::Editor,
         Verb::TabTitle => PrefKey::TabTitle,
@@ -6756,6 +6784,14 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         verb: Verb::ColumnCollapse,
         label: |_| "Collapsed".into(),
         detail: |_| "a one-cell spine until the cursor enters it".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    // T-1135: the column's share of the board's width.
+    MenuItem {
+        verb: Verb::ColumnWidth,
+        label: |_| "Width".into(),
+        detail: |_| "its share of the space above the floor ∙ S none, M one, L two, XL four".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -6963,7 +6999,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
 /// `Some("")` a section set apart by its blank line alone (the agent door).
 pub fn column_group(verb: Verb) -> Option<&'static str> {
     Some(match verb {
-        Verb::ColumnCollapse | Verb::SortColumn => "LOOK",
+        Verb::ColumnCollapse | Verb::ColumnWidth | Verb::SortColumn => "LOOK",
         Verb::ColumnRefusesNew | Verb::ColumnWorkspace => "NEW TICKETS",
         Verb::ColumnArrives
         | Verb::ColumnRequiresMerge
@@ -7004,6 +7040,7 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::ColumnCollapse => {
             choice(&["off", "always", "when empty"], or(c.col_collapse_word, "off"))
         }
+        Verb::ColumnWidth => choice(&["S", "M", "L", "XL"], or(c.col_width_word, "M")),
         Verb::SortColumn => Value::Word(or(c.col_sort_word, "newest first").into()),
         Verb::ColumnRefusesNew => Value::Switch(!c.col_refuses_new),
         // A column that says nothing works where the board does (T-816).
@@ -10574,7 +10611,7 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), 16);
+        assert_eq!(column_items(&other).len(), 17);
         assert!(!column_items(&other).iter().any(|m| m.verb == Verb::ColumnName));
         let agents = Ctx { column_agents: true, ..Default::default() };
         assert_eq!(
@@ -11169,6 +11206,7 @@ mod tests {
                     Verb::CrownLightning,
                     Verb::CardMoves,
                     Verb::Peek,
+                    Verb::CursorGrow,
                     Verb::SummaryShow,
                     Verb::NewReplies,
                     Verb::CardPrs,
@@ -12015,6 +12053,7 @@ mod tests {
             Verb::CrownLightning,
             Verb::CardMoves,
             Verb::Peek,
+            Verb::CursorGrow,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,

@@ -1612,6 +1612,11 @@ pub struct ColumnSettings {
     /// the pair. No schema bump: a build that drops it shows the column open.
     #[serde(default, skip_serializing_if = "is_false")]
     pub collapsed_when_empty: bool,
+    /// Its share of the board's width (T-1135); M is every column's before
+    /// the setting existed. No schema bump: a build that drops it only
+    /// draws the column at M.
+    #[serde(default, skip_serializing_if = "ColumnWidth::is_m")]
+    pub width: ColumnWidth,
     /// The workspace a ticket CREATED here starts with, stamped onto the
     /// ticket at mint; the ticket field stays the truth and a change here is
     /// never retroactive. `None` = the board's (`Board::workspace`).
@@ -1687,6 +1692,50 @@ pub struct ColumnSettings {
     pub sleep_after_minutes: u32,
 }
 
+/// How much of the board's width a column takes (T-1135, user: "some
+/// columns are more important than others, and their tickets should be
+/// readable through the board"), in the order Enter cycles them. Every open
+/// column keeps the same floor; the sizes share what is left above it — S
+/// takes none, M one share, L two, XL four — each under its own ceiling.
+/// All M is the board before the setting existed. The cell counts are the
+/// TUI's (`layout.rs`); this is the word a column carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColumnWidth {
+    S,
+    #[default]
+    M,
+    L,
+    #[serde(rename = "xl")]
+    Xl,
+}
+
+impl ColumnWidth {
+    pub const ALL: [Self; 4] = [Self::S, Self::M, Self::L, Self::Xl];
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::S => Self::M,
+            Self::M => Self::L,
+            Self::L => Self::Xl,
+            Self::Xl => Self::S,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::S => "S",
+            Self::M => "M",
+            Self::L => "L",
+            Self::Xl => "XL",
+        }
+    }
+
+    pub fn is_m(&self) -> bool {
+        *self == Self::M
+    }
+}
+
 /// The column's auto-sleep choices, in the order Enter cycles them.
 pub const COLUMN_SLEEP_MINUTES: [u32; 5] = [0, 1, 5, 15, 60];
 
@@ -1755,6 +1804,9 @@ impl ColumnSettings {
             Collapse::Off => {}
             Collapse::Always => out.push("collapsed".into()),
             Collapse::WhenEmpty => out.push("collapsed when empty".into()),
+        }
+        if !self.width.is_m() {
+            out.push(format!("width: {}", self.width.word()));
         }
         if self.refuses_new {
             out.push("takes no new tickets".into());

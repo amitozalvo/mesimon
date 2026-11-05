@@ -449,6 +449,10 @@ pub(crate) struct Prefs {
     /// glyph until the cursor rests on it. ON by default; per machine,
     /// as the crown's lightning is — motion is about the person watching.
     pub card_moves: bool,
+    /// The cursor's column takes XL's share of the board while the cursor
+    /// is in it (T-1135). OFF by default; per machine, as the card moves
+    /// are — it is about the person reading.
+    pub cursor_grow: bool,
     /// The board reads the mouse (T-716): clicks, the wheel and hover. ON
     /// by default; off leaves the terminal its own text selection. Per
     /// machine — it is about the terminal.
@@ -524,6 +528,7 @@ impl Default for Prefs {
             peek: PeekLevel::Cursor,
             crown_lightning: true,
             card_moves: true,
+            cursor_grow: false,
             mouse: true,
             usage_line: UsageLine::Near,
             usage_5h: true,
@@ -577,6 +582,7 @@ const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
 const CARD_MOVES_KEY: &str = PrefKey::CardMoves.name();
+const CURSOR_GROW_KEY: &str = PrefKey::CursorGrow.name();
 const MOUSE_KEY: &str = PrefKey::Mouse.name();
 const USAGE_LINE_KEY: &str = PrefKey::UsageLine.name();
 const USAGE_5H_KEY: &str = PrefKey::UsageFiveHour.name();
@@ -817,6 +823,7 @@ impl Prefs {
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
             PrefKey::CardMoves => onoff(self.card_moves),
+            PrefKey::CursorGrow => onoff(self.cursor_grow),
             PrefKey::Mouse => onoff(self.mouse),
             PrefKey::NewReplies => onoff(self.new_replies),
             PrefKey::UsageLine => self.usage_line.key(),
@@ -892,6 +899,7 @@ impl Prefs {
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         doc.insert(CARD_MOVES_KEY.into(), Value::from(self.card_moves));
+        doc.insert(CURSOR_GROW_KEY.into(), Value::from(self.cursor_grow));
         doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
         doc.insert(NEW_REPLIES_KEY.into(), Value::from(self.new_replies));
         for (key, v) in [
@@ -1395,6 +1403,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let card_moves = flag(CARD_MOVES_KEY, true);
+    let cursor_grow = flag(CURSOR_GROW_KEY, false);
     let mouse = flag(MOUSE_KEY, true);
     let new_replies = flag(NEW_REPLIES_KEY, true);
     let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -1492,6 +1501,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         peek,
         crown_lightning,
         card_moves,
+        cursor_grow,
         mouse,
         new_replies,
         usage_line,
@@ -2125,6 +2135,25 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["card_moves"], false);
         assert!(!PrefKey::CardMoves.board_overridable());
+    }
+
+    /// The cursor's column grows (T-1135): absent is off, an on round-trips,
+    /// and it is the machine's, as the card moves are.
+    #[test]
+    fn cursor_grow_default_off_and_round_trip() {
+        let p = scratch("cursor-grow");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(!l.prefs.cursor_grow, "absent is the default: off");
+        assert_eq!(l.prefs.word(PrefKey::CursorGrow), "off");
+        l.prefs.cursor_grow = true;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(l.prefs.cursor_grow);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["cursor_grow"], true);
+        assert!(!PrefKey::CursorGrow.board_overridable());
     }
 
     /// New replies on resting cards (T-720): absent is on, an off

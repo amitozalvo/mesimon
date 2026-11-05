@@ -255,6 +255,7 @@ fn dialog_rect(app: &App, cards: Rect) -> Rect {
         app.cursor_col,
         app.move_target(),
         pinned,
+        &app.column_sizes(),
         &mut window,
     );
     let cols: Vec<(u16, u16)> = geom

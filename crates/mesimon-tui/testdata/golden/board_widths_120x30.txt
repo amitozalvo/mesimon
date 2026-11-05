@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+   TODO                    2    IN PROGRESS                   2    REVIEW                 2    DONE                  1
+
+   Decay treatments      >1y    ⠋ Fix OSC-11 detection      >1y    ✓ Grapheme truncati~ >1y    z Painted accent b~ >1y
+                         T-1
+                                ⠋ Adopt drawer import       >1y    x Flaky e2e on runn~ >1y
+   Keymap validator      >1y
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ T-1 Decay treatments ∙ created >1y ago
+ enter ticket ∙ HJKL move card ∙ tab description                                                      esc menu ∙ ? keys

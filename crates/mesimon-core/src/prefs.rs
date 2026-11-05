@@ -80,6 +80,10 @@ pub enum PrefKey {
     /// cursor rests on it. On by default; off lets the card simply be
     /// where it went.
     CardMoves,
+    /// The cursor's column takes XL's share of the board while the cursor
+    /// is in it (T-1135): a switch, off by default. About the person
+    /// reading, so the machine's alone, as the card moves are.
+    CursorGrow,
     /// The subscription quota line above the board's keys (T-327): a named
     /// value — `near` (only while a provider warns, the default), `every`
     /// window, the `headline` alone, or `off`. The six after it say which
@@ -128,7 +132,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 46] = [
+    pub const ALL: [PrefKey; 47] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -160,6 +164,7 @@ impl PrefKey {
         PrefKey::Peek,
         PrefKey::CrownLightning,
         PrefKey::CardMoves,
+        PrefKey::CursorGrow,
         PrefKey::UsageLine,
         PrefKey::UsageFiveHour,
         PrefKey::UsageWeekly,
@@ -211,6 +216,7 @@ impl PrefKey {
             PrefKey::Peek => "peek",
             PrefKey::CrownLightning => "crown_lightning",
             PrefKey::CardMoves => "card_moves",
+            PrefKey::CursorGrow => "cursor_grow",
             PrefKey::UsageLine => "usage_line",
             PrefKey::UsageFiveHour => "usage_5h",
             PrefKey::UsageWeekly => "usage_week",
@@ -261,6 +267,7 @@ impl PrefKey {
                 | PrefKey::Peek
                 | PrefKey::CrownLightning
                 | PrefKey::CardMoves
+                | PrefKey::CursorGrow
                 | PrefKey::UsageLine
                 | PrefKey::UsageFiveHour
                 | PrefKey::UsageWeekly
@@ -315,6 +322,7 @@ impl PrefKey {
             PrefKey::NewReplies => "new replies on cards",
             PrefKey::CrownLightning => "crown lightning",
             PrefKey::CardMoves => "card moves",
+            PrefKey::CursorGrow => "cursor column grows",
             PrefKey::UsageLine => "usage line",
             PrefKey::UsageFiveHour => "usage line's 5-hour window",
             PrefKey::UsageWeekly => "usage line's weekly window",
@@ -393,6 +401,7 @@ mod tests {
                 PrefKey::Peek,
                 PrefKey::CrownLightning,
                 PrefKey::CardMoves,
+                PrefKey::CursorGrow,
                 PrefKey::UsageLine,
                 PrefKey::UsageFiveHour,
                 PrefKey::UsageWeekly,

@@ -41321,3 +41321,36 @@ test board matches a fresh one — which is why ~70 goldens gained the cursor ca
 Open: `Prefs::body` writes `peek` on every save, so a machine that saved any setting since
 T-365 holds `peek: "off"` and keeps the old look; the default reaches only machines with no
 `peek` key.
+## A column has a Width, and the cursor's column can grow (T-1135, 2026-11-05, user: "some columns are more important than others, and their tickets should be readable through the board. right now many tickets get truncated" ∙ "grow on hover i meant on movement (hjkl), not mouse hover" ∙ "build")
+
+Every open column had the same share of the terminal, capped at 40 cells: six columns at 200
+cells gave each 32, a title about 25, and most titles on the author's board are longer. Now
+`ColumnSettings.width` is `S`, `M`, `L` or `XL` (`ColumnWidth`, on disk `width = "xl"`, M
+skipped), a `Width` row under `Collapsed` in the column dialog's LOOK group, and `layout.rs`
+splits by size: every open column gets `MIN_COL` (26) first, the slack above the floors goes by
+share — S none, M one, L two, XL four — and each size stops at its own ceiling (S 26, M 40, L 60,
+XL 90). All M is the old equal split cell for cell: no board golden moved. **A size moves slack,
+never the fold**: a column falls off the window exactly when the floors no longer fit, as before,
+and the window slide is unchanged. `ColumnSettings::summary` says `width: XL` for `doctor` and the
+dialog's details; no `COLUMNS_SCHEMA` bump (a build that drops the field draws the column at M,
+which widens nothing an agent gets). Remote Control ignores it: one column per swipe.
+
+**The cursor's column grows** (`cursor_grow`, a machine pref, off by default; Settings ›
+Appearance › `Cursor column`, `grows` / `as set`): `App::column_sizes` puts XL on the cursor's
+column and the geometry takes it from there. Measured: between two same-size columns `h`/`l` move
+the one edge between them and every other column keeps its x (`sizes_share_the_slack_above_the_floor`,
+`golden_board_cursor_grow_120`); `j`/`k` never reflow. Off by default so every existing board
+keeps its geometry until the person flips it; the flip is one line and a golden remint.
+
+**Refuted.** Proportional shares with a hard 26 floor (the first draft, in the simulation): at
+200 cells a S column asked for 18 and folded, so sizes folded columns the old split kept open.
+Floor-first is what keeps the fold rule the same. Mouse hover grow: the column under the pointer
+would widen and everything right of it would shift while aiming at a card, and the keyboard has
+no hover; the author meant `hjkl`, which is the switch above. Proposal page with the author's
+board as the simulation: https://claude.ai/artifact/UPHLZyhwSkCE2mYnXu7zfm.
+
+**Not done, offered.** An `auto` size fitting a column's longest title (recomputed only when its
+tickets change); two-line titles for L and XL columns, since the board's longest titles (110
+cells) still cut at XL. Checks: `cargo ut`, `column_e2e`, clippy on all targets, `cargo build
+--workspace`; four dialog goldens reminted for the two new rows (the column dialog's golden is
+34 rows tall now), two board goldens added.

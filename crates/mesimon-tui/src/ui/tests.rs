@@ -3,8 +3,8 @@
 //! in `testdata/golden/`; regenerate with `MESIMON_UPDATE_GOLDEN=1`.
 
 use mesimon_core::board::{
-    Board, Column, ExitReason, FailReason, Reason, SessionKind, SessionRecord, SessionState,
-    StopReason, Ticket,
+    Board, Column, ColumnWidth, ExitReason, FailReason, Reason, SessionKind, SessionRecord,
+    SessionState, StopReason, Ticket,
 };
 use mesimon_core::keymap::HeaderChip;
 use ratatui::backend::TestBackend;
@@ -1974,18 +1974,19 @@ fn golden_board_header_automated_120() {
 }
 
 /// The column settings dialog over the board (T-117): every row, the
-/// selected row's detail under them, `esc back` in its edge. 32 lines tall
-/// with workspace choices belonging only to the column (T-1053).
+/// selected row's detail under them, `esc back` in its edge. 34 lines tall
+/// with workspace choices belonging only to the column (T-1053) and the
+/// Width row (T-1135).
 #[test]
 fn golden_column_settings_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-    let lines = render(&app, 120, 32);
+    let lines = render(&app, 120, 34);
     assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
-    golden("column_settings_120x32", &lines);
+    golden("column_settings_120x34", &lines);
 }
 
 /// The new opt-in row, selected so its scope and retained branch are visible.
@@ -2163,6 +2164,43 @@ fn golden_board_pinned_120() {
     app.cursor_col = 3;
     let lines = render(&app, 120, 30);
     assert!(lines[2].contains("DONE"), "the cursor expands it: {:?}", lines[2]);
+}
+
+/// A column's Width (T-1135, user: "some columns are more important than
+/// others, and their tickets should be readable through the board"): at
+/// 120 columns the slack above the floors goes to IN PROGRESS at XL, DONE
+/// at S keeps the floor, and no column folds that would not have.
+#[test]
+fn golden_board_widths_120() {
+    let mut board = fixture(false);
+    board.columns[1].settings.width = ColumnWidth::Xl;
+    board.columns[3].settings.width = ColumnWidth::S;
+    let app = app_graphite(board);
+    let lines = render(&app, 120, 30);
+    assert!(lines[2].contains("DONE"), "nothing folds: {:?}", lines[2]);
+    golden("board_widths_120x30", &lines);
+}
+
+/// The cursor's column grows (T-1135, user: "grow on movement (hjkl)"):
+/// with the switch on it takes XL's share, and a step to its neighbour
+/// moves the one edge between them — the columns either side keep their x.
+#[test]
+fn golden_board_cursor_grow_120() {
+    let mut app = app_graphite(fixture(false));
+    app.seed_pref(|p| p.cursor_grow = true);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    golden("board_cursor_grow_120x30", &lines);
+    let heads = |lines: &[String]| {
+        ["TODO", "IN PROGRESS", "REVIEW", "DONE"].map(|h| lines[2].find(h).unwrap_or(usize::MAX))
+    };
+    let before = heads(&lines);
+    app.cursor_col = 2;
+    let after = heads(&render(&app, 120, 30));
+    assert_eq!(before[0], after[0], "TODO keeps its place");
+    assert_eq!(before[3], after[3], "DONE keeps its place");
+    assert!(after[2] < before[2], "REVIEW's edge moves left as it grows");
 }
 
 /// A pending move opens the column its ghost stands in (T-1133, user: "open

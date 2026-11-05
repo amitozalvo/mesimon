@@ -5,11 +5,11 @@
   │  Crown's actions          ● lightning   ○ still      │
   │  Card moves               ● animated    ○ instant    │
   │  Replies on cards         cursor                     │
+  │  Cursor column            ○ grows       ● as set     │
   │  Summary on cards         full                       │
   │  New replies              ● on                       │
   │  Pull requests on cards   always                     │
   │  Card corner              ● age         ○ cost       │
-  │                                                      │
   │                                                      │
   │                                                      │
   │                                                      │

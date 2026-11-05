@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, Column, ColumnSettings, NoteMeta, SessionKind, SessionState, SortBy, TagRef, Ticket,
-    WorkspaceStrategy,
+    Board, Column, ColumnSettings, ColumnWidth, NoteMeta, SessionKind, SessionState, SortBy,
+    TagRef, Ticket, WorkspaceStrategy,
 };
 use mesimon_core::channel::Channel;
 use mesimon_core::command::{
@@ -2052,6 +2052,8 @@ pub struct App {
     columns_sorted: Vec<String>,
     /// Which of `columns_sorted` is a spine; see `pinned_columns`.
     columns_pinned: Vec<bool>,
+    /// Each column's width word (T-1135), in board order, off the snapshot.
+    columns_width: Vec<ColumnWidth>,
     /// Where the shin stood in the last frame and what it drew there, for
     /// the scoped block-glyph law (T-451).
     pub mascot: std::cell::RefCell<Option<crate::creature::Drawn>>,
@@ -2318,6 +2320,7 @@ impl App {
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
         let (columns_sorted, columns_pinned) = column_index(&snap.board);
+        let columns_width = column_widths(&snap.board);
         let mut app = Self {
             client,
             repo_root,
@@ -2461,6 +2464,7 @@ impl App {
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             columns_pinned,
+            columns_width,
             mascot: std::cell::RefCell::new(None),
             qr: std::cell::RefCell::new(None),
             creature_clock: Cell::new(None),
@@ -4052,6 +4056,18 @@ impl App {
         &self.columns_pinned
     }
 
+    /// Each column's size for the geometry (T-1135): its own `Width`, and
+    /// XL for the cursor's column while the cursor-grow switch is on.
+    pub(crate) fn column_sizes(&self) -> Vec<ColumnWidth> {
+        let mut sizes = self.columns_width.clone();
+        if self.prefs.cursor_grow {
+            if let Some(s) = sizes.get_mut(self.cursor_col) {
+                *s = ColumnWidth::Xl;
+            }
+        }
+        sizes
+    }
+
     /// The column a pending move's ghost stands in (T-1133): the board
     /// keeps it open, as it keeps the cursor's.
     pub(crate) fn move_target(&self) -> Option<usize> {
@@ -4066,6 +4082,7 @@ impl App {
     /// `board.columns` or moves a ticket between columns.
     pub(crate) fn reindex_columns(&mut self) {
         (self.columns_sorted, self.columns_pinned) = column_index(&self.board);
+        self.columns_width = column_widths(&self.board);
     }
 
     /// This frame's `Ctx` (see the field): built once, on the first read.
@@ -7702,6 +7719,7 @@ impl App {
             col_on_sort: false,
             col_sort_word,
             col_collapse_word: cs.collapse().word(),
+            col_width_word: cs.width.word(),
             col_workspace_word: match cs.workspace {
                 None => "",
                 Some(WorkspaceStrategy::Worktree) => "worktree",
@@ -7758,6 +7776,7 @@ impl App {
             theme_os_barred: self.appearance_barred,
             crown_lightning: self.prefs.crown_lightning,
             card_moves: self.prefs.card_moves,
+            cursor_grow: self.prefs.cursor_grow,
             mouse: self.prefs.mouse,
             new_replies: self.prefs.new_replies,
             card_prs_word: self.prefs.card_prs.key(),
@@ -9392,6 +9411,16 @@ impl App {
                 };
                 self.set_pref(word, |p| p.card_moves = on);
             }
+            // T-1135. Read on every frame; nothing to push.
+            Verb::CursorGrow => {
+                let on = !self.prefs.cursor_grow;
+                let word = if on {
+                    "the cursor's column grows to XL"
+                } else {
+                    "the cursor's column keeps its width"
+                };
+                self.set_pref(word, |p| p.cursor_grow = on);
+            }
             // T-739. Read on every frame; nothing to push.
             Verb::CardPrs => {
                 let v = self.prefs.card_prs.next();
@@ -10029,6 +10058,7 @@ impl App {
                 }
             }
             Verb::ColumnCollapse => self.set_column(|s| s.set_collapse(s.collapse().next()))?,
+            Verb::ColumnWidth => self.set_column(|s| s.width = s.width.next())?,
             Verb::SortColumn => {
                 if let Mode::ColumnSettings { subject: ColumnSubject::Existing(name), sort, .. } =
                     &self.mode
@@ -16024,6 +16054,10 @@ fn snapshot_of(resp: Response) -> Result<Snapshot> {
 /// composer both lay out.
 fn column_index(board: &Board) -> (Vec<String>, Vec<bool>) {
     board.sorted_columns().iter().map(|c| (c.name.clone(), board.column_pinned(c))).unzip()
+}
+
+fn column_widths(board: &Board) -> Vec<ColumnWidth> {
+    board.sorted_columns().iter().map(|c| c.settings.width).collect()
 }
 
 #[cfg(test)]
@@ -27014,6 +27048,27 @@ mod tests {
         app.reindex_columns();
         assert_eq!(app.pinned_columns(), [true, false, false], "emptied, it folds");
         assert_eq!(App::for_test((*app.board).clone(), theme()).cursor_col, 1, "launch skips it");
+    }
+
+    /// The Width row (T-1135) cycles S, M, L, XL through the whole settings,
+    /// relabelled off the snapshot, and the dialog stays.
+    #[test]
+    fn the_width_row_cycles_the_sizes() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // Width is the third row, under Collapsed.
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        assert_eq!(app.ctx().col_width_word, "M");
+        for word in ["L", "XL", "S", "M"] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.ctx().col_width_word, word);
+            assert_eq!(app.board.column("todo").unwrap().settings.width.word(), word);
+        }
+        assert!(sent_contains(&sent, "SetColumnSettings { name: \"todo\""), "{sent:?}");
+        assert!(sent_contains(&sent, "width: Xl"), "{sent:?}");
+        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 2, .. }), "the dialog stays");
     }
 
     #[test]

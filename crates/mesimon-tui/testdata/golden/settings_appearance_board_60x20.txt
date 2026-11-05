@@ -5,11 +5,11 @@
   │  Crown's actions          lightning         machine  │
   │  Card moves               animated          machine  │
   │  Replies on cards         cursor            machine  │
+  │  Cursor column            as set            machine  │
   │  Summary on cards         full              machine  │
   │  New replies              ● on              machine  │
   │  Pull requests on cards   always            machine  │
   │  Card corner              age               machine  │
-  │                                                      │
   │                                                      │
   │                                                      │
   │                                                      │

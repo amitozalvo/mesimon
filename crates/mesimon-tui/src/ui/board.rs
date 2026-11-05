@@ -35,6 +35,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
         app.cursor_col,
         app.move_target(),
         pinned,
+        &app.column_sizes(),
         &mut window,
     );
     app.col_window.set(window);

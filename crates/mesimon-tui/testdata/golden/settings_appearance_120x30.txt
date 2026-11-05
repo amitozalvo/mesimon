@@ -13,11 +13,11 @@
       │  Agents              Crown's actions          ● lightning   ○ still                                      │
       │                      Card moves               ● animated    ○ instant                                    │
       │  Crown               Replies on cards         ● cursor      ○ all       ○ off                            │
-      │                      Summary on cards         ● full        ○ hover     ○ none                           │
-      │  Terminal            New replies              ● on                                                       │
-      │                      Pull requests on cards   ● always      ○ news      ○ off                            │
-      │  Usage               Card corner              ● age         ○ cost                                       │
-      │                                                                                                          │
+      │                      Cursor column            ○ grows       ● as set                                     │
+      │  Terminal            Summary on cards         ● full        ○ hover     ○ none                           │
+      │                      New replies              ● on                                                       │
+      │  Usage               Pull requests on cards   ● always      ○ news      ○ off                            │
+      │                      Card corner              ● age         ○ cost                                       │
       │  About                                                                                                   │
       │                                                                                                          │
       │                                                                                                          │

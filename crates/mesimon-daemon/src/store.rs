@@ -2670,6 +2670,7 @@ order = "a0"
                     description: Some("planned for this version".into()),
                     collapsed: true,
                     collapsed_when_empty: false,
+                    width: mesimon_core::board::ColumnWidth::Xl,
                     workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                     refuses_new: true,
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,
@@ -2714,6 +2715,7 @@ order = "a0"
         assert!(text.contains("description = \"planned for this version\""), "{text}");
         assert!(text.contains("sleep_after_minutes = 5"), "{text}");
         assert!(text.contains("refuses_new = true"), "{text}");
+        assert!(text.contains("width = \"xl\""), "{text}");
         assert!(!text.contains("on_done"), "{text}");
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");
