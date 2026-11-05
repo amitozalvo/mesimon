@@ -41387,3 +41387,23 @@ swings into the pad cells either side, the dialog's own surface. `fold_composer`
 road of a clean Esc and of a refused mint. Not changed: the tour's "Describe a ticket" lesson
 (`tab` on an existing card, a note, where `^s` still saves) and `ticket-page.tape` (the same);
 the editor's `^s save` key label. `crown.tape` drops its Enter after `^s`; crown.gif re-recorded.
+
+## GitHub traffic is kept past its 14 days (T-1129, 2026-11-05, "Snapshot GitHub traffic, stars and release downloads so the 14-day windows are kept")
+
+`ci/traffic.py`, run by hand through `gh api`, appends JSON lines to the author's record at
+`~/.local/state/mesimon/traffic/traffic.jsonl` (`--file` for another) for `amitozalvo/mesimon`
+and `amitozalvo/mesimon-releases`. A `day` row per repository per finished UTC day holds views,
+unique visitors, clones and unique cloners; today is still counting, so it is printed with a
+`*` but recorded only on a later run, which keeps every kept day final. A `snapshot` row per
+repository per run day holds stars, forks, watchers, the 14-day referrers and popular paths,
+and every release asset's `download_count`. A (kind, repository, date) already in the file is
+never written again: a second run the same day adds nothing, and a weekly run loses nothing.
+It prints the last 14 recorded days and the change in stars, forks and downloads since the
+previous snapshot (per asset, `.sha256` files left out). Aggregates only, no visitor identity;
+nothing leaves the machine. Search queries are Google Search Console's, which has no `gh` road.
+
+**Refuted.** One row per run holding GitHub's whole window: weekly runs would hold each day
+up to 14 times with different partial values for the newest. Recording today: its counts
+grow until midnight UTC, and an idempotent record would freeze the partial number. First run
+2026-11-05: 30 rows; the second the same day: no new rows. No unit test; the ticket's check
+is the double live run.
