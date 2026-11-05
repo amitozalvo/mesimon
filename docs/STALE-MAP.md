@@ -41230,3 +41230,27 @@ column fits, the ghost's column wins. The drop or the cancel folds it again: the
 lasts only while the move is pending. The composer's `dialog_rect` passes the same target so its
 geometry matches the board's. Pinned by `a_pending_moves_column_is_open` (layout) and
 `golden_move_opens_a_folded_column` (`board_move_into_spine_100x24`).
+
+## The clips stay on the board; the crown clip comes first (T-1134, 2026-11-05, the author: "ticket page is confusing by itself and needs some changes anyway. for now, let's show only the board or inside the agent (claude code), skip ticket page … show the crown video before everything else")
+
+**Changed.** `demo.tape` answers the lit card with Shift+Enter on the board (the cursor follows the
+card to REVIEW) instead of `space` into its page, and merges with the board's `m` dialog; it waits
+on the card's `✓ Stats as JSON ⎇↑` (the board has no `m merge` footer hint, the page's branch line
+had it) and on the dialog's `tell the agent`, and no longer presses `q`. `agent.tape` goes from the
+card straight into Claude Code with `enter` and back to the board with `ctrl-]`. `crown.tape` ends
+on the board instead of the crown's page. For those three, `record.sh` turns the `p` peek on
+(`"peek":"cursor"`), so the cursor's card says what its agent asked or did, and `seed.py` turns
+DONE's reclaim off for `demo` as for `reddit` (else the merged card's peek reads "worktree kept:
+waiting…"). All three GIFs recorded again; `agent.gif` on the real Claude Code 2.1.318 (Sonnet,
+mod road). The README shows the crown clip first, above the demo, and drops the ticket-page clip;
+it stays in `docs/USING.md`'s ticket-page section, the one place it documents the page itself.
+Captions and alt text (README, USING, site) say "on its card" / "from the board".
+
+**Found on the way.** T-1125's profile block in `record.sh` wrote `.profile` with `>` after the
+key-file case had appended claude's sign-in and PATH to it, so a key-file take never found claude
+and `seed.py` stopped on "the daemon never finished probing claude's road" (twice, not a flake).
+It appends now. A failed seed prints the daemon's log before the sandbox goes.
+
+**Not done.** mesimon.dev's hero stays `demo.gif` (there is no crown clip on the site); the board's
+merge dialog still says "stay on this page" on the board, a product wording outside this ticket.
+Checked: every take run to the end and looked at frame by frame (contact sheets); no Rust changed.

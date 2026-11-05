@@ -1,5 +1,5 @@
-# The tour's first clip: from a working agent's ticket page, step into the
-# agent's own terminal, type to it the ordinary way, and step back to the
+# The tour's first clip: from a working agent's card on the board, step into
+# the agent's own terminal, type to it the ordinary way, and step back to the
 # board. Run through record.sh (`record.sh agent`), never alone: it builds
 # the sandbox this tape expects in DEMO_* and MESIMON_*. Same terminal as
 # demo.tape: theme, size and font. The take in the README is the real
@@ -31,14 +31,11 @@ Sleep 0.5s
 Show
 
 # The board, one agent at work.
-Sleep 1.3s
+Sleep 2s
 
-# Its ticket page: the agent's live output, read by the board.
-Space
-Sleep 1.8s
-
-# Enter steps into the agent itself, full screen: claude at work, or the
-# stand-in under the rule that says what it is.
+# Enter on a working agent's card steps into the agent itself, full
+# screen: claude at work, or the stand-in under the rule that says what
+# it is.
 Enter
 Wait+Screen@10s /esc to interrupt|stand-in/
 Sleep 1s
@@ -55,9 +52,7 @@ Wait+Screen@120s /(?s)Also log each 429.*⏺|with the client/
 Show
 Sleep 2.5s
 
-# Step back: the ticket page, then the board, the card still spinning.
+# Step back to the board, the card still spinning.
 Ctrl+]
-Wait+Screen@5s /PREVIEW/
-Sleep 0.6s
-Type "q"
-Sleep 1.8s
+Wait+Screen@5s /BOARD/
+Sleep 2.5s

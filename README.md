@@ -18,10 +18,17 @@ Your agent is the real Claude Code or Codex, in its own terminal: step into it a
 same prompt, the same slash commands and the same permission dialogs, and mesimon never sits
 between you and it.
 
-![Starting an agent from the board, answering it from the ticket page, and merging its branch](assets/demo.gif)
+**The crown.** `ctrl-o` on a card lets its agent file, move, tag and start the other tickets.
 
-<sub>Start an agent with Shift+Enter on the board. When its card lights, open the ticket and
-answer with Shift+Enter there, then merge its branch with `m`. Recorded with a scripted stand-in agent so the take is reproducible;
+![Crowning a working agent's ticket with ctrl-o: its agent files two tickets, moves one, tags one and starts an agent on another](assets/demo/crown.gif)
+
+<sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
+back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>
+
+![Starting an agent from the board, answering it on its card, and merging its branch](assets/demo.gif)
+
+<sub>Start an agent with Shift+Enter on the board. When its card lights, answer it with
+Shift+Enter on the card, then merge its branch with `m`. Recorded with a scripted stand-in agent so the take is reproducible;
 [`assets/demo/`](assets/demo) re-records it.</sub>
 
 **Beta.** It is used every day, and it still changes under you. Each version's changes are
@@ -89,31 +96,16 @@ its agent, and type the task into it.
 **Your agent, your way.** `enter` on a ticket with a working agent takes you into the agent
 itself: Claude Code or Codex, exactly as you know it.
 
-![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](assets/demo/agent.gif)
+![From the board into the agent's own terminal, a message typed to it, and back to the board](assets/demo/agent.gif)
 
 <sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
 `ctrl-]` steps back out while it keeps working.</sub>
-
-**The ticket page.** `tab` on a card writes its description, and `ctrl-k` lists the links in
-its notes.
-
-![Writing a ticket's description with tab, opening its page, and opening a link from its agent's note with ctrl-k](assets/demo/ticket-page.gif)
-
-<sub>`tab` adds two lines to the brief, `enter` opens the page with the note its agent left, and
-`ctrl-k` opens one of that note's links.</sub>
 
 **Search.** `/` finds any ticket by a word of its title, key, column or tag, or a line in one of its notes.
 
 ![Typing csv into the search picker narrows fifteen tickets to one, and enter puts the cursor on its card](assets/demo/search.gif)
 
 <sub>Three letters narrow fifteen tickets to one, and `enter` scrolls the board to its card.</sub>
-
-**The crown.** `ctrl-o` on a card lets its agent file, move, tag and start the other tickets.
-
-![Crowning a working agent's ticket with ctrl-o: its agent files two tickets, moves one, tags one and starts an agent on another](assets/demo/crown.gif)
-
-<sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
-back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>
 
 **Remote Control.** Pair your phone from `esc` › Remote Control and answer your agents from
 wherever you are.

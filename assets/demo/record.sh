@@ -116,9 +116,12 @@ mkdir -p "$HOME/.local/state/mesimon" \
 # (reddit.tape, prs.tape) keep the train, since the first one's ending is
 # the train's own merge and the second's board merges on its forge, and
 # show every card's latest reply (the `P` peek), so a feed viewer can read
-# what each agent is doing.
+# what each agent is doing. The demo, agent and crown takes never open a
+# ticket page (T-1134): the cursor card's reply (the `p` peek) says on the
+# board what its agent asked or did.
 case $TAPE in
     reddit | prs) echo '{"schema_version":1,"peek":"all"}' >"$HOME/.local/state/mesimon/prefs.json" ;;
+    demo | agent | crown) echo '{"schema_version":1,"merge_train":false,"peek":"cursor"}' >"$HOME/.local/state/mesimon/prefs.json" ;;
     *) echo '{"schema_version":1,"merge_train":false}' >"$HOME/.local/state/mesimon/prefs.json" ;;
 esac
 # The reddit clip's workers raise their hands one at a time (stub-claude.py,
@@ -189,18 +192,24 @@ export DEMO_GO=$SANDBOX/go
 export DEMO_WAKES=$SANDBOX/wakes.log
 # A pane's environment is what the sandbox's login shell exports
 # (daemon/src/shellenv.rs), not this script's: what the stand-ins and the
-# stand-in forge read goes through its profile. The profile is written
-# before the key-file case appends claude's sign-in below.
+# stand-in forge read goes through its profile. Appended: the key-file case
+# above already wrote claude's sign-in and PATH there (T-1134: a `>` here
+# erased them, and the daemon never found claude to probe).
 {
     echo "export DEMO_GO='$DEMO_GO' DEMO_WAKES='$DEMO_WAKES'"
     [ -n "${DEMO_PACED:-}" ] && echo "export DEMO_PACED=1"
     [ -n "${MSMN_FORGE:-}" ] && echo "export PATH='$SANDBOX/bin':\"\$PATH\" MSMN_FORGE='$MSMN_FORGE'"
     true
-} >"$HOME/.profile"
+} >>"$HOME/.profile"
 
 "$MESIMON" daemon --repo "$REPO" >"$SANDBOX/daemon.out" 2>&1 &
 DAEMON=$!
-DEMO_KEY_FILE=$KEY_FILE python3 -B "$HERE/seed.py" board "$REPO" "$TAPE"
+DEMO_KEY_FILE=$KEY_FILE python3 -B "$HERE/seed.py" board "$REPO" "$TAPE" || {
+    # The daemon's log goes with the sandbox; show why the board never came.
+    echo "--- daemon log ---" >&2
+    find "$HOME/.local/state/mesimon" -name daemon.log -exec tail -40 {} \; >&2 || true
+    exit 1
+}
 
 cd "$HERE"
 if ! vhs "$TAPE.tape"; then

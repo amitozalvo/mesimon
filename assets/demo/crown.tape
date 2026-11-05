@@ -42,7 +42,5 @@ Ctrl+O
 Wait+Screen@20s /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Expire old/
 Sleep 2s
 
-# Its own words on the ticket page: what it did, and the starts left.
-Space
-Wait+Screen@10s /starts? left/
-Sleep 3s
+# Its own words under its title, on the board: what it did.
+Sleep 4s

@@ -239,9 +239,10 @@ def board(repo, tape="demo", start=True):
            "workspace": "worktree", "agent_tools": "full"})
     if prs:
         columns(w)
-    if tape == "reddit":
+    if tape in ("reddit", "demo"):
         # DONE reclaims nothing: a person's worker stays in its worktree
-        # after the merge, and the card would say the worktree is kept.
+        # after the merge, and the card would say the worktree is kept
+        # (the peek shows the card's words, not the ticket page's).
         done = column_settings(w)["DONE"]
         done.update(reclaim=False, free_worktree=False)
         w.ask({"cmd": "set_column_settings", "name": "DONE", "settings": done})

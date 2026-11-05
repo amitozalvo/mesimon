@@ -45,7 +45,9 @@ What each file does:
 - **`record.sh`** builds a throwaway sandbox under `/tmp`: its own `HOME`, and a small git repo
   copied from `project/`. It starts the release binary's daemon there, seeds the tape's board,
   runs the tape, then stops the daemon and removes everything, including the daemon's private
-  tmux. Its prefs turn the merge train off, so a finished branch waits for the take's `m`. It
+  tmux. Its prefs turn the merge train off, so a finished branch waits for the take's `m`, and
+  for the demo, agent and crown takes turn the `p` peek on, so the cursor's card shows what its
+  agent asked or did without opening the ticket page. It
   also sets one timing seam: the worktree flags refresh every 2 s instead of every
   10 s, so the merge offer appears soon after the agent finishes. The link opener is `true`,
   so a link a take opens reads `opening …` on the board and starts no browser. The two Reddit
@@ -66,8 +68,8 @@ What each file does:
   first step into an agent as practised, so the practice screen does not open in a take. For
   `ticket-page` it then runs a second agent that writes a note on its ticket and stops, and puts
   that ticket back at the top of TODO. For `reddit` it waits for the crown's agent to read the
-  board and end its turn, and turns DONE's worktree reclaim off, so a merged card carries its
-  agent's words and not an eviction line. For `prs` it sets the board to merge through pull
+  board and end its turn. For `reddit` and `demo` it turns DONE's worktree reclaim off, so a
+  merged card carries its agent's words and not an eviction line. For `prs` it sets the board to merge through pull
   requests, renames DONE to PRODUCTION and adds STAGING, sets what moves a card into each
   column (a passed pipeline, a deploy to the environment), collapses TODO, writes each card's
   pull request under a Summary in a note, seeds the forge, crowns "Ship 1.1" and waits for its
@@ -102,22 +104,24 @@ What each file does:
   off. The shim answers the query and delivers the tape's `Alt+Enter` as the kitty report for
   Shift+Enter. Every other byte passes through unchanged. It also makes the `DEMO_GO` file as
   the take opens, which the `prs` take's workers and forge clocks wait for.
-- **`demo.tape`** is the README's main take: start an agent, answer it, merge its branch and
-  tell the agent it merged.
+- **`demo.tape`** is the README's main take, all of it on the board: start an agent, answer it
+  with Shift+Enter on its lit card, merge its branch and tell the agent it merged.
   Wherever the agent's timing matters, the tape waits for the screen to change instead of
   sleeping for a fixed time.
-- **`agent.tape`** is the tour's first clip: from a working agent's ticket page, step into the
-  agent's own terminal, type to it, and step back to the board. It waits on the shape of the
+- **`agent.tape`** is the tour's first clip: `enter` on a working agent's card steps into the
+  agent's own terminal, type to it, and `ctrl-]` steps back to the board. It waits on the shape of the
   agent's screen, never its words, and every wait also matches the stand-in, so the tape runs
   with either. A busy claude holds a typed message until its current step ends, which can take
   most of a minute, so the take is cut from the queued message to the answer under it.
 - **`search.tape`** is the search tour clip: fifteen tickets, `/`, `csv`, `enter`. Its board
   runs TODO off the bottom of the screen, so the card it finds starts out of view.
-- **`crown.tape`** is the crown tour clip: `^o` crowns the agent at work, and the stub, once
-  crowned, files two tickets, moves one, tags one and starts an agent on another.
-- **`ticket-page.tape`** is the ticket-page tour clip: `tab` writes a card's description,
-  `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that note's links
-  and `enter` opens one.
+- **`crown.tape`** is the crown clip, the README's first: `^o` crowns the agent at work, and the
+  stub, once crowned, files two tickets, moves one, tags one and starts an agent on another; its
+  card ends in REVIEW with what it did under its title.
+- **`ticket-page.tape`** is the ticket-page clip, shown in `docs/USING.md`'s section on that
+  page and no longer in the README (the other clips stay on the board): `tab` writes a card's
+  description, `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that
+  note's links and `enter` opens one.
 - **`reddit.tape`** is the first clip for a Reddit post (T-1125): you and the crown on one
   board, all of it on the board. Shift+Enter on a TODO card starts an agent with your words;
   one step right, `^o` crowns the idle agent that read the board, and Shift+Enter on its card

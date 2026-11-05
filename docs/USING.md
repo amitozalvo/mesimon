@@ -263,7 +263,7 @@ What you step into is the agent itself: Claude Code or Codex exactly as you run 
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
 it, answer its questions, interrupt it: mesimon never sits between you and it.
 
-![From a ticket page into the agent's own terminal, a message typed to it, and back to the board](../assets/demo/agent.gif)
+![From the board into the agent's own terminal, a message typed to it, and back to the board](../assets/demo/agent.gif)
 
 <sub>`enter` steps into the agent's own terminal, where you type to it as you always do, and
 `ctrl-]` steps back out while it keeps working.</sub>
