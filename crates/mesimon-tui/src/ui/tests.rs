@@ -5589,9 +5589,10 @@ fn a_confirmed_merge_says_it_is_merging() {
     );
 }
 
-/// The board's `m` (T-697) is the ticket page's: the selected card's
-/// footer offers it, the first press opens the same dialog over the board,
-/// and a refusal speaks in the status line, which is where the board talks.
+/// The board's `m` (T-697) is the ticket page's: `?` offers it (the board's
+/// footer leaves it there since T-1132), the first press opens the same
+/// dialog over the board, and a refusal speaks in the status line, which
+/// is where the board talks.
 #[test]
 fn the_board_merges_the_selected_card_in_the_same_dialog() {
     let mut app = app_graphite(fixture(false));
@@ -5622,7 +5623,15 @@ fn the_board_merges_the_selected_card_in_the_same_dialog() {
     }
     assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid_n(5)));
     let footer = crate::ui::footer_text(&app, 200);
-    assert!(footer.contains("m merge"), "the card's footer offers it:\n{footer}");
+    assert!(!footer.contains("m merge"), "left to `?`:\n{footer}");
+    assert_eq!(
+        mesimon_core::keymap::hint_for(
+            mesimon_core::keymap::Scope::Board,
+            mesimon_core::keymap::Verb::Merge,
+            &app.ctx()
+        ),
+        Some(("m", "merge"))
+    );
     press(&mut app, 'm');
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");

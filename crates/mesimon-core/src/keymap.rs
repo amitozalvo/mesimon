@@ -8729,11 +8729,13 @@ pub fn ticket_fact(b: &Binding, ctx: &Ctx) -> Option<u8> {
 
 /// What the board's footer leaves to `?` (T-1132, author: "it's all over
 /// the place"): `u`, whose word rides the row above beside the card it
-/// would bring back, and — while the cursor is on a card, whose own keys
-/// want the cells — `o` and `r`. A header and an empty board keep them.
+/// would bring back; `m`, whose stage the card's merge row already says
+/// (author, of `m ask the agent to rebase`: hide it, as `t`); and — while
+/// the cursor is on a card, whose own keys want the cells — `o` and `r`.
+/// A header and an empty board keep those two.
 fn board_drops(b: &Binding, ctx: &Ctx) -> bool {
     match b.verb {
-        Verb::Undo => true,
+        Verb::Undo | Verb::Merge => true,
         Verb::OpenTicket | Verb::Rename => ctx.has_ticket,
         _ => false,
     }
@@ -11962,6 +11964,14 @@ mod tests {
         );
         let overlay: Vec<&str> =
             overlay(Scope::Board, &card).into_iter().flat_map(|(_, r)| r).map(|(k, _)| k).collect();
+        // `m` too, at any stage: the card's merge row says where it stands.
+        let merging =
+            Ctx { merge_actionable: true, merge_word: "ask the agent to rebase", ..card.clone() };
+        assert!(!footer_items(Scope::Board, &merging).iter().any(|b| b.verb == Verb::Merge));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Merge, &merging),
+            Some(("m", "ask the agent to rebase"))
+        );
         for kept in ["u", "o", "r", "t"] {
             assert!(overlay.contains(&kept), "{kept} stays in `?`: {overlay:?}");
         }

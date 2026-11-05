@@ -41302,7 +41302,12 @@ scope only; a grace already says `u to undo`, and every other screen's footer ke
 description`. The left cluster now stops at the FIRST key that does not fit
 (`chrome::footer_spans`, `keymap::footer`) — the old skip-and-continue let `r rename` land
 while `o new ticket` and `shift+enter` did not, which is what read as "all over the place".
-`hint_spans` (dialogs, rail trailers, owed rows) keeps the old greedy fill on purpose.
+`hint_spans` (dialogs, rail trailers, owed rows) keeps the old greedy fill on purpose. After the
+merge the author asked why `m ask the agent to rebase` showed: `m`'s word follows the branch's
+stage (`merge`, `ask the agent to rebase`, `tell the agent it merged`), and the freed cells let
+it in. It left the board's footer at every stage, as `t` did (the author picked that over
+hiding it only while the train acts); the card's merge row says the stage, `?` keeps `m`, and
+the ticket page's footer is unchanged.
 
 **The cursor card's own dialogs in the footer** (`keymap::ticket_fact`): `^k ↗ links`,
 `^h prs`, `^j summary`, each exactly while the ticket has what it opens, after the

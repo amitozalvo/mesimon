@@ -27,4 +27,4 @@
 
 
  T-5 Grapheme truncation ∙ created >1y ago
- enter ticket ∙ HJKL move card ∙ m tell the agent it merged ∙ tab description                         esc menu ∙ ? keys
+ enter ticket ∙ HJKL move card ∙ tab description                                                      esc menu ∙ ? keys
