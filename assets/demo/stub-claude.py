@@ -371,9 +371,9 @@ def demo(first):
 
 
 def crown(first):
-    """Work until a person crowns this ticket, then run the board: file two
-    tickets, move one, tag one, start an agent on another. Every edit is a
-    keyed tool call through the shim, so the board lights each card itself."""
+    """Read the board, then, wearing the crown, run it: file two tickets,
+    tag one, start an agent on another. Every edit is a keyed tool call
+    through the shim, so the board lights each card itself."""
     submitted(first)
     text("Reading the board for what 1.0 still needs.")
     board = Board()
@@ -381,7 +381,8 @@ def crown(first):
     # The reddit clip's board (T-1125) has no "Expire old links": there the
     # first turn reads the board and ends, the person crowns the idle agent
     # and tells it what to do, and that ask is the turn that acts. The
-    # crown clip's agent acts the moment it is crowned.
+    # crown clip's ticket is crowned before it starts (T-1134), and its
+    # brief is the ask.
     reddit = "Expire old links" not in keys
     steps = ["Read the open tickets", "Check the release checklist"]
     n = 0
@@ -398,10 +399,12 @@ def crown(first):
         submitted(PANE.wait())
         text(f"On it: filing both, then starting {SLUGS}.")
     else:
+        for step in steps:
+            tool("Read", step)
         while not crowned():
             tool("Read", steps[n % len(steps)], until=crowned)
             n += 1
-        text("I wear the crown now. Filing what 1.0 is missing.")
+        text("I wear the crown. Filing what 1.0 is missing.")
     filed = crown_tool(board, "create_ticket", "File: health check endpoint",
                        title="Health check endpoint", column="TODO",
                        description="GET /healthz answers 200 while the store is reachable.",
@@ -410,21 +413,19 @@ def crown(first):
                        title="1.0 release notes", column="TODO",
                        description="What changed since 0.9, for the release page.",
                        workspace="worktree")
-    stale = keys["Custom slugs"]
-    if not reddit:
-        crown_tool(board, "move_ticket", f"Move {stale} back to TODO: nobody is on it",
-                   key=stale, to_column="TODO", seen=seen(board, stale))
-    crown_tool(board, "tag_ticket", f"Tag {notes['key']} MILESTONE",
-               key=notes["key"], name="MILESTONE")
+    # A tag the board has: the reddit board's crown card wears MILESTONE;
+    # the crown clip's board (T-1134) has FEATURE cards and no MILESTONE.
+    tagged, tag = (notes, "MILESTONE") if reddit else (filed, "FEATURE")
+    crown_tool(board, "tag_ticket", f"Tag {tagged['key']} {tag}",
+               key=tagged["key"], name=tag)
     # The crown clip's board has "Expire old links"; the reddit clip's crown
     # starts "Custom slugs", whose agent asks the crown and is merged.
     expire = keys.get("Expire old links") or keys[SLUGS]
     started = crown_tool(board, "start_agent", f"Start an agent on {expire}",
                          key=expire, seen=seen(board, expire), workspace="worktree")
     left = started["budget_left"]
-    moved = "" if reddit else f"moved {stale} back to TODO, "
-    text(f"Filed {filed['key']} and {notes['key']}, {moved}tagged "
-         f"{notes['key']} MILESTONE and started an agent on {expire}: "
+    text(f"Filed {filed['key']} and {notes['key']}, tagged "
+         f"{tagged['key']} {tag} and started an agent on {expire}: "
          f"{left} {'start' if left == 1 else 'starts'} left in the crown's budget.",
          last=True)
     hook("Stop", stop_hook_active=False)

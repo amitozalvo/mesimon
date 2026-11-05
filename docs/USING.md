@@ -498,10 +498,11 @@ finished ticket to DONE and you archive it. It watches a ticket you started only
 lights with what was done (`♛ moved`, `♛ tagged`, `♛ started`). One ticket wears the crown at a
 time. Only you can give it, and `ctrl-o` on the crowned card takes it back.
 
-![Crowning a working agent's ticket with ctrl-o: its agent files two tickets, moves one, tags one and starts an agent on another](../assets/demo/crown.gif)
+![Filing a ticket with its brief, crowning it with ctrl-o and starting it: its agent files two tickets, tags one and starts an agent on another](../assets/demo/crown.gif)
 
-<sub>The crowned agent files two tickets, moves one back to TODO, tags one and starts an agent
-on another; the moved, tagged and started cards light as they change.</sub>
+<sub>A ticket filed with its brief is crowned with `ctrl-o` and started. Its agent files two
+tickets, tags one and starts an agent on another; the filed, tagged and started cards light as
+they change.</sub>
 
 You can watch the crown work without opening its session. Each action strikes: a bolt of
 lightning runs from the crowned card's `♛` to the card it acted on, and the word for what was

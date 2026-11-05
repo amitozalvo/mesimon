@@ -41263,3 +41263,15 @@ still at work: 27 s, no `m`. With the train off a finished branch lights the hea
 `MESIMON_WT_REFRESH_TICKS` past the take (100000) instead of 8. DONE's reclaim is back to the
 `reddit` board only, since the demo's card no longer reaches DONE. Every caption says the card
 moves to REVIEW when it is done; nothing says merge.
+
+**The crown clip, filed and started on the take** (2026-11-05: "I want its ticket to be created,
+crowned and started (in TODO). maybe with a description brief. 'custom slugs' … was in 'in
+progress' … it should be in TODO"). `crown.tape` now writes "Plan 1.0" with `o`, its brief with
+`tab` ("File what 1.0 is missing, then start the next feature."), `^s` (which returns the brief
+to the one-line composer, "description kept"; Enter files it), `^o`, then Shift+Enter and a blank
+Enter. `CROWN_BOARD` has no crown card and no card in IN PROGRESS without an agent: "Custom slugs"
+waits in TODO, "Rate limiting" is the one agent at work. The stand-in crown reads two steps, then
+files two, tags the health check FEATURE (the board has no MILESTONE card, so `tag_ticket` refused
+MILESTONE: "no such tag") and starts "Expire old links"; it moves nothing. The reddit flow keeps
+MILESTONE on the release notes. The take waits for the crown's card to land in REVIEW before its
+last hold (it ended mid-glide). 28.6 s.

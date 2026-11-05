@@ -20,7 +20,7 @@ between you and it.
 
 **The crown.** `ctrl-o` on a card lets its agent file, move, tag and start the other tickets.
 
-![Crowning a working agent's ticket with ctrl-o: its agent files two tickets, moves one, tags one and starts an agent on another](assets/demo/crown.gif)
+![Filing a ticket with its brief, crowning it with ctrl-o and starting it: its agent files two tickets, tags one and starts an agent on another](assets/demo/crown.gif)
 
 <sub>The crowned agent runs the board, and you keep the crown: `ctrl-o` on its card takes it
 back. [More on the crown](docs/USING.md#the-crown-one-agent-runs-the-board).</sub>

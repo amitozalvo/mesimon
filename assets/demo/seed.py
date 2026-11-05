@@ -69,18 +69,21 @@ SEARCH = [
     ("DONE", "Set up CI", None, "Run the tests on every push."),
 ]
 
-# crown.tape: the agent at work is the one the tape crowns, and
-# stub-claude.py runs the board from it. "Custom slugs" sits in IN PROGRESS
-# with nobody on it, for the crown to move back.
+# crown.tape: the crown's ticket is not on this board. The take files it
+# in TODO with its brief, crowns it with ^o and starts it, and
+# stub-claude.py runs the board from it ("Plan 1.0"). One agent is at work
+# on "Rate limiting" when the take opens; every other card waits in TODO
+# (T-1134: nothing sits in IN PROGRESS with nobody on it).
 CROWN = "Plan 1.0"
 CROWN_BOARD = [
     ("TODO", "Expire old links", "FEATURE",
      "A link nobody clicked for 30 days should 404 and free its slug."),
+    ("TODO", "Custom slugs", "FEATURE",
+     "Let a user pick the slug instead of getting a random one."),
     ("TODO", "Document config", None,
      "Every key in shortlink.toml, its default, and an example."),
-    ("IN PROGRESS", CROWN, "MILESTONE", "Decide what 1.0 needs, and file it."),
-    ("IN PROGRESS", "Custom slugs", "FEATURE",
-     "Let a user pick the slug instead of getting a random one."),
+    ("IN PROGRESS", BUSY, "FEATURE",
+     "At most 20 new links a minute per client IP; answer 429 past that."),
     ("REVIEW", "Fix slash 404", "BUG",
      "GET /abc/ should redirect like GET /abc."),
     ("DONE", "Set up CI", None, "Run the tests on every push."),
@@ -175,7 +178,7 @@ BOARDS = {"demo": TICKETS, "agent": TICKETS, "search": SEARCH,
           "crown": CROWN_BOARD, "ticket-page": PAGE_BOARD, "reddit": REDDIT_BOARD,
           "prs": PRS_BOARD}
 # The ticket whose agent is already at work, where it is not BUSY.
-AT_WORK = {"crown": CROWN, "reddit": CROWN, "prs": PRS_CROWN}
+AT_WORK = {"reddit": CROWN, "prs": PRS_CROWN}
 
 # With the real claude (record.sh with a key file), BUSY's agent works on
 # this instead: it has to still be at work when the take steps into it, and
@@ -253,9 +256,9 @@ def board(repo, tape="demo", start=True):
                       "workspace": "worktree"})
         ids[title] = made["id"]
         # An agent may not undo a move made in the last minute
-        # (daemon/src/movegate.rs), and the crown take moves an IN PROGRESS
-        # card back to TODO: that card comes by way of REVIEW, so its last
-        # move is not the one the crown reverses.
+        # (daemon/src/movegate.rs): an IN PROGRESS card comes by way of
+        # REVIEW, so no crown's move of it reverses the seed's. No take's
+        # crown moves one since T-1134; the detour stays harmless.
         if column == "IN PROGRESS":
             w.ask({"cmd": "move_ticket", "id": made["id"], "column": "REVIEW"})
         if column != "TODO":

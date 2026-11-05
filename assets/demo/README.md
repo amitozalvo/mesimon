@@ -79,7 +79,7 @@ What each file does:
 - **`stub-claude.py`** stands in for `claude` through `MESIMON_CLAUDE_BIN`. The daemon launches
   it with claude's own argv and pastes the prompt into its pane. It reports back the way claude
   does: through the hook commands in its settings file, and through the `mesimon mcp` shim for
-  the board tools (`raise_hand` in the demo; `create_ticket`, `move_ticket`, `tag_ticket` and
+  the board tools (`raise_hand` in the demo; `create_ticket`, `tag_ticket` and
   `start_agent` once crowned in the crown clip; `write_note` in the ticket-page clip;
   `ask_agent` and `sleep_agent` when a crown answers a wake in the Reddit clips). It writes
   a transcript, and the ticket page's preview reads it. Its pane has a prompt line that takes
@@ -117,9 +117,10 @@ What each file does:
   most of a minute, so the take is cut from the queued message to the answer under it.
 - **`search.tape`** is the search tour clip: fifteen tickets, `/`, `csv`, `enter`. Its board
   runs TODO off the bottom of the screen, so the card it finds starts out of view.
-- **`crown.tape`** is the crown clip, the README's first: `^o` crowns the agent at work, and the
-  stub, once crowned, files two tickets, moves one, tags one and starts an agent on another; its
-  card ends in REVIEW with what it did under its title.
+- **`crown.tape`** is the crown clip, the README's first: `o` writes "Plan 1.0", `tab` its brief,
+  `^s` and Enter file it in TODO, `^o` crowns it and Shift+Enter starts it. The stub reads the
+  board, then files two tickets, tags one FEATURE and starts an agent on "Expire old links";
+  every other card stays in TODO, and its card ends in REVIEW with what it did under its title.
 - **`ticket-page.tape`** is the ticket-page clip, shown in `docs/USING.md`'s section on that
   page and no longer in the README (the other clips stay on the board): `tab` writes a card's
   description, `enter` opens its page, `j j` walks to the note its agent left, `^k` lists that
