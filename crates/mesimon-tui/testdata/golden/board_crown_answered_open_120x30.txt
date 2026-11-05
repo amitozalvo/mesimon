@@ -6,7 +6,7 @@
 
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
                                    answered by T-411: Okta
-
+                                                        T-4
 
 
 
@@ -27,4 +27,4 @@
 
 
  T-4 Adopt drawer import ∙ created >1y ago
- enter go to the agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe             esc menu ∙ ? keys
+ enter agent ∙ space ticket ∙ HJKL move card ∙ tab description                                        esc menu ∙ ? keys

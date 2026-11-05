@@ -530,7 +530,21 @@ fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
 /// carries up to five optional `∙` clauses and a sixth pushes the update chip
 /// off a 100-column terminal.
 pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
-    let width = area.width as usize;
+    // `u` and what it undoes (T-1132), off the footer and onto the row
+    // that names the card, at its right end: the board's footer gave its
+    // cell up. A grace already spells its own `u to undo`, so not there.
+    let undo = if app.grace.is_empty() { undo_spans(app) } else { Vec::new() };
+    let uw = super::spans_width(&undo);
+    let width = (area.width as usize).saturating_sub(if uw > 0 { uw + 2 } else { 0 });
+    let draw = |f: &mut Frame, line: Line<'static>| {
+        let mut spans = line.spans;
+        if uw > 0 {
+            let used: usize = super::spans_width(&spans);
+            spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used + uw + 1))));
+            spans.extend(undo.clone());
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    };
     // The subscription quota (T-327) takes the row's right side, one cell in
     // from the edge like the footer's own cluster: after a grace or a notice
     // in what they leave, before the hover row, which gives way to it.
@@ -562,7 +576,7 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
                 app.theme.base(),
             ));
             let quota = quota_after(&line);
-            f.render_widget(Paragraph::new(compose(Some(line), quota)), area);
+            draw(f, compose(Some(line), quota));
             return;
         }
         // The hover row is fitted second: the quota line is the scarcer
@@ -577,8 +591,8 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
         } else {
             hover
         };
-        if hover.is_some() || qw > 0 {
-            f.render_widget(Paragraph::new(compose(hover, quota)), area);
+        if hover.is_some() || qw > 0 || uw > 0 {
+            draw(f, compose(hover, quota));
         }
         return;
     };
@@ -597,7 +611,20 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
         app.theme.dim1(),
     ));
     let quota = quota_after(&line);
-    f.render_widget(Paragraph::new(compose(Some(line), quota)), area);
+    draw(f, compose(Some(line), quota));
+}
+
+/// `u undo archive` as the footer would have spelled it, for the advisory
+/// row's right end (T-1132) — empty while nothing can be undone, and off
+/// the board's own scope, whose footers keep `u` (`keymap::board_drops`).
+fn undo_spans(app: &App) -> Vec<Span<'static>> {
+    if app.scope() != Scope::Board {
+        return Vec::new();
+    }
+    let ctx = app.frame_ctx();
+    keymap::binding_for(Scope::Board, keymap::Verb::Undo, &ctx)
+        .map(|b| hint_spans(&[b], &ctx, &app.theme.rest, usize::MAX))
+        .unwrap_or_default()
 }
 
 /// The fewest cells the hover row keeps beside the quota line: a key and a
@@ -678,6 +705,55 @@ pub(super) fn hand_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Line::from(vec![Span::styled(lead, style), Span::styled(row, style)])
         })
         .collect()
+}
+
+/// The footer's left cluster (T-1132): `hint_spans`' look, filled in
+/// priority order up to the first key that does not fit — a shorter one
+/// after it never takes the gap, so what shows is always the top of the
+/// list (author: "it's all over the place"). The cursor card's own dialogs
+/// (`keymap::ticket_fact`) are spelled in the faint ink the card's `∙ ^j`
+/// wears, key and word alike, and `^k`'s word carries the card's `↗`.
+fn footer_spans(
+    items: &[&Binding],
+    ctx: &Ctx,
+    ink: &Ramp,
+    tier: crate::glyphs::Tier,
+    budget: usize,
+) -> Vec<Span<'static>> {
+    let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
+    let word = Style::default().fg(ink.dim2);
+    let faint = Style::default().fg(ink.dim3);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for b in items {
+        let fact = b.prio == 0 && keymap::ticket_fact(b, ctx).is_some();
+        let hint = match (b.verb, fact) {
+            (keymap::Verb::Links, true) => {
+                format!("{} {}", crate::glyphs::links_mark(tier), (b.hint)(ctx))
+            }
+            _ => (b.hint)(ctx).to_string(),
+        };
+        let w = b.show.width() + 1 + hint.width();
+        let add = if out.is_empty() { w } else { w + 3 };
+        if used + add > budget {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(Span::styled(" ∙ ".to_string(), faint));
+        }
+        out.push(Span::styled(b.show.to_string(), if fact { faint } else { key }));
+        out.push(Span::styled(format!(" {hint}"), if fact { faint } else { word }));
+        used += add;
+        // Spelled, so clickable wherever it lands whole (T-716).
+        if let Some(k) = keymap::click_key(b) {
+            if fact {
+                crate::mouse::note_quiet_hint(format!("{} {hint}", b.show), k);
+            } else {
+                crate::mouse::note_hint(b.show, &hint, k);
+            }
+        }
+    }
+    out
 }
 
 /// Bindings as hint spans — `key` in `ink.base` + bold (06 §5.1 clause 3:
@@ -879,7 +955,8 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     }
     let right_w: usize = super::spans_width(&right);
     let reserved = if right_w == 0 { 1 } else { right_w + 4 };
-    spans.extend(hint_spans(&own, &ctx, ink, width.saturating_sub(lead + reserved)));
+    let tier = theme.glyph_tier();
+    spans.extend(footer_spans(&own, &ctx, ink, tier, width.saturating_sub(lead + reserved)));
     if right_w > 0 {
         let used: usize = super::spans_width(&spans);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w + 1))));

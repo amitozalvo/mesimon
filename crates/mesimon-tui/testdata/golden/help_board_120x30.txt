@@ -9,22 +9,22 @@
    │   hjkl      move around           o         new ticket                              x         sleep sessions   │
    │   g         top of column         c         copy id                                                            │
    │   G         bottom of column      > <       move card, stay on original column    VIEW                         │
-   │   enter     go to the agent       HJKL      move card                               !         terminal         │
-   │   space     ticket page           O         new column                              p         show replies     │
-   │   /         search                r         rename                                  P         show every reply │
-   │                                   ^o        crown                                   $         show costs       │
-   │                                   tab       describe                                                           │
-   │                                   n         note                                  APP                          │
-   │                                   ^t        tags                                    ,         settings         │
-   │                                   a         archive                                 esc       menu             │
-   │                                   z         snooze                                  q         quit             │
-   │                                   d         delete                                  ?         keys             │
-   │                                                                                     ^L        redraw           │
+   │   enter     agent                 HJKL      move card                               !         terminal         │
+   │   space     ticket                O         new column                              P         show every reply │
+   │   /         search                r         rename                                  $         show costs       │
+   │                                   ^o        crown                                                              │
+   │                                   tab       description                           APP                          │
+   │                                   n         note                                    ,         settings         │
+   │                                   ^t        tags                                    esc       menu             │
+   │                                   a         archive                                 q         quit             │
+   │                                   z         snooze                                  ?         keys             │
+   │                                   d         delete                                  ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 
 
+
  T-3 Fix OSC-11 detection ∙ created >1y ago
- enter go to the agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe             esc menu ∙ ? keys
+ enter agent ∙ space ticket ∙ HJKL move card ∙ tab description                                        esc menu ∙ ? keys

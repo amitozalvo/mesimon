@@ -17,4 +17,4 @@
 
 
  T-99 Elsewhere ∙ created >1y ago
- enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys
+ enter ticket ∙ HJKL move card ∙ tab description                                                      esc menu ∙ ? keys

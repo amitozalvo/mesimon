@@ -3,9 +3,9 @@
    TODO                           2    IN PROGRESS                   2   2   1
 
    Decay treatments             >1y    ⠋ Fix OSC-11 detection      >1y   R   D
-                                                                         E   O
-   Keymap validator             >1y    ! Adopt drawer import       >1y   V   N
-                                                                         I   E
+                                T-1                                      E   O
+                                       ! Adopt drawer import       >1y   V   N
+   Keymap validator             >1y                                      I   E
                                                                          E
                                                                          W
 
@@ -14,10 +14,10 @@
 
 
 
-       *
 
 
 
+                                                    *
                                                           oo@
 
  T-1 Decay treatments ∙ created >1y ago

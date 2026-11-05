@@ -4063,7 +4063,9 @@ fn test_a_quick_tag_names_the_tag_on_a_session_less_card() {
         let title = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
         lines[title + 1].clone()
     };
-    // At rest the card is one line: the stripe says "tagged", never which.
+    // At rest — the reply row off (T-1132) — the card is one line: the
+    // stripe says "tagged", never which.
+    app.peek = false;
     assert!(!card(&app).contains("FTR"), "no tag row before the press");
 
     app.tag_flash = Some((ulid_n(1), std::time::Instant::now()));
@@ -4122,8 +4124,9 @@ fn test_the_peek_names_the_ticket() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     app.cursor_row = Some(0);
-    // Off: no card names the key. The hover row does (T-471), under the
-    // columns, which is not the card's row.
+    // Off (Settings' `off` rung since T-1132): no card names the key. The
+    // hover row does (T-471), under the columns, which is not the card's row.
+    app.peek = false;
     let lines = render(&app, 120, 30);
     let (columns, below) = lines.split_at(lines.len() - 2);
     assert!(!columns.iter().any(|l| l.contains("T-3")), "no key before `p`");
@@ -5634,7 +5637,16 @@ fn golden_train_manual_120() {
     app.cursor_col = 2;
     app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
-    assert!(lines.last().is_some_and(|l| l.contains("t merge by hand")), "{:?}", lines.last());
+    // The board's footer leaves `t` to `?` (T-1132); the key still works.
+    assert!(!lines.last().is_some_and(|l| l.contains("t merge by hand")), "{:?}", lines.last());
+    assert_eq!(
+        mesimon_core::keymap::hint_for(
+            mesimon_core::keymap::Scope::Board,
+            mesimon_core::keymap::Verb::ManualMerge,
+            &app.ctx()
+        ),
+        Some(("t", "merge by hand"))
+    );
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     assert!(
@@ -5656,7 +5668,15 @@ fn golden_train_manual_120() {
         lines.join("\n")
     );
     assert!(lines.iter().any(|l| l.contains("auto-merge ∙ off")), "{}", lines.join("\n"));
-    assert!(lines.last().is_some_and(|l| l.contains("t auto-merge")), "{:?}", lines.last());
+    // The card's row says it; the board's footer leaves `t` to `?` (T-1132).
+    assert_eq!(
+        mesimon_core::keymap::hint_for(
+            mesimon_core::keymap::Scope::Board,
+            mesimon_core::keymap::Verb::ManualMerge,
+            &app.ctx()
+        ),
+        Some(("t", "auto-merge"))
+    );
     golden("train_manual_120x30", &lines);
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
@@ -6865,8 +6885,10 @@ fn app_summary() -> App {
     }
     let mut app = app_graphite(b);
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
-    // At rest: the first read's reveal has played.
+    // At rest: the first read's reveal has played, and the reply row is
+    // off (Settings' `off` rung, T-1132) — the underline is the card closed.
     app.summary_pulses.clear();
+    app.peek = false;
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     app
@@ -7336,6 +7358,7 @@ fn test_summary_underline_leaves_a_finished_parked_card() {
     let mut parked = app_graphite(b.clone());
     parked.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(&done)));
     parked.summary_pulses.clear();
+    parked.peek = false;
     parked.cursor_col = 1;
     parked.cursor_row = Some(0);
     assert!(!underlined(&parked), "all done, the agent parked: bare");
@@ -7343,6 +7366,7 @@ fn test_summary_underline_leaves_a_finished_parked_card() {
     let mut open = app_graphite(b);
     open.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
     open.summary_pulses.clear();
+    open.peek = false;
     open.cursor_col = 1;
     open.cursor_row = Some(0);
     assert!(underlined(&open), "boxes left, the agent parked: the run");
@@ -7365,8 +7389,9 @@ fn test_summary_show_gates_the_card() {
     assert!(underlined(&app) && !lists(&app), "full at rest: the underline");
     app.peek = true;
     assert!(!underlined(&app) && lists(&app), "full with the peek: the rows");
-    app.peek = false;
+    // The seed resolves, which sets the reply row from the default rung.
     app.seed_pref(|p| p.summary = SummaryShow::Hover);
+    app.peek = false;
     assert!(!underlined(&app) && !lists(&app), "hover at rest: nothing");
     app.peek = true;
     assert!(!underlined(&app) && lists(&app), "hover with the peek: the rows");
@@ -10066,8 +10091,10 @@ fn a_resting_card_shows_its_agents_new_reply_under_its_title() {
     };
     golden("board_new_reply_120x30", &render(&app, 120, 30));
     let (y, under) = row(&app);
+    // From T-3's column on: the cursor card beside it is open (T-1132).
+    let words = &under[under.find("Fixed").unwrap_or(0)..];
     assert!(
-        under.trim_start().starts_with("Fixed the OSC-11 race:") && under.ends_with('~'),
+        words.starts_with("Fixed the OSC-11 race:") && under.ends_with('~'),
         "one line, cut to the card: {under:?}"
     );
     let buf = cells(&app, 120, 30);
@@ -13018,7 +13045,10 @@ fn the_summary_folds_key_alone_clicks() {
     let text = rows.join("\n");
     let fold = rows.iter().find(|r| r.contains("3 more")).map(|r| r.trim_end());
     assert!(fold.is_some_and(|r| r.ends_with("3 more ∙ ^j")), "the key after the count:\n{text}");
-    assert!(!text.contains("^j summary"), "and no word of its own:\n{text}");
+    // The card's key has no word of its own; the footer's quiet `^j
+    // summary` (T-1132) is the board's, a row below.
+    let footer = rows.last().expect("footer");
+    assert!(footer.contains("^j summary"), "the footer names it:\n{text}");
     let at = spot_of(&rows, "more ∙ ^j");
     click(&mut app, (at.0 + 7, at.1));
     assert!(matches!(app.mode, Mode::Summary { .. }), "{:?}", app.mode);
@@ -14103,4 +14133,85 @@ fn golden_hook_wait_uses_the_existing_background_park() {
     golden("board_hook_wait_120x30", &render(&app, 120, 30));
     app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
     golden("ticket_hook_wait_120x30", &render(&app, 120, 30));
+}
+
+/// A ticket whose notes lead somewhere (T-1132): `↗` before the key on the
+/// open card's row, `^k ↗ links` in the board's footer in the faint ink the
+/// card's `∙ ^j` wears — key and word, never bold — and the same mark on
+/// the dialog it opens. A note with no link, a path that is not a file and
+/// a key naming the ticket itself leave all of it off.
+#[test]
+fn golden_board_ticket_links_120() {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "Plan", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let marked = |app: &App| {
+        let lines = render(app, 120, 30);
+        let columns = &lines[..lines.len() - 2];
+        (
+            columns.iter().any(|l| l.contains("↗  T-3")),
+            lines.last().is_some_and(|l| l.contains("^k ↗ links")),
+        )
+    };
+    for nothing in ["plain words", "see ./no/such/file.rs", "a note about T-3 itself"] {
+        app.remember_note(ulid_n(90), 1, Some(nothing.into()));
+        assert_eq!(marked(&app), (false, false), "{nothing:?}");
+        assert!(!app.ctx().ticket_note_links, "{nothing:?}");
+    }
+    for something in ["the run: https://ci.test/9", "after T-1 lands"] {
+        app.remember_note(ulid_n(90), 1, Some(something.into()));
+        assert_eq!(marked(&app), (true, true), "{something:?}");
+    }
+    app.remember_note(ulid_n(90), 1, Some("the run: https://ci.test/9".into()));
+    let rows = render(&app, 120, 30);
+    golden("board_ticket_links_120x30", &rows);
+    let buf = cells(&app, 120, 30);
+    let y = 29u16;
+    let footer = &rows[29];
+    let x = footer[..footer.find("^k").expect("^k")].width() as u16;
+    let ink = app.theme.selected_bg.map_or(&app.theme.rest, |_| &app.theme.sel);
+    assert_eq!(buf[(x, y)].fg, ink.dim3, "the faint ink");
+    assert!(!buf[(x, y)].modifier.contains(Modifier::BOLD), "never bold");
+    let enter = footer[..footer.find("enter").expect("enter")].width() as u16;
+    assert!(buf[(enter, y)].modifier.contains(Modifier::BOLD), "the screen's keys stay bold");
+    app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL).unwrap();
+    assert!(matches!(app.mode, Mode::Links { .. }), "{:?}", app.mode);
+    assert!(render(&app, 120, 30).iter().any(|l| l.contains("↗ LINKS ∙ T-3")));
+}
+
+/// The board's footer (T-1132): `o`, `r` and `t` leave a card's footer for
+/// `?`, the row stops at the first key that does not fit, and `u` rides the
+/// row above, at its right end, beside the card it would bring back.
+#[test]
+fn the_board_footer_keeps_the_cards_keys_and_u_moves_up() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let rows = render(&app, 120, 30);
+    let footer = rows.last().expect("footer");
+    for gone in ["o new ticket", "r rename", "merge by hand", "describe ∙"] {
+        assert!(!footer.contains(gone), "{gone}: {footer}");
+    }
+    assert!(footer.starts_with(" enter agent ∙ space ticket ∙"), "{footer}");
+    assert!(footer.contains("tab description"), "{footer}");
+    app.seed_archive_undo(ulid_n(99));
+    assert!(app.ctx().can_undo);
+    let rows = render(&app, 120, 30);
+    assert!(!rows[29].contains("undo"), "{}", rows[29]);
+    assert!(rows[28].trim_end().ends_with("u undo archive"), "{}", rows[28]);
+    assert!(rows[28].starts_with(" T-3 Fix OSC-11"), "{}", rows[28]);
+    // A column header keeps `r` (`keymap::board_drops`).
+    app.cursor_row = None;
+    let rows = render(&app, 120, 30);
+    assert!(rows[29].contains("r rename column"), "{}", rows[29]);
+    // Off the board's own scope `u` stays in its footer, and only there.
+    app.cursor_row = Some(0);
+    app.header_focus = true;
+    let rows = render(&app, 120, 30);
+    assert!(rows[29].contains("u undo archive"), "{}", rows[29]);
+    assert!(!rows[28].contains("undo"), "{}", rows[28]);
 }

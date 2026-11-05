@@ -4,7 +4,8 @@
 
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ⠑ Grapheme truncation  >1y    z Painted accent bar  >1y
                                                                  queued ∙ after T-3
-   Keymap validator       >1y    ⠋ Adopt drawer import  >1y
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y                           T-5
+
                                                                x Flaky e2e on runner  >1y
 
 
@@ -25,6 +26,5 @@
 
 
 
-
  T-5 Grapheme truncation ∙ created >1y ago
- ^y send now ∙ ^u take back ∙ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe        esc menu ∙ ? keys
+ ^y send now ∙ ^u take back ∙ enter ticket ∙ HJKL move card ∙ tab description                         esc menu ∙ ? keys

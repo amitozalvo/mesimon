@@ -41275,3 +41275,46 @@ files two, tags the health check FEATURE (the board has no MILESTONE card, so `t
 MILESTONE: "no such tag") and starts "Expire old links"; it moves nothing. The reddit flow keeps
 MILESTONE on the release notes. The take waits for the crown's card to land in REVIEW before its
 last hold (it ended mid-glide). 28.6 s.
+
+## A card says its notes lead somewhere, and the board's footer is the top of a list (T-1132, 2026-11-05, the author: "indicate a ticket has links … on the ticket itself on board")
+
+**`↗` on the open card's key row** (`↗  T-3`, the key's ink), at the right end where the key
+already is, not under the state glyph the author first offered: that column is where the
+eye scans for needs-you, `!` and the spinner, and one cell holds no count. No count at all
+(author: "don't count links"). The same `↗` heads the links dialog (`↗ LINKS ∙ T-3`). What
+counts is the NOTES' links, the `^k` dialog's rule minus the agent's words and the pull
+requests (those change every turn, and pull requests have their own marks): a URL, an
+attachment, a path that is a file at the read, a key naming another ticket on the board.
+Read off the bodies `poll_summaries` already fetches for every card (`NoteSummary::links`),
+so no wire change and no disk read per frame; a key resolves at draw. ASCII `@`; `↗` is East
+Asian Width A like the `→` and `↑` the board already draws.
+
+**The footer, rebuilt with the author line by line** (their ask: "compile a list of all hints
+available at the bottom … it's all over the place"): on a card the board drops `o` (an empty
+column says it), `r` (rare enough for `?`) and `t` (author: "if someone wanna look for it,
+they can use ?") — a column header and an empty board keep `o`/`r` (`keymap::board_drops`);
+`u` moves to the advisory row's right end beside the card it would bring back (the board's
+scope only; a grace already says `u to undo`, and every other screen's footer keeps `u`);
+`enter agent ∙ space ticket` (was `go to the agent ∙ ticket page`, 38 → 23 cells); `tab
+description`. The left cluster now stops at the FIRST key that does not fit
+(`chrome::footer_spans`, `keymap::footer`) — the old skip-and-continue let `r rename` land
+while `o new ticket` and `shift+enter` did not, which is what read as "all over the place".
+`hint_spans` (dialogs, rail trailers, owed rows) keeps the old greedy fill on purpose.
+
+**The cursor card's own dialogs in the footer** (`keymap::ticket_fact`): `^k ↗ links`,
+`^h prs`, `^j summary`, each exactly while the ticket has what it opens, after the
+transcript (prio 21–23), in the faint ink the card's `∙ ^j` wears, key and word alike.
+Refuted on the way: the hints on the card beside each mark (three different places, "really
+unaligned"); a right-edge hint column (the PR mark and key would shift while it showed);
+hints that vanish after the first successful open (author: shown "regardless if user used
+it"); `∙ ↗ links` on the hover row (author: removed). Known cost: on a card with links and a
+pull request at 120 columns, `HJKL move card` and `tab description` do not fit; `?` has them.
+
+**Peek on by default, `p` gone** (author: "peak should be on by default, with no p to
+disable it (in settings if user wants to). capital P to peak all will still work").
+`PeekLevel` defaults to `Cursor`, a ring for Settings › Appearance's new `Replies on cards`
+row (cursor / all / off); `P` unchanged. The App's flags start from the default rung so a
+test board matches a fresh one — which is why ~70 goldens gained the cursor card's key row.
+Open: `Prefs::body` writes `peek` on every save, so a machine that saved any setting since
+T-365 holds `peek: "off"` and keeps the old look; the default reaches only machines with no
+`peek` key.

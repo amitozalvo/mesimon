@@ -73,25 +73,25 @@ macro_rules! pref_words {
     };
 }
 
-/// Where the board's reply row shows — the `p`/`P` ladder (T-237), one
-/// value rather than two flags because the ladder has an invariant (`All`
-/// implies the cursor card's) that two flags could spell wrong. Remembered
-/// in the machine file since T-365; `Off` is absent, which is how every
-/// board opened before the key existed.
+/// Where the board's reply row shows (T-237), one value rather than two
+/// flags because the ladder has an invariant (`All` implies the cursor
+/// card's) that two flags could spell wrong. Remembered in the machine file
+/// since T-365. The cursor card's by default since T-1132, when `p` went:
+/// Settings › Appearance cycles it, `P` widens it to every card and back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeekLevel {
+    /// The cursor card's latest reply.
     #[default]
-    Off,
-    /// The cursor card's latest reply (`p`).
     Cursor,
     /// Every card's (`P`).
     All,
+    Off,
 }
 
-pref_words!(PeekLevel {
-    Off => "off",
+pref_words!(ring PeekLevel {
     Cursor => "cursor",
     All => "all",
+    Off => "off",
 });
 
 /// What the terminal's tab reads (T-492): nothing of ours, the board's
@@ -521,7 +521,7 @@ impl Default for Prefs {
             notify_sound_done: Sound::Tick,
             notify_dock_bounce: false,
             notify_via: NotifyVia::Mesimon,
-            peek: PeekLevel::Off,
+            peek: PeekLevel::Cursor,
             crown_lightning: true,
             card_moves: true,
             mouse: true,
@@ -1650,14 +1650,14 @@ pub fn tab_title_doctor_line() -> String {
 }
 
 /// `mesimon doctor`'s `replies` line (T-365): the rung the board's reply
-/// row was left on — `p` and `P` set it, and the next board opens on it —
+/// row is on — Settings cycles it, `P` widens and narrows it (T-1132) —
 /// and whether a resting card shows a new one (T-720).
 pub fn peek_doctor_line() -> String {
     let prefs = load_home().prefs;
     let rung: String = match prefs.peek {
-        PeekLevel::Off => "hidden ∙ p shows the cursor card's latest reply, P every card's".into(),
-        PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card, p hides it".into(),
-        PeekLevel::All => "under every card ∙ P narrows it to the cursor card, p hides it".into(),
+        PeekLevel::Off => "hidden ∙ P shows every card's latest reply".into(),
+        PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card".into(),
+        PeekLevel::All => "under every card ∙ P narrows it to the cursor card".into(),
     };
     let fresh = if prefs.new_replies {
         "a new one under its resting card"
@@ -2343,12 +2343,12 @@ mod tests {
     /// rung this build does not know reads as off and survives a save of
     /// something else until a press replaces it.
     #[test]
-    fn the_reply_row_defaults_off_and_round_trips() {
+    fn the_reply_row_defaults_to_the_cursor_card_and_round_trips() {
         let p = scratch("peek");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
-        assert_eq!(l.prefs.peek, PeekLevel::Off, "absent is the default");
+        assert_eq!(l.prefs.peek, PeekLevel::Cursor, "absent is the cursor card's (T-1132)");
         l.prefs.set_peek(PeekLevel::All);
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
@@ -2359,11 +2359,11 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["peek"], "all", "a theme pick keeps the rung it loaded");
         assert_eq!(v["dark"], "amber");
-        // A foreign rung reads as off and a theme pick keeps it.
+        // A foreign rung reads as the default and a theme pick keeps it.
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk","peek":"column"}"#)
             .unwrap();
         let mut l = load(&p);
-        assert_eq!(l.prefs.peek, PeekLevel::Off);
+        assert_eq!(l.prefs.peek, PeekLevel::Cursor);
         l.prefs.set(Ground::Dark, Flavor::Amber);
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
@@ -2516,7 +2516,7 @@ mod tests {
         assert_eq!(r.tab_title, TabTitle::Mesimon, "the board file's own value is not read");
         assert!(!r.tab_progress);
         assert_eq!(r.week_start, Weekday::Monday);
-        assert_eq!(r.peek, PeekLevel::Off);
+        assert_eq!(r.peek, PeekLevel::Cursor);
         l.prefs.set_bool(PrefKey::Notify, true);
         save_board(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();

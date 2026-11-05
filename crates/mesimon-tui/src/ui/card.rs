@@ -494,6 +494,7 @@ pub(super) fn render(
     fresh: Option<(&str, u64, bool)>,
     prs: &[(String, Register)],
     pr_words: Option<(&str, bool)>,
+    links: bool,
     moved: bool,
     ghost: bool,
 ) -> Vec<Line<'static>> {
@@ -1323,6 +1324,13 @@ pub(super) fn render(
                 Some(t) if key.is_empty() => t.to_string(),
                 Some(t) => format!("{t} ∙ {key}"),
                 None => key,
+            };
+            // Its notes lead somewhere (T-1132): `↗` before the key, in the
+            // key's ink — a fact about the ticket, on the ticket's row.
+            let key = match (links, key.is_empty()) {
+                (false, _) => key,
+                (true, true) => glyphs::links_mark(tier).to_string(),
+                (true, false) => format!("{}  {key}", glyphs::links_mark(tier)),
             };
             let key = truncate(&key, inner);
             let key_cells = key.width();

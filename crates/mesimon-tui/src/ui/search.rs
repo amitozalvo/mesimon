@@ -427,6 +427,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         None,
         &[],
         None,
+        app.ticket_note_links(ticket.id),
         false,
         false,
     );

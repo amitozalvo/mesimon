@@ -1188,6 +1188,7 @@ impl SettingsSection {
             Verb::StatusLine
             | Verb::CrownLightning
             | Verb::CardMoves
+            | Verb::Peek
             | Verb::SummaryShow
             | Verb::NewReplies
             | Verb::CardPrs
@@ -1365,6 +1366,9 @@ pub struct Ctx {
     pub peek_on: bool,
     /// `P` is showing every card's reply, not only the cursor card's.
     pub peek_all: bool,
+    /// The reply row's rung as Settings names it (T-1132): `cursor`, `all`
+    /// or `off`; empty reads as `cursor`, the default.
+    pub peek_word: &'static str,
     /// The live theme's one-line blurb, for the Theme section's line.
     pub theme_blurb: &'static str,
     /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
@@ -1458,6 +1462,12 @@ pub struct Ctx {
     /// might be a link" — one that holds none still gets a status line,
     /// never an empty dialog.
     pub ticket_linkable: bool,
+    /// The subject ticket's notes hold a link that leads somewhere (T-1132)
+    /// — what the card's `↗` says and what names `^k` in the board's footer.
+    /// Read off the bodies the summaries already fetch, so unlike
+    /// `ticket_linkable` it is an answer, not a proxy; the agent's words
+    /// and the pull requests `^k` also lists are not counted.
+    pub ticket_note_links: bool,
     /// The subject ticket's notes hold a `Summary` section with at least one
     /// row (T-696), as the TUI's cache last read them — never the disk. What
     /// `^j` gates on.
@@ -2414,14 +2424,16 @@ static BOARD: &[Binding] = &[
         show: "enter",
         // Enter is "get me working": it focuses a live agent when there is
         // one, and the hint says which it will be BEFORE the press. On a
-        // column header it opens the column's settings (T-117).
+        // column header it opens the column's settings (T-117). The words
+        // are the destination alone (T-1132, author: "enter and space take
+        // too much space"): `enter agent ∙ space ticket`.
         hint: |c| {
             if c.col_header {
                 "column settings"
             } else if c.ticket_hot {
-                "go to the agent"
+                "agent"
             } else {
-                "ticket page"
+                "ticket"
             }
         },
         avail: |c| c.has_ticket || c.col_header,
@@ -2513,7 +2525,7 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Space],
         verb: Verb::TicketScreen,
         show: "space",
-        hint: |c| if c.ticket_hot { "ticket page" } else { "" },
+        hint: |c| if c.ticket_hot { "ticket" } else { "" },
         avail: |c| c.has_ticket,
         class: Class::Plain,
         group: Group::Navigate,
@@ -2525,7 +2537,9 @@ static BOARD: &[Binding] = &[
         verb: Verb::OpenTicket,
         show: "o",
         // "new", not "open": it mints a card. "open ticket" read as opening
-        // the one under the cursor (T-158).
+        // the one under the cursor (T-158). Off the footer while the cursor
+        // is on a card since T-1132 (`footer_items`): an empty column
+        // already says `o`, and those cells went to the card's own keys.
         hint: |_| "new ticket",
         avail: always,
         class: Class::Plain,
@@ -2660,6 +2674,8 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
+        // Off the footer while the cursor is on a card since T-1132
+        // (`footer_items`): a ticket's rename is rare enough to look up.
         prio: 70,
     },
     Binding {
@@ -2740,7 +2756,10 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
-        prio: 62,
+        // Overlay-only on the board since T-1132 (author: "if someone wanna
+        // look for it, they can use ?"); the card's merge row still says
+        // where the branch is going.
+        prio: 0,
     },
     Binding {
         // The crown (T-411, user: "a 'king' session ... that will allow the
@@ -2795,7 +2814,7 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Tab],
         verb: Verb::Describe,
         show: "tab",
-        hint: |_| "describe",
+        hint: |_| "description",
         avail: |c| c.has_ticket,
         class: Class::Plain,
         group: Group::Ticket,
@@ -3074,32 +3093,12 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // Overlay-only. The peek is a view preference, not a verb: it is set
-        // once and lived with (and remembered in `prefs.json` since T-365),
-        // and the board it changes is the evidence it worked. A permanent
-        // cell teaching a toggle nobody presses twice is the cell the footer
-        // could least afford.
-        keys: &[Key::Char('p')],
-        verb: Verb::Peek,
-        show: "p",
-        hint: |c| {
-            if c.peek_on {
-                "hide replies"
-            } else {
-                "show replies"
-            }
-        },
-        avail: always,
-        class: Class::Plain,
-        group: Group::View,
-        mutates: false,
-        prio: 0,
-    },
-    Binding {
-        // Overlay-only, like `p` and for the same reason (T-237, user: "no
-        // need to hint this"). `P` IS shift-of-`p`: the same reply row,
-        // widened from the cursor card to every card on the board; pressing
-        // it again narrows back to the cursor card, never to nothing.
+        // Overlay-only (T-237, user: "no need to hint this"): the reply
+        // row, widened from the cursor card to every card on the board;
+        // pressing it again narrows back to the cursor card, never to
+        // nothing. `p` went in T-1132 (author: "peek should be on by
+        // default, with no p to disable it"): the cursor card's rung is
+        // Settings › Appearance's `Replies on cards`.
         keys: &[Key::Char('P')],
         verb: Verb::PeekAll,
         show: "P",
@@ -5546,6 +5545,20 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The agent's latest reply under a card (T-237, T-365): the cursor
+    // card's by default, every card's, or none. A row since T-1132, when
+    // `p` went; `P` on the board still widens and narrows it.
+    MenuItem {
+        verb: Verb::Peek,
+        label: |_| "Replies on cards".into(),
+        detail: |c| match or(c.peek_word, "cursor") {
+            "all" => "every card's latest reply ∙ P narrows it to the cursor card".into(),
+            "off" => "titles only ∙ P shows every card's".into(),
+            _ => "the cursor card's latest reply ∙ P shows every card's".into(),
+        },
+        avail: always,
+        key: "",
+    },
     // A ticket's summary on its card (T-696): what the `Summary` section
     // shows there — everything, the rows alone, or nothing.
     MenuItem {
@@ -6334,6 +6347,7 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::CardMoves,
+            Verb::Peek,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,
@@ -6471,6 +6485,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::StatusLine => pick(&["top", "bottom"], !c.status_top),
         Verb::CrownLightning => pick(&["lightning", "still"], !c.crown_lightning),
         Verb::CardMoves => pick(&["animated", "instant"], !c.card_moves),
+        Verb::Peek => choice(&["cursor", "all", "off"], or(c.peek_word, "cursor")),
         Verb::SummaryShow => choice(&["full", "hover", "none"], or(c.summary_word, "full")),
         Verb::FetchEvery => choice(
             &["off", "1 min", "5 min", "15 min"],
@@ -6626,6 +6641,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
         Verb::CardCorner => PrefKey::CardCorner,
+        Verb::Peek => PrefKey::Peek,
         Verb::SummaryShow => PrefKey::Summary,
         Verb::NewReplies => PrefKey::NewReplies,
         Verb::CardPrs => PrefKey::CardPrs,
@@ -8631,23 +8647,56 @@ fn directional(verb: Verb, key: Key) -> Verb {
     }
 }
 
+/// The cursor card's own dialogs on the board's footer (T-1132): `^k`,
+/// `^h` and `^j` are overlay-only, and the footer names one exactly while
+/// the ticket has what it opens — links in its notes, a pull request, a
+/// summary — at the priority given here, after the transcript. The board
+/// draws these quieter than the rest (`chrome::hint_spans`): they say
+/// what the card holds, not what the screen does.
+pub fn ticket_fact(b: &Binding, ctx: &Ctx) -> Option<u8> {
+    match b.verb {
+        Verb::Links if ctx.ticket_note_links => Some(21),
+        Verb::PullRequests if ctx.has_prs => Some(22),
+        Verb::Summary if ctx.ticket_summarised => Some(23),
+        _ => None,
+    }
+}
+
+/// What the board's footer leaves to `?` (T-1132, author: "it's all over
+/// the place"): `u`, whose word rides the row above beside the card it
+/// would bring back, and — while the cursor is on a card, whose own keys
+/// want the cells — `o` and `r`. A header and an empty board keep them.
+fn board_drops(b: &Binding, ctx: &Ctx) -> bool {
+    match b.verb {
+        Verb::Undo => true,
+        Verb::OpenTicket | Verb::Rename => ctx.has_ticket,
+        _ => false,
+    }
+}
+
 /// The available bindings of a scope chain, most footer-worthy first. Bindings
-/// with `prio == 0` are overlay-only and never appear here.
+/// with `prio == 0` are overlay-only and never appear here, save the board's
+/// `ticket_fact`s; the board's `board_drops` never do.
 pub fn footer_items(scope: Scope, ctx: &Ctx) -> Vec<&'static Binding> {
-    let mut out: Vec<&'static Binding> = Vec::new();
+    let mut out: Vec<(u8, &'static Binding)> = Vec::new();
     for s in chain(scope) {
         for b in bindings(s) {
-            if b.prio > 0
+            let prio = match b.prio {
+                0 if s == Scope::Board => ticket_fact(b, ctx).unwrap_or(0),
+                p => p,
+            };
+            if prio > 0
                 && b.live(ctx)
                 && !(b.hint)(ctx).is_empty()
                 && (b.verb != Verb::AddColumn || ctx.col_header)
+                && !(scope == Scope::Board && board_drops(b, ctx))
             {
-                out.push(b);
+                out.push((prio, b));
             }
         }
     }
-    out.sort_by_key(|b| b.prio);
-    out
+    out.sort_by_key(|(p, _)| *p);
+    out.into_iter().map(|(_, b)| b).collect()
 }
 
 /// The footer's two clusters: what this screen does (left, in priority
@@ -8686,8 +8735,9 @@ pub fn frame_keys(scope: Scope, ctx: &Ctx, budget: usize) -> Vec<&'static Bindin
 }
 
 /// The footer line for this scope and state, filled to `width`: the left
-/// cluster in priority order, skipping what does not fit, then the right
-/// cluster. `? keys` closes the line wherever `?` resolves — and only there:
+/// cluster in priority order up to the first key that does not fit (T-1132:
+/// a shorter key after it never takes the gap, so the row is always the
+/// top of the list), then the right cluster. `? keys` closes the line wherever `?` resolves — and only there:
 /// inside a text field or a chord tail `?` is text or a cancel, and a hint
 /// that names a key must be a key that works.
 pub fn footer(scope: Scope, ctx: &Ctx, width: usize) -> String {
@@ -8702,7 +8752,7 @@ pub fn footer(scope: Scope, ctx: &Ctx, width: usize) -> String {
         let item = word(b);
         let add = if line.is_empty() { item.chars().count() } else { item.chars().count() + 3 };
         if line.chars().count() + add > budget {
-            continue;
+            break;
         }
         if !line.is_empty() {
             line.push_str(SEP);
@@ -10102,7 +10152,7 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::Tab, &Ctx::default()), None, "a rename");
         let card = Ctx { has_ticket: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Tab, &card), Some(Verb::Describe));
-        assert_eq!(hint_for(Scope::Board, Verb::Describe, &card), Some(("tab", "describe")));
+        assert_eq!(hint_for(Scope::Board, Verb::Describe, &card), Some(("tab", "description")));
         assert_eq!(resolve(Scope::Board, Key::Tab, &Ctx::default()), None, "no card, no tab");
         for scope in [Scope::Ticket, Scope::Diff, Scope::Global] {
             assert_eq!(resolve(scope, Key::Tab, &card), None, "{scope:?}");
@@ -11037,10 +11087,11 @@ mod tests {
         // — the same act one level wider, the way `x`/`X` widen the sleep.
         assert_eq!(resolve(Scope::Board, Key::Char('o'), &full), Some(Verb::OpenTicket));
         assert_eq!(resolve(Scope::Board, Key::Char('O'), &full), Some(Verb::AddColumn));
-        // `p` opens the cursor card's reply, `P` every card's (T-237): the
-        // same row, widened. The board's and nobody else's — the ticket page
-        // draws no cards, and `P` is unbound there since the pin went.
-        assert_eq!(resolve(Scope::Board, Key::Char('p'), &full), Some(Verb::Peek));
+        // `P` widens the reply row to every card (T-237); the cursor card's
+        // is on by default and `p` is unbound since T-1132. The board's and
+        // nobody else's — the ticket page draws no cards, and `P` is
+        // unbound there since the pin went.
+        assert_eq!(resolve(Scope::Board, Key::Char('p'), &full), None);
         assert_eq!(resolve(Scope::Board, Key::Char('P'), &full), Some(Verb::PeekAll));
         assert_eq!(resolve(Scope::Ticket, Key::Char('P'), &full), None);
         // `n` edits the note the cursor means, `N` forces a fresh one: same
@@ -11117,6 +11168,7 @@ mod tests {
                     Verb::StatusLine,
                     Verb::CrownLightning,
                     Verb::CardMoves,
+                    Verb::Peek,
                     Verb::SummaryShow,
                     Verb::NewReplies,
                     Verb::CardPrs,
@@ -11177,7 +11229,6 @@ mod tests {
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };
             assert_eq!(settings_items(&c).iter().map(|m| m.verb).collect::<Vec<_>>(), expected);
-            assert!(!settings_items(&c).iter().any(|m| m.verb == Verb::Peek));
             prefs.extend(expected);
         }
         let on: Vec<Verb> = settings_items(&Ctx {
@@ -11802,6 +11853,68 @@ mod tests {
         }
     }
 
+    /// The board's footer on a card (T-1132): the card's own dialogs after
+    /// the transcript while it has what they open; `u`, `o`, `r` and `t`
+    /// left to `?` (which still lists them); and the row cut at the first
+    /// key that does not fit — `^k links` would fit where `shift+enter`
+    /// did not, and does not take the gap.
+    #[test]
+    fn the_board_footer_names_the_cards_own_dialogs_in_order() {
+        let card = Ctx {
+            has_ticket: true,
+            ticket_hot: true,
+            ticket_transcript: true,
+            ticket_note_links: true,
+            ticket_linkable: true,
+            has_prs: true,
+            ticket_summarised: true,
+            can_undo: true,
+            can_nudge: true,
+            train_reaches: true,
+            ..Default::default()
+        };
+        let verbs: Vec<Verb> = footer_items(Scope::Board, &card).iter().map(|b| b.verb).collect();
+        assert_eq!(
+            verbs,
+            [
+                Verb::Act,
+                Verb::TicketScreen,
+                Verb::Transcript,
+                Verb::Links,
+                Verb::PullRequests,
+                Verb::Summary,
+                Verb::Nudge,
+                Verb::Describe,
+                Verb::Menu,
+                Verb::Help,
+            ]
+        );
+        let overlay: Vec<&str> =
+            overlay(Scope::Board, &card).into_iter().flat_map(|(_, r)| r).map(|(k, _)| k).collect();
+        for kept in ["u", "o", "r", "t"] {
+            assert!(overlay.contains(&kept), "{kept} stays in `?`: {overlay:?}");
+        }
+        // Without what they open, they are not named.
+        let bare = Ctx {
+            ticket_note_links: false,
+            has_prs: false,
+            ticket_summarised: false,
+            ..card.clone()
+        };
+        let verbs: Vec<Verb> = footer_items(Scope::Board, &bare).iter().map(|b| b.verb).collect();
+        assert!(!verbs
+            .iter()
+            .any(|v| matches!(v, Verb::Links | Verb::PullRequests | Verb::Summary)));
+        // The ticket page keeps its own `u`.
+        assert!(footer_items(Scope::Ticket, &card).iter().any(|b| b.verb == Verb::Undo));
+        // The cut: 40 cells for the left cluster at 60.
+        let rich = Ctx { rich_keys: true, ticket_has_agent: true, ticket_promptable: true, ..card };
+        assert_eq!(
+            footer(Scope::Board, &rich, 60),
+            "enter agent ∙ space ticket ∙ esc menu ∙ ? keys"
+        );
+    }
+
     /// The overlay is the complete answer: everything available, including the
     /// bindings the footer had no room for.
     #[test]
@@ -11822,10 +11935,7 @@ mod tests {
         // `space` speaks only while `enter` goes to the agent; on a cold
         // ticket it is silent (and still works — `resolve` says so).
         let cold = Ctx { ticket_hot: false, ..ctx.clone() };
-        assert_eq!(
-            hint_for(Scope::Board, Verb::TicketScreen, &ctx),
-            Some(("space", "ticket page"))
-        );
+        assert_eq!(hint_for(Scope::Board, Verb::TicketScreen, &ctx), Some(("space", "ticket")));
         assert_eq!(hint_for(Scope::Board, Verb::TicketScreen, &cold), None);
         assert_eq!(resolve(Scope::Board, Key::Space, &cold), Some(Verb::TicketScreen));
         let hot_footer: Vec<&str> =
@@ -11904,6 +12014,7 @@ mod tests {
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::CardMoves,
+            Verb::Peek,
             Verb::SummaryShow,
             Verb::NewReplies,
             Verb::CardPrs,

@@ -5,6 +5,7 @@
    ! Decay treatments     >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
      brief not sent
      shift+enter resend          ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+                          T-1
 
    Keymap validator       >1y
 
@@ -25,6 +26,5 @@
 
 
 
-
  T-1 Decay treatments ∙ created >1y ago
- enter ticket page ∙ shift+enter resend ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename     esc menu ∙ ? keys
+ enter ticket ∙ shift+enter resend ∙ HJKL move card ∙ tab description                                 esc menu ∙ ? keys

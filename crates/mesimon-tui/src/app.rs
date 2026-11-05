@@ -1872,8 +1872,8 @@ pub struct App {
     /// left. A golden may set the flags directly for one frame.
     pub peek: bool,
     /// `P` (T-237): every card shows its latest reply, not only the cursor
-    /// card. Implies `peek` — it is `p` widened, so `p` turning off takes
-    /// this with it and `P` turning off narrows back to the cursor card.
+    /// card. Implies `peek`: `P` turning off narrows back to the cursor
+    /// card, and only Settings' `off` rung clears both.
     pub peek_all: bool,
     pub peek_cache: crate::peek::PeekCache,
     /// The search picker's matcher (T-349). Minted on the first `/` and kept
@@ -2389,8 +2389,10 @@ impl App {
             rail_measure: Cell::new((0, 0)),
             menu_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
-            peek: false,
-            peek_all: false,
+            // The default rung's flags until `resolve_prefs` reads the file
+            // (T-1132: the cursor card's reply, on).
+            peek: PeekLevel::default() != PeekLevel::Off,
+            peek_all: PeekLevel::default() == PeekLevel::All,
             peek_cache: crate::peek::PeekCache::default(),
             searcher: std::cell::RefCell::new(None),
             corpus: Corpus::default(),
@@ -7744,6 +7746,7 @@ impl App {
             has_archived: self.archived_count() > 0,
             peek_on: self.peek,
             peek_all: self.peek_all,
+            peek_word: self.prefs.peek.key(),
             theme_blurb: self.theme.flavor.blurb(),
             theme_pinned: self.forced.is_some(),
             theme_tab_word: match self.mode {
@@ -7799,6 +7802,7 @@ impl App {
                 _ => 0,
             },
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
+            ticket_note_links: subject.is_some_and(|t| self.ticket_note_links(t)),
             ticket_summarised: subject.is_some_and(|t| self.ticket_summarised(t)),
             ticket_transcript: matches!(self.screen, Screen::Board)
                 && subject.is_some_and(|t| crate::transcript::session_of(&self.board, t).is_some()),
@@ -9883,15 +9887,16 @@ impl App {
             Verb::Cancel if scope == Scope::MergeChord => self.close_merge_dialog(),
             Verb::Cancel => self.mode = Mode::Normal,
             // ---- view / lists ----------------------------------------------
-            // The two rungs of one ladder (off / cursor / all), a preference
+            // The rungs of one ladder (cursor / all / off), a preference
             // since T-365: the press sets the rung, `resolve_prefs` sets the
-            // two flags from it, and the file remembers it.
+            // two flags from it, and the file remembers it. Settings'
+            // `Replies on cards` row cycles it since T-1132, when `p` went.
             Verb::Peek => {
-                // `P` is `p` widened, so `p` going off takes it along.
-                let (level, word) = if self.peek {
-                    (PeekLevel::Off, "replies hidden")
-                } else {
-                    (PeekLevel::Cursor, "showing the latest reply under the selected card")
+                let level = self.prefs.peek.next();
+                let word = match level {
+                    PeekLevel::Cursor => "showing the latest reply under the selected card",
+                    PeekLevel::All => "showing the latest reply under every card",
+                    PeekLevel::Off => "replies hidden",
                 };
                 self.set_pref(word, |p| p.set_peek(level));
             }
@@ -21903,6 +21908,8 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
         app.cursor_row = Some(0);
+        // The reply row off (T-1132), where the flash alone opens the card.
+        app.peek = false;
         let ctrl_n =
             |app: &mut App| app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
@@ -25267,13 +25274,16 @@ mod tests {
         assert_eq!((arm.row, arm.col), (2, 0));
     }
 
-    /// `P` is `p` widened (T-237): it opens every card, and it implies the
-    /// cursor card's own peek, so `p` going off takes it along and `P`
-    /// going off narrows back to the cursor card rather than to nothing.
+    /// The cursor card's reply is on from the start (T-1132) and `p` is
+    /// unbound; `P` widens it to every card (T-237), and going off narrows
+    /// back to the cursor card rather than to nothing. Only Settings'
+    /// `Replies on cards` row reaches `off`.
     #[test]
     fn shift_p_widens_the_peek_to_every_card() {
         let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        assert!(!app.peek && !app.peek_all);
+        assert!(app.peek && !app.peek_all, "the cursor card's reply, on by default");
+        press(&mut app, 'p');
+        assert!(app.peek && !app.peek_all, "`p` is unbound");
         press(&mut app, 'P');
         assert!(app.peek && app.peek_all, "every card, the cursor card included");
         assert!(
@@ -25283,10 +25293,15 @@ mod tests {
         );
         press(&mut app, 'P');
         assert!(app.peek && !app.peek_all, "narrowed to the cursor card, not hidden");
-        press(&mut app, 'P');
-        press(&mut app, 'p');
-        assert!(!app.peek && !app.peek_all, "`p` off hides the lot");
+        // The Settings row cycles the three rungs, `off` included.
+        let ctx = app.ctx();
+        app.dispatch(Verb::Peek, Key::Enter, Scope::Settings, &ctx).expect("replies row");
+        assert!(app.peek && app.peek_all, "cursor, then all");
+        let ctx = app.ctx();
+        app.dispatch(Verb::Peek, Key::Enter, Scope::Settings, &ctx).expect("replies row");
+        assert!(!app.peek && !app.peek_all, "then off");
         assert!(app.status.starts_with("replies hidden"), "{}", app.status);
+        assert_eq!(app.ctx().peek_word, "off");
         // Overlay-only, on the board alone: `?` names it, the footer never
         // does (user: "no need to hint this").
         assert!(!app.ctx().peek_on);
@@ -25306,17 +25321,15 @@ mod tests {
     #[test]
     fn the_reply_row_is_remembered_between_boards() {
         let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        assert_eq!(app.machine_prefs.peek, PeekLevel::Off);
+        assert_eq!(app.machine_prefs.peek, PeekLevel::Cursor);
         press(&mut app, 'P');
         assert_eq!(app.machine_prefs.peek, PeekLevel::All);
         assert_eq!(app.machine_prefs.word(PrefKey::Peek), "all");
         press(&mut app, 'P');
         assert_eq!(app.machine_prefs.peek, PeekLevel::Cursor);
-        press(&mut app, 'p');
-        assert_eq!(app.machine_prefs.peek, PeekLevel::Off);
         // No file under a test app, and the status says so — the road every
         // preference takes, with its words.
-        assert_eq!(app.status, "replies hidden for this session");
+        assert_eq!(app.status, "showing the latest reply under the selected card for this session");
 
         // The next board: `run` loads the file and resolves, which is what
         // the seed does here.
@@ -25343,6 +25356,9 @@ mod tests {
         app.cursor_col = 0;
         app.cursor_row = Some(0);
         let id = app.subject().expect("a ticket under the cursor");
+        // The reply row off (Settings' `off` rung, T-1132), where the flash
+        // is the only thing that opens the card.
+        app.peek = false;
         assert!(!app.peek_showing(id), "nothing is open before the press");
 
         press(&mut app, '1');

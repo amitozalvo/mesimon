@@ -4,9 +4,9 @@
 
    Decay treatments             >1y    ⠋ Fix OSC-11 detection      >1y   R   D
                                          ✻ claude ⠋  $ bash ◦            E   O
-   Keymap validator             >1y                                      V   N
-                                       ⠋ Adopt drawer import       >1y   I   E
-                                                                         E
+   Keymap validator             >1y                                T-3   V   N
+                                                                         I   E
+                                       ⠋ Adopt drawer import       >1y   E
                                                                          W
 
 

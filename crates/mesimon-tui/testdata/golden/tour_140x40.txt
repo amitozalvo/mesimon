@@ -12,11 +12,11 @@
  │    Archive a ticket             │   TODO                     3 →    IN PROGRESS              1 →    REVIEW                  1 →   1  │ │
  │    Delete a ticket              │                                                                                                    │ │
  │                                 │   Fix the login redirect   now    Dark mode toggle         now    Rate-limit the public ~ now   D  │ │
- │  MOVING                         │                                                                                                 O  │ │
- │    Move a card                  │   Write the onboarding gu~ now                                                                  N  │ │
- │    Order the cards              │                                                                                                 E  │ │
- │    Automatic moves              │   Cache the avatar images  now                                                                     │ │
- │                                 │                                                                                                    │ │
+ │  MOVING                         │                            T-1                                                                  O  │ │
+ │    Move a card                  │                                                                                                 N  │ │
+ │    Order the cards              │   Write the onboarding gu~ now                                                                  E  │ │
+ │    Automatic moves              │                                                                                                    │ │
+ │                                 │   Cache the avatar images  now                                                                     │ │
  │  FINDING                        │                                                                                                    │ │
  │    Search                       │                                                                                                    │ │
  │    Open a link                  │                                                                                                    │ │
@@ -32,7 +32,7 @@
  │    Adopt a session              │                                                                                                    │ │
  │                                 │                                                                                                    │ │
  │  THE BOARD                      │ T-1 Fix the login redirect ∙ created just now                                                      │ │
- │    Columns                      │ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename      esc menu ∙ ? keys │ │
+ │    Columns                      │ enter ticket ∙ HJKL move card ∙ tab description                                  esc menu ∙ ? keys │ │
  │                                 ╰────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
  │                                                                                                                                        │
  │                                                                                                                                        │

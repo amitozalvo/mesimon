@@ -25,6 +25,11 @@ const SUMMARY_READS_PER_TICK: usize = 8;
 pub struct NoteSummary {
     pub rev: u64,
     pub rows: Option<Vec<Row>>,
+    /// What in the body can be followed (T-1132), from the same read: the
+    /// card's `↗` and the footer's `^k`. A path is kept only when it was a
+    /// file at the read; a ticket key is resolved when asked, against the
+    /// board then.
+    pub links: Vec<mesimon_core::links::Found>,
     tried: Instant,
 }
 
@@ -89,8 +94,9 @@ impl App {
         // it was plays nothing.
         let owner =
             self.board.tickets.iter().find(|t| t.notes.iter().any(|n| n.id == id)).map(|t| t.id);
+        let links = self.followable(owner, text);
         let before = owner.map(|t| self.cached_count(t)).filter(|c| c.total > 0);
-        self.summaries.insert(id, NoteSummary { rev, rows, tried: Instant::now() });
+        self.summaries.insert(id, NoteSummary { rev, rows, links, tried: Instant::now() });
         if let Some(ticket) = owner {
             let after = self.cached_count(ticket);
             if after.total > 0 && before != Some(after) {
@@ -98,6 +104,44 @@ impl App {
                 self.summary_pulses.insert(ticket, SummaryPulse { at_ms, from: before });
             }
         }
+    }
+
+    /// The links in one body that can lead somewhere, the `^k` dialog's
+    /// rule (`App::resolve_link`) minus the board: a path is checked on the
+    /// disk now, once per revision, and a ticket key waits for the ask.
+    fn followable(
+        &self,
+        owner: Option<ulid::Ulid>,
+        text: Option<&str>,
+    ) -> Vec<mesimon_core::links::Found> {
+        use mesimon_core::links::Found;
+        let (Some(owner), Some(text)) = (owner, text) else { return Vec::new() };
+        let dir = self.link_dir(owner);
+        mesimon_core::links::extract(text)
+            .into_iter()
+            .map(|l| l.target)
+            .filter(|f| match f {
+                Found::Path { path, .. } => resolve_link_path(&dir, path).is_file(),
+                _ => true,
+            })
+            .collect()
+    }
+
+    /// `Ctx::ticket_note_links`: does a note of this ticket hold a link that
+    /// leads somewhere (T-1132)? Reads the cache whatever revision each
+    /// entry is at, as `cached_count` does, so the mark holds still while a
+    /// changed note is read again. Never the disk — asked once a frame.
+    pub(crate) fn ticket_note_links(&self, ticket: ulid::Ulid) -> bool {
+        use mesimon_core::links::Found;
+        let Some(t) = self.board.ticket(ticket) else { return false };
+        t.notes.iter().filter_map(|n| self.summaries.get(&n.id)).flat_map(|s| &s.links).any(|f| {
+            match f {
+                Found::Ticket(key) => {
+                    self.board.ticket_by_key(key).is_some_and(|other| other.id != ticket)
+                }
+                _ => true,
+            }
+        })
     }
 
     /// The ticket's boxes as the cache holds them, whatever revision each

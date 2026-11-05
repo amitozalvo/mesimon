@@ -7,17 +7,17 @@
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
              ╭─ KEYS ∙ board ─────────────────────────────────────────────────────────────────────────────╮
-             │ MOVE AROUND                    VIEW                            APP                         │
-             │   hjkl      move around          !         terminal              ,         settings        │
-             │   enter     column settings      p         show replies          esc       menu            │
-             │   /         search               P         show every reply      q         quit            │
-             │                                  $         show costs            ?         keys            │
-             │ TICKETS                                                          ^L        redraw          │
-             │   o         new ticket                                           ^Z        suspend mesimon │
-             │   HJKL      move column                                                                    │
-             │   O         new column                                                                     │
-             │   r         rename column                                                                  │
-             │   d         delete column                                                                  │
+             │ MOVE AROUND                    TICKETS                         APP                         │
+             │   hjkl      move around          o         new ticket            ,         settings        │
+             │   enter     column settings      HJKL      move column           esc       menu            │
+             │   /         search               O         new column            q         quit            │
+             │                                  r         rename column         ?         keys            │
+             │                                  d         delete column         ^L        redraw          │
+             │                                                                  ^Z        suspend mesimon │
+             │                                VIEW                                                        │
+             │                                  !         terminal                                        │
+             │                                  P         show every reply                                │
+             │                                  $         show costs                                      │
              ╰────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

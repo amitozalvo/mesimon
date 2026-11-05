@@ -327,6 +327,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 fresh.as_ref().map(|(words, ago, crown)| (words.as_str(), *ago, *crown)),
                 &brief,
                 pr_words.as_ref().map(|(w, running)| (w.as_str(), *running)),
+                app.ticket_note_links(t.id),
                 !left && app.moved_unseen(t.id),
                 glide,
             )

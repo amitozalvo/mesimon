@@ -481,6 +481,17 @@ pub(crate) fn crown(tier: Tier) -> &'static str {
     }
 }
 
+/// A ticket whose notes lead somewhere (T-1132): `↗` U+2197 NORTH EAST
+/// ARROW, on the open card's key row, before `^k` in the board's footer and
+/// in the links dialog's title. East Asian Width A, one cell where the
+/// board already draws `→` and `↑`; the ASCII tier reads `@`.
+pub(crate) fn links_mark(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Unicode => "↗",
+        Tier::Ascii => "@",
+    }
+}
+
 /// The bolt before a linked board's lit word in the header (T-733): `↯`
 /// U+21AF DOWNWARDS ZIGZAG ARROW, East Asian Width N — one cell, where the
 /// high-voltage sign is an emoji and two.

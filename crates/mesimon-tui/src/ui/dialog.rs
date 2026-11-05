@@ -545,7 +545,9 @@ pub(super) fn draw_links(
             }
         })
         .collect();
-    list(f, app, &format!("LINKS ∙ {key}"), true, Scope::Links, idx, &rows);
+    // The card's `↗` names the dialog it opens (T-1132).
+    let mark = crate::glyphs::links_mark(app.theme.glyph_tier());
+    list(f, app, &format!("{mark} LINKS ∙ {key}"), true, Scope::Links, idx, &rows);
 }
 
 /// The summary dialog (T-696): one row per box of the ticket's `Summary`
