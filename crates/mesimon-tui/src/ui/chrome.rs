@@ -710,9 +710,10 @@ pub(super) fn hand_lines(app: &App, width: usize) -> Vec<Line<'static>> {
 /// The footer's left cluster (T-1132): `hint_spans`' look, filled in
 /// priority order up to the first key that does not fit — a shorter one
 /// after it never takes the gap, so what shows is always the top of the
-/// list (author: "it's all over the place"). The cursor card's own dialogs
-/// (`keymap::ticket_fact`) are spelled in the faint ink the card's `∙ ^j`
-/// wears, key and word alike, and `^k`'s word carries the card's `↗`.
+/// list (author: "it's all over the place"). Every hint wears the one look,
+/// the cursor card's own dialogs (`keymap::ticket_fact`) included (author:
+/// "the hint line needs uniform styling"); `^k`'s word carries the card's
+/// `↗`.
 fn footer_spans(
     items: &[&Binding],
     ctx: &Ctx,
@@ -722,7 +723,7 @@ fn footer_spans(
 ) -> Vec<Span<'static>> {
     let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
     let word = Style::default().fg(ink.dim2);
-    let faint = Style::default().fg(ink.dim3);
+    let sep = Style::default().fg(ink.dim3);
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     for b in items {
@@ -739,18 +740,14 @@ fn footer_spans(
             break;
         }
         if !out.is_empty() {
-            out.push(Span::styled(" ∙ ".to_string(), faint));
+            out.push(Span::styled(" ∙ ".to_string(), sep));
         }
-        out.push(Span::styled(b.show.to_string(), if fact { faint } else { key }));
-        out.push(Span::styled(format!(" {hint}"), if fact { faint } else { word }));
+        out.push(Span::styled(b.show.to_string(), key));
+        out.push(Span::styled(format!(" {hint}"), word));
         used += add;
         // Spelled, so clickable wherever it lands whole (T-716).
         if let Some(k) = keymap::click_key(b) {
-            if fact {
-                crate::mouse::note_quiet_hint(format!("{} {hint}", b.show), k);
-            } else {
-                crate::mouse::note_hint(b.show, &hint, k);
-            }
+            crate::mouse::note_hint(b.show, &hint, k);
         }
     }
     out

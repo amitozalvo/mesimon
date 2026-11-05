@@ -8715,9 +8715,8 @@ fn directional(verb: Verb, key: Key) -> Verb {
 /// The cursor card's own dialogs on the board's footer (T-1132): `^k`,
 /// `^h` and `^j` are overlay-only, and the footer names one exactly while
 /// the ticket has what it opens — links in its notes, a pull request, a
-/// summary — at the priority given here, after the transcript. The board
-/// draws these quieter than the rest (`chrome::hint_spans`): they say
-/// what the card holds, not what the screen does.
+/// summary — at the priority given here, after the transcript, in every
+/// hint's own look (`chrome::footer_spans`).
 pub fn ticket_fact(b: &Binding, ctx: &Ctx) -> Option<u8> {
     match b.verb {
         Verb::Links if ctx.ticket_note_links => Some(21),

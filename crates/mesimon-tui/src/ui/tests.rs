@@ -14191,9 +14191,9 @@ fn golden_hook_wait_uses_the_existing_background_park() {
 }
 
 /// A ticket whose notes lead somewhere (T-1132): `↗` before the key on the
-/// open card's row, `^k ↗ links` in the board's footer in the faint ink the
-/// card's `∙ ^j` wears — key and word, never bold — and the same mark on
-/// the dialog it opens. A note with no link, a path that is not a file and
+/// open card's row, `^k ↗ links` in the board's footer in every hint's own
+/// look — the key bold, the word quiet — and the same mark on the dialog it
+/// opens. A note with no link, a path that is not a file and
 /// a key naming the ticket itself leave all of it off.
 #[test]
 fn golden_board_ticket_links_120() {
@@ -14238,12 +14238,18 @@ fn golden_board_ticket_links_120() {
     let buf = cells(&app, 120, 30);
     let y = 29u16;
     let footer = &rows[29];
-    let x = footer[..footer.find("^k").expect("^k")].width() as u16;
-    let ink = app.theme.selected_bg.map_or(&app.theme.rest, |_| &app.theme.sel);
-    assert_eq!(buf[(x, y)].fg, ink.dim3, "the faint ink");
-    assert!(!buf[(x, y)].modifier.contains(Modifier::BOLD), "never bold");
-    let enter = footer[..footer.find("enter").expect("enter")].width() as u16;
-    assert!(buf[(enter, y)].modifier.contains(Modifier::BOLD), "the screen's keys stay bold");
+    // One look for the whole row (author: "the hint line needs uniform
+    // styling"): `^k` and its word wear what `enter` and its word do.
+    let at = |words: &str| footer[..footer.find(words).expect(words)].width() as u16;
+    let (k, enter) = (at("^k"), at("enter"));
+    for (a, b) in [(k, enter), (at("↗ links") + 2, at("agent"))] {
+        assert_eq!(
+            (buf[(a, y)].fg, buf[(a, y)].modifier),
+            (buf[(b, y)].fg, buf[(b, y)].modifier),
+            "{footer}"
+        );
+    }
+    assert!(buf[(k, y)].modifier.contains(Modifier::BOLD), "the key is bold");
     app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL).unwrap();
     assert!(matches!(app.mode, Mode::Links { .. }), "{:?}", app.mode);
     assert!(render(&app, 120, 30).iter().any(|l| l.contains("↗ LINKS ∙ T-3")));

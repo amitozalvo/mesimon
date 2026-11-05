@@ -185,12 +185,6 @@ pub(crate) fn note_hint(show: &str, word: &str, key: Key) {
     HINTS.with(|h| h.borrow_mut().push((format!("{show} {word}"), key, true)));
 }
 
-/// A hint was spelled in one quiet ink, key and word alike (T-1132: the
-/// board footer's `^k ↗ links`): `text` as drawn, never needing bold.
-pub(crate) fn note_quiet_hint(text: String, key: Key) {
-    HINTS.with(|h| h.borrow_mut().push((text, key, false)));
-}
-
 /// A key was spelled alone in the ink of the words before it, after a
 /// bullet (`∙ ^j`, the summary fold, T-819): those words say what it does,
 /// and the bullet is what tells it from running text, as bold does a hint.

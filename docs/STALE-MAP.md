@@ -41311,7 +41311,10 @@ the ticket page's footer is unchanged.
 
 **The cursor card's own dialogs in the footer** (`keymap::ticket_fact`): `^k ↗ links`,
 `^h prs`, `^j summary`, each exactly while the ticket has what it opens, after the
-transcript (prio 21–23), in the faint ink the card's `∙ ^j` wears, key and word alike.
+transcript (prio 21–23), in every hint's own look. They first shipped in the faint ink the
+card's `∙ ^j` wears (the author's "keep the hints muted like the ^j" was said of hints ON THE
+CARD, before they moved to the footer); after using it the author: "the hint line needs
+uniform styling … it should have the same style as other hints on the hintline".
 Refuted on the way: the hints on the card beside each mark (three different places, "really
 unaligned"); a right-edge hint column (the PR mark and key would shift while it showed);
 hints that vanish after the first successful open (author: shown "regardless if user used
