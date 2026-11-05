@@ -14236,6 +14236,15 @@ fn golden_board_ticket_links_120() {
     let rows = render(&app, 120, 30);
     golden("board_ticket_links_120x30", &rows);
     let buf = cells(&app, 120, 30);
+    // The card's mark is a step quieter than the key beside it, so it never
+    // reads as part of a tier word there (`claude ∙ T-3`).
+    let row = rows.iter().position(|l| l.contains("↗  T-3")).expect("the key row");
+    let line = &rows[row];
+    let mark_x = line[..line.find('↗').expect("mark")].width() as u16;
+    let key_x = line[..line.find("T-3").expect("key")].width() as u16;
+    let (mark, key) = (&buf[(mark_x, row as u16)], &buf[(key_x, row as u16)]);
+    assert_eq!(mark.fg, app.theme.sel.dim3, "the faint ink");
+    assert_ne!(mark.fg, key.fg, "quieter than the key");
     let y = 29u16;
     let footer = &rows[29];
     // One look for the whole row (author: "the hint line needs uniform

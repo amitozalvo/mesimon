@@ -41278,7 +41278,9 @@ last hold (it ended mid-glide). 28.6 s.
 
 ## A card says its notes lead somewhere, and the board's footer is the top of a list (T-1132, 2026-11-05, the author: "indicate a ticket has links … on the ticket itself on board")
 
-**`↗` on the open card's key row** (`↗  T-3`, the key's ink), at the right end where the key
+**`↗` on the open card's key row** (`↗  T-3`; shipped in the key's ink, then one step down the
+ramp to `dim3` after the author saw it beside a tier word: "looks like it's a part of the model
+tier name"), at the right end where the key
 already is, not under the state glyph the author first offered: that column is where the
 eye scans for needs-you, `!` and the spinner, and one cell holds no count. No count at all
 (author: "don't count links"). The same `↗` heads the links dialog (`↗ LINKS ∙ T-3`). What

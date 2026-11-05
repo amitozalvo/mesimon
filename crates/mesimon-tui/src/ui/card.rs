@@ -1325,15 +1325,17 @@ pub(super) fn render(
                 Some(t) => format!("{t} ∙ {key}"),
                 None => key,
             };
-            // Its notes lead somewhere (T-1132): `↗` before the key, in the
-            // key's ink — a fact about the ticket, on the ticket's row.
-            let key = match (links, key.is_empty()) {
-                (false, _) => key,
+            // Its notes lead somewhere (T-1132): `↗` before the key, a fact
+            // about the ticket on the ticket's row, a step quieter than the
+            // key so it never reads as part of the tier word beside it
+            // (author: "looks like it's a part of the model tier name").
+            let mark = match (links, key.is_empty()) {
+                (false, _) => String::new(),
                 (true, true) => glyphs::links_mark(tier).to_string(),
-                (true, false) => format!("{}  {key}", glyphs::links_mark(tier)),
+                (true, false) => format!("{}  ", glyphs::links_mark(tier)),
             };
-            let key = truncate(&key, inner);
-            let key_cells = key.width();
+            let key = truncate(&key, inner.saturating_sub(mark.width()));
+            let key_cells = mark.width() + key.width();
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
             let mut chips = if tags.is_empty() {
                 Vec::new()
@@ -1350,6 +1352,9 @@ pub(super) fn render(
             let used = super::spans_width(&chips);
             row.extend(chips);
             row.push(Span::raw(" ".repeat(inner.saturating_sub(used + key_cells))));
+            if !mark.is_empty() {
+                row.push(Span::styled(mark, faint));
+            }
             row.push(Span::styled(key, dim));
             push(row);
         }
