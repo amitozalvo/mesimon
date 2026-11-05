@@ -63,7 +63,8 @@ const REFLOG_CAP: &str = "2000";
 /// read by itself (`unlisted`).
 const LIST_LIMIT: usize = 100;
 /// The fields one GitHub PR is read with, listed or viewed.
-const GH_FIELDS: &str = "number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeCommit,\
+const GH_FIELDS: &str =
+    "number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeCommit,\
                          mergeable,reviewDecision,updatedAt,mergedAt,statusCheckRollup";
 /// How long a merge commit a newer one superseded is still read (T-771): a
 /// day is past any deploy run, and the PR keeps what was read by then.
@@ -1395,8 +1396,10 @@ const GITLAB_PIPELINES_PAGE: usize = 20;
 /// never read as green.
 fn gitlab_pipeline(r: &RepoQuery, sha: &str, target: &str) -> (Pipeline, u64) {
     let on = if target.is_empty() { String::new() } else { format!("&ref={}", query_word(target)) };
-    let path =
-        format!("projects/{}/pipelines?sha={sha}{on}&per_page={GITLAB_PIPELINES_PAGE}", r.project());
+    let path = format!(
+        "projects/{}/pipelines?sha={sha}{on}&per_page={GITLAB_PIPELINES_PAGE}",
+        r.project()
+    );
     let Ok(out) = r.api(&path) else {
         return (Pipeline::Unknown, 0);
     };

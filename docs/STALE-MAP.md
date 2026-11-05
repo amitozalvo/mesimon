@@ -41284,7 +41284,10 @@ eye scans for needs-you, `!` and the spinner, and one cell holds no count. No co
 (author: "don't count links"). The same `↗` heads the links dialog (`↗ LINKS ∙ T-3`). What
 counts is the NOTES' links, the `^k` dialog's rule minus the agent's words and the pull
 requests (those change every turn, and pull requests have their own marks): a URL, an
-attachment, a path that is a file at the read, a key naming another ticket on the board.
+attachment, a relative path inside the ticket's checkout that is a file at the read, a key
+naming another ticket on the board. Absolute, `~/` and escaping paths are never looked up
+for the mark (a security review of the first cut: it runs on every card's notes with no key
+pressed, so an agent's `/net/…` would stat a mount on the draw thread); `^k` still finds them.
 Read off the bodies `poll_summaries` already fetches for every card (`NoteSummary::links`),
 so no wire change and no disk read per frame; a key resolves at draw. ASCII `@`; `↗` is East
 Asian Width A like the `→` and `↑` the board already draws.

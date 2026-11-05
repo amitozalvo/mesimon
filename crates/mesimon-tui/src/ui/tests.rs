@@ -14157,7 +14157,18 @@ fn golden_board_ticket_links_120() {
             lines.last().is_some_and(|l| l.contains("^k ↗ links")),
         )
     };
-    for nothing in ["plain words", "see ./no/such/file.rs", "a note about T-3 itself"] {
+    // A path outside the checkout is never looked up unasked (`/bin/sh`
+    // exists, and is read as a path): `^k` still finds it when pressed.
+    assert!(mesimon_core::links::extract("run /bin/sh")
+        .iter()
+        .any(|l| matches!(l.target, mesimon_core::links::Found::Path { .. })));
+    for nothing in [
+        "plain words",
+        "see ./no/such/file.rs",
+        "a note about T-3 itself",
+        "run /bin/sh",
+        "see ../../../../../../bin/sh",
+    ] {
         app.remember_note(ulid_n(90), 1, Some(nothing.into()));
         assert_eq!(marked(&app), (false, false), "{nothing:?}");
         assert!(!app.ctx().ticket_note_links, "{nothing:?}");

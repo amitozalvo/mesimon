@@ -107,8 +107,12 @@ impl App {
     }
 
     /// The links in one body that can lead somewhere, the `^k` dialog's
-    /// rule (`App::resolve_link`) minus the board: a path is checked on the
-    /// disk now, once per revision, and a ticket key waits for the ask.
+    /// rule (`App::resolve_link`) minus the board: a ticket key waits for
+    /// the ask, and a path is checked on the disk now, once per revision —
+    /// but only one that stays inside the ticket's checkout. This runs for
+    /// every card's notes with no key pressed, and words an agent wrote
+    /// must not make the board stat `/net/…`, `~/…` or a mount on the draw
+    /// thread; such a path is `^k`'s to look up when the person asks.
     fn followable(
         &self,
         owner: Option<ulid::Ulid>,
@@ -121,7 +125,11 @@ impl App {
             .into_iter()
             .map(|l| l.target)
             .filter(|f| match f {
-                Found::Path { path, .. } => resolve_link_path(&dir, path).is_file(),
+                Found::Path { path, .. } => {
+                    let inside = !path.starts_with('~') && !Path::new(path).is_absolute();
+                    let full = resolve_link_path(&dir, path);
+                    inside && full.starts_with(&dir) && full.is_file()
+                }
                 _ => true,
             })
             .collect()
