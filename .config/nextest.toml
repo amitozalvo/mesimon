@@ -58,6 +58,14 @@ filter = """
 threads-required = "num-test-threads"
 priority = 100
 
+# A test long by design: on the mod pass it walks every word a crown ask can
+# read through the mod's held submit, each step behind a 10 s owed window, and
+# ran 117.7 s on main before T-1148 put a `now` through a fill first. Six slow
+# intervals, not four, so the kill is for a wedge and not its length.
+[[profile.default.overrides]]
+filter = "binary_id(mesimon::crown_e2e) & test(=a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out)"
+slow-timeout = { period = "30s", terminate-after = 6 }
+
 # CI's runners only (ci.yml sets NEXTEST_PROFILE=ci on the full suite). These
 # eight are red on the GitHub runners, even run alone, and green on the
 # author's Mac alone and in the full suite, both roads. The release gate runs

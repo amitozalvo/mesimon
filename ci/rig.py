@@ -4637,6 +4637,13 @@ Reply with the single word ready and end your turn."""
                 hit = [w for w in arg.split(",") if w.lower() in said.lower()]
                 check(c, not hit, f"names {', '.join(hit)}: {said[:80]!r}" if hit
                       else f"said {said[:80]!r}")
+            elif name == "replies_never":
+                # T-1148 (NW1): no reply of the worker's, any turn, is one of
+                # the words alone, as `replies` reads a reply.
+                bare = [r.strip().strip(".!").strip().lower() for r in replies(rows)]
+                hit = [w for w in arg.split(",") if w.lower() in bare]
+                check(c, not hit, f"said {', '.join(hit)}" if hit
+                      else " → ".join(repr(r[:24]) for r in replies(rows)) or "none")
             elif name == "shell_workflow":
                 said = last_reply(rows)
                 try:

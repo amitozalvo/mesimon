@@ -255,8 +255,9 @@ pub const CROWN_WAKES: &str = concat!(
      Every other stop, an agent a person started, and a board that does not let the crown \
      answer stay a person's. \
      ask_agent's words wait for the agent's idle by default (deliver idle). With deliver now \
-     they are sent at once, as a person's send-now does; on the mod road a working agent \
-     reads them after its running turn ends. With deliver immediately, \
+     they are sent at once, as a person's send-now does, and a working agent reads them at \
+     its running turn's next tool step (on the mod road, after that turn while a person has \
+     its pane open or a draft in its box). With deliver immediately, \
      Claude Code's own send-now, a working agent reads them before its running tool call \
      ends, that call moved to the background and not stopped; a Claude agent only. Neither \
      goes while the agent stands at a dialog. The receipt's asked and get_ticket's say \
@@ -3863,7 +3864,7 @@ mod tests {
         for words in [
             "wait for the agent's idle by default (deliver idle)",
             "With deliver now they are sent at once",
-            "on the mod road a working agent reads them after its running turn ends",
+            "a working agent reads them at its running turn's next tool step",
             "With deliver immediately, Claude Code's own send-now",
             "before its running tool call ends, that call moved to the background",
             "Neither goes while the agent stands at a dialog",

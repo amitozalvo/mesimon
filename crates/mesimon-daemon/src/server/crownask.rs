@@ -375,7 +375,7 @@ impl Daemon {
     ) {
         let owed = self.owed.get(&session).filter(|o| o.ticket == target);
         let frame = owed.and_then(|o| o.frame.clone());
-        let submit = owed.is_some_and(|o| o.frame.is_some() && !o.fill);
+        let submit = owed.is_some_and(|o| o.frame.is_some() && o.fill.is_none());
         // A parked seat's pane is the one its wake makes: bound when its
         // frame is dispatched there (`crown_ask_framed`), or for a paste at
         // the first edge of its own that names it (`bind_pane`), never the

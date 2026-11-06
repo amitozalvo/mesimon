@@ -42051,3 +42051,46 @@ is retried on the same clock (one `list-clients` a second, only while the page s
 pane). Tests: `a_pane_that_lost_its_fit_is_fitted_again` (unit) and
 `a_woken_pane_is_fitted_again` (real tmux, `--ignored`; kills and remakes the session under its
 name, and fails at 80×24 with the refit off).
+
+## A `now` on the mod road reaches a working agent at its next tool step (T-1148, 2026-11-06, the author: "\"now\" on mod road takes a while until it reaches the agent … is there a way for it to arrive like the now when not using mod?")
+
+**Seen.** A person's or the crown's `now` into a working agent waited for the turn's end on the
+mod road: it went by `$.prompt.submit`, which Claude Code always queues at priority `later`
+(T-601's measurement, T-934's hold). On the hook set the same `now` is a paste and an Enter,
+which Claude Code queues as a person's prompt and the model reads at the running turn's next
+tool step (`queued_command`, `origin: human`, T-601).
+
+**Shipped.** The mod road's `now` into a working turn takes the hook set's shape through the
+mod: a `fill` (T-601's frame, words into the empty box only) and, on its `filled`, an Enter
+(`FillKey::Enter`; `Owed.fill` names the key, `SendNow` for `immediately`). `Daemon::fills_now`
+admits it: a session that takes words by its `submit`, whose mod speaks `fill`, not idle, no
+client at its pane (`PaneClients::Away`), not a crown wake. Otherwise the `submit` as before:
+an idle agent (a submit starts its turn at once), a person at the pane (the Enter is a key,
+T-958), a slash command, an older mod. A refused fill (a draft in the box, a dialog, a throw)
+falls to the `submit` for the crown's ask too, which is the `now` it had, and the ask is bound
+to that submit's frame (`crown_ask_framed`); a person at the pane between the fill and the Enter
+leaves the words in the box and the crown's ask `unknown`, as for `immediately`. Feed:
+`prompt_by_mod_fill` at the dispatch, `prompt_sent_by_mod_fill` at the Enter, or
+`prompt_enter_failed` / `prompt_fill_refused`. The crown's ask reads `sent` until a prompt hook
+carrying its words hands it (T-1025's receipt), the paste's word, no longer the submit's
+`entered`. `ask_agent`'s text drops "on the mod road a working agent reads them after its
+running turn ends".
+
+**Tests.** `the_crown_sends_immediately_into_a_working_turn` gains the `now` shape on both
+roads (words then `\r`, no send-now; on the mod pass every frame a fill) and, on the mod pass,
+a person at the pane taking the submit alone. Four crown e2es measured the mod's held submit
+through a `now`: a draft in the box now routes those words to it (`mod-draft`, per pane in
+T-1025's), and two mod-pass branches became the hook set's (`sent` until a carrying hook).
+`a_crown_ask_says_one_true_word…` ran 117.7 s on main's mod pass, at nextest's 120 s kill, and
+gets six slow intervals in `.config/nextest.toml`. Rig: ST2 measured the held submit under a
+`now` on the real mod and has no premise now; NW1 replaces it (three foreground sleeps, the
+crown's `now` during the first, `replies:mango` alone, one `prompt_by_mod`). `held_steer`
+stays in `ci/rig.py` with its unit test and no live case.
+
+**Not measured here.** What a person's Esc does to a prompt queued by the Enter (T-1025 measured
+it for a plugin's submit) and whether 2.1.316 still reads an Enter's queued prompt at the next
+tool step (T-601 measured 2.1.288). NW1 answered the second on 2.1.319 (Opus crown, Sonnet
+worker): the fill and Enter went in 10 s into the first one-minute wait, the wait ran to its
+end, and the model read the words at that step and replied mango; no second wait, no first.
+A bare `sleep 60` is refused by 2.1.319's Bash tool, so the case waits in python. `replies`
+reads a subsequence, so NW1 adds `replies_never:first`.

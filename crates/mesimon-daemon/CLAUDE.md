@@ -66,7 +66,9 @@ never a push from the writer thread. The mod spells nothing on promise 3's never
 test scans it); its two `deny`s are the gate's words and a board tool's refusal.
 **The turn roads ride it (T-575):** for a session whose mod speaks `submit` (`mod_speaks`, from
 the bridge's `--speaks`), every prompt goes down as `$.prompt.submit({ text, asUser: true })`
-and a question's answer as one `answer` frame, confirmed by the mod's `ModAnswer` report alone
+(but `now` into a working turn with no person at the pane: a `fill` and an Enter, read at the
+turn's next tool step, T-1148; a refused fill falls to the submit) and a question's answer as one
+`answer` frame, confirmed by the mod's `ModAnswer` report alone
 (the engine fires no `PostToolUse` for a dialog the mod closed). Launch words wait for the
 pane's `SessionStart` AND the mod's first poll; the paste road, the composer wait and the
 dialog keys stay for the hook set, Codex, a mod that never polled or an older one, a refusal,

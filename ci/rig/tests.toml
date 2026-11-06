@@ -63,7 +63,9 @@
 #              (a feed line of the crown's), pings, reply:<word> (the
 #              worker's last answer, from its transcript), doctor:<words>,
 #              final:<word>, reply_never:<w1,w2,...> (T-930: the worker's last
-#              answer names none of them), board_fed:<cmd> (a board line about no
+#              answer names none of them), replies_never:<w1,w2,...> (T-1148:
+#              no reply of the worker's, any turn, is one of them alone),
+#              board_fed:<cmd> (a board line about no
 #              ticket since the test began), relaunched:<secs> (T-598: the
 #              test's ticket relaunched on the hook set once, that soon after
 #              its start_agent; a sibling never). `mod_alone` (T-577): no hook set, no MCP server
@@ -999,21 +1001,21 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered:taken:200"
   wake = true
 
 [[test]]
-id = "ST2"
-title = "ST2 · the crown steers a worker whose turn holds its earlier ask: do the steps below"
+id = "NW1"
+title = "NW1 · the crown's now reaches a worker at its running turn's next tool step: do the steps below"
 workspace = "worktree"
-brief = "Run the shell command `sleep 90` with the Bash tool in the foreground (never in the background) and wait for it to finish, then reply with the single word first and end your turn. Read no file and run no other command."
-expect = "T-974 round 1, measured end to end on the real mod: while the worker's first turn runs its foreground sleep (90 s: a find over /usr ended under the first ask on this machine, so the steer met an idle agent, refused), the crown's ask_agent deliver now goes down the mod as a submit Claude Code holds to the running turn's end (receipt sent). The crown then sends the same words with deliver immediately: admitted beside the held submit as an ask of its own, its receipt naming the first in earlier at sent, its words read inside the running turn. The held submit then runs as a turn of its own and its end wakes the crown naming the first ask taken; the steer's turn's end wakes the crown naming the steer only where the board saw it end apart (the engine's Stop and the held prompt can come 0.3 s apart, one stretch to the board, round 1). The same words reach the worker twice, once as the steer and once as the held submit (T-934); the observed line counts them."
-checks = ["road:mod", "fed:prompt_by_mod", "crown:ask_agent=2", "held_steer:Reply with the single word mango and end your turn. Read no file and run no command."]
+brief = "Run the shell command `python3 -c 'import time; time.sleep(60)'` with the Bash tool in the foreground (never in the background) and wait for it to finish. Then run the same command the same way a second time, and then a third time. Then reply with the single word first and end your turn. Read no file and run no other command."
+expect = "T-1148, on the real mod: while the worker's turn runs the first of its three foreground one-minute waits (a python sleep: Claude Code 2.1.319 refuses a bare `sleep 60`), the crown's ask_agent deliver now goes into its empty box by the mod's fill and an Enter (fed prompt_sent_by_mod_fill), no submit of the mod's: Claude Code queues it as a person's Enter and the model reads it at the running turn's next tool step, after the first sleep. The worker runs no more waits and replies mango in that same turn, and no reply of its is first; the turn's end wakes the crown. Before T-1148 the words went by the mod's submit, which Claude Code holds to the running turn's end: the worker waited three times, replied first, then mango in a turn of their own (T-974's ST2 measured that hold; it has no live case now, and crown_e2e keeps the held submit under a draft)."
+checks = ["road:mod", "crown:ask_agent=1", "fed:prompt_sent_by_mod_fill=1", "fed:prompt_by_mod=1", "replies:mango", "replies_never:first"]
 
   [[test.steps]]
-  crown = "ST2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: ST2 started."
+  crown = "NW1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: NW1 started."
   until = { events = ["UserPromptSubmit"], state = "working" }
   settle = false
 
   [[test.steps]]
-  crown = "ST2, {key}'s agent is in a long command: call ask_agent for {key} with deliver now and the text: Reply with the single word mango and end your turn. Read no file and run no command. Then call ask_agent for {key} once more, with the seen that first receipt returned, deliver immediately and the same text. Then end your turn with two lines: ST2 first, followed by the asked status the first receipt gave; and ST2 second, followed by the second receipt's asked status and the status its earlier gives. When the board wakes you for {key}, end your turn with the single line: ST2 seen."
-  until = { stops = 2, state = "idle" }
+  crown = "NW1, {key}'s agent is in a long command it does not need: call ask_agent for {key} with deliver now and the text: Run no more commands. Reply with the single word mango and end your turn. Then end your turn with the single line: NW1 asked. When the board wakes you for {key}, end your turn with the single line: NW1 seen."
+  until = { stops = 1, state = "idle" }
   wake = true
 
 [[test]]

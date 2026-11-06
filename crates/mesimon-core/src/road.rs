@@ -379,13 +379,14 @@ pub enum ModCommand {
     Submit {
         text: String,
     },
-    /// Put `text` in the session's composer for Claude Code's send-now
+    /// Put `text` in the session's composer for a key of the daemon's
     /// (T-601): `$.prompt.fill({ text, mode: 'replace' })`, only into an
     /// empty box (`$.prompt.read()`), never over a person's draft. The
-    /// daemon presses [`SEND_NOW_KEYS`] on the mod's `filled`: the words go
-    /// in as a person's own composer send, whole, `origin: human`. A
-    /// plugin's `submit` waits for the running turn's end, and the
-    /// send-now does not take one (measured, 2.1.288).
+    /// daemon presses [`SEND_NOW_KEYS`] (`immediately`) or Enter (`now`
+    /// into a working turn, T-1148) on the mod's `filled`: the words go in
+    /// as a person's own composer send, whole, `origin: human`. A plugin's
+    /// `submit` waits for the running turn's end, and the send-now does not
+    /// take one (measured, 2.1.288).
     Fill {
         text: String,
     },

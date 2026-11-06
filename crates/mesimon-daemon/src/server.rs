@@ -2553,10 +2553,10 @@ struct Owed {
     frame: Option<String>,
     taken: bool,
     /// The frame is a `fill` (T-601): the mod puts the words in the empty
-    /// composer, and its `filled` is the daemon's cue to press Claude Code's
-    /// send-now (`road::SEND_NOW_KEYS`). A refused fill sends them as a
-    /// `submit` instead (`on_mod_fill`).
-    fill: bool,
+    /// composer, and its `filled` is the daemon's cue to press the key it
+    /// names. A refused fill sends them as a `submit` instead
+    /// (`on_mod_fill`).
+    fill: Option<FillKey>,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`). A
@@ -2603,6 +2603,20 @@ struct Owed {
     /// its one Ctrl+C clears whatever the box holds. A recovery's clears
     /// only the board's typed title (T-987).
     clears_draft: bool,
+}
+
+/// The key a mod's `filled` presses over the words in the box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FillKey {
+    /// Claude Code's send-now (`road::SEND_NOW_KEYS`, T-601): `immediately`,
+    /// read before the running tool call ends, that call moved to the
+    /// background.
+    SendNow,
+    /// A person's Enter (T-1148): `now` into a working turn, queued by
+    /// Claude Code and read at that turn's next tool step, as a paste and
+    /// its Enter are on the hook set. A plugin's `submit` waits for the
+    /// turn's end.
+    Enter,
 }
 
 /// Claude Code's refusal of a plugin's input after a person's Esc (T-894,
@@ -2660,7 +2674,7 @@ impl Owed {
             bridge_by: None,
             frame: None,
             taken: false,
-            fill: false,
+            fill: None,
             ack,
             asked: None,
             ask: None,
@@ -6326,33 +6340,43 @@ impl Daemon {
         true
     }
 
-    /// Words for Claude Code's send-now down the session's mod (T-601): a
-    /// `fill` puts them in its empty composer, and its `filled` is the cue
-    /// for the keys (`on_mod_fill`). Owed as a `submit` is: the ack is the
-    /// `UserPromptSubmit` the send fires. `false` when the words come to
-    /// nothing.
-    fn mod_fill(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, words: Parked, ack: Ack) -> bool {
+    /// Words for a key down the session's mod: a `fill` puts them in its
+    /// empty composer, and its `filled` is the cue for `key`
+    /// (`on_mod_fill`): Claude Code's send-now (T-601) or a person's Enter
+    /// (T-1148). Owed as a `submit` is: the ack is the `UserPromptSubmit`
+    /// the send fires. `false` when the words come to nothing.
+    fn mod_fill(
+        &mut self,
+        id: uuid::Uuid,
+        ticket: ulid::Ulid,
+        words: Parked,
+        ack: Ack,
+        key: FillKey,
+    ) -> bool {
         let text = self.launch_words(ticket, &words);
         if text.is_empty() {
             return false;
         }
         let frame = self.mod_enqueue(id, ModCommand::Fill { text });
         let mut owed = Owed::submitted(ticket, words, frame, ack, now_ms());
-        owed.fill = true;
+        owed.fill = Some(key);
         self.owed.insert(id, owed);
         self.feed.board("daemon", "prompt_by_mod_fill", Some(ticket));
         true
     }
 
     /// The mod's report on a `fill` (T-601), the frame's id as its reason.
-    /// `filled`: the words stand in the composer, and the send-now goes in.
-    /// Refused (the person's draft in the box, a dialog) or thrown: the words
-    /// still go at once, by the plain `submit`, which the engine holds to the
-    /// running turn's end, and the feed says why the level fell.
+    /// `filled`: the words stand in the composer, and the fill's key goes
+    /// in, the send-now or an Enter (T-1148). Refused (the person's draft in
+    /// the box, a dialog) or thrown: a person's words still go at once, by
+    /// the plain `submit`, which the engine holds to the running turn's end,
+    /// and the feed says why the level fell.
     pub(super) fn on_mod_fill(&mut self, id: uuid::Uuid, frame: &HookFrame) {
         let Some(fid) = frame.reason.as_deref() else { return };
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
-        let ours = self.owed.get(&id).is_some_and(|o| o.fill && o.frame.as_deref() == Some(fid));
+        let key =
+            self.owed.get(&id).filter(|o| o.frame.as_deref() == Some(fid)).and_then(|o| o.fill);
+        let ours = key.is_some();
         if !ours {
             self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}, nothing owed"));
             // A crown ask's fill report after its owed window (T-938): still
@@ -6384,37 +6408,51 @@ impl Daemon {
             // refusal, before any key. The `filled` report says only that the
             // mod filled the box; what the person did since is not the
             // board's to read.
+            let enter = key == Some(FillKey::Enter);
             let sent = if self.person_at_pane(&sid) {
                 Err(None)
+            } else if enter {
+                self.backend.send_enter(&sid).map_err(Some)
             } else {
                 self.backend.send_now(&sid).map_err(Some)
             };
+            let (sent_word, failed_word, key_name) = if enter {
+                ("prompt_sent_by_mod_fill", "prompt_enter_failed", "Enter")
+            } else {
+                ("prompt_sent_immediately", "prompt_send_now_failed", "send-now")
+            };
             match sent {
-                Ok(()) => self.feed.board("daemon", "prompt_sent_immediately", ticket),
+                Ok(()) => self.feed.board("daemon", sent_word, ticket),
                 Err(e) => {
                     // The words stand in the box; the person sends them.
                     let (word, why) = match e {
                         Some(e) => {
-                            self.journal.line(&format!("send-now for session {id} failed: {e}"));
+                            self.journal.line(&format!("{key_name} for session {id} failed: {e}"));
                             // The crown's ask (T-938): the keys may have half gone.
-                            (
-                                "keys",
-                                "the send-now keys failed after the words were filled into its box",
-                            )
+                            let why = if enter {
+                                "the Enter failed after the words were filled into its box"
+                            } else {
+                                "the send-now keys failed after the words were filled into its box"
+                            };
+                            ("keys", why)
                         }
                         None => {
                             self.journal.line(&format!(
-                                "send-now for session {id}: a person has its pane open"
+                                "{key_name} for session {id}: a person has its pane open"
                             ));
-                            (
-                                A_PERSON_ATTACHED,
+                            let why = if enter {
+                                "its mod reported the words filled; the board pressed no Enter \
+                                 because a person has its pane open; what became of the words is \
+                                 unconfirmed"
+                            } else {
                                 "its mod reported the words filled; the board pressed no send-now \
                                  because a person has its pane open; what became of the words is \
-                                 unconfirmed",
-                            )
+                                 unconfirmed"
+                            };
+                            (A_PERSON_ATTACHED, why)
                         }
                     };
-                    self.feed.board_outcome("daemon", "prompt_send_now_failed", ticket, word);
+                    self.feed.board_outcome("daemon", failed_word, ticket, word);
                     self.crown_ask_unread(id, fid, why);
                 }
             }
@@ -6427,6 +6465,35 @@ impl Daemon {
         let Some(owed) = self.owed.remove(&id) else { return };
         let asked = owed.asked;
         let ticket = owed.ticket;
+        // `now` (T-1148): a refused fill falls to the plain `submit`, the
+        // crown's ask too, which is the mod road's `now` as it was before
+        // the fill: the words go, and the engine holds them to the running
+        // turn's end. The ask is that submit's from here.
+        if key == Some(FillKey::Enter) {
+            let (ask, receipt_id) = (owed.ask, owed.receipt_id);
+            let Some(words) = owed.sent else { return };
+            self.feed.board_outcome("daemon", "prompt_fill_refused", Some(ticket), why);
+            if self.mod_submit(id, ticket, words, owed.ack) {
+                if let Some(o) = self.owed.get_mut(&id) {
+                    o.asked = asked;
+                    o.ask = ask;
+                    o.receipt_id = receipt_id;
+                }
+                let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
+                if let (Some(ask), Some(frame)) = (ask, frame) {
+                    self.crown_ask_framed(id, ask, frame);
+                }
+            } else {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.pending_submit = false;
+                }
+                if ask.is_some() {
+                    self.crown_ask_unread(id, fid, FILL_UNREAD);
+                }
+            }
+            self.persist_and_notify();
+            return;
+        }
         // The crown's ask is not slowed to the turn's end behind its back
         // (T-938): the refusal stands, and `asked` says it. Whose fill it
         // was is the delivery's crown tag, whatever the record could take.
@@ -14355,8 +14422,8 @@ impl Daemon {
     /// `paste_to_ticket`, or with `immediately` (T-601) Claude Code's
     /// send-now over the words: a WORKING Claude agent reads them at once,
     /// its running tool call moved to the background, where a plain send
-    /// waits for the turn's next step (a paste) or its end (a mod's
-    /// `submit`). The words must stand in the composer for the key to send
+    /// waits for the turn's next step (a paste, or on the mod road a `fill`
+    /// and an Enter, T-1148) or its end (a mod's `submit`). The words must stand in the composer for the key to send
     /// them: the mod fills the empty box where it speaks `fill`
     /// (`mod_fill`), and the paste road pastes; the keys go once they are
     /// in. An idle agent takes the plain send, which starts its turn at
@@ -14424,7 +14491,22 @@ impl Daemon {
         // composer by the mod's `fill`, then the keys, on its `filled`.
         if immediately && self.mod_speaks(id, "fill") && !road::is_command(text) {
             let words = Parked { text: text.to_string(), brief: false, title: false };
-            if !self.mod_fill(id, ticket, words, ack) {
+            if !self.mod_fill(id, ticket, words, ack, FillKey::SendNow) {
+                return Err("nothing to send".into());
+            }
+            return Ok(());
+        }
+        // Now into a working turn on the mod road (T-1148): the words into
+        // the empty composer by the mod's `fill`, then an Enter, on its
+        // `filled`, as a paste and its Enter go on the hook set. Claude Code
+        // queues a person's Enter mid-turn and the model reads the words at
+        // the running turn's next tool step; a plugin's `submit` would wait
+        // for that turn's end. The Enter is a key: with a person at the pane
+        // (T-958, T-966) the words go by the `submit`, which types nothing.
+        // The crown's wake keeps its own road.
+        if self.fills_now(id, &sid, text, ack) {
+            let words = Parked { text: text.to_string(), brief: false, title: false };
+            if !self.mod_fill(id, ticket, words, ack, FillKey::Enter) {
                 return Err("nothing to send".into());
             }
             return Ok(());
@@ -14570,6 +14652,18 @@ impl Daemon {
             && self.mod_speaks(id, "submit")
             && !road::is_command(text)
             && !self.crown_wake_typed(id)
+    }
+
+    /// Whether `now` words go into a working mod-road turn by a `fill` and
+    /// an Enter (T-1148): a session that would take them by its `submit`,
+    /// whose mod speaks `fill`, mid-turn, with no person at its pane. Not a
+    /// crown wake, which has its own road and receipt.
+    fn fills_now(&self, id: uuid::Uuid, sid: &str, text: &str, ack: Ack) -> bool {
+        ack.word != Ack::CROWN_WAKE.word
+            && self.takes_by_submit(id, text)
+            && self.mod_speaks(id, "fill")
+            && !self.session_idle(id)
+            && self.clients_at_pane(sid) == PaneClients::Away
     }
 
     /// The owed entry for words just pasted into a live Claude pane,
