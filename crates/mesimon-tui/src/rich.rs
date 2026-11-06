@@ -755,7 +755,12 @@ fn command_row(text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
 
 /// `text`'s styled spans in `width`: whole when they fit, else clipped with
 /// the `~` cut, which is itself marked when a marked span runs past it.
-fn fit(mut spans: Vec<Span<'static>>, text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
+fn fit(
+    mut spans: Vec<Span<'static>>,
+    text: &str,
+    width: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
     if text.width() > width {
         let budget = width - 1;
         let mut end = 0;

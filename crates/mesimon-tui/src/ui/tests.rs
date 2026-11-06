@@ -14008,6 +14008,53 @@ fn the_board_recedes_behind_a_cards_dialog() {
     assert_eq!(after[(36, fix)].bg, before[(36, fix)].bg, "lit, as the cursor's card");
 }
 
+/// T-1144: the editor on a ticket's note stands beside the card it came
+/// from — the card whole and lit, the rest of the board receded — and the
+/// new ticket's dialog recedes the board as well.
+#[test]
+fn the_editor_dialog_leaves_its_card_lit_and_recedes_the_board() {
+    let at = |app: &mut App| {
+        app.cursor_col = 1;
+        app.cursor_row = Some(0);
+    };
+    let mut plain = app_graphite(fixture(false));
+    at(&mut plain);
+    let before = cells(&plain, 120, 30);
+    let row = |buf: &ratatui::buffer::Buffer, needle: &str| {
+        lines_of(buf).iter().position(|l| l.contains(needle)).expect(needle) as u16
+    };
+    let mut app = app_graphite(fixture(false));
+    at(&mut app);
+    app.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: None },
+        "Fix OSC-11 detection",
+        "",
+    ));
+    let after = cells(&app, 120, 30);
+    let lines = lines_of(&after);
+    let fix = row(&before, "Fix OSC-11");
+    assert!(lines[fix as usize].contains("Fix OSC-11 detection >1y"), "the card: {lines:?}");
+    assert_eq!(after[(36, fix)].fg, before[(36, fix)].fg, "the card stays");
+    assert_eq!(after[(36, fix)].bg, before[(36, fix)].bg, "lit, as the cursor's card");
+    let decay = row(&after, "Decay treatments");
+    assert_ne!(after[(6, decay)].fg, before[(6, decay)].fg, "another card recedes");
+
+    let mut compose = app_graphite(fixture(false));
+    at(&mut compose);
+    compose.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Compose {
+            workspace: None,
+            tags: Vec::new(),
+            plan: false,
+            tier: None,
+        },
+        "Ship the diff viewer",
+        "",
+    ));
+    let composing = cells(&compose, 120, 30);
+    assert_ne!(composing[(6, decay)].fg, before[(6, decay)].fg, "the composer recedes it too");
+}
+
 // T-823: the snake shares the board, not a frozen picture of it. T-870: it
 // comes out on its own; a test seats it the way `App::drive_arcade` does.
 fn open_arcade(app: &mut App) {

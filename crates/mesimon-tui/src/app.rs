@@ -3111,10 +3111,12 @@ impl App {
             | Mode::Transcript { ticket, .. }
             | Mode::PullRequests { ticket, .. } => Some(*ticket),
             // The note reader (T-1139) hangs under its card, as the
-            // transcript does; the editor it opens covers the card.
+            // transcript does; the editor on a ticket's note or prompt
+            // stands beside its card and leaves it lit (T-1144).
             Mode::Editor(Editor {
-                reading: true,
-                purpose: EditorPurpose::Note { ticket, .. },
+                purpose:
+                    EditorPurpose::Note { ticket, .. }
+                    | EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. },
                 ..
             }) => Some(*ticket),
             _ => self.merge_dialog.as_ref().map(|d| d.ticket),

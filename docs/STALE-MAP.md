@@ -41594,3 +41594,34 @@ author asked for the card's rows back; the peek is the card's, the dialog is the
 `ui/board.rs` drops the `reading` gate. Tests: `test_transcript_dialog_keeps_its_card_open`
 (fails without the change); the dialog-scroll and link-mark tests now look inside the dialog,
 since the card above can show the same words; golden `transcript_dialog_120x30` moved.
+
+## The editor dialog stands beside its card, and the board recedes behind it (T-1144, 2026-11-06, the author: "big composer hiding the ticket it originated from … should find a horizontal area where it wouldn't hide the ticket. also, should mute other tickets, like transcript popup does")
+
+**Seen:** the editor's dialog (a ticket's note or description, or the ask field's prompt grown
+with Tab) took the run of columns nearest the board's centre (`snap_to_columns`) and never asked
+where its card was. With the cursor in a middle column the run was that column, so the card the
+dialog was about vanished under it. T-1139 had made the same complaint of the reader and moved
+only the reader.
+
+**Built.**
+- **`App::dialog_card` names the editor's ticket** for a Note or an Ask on a ticket, on the
+  board, as it did the reader's. The card draws lit, `spots.about` records it, and
+  `board::recede` keeps it while the rest recedes, the transcript's look.
+- **`dialog_rect` picks a run clear of the card.** `snap_to_columns` takes an `avoid` span (the
+  card's column), with the same order as before among the runs left: within `DIALOG_MAX_W`,
+  nearest the centre, narrowest. At 120 cells a card in IN PROGRESS gets REVIEW + DONE; one in
+  REVIEW gets TODO + IN PROGRESS.
+- **No run clear of it** (two columns, a narrow terminal): `clear_of` stands the dialog on the side
+  of the card with more rows, a row clear, and the frame's notch points at the card. It covers
+  the card only when neither side holds `DIALOG_MIN_H` (9) rows.
+- **The new ticket's dialog and a column's prompt recede the board too**, with no card to keep.
+  Their phantom card is gone while the editor is open, so there was nothing to hide.
+
+The grow still starts on the card (frame zero is the card) and now travels to the run beside it.
+
+Tests: `the_editor_dialog_leaves_its_card_lit_and_recedes_the_board` (fails without the fix:
+the dialog's title covers the card's row), `editor::tests::the_dialog_snaps_to_columns_clear_of_its_card`,
+`…stands_above_or_below_its_card`. Goldens reminted after reading them: `editor_ask_120x30`,
+`editor_describe_120x30`, `editor_note_ring_120x30`, `editor_wrapped_description_120x30` now show
+the IN PROGRESS card whole beside a dialog over REVIEW + DONE. Run: `cargo ut`, tui clippy. No
+e2e reaches this draw.

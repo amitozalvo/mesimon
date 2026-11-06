@@ -142,7 +142,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
 /// the picked tags on it, split the way an open card's stripe splits), the
 /// same `sel` ink, the title on the first row and the meta row under it. At
 /// rest it is `dialog_rect`: centred in the columns zone (`cards`), with the
-/// column headers above it and a margin of board around it. For the first
+/// column headers above it and a margin of board around it — and beside the
+/// card it came from, which stays lit while the rest recedes (T-1144). For the first
 /// `GROW` after Tab it is drawn between the phantom card's rectangle and
 /// that, so the dialog visibly comes out of the card — and since the
 /// anatomy is the card's, frame zero is the card, row for row and cell for
@@ -175,6 +176,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     // cards beside it stay whole. Below three rows `dialog::frame` draws no
     // frame and hands the area back, which is what keeps frame zero of the
     // grow the card itself.
+    let outer = area;
     let area = dialog::frame(
         f,
         app,
@@ -186,6 +188,10 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
             tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
         },
     );
+    // Stood above or below its card (`clear_of`), the edge points at it.
+    if framed {
+        dialog::notch(f, app, outer);
+    }
     if area.width <= chrome || area.height == 0 {
         return;
     }
@@ -284,36 +290,79 @@ fn dialog_rect(app: &App, cards: Rect) -> Rect {
             Slot::Spine { .. } => None,
         })
         .collect();
-    let (x, width) = snap_to_columns(&cols, cards.width)
+    // The card the dialog came from (T-1144), in the zone's cells: a run
+    // that leaves its column out keeps it in view.
+    let card = app.dialog_anchor();
+    let avoid = card.map(|c| (c.x.saturating_sub(cards.x), c.width));
+    let beside = avoid.and_then(|a| snap_to_columns(&cols, cards.width, Some(a)));
+    let (x, width) = beside
+        .or_else(|| snap_to_columns(&cols, cards.width, None))
         .unwrap_or((DIALOG_INSET_X, cards.width.saturating_sub(2 * DIALOG_INSET_X).max(1)));
     // The frame's cell on every side: the gutter (or page pad) beside the
     // run, the breathing row over the cards, the row under them.
     let y = cards.y + DIALOG_INSET_Y.min(cards.height.saturating_sub(1));
-    Rect {
+    let rest = Rect {
         x: cards.x + x.saturating_sub(1),
         y: y.saturating_sub(1),
         width: width + 2,
         height: cards.height.saturating_sub(2 * DIALOG_INSET_Y).max(1) + 2,
+    };
+    match card {
+        Some(card) if beside.is_none() => clear_of(rest, card),
+        _ => rest,
+    }
+}
+
+/// The fewest rows a dialog stood above or below its card settles for:
+/// frame, head and breathing rows, and a body of three.
+const DIALOG_MIN_H: u16 = 2 + DIALOG_HEAD_ROWS + 1 + 3;
+
+/// `rest` cut to the side of `card` with more rows, a row clear of it,
+/// where no run of columns leaves the card out (T-1144): a narrow board
+/// still shows the card the dialog is about. `rest` as it is when neither
+/// side has `DIALOG_MIN_H` rows, or the card is not under it.
+fn clear_of(rest: Rect, card: Rect) -> Rect {
+    if !rest.intersects(card) {
+        return rest;
+    }
+    let below_y = card.bottom() + 1;
+    let below = rest.bottom().saturating_sub(below_y);
+    let above = card.y.saturating_sub(1).saturating_sub(rest.y);
+    match (above, below) {
+        (a, b) if b >= a && b >= DIALOG_MIN_H => Rect { y: below_y, height: b, ..rest },
+        (a, _) if a >= DIALOG_MIN_H => Rect { height: a, ..rest },
+        _ => rest,
     }
 }
 
 /// The run of whole columns the dialog covers, as `(x, width)` in the
 /// zone's cells — `cols` are the expanded columns' `(x, width)` in board
-/// order. Among the runs at least `DIALOG_MIN_W` wide: the ones within
-/// `DIALOG_MAX_W` first, then the one whose centre is nearest the zone's,
-/// then the narrowest. Every column when no run reaches the floor; `None`
-/// with no columns at all.
-fn snap_to_columns(cols: &[(u16, u16)], zone_w: u16) -> Option<(u16, u16)> {
+/// order. Among the runs at least `DIALOG_MIN_W` wide and clear of
+/// `avoid` (a span `(x, width)` the run must not cross, T-1144): the ones
+/// within `DIALOG_MAX_W` first, then the one whose centre is nearest the
+/// zone's, then the narrowest. Every column when no run reaches the floor
+/// and nothing is avoided; `None` with no columns at all, or no run clear
+/// of `avoid`.
+fn snap_to_columns(
+    cols: &[(u16, u16)],
+    zone_w: u16,
+    avoid: Option<(u16, u16)>,
+) -> Option<(u16, u16)> {
     let (&(first_x, _), &(last_x, last_w)) = (cols.first()?, cols.last()?);
     let runs = cols.iter().enumerate().flat_map(|(i, &(x, _))| {
         cols[i..].iter().map(move |&(end_x, end_w)| (x, end_x + end_w - x))
     });
-    let best = runs.filter(|&(_, w)| w >= DIALOG_MIN_W).min_by_key(|&(x, w)| {
+    let clear = |&(x, w): &(u16, u16)| avoid.is_none_or(|(ax, aw)| x + w <= ax || ax + aw <= x);
+    let best = runs.filter(|&(_, w)| w >= DIALOG_MIN_W).filter(clear).min_by_key(|&(x, w)| {
         // Twice the distance between the run's centre and the zone's, so
         // the comparison stays in whole cells.
         (w > DIALOG_MAX_W, (2 * x + w).abs_diff(zone_w), w)
     });
-    Some(best.unwrap_or((first_x, last_x + last_w - first_x)))
+    match (best, avoid) {
+        (Some(run), _) => Some(run),
+        (None, Some(_)) => None,
+        (None, None) => Some((first_x, last_x + last_w - first_x)),
+    }
 }
 
 /// The dialog's surface and the ink that reads on it: the cursor card's
@@ -850,4 +899,39 @@ fn cells(spans: &[Span<'static>], skip: usize, take: usize) -> Vec<Span<'static>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T-1144: the run the dialog takes leaves the card's column out, and
+    /// with no such run wide enough it says so rather than cover the card.
+    #[test]
+    fn the_dialog_snaps_to_columns_clear_of_its_card() {
+        // Four columns of 27 with a gutter between, as at 120 cells.
+        let cols = [(3, 27), (31, 27), (59, 27), (87, 27)];
+        assert_eq!(snap_to_columns(&cols, 117, None), Some((31, 55)), "the middle two");
+        assert_eq!(snap_to_columns(&cols, 117, Some((31, 27))), Some((59, 55)), "right of it");
+        assert_eq!(snap_to_columns(&cols, 117, Some((59, 27))), Some((3, 55)), "left of it");
+        assert_eq!(snap_to_columns(&cols, 117, Some((3, 27))), Some((31, 55)));
+        // Two columns: any run of the floor's width crosses the card.
+        let two = [(3, 27), (31, 27)];
+        assert_eq!(snap_to_columns(&two, 61, Some((3, 27))), None);
+        assert_eq!(snap_to_columns(&two, 61, None), Some((3, 55)));
+    }
+
+    /// With no run beside the card, the dialog stands on the side of it
+    /// with more rows, a row clear; covering it only when neither side
+    /// holds `DIALOG_MIN_H`.
+    #[test]
+    fn with_no_run_beside_it_the_dialog_stands_above_or_below_its_card() {
+        let rest = Rect { x: 2, y: 4, width: 57, height: 24 };
+        let top = Rect { x: 3, y: 5, width: 27, height: 3 };
+        assert_eq!(clear_of(rest, top), Rect { y: 9, height: 19, ..rest }, "below");
+        let low = Rect { y: 20, ..top };
+        assert_eq!(clear_of(rest, low), Rect { height: 15, ..rest }, "above");
+        let mid = Rect { y: 12, height: 6, ..top };
+        assert_eq!(clear_of(Rect { height: 20, ..rest }, mid), Rect { height: 20, ..rest });
+    }
 }
