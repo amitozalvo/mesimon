@@ -10,7 +10,7 @@
 //! it a dialog on top of the board rather than a panel taking the columns
 //! zone edge to edge, and then — T-163 — wanted `Tab` on a card to open the
 //! ticket's description the same way). Composing, the title is editable
-//! and the mini composer's workspace rides along (its tags on the stripe); on a ticket that
+//! and the mini composer's workspace and tags ride along; on a ticket that
 //! exists the title is the ticket's, read-only, and the context row names
 //! the ticket's workspace, which Shift+Tab still sets while nothing has
 //! locked it. From the ticket page the same editor takes the whole screen
@@ -444,6 +444,7 @@ fn title_spans(ed: &Editor, budget: usize, ink: &Ramp) -> (Vec<Span<'static>>, O
 /// Composing, it names the COLUMN the ticket lands in — the panel covers
 /// the cards, so the cursor column's band alone no longer says it.
 fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'static> {
+    let theme = &app.theme;
     let dim1 = Style::default().fg(ink.dim1);
     let dim2 = Style::default().fg(ink.dim2);
     let now = mesimon_core::clock::now_ms();
@@ -455,7 +456,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
     };
     match &ed.purpose {
-        EditorPurpose::Compose { workspace, plan, tier, .. } => {
+        EditorPurpose::Compose { workspace, tags, plan, tier } => {
             let word = workspace_word(*workspace);
             // Framed, the top edge already says NEW TICKET; the row starts
             // at the column. (Unframed — frame zero of the grow, a terminal
@@ -481,9 +482,22 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             if let Some(word) = app.field_tier_word(None, tier.as_deref()) {
                 ctx_spans.push(Span::styled(format!(" ∙ {word}"), dim1));
             }
-            // No tag chips (T-1151, author: "redundant, it is shown on the
-            // ticket itself"): the stripe down the dialog's left edge wears
-            // the picks, as the card will.
+            if !tags.is_empty() {
+                ctx_spans.push(Span::styled(" ∙".to_string(), dim2));
+                for t in tags {
+                    ctx_spans.push(Span::raw(" "));
+                    let text = format!(" {} ", t.name);
+                    let tint = theme.pip(app.board.tint_of(t) as usize);
+                    if theme.paints_tags() {
+                        ctx_spans.push(Span::styled(
+                            text,
+                            Style::default().bg(tint).fg(theme.tag_ink()),
+                        ));
+                    } else {
+                        ctx_spans.push(Span::styled(text, dim1));
+                    }
+                }
+            }
         }
         EditorPurpose::Note { ticket, note } => {
             // WHICH note this is — the description or another, existing or
