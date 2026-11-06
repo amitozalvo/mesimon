@@ -42113,3 +42113,11 @@ clears the prompt the Enter queued with no report (T-1025's re-send is the held 
 the ask reads handed by its carrying hook, as a paste's does); an Enter refused or failed after
 the fill leaves the words in the box, `prompt_enter_failed` the one mark, as `immediately`'s
 send-now does.
+
+## The big composer drops its tag chips (T-1151, 2026-11-06, author request)
+
+The composer dialog's context row (`ui/editor.rs` `context_line`, `EditorPurpose::Compose`) no
+longer ends in `∙` plus a painted chip per picked tag. Author: "redundant, it is shown on the
+ticket itself" — the dialog's left stripe already wears the picks (`tags::painted`), as the
+card it mints will. The row is now column ∙ workspace + `shift+tab` ∙ plan mode ∙ tier. The
+one-line composer's phantom card is untouched. Golden: `editor_compose_120x30`.
