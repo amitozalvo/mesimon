@@ -14906,6 +14906,27 @@ fn the_conversation_is_kept_for_the_ticket_page() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// A parked agent's conversation that fills the zone keeps a blank row
+/// over the hints (T-1153): its last line never sits on the footer.
+#[test]
+fn a_parked_conversation_keeps_a_row_over_the_hints() {
+    let path = write_transcript("tparked-margin", &live_conversation());
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").state =
+        SessionState::Sleeping;
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert!(app.poll_page_transcript(), "the page opens the conversation");
+    let lines = render(&app, 120, 30);
+    let zone = |l: &String| l.chars().take(80).collect::<String>().trim().to_string();
+    assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
+    assert!(lines[29].contains("keys"), "the hints row: {lines:#?}");
+    assert_eq!(zone(&lines[28]), "", "a blank row over the hints: {lines:#?}");
+    assert_ne!(zone(&lines[27]), "", "the conversation fills the zone to it: {lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The paging keys stand on the heading on the frame that first overflows
 /// (T-1143: read from the last frame's measurement, `{ }` came a frame
 /// late each time the zone changed shape).

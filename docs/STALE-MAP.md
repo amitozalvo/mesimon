@@ -42123,3 +42123,10 @@ shown on the ticket itself". **Refuted first try:** removing the context row's t
 stay. The note and ask dialogs still wear their ticket's tags on the stripe; only composing
 changed. Test: `the_big_composers_stripe_wears_no_tags` (fails on the old stripe).
 
+## A parked conversation keeps a row over the hints (T-1153, 2026-11-06, the author: "hits the hints row")
+
+A parked agent's conversation that filled the ticket page's zone drew its last line on the row
+straight over the footer. The reply branch of `draw_preview` (`ui/ticket.rs`) now reserves one
+blank row at the zone's foot when the agent is not working (a working one already reserves two:
+the blank and the indicator). Only an overflowing zone changes, so no golden moved. Test:
+`ui::tests::a_parked_conversation_keeps_a_row_over_the_hints` (fails without the reserve).
