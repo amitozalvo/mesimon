@@ -7999,9 +7999,8 @@ fn golden_editor_describe_120() {
 }
 
 /// T-440: on a ticket with three notes the dialog counts where it stands
-/// — `NOTE 2/3` in the frame's top edge — and its bottom edge offers
-/// `tab next note`. Dirty and refused, the context row's `unsaved` goes
-/// from the dim register to full ink.
+/// — `NOTE 2/3` in the frame's top edge. Since T-1139 the editor walks no
+/// notes (the reader does), so its bottom edge offers no `tab`.
 #[test]
 fn golden_editor_note_ring_120() {
     let mut b = fixture_tagged();
@@ -8017,31 +8016,11 @@ fn golden_editor_note_ring_120() {
         "Fix OSC-11 detection",
         SECOND_NOTE,
     );
-    app.mode = Mode::Editor(ed.clone());
+    app.mode = Mode::Editor(ed);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("NOTE 2/3")), "the frame counts: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("tab next note")), "the edge offers it: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("next note")), "the editor walks none: {lines:?}");
     golden("editor_note_ring_120x30", &lines);
-
-    let ink = match app.theme.selected_bg {
-        Some(_) => app.theme.sel,
-        None => app.theme.rest,
-    };
-    let unsaved_fg = |app: &App| {
-        let buf = cells(app, 120, 30);
-        let lines = render(app, 120, 30);
-        lines.iter().enumerate().find_map(|(y, l)| {
-            let ix = l.find("unsaved")?;
-            Some(buf[(l[..ix].chars().count() as u16, y as u16)].fg)
-        })
-    };
-    let mut dirty = ed;
-    dirty.body.insert('x');
-    app.mode = Mode::Editor(dirty.clone());
-    assert_eq!(unsaved_fg(&app), Some(ink.dim2), "at rest the word is quiet");
-    dirty.tab_refused = true;
-    app.mode = Mode::Editor(dirty);
-    assert_eq!(unsaved_fg(&app), Some(ink.base), "a refused tab says it in full");
 }
 
 /// The note reader (T-1139): `tab` on a card with a description draws the
@@ -8065,11 +8044,19 @@ fn golden_editor_reader_120() {
     ed.reader = Some(crate::app::Reader::default());
     ed.reading = true;
     app.mode = Mode::Editor(ed.clone());
-    // The first frame measures the note; the keys it offers settle on the
-    // next, as on every paged zone.
-    let _ = render(&app, 120, 30);
+    // The note is measured before the edge is drawn: the first frame
+    // offers the scroll it has.
+    let lines = render(&app, 120, 30);
     assert!(app.ctx().reader_scrolls, "the note is longer than the window");
     assert!(!app.ctx().reader_sideways, "wrapped, nothing runs past it");
+    assert!(lines.iter().any(|l| l.contains("jk scroll")), "{lines:?}");
+    assert!(
+        lines.iter().take(8).any(|l| l.contains("Fix OSC-11")),
+        "the card stays in sight above it: {lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains('┴')), "the notch points at the card: {lines:?}");
+    // The footer was drawn before the note was measured; it says the
+    // same keys from the next frame on.
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("DESCRIPTION 1/2")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("enter edit")), "the edge offers it: {lines:?}");
@@ -8090,11 +8077,24 @@ fn golden_editor_reader_120() {
     }
     let lines = render(&app, 120, 30);
     golden("editor_reader_unwrapped_120x30", &lines);
+
+    // Wrapped again, the link selected by `tab`: drawn underlined, and
+    // Enter says it opens it.
+    app.reader_unwrapped = false;
+    if let Mode::Editor(ed) = &mut app.mode {
+        let r = ed.reader.as_mut().expect("a reader");
+        r.link = Some(0);
+        r.reveal.set(true);
+    }
+    let lines = render(&app, 120, 30);
+    assert!(app.ctx().reader_link_selected);
+    assert!(lines.iter().any(|l| l.contains("enter open link")), "{lines:?}");
+    golden("editor_reader_link_120x30", &lines);
 }
 
 const READER_NOTE: &str = "## What changed\n\nThe OSC-11 query now runs **once**, before raw \
 mode, and the answer is cached for the session; a terminal that never answers costs one timeout, \
-never one per frame.\n\n- `detect.rs` asks the terminal, then hands the flavor to `Theme::new`\n\
+never one per frame. The run: https://ci.test/run/42\n\n- `detect.rs` asks the terminal, then hands the flavor to `Theme::new`\n\
 - the goldens moved with it\n\n```\ncargo test -p mesimon-tui\n```\n\n> Still open: the \
 `--color=never` path is untested.\n\n1. one\n2. two\n3. three\n4. four\n5. five\n6. six\n\
 7. seven\n8. eight\n9. nine";

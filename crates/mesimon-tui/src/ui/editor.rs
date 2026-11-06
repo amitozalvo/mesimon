@@ -31,7 +31,7 @@ use crate::tags;
 use crate::text::{age_ago, area_window, created_at_epoch_ms, edit_window, truncate};
 use crate::theme::{BarWeight, Ramp, TagLevel, Theme};
 
-use mesimon_core::keymap::Scope;
+use mesimon_core::keymap::{self, Scope};
 
 use super::chrome;
 use super::dialog;
@@ -119,7 +119,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
         height: area.height.saturating_sub(HEAD_ROWS + 1),
     };
     if ed.reading {
-        draw_reader(f, app, ed, body, PAGE_PAD, crate::rich::Surface::Ground);
+        let lines = reader_lines(app, ed, body, PAGE_PAD);
+        f.render_widget(Paragraph::new(lines), body);
     } else {
         if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
             cursor = Some(c);
@@ -148,6 +149,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
 /// cell. The board's own footer stays under it and already speaks for the
 /// editor's scope.
 pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
+    if ed.reading {
+        return draw_reader_dialog(f, app, ed);
+    }
     let theme = &app.theme;
     // The dialog's frame is a card's: `[bar][pad 1][content][pad 1]`, the
     // bar as wide as the board's (`App::bar_width`).
@@ -179,12 +183,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         ink,
         dialog::Edges {
             title: dialog::title(ink, heading(app, ed)),
-            tail: dialog::keys(
-                app,
-                if ed.reading { Scope::Reader } else { Scope::Editor },
-                ink,
-                (area.width as usize).saturating_sub(6),
-            ),
+            tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
         },
     );
     if area.width <= chrome || area.height == 0 {
@@ -253,20 +252,10 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         width: inner.width,
         height: inner.height.saturating_sub(DIALOG_HEAD_ROWS + 1),
     };
-    if ed.reading {
-        // The reader's markdown on the dialog's own surface: the card's
-        // when the profile paints one, where code sinks to the page ground.
-        let on = match theme.selected_bg {
-            Some(_) => crate::rich::Surface::Elevated,
-            None => crate::rich::Surface::Ground,
-        };
-        draw_reader(f, app, ed, body, 0, on);
-    } else {
-        if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
-            cursor = Some(c);
-        }
-        body_spot(app, ed, body, 0);
+    if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
+        cursor = Some(c);
     }
+    body_spot(app, ed, body, 0);
     if let Some((x, y)) = cursor {
         f.set_cursor_position((x, y));
     }
@@ -479,11 +468,9 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
                 // Spelled only while Shift+Tab can still change it — the
                 // choice locks with the first session or worktree — and
-                // never on a ring of notes, where Shift+Tab walks back
-                // (T-1113).
+                // never in the reader (T-1139), whose Shift+Tab walks.
                 let cx = app.frame_ctx();
-                // Nor in the reader (T-1139), whose Shift+Tab only walks.
-                if cx.workspace_open && !cx.editor_cycles && !ed.reading {
+                if cx.workspace_open && !ed.reading {
                     parts.push(Span::styled("shift+tab".to_string(), dim2));
                 }
             }
@@ -549,11 +536,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         }
     }
     if ed.dirty() {
-        // A refused `tab` (T-440) says why where the eye already is: the
-        // word goes full ink until the next key, and the status line under
-        // the room says what to press.
-        let ink = if ed.tab_refused { Style::default().fg(ink.base) } else { dim2 };
-        ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), ink));
+        ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), dim2));
     }
     // A teammate wrote the note since it was opened here (T-335): the
     // draft stays, the row says so in the full register, and a save is
@@ -670,54 +653,77 @@ fn draw_body(
     })
 }
 
+/// The note reader over the board (T-1139): a card's dialog, hung one row
+/// under the card with its notch while the rest of the board recedes — the
+/// transcript's place and measure (T-817, T-921), so the card stays in
+/// sight (author: "why is the popup hiding the ticket? it should come
+/// below it"). The heading counts the notes in the top edge, the context
+/// row leads, the note follows; the reading keys sit in the bottom edge
+/// and Esc is the footer's.
+fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
+    let theme = &app.theme;
+    let screen = f.area();
+    let mut area = dialog::placed(app, screen, super::transcript::ROWS, super::transcript::WIDTH);
+    // The row above the footer stays the screen's, as a list's does.
+    let whole_y = screen.bottom().saturating_sub(2);
+    area.height = area.height.min(whole_y.saturating_sub(area.y)).max(3);
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let body = Rect { x: inner.x + 2, width: inner.width.saturating_sub(4), ..inner };
+    let fits = body.width >= 8 && body.height >= 3;
+    // The note is measured before the edge is drawn, so the edge's `jk`
+    // offers a scroll on the very frame that has one.
+    let words = Rect { y: body.y + 2, height: body.height.saturating_sub(2), ..body };
+    let lines = fits.then(|| reader_lines(app, ed, words, 0));
+    app.preview_measured();
+    let ctx = app.frame_ctx();
+    let (own, _) = keymap::footer_split(Scope::Reader, &ctx);
+    let own: Vec<_> = own.into_iter().filter(|b| b.verb != keymap::Verb::Back).collect();
+    let tail =
+        super::chrome::hint_spans(&own, &ctx, &theme.rest, inner.width.saturating_sub(4).into());
+    let title = dialog::title(&theme.rest, heading(app, ed));
+    dialog::frame(f, app, area, None, &theme.rest, dialog::Edges { title, tail });
+    dialog::notch(f, app, area);
+    let Some(lines) = lines else { return };
+    f.render_widget(
+        Paragraph::new(context_line(app, ed, &theme.rest, true)),
+        Rect { height: 1, ..body },
+    );
+    f.render_widget(Paragraph::new(lines), words);
+}
+
 /// The note reader's body (T-1139): the note drawn as markdown, the way the
 /// ticket page's preview draws one, in the window `jk` and `{ }` move. With
 /// the wrap off (`w`) the lines are laid out as wide as the widest needs
 /// and the window shows `x` cells in from their left (`hl`). A window that
 /// stops short of the last row ends in the `~` cut mark, as the preview's.
-fn draw_reader(
-    f: &mut Frame,
-    app: &App,
-    ed: &Editor,
-    area: Rect,
-    pad: u16,
-    surface: crate::rich::Surface,
-) {
-    let Some(r) = ed.reader.as_ref() else { return };
+fn reader_lines(app: &App, ed: &Editor, area: Rect, pad: u16) -> Vec<Line<'static>> {
+    let Some(r) = ed.reader.as_ref() else { return Vec::new() };
     let theme = &app.theme;
     let budget = area.height as usize;
     let width = (area.width as usize).saturating_sub(pad as usize + 1);
     if budget == 0 || width == 0 {
-        return;
+        return Vec::new();
     }
-    let text = ed.body.as_str();
-    if text.trim().is_empty() {
-        let ink = match surface {
-            crate::rich::Surface::Elevated => &theme.sel,
-            crate::rich::Surface::Ground => &theme.rest,
-        };
-        let line = Line::from(vec![
+    if ed.body.as_str().trim().is_empty() {
+        return vec![Line::from(vec![
             Span::raw(" ".repeat(pad as usize)),
-            Span::styled("empty", Style::default().fg(ink.dim3)),
-        ]);
-        f.render_widget(Paragraph::new(line), area);
-        return;
+            Span::styled("empty", theme.dim3()),
+        ])];
     }
     let unwrapped = app.reader_unwrapped;
-    let key = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        if let EditorPurpose::Note { note, .. } = &ed.purpose {
-            note.hash(&mut h);
-        }
-        text.hash(&mut h);
-        h.finish()
-    };
+    let key = crate::app::reader_key(ed);
+    let selected = app.reader_cursor_source(ed);
     // Unwrapped, as wide as the longest source line plus room for the
     // indents a list or a quote adds, never narrower than the window; the
     // cap keeps a pasted log from laying out a mile of slab.
     let lay = if unwrapped {
-        let longest = text.lines().map(unicode_width::UnicodeWidthStr::width).max().unwrap_or(0);
+        let longest =
+            ed.body.as_str().lines().map(unicode_width::UnicodeWidthStr::width).max().unwrap_or(0);
         (longest + 8).clamp(width, 4096)
     } else {
         width
@@ -733,10 +739,20 @@ fn draw_reader(
     let (rows, widest) = {
         let mut slot = r.rows.borrow_mut();
         let fresh = slot.as_ref().is_some_and(|c| {
-            c.key == key && c.width == lay && c.unwrapped == unwrapped && c.flavor == theme.flavor
+            c.key == key
+                && c.width == lay
+                && c.unwrapped == unwrapped
+                && c.flavor == theme.flavor
+                && c.selected == selected
         });
         if !fresh {
-            let rows = crate::rich::render_on(text, lay, usize::MAX, theme, surface, newline);
+            // A note's words are a person's or an agent's: scrubbed as the
+            // ticket page's preview scrubs them before they are drawn.
+            let text = crate::peek::sanitize(ed.body.as_str());
+            let rows = match selected.as_ref() {
+                Some(found) => crate::rich::render_all_with_link(&text, lay, theme, newline, found),
+                None => crate::rich::render_all(&text, lay, theme, newline),
+            };
             let widest = rows.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0);
             *slot = Some(crate::app::ReaderRows {
                 key,
@@ -745,12 +761,36 @@ fn draw_reader(
                 flavor: theme.flavor,
                 rows: std::rc::Rc::new(rows),
                 widest,
+                selected: selected.clone(),
             });
         }
         let c = slot.as_ref().expect("laid out above");
         (std::rc::Rc::clone(&c.rows), c.widest)
     };
-    let at = r.pager.window(Some(key), rows.len(), budget, false);
+    let mut at = r.pager.window(Some(key), rows.len(), budget, false);
+    // A link just selected is brought into the window, clear of the cut
+    // mark, as the transcript's is; sideways too, unwrapped.
+    if r.reveal.replace(false) {
+        let underlined = |s: &Span<'_>| s.style.add_modifier.contains(Modifier::UNDERLINED);
+        if let Some(row) = rows.iter().position(|l| l.spans.iter().any(underlined)) {
+            if row < at || row >= at + budget.saturating_sub(1).max(1) {
+                r.pager.jump(row);
+                at = r.pager.window(Some(key), rows.len(), budget, false);
+            }
+            if unwrapped {
+                let mut cell = 0;
+                for s in &rows[row].spans {
+                    if underlined(s) {
+                        break;
+                    }
+                    cell += unicode_width::UnicodeWidthStr::width(s.content.as_ref());
+                }
+                if cell < r.x.get() || cell >= r.x.get() + width {
+                    r.x.set(cell.saturating_sub(width / 4));
+                }
+            }
+        }
+    }
     let max_x = if unwrapped { widest.saturating_sub(width) } else { 0 };
     r.max_x.set(max_x);
     let x = r.x.get().min(max_x);
@@ -769,7 +809,7 @@ fn draw_reader(
             line.spans.insert(0, Span::raw(" ".repeat(pad as usize)));
         }
     }
-    f.render_widget(Paragraph::new(shown), area);
+    shown
 }
 
 /// The `take` cells of `spans` from cell `skip` on, styles kept. A wide

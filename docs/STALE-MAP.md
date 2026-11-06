@@ -41442,3 +41442,34 @@ Tests: `keymap::the_reader_reads_and_enter_edits`;
 `the_reader_walks_the_notes_and_toggles_the_wrap` (app); the editor tests that typed after Tab now
 press Enter first; `golden_editor_reader_120` (`editor_reader_120x30`,
 `editor_reader_unwrapped_120x30`).
+
+## The note reader hangs under its card, walks notes on `{ }` and links on `tab`; the editor walks none (T-1139 follow-up, 2026-11-06)
+
+Three asks from the author after using the reader:
+
+- **"why is the popup hiding the ticket? it should come below it."** The reader was the editor's
+  dialog, which covers whole columns and grows out of the card. It is now a card's dialog
+  (T-817): `dialog::placed` one row under the card with its notch, the rest of the board receded
+  (`App::dialog_card` names the reader's ticket), at the transcript's 68×14 measure
+  (`transcript::ROWS`/`WIDTH`). The context row leads the body. Enter still grows the editor out of
+  the card, which covers it again while writing.
+- **"don't allow to move between notes while writing."** The editor walks no notes: T-440's `tab`
+  binding is gone (Tab is inert there) and T-1113's Shift+Tab walk-back with it, so Shift+Tab in
+  the editor is the workspace pick on a ring of notes too and the context row spells it. Gone with
+  them: `Editor::tab_refused` and the dirty-walk refusal (a reader holds no draft).
+  `App::reader_walk_notes` replaces `editor_walk_notes`; the ticket page's editor (`n`) walks
+  nothing.
+- **"let's use { } to cycle the notes and tab to cycle links inside the current note like in
+  transcript popup."** `{ }` walk the notes (`NextNote`, `{` → `PrevNote` in `directional`),
+  `tab`/`shift+tab` walk the note's links (`TranscriptLinkNext`/`Prev`, resolved by
+  `App::reader_links` as the transcript's are, cached per document), Enter opens the selected
+  link and closes the reader (one Enter binding, hint `open link`/`edit`), Esc lets a selected
+  link go before it closes. Page keys page (overlay-only).
+
+**Fixed on the way:** the reader drew the note's raw text; it now crosses `peek::sanitize`, as the
+ticket page's preview does, and the links are read from the same scrubbed text.
+
+Tests: `keymap::the_reader_reads_and_enter_edits`, `the_editor_never_walks_the_notes` (keymap and
+app), `tab_walks_the_links_in_the_reader_and_enter_opens_one`; goldens `editor_reader_120x30`,
+`editor_reader_unwrapped_120x30`, `editor_reader_link_120x30`; `editor_note_ring_120x30`,
+`editor_note_120x30` and `editor_picture_120x30` lost `tab next note`.

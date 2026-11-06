@@ -728,10 +728,6 @@ pub struct Editor {
     pub esc_armed: bool,
     /// `^s` on an EMPTIED existing note is a delete, and takes two presses.
     pub delete_armed: bool,
-    /// `tab` was refused on a dirty note (T-440): the context row's
-    /// `unsaved` goes full ink until the next key, so the reason is said
-    /// where the eye is and the status line says what to press.
-    pub tab_refused: bool,
     /// When `^s` or `^S` was refused for a blank title: the title row
     /// shakes from that instant, the board's refusal shake (T-423) on the
     /// composer's own title.
@@ -772,6 +768,13 @@ pub struct Reader {
     /// the window. Zero while the wrap is on.
     pub max_x: Cell<usize>,
     pub rows: std::cell::RefCell<Option<ReaderRows>>,
+    /// The selected link, an index into `App::reader_links` (`tab`, as the
+    /// transcript's); `None` until the first press.
+    pub link: Option<usize>,
+    /// Bring the selected link into the window on the next draw.
+    pub reveal: Cell<bool>,
+    /// The note's links resolved against the board, per document (`key`).
+    pub links: std::cell::RefCell<Option<(u64, std::rc::Rc<TranscriptLinks>)>>,
 }
 
 /// One layout of the reader's document: what it was laid out for, and the
@@ -784,6 +787,20 @@ pub struct ReaderRows {
     pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
     /// The widest row's cells, for the sideways clamp.
     pub widest: usize,
+    /// The link drawn selected in these rows.
+    pub selected: Option<mesimon_core::links::Found>,
+}
+
+/// The reader's document (T-1139): one key per note and text, for its rows,
+/// its links and its pager.
+pub fn reader_key(ed: &Editor) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let EditorPurpose::Note { note, .. } = &ed.purpose {
+        note.hash(&mut h);
+    }
+    ed.body.as_str().hash(&mut h);
+    h.finish()
 }
 
 impl Reader {
@@ -1211,7 +1228,6 @@ impl Editor {
             baseline,
             esc_armed: false,
             delete_armed: false,
-            tab_refused: false,
             title_shake: None,
             top: Cell::new(0),
             body_width: Cell::new(usize::MAX),
@@ -2974,6 +2990,44 @@ impl App {
         self.transcript_links().get(idx).map(|(_, link)| link.clone())
     }
 
+    /// The reader's note's links (T-1139), resolved against the live board
+    /// the way the transcript's are, once per document: the words drawn,
+    /// so the same scrubbed text the draw reads.
+    pub(crate) fn reader_links(&self, ed: &Editor) -> std::rc::Rc<TranscriptLinks> {
+        let (Some(r), EditorPurpose::Note { ticket, .. }) = (ed.reader.as_ref(), &ed.purpose)
+        else {
+            return std::rc::Rc::new(Vec::new());
+        };
+        let key = reader_key(ed);
+        if let Some((at, links)) = r.links.borrow().as_ref() {
+            if *at == key {
+                return std::rc::Rc::clone(links);
+            }
+        }
+        let dir = self.link_dir(*ticket);
+        let links: TranscriptLinks =
+            mesimon_core::links::extract(&crate::peek::sanitize(ed.body.as_str()))
+                .iter()
+                .filter_map(|link| {
+                    self.resolve_link(*ticket, &dir, link)
+                        .map(|resolved| (link.target.clone(), resolved))
+                })
+                .collect();
+        let links = std::rc::Rc::new(links);
+        *r.links.borrow_mut() = Some((key, std::rc::Rc::clone(&links)));
+        links
+    }
+
+    pub(crate) fn reader_cursor_link(&self, ed: &Editor) -> Option<TicketLink> {
+        let idx = ed.reader.as_ref()?.link?;
+        self.reader_links(ed).get(idx).map(|(_, link)| link.clone())
+    }
+
+    pub(crate) fn reader_cursor_source(&self, ed: &Editor) -> Option<mesimon_core::links::Found> {
+        let idx = ed.reader.as_ref()?.link?;
+        self.reader_links(ed).get(idx).map(|(source, _)| source.clone())
+    }
+
     pub(crate) fn transcript_cursor_source(&self) -> Option<mesimon_core::links::Found> {
         let Mode::Transcript { link_idx: Some(idx), .. } = self.mode else { return None };
         self.transcript_links().get(idx).map(|(source, _)| source.clone())
@@ -3035,6 +3089,13 @@ impl App {
             | Mode::Summary { ticket, .. }
             | Mode::Transcript { ticket, .. }
             | Mode::PullRequests { ticket, .. } => Some(*ticket),
+            // The note reader (T-1139) hangs under its card, as the
+            // transcript does; the editor it opens covers the card.
+            Mode::Editor(Editor {
+                reading: true,
+                purpose: EditorPurpose::Note { ticket, .. },
+                ..
+            }) => Some(*ticket),
             _ => self.merge_dialog.as_ref().map(|d| d.ticket),
         }
     }
@@ -8174,6 +8235,12 @@ impl App {
             reader_scrolls: reader.is_some_and(|r| r.pager.view.get().max > 0),
             reader_unwrapped: self.reader_unwrapped,
             reader_sideways: self.reader_unwrapped && reader.is_some_and(|r| r.max_x.get() > 0),
+            reader_links: editor
+                .filter(|e| e.reading)
+                .is_some_and(|e| !self.reader_links(e).is_empty()),
+            reader_link_selected: editor
+                .filter(|e| e.reading)
+                .is_some_and(|e| self.reader_cursor_link(e).is_some()),
             editor_word: self.editor().map_or("", |e| e.word),
             editor_pick: self.prefs.editor.unwrap_or(crate::prefs::AUTO),
             editor_from: self.editors.source().map_or("", crate::external::Source::words),
@@ -8806,6 +8873,9 @@ impl App {
                     if let (Some(_), Mode::Editor(ed)) = (note, &mut self.mode) {
                         ed.reader = Some(Reader::default());
                         ed.reading = true;
+                        // Hung under the card, not grown out of it: the
+                        // card stays in sight (author, 2026-11-06).
+                        ed.grow = None;
                     }
                 }
             }
@@ -12968,7 +13038,9 @@ impl App {
         let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return Ok(());
         };
-        let Some(r) = ed.reader.as_ref() else {
+        let links = self.reader_links(&ed).len();
+        let chosen = self.reader_cursor_link(&ed);
+        let Some(r) = ed.reader.as_mut() else {
             self.mode = Mode::Editor(ed);
             return Ok(());
         };
@@ -12977,22 +13049,42 @@ impl App {
             Verb::ScrollUp => r.pager.scroll(-1),
             Verb::PageDown => r.pager.page(1, false),
             Verb::PageUp => r.pager.page(-1, false),
-            Verb::HalfPageDown => r.pager.page(1, true),
-            Verb::HalfPageUp => r.pager.page(-1, true),
             Verb::CursorLeft => r.sideways(-1),
             Verb::CursorRight => r.sideways(1),
             Verb::ReaderWrap => {
                 self.reader_unwrapped = !self.reader_unwrapped;
                 r.x.set(0);
+                r.reveal.set(r.link.is_some());
             }
-            Verb::NextNote => return self.editor_walk_notes(ed, 1),
-            Verb::PrevNote => return self.editor_walk_notes(ed, -1),
-            // The editor opens where the reader is: on the note, cursor at
-            // its top, the same dialog with no grow.
+            Verb::NextNote => return self.reader_walk_notes(ed, 1),
+            Verb::PrevNote => return self.reader_walk_notes(ed, -1),
+            // The transcript's walk (T-1112): the first press lands on the
+            // first link (or the last, backwards), then round again.
+            Verb::TranscriptLinkNext | Verb::TranscriptLinkPrev if links > 0 => {
+                r.link = Some(match (r.link, verb == Verb::TranscriptLinkNext) {
+                    (None, true) => 0,
+                    (None, false) => links - 1,
+                    (Some(i), true) => (i + 1) % links,
+                    (Some(i), false) => (i + links - 1) % links,
+                });
+                r.reveal.set(true);
+            }
+            // A selected link opens, as the transcript's Enter does.
+            Verb::NoteEdit if chosen.is_some() => {
+                if let Some(link) = chosen {
+                    self.open_link(link);
+                }
+                return Ok(());
+            }
+            // The editor grows out of the card, on the note the reader
+            // was on, cursor at its top.
             Verb::NoteEdit => {
                 ed.reading = false;
                 ed.focus = Field::Body;
+                ed.grow = self.card_grow();
             }
+            // Esc lets a selected link go before it closes the reader.
+            Verb::Back if r.link.is_some() => r.link = None,
             Verb::Back => return Ok(()),
             _ => {
                 self.mode = Mode::Editor(ed);
@@ -13039,15 +13131,8 @@ impl App {
         if verb != Some(Verb::EditorSave) {
             ed.delete_armed = false;
         }
-        ed.tab_refused = false;
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
-            Some(Verb::NextNote) => return self.editor_walk_notes(ed, 1),
-            // Shift+Tab on a ring of notes is the walk back (T-1113), ahead
-            // of the workspace pick the same key is everywhere else.
-            Some(Verb::CycleWorkspace) if self.note_ring(&ed).is_some() => {
-                return self.editor_walk_notes(ed, -1)
-            }
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
             // The field's `^p` in the room (T-434).
@@ -13808,25 +13893,13 @@ impl App {
         (notes.len() > 1).then_some((at, notes.len()))
     }
 
-    /// `tab` in the note editor (T-440): the ticket's next note, round
-    /// again from the description, in the same room — no grow, since the
-    /// dialog is already open; `shift+tab` (T-1113, `step` -1) the previous
-    /// one, round again from the last. Unsaved words hold it where it is:
-    /// the status says the two ways out and the row's `unsaved` goes full
-    /// ink, and nothing is ever discarded by this key. On the ticket page
-    /// the rail follows, so leaving the editor lands on the note it was on.
-    fn editor_walk_notes(&mut self, mut ed: Editor, step: isize) -> Result<()> {
-        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
-            self.status = "clipboard read pending".into();
-            self.mode = Mode::Editor(ed);
-            return Ok(());
-        }
-        if ed.dirty() {
-            ed.tab_refused = true;
-            self.status = "unsaved ∙ ^s saves ∙ esc discards".into();
-            self.mode = Mode::Editor(ed);
-            return Ok(());
-        }
+    /// `tab` in the note reader (T-1139): the ticket's next note, round
+    /// again from the description, in the same dialog, from its top;
+    /// `shift+tab` (`step` -1) the previous one. The reader holds no
+    /// draft, so nothing is ever left behind. Only the reader walks: the
+    /// editor did (T-440, T-1113) until the author asked it not to ("don't
+    /// allow to move between notes while writing").
+    fn reader_walk_notes(&mut self, ed: Editor, step: isize) -> Result<()> {
         let next = match (&ed.purpose, self.note_ring(&ed)) {
             (EditorPurpose::Note { ticket, .. }, Some((at, n))) => {
                 let to = (at as isize + step).rem_euclid(n as isize) as usize;
@@ -13834,26 +13907,13 @@ impl App {
             }
             _ => None,
         };
-        let Some((ticket, next)) = next else {
+        let walked = next.and_then(|(ticket, next)| self.note_editor(ticket, Some(next)));
+        let Some(mut walked) = walked else {
             self.mode = Mode::Editor(ed);
             return Ok(());
         };
-        let Some(mut walked) = self.note_editor(ticket, Some(next)) else {
-            self.mode = Mode::Editor(ed);
-            return Ok(());
-        };
-        // A reader walks as a reader, from the next note's top (T-1139).
-        walked.reader = ed.reader.as_ref().map(|_| Reader::default());
-        walked.reading = ed.reading;
-        if let Screen::Ticket { ticket: page, .. } = self.screen {
-            if let Some(idx) = self
-                .rail_rows(page)
-                .iter()
-                .position(|r| matches!(r, RailRow::Note(m) if m.id == next))
-            {
-                self.screen = Screen::Ticket { ticket: page, rail_idx: idx };
-            }
-        }
+        walked.reader = Some(Reader::default());
+        walked.reading = true;
         self.mode = Mode::Editor(walked);
         Ok(())
     }
@@ -19372,21 +19432,24 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
     }
 
-    /// T-1139: `tab` and `shift+tab` walk the notes in the reader, each
-    /// from its top; `w` takes the wrap off for the run, and back.
+    /// T-1139: `{ }` walk the notes in the reader, as the transcript's walk
+    /// its messages, each from its top and round again; `w` takes the wrap
+    /// off for the run, and back.
     #[test]
     fn the_reader_walks_the_notes_and_toggles_the_wrap() {
         let (mut app, _) = app_with_three_notes();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(app.ctx().editor_cycles);
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        press(&mut app, '}');
         assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
         assert!(editor(&app).reading, "a reader walks as a reader");
         assert_eq!(editor(&app).body.as_str(), "second");
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        press(&mut app, '{');
+        press(&mut app, '{');
         assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
-        assert_eq!(app.board.tickets[0].workspace, None, "shift+tab never picks here");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "shift+tab is the links'");
+        assert_eq!(app.board.tickets[0].workspace, None, "and never the pick");
         assert!(!app.ctx().reader_unwrapped);
         press(&mut app, 'w');
         assert!(app.ctx().reader_unwrapped);
@@ -19395,6 +19458,38 @@ mod tests {
         assert!(app.ctx().reader_unwrapped, "the choice holds for the run");
         press(&mut app, 'w');
         assert!(!app.ctx().reader_unwrapped);
+    }
+
+    /// T-1139: `tab` walks the note's links, as the transcript's does, and
+    /// Enter opens the one selected, closing the reader; Esc lets a link go
+    /// before it closes, and Enter on no link edits.
+    #[test]
+    fn tab_walks_the_links_in_the_reader_and_enter_opens_one() {
+        let (mut app, _) =
+            app_with_notes_state(None, &[(90, "See https://a.test/one and https://b.test/two.")]);
+        app.opener = Some("open".into());
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().reader_links);
+        assert!(!app.ctx().reader_link_selected);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().reader_link_selected);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        // first → second → first → second (back from the wrap).
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading, "esc lets the link go first");
+        assert!(!app.ctx().reader_link_selected);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "opening closes the reader");
+        assert_eq!(app.status, "opening https://b.test/two");
+
+        let (mut app, _) = app_with_notes_state(None, &[(90, "no links here")]);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.ctx().reader_links);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!editor(&app).reading, "enter edits");
     }
 
     /// A card with no description has nothing to read: `tab` opens the
@@ -19457,92 +19552,26 @@ mod tests {
         }
     }
 
-    /// T-440: `tab` in the editor walks the ticket's notes in the rail's
-    /// order and comes round to the description — each one re-read from
-    /// the daemon, clean, with its own rev, and in the room that is already
-    /// open: only the first `tab`, the one on the card, grows.
+    /// T-1139 (author: "don't allow to move between notes while writing"):
+    /// the editor walks no notes. `tab` is not a character and moves
+    /// nothing, `shift+tab` is the workspace pick on a ring of notes too,
+    /// over the board and on the ticket page alike.
     #[test]
-    fn tab_in_the_editor_walks_the_notes_and_wraps() {
-        let (mut app, sent) = app_with_three_notes();
-        let tab = |app: &mut App| app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        app.cursor_card.set(Some(ratatui::layout::Rect::new(2, 3, 30, 4)));
-        tab(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "the card's tab: the description");
-        assert!(editor(&app).grow.is_some(), "it grows out of the card");
-        assert!(app.ctx().editor_cycles);
-        sent.borrow_mut().clear();
-        tab(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
-        assert_eq!(editor(&app).body.as_str(), "second");
-        assert!(sent_contains(&sent, "ReadNote"), "never the cache: {:?}", sent.borrow());
-        assert!(editor(&app).grow.is_none(), "the room is already open");
-        assert_eq!(editor(&app).opened_rev, Some(1));
-        assert!(!editor(&app).dirty());
-        tab(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(92)));
-        tab(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "and round again");
-        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
-    }
-
-    /// T-1113: `shift+tab` walks the same ring the other way — from the
-    /// description round to the last note — and takes the key from the
-    /// workspace pick there: nothing goes on the wire but the read, and the
-    /// context row stops spelling a key that now walks.
-    #[test]
-    fn shift_tab_in_the_editor_walks_the_notes_back() {
+    fn the_editor_never_walks_the_notes() {
         let (mut app, sent) = app_with_three_notes();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
-        assert!(app.ctx().workspace_open, "the pick would have had the key");
-        let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().editor_cycles, "there is a ring to walk");
         sent.borrow_mut().clear();
-        back(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
-        assert!(sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
-        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
-        assert_eq!(app.board.tickets[0].workspace, None);
-        back(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "tab is forward again");
-        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
-        back(&mut app);
-        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "a draft holds it");
-        assert_eq!(app.status, "unsaved ∙ ^s saves ∙ esc discards");
-    }
-
-    /// T-440: unsaved words hold the editor where it is. The status says
-    /// the two ways out, the row's `unsaved` goes full ink until the next
-    /// key, nothing is read — and a second `tab` is the same refusal, never
-    /// a discard.
-    #[test]
-    fn tab_on_an_unsaved_note_stays_and_says_why() {
-        let (mut app, sent) = app_with_three_notes();
-        let key = |app: &mut App, code| app.handle_key(code, KeyModifiers::NONE).unwrap();
-        key(&mut app, KeyCode::Tab);
-        key(&mut app, KeyCode::Enter);
-        key(&mut app, KeyCode::Char('x'));
-        sent.borrow_mut().clear();
-        for _ in 0..2 {
-            key(&mut app, KeyCode::Tab);
-            assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "it stays");
-            assert!(editor(&app).body.as_str().contains('x'), "the draft is kept");
-            assert!(editor(&app).dirty());
-            assert!(editor(&app).tab_refused);
-            assert_eq!(app.status, "unsaved ∙ ^s saves ∙ esc discards");
-        }
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)), "it stays");
+        assert!(!editor(&app).dirty(), "a tab is not a character");
         assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
-        key(&mut app, KeyCode::Char('y'));
-        assert!(!editor(&app).tab_refused, "any other key lets the word rest");
-    }
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        assert!(sent_contains(&sent, "SetWorkspace"), "the pick: {:?}", sent.borrow());
 
-    /// T-440: from the ticket page the rail follows the walk, so leaving
-    /// the editor lands on the note it was on.
-    #[test]
-    fn tab_on_the_ticket_page_moves_the_rail_with_it() {
-        let (mut app, _) = app_with_three_notes();
+        let (mut app, sent) = app_with_three_notes();
         let first = app
             .rail_rows(ulid::Ulid(1))
             .iter()
@@ -19550,14 +19579,10 @@ mod tests {
             .expect("the description is on the rail");
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: first };
         app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        sent.borrow_mut().clear();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
-        assert!(
-            matches!(app.rail_row(), Some(RailRow::Note(n)) if n.id == ulid::Ulid(91)),
-            "{:?}",
-            app.screen
-        );
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
     }
 
     /// T-440: nothing to walk, nothing bound — a ticket with one note, and

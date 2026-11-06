@@ -24,8 +24,9 @@ use crate::text::truncate;
 
 /// The dialog's inner rows and width, terminal permitting: a medium
 /// window, the reply's reading measure.
-const ROWS: u16 = 14;
-const WIDTH: u16 = 68;
+/// The note reader (T-1139) hangs at the same measure.
+pub(super) const ROWS: u16 = 14;
+pub(super) const WIDTH: u16 = 68;
 
 /// When a message was written: the clock today, how long ago before that.
 fn when(ms: Option<u64>, now_ms: u64) -> String {

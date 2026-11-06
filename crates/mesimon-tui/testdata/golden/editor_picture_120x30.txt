@@ -27,4 +27,4 @@
 
 
 
- ^s save ∙ tab next note ∙ esc close
+ ^s save ∙ esc close

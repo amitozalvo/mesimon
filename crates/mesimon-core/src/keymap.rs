@@ -1520,6 +1520,11 @@ pub struct Ctx {
     /// Unwrapped, a line is wider than the window, so `hl` has cells to
     /// scroll (T-1139).
     pub reader_sideways: bool,
+    /// The note on the reader holds a link it can open (T-1139): `tab`
+    /// walks them.
+    pub reader_links: bool,
+    /// A link is selected in the reader: Enter opens it, Esc lets it go.
+    pub reader_link_selected: bool,
     /// The forge has bound at least one pull request to the subject ticket
     /// (T-739), as the last snapshot said. What `^h` gates on.
     pub has_prs: bool,
@@ -7658,16 +7663,21 @@ static TRANSCRIPT: &[Binding] = &[
 
 /// The note reader (T-1139, author: "tab on ticket with notes show readonly
 /// formatted presentation of the MD ∙ {} and hjkl and arrow keys for motion
-/// ∙ enter to edit"). The editor's dialog with the note drawn as the ticket
-/// page draws one. The wrap is on, so `hl` only scroll once `w` takes it off
-/// ("shouldn't we disable wordwrap? or at least allow user to toggle it, and
-/// then it becomes needed"); notes are walked by `tab`, the editor's key.
+/// ∙ enter to edit"). A card's dialog hung under the card, the note drawn as
+/// the ticket page draws one. The wrap is on, so `hl` only scroll once `w`
+/// takes it off ("shouldn't we disable wordwrap? or at least allow user to
+/// toggle it, and then it becomes needed"). The transcript dialog's keys
+/// otherwise ("let's use { } to cycle the notes and tab to cycle links
+/// inside the current note like in transcript popup"): `{ }` walk the
+/// notes, `tab` the note's links, and Enter opens a selected one.
 static READER: &[Binding] = &[
     Binding {
+        // One atom, one binding: the selected link's opener while there is
+        // one, the editor otherwise. Esc lets the link go first.
         keys: &[Key::Enter],
         verb: Verb::NoteEdit,
         show: "enter",
-        hint: |_| "edit",
+        hint: |c| if c.reader_link_selected { "open link" } else { "edit" },
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
@@ -7686,28 +7696,42 @@ static READER: &[Binding] = &[
         prio: 10,
     },
     Binding {
-        // Forward and back in one binding, so the edge spends one item on
-        // it (`directional` tells them apart).
-        keys: &[Key::Tab, Key::BackTab],
+        // The transcript's `{ }` (T-921), a note for a message: `}` the
+        // next, `{` the previous, round again (`directional`).
+        keys: &[Key::Char('}'), Key::Char('{')],
         verb: Verb::NextNote,
-        show: "tab",
-        hint: |_| "next note",
+        show: "{ }",
+        hint: |_| "note",
         avail: |c| c.editor_cycles,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 8,
+    },
+    Binding {
+        // The transcript's link walk (T-1112): forward and back in one
+        // binding, so the edge spends one item on it.
+        keys: &[Key::Tab, Key::BackTab],
+        verb: Verb::TranscriptLinkNext,
+        show: "tab",
+        hint: |_| "link",
+        avail: |c| c.reader_links,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 12,
     },
     Binding {
-        keys: &[Key::Char('}'), Key::Char('{'), Key::PageDown, Key::PageUp],
+        // The page keys page; `{ }` are the notes'. Overlay-only.
+        keys: &[Key::PageDown, Key::PageUp],
         verb: Verb::PageDown,
-        show: "{ }",
+        show: "pgdn pgup",
         hint: |_| "page",
         avail: |c| c.reader_scrolls,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 20,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('h'), Key::Left, Key::Char('l'), Key::Right],
@@ -8415,27 +8439,6 @@ static EDITOR: &[Binding] = &[
         prio: 12,
     },
     Binding {
-        // The ticket's next note, in the same room (T-440, user request:
-        // "allow user to cycle the notes on tab"), round again. Shift+Tab
-        // walks back (T-1113), but one atom is one binding in a scope and
-        // Shift+Tab is the workspace pick's here (T-163), so the walk back
-        // rides that binding: see `CycleWorkspace` below. Live on a dirty
-        // note too — the press
-        // is refused there, and the refusal is the answer (the status says
-        // `^s` or `esc`, the row's `unsaved` goes full ink) — so the edge
-        // does not reflow on the first keystroke. Never a discard: Tab is
-        // pressed in a row, and a second press must not lose the draft.
-        keys: &[Key::Tab],
-        verb: Verb::NextNote,
-        show: "tab",
-        hint: |_| "next note",
-        avail: |c| c.editing && c.editor_cycles,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 15,
-    },
-    Binding {
         // Two presses when there is something to lose; the first says so.
         // `^]` (both spellings) is the same verb (2026-09-03, user request):
         // it is the pop-outward key everywhere else — tmux's detach, the
@@ -8527,11 +8530,10 @@ static EDITOR: &[Binding] = &[
         // In the ask room (T-380) it is the field's own toggle, now /
         // queued, spelled on the same context row, and offered exactly
         // where the one-line field offers it — never by the ticket's
-        // workspace being open, which is another verb's reason. On a ring
-        // of notes (`editor_cycles`) it is the walk back, Tab's other way
-        // (T-1113, user request: "shift+tab to cycle back notes"): the
-        // ring outranks the pick there, which keeps the key on a lone note,
-        // a new one, the card and the ticket page.
+        // workspace being open, which is another verb's reason. The editor
+        // walks no notes (T-1139, author: "don't allow to move between
+        // notes while writing"): `tab` and `shift+tab` walk them in the
+        // reader, so T-1113's walk back on this key is gone.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
@@ -8541,7 +8543,7 @@ static EDITOR: &[Binding] = &[
                 && if c.editor_asking {
                     c.ask_queueable
                 } else {
-                    c.editor_composing || c.workspace_open || c.editor_cycles
+                    c.editor_composing || c.workspace_open
                 }
         },
         class: Class::Plain,
@@ -8818,7 +8820,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::TranscriptNewer, Key::Char('{')) => Verb::TranscriptOlder,
         (Verb::TranscriptLinkNext, Key::BackTab | Key::Char('N')) => Verb::TranscriptLinkPrev,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
-        (Verb::NextNote, Key::BackTab) => Verb::PrevNote,
+        (Verb::NextNote, Key::Char('{')) => Verb::PrevNote,
         (v, _) => v,
     }
 }
@@ -9159,9 +9161,10 @@ mod tests {
         assert_eq!(Scope::Move.parent(), None);
     }
 
-    /// T-1139: the note reader's keys. Enter edits and `w` toggles always;
-    /// the motions are live only where they have somewhere to go, and
-    /// `hl` only once the wrap is off and a line runs past the window.
+    /// T-1139: the note reader's keys. Enter edits (or opens the selected
+    /// link) and `w` toggles always; the motions are live only where they
+    /// have somewhere to go, and `hl` only once the wrap is off and a line
+    /// runs past the window. `{ }` walk the notes, `tab` the links.
     #[test]
     fn the_reader_reads_and_enter_edits() {
         let bare = Ctx::default();
@@ -9175,16 +9178,24 @@ mod tests {
         let long = Ctx { reader_scrolls: true, ..Default::default() };
         assert_eq!(resolve(Scope::Reader, Key::Char('j'), &long), Some(Verb::ScrollDown));
         assert_eq!(resolve(Scope::Reader, Key::Up, &long), Some(Verb::ScrollUp));
-        assert_eq!(resolve(Scope::Reader, Key::Char('}'), &long), Some(Verb::HalfPageDown));
-        assert_eq!(resolve(Scope::Reader, Key::Char('{'), &long), Some(Verb::HalfPageUp));
+        assert_eq!(resolve(Scope::Reader, Key::PageDown, &long), Some(Verb::PageDown));
+        assert_eq!(resolve(Scope::Reader, Key::PageUp, &long), Some(Verb::PageUp));
+        assert_eq!(resolve(Scope::Reader, Key::Char('}'), &long), None, "{{ }} are the notes'");
         let wide = Ctx { reader_unwrapped: true, reader_sideways: true, ..Default::default() };
         assert_eq!(resolve(Scope::Reader, Key::Char('h'), &wide), Some(Verb::CursorLeft));
         assert_eq!(resolve(Scope::Reader, Key::Right, &wide), Some(Verb::CursorRight));
         assert_eq!(hint_for(Scope::Reader, Verb::ReaderWrap, &wide), Some(("w", "wrap")));
         assert_eq!(hint_for(Scope::Reader, Verb::ReaderWrap, &bare), Some(("w", "unwrap")));
         let ring = Ctx { editor_cycles: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), Some(Verb::NextNote));
-        assert_eq!(resolve(Scope::Reader, Key::BackTab, &ring), Some(Verb::PrevNote));
+        assert_eq!(resolve(Scope::Reader, Key::Char('}'), &ring), Some(Verb::NextNote));
+        assert_eq!(resolve(Scope::Reader, Key::Char('{'), &ring), Some(Verb::PrevNote));
+        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), None, "tab is the links'");
+        let linked = Ctx { reader_links: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Reader, Key::Tab, &linked), Some(Verb::TranscriptLinkNext));
+        assert_eq!(resolve(Scope::Reader, Key::BackTab, &linked), Some(Verb::TranscriptLinkPrev));
+        assert_eq!(hint_for(Scope::Reader, Verb::NoteEdit, &linked), Some(("enter", "edit")));
+        let chosen = Ctx { reader_link_selected: true, ..linked };
+        assert_eq!(hint_for(Scope::Reader, Verb::NoteEdit, &chosen), Some(("enter", "open link")));
     }
 
     #[test]
@@ -10375,37 +10386,20 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Tab, &editing), None);
     }
 
-    /// T-440: on a ticket with more than one note, `tab` in the editor is
-    /// the next note — dirty or clean, since the refusal is the handler's
-    /// and the edge must not reflow on the first keystroke. Nowhere else:
-    /// not composing, not asking, not on a new note or a lone description.
-    /// T-1113: `shift+tab` is live on the same ring, open workspace or not
-    /// — the editor's handler walks back there instead of picking.
+    /// T-1139 (author: "don't allow to move between notes while writing"):
+    /// the editor walks no notes — `tab` is unbound there and `shift+tab`
+    /// is the workspace pick on a ring of notes too. The reader walks them.
     #[test]
-    fn tab_walks_the_notes_in_the_editor() {
+    fn the_editor_never_walks_the_notes() {
         let ring = Ctx { editing: true, editor_cycles: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::Tab, &ring), Some(Verb::NextNote));
-        assert_eq!(resolve(Scope::Editor, Key::BackTab, &ring), Some(Verb::CycleWorkspace));
-        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &ring), Some(("tab", "next note")));
-        let dirty = Ctx { editor_dirty: true, ..ring.clone() };
-        assert_eq!(resolve(Scope::Editor, Key::Tab, &dirty), Some(Verb::NextNote));
-        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &dirty), Some(("tab", "next note")));
-        let lone = Ctx { editing: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::Tab, &lone), None);
-        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &lone), None);
-        let composing = Ctx { editing: true, editor_composing: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::Tab, &composing), None);
-        let asking = Ctx { editing: true, editor_asking: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::Tab, &asking), None);
-        assert_eq!(resolve(Scope::Editor, Key::BackTab, &lone), None);
-        let open = Ctx { workspace_open: true, ..ring };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &ring), None);
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &ring), None);
+        let open = Ctx { workspace_open: true, ..ring.clone() };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
+        assert_eq!(hint_for(Scope::Editor, Verb::NextNote, &ring), None);
+        assert_eq!(resolve(Scope::Reader, Key::Char('}'), &ring), Some(Verb::NextNote));
     }
 
-    /// A picture goes with the words to one ticket's agent (T-853): `^v`
-    /// reads the clipboard in the ask room and in the one-line field for a
-    /// ticket's ask, and stays off, unhinted, for a column's — a column has
-    /// no ticket to keep the picture. A note's body keeps its paste.
     #[test]
     fn a_ticket_ask_takes_a_picture_and_a_column_ask_does_not() {
         let room =
