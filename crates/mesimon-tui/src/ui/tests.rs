@@ -13359,6 +13359,40 @@ fn the_hover_lights_the_spot_under_the_pointer() {
     assert!(under.content().iter().all(|c| c.bg != hover), "a dialog covers the board");
 }
 
+/// A folded column's title is its header (T-1142, user: "collapsed column
+/// mouse hover indicate only when hovering title, not all column"): the
+/// hover lights its count and letters and a click there opens it; the
+/// strip under the title neither lights nor opens.
+#[test]
+fn a_folded_column_lights_and_opens_on_its_title_only() {
+    let mut app = app_graphite(fixture(true));
+    app.cursor_col = 0;
+    let lines = render(&app, 100, 24);
+    let x = 97;
+    assert_eq!(lines[2].chars().nth(x as usize), Some('1'), "the spine's count: {lines:#?}");
+    assert_eq!(lines[7].chars().nth(x as usize), Some('E'), "its last letter: {lines:#?}");
+    let hover = app.theme.hover_bg().expect("true colour has a hover ground");
+    let rest = cells(&app, 100, 24);
+
+    app.pointer.set(Some((x, 4)));
+    let lit = cells(&app, 100, 24);
+    for y in 2..=7 {
+        assert_eq!(lit[(x, y)].bg, hover, "row {y} of the title lights");
+    }
+    let changed: Vec<u16> = (0..24).filter(|y| lit[(x, *y)] != rest[(x, *y)]).collect();
+    assert_eq!(changed, (2..=7).collect::<Vec<_>>(), "the title and nothing under it");
+
+    app.pointer.set(Some((x, 12)));
+    let under = cells(&app, 100, 24);
+    assert!(under.content().iter().all(|c| c.bg != hover), "under the title, no hover");
+
+    click(&mut app, (x, 12));
+    assert_eq!(app.cursor_col, 0, "a click under the title opens nothing");
+    render(&app, 100, 24);
+    click(&mut app, (x, 4));
+    assert_eq!(app.cursor_col, 3, "a click on the title opens the column");
+}
+
 /// A tag picker cell is a click away: the first puts the picker's cursor
 /// on it, the second is its Enter — the tag goes to the daemon.
 #[test]

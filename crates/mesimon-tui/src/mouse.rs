@@ -42,7 +42,7 @@ pub(crate) enum Target {
     /// A ticket's pull requests — the card's brief, the page's rows
     /// (T-759): a click is that ticket's `^h`.
     Prs(ulid::Ulid),
-    /// A board column's header (or the whole spine of a folded column).
+    /// A board column's header (or a folded column's title, T-1142).
     Column(usize),
     /// A board column's whole body, for the wheel.
     Lane(usize),

@@ -60,11 +60,16 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
             }
             Slot::Spine { x } => {
                 let rect = Rect { x: area.x + x, y: area.y, width: 1, height: area.height };
-                // A folded column is all header: a click opens it.
-                app.hits.borrow_mut().record(rect, crate::mouse::Target::Column(ci));
+                // A folded column's title (its marks, count and letters)
+                // is its header: the click that opens it, and all a hover
+                // lights (T-1142). The strip under it is the wheel's lane.
+                let title = draw_spine(f, rect, app, name);
+                let mut hits = app.hits.borrow_mut();
+                hits.record(rect, crate::mouse::Target::Lane(ci));
+                hits.record(Rect { height: title, ..rect }, crate::mouse::Target::Column(ci));
+                drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, 1));
                 app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
-                draw_spine(f, rect, app, name);
             }
         }
     }
@@ -1017,7 +1022,8 @@ fn cell_of(line: &Line<'_>, glyph: &str) -> Option<u16> {
 /// mark the board can make and it was reading as quiet next to the folded
 /// column it stands for; painting the cell spends the same one colour on
 /// the whole cell instead of on a stroke.
-fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
+/// Draws a folded column's spine; returns the rows its title takes.
+fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) -> u16 {
     let theme = &app.theme;
     let tickets = app.board.column_tickets(name);
     let waiting = tickets.iter().any(|t| {
@@ -1043,7 +1049,9 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
         lines.push(Line::from(Span::styled(c.to_string(), theme.dim1())));
     }
 
+    let title = (lines.len() as u16).min(area.height);
     f.render_widget(Paragraph::new(lines), area);
+    title
 }
 
 /// The spine's count block: the digit, and the cell under it — a space, or

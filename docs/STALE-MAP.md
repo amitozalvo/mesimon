@@ -41572,3 +41572,14 @@ Tests: `links::tests::a_shell_fence_holds_one_command_a_line`,
 `a_command_in_a_note_is_copied_from_the_reader_and_the_links_dialog` (app);
 `transcript_commands_are_selected_marked_and_copied` (ui). Golden `editor_reader_link_120x30`:
 the frame's edge says `c copy` where `w unwrap` was (the footer keeps both).
+
+## A folded column lights and opens on its title only (T-1142, 2026-11-06, user: "collapsed column mouse hover indicate only when hovering title, not all column")
+
+T-716 recorded a folded column's whole one-cell strip as its `Target::Column`, so the hover lit
+the spine top to bottom. Now the spine records like an expanded column: the whole strip is its
+`Lane` (the wheel still turns the column under it) and `Column` covers only the title rows
+`draw_spine` returns — the `!`, the count, the `⁺` row and the letters. The click shrank with the
+light, on purpose: a hover says what a click does, so lighting the title while the strip below
+still opened the column would have been a lie. Refuted: keeping the whole strip clickable with a
+title-only light. Test: `a_folded_column_lights_and_opens_on_its_title_only` (rows 2..=7 light at
+100×24, row 12 neither lights nor opens). No golden moved.
