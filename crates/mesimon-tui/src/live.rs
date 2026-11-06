@@ -79,6 +79,11 @@ impl Shot {
                 return (i - 1).saturating_sub(CONTEXT_ROWS);
             }
         }
+        // Codex's composer (measured 2026-11-06, 0.166.0): a `›` row with no
+        // rule on either side, the cursor on it, a blank row over it.
+        if let Some(p) = self.cursor_prompt() {
+            return p.saturating_sub(CONTEXT_ROWS);
+        }
         if let Some(m) = (0..n).rev().find(|&i| is_marker(&self.rows[i].text)) {
             let floor = m.saturating_sub(DIALOG_REACH);
             return (floor..m).rev().find(|&i| self.rows[i].blank()).unwrap_or(floor);
@@ -87,10 +92,22 @@ impl Shot {
     }
 
     /// The composer's own prompt row, where the words are typed: the row
-    /// under its top rule. `None` while a dialog has the box's place.
+    /// under its top rule, or the unframed prompt row the cursor is on.
+    /// `None` while a dialog has the box's place.
     pub(crate) fn prompt_row(&self) -> Option<usize> {
         let n = self.rows.len();
-        (1..n).rev().find(|&i| is_prompt(&self.rows[i].text) && is_rule(&self.rows[i - 1].text))
+        (1..n)
+            .rev()
+            .find(|&i| is_prompt(&self.rows[i].text) && is_rule(&self.rows[i - 1].text))
+            .or_else(|| self.cursor_prompt())
+    }
+
+    /// The prompt row the pane's cursor sits on, at the screen's left edge
+    /// — a composer, never a framed dialog's `›` option.
+    fn cursor_prompt(&self) -> Option<usize> {
+        let (_, cy) = self.cursor?;
+        let row = self.rows.get(cy as usize)?;
+        (is_prompt(&row.text) && !row.text.starts_with([' ', '│'])).then_some(cy as usize)
     }
 }
 
@@ -526,6 +543,56 @@ mod tests {
 
     fn shot(lines: &[&str]) -> Shot {
         Shot { rows: parse(&lines.join("\n")), cols: 80, cursor: None }
+    }
+
+    /// Codex 0.166.0's screen as captured on 2026-11-06: no rule on either
+    /// side of the `›` row, the cursor on it, a blank row over it, the
+    /// status and the hints under it (truecolour inks). The seam is the
+    /// blank row and the prompt row is the cursor's.
+    #[test]
+    fn codex_composer_is_found_by_the_cursor() {
+        let mut lines: Vec<&str> = vec![
+            "\x1b[1m•\x1b[0m Ran touch /tmp/mesimon-codex-probe-1143",
+            "  └ (no output)",
+            "\x1b[1m•\x1b[0m done",
+            "\x1b[2m  Worked for 8s • 16:42\x1b[0m",
+            "",
+            "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m",
+            "",
+            "  \x1b[38;2;72;154;54mT-1143-ticket-page-rehaul\x1b[39m · \x1b[38;2;213;144;48mGPT-6-Astra xhigh\x1b[39m · \x1b[38;2;236;105;30mContext 3% used\x1b[39m",
+            "  \x1b[1m←\x1b[0m for agents · \x1b[1m?\x1b[0m for shortcuts                    ⚠ \x1b[38;2;196;167;103m2 warnings\x1b[39m · \x1b[1mf2\x1b[0m to view",
+        ];
+        while lines.len() < 30 {
+            lines.insert(0, "");
+        }
+        let mut s = shot(&lines);
+        assert_eq!(s.rows[26].text, "› Ask Codex to do anything");
+        s.cursor = Some((2, 26));
+        assert_eq!(s.anchor(), 25, "the blank row over the composer");
+        assert_eq!(s.prompt_row(), Some(26));
+        // Without the cursor the `›` row is read as a marker: the same seam.
+        s.cursor = None;
+        assert_eq!(s.anchor(), 25);
+        assert_eq!(s.prompt_row(), None, "no rule, no cursor: no row to type on");
+    }
+
+    /// A framed dialog option under the cursor is not a composer.
+    #[test]
+    fn a_framed_option_under_the_cursor_is_not_a_prompt_row() {
+        let mut lines: Vec<&str> = vec![
+            "╭──────────────────────────────╮",
+            "│ Do you want to run this?     │",
+            "│ › 1. Yes                     │",
+            "│   2. No                      │",
+            "╰──────────────────────────────╯",
+        ];
+        while lines.len() < 24 {
+            lines.insert(0, "");
+        }
+        let mut s = shot(&lines);
+        s.cursor = Some((2, 21));
+        assert_eq!(s.prompt_row(), None);
+        assert_eq!(s.anchor(), 18, "the blank row over the box");
     }
 
     #[test]

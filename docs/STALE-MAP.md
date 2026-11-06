@@ -41854,3 +41854,21 @@ turn under `you`, the reply under `claude`, the shin on the rail's foot in both,
 and the dialog as before); `the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field`
 now asserts the field between the rules with one prompt row on screen. Not measured: the heads'
 clocks on a real transcript (the fixtures carry no timestamps), Codex's `›` composer.
+
+**Codex measured** (2026-11-06, codex-cli 0.166.0 in a private tmux server of the session's own,
+100×30, alternate screen): the composer is a bold `›` at column 0 with the dim placeholder `Ask
+Codex to do anything`, no rule on either side, the cursor at (2, row), a blank row over it, then
+a blank, the truecolour status row (`38;2;r;g;b` inks, folded by the parser) and the hints row.
+Working: `• Working (5s • esc to interrupt)` directly over the composer's blank. So
+`Shot::anchor` and `Shot::prompt_row` read the cursor too (`cursor_prompt`: an unframed prompt
+row under the cursor), after the rule shape and before the marker road: the seam is the blank
+over `›`, the ask field types on the `›` row. A framed `│ › 1. Yes` option under the cursor is
+never a prompt row. **Not captured**: a Codex approval dialog — 0.166.0 reviews an escalation
+itself (`• Reviewing approval request (7s)` … `with escalated approval`), `approval_policy =
+"untrusted"` is refused ("no longer supported"), and the board's own flags are `on-request` /
+`never` (`agents/codex/mod.rs::prepare`), so an interactive box was not reachable in a probe;
+the marker road (`› 1. …` looked up to a blank) stands as written in T-846's capture. Tests:
+`live::tests::codex_composer_is_found_by_the_cursor`,
+`a_framed_option_under_the_cursor_is_not_a_prompt_row`. Typing into Codex's composer with
+`send-keys -l` lost the head of the line twice; `paste-buffer -p` carried it whole — a note for
+anyone wiring keys into a Codex pane.
