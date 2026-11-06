@@ -14840,6 +14840,42 @@ fn pane_after_reply(fresh: Option<&str>) -> crate::live::Shot {
     }
 }
 
+/// The conversation is opened and laid out once per ticket page (the
+/// author: "at least while on the ticket page it should be cached"): the
+/// cursor going to a note and back reopens nothing and lays nothing out
+/// again, the board in between keeps it, another ticket's page drops it.
+#[test]
+fn the_conversation_is_kept_for_the_ticket_page() {
+    let (mut app, path) = app_live("tlive-kept", false);
+    let _ = render(&app, 120, 30);
+    let held = |app: &App| app.page_transcripts.get(&uuid_n(31)).map(|t| t as *const _);
+    let laid = |app: &App| {
+        app.page_composed.borrow().get(&uuid_n(31)).map(|c| std::rc::Rc::as_ptr(&c.rows))
+    };
+    let (t0, rows0) = (held(&app).expect("opened"), laid(&app).expect("laid out"));
+    // To another row (the shell here; a note is the same road): the
+    // conversation stays.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
+    let _ = app.poll_page_transcript();
+    let away = render(&app, 120, 30);
+    assert!(!away.iter().any(|l| l.contains("Research is mostly done")), "{away:#?}");
+    assert_eq!(held(&app), Some(t0), "not dropped for another row");
+    // And back: the same transcript, the same rows.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert!(!app.poll_page_transcript(), "nothing to open again");
+    let _ = render(&app, 120, 30);
+    assert_eq!(held(&app), Some(t0));
+    assert_eq!(laid(&app), Some(rows0), "not laid out again");
+    // The board in between keeps it; another ticket's page drops it.
+    app.screen = Screen::Board;
+    let _ = app.poll_page_transcript();
+    assert_eq!(held(&app), Some(t0));
+    app.screen = Screen::Ticket { ticket: ulid_n(4), rail_idx: 0 };
+    let _ = app.poll_page_transcript();
+    assert!(held(&app).is_none() && laid(&app).is_none(), "another ticket's page");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The paging keys stand on the heading on the frame that first overflows
 /// (T-1143: read from the last frame's measurement, `{ }` came a frame
 /// late each time the zone changed shape).
@@ -14877,15 +14913,15 @@ fn earlier_messages_landing_keep_a_paged_back_place() {
     let (app, path) = app_live("tlive-prepend", false);
     let _ = render(&app, 120, 30);
     let key = app.page_doc.borrow().as_ref().map(|d| d.key).expect("the conversation");
-    let second = app.page_transcript.as_ref().map(|(_, t)| t.messages()[1].key).expect("held");
+    let second = app.page_transcripts.get(&uuid_n(31)).map(|t| t.messages()[1].key).expect("held");
     // As if the doc had been laid out when the second message was the
     // first held, and the reader had paged to its row 1: the first
     // message's head, prompt and blank row land above it.
-    if let Some(d) = app.page_doc.borrow_mut().as_mut() {
-        d.first = second;
+    if let Some(c) = app.page_composed.borrow_mut().get_mut(&uuid_n(31)) {
+        c.doc.first = second;
+        c.stamp = 0;
     }
     app.preview.request.set(Some((key, 1)));
-    app.rich_cache.borrow_mut().take();
     let _ = render(&app, 120, 30);
     let (k, at) = app.preview.request.get().expect("still asked");
     assert_eq!(k, key, "the same document");

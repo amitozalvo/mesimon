@@ -1348,6 +1348,21 @@ pub(crate) struct PageDoc {
     pub first: (u64, usize),
 }
 
+/// Each held message's laid-out rows, by its session and its key.
+pub(crate) type PageMessages = std::collections::HashMap<(uuid::Uuid, (u64, usize)), PageMessage>;
+
+/// A session's conversation laid out (T-1143): what it was laid out from
+/// (`stamp`: the messages held, the newest's words and steps, the minute;
+/// the width, the flavor, the selected link) and the rows and links.
+pub(crate) struct Composed {
+    pub stamp: u64,
+    pub width: usize,
+    pub flavor: crate::theme::Flavor,
+    pub selected: Option<mesimon_core::links::Found>,
+    pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
+    pub doc: PageDoc,
+}
+
 /// One message's rows and links, rendered once for its words, width and
 /// theme (T-1143): the zone's document is the held messages' entries end
 /// to end, so a conversation of hundreds re-renders only the one message
@@ -2078,15 +2093,25 @@ pub struct App {
     /// Where the last frame drew the live window's rows (the pane's own
     /// glyphs and attributes, a picture the L1 laws know by position).
     pub live_rect: std::cell::Cell<Option<ratatui::layout::Rect>>,
-    /// The selected agent session's conversation, whole, for the ticket
-    /// page's zone (T-1143): the transcript dialog's reader, opened on the
-    /// rail's row and polled while the cursor stays there.
-    pub page_transcript: Option<(uuid::Uuid, crate::transcript::Transcript)>,
+    /// The ticket whose page the conversations below belong to: another
+    /// ticket's page drops them, the board in between does not.
+    pub page_ticket: Option<ulid::Ulid>,
+    /// Each agent session's conversation, whole, for the ticket page's zone
+    /// (T-1143): the transcript dialog's reader, opened the first time the
+    /// rail's cursor is on the session and kept for as long as the page is
+    /// this ticket's (the author: "at least while on the ticket page it
+    /// should be cached"; a 12 MB conversation took 96 ms to open and
+    /// 180 ms more to land its earlier pages, every time the cursor came
+    /// back from a note).
+    pub page_transcripts: std::collections::HashMap<uuid::Uuid, crate::transcript::Transcript>,
     /// The last session a page transcript was asked of and when: a record
     /// with nothing said yet is asked again only after a while.
     page_transcript_tried: Option<(uuid::Uuid, std::time::Instant)>,
-    /// Each held message's rendered rows and links, by its key.
-    pub page_messages: std::cell::RefCell<std::collections::HashMap<(u64, usize), PageMessage>>,
+    /// Each held message's rendered rows and links, by its session and key.
+    pub page_messages: std::cell::RefCell<PageMessages>,
+    /// Each session's conversation as last laid out, whole: a draw that
+    /// changes nothing it depends on takes it as it is.
+    pub page_composed: std::cell::RefCell<std::collections::HashMap<uuid::Uuid, Composed>>,
     /// The zone's conversation document as the last draw laid it out.
     pub page_doc: std::cell::RefCell<Option<PageDoc>>,
     /// Whether the last ticket page drew its two zones (the terminal wide
@@ -2589,9 +2614,11 @@ impl App {
             live_rect: std::cell::Cell::new(None),
             live_last: None,
             live_size: std::cell::Cell::new(None),
-            page_transcript: None,
+            page_ticket: None,
+            page_transcripts: std::collections::HashMap::new(),
             page_transcript_tried: None,
             page_messages: std::cell::RefCell::new(std::collections::HashMap::new()),
+            page_composed: std::cell::RefCell::new(std::collections::HashMap::new()),
             page_doc: std::cell::RefCell::new(None),
             page_link: std::cell::RefCell::new(None),
             page_zone: std::cell::Cell::new(true),
@@ -5998,47 +6025,56 @@ impl App {
         }
     }
 
-    /// The zone's conversation (T-1143): the selected agent session's
+    /// The zone's conversations (T-1143): the selected agent session's
     /// transcript opened whole, the way the board's `{ }` dialog opens it,
-    /// kept and polled while the rail's cursor stays on that session and
-    /// dropped when it leaves. A record with nothing said yet is asked
-    /// again after a second, not every tick.
+    /// the first time the cursor is on it, then kept, with every other one
+    /// this ticket's page has opened, until another ticket's page opens;
+    /// each follows its file while the page is up. A record with nothing
+    /// said yet is asked again after a second, not every tick. True when
+    /// the selected session's conversation moved.
     pub(crate) fn poll_page_transcript(&mut self) -> bool {
         const AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
-        let want = match self.rail_row() {
+        let Screen::Ticket { ticket, .. } = self.screen else { return false };
+        if self.page_ticket != Some(ticket) {
+            self.page_ticket = Some(ticket);
+            self.page_transcripts.clear();
+            self.page_messages.borrow_mut().clear();
+            self.page_composed.borrow_mut().clear();
+            self.page_transcript_tried = None;
+        }
+        let selected = match self.rail_row() {
             Some(RailRow::Session(s)) if s.kind.is_agent() && s.transcript_path.is_some() => {
                 Some(s.clone())
             }
             _ => None,
         };
-        match (want, &mut self.page_transcript) {
-            (None, None) => false,
-            (None, Some(_)) => {
-                self.page_transcript = None;
-                self.page_messages.borrow_mut().clear();
-                true
-            }
-            (Some(rec), Some((id, t))) if *id == rec.id => {
-                let path = rec.transcript_path.as_deref();
-                let changed = t.poll(path.map(|p| (rec.kind, p)));
-                if changed {
-                    self.rich_cache.borrow_mut().take();
-                }
-                changed
-            }
-            (Some(rec), _) => {
-                let tried = self.page_transcript_tried;
-                if tried.is_some_and(|(id, at)| id == rec.id && at.elapsed() < AGAIN) {
-                    return false;
-                }
-                self.page_transcript_tried = Some((rec.id, std::time::Instant::now()));
-                self.page_messages.borrow_mut().clear();
-                self.rich_cache.borrow_mut().take();
-                self.page_transcript =
-                    crate::transcript::Transcript::open(&rec).map(|t| (rec.id, t));
-                self.page_transcript.is_some()
+        let records: Vec<(uuid::Uuid, SessionKind, Option<String>)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| self.page_transcripts.contains_key(&s.id))
+            .map(|s| (s.id, s.kind, s.transcript_path.clone()))
+            .collect();
+        let mut changed = false;
+        for (id, kind, path) in records {
+            let Some(t) = self.page_transcripts.get_mut(&id) else { continue };
+            if t.poll(path.as_deref().map(|p| (kind, p))) {
+                self.page_composed.borrow_mut().remove(&id);
+                changed |= selected.as_ref().is_some_and(|s| s.id == id);
             }
         }
+        if let Some(rec) = selected.filter(|s| !self.page_transcripts.contains_key(&s.id)) {
+            let tried = self.page_transcript_tried;
+            if tried.is_some_and(|(id, at)| id == rec.id && at.elapsed() < AGAIN) {
+                return changed;
+            }
+            self.page_transcript_tried = Some((rec.id, std::time::Instant::now()));
+            if let Some(t) = crate::transcript::Transcript::open(&rec) {
+                self.page_transcripts.insert(rec.id, t);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// A message's link candidates resolved against the live board, as

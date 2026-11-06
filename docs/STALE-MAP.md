@@ -41979,3 +41979,19 @@ attached). Tests: `a_capture_of_another_size_waits_for_the_fit`,
 `a_parked_window_keeps_its_picture_and_size`, and `the_first_capture_is_at_the_zone_size`, which
 starts a real tmux server and is `#[ignore]`d in `cargo ut` (run it with `--ignored`; it fails
 with the first fit removed).
+
+**Then: the conversation kept for the ticket page (the author: "still the {} transcript takes a
+second to settle … I think the transcript is calculated everytime. at least while on the ticket
+page it should be cached").** Measured first, on this ticket's own 12 MB, 4009-record transcript in
+the debug build the board runs: opening it took 96 ms on the UI thread, its earlier pages landed
+over 180 ms more (three relayouts), and a steady frame took ~5 ms, so frames were never the cost.
+The cost was that the cursor leaving the session dropped the transcript and every laid-out
+message, and coming back opened and laid it all out again; the composed document also lived in the
+one-slot `rich_cache`, which a note's draw evicts. Now `App::page_transcripts` keeps every
+conversation this ticket's page has opened, each following its file while the page is up, until
+another ticket's page opens (the board in between keeps them, `page_ticket`); laid-out messages are
+keyed by session and message (`PageMessages`), and each session's composed conversation has its own
+entry (`page_composed`, `Composed`: the stamp, width, flavor, selected link, rows and its
+`PageDoc`). A session's first open still reads on the UI thread once per page visit.
+`the_conversation_is_kept_for_the_ticket_page` (fails with the old drop): to another row and back,
+the same transcript and the same rows; the board keeps them; another ticket drops them.

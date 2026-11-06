@@ -1676,8 +1676,8 @@ fn conversation(
     width: usize,
 ) -> Option<(u64, Rc<Vec<Line<'static>>>)> {
     use mesimon_core::mesophon::RowKind;
-    let (id, t) = app.page_transcript.as_ref()?;
-    if *id != rec.id || width < 8 {
+    let t = app.page_transcripts.get(&rec.id)?;
+    if width < 8 {
         return None;
     }
     let messages = t.messages();
@@ -1690,7 +1690,7 @@ fn conversation(
     // restarted (T-1143: a long conversation's earlier pages land one by
     // one for seconds after the page opens).
     let key = crate::text::hash64((8u8, rec.id));
-    let before = app.page_doc.borrow().as_ref().filter(|d| d.key == key).map(|d| d.first);
+    let before = app.page_composed.borrow().get(&rec.id).map(|c| c.doc.first);
     let selected = app
         .page_link
         .borrow()
@@ -1702,12 +1702,12 @@ fn conversation(
     let now = mesimon_core::clock::now_ms();
     let last = messages.last().map(|m| (m.key, t.text(m).len(), m.steps));
     let stamp = crate::text::hash64((key, messages.len(), last, now / 60_000));
-    {
-        let slot = app.rich_cache.borrow();
-        if let Some(c) = slot.as_ref() {
-            if c.key == stamp && c.width == width && c.flavor == flavor && c.selected == selected {
-                return Some((key, Rc::clone(&c.rows)));
-            }
+    // Laid out already for all of that: as it is (the session's own
+    // entry, so a note read in between evicts nothing).
+    if let Some(c) = app.page_composed.borrow().get(&rec.id) {
+        if c.stamp == stamp && c.width == width && c.flavor == flavor && c.selected == selected {
+            *app.page_doc.borrow_mut() = Some(c.doc.clone());
+            return Some((key, Rc::clone(&c.rows)));
         }
     }
     // A person's words as Claude Code draws them (the author, 2026-11-06:
@@ -1732,13 +1732,13 @@ fn conversation(
         let newline = if prompt { Newline::Break } else { Newline::Space };
         let text = t.text(m);
         let stamp = (text.len(), width, flavor);
-        if !cache.get(&m.key).is_some_and(|e| e.stamp == stamp) {
+        if !cache.get(&(rec.id, m.key)).is_some_and(|e| e.stamp == stamp) {
             let clean = crate::peek::sanitize(text);
             let body = crate::rich::render_all(&clean, width - bar, theme, newline);
             let found = app.page_links(rec.ticket, &clean);
             let link_rows = found.iter().map(|(_, link)| row_of(&body, &link.text)).collect();
             cache.insert(
-                m.key,
+                (rec.id, m.key),
                 crate::app::PageMessage {
                     stamp,
                     rows: Rc::new(body),
@@ -1747,7 +1747,7 @@ fn conversation(
                 },
             );
         }
-        let entry = &cache[&m.key];
+        let entry = &cache[&(rec.id, m.key)];
         // The selected link's message is laid out again with the mark on
         // it, as the dialog does; the mark never enters the cache.
         let body = match selected.as_ref().filter(|s| entry.links.iter().any(|(f, _)| f == *s)) {
@@ -1804,10 +1804,12 @@ fn conversation(
             app.preview.request.set(Some((k, at + moved)));
         }
     }
-    *app.page_doc.borrow_mut() =
-        Some(crate::app::PageDoc { key, links: Rc::new(links), first: first.key });
-    *app.rich_cache.borrow_mut() =
-        Some(RichCache { key: stamp, width, flavor, selected, rows: Rc::clone(&rows) });
+    let doc = crate::app::PageDoc { key, links: Rc::new(links), first: first.key };
+    *app.page_doc.borrow_mut() = Some(doc.clone());
+    app.page_composed.borrow_mut().insert(
+        rec.id,
+        crate::app::Composed { stamp, width, flavor, selected, rows: Rc::clone(&rows), doc },
+    );
     Some((key, rows))
 }
 
