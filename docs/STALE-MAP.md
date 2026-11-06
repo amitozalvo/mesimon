@@ -41530,3 +41530,12 @@ The reader's context row was the editor's: `⎇ shared ∙ edited by you 2h ago`
 the workspace because Shift+Tab sets it there (T-158); the reader sets nothing and hangs under the
 card that already wears it, so its row is `edited by you 2h ago` alone. The editor's row is
 unchanged. Test: `golden_editor_reader_120` asserts no `⎇`; the three reader goldens moved.
+
+## The reader's `tab` runs on from the links into the next note (T-1139 follow-up, 2026-11-06, the author: "I think tab should cycle the notes if reached the end of the links, shift tab same but opposite")
+
+`tab` in the reader walked the note's links round and round. Now it walks one ring of stops: each
+note's top (no link selected), then its links. Past the last link `tab` lands on the next note's
+top; `shift+tab` back past a top lands on the previous note's last link (its top when it has
+none). A lone note comes round to its own top. The binding is live with links or a ring of notes
+(`reader_links || editor_cycles`) and says `next note` when the note holds no link. `{ }` still
+walk the notes directly. Test: `tab_runs_on_from_the_links_into_the_next_note`.

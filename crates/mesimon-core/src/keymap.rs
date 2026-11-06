@@ -7709,13 +7709,14 @@ static READER: &[Binding] = &[
         prio: 8,
     },
     Binding {
-        // The transcript's link walk (T-1112): forward and back in one
-        // binding, so the edge spends one item on it.
+        // The transcript's link walk (T-1112), forward and back in one
+        // binding, that goes on to the next note past the last link and to
+        // the previous one back past the top: one ring of stops.
         keys: &[Key::Tab, Key::BackTab],
         verb: Verb::TranscriptLinkNext,
         show: "tab",
-        hint: |_| "link",
-        avail: |c| c.reader_links,
+        hint: |c| if c.reader_links { "link" } else { "next note" },
+        avail: |c| c.reader_links || c.editor_cycles,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -9189,7 +9190,11 @@ mod tests {
         let ring = Ctx { editor_cycles: true, ..Default::default() };
         assert_eq!(resolve(Scope::Reader, Key::Char('}'), &ring), Some(Verb::NextNote));
         assert_eq!(resolve(Scope::Reader, Key::Char('{'), &ring), Some(Verb::PrevNote));
-        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), None, "tab is the links'");
+        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), Some(Verb::TranscriptLinkNext));
+        assert_eq!(
+            hint_for(Scope::Reader, Verb::TranscriptLinkNext, &ring),
+            Some(("tab", "next note"))
+        );
         let linked = Ctx { reader_links: true, ..Default::default() };
         assert_eq!(resolve(Scope::Reader, Key::Tab, &linked), Some(Verb::TranscriptLinkNext));
         assert_eq!(resolve(Scope::Reader, Key::BackTab, &linked), Some(Verb::TranscriptLinkPrev));

@@ -317,7 +317,8 @@ stops a snake that is out.
 
 `tab` on a card shows its description, the brief its agent starts from, drawn as markdown under
 the card: `j` and `k` scroll, `{` and `}` walk to the ticket's other notes, `tab` walks the
-note's links and `enter` opens the one selected, and `w` turns the wrap off so `h` and `l`
+note's links and on into the next note (`shift-tab` back), `enter` opens the selected link, and
+`w` turns the wrap off so `h` and `l`
 scroll a long line sideways. With no link selected, `enter` edits the note on screen; `ctrl-s`
 saves it and `esc` leaves the editor, both back to the note, and `ctrl-g` opens the text in your
 own editor instead. A card with no description opens the editor straight away. In the new-ticket

@@ -13040,6 +13040,7 @@ impl App {
         };
         let links = self.reader_links(&ed).len();
         let chosen = self.reader_cursor_link(&ed);
+        let ring = self.note_ring(&ed).is_some();
         let Some(r) = ed.reader.as_mut() else {
             self.mode = Mode::Editor(ed);
             return Ok(());
@@ -13060,15 +13061,39 @@ impl App {
             Verb::PrevNote => return self.reader_walk_notes(ed, -1),
             // The transcript's walk (T-1112): the first press lands on the
             // first link (or the last, backwards), then round again.
-            Verb::TranscriptLinkNext | Verb::TranscriptLinkPrev if links > 0 => {
-                r.link = Some(match (r.link, verb == Verb::TranscriptLinkNext) {
-                    (None, true) => 0,
-                    (None, false) => links - 1,
-                    (Some(i), true) => (i + 1) % links,
-                    (Some(i), false) => (i + links - 1) % links,
-                });
-                r.reveal.set(true);
-            }
+            // One ring of stops (author: "tab should cycle the notes if
+            // reached the end of the links, shift tab same but opposite"):
+            // each note's top, then its links. Past the last link `tab` is
+            // the next note's top; back past the top `shift+tab` is the
+            // previous note's last link. A lone note comes round to itself.
+            Verb::TranscriptLinkNext => match r.link {
+                None if links > 0 => {
+                    r.link = Some(0);
+                    r.reveal.set(true);
+                }
+                Some(i) if i + 1 < links => {
+                    r.link = Some(i + 1);
+                    r.reveal.set(true);
+                }
+                _ if ring => return self.reader_walk_notes(ed, 1),
+                _ => r.link = None,
+            },
+            Verb::TranscriptLinkPrev => match r.link {
+                Some(0) => r.link = None,
+                Some(i) => {
+                    r.link = Some(i - 1);
+                    r.reveal.set(true);
+                }
+                None if ring => {
+                    self.reader_walk_notes(ed, -1)?;
+                    return self.reader_land_on_last_link();
+                }
+                None if links > 0 => {
+                    r.link = Some(links - 1);
+                    r.reveal.set(true);
+                }
+                None => {}
+            },
             // A selected link opens, as the transcript's Enter does.
             Verb::NoteEdit if chosen.is_some() => {
                 if let Some(link) = chosen {
@@ -13090,6 +13115,21 @@ impl App {
                 self.mode = Mode::Editor(ed);
                 return self.dispatch(verb, key, Scope::Reader, &ctx);
             }
+        }
+        self.mode = Mode::Editor(ed);
+        Ok(())
+    }
+
+    /// `shift+tab` into the previous note lands on its last link, the stop
+    /// before the top `tab` would have left it at (T-1139).
+    fn reader_land_on_last_link(&mut self) -> Result<()> {
+        let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        let links = self.reader_links(&ed).len();
+        if let (Some(r), Some(last)) = (ed.reader.as_mut(), links.checked_sub(1)) {
+            r.link = Some(last);
+            r.reveal.set(true);
         }
         self.mode = Mode::Editor(ed);
         Ok(())
@@ -19448,8 +19488,8 @@ mod tests {
         press(&mut app, '{');
         assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "shift+tab is the links'");
-        assert_eq!(app.board.tickets[0].workspace, None, "and never the pick");
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)), "no links: shift+tab walks back");
+        assert_eq!(app.board.tickets[0].workspace, None, "and never picks");
         assert!(!app.ctx().reader_unwrapped);
         press(&mut app, 'w');
         assert!(app.ctx().reader_unwrapped);
@@ -19490,6 +19530,66 @@ mod tests {
         assert!(!app.ctx().reader_links);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!editor(&app).reading, "enter edits");
+    }
+
+    /// T-1139 (author: "tab should cycle the notes if reached the end of
+    /// the links, shift tab same but opposite"): one ring of stops, each
+    /// note's top and then its links. `tab` runs past the last link to the
+    /// next note's top; `shift+tab` runs back past a top to the previous
+    /// note's last link; round again either way.
+    #[test]
+    fn tab_runs_on_from_the_links_into_the_next_note() {
+        let (mut app, _) = app_with_notes_state(
+            None,
+            &[
+                (90, "a https://a.test/1 b https://a.test/2"),
+                (91, "no links"),
+                (92, "https://c.test/3"),
+            ],
+        );
+        let at = |app: &App| {
+            let ed = editor(app);
+            (on_note(app).map(|n| n.0), ed.reader.as_ref().and_then(|r| r.link))
+        };
+        let tab = |app: &mut App| app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        tab(&mut app);
+        assert_eq!(at(&app), (Some(90), None), "the card's tab: the description's top");
+        let forward = [
+            (Some(90), Some(0)),
+            (Some(90), Some(1)),
+            (Some(91), None),
+            (Some(92), None),
+            (Some(92), Some(0)),
+            (Some(90), None),
+        ];
+        for want in forward {
+            tab(&mut app);
+            assert_eq!(at(&app), want);
+            assert!(editor(&app).reading);
+        }
+        let backward = [
+            (Some(92), Some(0)),
+            (Some(92), None),
+            (Some(91), None),
+            (Some(90), Some(1)),
+            (Some(90), Some(0)),
+            (Some(90), None),
+        ];
+        for want in backward {
+            back(&mut app);
+            assert_eq!(at(&app), want);
+        }
+
+        // A lone note comes round to its own top.
+        let (mut app, _) = app_with_notes_state(None, &[(90, "https://a.test/1")]);
+        tab(&mut app);
+        tab(&mut app);
+        assert_eq!(at(&app), (Some(90), Some(0)));
+        tab(&mut app);
+        assert_eq!(at(&app), (Some(90), None));
+        back(&mut app);
+        assert_eq!(at(&app), (Some(90), Some(0)));
     }
 
     /// A card with no description has nothing to read: `tab` opens the
