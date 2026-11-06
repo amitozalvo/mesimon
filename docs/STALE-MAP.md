@@ -41655,3 +41655,40 @@ Tests: `an_untagged_fence_holds_its_prompted_and_program_led_lines`,
 `an_agents_bang_line_and_a_code_span_are_commands_too` (ui, the reported message's shape).
 Golden `transcript_dialog_120x30`: its fixture's untagged ```` ``` ```` holds `$ cargo test …`, so
 the frame now offers `tab link`.
+
+## A checkout's new HEAD is a delivery only at the end of a turn that ran (T-1146, 2026-11-06, the author: "why does board restart replays already sent crown notices? happened on T-132 right now")
+
+**Seen on the simbly board, crown T-132.** A `U` at 14:58:53 IST; eight seconds later the crown got
+`T-170 … delivered (commit ee65799, column DONE, after a restart)`, forty seconds later the same
+for T-172, T-168, T-169 and T-167. Commit `ee65799` was T-180's, made at 12:28, the one commit on
+the checkout since `0542b5b`, where the crown had last heard those five. All five were sleeping,
+shared-checkout, crown-started, long in DONE. Twenty-two worktree workers were looked at in the
+same window and stayed silent (their tips had not moved); T-156 and T-157, the same shape on a
+dead tmux server, were skipped only because `probe_turn` needs a live seat's cwd.
+
+**Cause.** T-602's restart look is seeded with every worker in `crown.json`'s `heard`, parked
+ones included (`crownledger::restore`), and `hear_restored` counts a sleeping seat as settled.
+For a worker with no branch the look reads the checkout's HEAD, and `verdict` called any tip
+the crown had not heard for that worker a delivery; only `Finished` was gated on `fresh` (a turn
+ran). A parked worker is judged by nothing between restarts, so the first restart after any
+commit on the checkout "delivered" every parked checkout worker at once, with that commit's
+hash. The look exists to hear worktree merges that landed while the daemon was down
+(`merge_verdict`); a checkout worker has no merge to read there.
+
+**Fix.** `verdict` takes a checkout's new HEAD as a delivery only when `fresh` — a turn of the
+worker's ran since the last end judged; a worktree branch keeps its tip as the one proof, turn
+or none, since nobody else moves it. The restart look still moves the baseline (`heard.judged`),
+so a HEAD moved by another ticket is absorbed silently. A turn whose end fell into the restart's
+gap is still heard: T-663 closes it with `end_turn`, and `turns_open` is in `crown.json`, so
+`fresh` holds. Lost on purpose: a checkout worker whose turn began and ended entirely while no
+daemon ran, which no end signal ever reaches; the crown learns at its next `get_ticket`.
+Refuted: skipping parked workers in `hear_restored` alone — the next real turn end would still
+have read every commit since as that worker's. Still open, narrower: a checkout worker's real
+turn end that committed nothing while someone else moved HEAD reads as its delivery; closing it
+needs a HEAD baseline at the turn's start, not its end.
+
+Unit `a_checkout_delivers_on_a_new_head` (verdict): tip moved with no turn is silent, baseline
+or none; with a turn, delivered; same tip with a turn, finished; a worktree branch with no turn,
+delivered. Forge news is a different road (`hear_forge`, diffed against `forge.json`, written in
+the pass's own tick) and was not part of this; the lab "replays" of 2026-10-29 were archived
+tickets (T-1076) and the stub moving a PR's head.

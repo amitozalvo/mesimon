@@ -9,7 +9,8 @@
 //!
 //! 1. **delivered** — a worker it started ends a turn with something new to
 //!    merge: its branch ahead of the base at a tip the crown has not heard
-//!    of, or, in a shared checkout, a HEAD it has not heard of;
+//!    of, or, in a shared checkout, a HEAD it has not heard of at the end
+//!    of a turn that ran (T-1146: anyone moves that HEAD);
 //! 2. **finished its turn** (T-591) — a worker it started ends a turn with
 //!    nothing new to merge and nothing pending on its ticket: no words
 //!    queued for it or on their way, no hand up, no merge the train will
@@ -948,6 +949,13 @@ impl CrownWake {
 /// any other fresh turn finished (T-591) — "nothing new" is no reason for
 /// silence, and the crown decides what comes next. What is pending on the
 /// ticket is `due`'s to weigh.
+///
+/// A checkout's HEAD is moved by anyone's commit, so a new one is this
+/// worker's delivery only when a turn of its ran (T-1146): the restart's
+/// look judged every parked worker on the checkout against the HEAD the
+/// crown last heard for it, and one commit by another ticket "delivered"
+/// five long-done tickets at once. A worktree branch moves by its worker
+/// alone, and keeps its tip as the one proof.
 pub(super) fn verdict(
     before: Option<&Told>,
     now: &Told,
@@ -961,7 +969,8 @@ pub(super) fn verdict(
     if merge_step {
         return None;
     }
-    if now.mergeable() && before.is_none_or(|b| b.tip != now.tip) {
+    let own = now.merge.is_some() || fresh;
+    if own && now.mergeable() && before.is_none_or(|b| b.tip != now.tip) {
         return Some(WakeCause::Delivered);
     }
     fresh.then_some(WakeCause::Finished)
@@ -3622,15 +3631,24 @@ pub(in crate::server) mod tests {
         }
     }
 
-    /// A shared checkout delivers by HEAD: a new one wakes, the same one
-    /// does not, and with no baseline (a restart) any HEAD does.
+    /// A shared checkout delivers by HEAD at the end of a turn that ran:
+    /// a new one wakes, the same one is a finished turn. With no turn run
+    /// (the restart's look at a parked worker, T-1146) a HEAD anyone may
+    /// have moved says nothing, baseline or none: the look that woke the
+    /// crown for five long-done tickets on one commit of another's.
     #[test]
     fn a_checkout_delivers_on_a_new_head() {
         let start = checkout("1111111aaaa", "IN PROGRESS");
         let after = checkout("2222222bbbb", "REVIEW");
         assert_eq!(verdict(Some(&start), &start, false, false, false), None);
-        assert_eq!(verdict(Some(&start), &after, false, false, false), DELIVERED);
-        assert_eq!(verdict(None, &after, false, false, false), DELIVERED);
+        assert_eq!(verdict(Some(&start), &start, false, false, true), FINISHED);
+        assert_eq!(verdict(Some(&start), &after, false, false, true), DELIVERED);
+        assert_eq!(verdict(None, &after, false, false, true), DELIVERED);
+        assert_eq!(verdict(Some(&start), &after, false, false, false), None, "no turn ran");
+        assert_eq!(verdict(None, &after, false, false, false), None, "no baseline, no turn");
+        // A worktree branch keeps its tip as the proof, turn or none.
+        let branch = branch("ccc", "ahead", 1, "REVIEW");
+        assert_eq!(verdict(None, &branch, false, false, false), DELIVERED);
     }
 
     /// A finished turn's line (T-591) says first that it left nothing new
