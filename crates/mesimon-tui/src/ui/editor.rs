@@ -464,13 +464,16 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             let t = app.board.ticket(*ticket);
             let meta = note.and_then(|id| t.and_then(|t| t.note(id)));
             let mut parts: Vec<Span<'static>> = Vec::new();
-            if let Some(t) = t {
+            // Not in the reader (T-1139, author: "why is workspace shown on
+            // the note popup subtitle? it's not relevant there"): it reads
+            // the note, sets nothing, and hangs under the card that already
+            // wears the workspace.
+            if let Some(t) = t.filter(|_| !ed.reading) {
                 parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
                 // Spelled only while Shift+Tab can still change it — the
-                // choice locks with the first session or worktree — and
-                // never in the reader (T-1139), whose Shift+Tab walks.
+                // choice locks with the first session or worktree.
                 let cx = app.frame_ctx();
-                if cx.workspace_open && !ed.reading {
+                if cx.workspace_open {
                     parts.push(Span::styled("shift+tab".to_string(), dim2));
                 }
             }

@@ -41523,3 +41523,10 @@ Tests: `register.test.ts` `classic:`/`native: a board tool's answer is one PostT
 fails on the classic road without the relay; `asynchooks::the_leads_tool_completion_cancels_a_held_stop`.
 Run: `cargo ut`, `mod_plugin`, and `async_hook_e2e` + `bash_mode_e2e` on both roads plus
 `mod_bridge_e2e`, all green on the first run. No rig case: no agent-facing text changed.
+
+## The note reader's subtitle names no workspace (T-1139 follow-up, 2026-11-06, the author: "why is workspace shown on the note popup subtitle? it's not relevant there, no?")
+
+The reader's context row was the editor's: `⎇ shared ∙ edited by you 2h ago`. The editor shows
+the workspace because Shift+Tab sets it there (T-158); the reader sets nothing and hangs under the
+card that already wears it, so its row is `edited by you 2h ago` alone. The editor's row is
+unchanged. Test: `golden_editor_reader_120` asserts no `⎇`; the three reader goldens moved.

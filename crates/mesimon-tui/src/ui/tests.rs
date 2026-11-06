@@ -8050,6 +8050,7 @@ fn golden_editor_reader_120() {
     assert!(app.ctx().reader_scrolls, "the note is longer than the window");
     assert!(!app.ctx().reader_sideways, "wrapped, nothing runs past it");
     assert!(lines.iter().any(|l| l.contains("jk scroll")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("⎇")), "the card wears the workspace: {lines:?}");
     assert!(
         lines.iter().take(8).any(|l| l.contains("Fix OSC-11")),
         "the card stays in sight above it: {lines:?}"
