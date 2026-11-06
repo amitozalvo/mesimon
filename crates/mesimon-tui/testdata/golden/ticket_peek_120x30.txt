@@ -6,11 +6,10 @@
 
   PREVIEW                                                                                  SESSIONS                  2
 
-    Fixed the OSC-11 race: the query now runs once before raw    ▀█ ▄▀▀   █▀              ⠋ ✻ claude               >1y
-    mode; goldens updated and clippy is clean.                  ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█       ◦ $ bash                 >1y
-                                                                ███▀▀████▀▀█ █▀████        x sleep
-    ● working ∙ Run the golden tests                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
-                                                                ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+  Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and     ⠋ ✻ claude               >1y
+  clippy is clean.                                                                        ◦ $ bash                 >1y
+                                                                                           x sleep
+    ● working ∙ Run the golden tests
 
 
 
@@ -22,9 +21,10 @@
 
 
 
-
-
-
-
+                                                                                             ▀█ ▄▀▀   █▀
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+                                                                                            ███▀▀████▀▀█ █▀▀███
+                                                                                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

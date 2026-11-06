@@ -6,8 +6,8 @@
 
   PREVIEW                                                                                  SESSIONS                  2
 
-                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
-                 ╭─ KEYS ∙ ticket ───────────────────────────────────────────────────────────────────╮             >1y
+    ● working                                                                             ⠋ ✻ claude               >1y
+    nothing said ╭─ KEYS ∙ ticket ───────────────────────────────────────────────────────────────────╮             >1y
                  │ MOVE AROUND                   TICKETS                 SESSIONS                    │
                  │   jk        select session      c         copy id       enter     focus           │
                  │   q         board               ^o        crown         !         terminal        │
@@ -15,16 +15,16 @@
                  │                                 n         describe                                │
                  │                                 N         new note    APP                         │
                  │                                 ^t        tags          ,         settings        │
-    ● working    │                                 a         archive       ?         keys            │
-    nothing said │                                 z         snooze        ^L        redraw          │
+                 │                                 a         archive       ?         keys            │
+                 │                                 z         snooze        ^L        redraw          │
                  │                                 d         delete        ^Z        suspend mesimon │
                  ╰───────────────────────────────────────────────────────────────────────────────────╯
 
 
-
-
-
-
-
+                                                                                             ▀█ ▄▀▀   █▀
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+                                                                                            ███▀▀████▀▀█ █▀▀███
+                                                                                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

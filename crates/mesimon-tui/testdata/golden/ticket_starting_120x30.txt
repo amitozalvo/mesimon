@@ -6,17 +6,8 @@
 
   PREVIEW                                                                                  SESSIONS                  1
 
-                             ▀▀▀▄  ▄▄▄   ▀▀▀▄                                             ⠋ ✻ claude               >1y
-                              ▀▀▀▄▀█▀▀    ███                                              x sleep
-                              ▄▀███▀▄▄▄▄▄▄▀█▀▄
-                            ▄▀████████████████▀▄
-                            ████▀████████▀██████
-                            ████▀▀▀██████▀▀▀████
-                            ▀▀▀█████▀▀▀▀█████▀▀▀
-                             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    starting up
-    the ticket title is in its box ∙ mesimon presses enter when it is ready
+    starting up                                                                           ⠋ ✻ claude               >1y
+    the ticket title is in its box ∙ mesimon presses enter when it is ready                x sleep
 
 
 
@@ -26,5 +17,14 @@
 
 
 
+
+
+
+
+                                                                                            ▀█ ▄▀▀   █▀
+                                                                                            ▄▀▀▀▄▄▄▄▄▀▀▄
+                                                                                            ██▀▀████▀▀██
+                                                                                            █▀▀▀█▀▀█▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀▀
 
  enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

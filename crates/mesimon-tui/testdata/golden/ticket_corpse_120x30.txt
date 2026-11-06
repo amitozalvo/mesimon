@@ -6,17 +6,11 @@
 
   PREVIEW                                                                                  SESSIONS                  3
 
-                       ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                   ⠋ ✻ claude               >1y
-                        ██▀▄▀▀▀▀   ▄▀▀▀                                                   ◦ $ bash                 >1y
-                       ▄▀███▀▄▄▄▄▄▄▀█▀▄    ▄▄▄▄▄▄▄▄▄                                      ✓ ✻ claude               >1y
-                     ▄▀████████████████▀▄  ██▀▀▀████                                          enter resumes
-                     █████▀████████▀█████  ██▀▀█████                                       x sleep
-                     █████▀▀▀██████▀▀▀███  █▀███████
-                     ▀▀▀██████▀▀██████▀▀▀▀▀▀▀███████▄
-                      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    ● working
-    nothing said yet ∙ the first words land when the turn does
+    ● working                                                                             ⠋ ✻ claude               >1y
+    nothing said yet ∙ the first words land when the turn does                            ◦ $ bash                 >1y
+                                                                                          ✓ ✻ claude               >1y
+                                                                                              enter resumes
+                                                                                           x sleep
 
 
 
@@ -26,5 +20,11 @@
 
 
 
+
+                                                                                             ▀█ ▄▀▀   █▀
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+                                                                                            ███▀▀████▀▀█ █▀▀███
+                                                                                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

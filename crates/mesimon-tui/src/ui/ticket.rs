@@ -701,6 +701,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // had, so the space comes back on the LEFT and the row under the cursor
     // does not move as the cursor walks into the notes.
     let two_zone = area.width >= TWO_ZONE_MIN_W;
+    app.page_zone.set(two_zone);
     let row = app.rail_rows(ticket_id).get(rail_idx).copied();
     let reading_note = two_zone && matches!(row, Some(RailRow::Note(_)));
     let body_rows = (area.height as usize).saturating_sub(7 + wt_row as usize);
@@ -904,6 +905,34 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                                               // height and leaves the field's rows between the two.
         let hybrid = sel.is_some_and(|s| app.live_shot(s.id).is_some());
         let content_h = if hybrid { body_h } else { body_h - field_rows };
+        let rail = Rect {
+            x: area.x + left_w + 3,
+            y: rail_y,
+            width: RAIL_W.saturating_sub(1),
+            height: rail_h,
+        };
+        // The page's one shin (T-1143), on the rail's foot whatever row the
+        // cursor is on, so it never moves as the cursor walks the sessions
+        // and the notes: the selected agent's state, else the ticket's
+        // seated agent's, else its newest agent's. Its feet one row over the
+        // zone's foot, which centres it on Claude Code's input row. While it
+        // stands there the zone draws no shin of its own.
+        //
+        // The rail is drawn first and keeps every row it needs: the shin
+        // stands under its last row or not at all, never over a note. One
+        // row of slack covers the badge row a selected session adds, so the
+        // walk from a session to a note cannot make it come and go.
+        let rail_used = draw_rail(f, rail, app, ticket_id, rail_idx, now) as u16;
+        let shin_rec = sel
+            .filter(|s| s.kind.is_agent())
+            .or_else(|| app.board.live_agent(ticket_id))
+            .or_else(|| app.rail_sessions(ticket_id).into_iter().find(|s| s.kind.is_agent()));
+        let shin_peek = shin_rec.and_then(|s| app.peek_cache.peek_of(s));
+        let shin = shin_rec
+            .and_then(|rec| {
+                rail_shin(app, rail, (body_y + body_h).saturating_sub(1), rec, shin_peek.as_deref())
+            })
+            .filter(|(_, _, y)| rail.y + rail_used + 2 <= *y);
         let used = draw_preview(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h },
@@ -914,28 +943,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             shell,
             note,
             seat,
+            shin.is_some(),
         );
         // Under the content where it ends, at the zone's foot where it does
         // not: `used` is the whole zone exactly when the content overflowed.
         // With the live window (T-1143) `used` names the composer's own
         // prompt row, and the field is typed over it.
         draw_field(f, area.x + 1, body_y + (used as u16).min(body_h - field_rows));
-        let rail = Rect {
-            x: area.x + left_w + 3,
-            y: rail_y,
-            width: RAIL_W.saturating_sub(1),
-            height: rail_h,
-        };
-        // The small shin on the rail's foot beside the pane's input field
-        // (T-1143), in one place for good: the rail's rows stop a row short
-        // of it, so a long rail never runs under its feet.
-        let shin = if hybrid {
-            sel.and_then(|rec| rail_shin(app, rail, body_y + body_h, rec, peek.as_deref()))
-        } else {
-            None
-        };
-        let rows_h = shin.as_ref().map_or(rail_h, |(_, _, y)| y.saturating_sub(rail_y + 1));
-        draw_rail(f, Rect { height: rows_h, ..rail }, app, ticket_id, rail_idx, now);
         if let Some((stage, x, y)) = shin {
             stage.paint(f.buffer_mut(), x, y, rail);
             *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
@@ -948,7 +962,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // the field takes the page's last rows over the footer — the one
         // place a field can sit here without moving the row under the cursor.
         rail_h -= field_rows;
-        draw_rail(
+        let _ = draw_rail(
             f,
             Rect { x: area.x + 1, y: rail_y, width: area.width.saturating_sub(2), height: rail_h },
             app,
@@ -982,6 +996,7 @@ fn draw_preview(
     shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
+    shin_on_rail: bool,
 ) -> usize {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -1014,10 +1029,6 @@ fn draw_preview(
     // Until something below measures a document, there is nothing to page.
     app.preview.view.set(View::default());
     app.preview_measured();
-    // The small shin standing beside a reply, painted over the zone once
-    // the words are down.
-    let mut beside: Option<(creature::Stage, u16, u16)> = None;
-
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
     // no section at all — a heading over nothing is noise — UNLESS the agent
@@ -1076,7 +1087,10 @@ fn draw_preview(
             None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
             Some(text) => {
                 let budget = (area.height as usize).saturating_sub(lines.len());
-                let width = (area.width as usize).saturating_sub(4);
+                // One column in from the zone's edge (T-1143, the author:
+                // flush with the pane "doesn't look good"), as the
+                // conversation is: the pane's marks stand out to its left.
+                let width = (area.width as usize).saturating_sub(2);
                 let key = note_key(meta);
                 let rows = rendered(app, key, width, || text, Newline::of_note(meta));
                 // Enter in the summary dialog (T-696) asked for one of this
@@ -1097,12 +1111,7 @@ fn draw_preview(
                         app.summary_jump.set(None);
                     }
                 }
-                let shown = window(app, Some(key), &rows, budget, width, false);
-                for row in shown {
-                    let mut spans = vec![Span::raw("   ")];
-                    spans.extend(row.spans);
-                    lines.push(Line::from(spans));
-                }
+                lines.extend(margin(window(app, Some(key), &rows, budget, width, false)));
             }
         }
     } else if let Some((rec, shot)) = record.and_then(|r| app.live_shot(r.id).map(|s| (r, s))) {
@@ -1120,17 +1129,33 @@ fn draw_preview(
         // The pane is asked to be the zone's size, so the agent lays its
         // screen out for the room it has here.
         app.live_wish(area.width, zone_h as u16);
-        let n = shot.rows.len();
-        let anchor = shot.anchor().min(n);
-        let live_n = (n - anchor).min(zone_h);
-        let live_from = n - live_n;
-        let fade_n = live::FADE_ROWS.min(live_from).min(zone_h - live_n);
+        // The screen as the page draws it (`Shot::view`): to its last row
+        // with words, a blank run as one row. `at` is where the seam falls
+        // in it; the live rows are from there down, the zone's height at
+        // most, keeping the bottom: a dialog taller than the zone loses its
+        // top, never its options.
+        let view = shot.view();
+        let anchor = shot.anchor();
+        let at = view.partition_point(|&r| r < anchor);
+        let live_n = (view.len() - at).min(zone_h);
+        let live_from = view.len() - live_n;
+        // The fade is the screen's last rows over the seam, past the blank
+        // between them: Claude Code keeps its composer at the foot of an
+        // empty screen, and four blank rows going out are a gap.
+        let mut above = live_from;
+        if above > 0 && shot.rows[view[above - 1]].blank() {
+            above -= 1;
+        }
+        let fade_n = live::FADE_ROWS.min(above).min(zone_h - live_n);
         let top_n = zone_h - live_n - fade_n;
-        // The conversation keeps the rows over the window, at its foot
-        // until `{` asks for earlier; two rows or fewer is a heading over
-        // nothing.
+        // The conversation keeps the rows over the window, resting on the
+        // fade — at its foot until `{` asks for earlier, so a short one
+        // reads into the pane rather than hanging under the heading; two
+        // rows or fewer is a heading over nothing.
         if top_n >= 2 {
-            let width = (area.width as usize).saturating_sub(4);
+            // One column in from the pane's own left edge: its words line
+            // up with the text after the pane's `⏺ ` and `❯ ` marks' column.
+            let width = (area.width as usize).saturating_sub(2);
             let doc = match conversation(app, rec, width) {
                 Some((key, rows)) => Some((key, rows, true)),
                 None => reply.map(|text| {
@@ -1142,21 +1167,18 @@ fn draw_preview(
                 Some((key, rows, tail)) => window(app, Some(*key), rows, top_n, width, *tail),
                 None => Vec::new(),
             };
-            for row in shown {
-                let mut spans = vec![Span::raw("   ")];
-                spans.extend(row.spans);
-                lines.push(Line::from(spans));
-            }
+            lines.extend((shown.len()..top_n).map(|_| Line::default()));
+            lines.extend(margin(shown));
         }
         f.render_widget(Paragraph::new(lines), area);
         let foot_y = area.bottom() - live_n as u16;
         if fade_n + live_n > 0 {
             let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + live_n);
             for r in 0..fade_n {
-                let row = &shot.rows[live_from - fade_n + r];
+                let row = &shot.rows[view[above - fade_n + r]];
                 raw.push(faded_line(theme, row, live::fade_keep(r, fade_n)));
             }
-            raw.extend(shot.rows[live_from..n].iter().map(|row| live_line(theme, row)));
+            raw.extend(view[live_from..].iter().map(|&i| live_line(theme, &shot.rows[i])));
             let rect = Rect {
                 x: area.x,
                 y: foot_y - fade_n as u16,
@@ -1168,9 +1190,9 @@ fn draw_preview(
             // The pane's own cursor, where its box has it: the one place on
             // the page that is being typed into, even when not by you.
             if let Some((cx, cy)) = shot.cursor {
-                let (cx, cy) = (cx as usize, cy as usize);
-                if cy >= live_from && cy < n && cx < area.width as usize {
-                    f.set_cursor_position((area.x + cx as u16, foot_y + (cy - live_from) as u16));
+                let row = view[live_from..].iter().position(|&i| i == cy as usize);
+                if let (Some(p), true) = (row, (cx as usize) < area.width as usize) {
+                    f.set_cursor_position((area.x + cx, foot_y + p as u16));
                 }
             }
         }
@@ -1178,18 +1200,16 @@ fn draw_preview(
         // between the pane's rules, so the words are typed where the agent
         // reads them; over a dialog, which has the box's place, the seam
         // itself.
-        let field_y = match shot.prompt_row() {
-            Some(p) if p >= live_from => foot_y + (p - live_from) as u16,
-            _ => foot_y,
-        };
+        let field_y = shot
+            .prompt_row()
+            .and_then(|p| view[live_from..].iter().position(|&i| i == p))
+            .map_or(foot_y, |p| foot_y + p as u16);
         return (field_y - area.y) as usize;
     } else if reply.is_some() {
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
-        // The reply wraps short of the companion's corner, and so does the
-        // working row under it.
-        beside = record.and_then(|rec| companion(app, area, rec, peek));
-        let gutter = beside.as_ref().map_or(0, |(stage, ..)| stage.cols as usize + 1);
+        // The shin is the rail's now (T-1143), so the words take the zone's
+        // width, from its left column.
         if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
             let reserve = if working { 2 } else { 0 };
@@ -1197,7 +1217,7 @@ fn draw_preview(
             // Rich text, not the source: an agent reply is markdown, and the
             // ticket page is the surface with room to read it as such
             // (rich.rs — value, weight, paint and space only).
-            let width = (area.width as usize).saturating_sub(4 + gutter);
+            let width = (area.width as usize).saturating_sub(2);
             // The whole conversation where the page holds one (T-1143), at
             // its foot; else the reply alone, keyed to the reply as well
             // as the session: a page into this reply must not open the
@@ -1218,19 +1238,14 @@ fn draw_preview(
                     (key, rows, false)
                 }
             };
-            let shown = window(app, key, &rows, budget, width, tail);
-            for row in shown {
-                let mut spans = vec![Span::raw("   ")];
-                spans.extend(row.spans);
-                lines.push(Line::from(spans));
-            }
+            lines.extend(margin(window(app, key, &rows, budget, width, tail)));
             if working {
                 lines.push(Line::default());
             }
         }
         if working {
             let compacting = record.is_some_and(glyphs::is_compacting);
-            let width = (area.width as usize).saturating_sub(gutter);
+            let width = area.width as usize;
             lines.push(working_row(app, peek, compacting, width));
         }
     } else if let Some(rec) = record {
@@ -1239,21 +1254,26 @@ fn draw_preview(
         // pane has not been captured yet. The zone stood blank for all of
         // them — the same blank the empty seat had, one press later.
         lines.push(heading("PREVIEW"));
-        lines.extend(quiet_session(app, rec, peek, area));
+        lines.extend(quiet_session(app, rec, peek, area, shin_on_rail));
     } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
         lines.push(heading("PREVIEW"));
-        lines.extend(empty_seat(app, ticket, area));
+        lines.extend(empty_seat(app, ticket, area, shin_on_rail));
     }
     // How many rows the zone wrote, for the ask field to hang under (T-476)
     // — never more than the zone has, which is what pins the field at the
     // foot when the content overflows.
     let used = lines.len().min(area.height as usize);
     f.render_widget(Paragraph::new(lines), area);
-    if let Some((stage, x, y)) = beside {
-        stage.paint(f.buffer_mut(), x, y, area);
-        *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
-    }
     used
+}
+
+/// The zone's reading rows one column in (T-1143).
+fn margin(rows: Vec<Line<'static>>) -> impl Iterator<Item = Line<'static>> {
+    rows.into_iter().map(|row| {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(row.spans);
+        Line::from(spans)
+    })
 }
 
 /// The working indicator: what the agent is DOING, not just that it is —
@@ -1302,6 +1322,7 @@ fn quiet_session(
     rec: &mesimon_core::board::SessionRecord,
     peek: Option<&crate::peek::Peek>,
     area: Rect,
+    shin_on_rail: bool,
 ) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let w = area.width as usize;
@@ -1338,7 +1359,9 @@ fn quiet_session(
     // a still picture beside a row saying something was happening read as
     // "nothing here"; a creature that is visibly working says the same thing
     // the row does. A shell has no agent to be.
-    let mut lines = if rec.kind.is_agent() {
+    // The rail's shin, where it stands (T-1143), is that creature: the zone
+    // draws no second one.
+    let mut lines = if rec.kind.is_agent() && !shin_on_rail {
         creature_rows(app, area, block_w, text.len(), agent_anim(rec, peek), rec.id)
     } else {
         vec![Line::default()]
@@ -1462,7 +1485,12 @@ fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
 /// keymap's own words, and the clauses that say what the session about to
 /// exist will BE. Every fact is one the page already holds; nothing is asked
 /// of the daemon to draw it.
-fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Vec<Line<'static>> {
+fn empty_seat(
+    app: &App,
+    ticket: &mesimon_core::board::Ticket,
+    area: Rect,
+    shin_on_rail: bool,
+) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let w = area.width as usize;
     // The words first: they are what sizes the block, and the mark is hung
@@ -1487,7 +1515,11 @@ fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Ve
     }
     let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
 
-    let mut lines = creature_rows(app, area, block_w, text.len(), Anim::Seat, ticket.id);
+    let mut lines = if shin_on_rail {
+        vec![Line::default()]
+    } else {
+        creature_rows(app, area, block_w, text.len(), Anim::Seat, ticket.id)
+    };
     lines.extend(text);
     lines
 }
@@ -1538,34 +1570,11 @@ fn creature_rows(
     lines
 }
 
-/// The small shin beside a reply (T-451) and where it stands: the zone's
-/// top-right corner, from the row under the heading, its props in the
-/// blank row and in the gutter it keeps. `None` in mono, and in a zone too
-/// narrow to give a reply the columns it leaves or too short for its stage.
-fn companion(
-    app: &App,
-    area: Rect,
-    rec: &mesimon_core::board::SessionRecord,
-    peek: Option<&crate::peek::Peek>,
-) -> Option<(creature::Stage, u16, u16)> {
-    const MIN_ZONE: u16 = 72;
-    if !rec.kind.is_agent() || area.width < MIN_ZONE {
-        return None;
-    }
-    let anim = agent_anim(rec, peek);
-    let ms = app.creature_ms(crate::text::hash64((rec.id, anim)));
-    let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
-    (area.height > stage.rows).then(|| {
-        let x = area.right() - stage.cols;
-        (stage, x, area.y + 1)
-    })
-}
-
-/// The small shin on the rail's foot (T-1143): beside the pane's input
-/// field, its feet on the zone's last row, at the rail's left — the one
-/// spot on the page that never moves, whatever the pane or the
-/// conversation does. `None` in mono, for a shell, and on a page too
-/// short to keep the rail's heading and a row over it.
+/// The small shin on the rail's foot (T-1143): at the rail's left, its
+/// feet on `floor` — the one spot on the page that never moves, whatever
+/// the cursor, the pane or the conversation does. `None` in mono, for a
+/// shell, and on a page too short to keep the rail's heading and a row
+/// over it. It replaced the companion in the zone's corner (T-451).
 fn rail_shin(
     app: &App,
     rail: Rect,
@@ -1955,6 +1964,8 @@ fn window(
     shown
 }
 
+/// Draws the rail and returns the rows it wrote: what the shin under it
+/// (T-1143) measures its room by.
 fn draw_rail(
     f: &mut Frame,
     area: Rect,
@@ -1962,7 +1973,7 @@ fn draw_rail(
     ticket_id: ulid::Ulid,
     rail_idx: usize,
     now: u64,
-) {
+) -> usize {
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let rail = app.rail_sessions(ticket_id);
@@ -2269,6 +2280,7 @@ fn draw_rail(
         }
     }
 
+    let used = lines.len().min(area.height as usize);
     f.render_widget(Paragraph::new(lines), area);
     let mut hits = app.hits.borrow_mut();
     for (from, to, idx) in owners {
@@ -2277,6 +2289,7 @@ fn draw_rail(
         let rect = Rect { y, height: h, ..area }.intersection(area);
         hits.record(rect, crate::mouse::Target::Rail(idx));
     }
+    used
 }
 
 /// The rail's first shown note (T-975): `top` while the `cursor` note sits

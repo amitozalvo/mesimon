@@ -6,25 +6,25 @@
 
   PREVIEW                                                                                  SESSIONS                  2
 
-    ▎ Go on; measure the pane sizes too.                                                  ⠋ ✻ claude               >1y
-                                                                                          ◦ $ bash                 >1y
-    claude                                                                                 x sleep
-    Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
-    facts so far: every agent pane is on tmux's alternate screen, an unattached pane
-    sits at 80×24 while an attached one is 187×52.
+  you                                                                                     ⠋ ✻ claude               >1y
+  ▎ Go on; measure the pane sizes too.                                                    ◦ $ bash                 >1y
+                                                                                           x sleep
+  claude
+  Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
+  facts so far: every agent pane is on tmux's alternate screen, an unattached pane sits
+  at 80×24 while an attached one is 187×52.
    tests · 7s
    ⎿  $ ls crates/mesimon-daemon/src/agents/
 
  ⏺ Bash(cargo test -p mesimon-tui ticket)
-
  ╭──────────────────────────────────────────────────────────────────────────────╮
  │ Do you want to run this command?                                             │
  │   Run the ticket page tests                                                  │
  │                                                                              │
- │ ❯ 1. Yes                                                                   │
- │   2. Yes, and don't ask again for cargo test in this session                 │            ▀█ ▄▀▀   █▀
- │   3. No, and tell Claude what to do differently (esc)                        │           ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
- ╰──────────────────────────────────────────────────────────────────────────────╯           ███▀▀████▀▀█ █▀▀███
-   ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
-   ⏵⏵ auto mode on (shift+tab to cycle)                                                     ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+ │ ❯ 1. Yes                                                                   │              ▀█ ▄▀▀   █▀
+ │   2. Yes, and don't ask again for cargo test in this session                 │           ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+ │   3. No, and tell Claude what to do differently (esc)                        │           ███▀▀████▀▀█ █▀▀███
+ ╰──────────────────────────────────────────────────────────────────────────────╯           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+   ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+   ⏵⏵ auto mode on (shift+tab to cycle)
  jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys

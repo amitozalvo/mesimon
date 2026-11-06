@@ -6,17 +6,11 @@
 
   PREVIEW                                                                                  SESSIONS                  3
 
-    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                                      ⠋ ✻ claude               >1y
-     ▀▀▀▄▀█▀▀    ███                                                                      ◦ $ bash                 >1y
-     ▄▀███▀▄▄▄▄▄▄▀█▀▄                                                                     ✓ ✻ claude               >1y
-   ▄▀████████████████▀▄                                                                       enter resumes
-   ████▀▀▀██████▀▀▀████                                                                    x dismiss
-   ████████████████████
-   ▀██████████████████▀
-    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    exited
-    it left no transcript
+    exited                                                                                ⠋ ✻ claude               >1y
+    it left no transcript                                                                 ◦ $ bash                 >1y
+                                                                                          ✓ ✻ claude               >1y
+                                                                                              enter resumes
+                                                                                           x dismiss
 
 
 
@@ -26,5 +20,11 @@
 
 
 
+
+                                                                                            ▀█ ▄▀▀   █▀
+                                                                                            ▄▀▀▀▄▄▄▄▄▀▀▄
+                                                                                            ████████████
+                                                                                            ██▀▀████▀▀██
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀▀
 
  jk select session ∙ enter resume ∙ r rename ∙ d delete ∙ n describe                                             ? keys

@@ -42,8 +42,12 @@ pub(crate) const FADE_ROWS: usize = 4;
 const CONTEXT_ROWS: usize = 1;
 /// The window when the screen shows neither a composer nor a dialog.
 const FALLBACK_ROWS: usize = 8;
-/// How far above a dialog's marker row its heading is looked for.
-const DIALOG_REACH: usize = 12;
+/// How far above a dialog's marker row its top is looked for: a plan
+/// approval is the whole screen (Claude Code 2.1.319, measured 2026-11-06).
+const DIALOG_REACH: usize = 40;
+/// How far below a composer's prompt row its bottom rule is looked for:
+/// the typed words wrap inside the box.
+const BOX_REACH: usize = 12;
 /// The shortest run of `─` read as a composer rule (the daemon's own floor).
 const RULE_MIN: usize = 8;
 
@@ -55,7 +59,7 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    fn blank(&self) -> bool {
+    pub(crate) fn blank(&self) -> bool {
         self.text.trim().is_empty()
     }
 }
@@ -70,44 +74,94 @@ pub(crate) struct Shot {
 
 impl Shot {
     /// The first row of the live window: the composer's top rule and the
-    /// row above it, a dialog from the blank row over its heading, or the
-    /// screen's last `FALLBACK_ROWS` when neither shape is on it.
+    /// row above it; a dialog from its top (`dialog_top`); or the screen's
+    /// last `FALLBACK_ROWS` rows with words when neither shape is on it.
     pub(crate) fn anchor(&self) -> usize {
-        let n = self.rows.len();
-        for i in (1..n).rev() {
-            if is_prompt(&self.rows[i].text) && is_rule(&self.rows[i - 1].text) {
-                return (i - 1).saturating_sub(CONTEXT_ROWS);
-            }
+        if let Some(p) = self.boxed_prompt() {
+            return (p - 1).saturating_sub(CONTEXT_ROWS);
         }
         // Codex's composer (measured 2026-11-06, 0.166.0): a `›` row with no
         // rule on either side, the cursor on it, a blank row over it.
         if let Some(p) = self.cursor_prompt() {
             return p.saturating_sub(CONTEXT_ROWS);
         }
+        let n = self.rows.len();
         if let Some(m) = (0..n).rev().find(|&i| is_marker(&self.rows[i].text)) {
-            let floor = m.saturating_sub(DIALOG_REACH);
-            return (floor..m).rev().find(|&i| self.rows[i].blank()).unwrap_or(floor);
+            return self.dialog_top(m);
         }
-        n.saturating_sub(FALLBACK_ROWS)
+        let end = self.rows.iter().rposition(|r| !r.blank()).map_or(n, |e| e + 1);
+        end.saturating_sub(FALLBACK_ROWS)
     }
 
     /// The composer's own prompt row, where the words are typed: the row
     /// under its top rule, or the unframed prompt row the cursor is on.
     /// `None` while a dialog has the box's place.
     pub(crate) fn prompt_row(&self) -> Option<usize> {
+        self.boxed_prompt().or_else(|| self.cursor_prompt())
+    }
+
+    /// Claude Code's composer: a prompt row under a rule, with a rule
+    /// below it (the box's bottom, under any wrapped words). A question's
+    /// `❯ 4. Chat about this` sits under a rule with none below it, and
+    /// is a numbered option besides.
+    fn boxed_prompt(&self) -> Option<usize> {
         let n = self.rows.len();
-        (1..n)
-            .rev()
-            .find(|&i| is_prompt(&self.rows[i].text) && is_rule(&self.rows[i - 1].text))
-            .or_else(|| self.cursor_prompt())
+        (1..n).rev().find(|&i| {
+            let t = &self.rows[i].text;
+            is_prompt(t)
+                && !is_option(t)
+                && is_rule(&self.rows[i - 1].text)
+                && (i + 1..(i + BOX_REACH).min(n)).any(|j| is_rule(&self.rows[j].text))
+        })
     }
 
     /// The prompt row the pane's cursor sits on, at the screen's left edge
-    /// — a composer, never a framed dialog's `›` option.
+    /// — a composer, never a dialog's option: a question parks the cursor
+    /// on its selected `❯ 1. Teal` (measured 2026-11-06).
     fn cursor_prompt(&self) -> Option<usize> {
         let (_, cy) = self.cursor?;
         let row = self.rows.get(cy as usize)?;
-        (is_prompt(&row.text) && !row.text.starts_with([' ', '│'])).then_some(cy as usize)
+        let t = &row.text;
+        (is_prompt(t) && !is_option(t) && !t.starts_with([' ', '│'])).then_some(cy as usize)
+    }
+
+    /// A dialog's first row, from its selected option `m` up: the topmost
+    /// rule or frame corner before the transcript's last mark (`is_mark`)
+    /// — a plan approval's top rule is twenty rows over its options, past
+    /// the plan's box and a run of padding — else the first row with words
+    /// after that mark, which is a Codex dialog's heading.
+    fn dialog_top(&self, m: usize) -> usize {
+        let floor = m.saturating_sub(DIALOG_REACH);
+        let mut top = None;
+        let mut from = floor;
+        for i in (floor..m).rev() {
+            let t = self.rows[i].text.trim_start();
+            if is_mark(t) {
+                from = i + 1;
+                break;
+            }
+            if is_rule(t) || t.starts_with('╭') {
+                top = Some(i);
+            }
+        }
+        top.unwrap_or_else(|| (from..m).find(|&i| !self.rows[i].blank()).unwrap_or(m))
+    }
+
+    /// The rows the page draws, top to bottom, by their index on the
+    /// screen: down to the last row with words (a dialog drawn at the
+    /// screen's top leaves the rest blank), a run of blank rows drawn as
+    /// one (a plan approval pads ten between its plan and its question).
+    pub(crate) fn view(&self) -> Vec<usize> {
+        let Some(end) = self.rows.iter().rposition(|r| !r.blank()) else { return Vec::new() };
+        let mut out: Vec<usize> = Vec::with_capacity(end + 1);
+        for i in 0..=end {
+            let blank = self.rows[i].blank();
+            if blank && out.last().is_some_and(|&p| self.rows[p].blank()) {
+                continue;
+            }
+            out.push(i);
+        }
+        out
     }
 }
 
@@ -131,6 +185,23 @@ fn is_prompt(t: &str) -> bool {
 fn is_marker(t: &str) -> bool {
     let t = unframed(t);
     (t.starts_with("❯ ") || t.starts_with("› ")) && t.chars().count() > 2
+}
+
+/// A numbered option row: the marker, then `1.`, `12.` (a question's, an
+/// approval's, a plan's).
+fn is_option(t: &str) -> bool {
+    let t = unframed(t);
+    let Some(rest) = t.strip_prefix(['❯', '›']) else { return false };
+    let rest = rest.trim_start();
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && rest[digits..].starts_with('.')
+}
+
+/// A row the transcript part of the screen begins with: Claude Code's
+/// message and tool marks, its spinners and a box's foot; Codex's bullet.
+/// A dialog is never above one of these.
+fn is_mark(t: &str) -> bool {
+    t.starts_with(['⏺', '⎿', '•', '▔', '✻', '✶', '✳', '✢', '✽'])
 }
 
 /// How much of a fade row's colour is kept: row `r` of `f`, top first.
@@ -570,10 +641,176 @@ mod tests {
         s.cursor = Some((2, 26));
         assert_eq!(s.anchor(), 25, "the blank row over the composer");
         assert_eq!(s.prompt_row(), Some(26));
-        // Without the cursor the `›` row is read as a marker: the same seam.
+        // Without the cursor (hidden mid-redraw) the `›` row is read as a
+        // dialog's marker, and the window opens under the last bullet.
         s.cursor = None;
-        assert_eq!(s.anchor(), 25);
+        assert_eq!(s.anchor(), 24);
         assert_eq!(s.prompt_row(), None, "no rule, no cursor: no row to type on");
+    }
+
+    /// A screen of `h` rows, `lines` from the top, the rest blank: the
+    /// captures below, from the throwaway board of 2026-11-06 (Claude Code
+    /// 2.1.319 and Codex 0.166.0 at 107×32).
+    fn screen(lines: &[&str], h: usize) -> Shot {
+        let mut lines = lines.to_vec();
+        lines.resize(h, "");
+        shot(&lines)
+    }
+
+    const CLAUDE_RULE: &str = "──────────────────────────────────────────────────────────────";
+
+    /// Claude Code's folder trust, drawn at the screen's top over fourteen
+    /// blank rows: the window is the dialog from its rule to its last
+    /// words, and the blank rows under it are not drawn.
+    #[test]
+    fn a_dialog_at_the_screen_top_is_whole_and_ends_at_its_words() {
+        let s = screen(
+            &[
+                "",
+                CLAUDE_RULE,
+                " Accessing workspace:",
+                "",
+                " /Users/x/.local/state/mesimon/ac41/worktrees/T-1-calm-say-hi",
+                "",
+                " Quick safety check: Is this a project you created or one you trust?",
+                "",
+                " Security guide",
+                "",
+                " ❯ No, exit",
+                "   Yes, I trust this folder",
+                "",
+                " Enter to confirm · Esc to cancel",
+            ],
+            32,
+        );
+        assert_eq!(s.anchor(), 1, "the dialog's rule");
+        assert_eq!(s.prompt_row(), None);
+        let view = s.view();
+        assert_eq!(view.last(), Some(&13), "the view ends at the dialog's last words");
+    }
+
+    /// A question parks the cursor on its selected option: that row is not
+    /// a composer, and the window is the question from its rule.
+    #[test]
+    fn a_question_is_whole_with_the_cursor_on_its_option() {
+        let mut s = screen(
+            &[
+                "⏺ Ticket has no notes beyond the title. Asking now.",
+                CLAUDE_RULE,
+                " ☐ Accent",
+                "",
+                "Which colour do you prefer for the board accent?",
+                "",
+                "❯ 1. Teal",
+                "     Teal accent",
+                "  2. Amber",
+                "  4. Type something.",
+                CLAUDE_RULE,
+                "  5. Chat about this",
+                "",
+                "Enter to select · ↑/↓ to navigate · Esc to cancel",
+            ],
+            24,
+        );
+        s.cursor = Some((0, 6));
+        assert_eq!(s.prompt_row(), None, "a numbered option is never the composer");
+        assert_eq!(s.anchor(), 1, "the question's rule, under the transcript's mark");
+        // On `Chat about this` its `❯` is under a rule with none below.
+        s.rows[6] = parse_row("  1. Teal");
+        s.rows[11] = parse_row("❯ 5. Chat about this");
+        s.cursor = Some((0, 11));
+        assert_eq!(s.prompt_row(), None);
+        assert_eq!(s.anchor(), 1);
+    }
+
+    /// A plan approval is the whole screen: its top rule and the plan's box,
+    /// ten padding rows, the question's rule and the options. The window
+    /// is all of it, the padding drawn as one row.
+    #[test]
+    fn a_plan_approval_shows_its_plan() {
+        let mut lines = vec![
+            "",
+            "  ⎿  /plan to preview",
+            "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔",
+            "",
+            CLAUDE_RULE,
+            "   Ready to code?",
+            "",
+            "   Here is Claude's plan:",
+            "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+            "   1. Open README.md.",
+            "   2. Append the line at the end of the file.",
+            "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        ];
+        lines.extend([""; 10]);
+        lines.extend([
+            CLAUDE_RULE,
+            "   Claude has written up a plan and is ready to execute. Would you like to proceed?",
+            "",
+            "   ❯ 1. Yes, and use auto mode",
+            "     2. Yes, manually approve edits",
+            "     3. Tell Claude what to change",
+            "",
+            "   ctrl+g to edit in Nvim · ~/.claude/plans/plan.md",
+        ]);
+        let mut s = screen(&lines, 32);
+        s.cursor = Some((3, 25));
+        assert_eq!(s.anchor(), 4, "the plan's rule, not the question's");
+        let view = s.view();
+        let from = view.iter().position(|&i| i == 4).expect("the rule is drawn");
+        assert_eq!(view.len() - from, 17, "27 rows less the padding's nine");
+    }
+
+    /// Codex's trust and hook prompts are no box: no rule, no mark over
+    /// them. The window starts at the prompt's first words.
+    #[test]
+    fn a_codex_prompt_starts_at_its_first_words() {
+        let mut s = screen(
+            &[
+                "",
+                "  Folder access",
+                "  /Users/x/.local/state/mesimon/ac41/worktrees/T-6-codex-say-hi",
+                "",
+                "  Trust this folder? Codex can read, edit, and run files here.",
+                "",
+                "› 1. Trust and continue",
+                "  2. Back to Agent Command Center",
+                "",
+                "  enter continue · esc back",
+            ],
+            32,
+        );
+        s.cursor = Some((1, 31));
+        assert_eq!(s.anchor(), 1);
+        assert_eq!(s.prompt_row(), None);
+        assert_eq!(s.view().last(), Some(&9));
+    }
+
+    /// Codex's command approval (T-846's capture) under its transcript: from
+    /// the bullet down is the transcript, the approval's heading is the
+    /// window's first row.
+    #[test]
+    fn a_codex_approval_starts_under_the_transcript() {
+        let s = screen(
+            &[
+                "• I'll request approval to run that exact command outside the sandbox.",
+                "",
+                "  Would you like to run the following command?",
+                "",
+                "  Reason: May I write this disposable fixture file?",
+                "",
+                "  $ printf MESIMON_REFUSED_WRITE > /tmp/approval-refused.txt",
+                "",
+                "",
+                "› 1. Yes, proceed (y)",
+                "  2. Yes, and don't ask again for commands that start with `printf` (p)",
+                "  3. No, and tell Codex what to do differently (esc)",
+                "",
+                "  Press enter to confirm or esc to cancel",
+            ],
+            30,
+        );
+        assert_eq!(s.anchor(), 2);
     }
 
     /// A framed dialog option under the cursor is not a composer.
@@ -592,7 +829,7 @@ mod tests {
         let mut s = shot(&lines);
         s.cursor = Some((2, 21));
         assert_eq!(s.prompt_row(), None);
-        assert_eq!(s.anchor(), 18, "the blank row over the box");
+        assert_eq!(s.anchor(), 19, "the box's top corner");
     }
 
     #[test]
@@ -640,8 +877,11 @@ mod tests {
         assert_eq!(s.anchor(), 2);
     }
 
+    /// A dialog's heading is live, never in the fade (T-1143, the author
+    /// asked whether questions and prompts show whole): from the first
+    /// words under the transcript's mark, or from its frame's corner.
     #[test]
-    fn anchor_takes_a_dialog_from_the_blank_over_its_heading() {
+    fn anchor_takes_a_dialog_from_its_heading() {
         let s = shot(&[
             "⏺ Bash(cargo test)",
             "",
@@ -653,7 +893,7 @@ mod tests {
             "",
             "  ~/x | ⎇ main",
         ]);
-        assert_eq!(s.anchor(), 4);
+        assert_eq!(s.anchor(), 2);
         let boxed = shot(&[
             "words",
             "",
@@ -662,7 +902,7 @@ mod tests {
             "│ ❯ 1. Yes     │",
             "╰──────────────╯",
         ]);
-        assert_eq!(boxed.anchor(), 1);
+        assert_eq!(boxed.anchor(), 2);
     }
 
     #[test]

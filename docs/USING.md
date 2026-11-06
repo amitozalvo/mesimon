@@ -194,8 +194,10 @@ preview, as its terminal draws it, in the agent's own colours, the input box, a 
 permission prompt or a plan, and above that the screen's rows going out into the page, with the
 whole conversation as mesimon reads it over them, newest at the foot: `{` and `}` page back
 through it, and `tab` walks the links on the rows you can see, `enter` opening the one it stops
-on (past the last link it lets go). A dialog makes the window taller and the turn's end makes it
-shorter; the shin stands on the rail's foot beside the input box and stays there. `shift+enter`
+on (past the last link it lets go, and a link you page away from is let go). A question, a
+permission prompt, a plan to approve or a trust prompt shows whole, the plan's text included; a
+dialog makes the window taller and the turn's end makes it shorter. The shin stands on the rail's
+foot level with the input box, wherever the cursor is, whenever the rail leaves it the room. `shift+enter`
 opens the ask field over that box, between its rules, so what you type goes where the agent
 reads it. While the page shows a pane, the pane is sized to the page (never while a terminal is
 attached to it), and it takes your terminal's size again when you step in. The pointer resting

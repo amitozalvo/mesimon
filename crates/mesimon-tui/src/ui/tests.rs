@@ -14639,7 +14639,11 @@ fn golden_ticket_live_120() {
     assert_eq!(rect.bottom(), 29, "the window ends over the footer: {rect:?}");
     let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin stands on the rail");
     assert!(shin.x >= 120 - 30, "on the rail, not the zone: {shin:?}");
-    assert_eq!(shin.bottom(), 29, "its feet on the zone's last row: {shin:?}");
+    assert_eq!(
+        shin.bottom(),
+        28,
+        "its feet a row over the zone's foot, level with the input: {shin:?}"
+    );
     golden("ticket_live_120x30", &lines);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
@@ -14798,6 +14802,100 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!(lines[field + 1].contains("────"), "over its bottom rule: {lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A selected link paged off the screen is let go: Enter is the row's
+/// again, and `tab` starts from the first link the window shows (seen on
+/// the throwaway board, 2026-11-06: it let go and selected nothing). A
+/// page too narrow for the zone selects nothing either.
+#[test]
+fn a_link_paged_away_is_let_go_and_tab_starts_on_screen() {
+    let (mut app, path) = app_live("tlive-pagelink", false);
+    let _ = render(&app, 120, 30);
+    next_link(&mut app);
+    assert!(app.page_cursor_link().is_some(), "the visible link");
+    let mut lines = render(&app, 120, 30);
+    for _ in 0..4 {
+        if !lines.iter().any(|l| l.contains("mesimon.dev/proposal")) {
+            break;
+        }
+        page(&mut app, '{');
+        lines = render(&app, 120, 30);
+    }
+    assert!(!lines.iter().any(|l| l.contains("mesimon.dev/proposal")), "{lines:#?}");
+    assert!(app.page_cursor_link().is_none(), "off the screen, the selection is let go");
+    assert!(lines.last().is_some_and(|l| l.contains("enter focus")), "{lines:#?}");
+    for _ in 0..4 {
+        if lines.iter().any(|l| l.contains("mesimon.dev/research")) {
+            break;
+        }
+        page(&mut app, '{');
+        lines = render(&app, 120, 30);
+    }
+    assert!(lines.iter().any(|l| l.contains("mesimon.dev/research")), "{lines:#?}");
+    next_link(&mut app);
+    let link = app.page_cursor_link().expect("the first link on screen");
+    assert_eq!(link.text, "https://mesimon.dev/research");
+    // Too narrow for the zone: nothing is on screen to select.
+    let _ = render(&app, 100, 30);
+    assert!(app.page_cursor_link().is_none());
+    assert!(!app.page_zone.get(), "the page drew one zone");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// Codex's composer has no rules (0.166.0, 2026-11-06): the field is typed
+/// on its `›` row, where the pane's cursor is, and the conversation rests
+/// on the pane's last words, the blank rows between them not drawn.
+#[test]
+fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
+    let (mut app, path) = app_live("tlive-codex", false);
+    let mut rows: Vec<String> = vec![
+        "\x1b[1m•\x1b[0m Hi! 👋".into(),
+        String::new(),
+        "\x1b[2m  Worked for 8s • 17:33\x1b[0m".into(),
+        String::new(),
+        "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m".into(),
+        String::new(),
+        "  \x1b[38;2;72;154;54mT-6-codex-say-hi\x1b[39m · GPT-6-Astra high · Context 2% used"
+            .into(),
+        "  \x1b[1m←\x1b[0m for agents · \x1b[1m?\x1b[0m for shortcuts".into(),
+    ];
+    for _ in 0..16 {
+        rows.insert(1, String::new());
+    }
+    let prompt = rows.iter().position(|r| r.contains("Ask Codex")).expect("the composer") as u16;
+    let shot = crate::live::Shot {
+        rows: crate::live::parse(&rows.join("\n")),
+        cols: 80,
+        cursor: Some((2, prompt)),
+    };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("Ask Codex")).expect("the composer");
+    // The blank run between the pane's words and its composer is one row.
+    assert!(lines[at - 2].contains("Worked for 8s"), "{lines:#?}");
+    assert!(lines[at - 4].contains("Hi! 👋"), "the pane's words over its composer: {lines:#?}");
+    assert!(lines[at - 5].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "summarise the ticket".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

@@ -7,17 +7,8 @@
 
   PREVIEW                                                                                  SESSIONS                  1
 
-    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                                      ⠒ ✻ claude               >1y
-     ▀▀▀▄▀█▀▀    ███                                                                       x sleep
-     ▄▀███▀▄▄▄▄▄▄▀█▀▄
-   ▄▀████████████████▀▄
-   ███▀████████▀███████
-   ███▀▀▀██████▀▀▀█████
-   ▀▀▀██████▀▀██████▀▀▀
-    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    monitoring
-    it left no transcript
+    monitoring                                                                            ⠒ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
 
 
 
@@ -26,5 +17,14 @@
 
 
 
+
+
+
+
+                                                                                            ▀█ ▄▀▀   ▀▀
+                                                                                            ▄▀▀▀▄▄▄▄▄▀▀▄
+                                                                                            █▀▀████▀▀███
+                                                                                            █▀▀██▀▀▀▀█▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀▀
 
  enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

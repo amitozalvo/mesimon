@@ -20,11 +20,11 @@
   │                            titles                                                                                │
   ╰──────────────────────────────────────────────────────────────────── jk select ∙ enter open ∙ c copy ∙ esc close ─╯
 
-    done
-    it left no transcript
-
-
-
-
+                                                                                            ▄▄  ▄▄   ▄▄
+                                                                                             █▄▀▀    ██
+                                                                                            ████▀▀▀▀▀██▀✦
+                                                                                            ██▀▀████▀▀██
+                                                                                           ✦▀▀███▀▀███▀▀
+                                                                                             ▀▀▀▀▀▀▀▀▀▀
  https://github.com/amitozalvo/mesimon/pull/43
  PULL REQUESTS  jk select ∙ enter open ∙ c copy ∙ esc close                                                      ? keys

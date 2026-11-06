@@ -9,22 +9,22 @@
 
 
   PREVIEW                                                                                  SESSIONS                  1
-    ▄▄▄         ▄▄▄
-    ▀▀█▀ ▄▀▀▀   ▀▀█▀                                                                      ✓ ✻ claude               >1y
-      ██▀█▀▀     ███   ✦                                                                   x sleep
-    ▄▀█████▀▀▀▀▀▀███▀▄
-  ✦█████▀████████▀████▀
-   ████▀█▀██████▀█▀████
-   █▀▀█████▀▀▀▀█████▀▀█
-   ▀▀▀██████▀▀██████▀▀▀
-      ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 
-    done
-    it left no transcript
+    done                                                                                  ✓ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
 
 
 
 
 
+
+
+
+                                                                                            ▄▄  ▄▄   ▄▄
+                                                                                             █▄▀▀    ██
+                                                                                            ████▀▀▀▀▀██▀✦
+                                                                                            ██▀▀████▀▀██
+                                                                                           ✦▀▀███▀▀███▀▀
+                                                                                             ▀▀▀▀▀▀▀▀▀▀
 
  enter focus ∙ v diff ∙ t merge by hand ∙ r rename ∙ d delete ∙ n describe                                       ? keys

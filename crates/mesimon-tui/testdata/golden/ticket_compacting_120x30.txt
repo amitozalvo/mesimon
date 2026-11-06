@@ -6,17 +6,8 @@
 
   PREVIEW                                                                                  SESSIONS                  1
 
-     ▀▀▀▄  ▄▄▄   ▀▀▀▄      ▄███▄▄███▄                                                     ⠿ ✻ claude               >1y
-      ██▀▄▀▀▀▀   ▄▀▀▀  ▄▄ ████████████                                                     x sleep
-     ▄▀███▀▄▄▄▄▄▄▀█▀▄▄ ▀▀ ▀██████████▀
-   ▄▀████████████████▀▄      ▀▀▀ ▀▀
-   ████████████████████
-   ████▀▀▀██████▀▀▀████
-   ▀▀▀███████▀▀█████▀▀▀
-    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    ● compacting context
-    it left no transcript
+    ● compacting context                                                                  ⠿ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
 
 
 
@@ -26,5 +17,14 @@
 
 
 
+
+
+
+
+                                                                                             ▀█ ▄▀▀   █▀  ▄██▄███▄
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄▄ ████████
+                                                                                            ██▀▀████▀▀██   ▀▀▀ ▀▀
+                                                                                            █▀▀▀██▀█▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀▀
 
  enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

@@ -41872,3 +41872,65 @@ the marker road (`› 1. …` looked up to a blank) stands as written in T-846's
 `a_framed_option_under_the_cursor_is_not_a_prompt_row`. Typing into Codex's composer with
 `send-keys -l` lost the head of the line twice; `paste-buffer -p` carried it whole — a note for
 anyone wiring keys into a Codex pane.
+
+## The live window, run by hand on a throwaway board: every needs-you dialog whole, one shin that never moves (T-1143, 2026-11-06, the author: "run this feature manually and make sure it looks good on all edge cases"; then "i still see the mascot jumping when i'm jumping between session and notes", "align our transcript with the tmux render … the mascot should be a little higher … aligned with the input", "push transcript right one column of margin")
+
+**How it was run.** A throwaway repo at `/private/tmp/t1143-lab` with its own daemon and private
+tmux server, the worktree's binary in a detached tmux client of the session's own at 140×42
+(never in the agent's pane), driven with `send-keys` and read with `capture-pane`; real Claude
+Code 2.1.319 sessions on the `quick` tier (Sonnet, low) and one Codex 0.166.0 on
+`research-codex`. Every dialog below was put up for real and read on the pane and the page side
+by side. **Found and fixed** (`live.rs`, `ui/ticket.rs`, `app.rs`):
+- A dialog drawn at the screen's top (both trust prompts, Codex's hook review) left its blank
+  rows under it as live rows: the dialog floated mid-zone over 12–16 empty rows.
+  `Shot::view` draws the screen to its last row with words, a blank run as one row.
+- The seam stopped at the blank over the selected option, so every heading went into the fade:
+  the trust prompt's "Accessing workspace", the question's "☐ Accent", Codex's "Folder access",
+  a plan's whole plan. `Shot::dialog_top` scans up from the option to the topmost rule or frame
+  corner before the transcript's last mark (`is_mark`: `⏺ ⎿ • ▔` and the spinners), else the
+  first row with words after that mark (Codex's prompts have no rule); the reach is 40 rows,
+  because a plan approval is the whole screen: its rule, "Ready to code?", the plan's `╌` box,
+  ten padding rows (drawn as one), the question's rule, the options.
+- The Codex cursor rule took a question's selected option for a composer: Claude Code parks the
+  cursor on `❯ 1. Teal`. `is_option` (a marker then `N.`) is never a prompt row, and the boxed
+  composer needs a rule below it within 12 rows too (a question's `❯ 5. Chat about this` sits
+  under a rule with none below). Shift+Enter would have typed over the first option.
+- A short conversation hung under the heading with a 20-row gap over the pane, and the fade
+  showed four blank rows (Claude Code keeps its composer at the foot of an empty screen): the
+  conversation rests on the fade, padded above, and the fade is the screen's last rows over the
+  seam past the blank between them.
+- After `{` paged a selected link away, `tab` let go instead of starting on screen, and a link
+  stayed selected (Enter opened it) on a page too narrow for the zone. `App::page_selected`
+  counts a link only while it is on a row the zone shows.
+- On a terminal under the two-zone width the reader kept the pane fitted to a zone no longer
+  drawn: `App::page_zone` (set by the draw) gates `poll_live`.
+- **The shin.** It stood on the rail's foot only beside a live pane, the companion in the zone's
+  corner beside a parked reply, the large one in the zone for a quiet session or the empty seat,
+  and nothing on a note: four places, so it jumped as the cursor walked. Now one shin per page,
+  on the rail's foot, its state the selected agent's, else `live_agent`'s, else the newest agent
+  record's; its feet one row over the zone's foot, which centres it on Claude Code's `❯` row.
+  The rail is drawn first (`draw_rail` returns its rows) and keeps every row: the shin stands
+  under it with a row of slack (a selected session's badge row) or not at all, so a rail that
+  fills the page drops the shin for the page, never per row. While it stands, `quiet_session`
+  and `empty_seat` draw no creature, and `companion` is gone.
+- **The margin.** The conversation and a note read one column in from the zone's edge (level
+  with the PREVIEW heading, the pane's `⏺`/`❯` marks to their left); the author asked for flush,
+  then one column back. The shell tail and the quiet rows keep their own indent.
+
+**Verified working, unchanged.** The fit (107×32 while shown, the terminal's 140×41 attached,
+107×32 again after `ctrl-]`); the framed permission box; Codex's composer found by the cursor;
+`{ }` and `tab` on a 40-item reply; a 20-row terminal (the composer and the shin in a 10-row
+zone); a parked agent (the conversation, now with the rail's shin). **Seen, not this ticket's**:
+the board's `w` answers "trust dialog not recognised" on Claude Code 2.1.319 (its trust prompt
+now lists `❯ No, exit` first, unnumbered) and on Codex 0.166.0, and after the prompt is answered
+by hand the brief sits typed in the composer, unsent, on both. Shift+Enter could not be driven
+through a tmux client (it arrives as Enter), so the field's row is pinned by
+`on_a_codex_pane_the_field_is_typed_on_its_prompt_row` and the Claude field test instead.
+
+**Tests.** `live::tests`: `a_dialog_at_the_screen_top_is_whole_and_ends_at_its_words`,
+`a_question_is_whole_with_the_cursor_on_its_option`, `a_plan_approval_shows_its_plan`,
+`a_codex_prompt_starts_at_its_first_words`, `a_codex_approval_starts_under_the_transcript`;
+`anchor_takes_a_dialog_from_its_heading` replaces the test that pinned the heading in the fade.
+`ui::tests`: `a_link_paged_away_is_let_go_and_tab_starts_on_screen` (fails with the old
+selection rule), `on_a_codex_pane_the_field_is_typed_on_its_prompt_row`. 36 ticket-page goldens
+moved for the shin's one place and the margin, reviewed by eye.

@@ -2082,6 +2082,9 @@ pub struct App {
     pub page_messages: std::cell::RefCell<std::collections::HashMap<(u64, usize), PageMessage>>,
     /// The zone's conversation document as the last draw laid it out.
     pub page_doc: std::cell::RefCell<Option<PageDoc>>,
+    /// Whether the last ticket page drew its two zones (the terminal wide
+    /// enough): the live window has nowhere to stand otherwise.
+    pub page_zone: std::cell::Cell<bool>,
     /// The zone's selected link (`tab`): the session it belongs to and the
     /// candidate, so a conversation that grows under it keeps it.
     pub page_link: std::cell::RefCell<Option<(uuid::Uuid, mesimon_core::links::Found)>>,
@@ -2582,6 +2585,7 @@ impl App {
             page_messages: std::cell::RefCell::new(std::collections::HashMap::new()),
             page_doc: std::cell::RefCell::new(None),
             page_link: std::cell::RefCell::new(None),
+            page_zone: std::cell::Cell::new(true),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
             links: Vec::new(),
@@ -5939,7 +5943,11 @@ impl App {
     /// the page or the board's socket ends it (the drop undoes its fit).
     fn poll_live(&mut self) -> bool {
         let want = match (&self.tmux_sock, self.rail_row()) {
-            (Some(_), Some(RailRow::Session(s))) if s.kind.is_agent() && s.state.has_pane() => {
+            // Only while the page has its zone: a terminal too narrow for
+            // it draws no window, so the pane is not held at a size.
+            (Some(_), Some(RailRow::Session(s)))
+                if s.kind.is_agent() && s.state.has_pane() && self.page_zone.get() =>
+            {
                 Some((s.id, s.sid16()))
             }
             _ => None,
@@ -6030,16 +6038,16 @@ impl App {
             .collect()
     }
 
-    /// The zone's selected link, if the cursor is still on its session.
+    /// The zone's selected link, while the cursor is still on its session
+    /// and the link is on a row the zone shows: paged away, or the zone
+    /// gone with the terminal's width, Enter is the row's again and `tab`
+    /// starts from the first link on screen.
     fn page_selected(&self) -> Option<(usize, PageLink)> {
         let Some(RailRow::Session(s)) = self.rail_row() else { return None };
         let id = s.id;
         let held = self.page_link.borrow();
         let (_, source) = held.as_ref().filter(|(of, _)| *of == id)?;
-        let doc = self.page_doc.borrow();
-        let doc = doc.as_ref()?;
-        let i = doc.links.iter().position(|l| l.source == *source)?;
-        Some((i, doc.links[i].clone()))
+        self.page_visible_links().into_iter().find(|(_, l)| l.source == *source)
     }
 
     pub(crate) fn page_cursor_link(&self) -> Option<TicketLink> {

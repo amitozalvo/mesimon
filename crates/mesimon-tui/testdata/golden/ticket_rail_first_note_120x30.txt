@@ -6,9 +6,9 @@
 
   DESCRIPTION
 
-    The rail cuts a long notes list at its height.
+  The rail cuts a long notes list at its height.
 
-    One note per run.                                                                      SESSIONS                  3
+  One note per run.                                                                        SESSIONS                  3
 
                                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y

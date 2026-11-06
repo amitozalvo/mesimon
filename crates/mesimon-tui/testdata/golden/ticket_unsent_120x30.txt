@@ -7,17 +7,8 @@
 
   PREVIEW                                                                                  SESSIONS                  1
 
-            ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                              ◦ ✻ claude
-             ▀▀▀▄▀█▀▀    ███                                                               x sleep
-             ▄▀███▀▄▄▄▄▄▄▀█▀▄
-           ▄▀████████████████▀▄
-           ████▀████████▀██████
-           ████▀▀▀██████▀▀▀████
-           ▀▀▀█████▀▀▀▀█████▀▀▀
-            ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-
-    waiting for you
-    the ticket title is in its box, unsent
+    waiting for you                                                                       ◦ ✻ claude
+    the ticket title is in its box, unsent                                                 x sleep
 
 
 
@@ -26,5 +17,14 @@
 
 
 
+
+
+
+
+                                                                                            ▀█ ▄▀▀   █▀
+                                                                                            ▄▀▀▀▄▄▄▄▄▀▀▄
+                                                                                            ██▀▀████▀▀██
+                                                                                            █▀▀▀█▀▀█▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀▀
 
  enter focus ∙ shift+enter resend ∙ r rename ∙ d delete ∙ n describe                                             ? keys

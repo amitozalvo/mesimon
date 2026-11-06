@@ -6,11 +6,11 @@
 
   NOTE
 
-    Repro steps
+  Repro steps
 
-    1. open the board
-    2. press p
-    3. watch the peek
+  1. open the board
+  2. press p
+  3. watch the peek
                                                                                            SESSIONS                  2
 
                                                                                           ⠋ ✻ claude               >1y
