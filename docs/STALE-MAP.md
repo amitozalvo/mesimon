@@ -42120,8 +42120,12 @@ The composer dialog's left stripe (`ui/editor.rs` `draw_dialog`, `EditorPurpose:
 the plain cursor bar now, no longer split into the picked tags' tints. Author: "redundant, it is
 shown on the ticket itself". **Refuted first try:** removing the context row's tag chips
 (716098be, reverted in the next commit) — the author meant the block on the left, and the chips
-stay. The note and ask dialogs still wear their ticket's tags on the stripe; only composing
-changed. Test: `the_big_composers_stripe_wears_no_tags` (fails on the old stripe).
+stay. First only composing changed. Test: `the_big_composers_stripe_wears_no_tags` (fails on the old stripe).
+**Then every dialog** (author, on a screenshot of `Tab`'s DESCRIPTION dialog: "you didn't change
+anything"): the note and ask dialogs' stripes are plain too — the card the dialog came from stays
+in view beside it wearing its tags (T-1144). `draw_dialog` passes no tags to `bar_spans` at all;
+goldens `editor_describe`, `editor_note_ring`, `editor_wrapped_description` reminted, stripe
+column only.
 
 ## A parked conversation keeps a row over the hints (T-1153, 2026-11-06, the author: "hits the hints row")
 

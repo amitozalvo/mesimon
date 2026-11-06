@@ -2,7 +2,7 @@
 //! then the body. Two purposes share the shape, on two surfaces — and the
 //! surface is the SCREEN's. Over the board it is a DIALOG: the cursor card,
 //! grown — a room on the card's own surface, the card's accent bar down its
-//! left edge wearing the ticket's tags on a description (plain composing),
+//! left edge, plain (T-1151: the card beside it wears the tags),
 //! the header, the column headers and a margin of the board still in view
 //! around it — and it grows out of the card it stands
 //! for (`Editor::grow`, 2026-09-03: the author wanted the bigger room to
@@ -196,34 +196,13 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         return;
     }
 
-    // ---- the stripe: the card's bar, wearing the tags
-    // exactly as the real card will (`render_edit` paints the phantom card's
-    // the same way) --------------------------------------------------------
-    // The ticket's own on a description, so the dialog's stripe is the
-    // card's stripe at frame zero and after. Composing, the plain bar
-    // (T-1151, author: "redundant, it is shown on the ticket itself"): the
-    // context row's chips and the phantom card already show the picks.
-    let worn = match &ed.purpose {
-        EditorPurpose::Compose { .. } => Vec::new(),
-        EditorPurpose::Note { ticket, .. }
-        | EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => app
-            .board
-            .ticket(*ticket)
-            .map(|t| tags::painted(&app.board, &t.tags))
-            .unwrap_or_default(),
-        // A column's field hangs under its header, which wears no tags.
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => Vec::new(),
-    };
+    // ---- the stripe: the card's bar, plain on every dialog (T-1151,
+    // author: "redundant, it is shown on the ticket itself") — the card it
+    // stands for stays in view wearing its tags, and the composer's picks
+    // are the context row's chips -------------------------------------------
     let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
-    let stripe_spans = tags::bar_spans(
-        theme,
-        plain_ch,
-        plain_style,
-        &worn,
-        TagLevel::Selected,
-        surface,
-        bar.into(),
-    );
+    let stripe_spans =
+        tags::bar_spans(theme, plain_ch, plain_style, &[], TagLevel::Selected, surface, bar.into());
     let stripe: Vec<Line<'static>> =
         (0..area.height).map(|_| Line::from(stripe_spans.clone())).collect();
     f.render_widget(

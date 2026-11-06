@@ -8094,7 +8094,7 @@ fn editor_note_just_edited_reads_just_now() {
 }
 
 /// `Tab` on a card: the description in the composer's dialog over the
-/// board, the stripe wearing the ticket's own tags, the context row naming
+/// board, the stripe plain (T-1151: the card beside it wears the tags), the context row naming
 /// the note and the ticket's workspace.
 #[test]
 fn golden_editor_describe_120() {
@@ -15157,7 +15157,8 @@ fn golden_ticket_live_ask_120() {
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     let buf = terminal.backend().buffer();
     let lines = lines_of(buf);
-    let y = lines.iter().position(|l| l.starts_with(" ❯  later then")).expect("a space, then typed");
+    let y =
+        lines.iter().position(|l| l.starts_with(" ❯  later then")).expect("a space, then typed");
     let y16 = y as u16;
     assert_eq!(terminal.backend().cursor_position(), (14u16, y16).into(), "after the words");
     assert_eq!(buf[(4, y16)].bg, buf[(0, y16)].bg, "the words sit on the page ground");

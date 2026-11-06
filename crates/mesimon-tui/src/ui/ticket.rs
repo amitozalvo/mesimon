@@ -966,8 +966,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 } else {
                     field_y
                 };
-                let placeholder =
-                    super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
+                let placeholder = super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
                 let (line, cx) = composer_row(theme, c, buf, placeholder);
                 // The pane's own mark stays as the pane drew it: the row
                 // begins at its words' column; over a dialog, at the mark's.
@@ -984,8 +983,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 if delivery && under < body_y + body_h {
                     let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
                     let tier_word = app.field_tier_word(Some(ticket_id), tier);
-                    let cycles =
-                        app.ask_queueable(ticket_id) && !app.ticket_plan_ready(ticket_id);
+                    let cycles = app.ask_queueable(ticket_id) && !app.ticket_plan_ready(ticket_id);
                     let line = delivery_row(theme, c, word, tier_word.as_deref(), cycles);
                     let rect = Rect { x: c.x, y: under, width: c.right - c.x, height: 1 };
                     f.render_widget(Paragraph::new(line), rect);
