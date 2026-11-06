@@ -42113,3 +42113,13 @@ clears the prompt the Enter queued with no report (T-1025's re-send is the held 
 the ask reads handed by its carrying hook, as a paste's does); an Enter refused or failed after
 the fill leaves the words in the box, `prompt_enter_failed` the one mark, as `immediately`'s
 send-now does.
+
+## The big composer's stripe drops the tags (T-1151, 2026-11-06, author request)
+
+The composer dialog's left stripe (`ui/editor.rs` `draw_dialog`, `EditorPurpose::Compose`) is
+the plain cursor bar now, no longer split into the picked tags' tints. Author: "redundant, it is
+shown on the ticket itself". **Refuted first try:** removing the context row's tag chips
+(716098be, reverted in the next commit) — the author meant the block on the left, and the chips
+stay. The note and ask dialogs still wear their ticket's tags on the stripe; only composing
+changed. Test: `the_big_composers_stripe_wears_no_tags` (fails on the old stripe).
+

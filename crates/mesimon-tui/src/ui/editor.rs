@@ -2,9 +2,9 @@
 //! then the body. Two purposes share the shape, on two surfaces — and the
 //! surface is the SCREEN's. Over the board it is a DIALOG: the cursor card,
 //! grown — a room on the card's own surface, the card's accent bar down its
-//! left edge wearing the tags (the picked ones composing, the ticket's own
-//! on a description), the header, the column headers and a margin of the
-//! board still in view around it — and it grows out of the card it stands
+//! left edge wearing the ticket's tags on a description (plain composing),
+//! the header, the column headers and a margin of the board still in view
+//! around it — and it grows out of the card it stands
 //! for (`Editor::grow`, 2026-09-03: the author wanted the bigger room to
 //! read as the composer opening up, not as a different place, then wanted
 //! it a dialog on top of the board rather than a panel taking the columns
@@ -138,8 +138,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
 }
 
 /// The composer, grown: a dialog over the board. It IS the cursor card,
-/// bigger — the same surface, the same accent bar down its left edge (with
-/// the picked tags on it, split the way an open card's stripe splits), the
+/// bigger — the same surface, the same accent bar down its left edge (plain:
+/// the picked tags are the context row's chips, T-1151), the
 /// same `sel` ink, the title on the first row and the meta row under it. At
 /// rest it is `dialog_rect`: centred in the columns zone (`cards`), with the
 /// column headers above it and a margin of board around it — and beside the
@@ -199,10 +199,12 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     // ---- the stripe: the card's bar, wearing the tags
     // exactly as the real card will (`render_edit` paints the phantom card's
     // the same way) --------------------------------------------------------
-    // The picked tags composing; the ticket's own on a description, so the
-    // dialog's stripe is the card's stripe at frame zero and after.
+    // The ticket's own on a description, so the dialog's stripe is the
+    // card's stripe at frame zero and after. Composing, the plain bar
+    // (T-1151, author: "redundant, it is shown on the ticket itself"): the
+    // context row's chips and the phantom card already show the picks.
     let worn = match &ed.purpose {
-        EditorPurpose::Compose { tags, .. } => tags::painted(&app.board, tags),
+        EditorPurpose::Compose { .. } => Vec::new(),
         EditorPurpose::Note { ticket, .. }
         | EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => app
             .board

@@ -7801,6 +7801,36 @@ fn golden_editor_compose_120() {
     golden("editor_compose_120x30", &render(&app, 120, 30));
 }
 
+/// T-1151 (author: "redundant, it is shown on the ticket itself"): the big
+/// composer's stripe is the plain bar; the picked tags are the context
+/// row's chips, never a block on the left edge.
+#[test]
+fn the_big_composers_stripe_wears_no_tags() {
+    let mut app = app_graphite(fixture_tagged());
+    let bug = mesimon_core::board::TagRef { name: "BUG".into(), group: 1 };
+    app.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Compose {
+            workspace: None,
+            tags: vec![bug],
+            plan: false,
+            tier: None,
+        },
+        "Ship the diff viewer",
+        COMPOSE_BODY,
+    ));
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("Ship the diff viewer")).expect("title");
+    assert!(lines[y + 1].contains(" BUG "), "the chips stay: {:?}", lines[y + 1]);
+    let x = lines[y].chars().position(|c| c == 'S').expect("title x") as u16 - 2;
+    let buf = cells(&app, 120, 30);
+    let tint = app.theme.pip(app.board.tag_def(1, "BUG").expect("registered").tint() as usize);
+    let worn: Vec<u16> =
+        (0..30u16).filter(|&r| buf[(x, r)].fg == tint || buf[(x, r)].bg == tint).collect();
+    assert!(worn.is_empty(), "the stripe at x={x} wears the tag on rows {worn:?}");
+    let (plain, _) = app.theme.bar(crate::theme::BarWeight::Cursor);
+    assert_eq!(buf[(x, y as u16)].symbol(), plain.to_string(), "not the bar's cell");
+}
+
 #[test]
 fn the_composer_dialog_grows_out_of_its_card() {
     // The one-line composer, in the first column: the board records where
