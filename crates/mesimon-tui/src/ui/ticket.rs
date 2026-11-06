@@ -1087,10 +1087,9 @@ fn draw_preview(
             None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
             Some(text) => {
                 let budget = (area.height as usize).saturating_sub(lines.len());
-                // One column in from the zone's edge (T-1143, the author:
-                // flush with the pane "doesn't look good"), as the
+                // Two columns in from the zone's edge (`margin`), as the
                 // conversation is: the pane's marks stand out to its left.
-                let width = (area.width as usize).saturating_sub(2);
+                let width = (area.width as usize).saturating_sub(3);
                 let key = note_key(meta);
                 let rows = rendered(app, key, width, || text, Newline::of_note(meta));
                 // Enter in the summary dialog (T-696) asked for one of this
@@ -1153,9 +1152,9 @@ fn draw_preview(
         // reads into the pane rather than hanging under the heading; two
         // rows or fewer is a heading over nothing.
         if top_n >= 2 {
-            // One column in from the pane's own left edge: its words line
-            // up with the text after the pane's `⏺ ` and `❯ ` marks' column.
-            let width = (area.width as usize).saturating_sub(2);
+            // Two columns in from the pane's own left edge (`margin`), the
+            // pane's `⏺` and `❯` marks out to their left.
+            let width = (area.width as usize).saturating_sub(3);
             let doc = match conversation(app, rec, width) {
                 Some((key, rows)) => Some((key, rows, true)),
                 None => reply.map(|text| {
@@ -1217,7 +1216,7 @@ fn draw_preview(
             // Rich text, not the source: an agent reply is markdown, and the
             // ticket page is the surface with room to read it as such
             // (rich.rs — value, weight, paint and space only).
-            let width = (area.width as usize).saturating_sub(2);
+            let width = (area.width as usize).saturating_sub(3);
             // The whole conversation where the page holds one (T-1143), at
             // its foot; else the reply alone, keyed to the reply as well
             // as the session: a page into this reply must not open the
@@ -1267,10 +1266,11 @@ fn draw_preview(
     used
 }
 
-/// The zone's reading rows one column in (T-1143).
+/// The zone's reading rows two columns in (T-1143: the author asked for
+/// flush with the pane, then one column, then one more).
 fn margin(rows: Vec<Line<'static>>) -> impl Iterator<Item = Line<'static>> {
     rows.into_iter().map(|row| {
-        let mut spans = vec![Span::raw(" ")];
+        let mut spans = vec![Span::raw("  ")];
         spans.extend(row.spans);
         Line::from(spans)
     })

@@ -41913,9 +41913,9 @@ by side. **Found and fixed** (`live.rs`, `ui/ticket.rs`, `app.rs`):
   under it with a row of slack (a selected session's badge row) or not at all, so a rail that
   fills the page drops the shin for the page, never per row. While it stands, `quiet_session`
   and `empty_seat` draw no creature, and `companion` is gone.
-- **The margin.** The conversation and a note read one column in from the zone's edge (level
-  with the PREVIEW heading, the pane's `⏺`/`❯` marks to their left); the author asked for flush,
-  then one column back. The shell tail and the quiet rows keep their own indent.
+- **The margin.** The conversation and a note read two columns in from the zone's edge (the
+  pane's `⏺`/`❯` marks to their left); the author asked for flush, then one column, then one
+  more. The shell tail and the quiet rows keep their own indent.
 
 **Verified working, unchanged.** The fit (107×32 while shown, the terminal's 140×41 attached,
 107×32 again after `ctrl-]`); the framed permission box; Codex's composer found by the cursor;

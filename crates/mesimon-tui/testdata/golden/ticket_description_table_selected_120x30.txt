@@ -6,16 +6,16 @@
 
   DESCRIPTION
 
-  Tables render in columns now.
+   Tables render in columns now.
 
-  file       lines  why
+   file       lines  why
 
-  rich.rs      212  a delimiter row under a pipe row makes a table, and each cell reads
-                    inline                                                                 SESSIONS                  2
+   rich.rs      212  a delimiter row under a pipe row makes a table, and each cell
+                     reads inline                                                          SESSIONS                  2
 
-  ticket.rs      0  the band already calls render_on                                      ⠋ ✻ claude               >1y
+   ticket.rs      0  the band already calls render_on                                     ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
-  tests.rs      31  this one
+   tests.rs      31  this one
 
                                                                                            NOTES                     2
 

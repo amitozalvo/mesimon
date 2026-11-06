@@ -6,9 +6,9 @@
 
   NOTE
 
-  run log 164
+   run log 164
 
-  3 passed, 1 failed                                                                       SESSIONS                  3
+   3 passed, 1 failed                                                                      SESSIONS                  3
 
                                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y

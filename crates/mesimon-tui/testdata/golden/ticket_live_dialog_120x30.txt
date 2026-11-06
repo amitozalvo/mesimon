@@ -6,13 +6,13 @@
 
   PREVIEW                                                                                  SESSIONS                  2
 
-  you                                                                                     ⠋ ✻ claude               >1y
-  ▎ Go on; measure the pane sizes too.                                                    ◦ $ bash                 >1y
+   you                                                                                    ⠋ ✻ claude               >1y
+   ▎ Go on; measure the pane sizes too.                                                   ◦ $ bash                 >1y
                                                                                            x sleep
-  claude
-  Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
-  facts so far: every agent pane is on tmux's alternate screen, an unattached pane sits
-  at 80×24 while an attached one is 187×52.
+   claude
+   Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
+   facts so far: every agent pane is on tmux's alternate screen, an unattached pane
+   sits at 80×24 while an attached one is 187×52.
    tests · 7s
    ⎿  $ ls crates/mesimon-daemon/src/agents/
 
