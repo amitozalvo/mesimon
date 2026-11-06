@@ -29,12 +29,21 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
 
 /// How often the pane is captured while the window shows it.
 pub(crate) const EVERY: Duration = Duration::from_millis(200);
+/// After a fit the agent redraws for its new size; a capture inside this
+/// is its old screen cut to the new one. Claude Code 2.1.319, idle, redrew
+/// within 12–20 ms of a `resize-window` (measured 2026-11-06); a busy turn
+/// gets the margin.
+const SETTLE: Duration = Duration::from_millis(60);
+/// How long a capture of another size than the zone's is held back before
+/// it is sent all the same: a fit refused while a client is attached, an
+/// agent that never redraws.
+const SIZE_WAIT: Duration = Duration::from_millis(1000);
 /// The most rows of the pane that fade above the live rows.
 pub(crate) const FADE_ROWS: usize = 4;
 /// Rows of the pane's own context above the composer's rule kept live: the
@@ -461,19 +470,35 @@ pub(crate) struct Live {
 }
 
 impl Live {
-    /// Start reading `sid16`'s pane through `sock`.
-    pub(crate) fn start(sock: PathBuf, session: uuid::Uuid, sid16: String) -> Self {
+    /// Start reading `sid16`'s pane through `sock`. `size` is the zone's,
+    /// when the page knows it: the pane is fitted before the first capture,
+    /// so the agent's screen at the attached terminal's size never shows.
+    /// `seed` is this session's last picture, shown until a capture at the
+    /// zone's size replaces it: back from the pane (`ctrl-]`), the page is
+    /// the one that was left.
+    pub(crate) fn start(
+        sock: PathBuf,
+        session: uuid::Uuid,
+        sid16: String,
+        size: Option<(u16, u16)>,
+        seed: Option<Rc<Shot>>,
+    ) -> Self {
         let (tx, rx) = channel();
         let (ask_tx, ask_rx) = channel::<Ask>();
-        let reader = std::thread::spawn(move || read_loop(&sock, &sid16, &tx, &ask_rx));
+        let reader = std::thread::spawn(move || read_loop(&sock, &sid16, &tx, &ask_rx, size));
         Live {
             session,
-            shot: None,
+            shot: seed,
             rx,
             ask: Some(ask_tx),
-            wished: Cell::new(None),
+            wished: Cell::new(size),
             reader: Some(reader),
         }
+    }
+
+    /// The size the reader was last asked for.
+    pub(crate) fn wished(&self) -> Option<(u16, u16)> {
+        self.wished.get()
     }
 
     /// A window over a capture already taken, for a test: no thread, no
@@ -527,9 +552,57 @@ impl Drop for Live {
     }
 }
 
-fn read_loop(sock: &Path, sid16: &str, tx: &Sender<Shot>, ask: &Receiver<Ask>) {
+/// The reader's fit: the size last asked, since when, whether the pane was
+/// ever fitted (so the way out undoes it), and the settle a fit starts.
+struct Fitting {
+    want: Option<(u16, u16)>,
+    since: Instant,
+    settle: Option<Instant>,
+    fitted: bool,
+}
+
+impl Fitting {
+    fn to(&mut self, sock: &Path, sid16: &str, cols: u16, rows: u16) {
+        if self.want != Some((cols, rows)) {
+            self.want = Some((cols, rows));
+            self.since = Instant::now();
+        }
+        if fit(sock, sid16, cols, rows) {
+            self.fitted = true;
+            self.settle = Some(Instant::now() + SETTLE);
+        }
+    }
+
+    /// Whether a capture of `shot`'s size may go: the size asked, or the
+    /// size wait run out.
+    fn takes(&self, shot: &Shot) -> bool {
+        let sized = self.want.is_none_or(|(c, r)| shot.cols == c && shot.rows.len() == r as usize);
+        sized || self.since.elapsed() >= SIZE_WAIT
+    }
+
+    fn done(&self, sock: &Path, sid16: &str) {
+        if self.fitted {
+            unfit(sock, sid16);
+        }
+    }
+}
+
+/// The reader: fit to the newest size asked, capture every `EVERY`, send a
+/// screen only when it changed and only at the size asked (`SIZE_WAIT`
+/// at most), and never inside a fit's `SETTLE`; undo the fit on the way
+/// out.
+fn read_loop(
+    sock: &Path,
+    sid16: &str,
+    tx: &Sender<Shot>,
+    ask: &Receiver<Ask>,
+    first: Option<(u16, u16)>,
+) {
     let mut last = 0u64;
-    let mut fitted = false;
+    let mut f = Fitting { want: None, since: Instant::now(), settle: None, fitted: false };
+    if let Some((cols, rows)) = first {
+        f.to(sock, sid16, cols, rows);
+    }
     loop {
         // Every ask that came while the last capture ran, the newest size
         // winning; a stop ends the loop at once.
@@ -537,38 +610,30 @@ fn read_loop(sock: &Path, sid16: &str, tx: &Sender<Shot>, ask: &Receiver<Ask>) {
         loop {
             match ask.try_recv() {
                 Ok(Ask::Size(c, r)) => size = Some((c, r)),
-                Ok(Ask::Stop) | Err(TryRecvError::Disconnected) => {
-                    if fitted {
-                        unfit(sock, sid16);
-                    }
-                    return;
-                }
+                Ok(Ask::Stop) | Err(TryRecvError::Disconnected) => return f.done(sock, sid16),
                 Err(TryRecvError::Empty) => break,
             }
         }
         if let Some((cols, rows)) = size {
-            fitted |= fit(sock, sid16, cols, rows);
+            f.to(sock, sid16, cols, rows);
         }
-        if let Some((hash, shot)) = capture(sock, sid16) {
-            if hash != last {
-                last = hash;
-                if tx.send(shot).is_err() {
-                    if fitted {
-                        unfit(sock, sid16);
+        if f.settle.is_none_or(|t| Instant::now() >= t) {
+            f.settle = None;
+            if let Some((hash, shot)) = capture(sock, sid16) {
+                if hash != last && f.takes(&shot) {
+                    last = hash;
+                    if tx.send(shot).is_err() {
+                        return f.done(sock, sid16);
                     }
-                    return;
                 }
             }
         }
-        match ask.recv_timeout(EVERY) {
-            Ok(Ask::Size(c, r)) => {
-                fitted |= fit(sock, sid16, c, r);
-            }
+        let wait =
+            f.settle.map_or(EVERY, |t| t.saturating_duration_since(Instant::now()).min(EVERY));
+        match ask.recv_timeout(wait) {
+            Ok(Ask::Size(c, r)) => f.to(sock, sid16, c, r),
             Ok(Ask::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                if fitted {
-                    unfit(sock, sid16);
-                }
-                return;
+                return f.done(sock, sid16)
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -872,6 +937,57 @@ mod tests {
         assert!(!said.holds("⏺ Done."), "too short to count");
         assert!(!said.holds("✻ Churned for 28s · done 6:03 PM"), "the pane's own line");
         assert!(!said.holds("⏺ Bash(cargo test -p mesimon-tui)"), "newer than the transcript");
+    }
+
+    /// A capture at another size than the zone's is held back (the agent
+    /// has not redrawn for the fit yet), until the size wait runs out.
+    #[test]
+    fn a_capture_of_another_size_waits_for_the_fit() {
+        let screen =
+            |cols: u16, rows: usize| Shot { rows: vec![Row::default(); rows], cols, cursor: None };
+        let mut f =
+            Fitting { want: Some((107, 32)), since: Instant::now(), settle: None, fitted: true };
+        assert!(!f.takes(&screen(140, 41)), "the attached terminal's size, not yet refitted");
+        assert!(f.takes(&screen(107, 32)));
+        f.since = Instant::now() - SIZE_WAIT;
+        assert!(f.takes(&screen(140, 41)), "a fit that never lands is not waited on for good");
+        f.want = None;
+        assert!(f.takes(&screen(80, 24)), "no size asked: any capture");
+    }
+
+    /// Against a real tmux (ignored in `cargo ut`; run with `--ignored`):
+    /// a reader started with the zone's size fits the pane before its
+    /// first capture, so the first screen the page gets is at that size
+    /// and drawn for it — back from the pane (`ctrl-]`), never the
+    /// attached terminal's layout first.
+    #[test]
+    #[ignore = "starts a tmux server"]
+    fn the_first_capture_is_at_the_zone_size() {
+        let sock = PathBuf::from(format!("/tmp/msmn-fit-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        // Redraws on a resize only, as an agent does.
+        let script = "draw() { clear; printf '%s x %s\\n' $(tput cols) $(tput lines); }; \
+                      trap draw WINCH; draw; while :; do sleep 0.02; done";
+        let up =
+            tmux(&sock, &["new-session", "-d", "-s", "fitprobe", "-x", "140", "-y", "41", script]);
+        assert!(up.is_some(), "tmux starts");
+        std::thread::sleep(Duration::from_millis(300));
+        let mut live =
+            Live::start(sock.clone(), uuid::Uuid::nil(), "fitprobe".into(), Some((60, 20)), None);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while live.shot.is_none() && Instant::now() < deadline {
+            live.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let shot = live.shot.clone().expect("a capture");
+        let _ = tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_file(&sock);
+        assert_eq!((shot.cols, shot.rows.len()), (60, 20), "the first capture is fitted");
+        assert!(
+            shot.rows.iter().any(|r| r.text.contains("60 x 20")),
+            "and drawn for the fit: {:?}",
+            shot.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+        );
     }
 
     /// A framed dialog option under the cursor is not a composer.

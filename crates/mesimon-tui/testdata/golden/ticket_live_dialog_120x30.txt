@@ -4,7 +4,7 @@
  IN PROGRESS for >1y ∙ created >1y ago
 
 
-  PREVIEW                                                                                  SESSIONS                  2
+  PREVIEW                                                              { } page preview    SESSIONS                  2
 
    you                                                                                    ⠋ ✻ claude               >1y
  ❯ Go on; measure the pane sizes too.                                                     ◦ $ bash                 >1y

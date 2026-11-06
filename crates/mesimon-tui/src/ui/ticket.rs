@@ -1003,14 +1003,19 @@ fn draw_preview(
     let mut lines: Vec<Line<'static>> = Vec::new();
     // The heading carries the paging keys on its right while the zone
     // overflows (T-158: the hint beside the thing it pages, off the footer)
-    // — read from the LAST frame's measurement, before this one resets it.
-    let ctx = app.frame_ctx();
+    // — drawn last, from THIS frame's measurement (T-1143: read from the
+    // last frame's, `{ }` came a frame late each time the zone changed
+    // shape, and the page took a second to settle). A branch pushes a
+    // blank row and names its word; `head` puts the heading in its place
+    // once the rows below are measured.
+    let mut word: Option<&'static str> = None;
     // The word names what the zone is holding, in the page's own heading
     // vocabulary: PREVIEW for a session, because neither a transcript tail
     // nor a pane capture is the record (author 2026-09-01) — and, since
     // T-344, DESCRIPTION or NOTE for a note, because a note in this zone IS
     // the whole document and the band above has stopped saying which.
     let heading = |word: &str| -> Line<'static> {
+        let ctx = app.frame_ctx();
         let word = format!(" {word}");
         let used = word.width();
         let mut spans = vec![Span::styled(word, theme.dim1().add_modifier(Modifier::BOLD))];
@@ -1040,11 +1045,15 @@ fn draw_preview(
     // side is the record, both are the last of it, and the rail row beside it
     // already says which session the cursor is on (author 2026-09-01).
     if let Some(ShellView { key, lines: tail }) = shell {
-        lines.push(heading("PREVIEW"));
+        word = Some("PREVIEW");
+        lines.push(Line::default());
         lines.push(Line::default());
         let Some(tail) = tail else {
             lines.push(Line::from(Span::styled("   reading its pane", theme.dim3())));
             let used = lines.len();
+            if let Some(w) = word {
+                lines[0] = heading(w);
+            }
             f.render_widget(Paragraph::new(lines), area);
             return used;
         };
@@ -1081,7 +1090,8 @@ fn draw_preview(
         // the page at the top. This is the ticket's reading surface now —
         // the band gave the description's rows up to reach it (T-344) — so
         // the heading says which of the two a note row is.
-        lines.push(heading(if description { "DESCRIPTION" } else { "NOTE" }));
+        word = Some(if description { "DESCRIPTION" } else { "NOTE" });
+        lines.push(Line::default());
         lines.push(Line::default());
         match text {
             None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
@@ -1122,7 +1132,8 @@ fn draw_preview(
         // (`Shot::anchor`); a dialog taller than the box moves it up, and
         // the turn's end moves it back. No rule between them: the fade is
         // the seam.
-        lines.push(heading("PREVIEW"));
+        word = Some("PREVIEW");
+        lines.push(Line::default());
         lines.push(Line::default());
         let zone_h = (area.height as usize).saturating_sub(lines.len());
         // The pane is asked to be the zone's size, so the agent lays its
@@ -1206,6 +1217,9 @@ fn draw_preview(
                 lines.extend(margin(shown));
             }
         }
+        if let Some(w) = word {
+            lines[0] = heading(w);
+        }
         f.render_widget(Paragraph::new(lines), area);
         let foot_y = area.bottom() - live_n as u16;
         if fade_n + live_n > 0 {
@@ -1242,7 +1256,8 @@ fn draw_preview(
             .map_or(foot_y, |p| foot_y + p as u16);
         return (field_y - area.y) as usize;
     } else if reply.is_some() {
-        lines.push(heading("PREVIEW"));
+        word = Some("PREVIEW");
+        lines.push(Line::default());
         lines.push(Line::default());
         // The shin is the rail's now (T-1143), so the words take the zone's
         // width, from its left column.
@@ -1294,16 +1309,21 @@ fn draw_preview(
         // words have not landed, the corpse that never spoke, the shell whose
         // pane has not been captured yet. The zone stood blank for all of
         // them — the same blank the empty seat had, one press later.
-        lines.push(heading("PREVIEW"));
+        word = Some("PREVIEW");
+        lines.push(Line::default());
         lines.extend(quiet_session(app, rec, peek, area, shin_on_rail));
     } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
-        lines.push(heading("PREVIEW"));
+        word = Some("PREVIEW");
+        lines.push(Line::default());
         lines.extend(empty_seat(app, ticket, area, shin_on_rail));
     }
     // How many rows the zone wrote, for the ask field to hang under (T-476)
     // — never more than the zone has, which is what pins the field at the
     // foot when the content overflows.
     let used = lines.len().min(area.height as usize);
+    if let Some(w) = word {
+        lines[0] = heading(w);
+    }
     f.render_widget(Paragraph::new(lines), area);
     used
 }
@@ -1664,10 +1684,13 @@ fn conversation(
     let first = messages.first()?;
     let theme = &app.theme;
     let flavor = theme.flavor;
-    // The pager's key: the session and the document's first message —
-    // steady while messages land at the end, so a page back into the
-    // conversation is not thrown to its foot by the agent's next words.
-    let key = crate::text::hash64((8u8, rec.id, first.key));
+    // The pager's key: the session — steady while messages land at the end
+    // and while the transcript's earlier pages land at the top, so a page
+    // back into the conversation is neither thrown to its foot nor
+    // restarted (T-1143: a long conversation's earlier pages land one by
+    // one for seconds after the page opens).
+    let key = crate::text::hash64((8u8, rec.id));
+    let before = app.page_doc.borrow().as_ref().filter(|d| d.key == key).map(|d| d.first);
     let selected = app
         .page_link
         .borrow()
@@ -1700,6 +1723,7 @@ fn conversation(
         Line::from(spans)
     };
     let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut moved = 0usize;
     let mut links: Vec<crate::app::PageLink> = Vec::new();
     let mut cache = app.page_messages.borrow_mut();
     for m in messages {
@@ -1736,6 +1760,9 @@ fn conversation(
             )),
             None => Rc::clone(&entry.rows),
         };
+        if before == Some(m.key) && m.key != first.key {
+            moved = rows.len();
+        }
         rows.push(gutter(message_head(theme, t.kind, m, width, now)));
         let body_at = rows.len();
         for (j, (source, link)) in entry.links.iter().enumerate() {
@@ -1769,7 +1796,16 @@ fn conversation(
     // The last blank is the document's end, not a row to page to.
     rows.pop();
     let rows = Rc::new(rows);
-    *app.page_doc.borrow_mut() = Some(crate::app::PageDoc { key, links: Rc::new(links) });
+    // Earlier messages landed above the one that was first: a reader paged
+    // back keeps their place, the window moving down by the rows added. A
+    // window resting at the foot follows the foot as before.
+    if moved > 0 {
+        if let Some((k, at)) = app.preview.request.get().filter(|(k, _)| *k == key) {
+            app.preview.request.set(Some((k, at + moved)));
+        }
+    }
+    *app.page_doc.borrow_mut() =
+        Some(crate::app::PageDoc { key, links: Rc::new(links), first: first.key });
     *app.rich_cache.borrow_mut() =
         Some(RichCache { key: stamp, width, flavor, selected, rows: Rc::clone(&rows) });
     Some((key, rows))

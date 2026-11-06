@@ -1343,6 +1343,9 @@ pub(crate) struct PageLink {
 pub(crate) struct PageDoc {
     pub key: u64,
     pub links: std::rc::Rc<Vec<PageLink>>,
+    /// The first message held when it was laid out: earlier pages land
+    /// above it, and the window moves down by the rows they add.
+    pub first: (u64, usize),
 }
 
 /// One message's rows and links, rendered once for its words, width and
@@ -2068,6 +2071,10 @@ pub struct App {
     /// The private tmux server's socket, for the live window's reads. Set
     /// by `lib.rs::run`, never by `App::new`: a test app reads no pane.
     pub tmux_sock: Option<std::path::PathBuf>,
+    /// The last window's session and picture, and the zone's size it was
+    /// fitted to (`park_live`): what the next window starts from.
+    pub live_last: Option<(uuid::Uuid, std::rc::Rc<crate::live::Shot>)>,
+    pub live_size: std::cell::Cell<Option<(u16, u16)>>,
     /// Where the last frame drew the live window's rows (the pane's own
     /// glyphs and attributes, a picture the L1 laws know by position).
     pub live_rect: std::cell::Cell<Option<ratatui::layout::Rect>>,
@@ -2580,6 +2587,8 @@ impl App {
             live: None,
             tmux_sock: None,
             live_rect: std::cell::Cell::new(None),
+            live_last: None,
+            live_size: std::cell::Cell::new(None),
             page_transcript: None,
             page_transcript_tried: None,
             page_messages: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -5955,14 +5964,36 @@ impl App {
         match (want, &mut self.live) {
             (None, None) => false,
             (None, Some(_)) => {
-                self.live = None;
+                self.park_live();
                 true
             }
             (Some((id, _)), Some(live)) if live.session == id => live.poll(),
             (Some((id, sid16)), _) => {
+                self.park_live();
                 let sock = self.tmux_sock.clone().expect("the socket gates the want");
-                self.live = Some(crate::live::Live::start(sock, id, sid16));
+                let seed = self
+                    .live_last
+                    .as_ref()
+                    .filter(|(s, _)| *s == id)
+                    .map(|(_, shot)| std::rc::Rc::clone(shot));
+                let size = self.live_size.get();
+                self.live = Some(crate::live::Live::start(sock, id, sid16, size, seed));
                 true
+            }
+        }
+    }
+
+    /// The window stops (its reader joined, its fit undone), its session's
+    /// last picture and the zone's size kept: the next window starts from
+    /// them, so back from the pane or back on the row the page is the one
+    /// that was left until a capture at the zone's size replaces it.
+    pub(crate) fn park_live(&mut self) {
+        if let Some(live) = self.live.take() {
+            if let Some(shot) = live.shot.clone() {
+                self.live_last = Some((live.session, shot));
+            }
+            if let Some(size) = live.wished() {
+                self.live_size.set(Some(size));
             }
         }
     }
@@ -6078,6 +6109,7 @@ impl App {
 
     /// The zone's size for the pane, from the draw.
     pub(crate) fn live_wish(&self, cols: u16, rows: u16) {
+        self.live_size.set(Some((cols, rows)));
         if let Some(l) = &self.live {
             l.wish(cols, rows);
         }

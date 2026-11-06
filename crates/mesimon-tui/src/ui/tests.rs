@@ -14840,6 +14840,59 @@ fn pane_after_reply(fresh: Option<&str>) -> crate::live::Shot {
     }
 }
 
+/// The paging keys stand on the heading on the frame that first overflows
+/// (T-1143: read from the last frame's measurement, `{ }` came a frame
+/// late each time the zone changed shape).
+#[test]
+fn the_paging_keys_show_on_the_first_frame() {
+    let (app, path) = app_live("tlive-firstkeys", false);
+    let lines = render(&app, 120, 30);
+    let head = lines.iter().find(|l| l.contains("PREVIEW")).expect("the heading");
+    assert!(head.contains("{ } page preview"), "on the first frame: {head:?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The window's last picture and the zone's size outlive it (T-1143): back
+/// from the pane, the next window starts from them, never from a blank
+/// zone or the attached terminal's size.
+#[test]
+fn a_parked_window_keeps_its_picture_and_size() {
+    let (mut app, path) = app_live("tlive-park", false);
+    let _ = render(&app, 120, 30);
+    let size = app.live_size.get().expect("the draw asked a size");
+    app.park_live();
+    assert!(app.live.is_none());
+    let (session, shot) = app.live_last.clone().expect("the picture kept");
+    assert_eq!(session, uuid_n(31));
+    assert!(shot.rows.iter().any(|r| r.text.contains("auto mode on")));
+    assert_eq!(app.live_size.get(), Some(size), "the zone's size kept");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// Earlier messages landing above the first one held move a paged-back
+/// window down by the rows they add, so the reader keeps their place; the
+/// pager's key is the session's, so the landing restarts nothing.
+#[test]
+fn earlier_messages_landing_keep_a_paged_back_place() {
+    let (app, path) = app_live("tlive-prepend", false);
+    let _ = render(&app, 120, 30);
+    let key = app.page_doc.borrow().as_ref().map(|d| d.key).expect("the conversation");
+    let second = app.page_transcript.as_ref().map(|(_, t)| t.messages()[1].key).expect("held");
+    // As if the doc had been laid out when the second message was the
+    // first held, and the reader had paged to its row 1: the first
+    // message's head, prompt and blank row land above it.
+    if let Some(d) = app.page_doc.borrow_mut().as_mut() {
+        d.first = second;
+    }
+    app.preview.request.set(Some((key, 1)));
+    app.rich_cache.borrow_mut().take();
+    let _ = render(&app, 120, 30);
+    let (k, at) = app.preview.request.get().expect("still asked");
+    assert_eq!(k, key, "the same document");
+    assert_eq!(at, 1 + 3, "moved down by the first message's three rows");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// A person's words read as Claude Code draws them (the author,
 /// 2026-11-06): the `❯` in the gutter the pane's marks stand in, the row on
 /// the page's raised surface, the head's `you` as bold as `claude`.

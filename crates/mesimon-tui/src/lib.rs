@@ -516,8 +516,9 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
             let cwd = app.pending_attach_cwd.take();
             // The pane goes back to its client's size before the client
             // attaches (T-1143): the window's reader stops here, and its
-            // fit is undone on the way out.
-            drop(app.live.take());
+            // fit is undone on the way out. Its last picture is kept for
+            // the way back.
+            app.park_live();
             // The board is about to stop being what the terminal shows, for
             // however long the user stays in that pane (T-291). Said before
             // the restore, so nothing writes an escape into the gap.

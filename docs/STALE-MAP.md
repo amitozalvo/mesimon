@@ -41954,3 +41954,28 @@ margin; a bare reply and a note still get `margin`. Tests:
 `live::tests::a_pane_row_the_conversation_holds_is_said`,
 `the_fade_never_repeats_the_conversation` (fails without the stop),
 `a_persons_words_read_as_claude_code_draws_them`; the two live goldens remade.
+
+**Then: two settles (the author: "the { } page preview hint takes a second to settle", "when going
+back from claude code (^]) the tmux preview takes a second to settle").** Three causes, all
+TUI-side. (1) The PREVIEW heading's `{ }` read the LAST frame's measurement, so every frame that
+changed the zone's shape (the conversation opening, its earlier pages landing, the pane's first
+capture) drew the heading without the keys. `draw_preview` now names the heading's word, pushes a
+blank row, and puts the heading in after the rows below are measured, with a fresh `frame_ctx`:
+the keys stand on the first frame (`the_paging_keys_show_on_the_first_frame`; the two live goldens
+show `{ }` on their first render now). (2) The conversation's pager key included its first held
+message, so each page of earlier messages that landed made a new document: a reader paged back
+was thrown to the foot. The key is the session's; a rebuild whose old first message now has
+messages above it moves an asked window down by the rows they added
+(`earlier_messages_landing_keep_a_paged_back_place`, fails without the move). (3) Back from the
+pane, the reader started from nothing and its first capture was at the attached terminal's size
+(the agent's 140-column layout), then the fit, then the redraw. `App::park_live` keeps the
+window's last picture and the zone's size when it stops (the attach handover, the cursor
+leaving); `Live::start` takes both: the pane is fitted before the first capture, and the kept
+picture stands until a capture at the zone's size replaces it. The reader (`Fitting`) holds back
+captures inside a fit's `SETTLE` (60 ms: Claude Code redrew within 12–20 ms of a
+`resize-window`, measured on an idle 2.1.319 pane, the rule's width right on the first capture)
+and captures of another size for up to `SIZE_WAIT` (1 s: a fit refused while a client is
+attached). Tests: `a_capture_of_another_size_waits_for_the_fit`,
+`a_parked_window_keeps_its_picture_and_size`, and `the_first_capture_is_at_the_zone_size`, which
+starts a real tmux server and is `#[ignore]`d in `cargo ut` (run it with `--ignored`; it fails
+with the first fit removed).
