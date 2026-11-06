@@ -291,13 +291,18 @@ pub enum Scope {
     /// opens it from the board and steps the messages inside it, `jk`
     /// scrolls the message, `c` copies it.
     Transcript,
+    /// The note reader (T-1139): `tab` on a card with a description opens
+    /// it drawn as markdown, read-only, in the editor's own dialog. `jk`
+    /// scroll, `{ }` page, `w` turns the wrap off and `hl` then scroll
+    /// sideways, `tab` walks the notes, Enter edits the one on screen.
+    Reader,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 38] = [
+    pub const ALL: [Scope; 39] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -336,6 +341,7 @@ impl Scope {
         Scope::Arcade,
         Scope::Boards,
         Scope::Transcript,
+        Scope::Reader,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -363,6 +369,7 @@ impl Scope {
             | Scope::Usage
             | Scope::Summary
             | Scope::Transcript
+            | Scope::Reader
             | Scope::PullRequests
             | Scope::Tour => Some(Scope::Global),
             Scope::Global
@@ -415,6 +422,7 @@ impl Scope {
             Scope::Links => "LINKS",
             Scope::Summary => "SUMMARY",
             Scope::Transcript => "TRANSCRIPT",
+            Scope::Reader => "NOTE",
             Scope::PullRequests => "PULL REQUESTS",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
@@ -1034,6 +1042,12 @@ pub enum Verb {
     /// unsaved changes stays put and says so — the draft is never dropped
     /// by a key the finger presses in a row.
     NextNote,
+    /// `shift+tab` in the note reader (T-1139): the previous note. The
+    /// editor's walk back rides its workspace binding (T-1113); the reader
+    /// has no workspace pick, so the two ways share one binding there.
+    PrevNote,
+    /// `w` in the note reader (T-1139): the wrap off, or on again.
+    ReaderWrap,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -1499,6 +1513,13 @@ pub struct Ctx {
     /// The transcript dialog's message is longer than its window, so `jk`
     /// has rows to scroll.
     pub transcript_scrolls: bool,
+    /// The note reader's document is longer than its window (T-1139).
+    pub reader_scrolls: bool,
+    /// The note reader draws its lines unwrapped (`w`, T-1139).
+    pub reader_unwrapped: bool,
+    /// Unwrapped, a line is wider than the window, so `hl` has cells to
+    /// scroll (T-1139).
+    pub reader_sideways: bool,
     /// The forge has bound at least one pull request to the subject ticket
     /// (T-739), as the last snapshot said. What `^h` gates on.
     pub has_prs: bool,
@@ -7635,6 +7656,94 @@ static TRANSCRIPT: &[Binding] = &[
     },
 ];
 
+/// The note reader (T-1139, author: "tab on ticket with notes show readonly
+/// formatted presentation of the MD ∙ {} and hjkl and arrow keys for motion
+/// ∙ enter to edit"). The editor's dialog with the note drawn as the ticket
+/// page draws one. The wrap is on, so `hl` only scroll once `w` takes it off
+/// ("shouldn't we disable wordwrap? or at least allow user to toggle it, and
+/// then it becomes needed"); notes are walked by `tab`, the editor's key.
+static READER: &[Binding] = &[
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::NoteEdit,
+        show: "enter",
+        hint: |_| "edit",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 5,
+    },
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::ScrollDown,
+        show: "jk",
+        hint: |_| "scroll",
+        avail: |c| c.reader_scrolls,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        // Forward and back in one binding, so the edge spends one item on
+        // it (`directional` tells them apart).
+        keys: &[Key::Tab, Key::BackTab],
+        verb: Verb::NextNote,
+        show: "tab",
+        hint: |_| "next note",
+        avail: |c| c.editor_cycles,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 12,
+    },
+    Binding {
+        keys: &[Key::Char('}'), Key::Char('{'), Key::PageDown, Key::PageUp],
+        verb: Verb::PageDown,
+        show: "{ }",
+        hint: |_| "page",
+        avail: |c| c.reader_scrolls,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Left, Key::Char('l'), Key::Right],
+        verb: Verb::CursorLeft,
+        show: "hl",
+        hint: |_| "sideways",
+        avail: |c| c.reader_sideways,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 25,
+    },
+    Binding {
+        keys: &[Key::Char('w')],
+        verb: Verb::ReaderWrap,
+        show: "w",
+        hint: |c| if c.reader_unwrapped { "wrap" } else { "unwrap" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The board's own top row (T-305), reached by `k` off a column header. It is
 /// a cursor position, not a screen: nothing is drawn over the board, the
 /// cursor column keeps its painted band, and `j` walks straight back into it.
@@ -8623,6 +8732,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Links => LINKS,
         Scope::Summary => SUMMARY,
         Scope::Transcript => TRANSCRIPT,
+        Scope::Reader => READER,
         Scope::PullRequests => PULL_REQUESTS,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
@@ -8708,6 +8818,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::TranscriptNewer, Key::Char('{')) => Verb::TranscriptOlder,
         (Verb::TranscriptLinkNext, Key::BackTab | Key::Char('N')) => Verb::TranscriptLinkPrev,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
+        (Verb::NextNote, Key::BackTab) => Verb::PrevNote,
         (v, _) => v,
     }
 }
@@ -9048,6 +9159,34 @@ mod tests {
         assert_eq!(Scope::Move.parent(), None);
     }
 
+    /// T-1139: the note reader's keys. Enter edits and `w` toggles always;
+    /// the motions are live only where they have somewhere to go, and
+    /// `hl` only once the wrap is off and a line runs past the window.
+    #[test]
+    fn the_reader_reads_and_enter_edits() {
+        let bare = Ctx::default();
+        assert_eq!(resolve(Scope::Reader, Key::Enter, &bare), Some(Verb::NoteEdit));
+        assert_eq!(resolve(Scope::Reader, Key::Char('w'), &bare), Some(Verb::ReaderWrap));
+        assert_eq!(resolve(Scope::Reader, Key::Esc, &bare), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Reader, Key::Char('?'), &bare), Some(Verb::Help));
+        for k in [Key::Char('j'), Key::Char('}'), Key::Char('l'), Key::Tab, Key::BackTab] {
+            assert_eq!(resolve(Scope::Reader, k, &bare), None, "{k}");
+        }
+        let long = Ctx { reader_scrolls: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Reader, Key::Char('j'), &long), Some(Verb::ScrollDown));
+        assert_eq!(resolve(Scope::Reader, Key::Up, &long), Some(Verb::ScrollUp));
+        assert_eq!(resolve(Scope::Reader, Key::Char('}'), &long), Some(Verb::HalfPageDown));
+        assert_eq!(resolve(Scope::Reader, Key::Char('{'), &long), Some(Verb::HalfPageUp));
+        let wide = Ctx { reader_unwrapped: true, reader_sideways: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Reader, Key::Char('h'), &wide), Some(Verb::CursorLeft));
+        assert_eq!(resolve(Scope::Reader, Key::Right, &wide), Some(Verb::CursorRight));
+        assert_eq!(hint_for(Scope::Reader, Verb::ReaderWrap, &wide), Some(("w", "wrap")));
+        assert_eq!(hint_for(Scope::Reader, Verb::ReaderWrap, &bare), Some(("w", "unwrap")));
+        let ring = Ctx { editor_cycles: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), Some(Verb::NextNote));
+        assert_eq!(resolve(Scope::Reader, Key::BackTab, &ring), Some(Verb::PrevNote));
+    }
+
     #[test]
     fn scope_list_is_complete() {
         fn index(s: Scope) -> usize {
@@ -9090,6 +9229,7 @@ mod tests {
                 Scope::Arcade => 35,
                 Scope::Boards => 36,
                 Scope::Transcript => 37,
+                Scope::Reader => 38,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {

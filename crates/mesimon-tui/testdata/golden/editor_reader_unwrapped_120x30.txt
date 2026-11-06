@@ -1,0 +1,30 @@
+ NOTE   mesimon › kanban-tui
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+                              ╭─ DESCRIPTION 1/2 ─────────────────────────────────────────╮
+    Decay treatments      >1y │▉▉ Fix OSC-11 detection                                    │   z Painted accent bar >1y
+                              │▉▉ ⎇ shared ∙ edited by you >1y ago                        │
+    Keymap validator      >1y │▉▉                                                         │
+                              │▉▉  now runs once, before raw mode, and the answer is cac  │
+                              │▉▉                                                         │
+                              │▉▉  the terminal, then hands the flavor to Theme::new      │
+                              │▉▉ ved with it                                             │
+                              │▉▉                                                         │
+                              │▉▉ mesimon-tui                                             │
+                              │▉▉                                                         │
+                              │▉▉ e --color=never path is untested.                       │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              │▉▉                                                         │
+                              ╰─────── enter edit ∙ jk scroll ∙ tab next note ∙ { } page ─╯
+
+
+ enter edit ∙ jk scroll ∙ tab next note ∙ { } page ∙ hl sideways ∙ w wrap ∙ esc close                            ? keys

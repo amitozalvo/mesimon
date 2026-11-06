@@ -118,10 +118,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
         width: area.width,
         height: area.height.saturating_sub(HEAD_ROWS + 1),
     };
-    if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
-        cursor = Some(c);
+    if ed.reading {
+        draw_reader(f, app, ed, body, PAGE_PAD, crate::rich::Surface::Ground);
+    } else {
+        if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
+            cursor = Some(c);
+        }
+        body_spot(app, ed, body, PAGE_PAD);
     }
-    body_spot(app, ed, body, PAGE_PAD);
     if let Some((x, y)) = cursor {
         f.set_cursor_position((x, y));
     }
@@ -175,7 +179,12 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         ink,
         dialog::Edges {
             title: dialog::title(ink, heading(app, ed)),
-            tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
+            tail: dialog::keys(
+                app,
+                if ed.reading { Scope::Reader } else { Scope::Editor },
+                ink,
+                (area.width as usize).saturating_sub(6),
+            ),
         },
     );
     if area.width <= chrome || area.height == 0 {
@@ -244,10 +253,20 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         width: inner.width,
         height: inner.height.saturating_sub(DIALOG_HEAD_ROWS + 1),
     };
-    if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
-        cursor = Some(c);
+    if ed.reading {
+        // The reader's markdown on the dialog's own surface: the card's
+        // when the profile paints one, where code sinks to the page ground.
+        let on = match theme.selected_bg {
+            Some(_) => crate::rich::Surface::Elevated,
+            None => crate::rich::Surface::Ground,
+        };
+        draw_reader(f, app, ed, body, 0, on);
+    } else {
+        if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
+            cursor = Some(c);
+        }
+        body_spot(app, ed, body, 0);
     }
-    body_spot(app, ed, body, 0);
     if let Some((x, y)) = cursor {
         f.set_cursor_position((x, y));
     }
@@ -463,7 +482,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 // never on a ring of notes, where Shift+Tab walks back
                 // (T-1113).
                 let cx = app.frame_ctx();
-                if cx.workspace_open && !cx.editor_cycles {
+                // Nor in the reader (T-1139), whose Shift+Tab only walks.
+                if cx.workspace_open && !cx.editor_cycles && !ed.reading {
                     parts.push(Span::styled("shift+tab".to_string(), dim2));
                 }
             }
@@ -648,4 +668,143 @@ fn draw_body(
             area.y + cy.min(body_h.saturating_sub(1) as u16),
         )
     })
+}
+
+/// The note reader's body (T-1139): the note drawn as markdown, the way the
+/// ticket page's preview draws one, in the window `jk` and `{ }` move. With
+/// the wrap off (`w`) the lines are laid out as wide as the widest needs
+/// and the window shows `x` cells in from their left (`hl`). A window that
+/// stops short of the last row ends in the `~` cut mark, as the preview's.
+fn draw_reader(
+    f: &mut Frame,
+    app: &App,
+    ed: &Editor,
+    area: Rect,
+    pad: u16,
+    surface: crate::rich::Surface,
+) {
+    let Some(r) = ed.reader.as_ref() else { return };
+    let theme = &app.theme;
+    let budget = area.height as usize;
+    let width = (area.width as usize).saturating_sub(pad as usize + 1);
+    if budget == 0 || width == 0 {
+        return;
+    }
+    let text = ed.body.as_str();
+    if text.trim().is_empty() {
+        let ink = match surface {
+            crate::rich::Surface::Elevated => &theme.sel,
+            crate::rich::Surface::Ground => &theme.rest,
+        };
+        let line = Line::from(vec![
+            Span::raw(" ".repeat(pad as usize)),
+            Span::styled("empty", Style::default().fg(ink.dim3)),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let unwrapped = app.reader_unwrapped;
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let EditorPurpose::Note { note, .. } = &ed.purpose {
+            note.hash(&mut h);
+        }
+        text.hash(&mut h);
+        h.finish()
+    };
+    // Unwrapped, as wide as the longest source line plus room for the
+    // indents a list or a quote adds, never narrower than the window; the
+    // cap keeps a pasted log from laying out a mile of slab.
+    let lay = if unwrapped {
+        let longest = text.lines().map(unicode_width::UnicodeWidthStr::width).max().unwrap_or(0);
+        (longest + 8).clamp(width, 4096)
+    } else {
+        width
+    };
+    let newline = match &ed.purpose {
+        EditorPurpose::Note { ticket, note: Some(id) } => app
+            .board
+            .ticket(*ticket)
+            .and_then(|t| t.note(*id))
+            .map_or(crate::rich::Newline::Break, crate::rich::Newline::of_note),
+        _ => crate::rich::Newline::Break,
+    };
+    let (rows, widest) = {
+        let mut slot = r.rows.borrow_mut();
+        let fresh = slot.as_ref().is_some_and(|c| {
+            c.key == key && c.width == lay && c.unwrapped == unwrapped && c.flavor == theme.flavor
+        });
+        if !fresh {
+            let rows = crate::rich::render_on(text, lay, usize::MAX, theme, surface, newline);
+            let widest = rows.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0);
+            *slot = Some(crate::app::ReaderRows {
+                key,
+                width: lay,
+                unwrapped,
+                flavor: theme.flavor,
+                rows: std::rc::Rc::new(rows),
+                widest,
+            });
+        }
+        let c = slot.as_ref().expect("laid out above");
+        (std::rc::Rc::clone(&c.rows), c.widest)
+    };
+    let at = r.pager.window(Some(key), rows.len(), budget, false);
+    let max_x = if unwrapped { widest.saturating_sub(width) } else { 0 };
+    r.max_x.set(max_x);
+    let x = r.x.get().min(max_x);
+    r.x.set(x);
+    let mut shown: Vec<Line<'static>> = rows
+        .iter()
+        .skip(at)
+        .take(budget)
+        .map(|l| if unwrapped { Line::from(cells(&l.spans, x, width)) } else { l.clone() })
+        .collect();
+    if at + shown.len() < rows.len() {
+        crate::rich::mark_cut(&mut shown, width, theme);
+    }
+    if pad > 0 {
+        for line in &mut shown {
+            line.spans.insert(0, Span::raw(" ".repeat(pad as usize)));
+        }
+    }
+    f.render_widget(Paragraph::new(shown), area);
+}
+
+/// The `take` cells of `spans` from cell `skip` on, styles kept. A wide
+/// character cut by either edge becomes a space, so a row never draws
+/// wider than it was asked.
+fn cells(spans: &[Span<'static>], skip: usize, take: usize) -> Vec<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let (start, end) = (skip, skip + take);
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    for span in spans {
+        let mut kept = String::new();
+        for g in span.content.graphemes(true) {
+            let w = g.width();
+            let (from, to) = (at, at + w);
+            at = to;
+            if to <= start || w == 0 && from < start {
+                continue;
+            }
+            if from >= end {
+                break;
+            }
+            if from < start || to > end {
+                kept.push_str(&" ".repeat(to.min(end) - from.max(start)));
+            } else {
+                kept.push_str(g);
+            }
+        }
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, span.style));
+        }
+        if at >= end {
+            break;
+        }
+    }
+    out
 }

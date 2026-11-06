@@ -8044,6 +8044,61 @@ fn golden_editor_note_ring_120() {
     assert_eq!(unsaved_fg(&app), Some(ink.base), "a refused tab says it in full");
 }
 
+/// The note reader (T-1139): `tab` on a card with a description draws the
+/// note as markdown in the editor's dialog — no cursor, no markers — and
+/// the edge offers Enter. Unwrapped (`w`), a long line runs past the
+/// window and `hl` scroll it; a note longer than the window ends in `~`.
+#[test]
+fn golden_editor_reader_120() {
+    let mut b = fixture_tagged();
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+        t.notes.push(note_meta(91, "Repro steps", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        READER_NOTE,
+    );
+    ed.reader = Some(crate::app::Reader::default());
+    ed.reading = true;
+    app.mode = Mode::Editor(ed.clone());
+    // The first frame measures the note; the keys it offers settle on the
+    // next, as on every paged zone.
+    let _ = render(&app, 120, 30);
+    assert!(app.ctx().reader_scrolls, "the note is longer than the window");
+    assert!(!app.ctx().reader_sideways, "wrapped, nothing runs past it");
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION 1/2")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("enter edit")), "the edge offers it: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("## What")), "markdown is drawn: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("**once**")), "{lines:?}");
+    golden("editor_reader_120x30", &lines);
+
+    // Unwrapped and scrolled two steps sideways, then down past the top.
+    app.reader_unwrapped = true;
+    let _ = render(&app, 120, 30);
+    if let Mode::Editor(ed) = &app.mode {
+        let r = ed.reader.as_ref().expect("a reader");
+        assert!(r.max_x.get() > 0, "a line runs past the window");
+        assert!(app.ctx().reader_sideways);
+        r.sideways(1);
+        r.sideways(1);
+        r.pager.scroll(2);
+    }
+    let lines = render(&app, 120, 30);
+    golden("editor_reader_unwrapped_120x30", &lines);
+}
+
+const READER_NOTE: &str = "## What changed\n\nThe OSC-11 query now runs **once**, before raw \
+mode, and the answer is cached for the session; a terminal that never answers costs one timeout, \
+never one per frame.\n\n- `detect.rs` asks the terminal, then hands the flavor to `Theme::new`\n\
+- the goldens moved with it\n\n```\ncargo test -p mesimon-tui\n```\n\n> Still open: the \
+`--color=never` path is untested.\n\n1. one\n2. two\n3. three\n4. four\n5. five\n6. six\n\
+7. seven\n8. eight\n9. nine";
+
 /// The ask room (T-380): the one-line field's prompt in the composer's
 /// dialog. The frame names who the words reach, the title row is the
 /// ticket (read-only), the context row is the field's delivery row, and the

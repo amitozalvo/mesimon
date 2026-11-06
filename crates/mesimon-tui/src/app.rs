@@ -750,6 +750,72 @@ pub struct Editor {
     /// that moves it on means someone else wrote the note, and the row
     /// says so while the draft stays.
     pub opened_rev: Option<u64>,
+    /// The note reader (T-1139): `tab` on a card with a description opens
+    /// the note drawn as markdown, read-only, in this same dialog. `Some`
+    /// for as long as the room was opened as a reader, so leaving the
+    /// editor (`^s`, `esc`) lands back on it.
+    pub reader: Option<Reader>,
+    /// Whether the reader is on screen, rather than the editor it holds.
+    pub reading: bool,
+}
+
+/// The note reader's place (T-1139): the rows scrolled past, as the ticket
+/// page's preview keeps them, and how many cells the unwrapped lines are
+/// scrolled sideways. The rendered rows are cached per document and width
+/// (`rows`), because a held `j` draws a frame per press.
+#[derive(Default)]
+pub struct Reader {
+    pub pager: Pager,
+    /// Cells hidden at the left while the wrap is off; clamped by the draw.
+    pub x: Cell<usize>,
+    /// How far `x` can go, as the last draw measured: the widest line past
+    /// the window. Zero while the wrap is on.
+    pub max_x: Cell<usize>,
+    pub rows: std::cell::RefCell<Option<ReaderRows>>,
+}
+
+/// One layout of the reader's document: what it was laid out for, and the
+/// rows.
+pub struct ReaderRows {
+    pub key: u64,
+    pub width: usize,
+    pub unwrapped: bool,
+    pub flavor: crate::theme::Flavor,
+    pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
+    /// The widest row's cells, for the sideways clamp.
+    pub widest: usize,
+}
+
+impl Reader {
+    /// A step sideways: an eighth of a line's worth of cells, so a long
+    /// line is crossed in a few presses.
+    pub const STEP: usize = 8;
+
+    /// `h`/`l`: `dir` steps sideways, clamped to what the last draw measured.
+    pub fn sideways(&self, dir: isize) {
+        let x = self.x.get() as isize + dir * Self::STEP as isize;
+        self.x.set(x.clamp(0, self.max_x.get() as isize) as usize);
+    }
+}
+
+// The reader's place is a frame's measurement, not the editor's state: a
+// copy starts at the top and two readers compare equal.
+impl Clone for Reader {
+    fn clone(&self) -> Self {
+        Reader::default()
+    }
+}
+
+impl PartialEq for Reader {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Reader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reader").field("x", &self.x.get()).finish_non_exhaustive()
+    }
 }
 
 /// How long the composer dialog takes to grow out of its card. One gesture,
@@ -1151,6 +1217,8 @@ impl Editor {
             body_width: Cell::new(usize::MAX),
             grow: None,
             opened_rev: None,
+            reader: None,
+            reading: false,
             shell_capture: false,
             capture_terminal: None,
         }
@@ -2008,6 +2076,9 @@ pub struct App {
     /// The PREVIEW zone's markdown, rendered once per document and width
     /// rather than once per frame (see `ui::ticket::rendered`).
     pub rich_cache: std::cell::RefCell<Option<crate::ui::RichCache>>,
+    /// The note reader draws its lines unwrapped (`w`, T-1139). The App's,
+    /// not one reader's: the choice holds from note to note for the run.
+    pub reader_unwrapped: bool,
     /// The open transcript's links resolved against the live board, once
     /// per frame rather than per reader (`ctx()`, the hover test and the
     /// dialog each ask; a path candidate costs a stat). Dropped with the
@@ -2465,6 +2536,7 @@ impl App {
             burnt: Vec::new(),
             preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
+            reader_unwrapped: false,
             transcript_links_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
@@ -2811,6 +2883,8 @@ impl App {
     /// or a new reply fading in under a resting card.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
+            || matches!(&self.mode, Mode::Editor(Editor { reader: Some(r), reading: true, .. })
+                if r.pager.animating())
             || self.pager().is_some_and(Pager::animating)
             || self.shaking()
             || self.layout_flashing()
@@ -7558,6 +7632,9 @@ impl App {
         if matches!(self.mode, Mode::Input { .. }) {
             return Scope::Input;
         }
+        if matches!(self.mode, Mode::Editor(Editor { reading: true, .. })) {
+            return Scope::Reader;
+        }
         if matches!(self.mode, Mode::Editor(_)) {
             return Scope::Editor;
         }
@@ -7645,6 +7722,7 @@ impl App {
             Mode::Editor(e) => Some(e),
             _ => None,
         };
+        let reader = editor.filter(|e| e.reading).and_then(|e| e.reader.as_ref());
         let wt = subject.and_then(|t| self.wt_item(t));
         let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
         // `u` is global, so every dialog inherits it; it is offered (and
@@ -7666,6 +7744,7 @@ impl App {
                     | Scope::ColumnSettings
                     | Scope::Summary
                     | Scope::Transcript
+                    | Scope::Reader
                     | Scope::PullRequests
                     | Scope::Tour
             )
@@ -8092,6 +8171,9 @@ impl App {
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
             editor_cycles: editor.is_some_and(|e| self.note_ring(e).is_some()),
+            reader_scrolls: reader.is_some_and(|r| r.pager.view.get().max > 0),
+            reader_unwrapped: self.reader_unwrapped,
+            reader_sideways: self.reader_unwrapped && reader.is_some_and(|r| r.max_x.get() > 0),
             editor_word: self.editor().map_or("", |e| e.word),
             editor_pick: self.prefs.editor.unwrap_or(crate::prefs::AUTO),
             editor_from: self.editors.source().map_or("", crate::external::Source::words),
@@ -8323,6 +8405,9 @@ impl App {
         // an atom it does not bind is a character to type.
         if let Mode::Input { .. } = self.mode {
             return self.key_input(code, mods);
+        }
+        if let Mode::Editor(Editor { reading: true, .. }) = self.mode {
+            return self.key_reader(code, mods);
         }
         if let Mode::Editor(_) = self.mode {
             return self.key_editor(code, mods);
@@ -8711,6 +8796,19 @@ impl App {
             // `Tab` on a card (`Describe`) is the description in the composer's
             // dialog; off the ticket page there is no rail row, so it is
             // `NoteEdit`'s road. The composer's own `Tab` lands in `key_input`.
+            // `Tab` on a card with a description reads it (T-1139): the
+            // editor's dialog, the note drawn as markdown, Enter to edit.
+            // A card with none still opens the editor, to write one.
+            Verb::Describe if matches!(self.screen, Screen::Board) => {
+                if let Some(ticket) = self.subject() {
+                    let note = self.board.ticket(ticket).and_then(|t| t.description()).map(|n| n.id);
+                    self.open_note_editor(ticket, note)?;
+                    if let (Some(_), Mode::Editor(ed)) = (note, &mut self.mode) {
+                        ed.reader = Some(Reader::default());
+                        ed.reading = true;
+                    }
+                }
+            }
             Verb::NoteEdit | Verb::Describe => {
                 if let Some(ticket) = self.subject() {
                     let note = self.selected_note().or_else(|| {
@@ -10234,7 +10332,9 @@ impl App {
             | Verb::EditorDown
             | Verb::EditorExternal
             | Verb::EditorPaste
-            | Verb::NextNote => {}
+            | Verb::NextNote
+            | Verb::PrevNote
+            | Verb::ReaderWrap => {}
         }
         Ok(())
     }
@@ -12858,6 +12958,64 @@ impl App {
         self.mode = Mode::Search(s);
     }
 
+    /// The note reader (T-1139). Not a barrier: it resolves its own scope
+    /// and falls through to the global keys. Every move is the reader's own
+    /// place; Enter turns the same room into the editor on the same note.
+    fn key_reader(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let Some(key) = crate::keys::to_key(code, mods) else { return Ok(()) };
+        let ctx = self.ctx();
+        let Some(verb) = keymap::resolve(Scope::Reader, key, &ctx) else { return Ok(()) };
+        let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        let Some(r) = ed.reader.as_ref() else {
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        };
+        match verb {
+            Verb::ScrollDown => r.pager.scroll(1),
+            Verb::ScrollUp => r.pager.scroll(-1),
+            Verb::PageDown => r.pager.page(1, false),
+            Verb::PageUp => r.pager.page(-1, false),
+            Verb::HalfPageDown => r.pager.page(1, true),
+            Verb::HalfPageUp => r.pager.page(-1, true),
+            Verb::CursorLeft => r.sideways(-1),
+            Verb::CursorRight => r.sideways(1),
+            Verb::ReaderWrap => {
+                self.reader_unwrapped = !self.reader_unwrapped;
+                r.x.set(0);
+            }
+            Verb::NextNote => return self.editor_walk_notes(ed, 1),
+            Verb::PrevNote => return self.editor_walk_notes(ed, -1),
+            // The editor opens where the reader is: on the note, cursor at
+            // its top, the same dialog with no grow.
+            Verb::NoteEdit => {
+                ed.reading = false;
+                ed.focus = Field::Body;
+            }
+            Verb::Back => return Ok(()),
+            _ => {
+                self.mode = Mode::Editor(ed);
+                return self.dispatch(verb, key, Scope::Reader, &ctx);
+            }
+        }
+        self.mode = Mode::Editor(ed);
+        Ok(())
+    }
+
+    /// Back from the editor to the reader it was opened from (T-1139), on
+    /// the note it was on, showing what was saved. `false` when the editor
+    /// was not opened from one.
+    fn back_to_reader(&mut self, ed: &mut Editor) -> bool {
+        if ed.reader.is_none() || !matches!(ed.purpose, EditorPurpose::Note { note: Some(_), .. }) {
+            return false;
+        }
+        ed.reading = true;
+        ed.esc_armed = false;
+        ed.delete_armed = false;
+        true
+    }
+
     /// The editor. A barrier like `key_input`; the mode is TAKEN rather than
     /// cloned, because a 32 KiB body copied per keystroke is silly.
     fn key_editor(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
@@ -13088,6 +13246,26 @@ impl App {
         if ed.dirty() && !ed.esc_armed {
             ed.esc_armed = true;
             self.status = "unsaved ∙ esc again discards".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        // Opened as a reader (T-1139): out of the editor is back to it.
+        // Clean, the words on screen are the note's; a discard reads the
+        // note again, so the reader never shows the words thrown away.
+        if self.back_to_reader(&mut ed) {
+            if ed.dirty() {
+                self.status.clear();
+                let EditorPurpose::Note { ticket, note } = ed.purpose else { return Ok(()) };
+                match self.note_editor(ticket, note) {
+                    Some(mut fresh) => {
+                        fresh.reader = ed.reader.take();
+                        fresh.reading = true;
+                        self.mode = Mode::Editor(fresh);
+                    }
+                    None => self.mode = Mode::Normal,
+                }
+                return Ok(());
+            }
             self.mode = Mode::Editor(ed);
             return Ok(());
         }
@@ -13517,8 +13695,10 @@ impl App {
                 let body = ed.body.as_str().to_string();
                 let blank = body.trim().is_empty();
                 if !ed.dirty() {
-                    // Nothing to save: just leave.
-                    self.mode = Mode::Normal;
+                    // Nothing to save: just leave — to the reader, when
+                    // the room was opened as one (T-1139).
+                    self.mode =
+                        if self.back_to_reader(&mut ed) { Mode::Editor(ed) } else { Mode::Normal };
                     return Ok(());
                 }
                 if blank {
@@ -13553,6 +13733,7 @@ impl App {
                     return self.refresh_soon();
                 }
                 self.mode = match self.write_note(&mut ed, ticket, note, body)? {
+                    Some(_) if self.back_to_reader(&mut ed) => Mode::Editor(ed),
                     Some(_) => Mode::Normal,
                     None => Mode::Editor(ed),
                 };
@@ -13657,10 +13838,13 @@ impl App {
             self.mode = Mode::Editor(ed);
             return Ok(());
         };
-        let Some(walked) = self.note_editor(ticket, Some(next)) else {
+        let Some(mut walked) = self.note_editor(ticket, Some(next)) else {
             self.mode = Mode::Editor(ed);
             return Ok(());
         };
+        // A reader walks as a reader, from the next note's top (T-1139).
+        walked.reader = ed.reader.as_ref().map(|_| Reader::default());
+        walked.reading = ed.reading;
         if let Screen::Ticket { ticket: page, .. } = self.screen {
             if let Some(idx) = self
                 .rail_rows(page)
@@ -19134,13 +19318,92 @@ mod tests {
         assert_eq!(ed.focus, Field::Body);
     }
 
-    /// `Tab` on a card is the composer's `Tab` a ticket late: the
-    /// description opens in the editor, re-read from the daemon, cursor in
-    /// the body, the title the ticket's.
+    /// T-1139: `tab` on a card with a description READS it — the editor's
+    /// room with the note drawn, the reader's keys — and Enter turns the
+    /// room into the editor on the same note. Out of the editor, `esc` and
+    /// `^s` land back on the reader; `esc` there closes.
+    #[test]
+    fn tab_on_a_card_reads_its_description_and_enter_edits_it() {
+        let (mut app, sent) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading, "a reader, not the editor");
+        assert_eq!(app.scope(), Scope::Reader);
+        assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
+        // Letters move or do nothing: none is typed into the note.
+        press(&mut app, 'x');
+        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!editor(&app).reading);
+        assert_eq!(app.scope(), Scope::Editor);
+        // A clean `esc` is back to the reader, a second one closes.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading, "back to the reader");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+
+        // `^s` writes the note and shows it in the reader.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'z');
+        sent.borrow_mut().clear();
+        ctrl(&mut app, 's');
+        assert!(sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        assert!(editor(&app).reading, "saved, and back to the reader");
+        assert!(editor(&app).body.as_str().starts_with('z'));
+        assert!(!editor(&app).dirty());
+    }
+
+    /// T-1139: a discarded draft never shows in the reader — the note is
+    /// read again — and `q` closes the reader as `esc` does.
+    #[test]
+    fn a_discard_lands_on_the_note_as_it_was() {
+        let (mut app, sent) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'z');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!editor(&app).reading, "the first esc only warns");
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading);
+        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
+        assert!(!sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        press(&mut app, 'q');
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    /// T-1139: `tab` and `shift+tab` walk the notes in the reader, each
+    /// from its top; `w` takes the wrap off for the run, and back.
+    #[test]
+    fn the_reader_walks_the_notes_and_toggles_the_wrap() {
+        let (mut app, _) = app_with_three_notes();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().editor_cycles);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)));
+        assert!(editor(&app).reading, "a reader walks as a reader");
+        assert_eq!(editor(&app).body.as_str(), "second");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
+        assert_eq!(app.board.tickets[0].workspace, None, "shift+tab never picks here");
+        assert!(!app.ctx().reader_unwrapped);
+        press(&mut app, 'w');
+        assert!(app.ctx().reader_unwrapped);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().reader_unwrapped, "the choice holds for the run");
+        press(&mut app, 'w');
+        assert!(!app.ctx().reader_unwrapped);
+    }
+
+    /// A card with no description has nothing to read: `tab` opens the
+    /// editor on the fresh note that becomes it, as before T-1139.
     #[test]
     fn tab_on_a_card_opens_its_description() {
         let (mut app, sent) = app_with_note();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
         let ed = editor(&app);
         assert_eq!(ed.body.as_str(), "# Why\n\nbecause");
@@ -19152,10 +19415,12 @@ mod tests {
         assert!(!ed.composing(), "the title is the ticket's");
         // A ticket with no description gets the fresh note that becomes it.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         app.cursor_row = Some(1);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: None, .. }));
+        assert!(!editor(&app).reading, "nothing to read: the editor");
     }
 
     /// Shift+Tab in the description editor is the composer's workspace
@@ -19165,6 +19430,7 @@ mod tests {
     fn shift_tab_in_the_description_sets_the_workspace_until_work_starts() {
         let (mut app, sent) = app_with_note();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
@@ -19176,6 +19442,7 @@ mod tests {
         // With a session on the ticket the key is inert: nothing is sent.
         let (mut app, sent) = app_with_note_and(true);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         sent.borrow_mut().clear();
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
@@ -19226,6 +19493,7 @@ mod tests {
     fn shift_tab_in_the_editor_walks_the_notes_back() {
         let (mut app, sent) = app_with_three_notes();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(on_note(&app), Some(ulid::Ulid(90)));
         assert!(app.ctx().workspace_open, "the pick would have had the key");
         let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
@@ -19254,6 +19522,7 @@ mod tests {
         let (mut app, sent) = app_with_three_notes();
         let key = |app: &mut App, code| app.handle_key(code, KeyModifiers::NONE).unwrap();
         key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('x'));
         sent.borrow_mut().clear();
         for _ in 0..2 {

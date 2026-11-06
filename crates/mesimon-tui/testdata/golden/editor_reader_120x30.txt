@@ -1,0 +1,30 @@
+ NOTE   mesimon › kanban-tui
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+                              ╭─ DESCRIPTION 1/2 ─────────────────────────────────────────╮
+    Decay treatments      >1y │▉▉ Fix OSC-11 detection                                    │   z Painted accent bar >1y
+                              │▉▉ ⎇ shared ∙ edited by you >1y ago                        │
+    Keymap validator      >1y │▉▉                                                         │
+                              │▉▉ What changed                                            │
+                              │▉▉                                                         │
+                              │▉▉ The OSC-11 query now runs once, before raw mode, and    │
+                              │▉▉ the answer is cached for the session; a terminal that   │
+                              │▉▉ never answers costs one timeout, never one per frame.   │
+                              │▉▉                                                         │
+                              │▉▉ • detect.rs asks the terminal, then hands the flavor    │
+                              │▉▉   to Theme::new                                         │
+                              │▉▉ • the goldens moved with it                             │
+                              │▉▉                                                         │
+                              │▉▉   cargo test -p mesimon-tui                             │
+                              │▉▉                                                         │
+                              │▉▉ › Still open: the --color=never path is untested.       │
+                              │▉▉                                                         │
+                              │▉▉ 1. one                                                  │
+                              │▉▉ 2. two                                                  │
+                              │▉▉ 3. three                                                │
+                              │▉▉ 4. four~                                                │
+                              │▉▉                                                         │
+                              ╰─────── enter edit ∙ jk scroll ∙ tab next note ∙ { } page ─╯
+
+
+ enter edit ∙ jk scroll ∙ tab next note ∙ { } page ∙ w unwrap ∙ esc close                                        ? keys

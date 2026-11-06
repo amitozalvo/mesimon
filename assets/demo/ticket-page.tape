@@ -28,10 +28,13 @@ Show
 # The board, the cursor on a ticket whose agent has already been at it.
 Sleep 0.9s
 
-# Tab: the card grows into its description. Two lines of what to do, under
-# the one already there, and ^s keeps them.
+# Tab: the card grows into its description, drawn to read. Enter edits it:
+# two lines of what to do, under the one already there, ^s keeps them and
+# shows them, and Esc puts the card back.
 Tab
-Sleep 0.6s
+Sleep 0.9s
+Enter
+Sleep 0.3s
 Down
 Enter
 Type "- Count from the last click, not creation."
@@ -39,7 +42,9 @@ Enter
 Type "- Free its slug and log it."
 Sleep 0.4s
 Ctrl+S
-Sleep 0.6s
+Sleep 0.9s
+Escape
+Sleep 0.4s
 
 # Enter on a quiet ticket is its page: the description, the agent's last
 # words beside the shin, and the NOTES rail with the agent's note.

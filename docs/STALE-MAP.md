@@ -41407,3 +41407,38 @@ up to 14 times with different partial values for the newest. Recording today: it
 grow until midnight UTC, and an idempotent record would freeze the partial number. First run
 2026-11-05: 30 rows; the second the same day: no new rows. No unit test; the ticket's check
 is the double live run.
+
+## `tab` on a card reads its description; Enter edits it (T-1139, 2026-11-06, the author: "tab on ticket with notes show readonly formatted presentation of the MD ∙ {} and hjkl and arrow keys for motion ∙ enter to edit")
+
+Tab on a card opened the description straight into the editor (T-163). Now, on a card whose
+ticket has a description, it opens the **note reader**: the editor's own dialog (same grow,
+frame, stripe, `DESCRIPTION 1/3` heading and context row), the body drawn as markdown by
+`rich::render_on` on the dialog's surface (`Elevated` where the profile paints a cursor card),
+no cursor. A card with no description still opens the editor, to write one. Frames were approved
+before building.
+
+- **State.** `Editor.reader: Option<Reader>` + `Editor.reading`. `reader` stays `Some` while the
+  room was opened as a reader, so `^s` (written or clean) and `esc` (clean, or the second press
+  of a discard) land back on it (`App::back_to_reader`); a discard re-reads the note so the
+  reader never shows thrown-away words; `esc`/`q` in the reader closes. A walk keeps the mode and
+  starts the next note at its top. `Reader` holds a `Pager`, the sideways `x`/`max_x` and a
+  per-document row cache (not `App::rich_cache`, which is Ground-only and the preview's).
+- **Keys: `Scope::Reader`, parent Global.** Enter edits (`NoteEdit`); `jk`/arrows scroll and
+  `{ }`/PgUp/PgDn page, live only when the note is longer than the window; `tab`/`shift+tab`
+  walk the notes (`NextNote`/new `PrevNote` via `directional`); `w` toggles the wrap
+  (`ReaderWrap`, `App::reader_unwrapped`, for the run, not persisted); `hl`/arrows scroll 8 cells
+  sideways, live only unwrapped with a line past the window.
+- **Wrap.** The author asked mid-design: "shouldn't we disable wordwrap? or atleast allow user
+  to toggle it, and then it becomes needed" (`hl`). Kept ON by default: a person's paragraph is
+  one source line and would run off a 60-cell dialog. Unwrapped lays out at the longest source
+  line + 8, capped at 4096 cells, then slices each row (`ui::editor::cells`).
+- **Given up:** Shift+Tab in the reader on a lone note no longer sets the workspace (the editor's
+  still does, after Enter), and the reader's context row does not spell it.
+- **Docs/demo:** `docs/USING.md` describes the reader; `assets/demo/ticket-page.tape` presses
+  Enter before typing and Esc after `^s`. The GIF was not re-recorded.
+
+Tests: `keymap::the_reader_reads_and_enter_edits`;
+`tab_on_a_card_reads_its_description_and_enter_edits_it`, `a_discard_lands_on_the_note_as_it_was`,
+`the_reader_walks_the_notes_and_toggles_the_wrap` (app); the editor tests that typed after Tab now
+press Enter first; `golden_editor_reader_120` (`editor_reader_120x30`,
+`editor_reader_unwrapped_120x30`).

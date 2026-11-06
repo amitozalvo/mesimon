@@ -315,8 +315,11 @@ stops a snake that is out.
 <sub>`tab` adds two lines to the brief, `enter` opens the page with the note its agent left, and
 `ctrl-k` opens one of that note's links.</sub>
 
-`tab` on a card opens its description, the brief its agent starts from. `ctrl-s` saves it and
-closes the editor, and `ctrl-g` opens the text in your own editor instead. In the new-ticket
+`tab` on a card shows its description, the brief its agent starts from, drawn as markdown: `j`
+and `k` scroll, `{` and `}` page, `tab` walks to the ticket's other notes, and `w` turns the
+wrap off so `h` and `l` scroll a long line sideways. `enter` edits the note on screen; `ctrl-s`
+saves it and `esc` leaves the editor, both back to the note, and `ctrl-g` opens the text in your
+own editor instead. A card with no description opens the editor straight away. In the new-ticket
 composer, `tab` opens the same editor for the new ticket's description, and `ctrl-s` files the
 ticket. The description is a
 ticket's first note. Every other note is listed under NOTES on the ticket page, whether you
