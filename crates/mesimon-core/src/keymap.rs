@@ -11888,7 +11888,8 @@ mod tests {
         assert_eq!(resolve(Scope::Links, Key::Enter, &command), None);
         assert_eq!(hint_for(Scope::Links, Verb::Act, &command), None);
         assert_eq!(resolve(Scope::Links, Key::Char('c'), &command), Some(Verb::LinkCopy));
-        let picked = Ctx { transcript_links: true, transcript_link_selected: true, ..command.clone() };
+        let picked =
+            Ctx { transcript_links: true, transcript_link_selected: true, ..command.clone() };
         assert_eq!(resolve(Scope::Transcript, Key::Enter, &picked), None);
         assert_eq!(resolve(Scope::Transcript, Key::Char('c'), &picked), Some(Verb::LinkCopy));
         let read = Ctx { reader_links: true, reader_link_selected: true, ..command.clone() };

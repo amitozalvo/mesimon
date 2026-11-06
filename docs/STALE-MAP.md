@@ -41711,3 +41711,24 @@ binding is not queued, so success stays consumed; a ticket woken in place after 
 freed and parked again is freed at the next restart, which is what the column asks. Refuted:
 seeding on every tick (re-judges each refused ticket every 2 s for its whole stay, the
 T-1040 review's complaint).
+
+## A board waits out a daemon that is still starting (T-1149, 2026-11-06)
+
+A `U` on the simbly board (13 repositories, 31 bindings) came up saying "no daemon yet" and
+recovered on the next 2 s reconnect. The reload itself worked: the old daemon stopped, the new
+binary took the board over, a new daemon started. But a daemon binds `orch.sock` in its first
+milliseconds and answers `Hello` from its writer's first turn, after the whole startup in
+`server::run`, and that startup took 11.5 s. The client waited `RESPONSE_WAIT` (10 s). Read off
+`daemon.log` (start to the shell capture's ask), the startup grew with the bindings over the
+day: 1.3, 3.5, 7.5, 5.0, 4.4, then 11.5 s. Its largest piece is the synchronous
+`refresh_worktree_flags`: the same git reads, timed by hand on simbly, take 4.4 s.
+
+**The handshake's `Hello` waits `HELLO_WAIT` (= `HANDOVER_MAX`, 30 s)**, the bound the same
+reload already gives the old daemon to stop. Every later request keeps `RESPONSE_WAIT`. The
+snapshot lane's `Hello` keeps it as well, since a lane opens beside a connection that already
+had its `Hello` answered. `ResponseTimeout` names the wait it ran out. **The daemon writes
+`serving after N ms of startup`** just before its loop, so the next slow start is one line in
+the log instead of a sum. Refuted for this fix: moving the startup flags sample onto the
+worker. Forty-eight readers of `wt_agg`/`wt_repos` (crown wakes, the train, column evictions,
+gates, the first snapshot) would see no flags for the first seconds of every daemon life, and
+each one would need its own check. That is its own change if startup keeps growing.

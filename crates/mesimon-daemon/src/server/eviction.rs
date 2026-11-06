@@ -146,10 +146,8 @@ impl Daemon {
             .map(|t| (t.id, t.column.clone()))
             .collect();
         for (id, column) in due {
-            self.column_evictions.insert(
-                id,
-                ColumnEviction { column, due: now, refusal: None, probing: false },
-            );
+            self.column_evictions
+                .insert(id, ColumnEviction { column, due: now, refusal: None, probing: false });
         }
     }
 

@@ -113,16 +113,17 @@ fn upgradeable(error: &anyhow::Error) -> bool {
     matches!(error.downcast_ref::<ProtocolMismatch>(), Some(ProtocolMismatch(1)))
 }
 
-/// The daemon took the request and did not answer within `RESPONSE_WAIT`
-/// (T-856): the socket is open, so the process is up, and its writer thread
-/// is in a turn that has outrun the board's patience. Not an outage — the
-/// journal's `slow turn` line will name what it was doing.
+/// The daemon took the request and did not answer within the wait it was
+/// given (T-856), `RESPONSE_WAIT` or a handshake's `HELLO_WAIT`: the socket
+/// is open, so the process is up, and its writer thread is in a turn that
+/// has outrun the board's patience. Not an outage — the journal's
+/// `slow turn` line will name what it was doing.
 #[derive(Debug)]
-pub struct ResponseTimeout;
+pub struct ResponseTimeout(pub(crate) Duration);
 
 impl std::fmt::Display for ResponseTimeout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the daemon did not answer within {} s", RESPONSE_WAIT.as_secs())
+        write!(f, "the daemon did not answer within {} s", self.0.as_secs())
     }
 }
 
@@ -143,6 +144,17 @@ impl std::error::Error for Reopening {}
 
 /// How long one request waits for the writer thread's answer.
 pub const RESPONSE_WAIT: Duration = Duration::from_secs(10);
+
+/// How long a board connection's `Hello` waits (T-1149). A daemon binds its
+/// socket in its first milliseconds and answers from its writer's first
+/// turn, after the whole startup: the board's files, the panes' reconcile and
+/// one synchronous worktree-flags sample across every leg. On a 13-repo
+/// workspace with 31 bindings that took 11.5 s, past `RESPONSE_WAIT`, and a
+/// `U` reload came up saying "no daemon yet" over a daemon that answered a
+/// second later. The bound is `HANDOVER_MAX`'s, the wait the same reload
+/// already allows the old daemon to stop.
+pub const HELLO_WAIT: Duration = HANDOVER_MAX;
+const _: () = assert!(HELLO_WAIT.as_secs() > RESPONSE_WAIT.as_secs());
 
 /// What a failed request says about the daemon, for the status row (T-856):
 /// the one word a person acts on differently. `Slow` is a daemon that is up
@@ -336,9 +348,9 @@ impl Client {
     /// The board's connection, reopened off the loop's thread (T-856).
     ///
     /// `open_current` dials, spawns a daemon that is gone, waits out a
-    /// handover and runs the handshake — up to `RESPONSE_WAIT` on each of
-    /// `Hello` and `Subscribe` when the daemon is up but its writer is in a
-    /// long turn. Done on this thread, every one of those held the loop,
+    /// handover and runs the handshake — up to `HELLO_WAIT` on the `Hello` and
+    /// `RESPONSE_WAIT` on `Subscribe` when the daemon is up but its writer is
+    /// in a long turn or still starting. Done on this thread, every one of those held the loop,
     /// and a daemon that was merely slow froze the board for the stall plus
     /// a handshake per 2 s reconnect (the author's work machine, on a Zoom
     /// call: 30 s at a time, said as "unreachable"). The thread does the
@@ -672,7 +684,10 @@ fn open(repo_root: &Path) -> Result<Conn> {
 /// does — and a subscriber nobody drains would grow its event channel by
 /// one entry per push for the board's whole life.
 fn open_lane(repo_root: &Path) -> Result<Conn> {
-    hello(connect_existing(repo_root)?, PROTOCOL_VERSION)
+    // A lane opens beside a board connection that already had its Hello
+    // answered, so its wait stays a request's: a starting daemon is the
+    // board connection's to wait out.
+    hello(connect_existing(repo_root)?, PROTOCOL_VERSION, RESPONSE_WAIT)
 }
 
 /// One snapshot on the lane: the kept connection, or a fresh one when there
@@ -703,7 +718,7 @@ fn ask_lane(lane: &mut Option<Conn>, repo_root: &Path) -> Result<Response> {
 /// Wire up the reader thread, say Hello, subscribe — and record what the
 /// daemon said about itself.
 fn handshake(stream: UnixStream) -> Result<Conn> {
-    let mut c = hello(stream, PROTOCOL_VERSION)?;
+    let mut c = hello(stream, PROTOCOL_VERSION, HELLO_WAIT)?;
     c.request(Command::Subscribe)?;
     Ok(c)
 }
@@ -711,15 +726,17 @@ fn handshake(stream: UnixStream) -> Result<Conn> {
 /// Hello and Shutdown have the same wire shape in protocols 1 and 2. This
 /// connection is deliberately short-lived and never enters `Client::conn`.
 fn shutdown_existing(sock: &Path) -> Result<Response> {
-    let mut c = match hello(UnixStream::connect(sock)?, PROTOCOL_VERSION) {
+    let mut c = match hello(UnixStream::connect(sock)?, PROTOCOL_VERSION, HELLO_WAIT) {
         Ok(c) => c,
-        Err(error) if upgradeable(&error) => hello(UnixStream::connect(sock)?, 1)?,
+        Err(error) if upgradeable(&error) => hello(UnixStream::connect(sock)?, 1, HELLO_WAIT)?,
         Err(error) => return Err(error),
     };
     c.request(Command::Shutdown)
 }
 
-fn hello(stream: UnixStream, version: u32) -> Result<Conn> {
+/// `wait` bounds the `Hello`'s answer alone; every later request on the
+/// connection waits `RESPONSE_WAIT`.
+fn hello(stream: UnixStream, version: u32, wait: Duration) -> Result<Conn> {
     // A write the daemon never drains ends within the same wait a reply
     // gets (T-812 re-review): the lane's thread, and the board's, never
     // hang on a full socket buffer.
@@ -742,10 +759,10 @@ fn hello(stream: UnixStream, version: u32) -> Result<Conn> {
     });
 
     let mut c = Conn { write, responses: rrx, events: erx, daemon: DaemonIdent::default() };
-    let hello = c.request(Command::Hello {
-        version,
-        client: format!("mesimon-tui/{}", env!("CARGO_PKG_VERSION")),
-    })?;
+    let hello = c.request_within(
+        Command::Hello { version, client: format!("mesimon-tui/{}", env!("CARGO_PKG_VERSION")) },
+        wait,
+    )?;
     match hello {
         Response::Hello { version: received, daemon_pid, build, exe_stamp, detached, .. }
             if received == version =>
@@ -776,12 +793,16 @@ impl Drop for Conn {
 
 impl Conn {
     fn request(&mut self, command: Command) -> Result<Response> {
+        self.request_within(command, RESPONSE_WAIT)
+    }
+
+    fn request_within(&mut self, command: Command, wait: Duration) -> Result<Response> {
         let env = Envelope { principal: Principal::Local, command };
         let json = serde_json::to_string(&env)?;
         writeln!(self.write, "{json}").context("write to daemon")?;
-        match self.responses.recv_timeout(RESPONSE_WAIT) {
+        match self.responses.recv_timeout(wait) {
             Ok(response) => Ok(response),
-            Err(RecvTimeoutError::Timeout) => Err(ResponseTimeout.into()),
+            Err(RecvTimeoutError::Timeout) => Err(ResponseTimeout(wait).into()),
             Err(RecvTimeoutError::Disconnected) => {
                 Err(anyhow!("the daemon hung up before answering"))
             }
@@ -901,6 +922,40 @@ mod tests {
             }
             peer.join().unwrap();
         }
+    }
+
+    /// A daemon still starting answers its first Hello late (T-1149): the
+    /// handshake waits the wait it was given, and a timeout names it.
+    #[test]
+    fn a_late_hello_is_waited_for_within_its_own_wait() {
+        let late = |wait: Duration| {
+            let (client, server) = UnixStream::pair().unwrap();
+            let peer = std::thread::spawn(move || {
+                let mut reader = BufReader::new(server);
+                let _ = read_command(&mut reader);
+                std::thread::sleep(Duration::from_millis(400));
+                // A client that gave up has hung up: the late answer may
+                // meet a closed socket.
+                let hello = serde_json::to_string(&Response::Hello {
+                    version: PROTOCOL_VERSION,
+                    daemon_pid: 7,
+                    build: String::new(),
+                    exe_stamp: None,
+                    detached: true,
+                    repo_root: String::new(),
+                    crown: None,
+                })
+                .unwrap();
+                let _ = writeln!(reader.get_mut(), "{hello}");
+            });
+            let got = hello(client, PROTOCOL_VERSION, wait);
+            peer.join().unwrap();
+            got
+        };
+        assert_eq!(late(Duration::from_secs(5)).expect("waited out").daemon.pid, 7);
+        let error = late(Duration::from_millis(100)).err().expect("gave up");
+        assert_eq!(outage(&error), Outage::Slow);
+        assert!(error.downcast_ref::<ResponseTimeout>().is_some_and(|t| t.0.as_millis() == 100));
     }
 
     #[test]

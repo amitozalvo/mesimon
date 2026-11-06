@@ -1240,6 +1240,7 @@ struct NestedFetch {
 }
 
 pub fn run(paths: Paths) -> Result<()> {
+    let began = Instant::now();
     // First statement: the stamp must describe the binary that is executing,
     // not one that replaced it at the same path while we were starting.
     // MESIMON_DAEMON_EXE names another file (test seam, T-941): an e2e moves
@@ -1690,6 +1691,10 @@ pub fn run(paths: Paths) -> Result<()> {
     // used before this existed, so the window is a regression to the old
     // behaviour rather than to no behaviour at all.
     d.queue_shell_env_capture();
+    // Everything above ran before any client's Hello could be answered
+    // (T-1149): a board waits `HELLO_WAIT` for it, and this line is how long
+    // that was.
+    d.journal.line(&format!("serving after {} ms of startup", began.elapsed().as_millis()));
 
     for msg in rx {
         // Every turn is timed and named BEFORE it runs (the message is

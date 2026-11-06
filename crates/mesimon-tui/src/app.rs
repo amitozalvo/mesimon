@@ -17743,7 +17743,7 @@ mod tests {
         struct Slow;
         impl Transport for Slow {
             fn request(&mut self, _: Command) -> Result<Response> {
-                Err(crate::client::ResponseTimeout.into())
+                Err(crate::client::ResponseTimeout(crate::client::RESPONSE_WAIT).into())
             }
             fn poll_event(&mut self) -> bool {
                 false
