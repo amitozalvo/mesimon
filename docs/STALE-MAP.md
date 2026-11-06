@@ -42094,3 +42094,22 @@ worker): the fill and Enter went in 10 s into the first one-minute wait, the wai
 end, and the model read the words at that step and replied mango; no second wait, no first.
 A bare `sleep 60` is refused by 2.1.319's Bash tool, so the case waits in python. `replies`
 reads a subsequence, so NW1 adds `replies_never:first`.
+
+**Review (the same day, ten findings, three defects fixed).** A `now` at a dialog went by the
+fill, whose Enter would have picked the dialog's option (the submit typed nothing, and a
+person's plain `now` has no dialog gate in `prompt_session`, only `immediately`'s): `fills_now`
+refuses `pane_waits_on_you`, the e2e sends a person's `now` at the dialog on the mod pass and
+reads a submit alone. A second send into the seat between the fill's dispatch and its report
+replaced the owed entry, and the first words stood in the box with no key and nobody owing them:
+`Owed.filled` marks the report, and `paste_at` refuses `PROMPT_WAITING` while a fill is pending,
+as for parked words (no e2e: the stand-in reports in the same tick). `fills_now` asked for no
+client at all (`Away`), so a worker pane open in a split, idle, fell to the submit and the
+complaint stood: the rule is T-966's at both edges, no client typing (`Here`), the box the mod's
+own read. Cleanups: one `resubmit` carries a delivery's identity through `mod_submit` at its
+three sites (the parked bridge, the two refused fills); the key's name is in one wording;
+`prompt_by_mod_fill` says `enter` or `send_now` at the dispatch; `bare_replies` is the one
+reading `replies` and `replies_never` share. Left as the hook road has it: a person's Esc
+clears the prompt the Enter queued with no report (T-1025's re-send is the held submit's, and
+the ask reads handed by its carrying hook, as a paste's does); an Enter refused or failed after
+the fill leaves the words in the box, `prompt_enter_failed` the one mark, as `immediately`'s
+send-now does.

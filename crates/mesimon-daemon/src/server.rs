@@ -2557,6 +2557,10 @@ struct Owed {
     /// names. A refused fill sends them as a `submit` instead
     /// (`on_mod_fill`).
     fill: Option<FillKey>,
+    /// The mod reported the fill done and its key went in (or was
+    /// withheld): until then the words are in flight to the box, and no
+    /// other send takes this seat (`fill_pending`, T-1148 review).
+    filled: bool,
     ack: Ack,
     /// Why these words were sent, when that matters to the crown (T-469):
     /// its ack marks the turn that took them (`Daemon::turn_asks`). A
@@ -2675,6 +2679,7 @@ impl Owed {
             frame: None,
             taken: false,
             fill: None,
+            filled: false,
             ack,
             asked: None,
             ask: None,
@@ -6024,6 +6029,13 @@ impl Daemon {
         self.owed.get(&id).is_some_and(|o| o.parked.is_some())
     }
 
+    /// A `fill` is down the session's mod and its report not yet in: the
+    /// words are on their way to the box, and a send that replaced the
+    /// entry now would leave them there with no key and no one owing them.
+    fn fill_pending(&self, id: uuid::Uuid) -> bool {
+        self.owed.get(&id).is_some_and(|o| o.fill.is_some() && !o.filled)
+    }
+
     /// Anything owed on any of the ticket's sessions.
     fn owed_on(&self, ticket: ulid::Ulid) -> bool {
         self.owed.values().any(|o| o.ticket == ticket)
@@ -6361,7 +6373,11 @@ impl Daemon {
         let mut owed = Owed::submitted(ticket, words, frame, ack, now_ms());
         owed.fill = Some(key);
         self.owed.insert(id, owed);
-        self.feed.board("daemon", "prompt_by_mod_fill", Some(ticket));
+        let word = match key {
+            FillKey::SendNow => "send_now",
+            FillKey::Enter => "enter",
+        };
+        self.feed.board_outcome("daemon", "prompt_by_mod_fill", Some(ticket), word);
         true
     }
 
@@ -6403,13 +6419,23 @@ impl Daemon {
         if outcome == "filled" {
             self.mod_taken(id, fid);
             let ticket = self.owed.get(&id).map(|o| o.ticket);
+            if let Some(o) = self.owed.get_mut(&id) {
+                o.filled = true;
+            }
             // Never under a person's hands (T-958): one typing since the
             // fill would have their keys sent with the words. `None` is that
             // refusal, before any key. The `filled` report says only that the
             // mod filled the box; what the person did since is not the
-            // board's to read.
+            // board's to read. The send-now asks for no client at all; the
+            // Enter (T-1148) goes by the rule that admitted it, no client
+            // typing (`Here`), read again at this edge.
             let enter = key == Some(FillKey::Enter);
-            let sent = if self.person_at_pane(&sid) {
+            let held = if enter {
+                self.clients_at_pane(&sid) == PaneClients::Here
+            } else {
+                self.person_at_pane(&sid)
+            };
+            let sent = if held {
                 Err(None)
             } else if enter {
                 self.backend.send_enter(&sid).map_err(Some)
@@ -6429,31 +6455,24 @@ impl Daemon {
                         Some(e) => {
                             self.journal.line(&format!("{key_name} for session {id} failed: {e}"));
                             // The crown's ask (T-938): the keys may have half gone.
-                            let why = if enter {
-                                "the Enter failed after the words were filled into its box"
-                            } else {
-                                "the send-now keys failed after the words were filled into its box"
-                            };
-                            ("keys", why)
+                            ("keys", format!("the {key_name} failed after the words were filled into its box"))
                         }
                         None => {
                             self.journal.line(&format!(
                                 "{key_name} for session {id}: a person has its pane open"
                             ));
-                            let why = if enter {
-                                "its mod reported the words filled; the board pressed no Enter \
-                                 because a person has its pane open; what became of the words is \
-                                 unconfirmed"
-                            } else {
-                                "its mod reported the words filled; the board pressed no send-now \
-                                 because a person has its pane open; what became of the words is \
-                                 unconfirmed"
-                            };
-                            (A_PERSON_ATTACHED, why)
+                            (
+                                A_PERSON_ATTACHED,
+                                format!(
+                                    "its mod reported the words filled; the board pressed no \
+                                     {key_name} because a person has its pane open; what became \
+                                     of the words is unconfirmed"
+                                ),
+                            )
                         }
                     };
                     self.feed.board_outcome("daemon", failed_word, ticket, word);
-                    self.crown_ask_unread(id, fid, why);
+                    self.crown_ask_unread(id, fid, &why);
                 }
             }
             self.persist_and_notify();
@@ -6462,32 +6481,20 @@ impl Daemon {
         let said = frame.payload["reason"].as_str().or(frame.payload["error"].as_str());
         let why = said.map(|s| mesimon_core::text::cap_bytes(s, 120)).unwrap_or("refused");
         self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}: {why}"));
-        let Some(owed) = self.owed.remove(&id) else { return };
-        let asked = owed.asked;
+        let Some(mut owed) = self.owed.remove(&id) else { return };
         let ticket = owed.ticket;
         // `now` (T-1148): a refused fill falls to the plain `submit`, the
         // crown's ask too, which is the mod road's `now` as it was before
         // the fill: the words go, and the engine holds them to the running
         // turn's end. The ask is that submit's from here.
         if key == Some(FillKey::Enter) {
-            let (ask, receipt_id) = (owed.ask, owed.receipt_id);
-            let Some(words) = owed.sent else { return };
+            let Some(words) = owed.sent.take() else { return };
             self.feed.board_outcome("daemon", "prompt_fill_refused", Some(ticket), why);
-            if self.mod_submit(id, ticket, words, owed.ack) {
-                if let Some(o) = self.owed.get_mut(&id) {
-                    o.asked = asked;
-                    o.ask = ask;
-                    o.receipt_id = receipt_id;
-                }
-                let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
-                if let (Some(ask), Some(frame)) = (ask, frame) {
-                    self.crown_ask_framed(id, ask, frame);
-                }
-            } else {
+            if !self.resubmit(id, words, &owed) {
                 if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                     rec.pending_submit = false;
                 }
-                if ask.is_some() {
+                if owed.ask.is_some() {
                     self.crown_ask_unread(id, fid, FILL_UNREAD);
                 }
             }
@@ -6512,16 +6519,37 @@ impl Daemon {
             self.persist_and_notify();
             return;
         }
-        let Some(words) = owed.sent else { return };
+        let Some(words) = owed.sent.take() else { return };
         self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
-        if self.mod_submit(id, ticket, words, owed.ack) {
-            if let Some(o) = self.owed.get_mut(&id) {
-                o.asked = asked;
+        if !self.resubmit(id, words, &owed) {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.pending_submit = false;
             }
-        } else if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-            rec.pending_submit = false;
         }
         self.persist_and_notify();
+    }
+
+    /// Words one delivery owes go down the session's mod as a `submit` in
+    /// its place, the delivery's identity carried onto the new entry (its
+    /// receipt, T-1042; the turn ask; the crown's ask, bound to the new
+    /// frame as a turn of its own, T-938): parked words at the bridge
+    /// (T-575), a fill refused (T-601, T-1148). `false` when the words came
+    /// to nothing, no entry owed.
+    fn resubmit(&mut self, id: uuid::Uuid, words: Parked, from: &Owed) -> bool {
+        if !self.mod_submit(id, from.ticket, words, from.ack) {
+            return false;
+        }
+        if let Some(o) = self.owed.get_mut(&id) {
+            o.asked = from.asked;
+            o.ask = from.ask;
+            o.receipt_id = from.receipt_id;
+        }
+        if let (Some(ask), Some(frame)) =
+            (from.ask, self.owed.get(&id).and_then(|o| o.frame.clone()))
+        {
+            self.crown_ask_framed(id, ask, frame);
+        }
+        true
     }
 
     /// A session's mod came up (its bridge's first poll from this pane):
@@ -6563,22 +6591,12 @@ impl Daemon {
             ));
             return true;
         }
-        let Some(owed) = self.owed.remove(&id) else { return false };
-        let Some(words) = owed.parked else { return false };
-        let (asked, ask, receipt_id) = (owed.asked, owed.ask, owed.receipt_id);
-        if !self.mod_submit(id, owed.ticket, words, owed.ack) {
-            self.drop_owed(id);
-            return true;
-        }
-        if let Some(o) = self.owed.get_mut(&id) {
-            o.asked = asked;
-            o.ask = ask;
-            o.receipt_id = receipt_id;
-        }
+        let Some(mut owed) = self.owed.remove(&id) else { return false };
+        let Some(words) = owed.parked.take() else { return false };
         // A parked wake's words went down the mod: the ask's frame is this
         // one, and it runs as a turn of its own (T-938).
-        if let (Some(ask), Some(frame)) = (ask, self.owed.get(&id).and_then(|o| o.frame.clone())) {
-            self.crown_ask_framed(id, ask, frame);
+        if !self.resubmit(id, words, &owed) {
+            self.drop_owed(id);
         }
         true
     }
@@ -14451,7 +14469,7 @@ impl Daemon {
         // fill or a submit. Refused before any key, as for a person at the
         // pane: the words stay with whoever sent them, a queue road keeps its
         // entry, and the parked words keep theirs and their receipt.
-        if self.parked(id) {
+        if self.parked(id) || self.fill_pending(id) {
             self.refuse_before_keys(id, ticket, PROMPT_WAITING);
             return Err(PROMPT_WAITING.into());
         }
@@ -14656,14 +14674,18 @@ impl Daemon {
 
     /// Whether `now` words go into a working mod-road turn by a `fill` and
     /// an Enter (T-1148): a session that would take them by its `submit`,
-    /// whose mod speaks `fill`, mid-turn, with no person at its pane. Not a
-    /// crown wake, which has its own road and receipt.
+    /// whose mod speaks `fill`, mid-turn and not at a dialog (the Enter
+    /// would answer it; the submit types nothing), with no one typing at
+    /// its pane (T-966's rule: a client idle past the bound is not at the
+    /// box, and the mod fills only an empty one). Not a crown wake, which
+    /// has its own road and receipt.
     fn fills_now(&self, id: uuid::Uuid, sid: &str, text: &str, ack: Ack) -> bool {
         ack.word != Ack::CROWN_WAKE.word
             && self.takes_by_submit(id, text)
             && self.mod_speaks(id, "fill")
             && !self.session_idle(id)
-            && self.clients_at_pane(sid) == PaneClients::Away
+            && !self.pane_waits_on_you(id)
+            && self.clients_at_pane(sid) != PaneClients::Here
     }
 
     /// The owed entry for words just pasted into a live Claude pane,

@@ -1163,6 +1163,12 @@ def replies(rows):
     return out
 
 
+def bare_replies(rows):
+    """`replies`, each read as a word: trimmed, its end punctuation off,
+    lowered (the rule `replies` and `replies_never` share)."""
+    return [r.strip().strip(".!").strip().lower() for r in replies(rows)]
+
+
 def slug(title):
     """`mesimon_core::workspace::slug` for the rig's ASCII titles: the branch
     a worktree ticket is cut on is `msmn/<KEY>-<slug>` (U1 holds it)."""
@@ -4498,7 +4504,7 @@ Reply with the single word ready and end your turn."""
             elif name == "replies":
                 want = arg.split(",")
                 said = replies(rows)
-                bare = [r.strip().strip(".!").strip().lower() for r in said]
+                bare = bare_replies(rows)
                 hit = is_subsequence(want, [b if b in want else None for b in bare])
                 check(c, hit, " → ".join(repr(r[:24]) for r in said) or "none")
             elif name == "file":
@@ -4640,10 +4646,10 @@ Reply with the single word ready and end your turn."""
             elif name == "replies_never":
                 # T-1148 (NW1): no reply of the worker's, any turn, is one of
                 # the words alone, as `replies` reads a reply.
-                bare = [r.strip().strip(".!").strip().lower() for r in replies(rows)]
-                hit = [w for w in arg.split(",") if w.lower() in bare]
+                said = replies(rows)
+                hit = [w for w in arg.split(",") if w.lower() in bare_replies(rows)]
                 check(c, not hit, f"said {', '.join(hit)}" if hit
-                      else " → ".join(repr(r[:24]) for r in replies(rows)) or "none")
+                      else " → ".join(repr(r[:24]) for r in said) or "none")
             elif name == "shell_workflow":
                 said = last_reply(rows)
                 try:

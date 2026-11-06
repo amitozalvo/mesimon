@@ -5477,22 +5477,20 @@ fn the_crown_sends_now_into_a_working_turn() {
             .is_ok_and(|f| f.contains("\"paste_unacked\"") || f.contains("\"submit_unacked\""))
     });
     let word = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.map(|a| a.status);
-    {
-        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the window closed unacked");
-        // A resend for its idle meanwhile is refused, naming the first (a
-        // steer mid-turn goes beside it, T-974).
-        match ask(&mut c, "mesimon-probe-85b again", Deliver::Idle) {
-            Response::Err { message } => {
-                assert!(message.contains("(sent,") && message.contains("is refused"), "{message}")
-            }
-            other => panic!("a second ask while the first is out: {other:?}"),
+    assert_eq!(word(&mut c).as_deref(), Some("sent"), "the window closed unacked");
+    // A resend for its idle meanwhile is refused, naming the first (a
+    // steer mid-turn goes beside it, T-974).
+    match ask(&mut c, "mesimon-probe-85b again", Deliver::Idle) {
+        Response::Err { message } => {
+            assert!(message.contains("(sent,") && message.contains("is refused"), "{message}")
         }
-        stop(&mut c, ws);
-        settle();
-        assert_eq!(answers(), before, "no turn of the ask's own ended");
-        assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word the board saw");
-        assert!(!landed("mesimon-probe-85b"), "the refused ask sent nothing");
+        other => panic!("a second ask while the first is out: {other:?}"),
     }
+    stop(&mut c, ws);
+    settle();
+    assert_eq!(answers(), before, "no turn of the ask's own ended");
+    assert_eq!(word(&mut c).as_deref(), Some("sent"), "the last word the board saw");
+    assert!(!landed("mesimon-probe-85b"), "the refused ask sent nothing");
 
     // ---- supervised: held for a person, the send preset to now --------------
     assert!(matches!(
@@ -6491,6 +6489,21 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     }
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert!(!landed("mesimon-probe-73"));
+    // A person's `now` at the dialog goes by the mod's submit, which types
+    // nothing (T-1148 review): the fill's Enter would answer the dialog.
+    if test_road() == "mod" {
+        assert!(matches!(c.prompt(w, "mesimon-probe-73b now at the dialog"), Response::Ok));
+        wait_until(std::time::Duration::from_secs(5), "the submit's words", || {
+            landed("mesimon-probe-73b now at the dialog")
+        });
+        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
+        let lines: Vec<_> = frames.lines().filter(|l| l.contains("mesimon-probe-73b")).collect();
+        assert!(
+            !lines.is_empty() && lines.iter().all(|l| l.contains("\"submit\"")),
+            "a submit alone at a dialog: {frames}"
+        );
+        hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    }
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", permission);
     c.await_state(ws, "past the dialog", |s| *s == SessionState::Running);
 
