@@ -192,11 +192,14 @@ its own terminal takes over your whole screen. `ctrl-]` (or `ctrl-5`) steps back
 were. Before you step in, the page already shows the session's screen: at the foot of the
 preview, as its terminal draws it, in the agent's own colours, the input box, a question, a
 permission prompt or a plan, and above that the screen's rows going out into the page, with the
-agent's last reply as mesimon reads it over them. A dialog makes the window taller and the turn's
-end makes it shorter; the shin stands on the seam. While the page shows a pane, the pane is sized
-to the page (never while a terminal is attached to it), and it takes your terminal's size again
-when you step in. The pointer resting on a row of the rail moves the cursor there, as it does on a
-card. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
+whole conversation as mesimon reads it over them, newest at the foot: `{` and `}` page back
+through it, and `tab` walks the links on the rows you can see, `enter` opening the one it stops
+on (past the last link it lets go). A dialog makes the window taller and the turn's end makes it
+shorter; the shin stands on the rail's foot beside the input box and stays there. `shift+enter`
+opens the ask field over that box, between its rules, so what you type goes where the agent
+reads it. While the page shows a pane, the pane is sized to the page (never while a terminal is
+attached to it), and it takes your terminal's size again when you step in. The pointer resting
+on a row of the rail moves the cursor there, as it does on a card. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
 fast-forward only, so mesimon never mints a merge commit. A second `m` tells the agent its branch
 was merged; for an agent the crown started, the board tells it in the same step (where **Auto
 merge tells the agent after a merge** is on), the line reads `merged ∙ its agent was told`, and

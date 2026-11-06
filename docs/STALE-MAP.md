@@ -41811,3 +41811,46 @@ and banned attributes inside `live_rect` only, on TrueColor, Ansi256 and mono);
 `a_pointer_resting_on_a_rail_row_moves_the_cursor_there`. No existing golden moved. Known
 risk: a glyph the terminal draws two cells wide that `unicode-width` counts as one strands a
 cell past the zone's right edge (the T-485 class); the window redraws whole on every change.
+
+## The ticket page's zone reads the whole conversation, the shin keeps one place on the rail, the ask field sits on the composer (T-1143, 2026-11-06, the author after trying the live window: "the mascot should be on the right side of the input field, on the notes rail … moves and jumps which is not good, should stay in place all the time … I want to see the whole transcript, not just the last message, use {}, add links support with tab, only visible transcript … figure out how to use shift+enter with the input field, maybe on top of it?")
+
+**The conversation.** `App::poll_page_transcript` opens the transcript dialog's reader
+(`transcript::Transcript`, T-921) on the rail's selected agent session and polls it while the
+cursor stays there — every page back to the file's start lands off-thread as the dialog's does —
+and `ui/ticket.rs::conversation` lays every held message out as one document: a head row (who,
+when, the steps that followed, the dialog's words at the zone's width), a person's words behind
+the quote bar, a notice in the quiet ink, a blank between messages. Each message's rows and
+resolved links are rendered once (`App::page_messages`, keyed by the message, stamped by its
+text length, the width and the flavor), so a conversation of hundreds lays out again only the
+message that grew; the composed document sits in `rich_cache` under a stamp that includes the
+minute, for the heads' clocks. The pager's key is the session and the first held message — a new
+message at the end moves no window; `follows_tail` is on, so the zone rests at the newest words
+and `{` pages back. The same document shows in the reply branch (no pane: a parked agent) with
+the companion in its old corner. **The links.** `App::page_doc` holds the document's links by row
+(`row_of`: the first row holding the link's spelling, or its first dozen characters where the
+wrap split it); `Verb::TicketLinkNext` (`tab`, `Ctx::ticket_links`) walks those on the rows the
+last draw showed (`Pager::view`'s offset and page), round to none; the selection is
+`App::page_link` — the session and the candidate, so a growing conversation keeps it — and Enter
+on it (`act`, before the row's own press; `Ctx::ticket_link_selected`, the hint says `open
+link` / `copy command`) opens it or copies a command. `shift+tab` stays the workspace's on
+this page, so there is no walk back. **The shin.** `rail_shin`: the rail's left column, its
+feet on the zone's last row, the rail's rows stopping a row short of it; `seam_companion` and
+the fade-row cut are gone. It does not move for a dialog (`golden_ticket_live_dialog_120`
+asserts it). **The field.** `draw_preview`'s return for the live window is the composer's own
+prompt row (`Shot::prompt_row`: the `❯`/`›`/`!` row under a rule), or the seam over a dialog;
+the field is typed there, between the pane's rules, and its mode row covers the bottom rule.
+The `field_rows` parameter is gone.
+
+**Refuted.** Clearing the selected link on every transcript change (a streaming reply would
+drop it): it is keyed by candidate instead. Rendering the whole document from one joined text
+(prompts need `Newline::Break` and the bar, replies `Space`): per-message rendering, cached.
+Walking the conversation's links at message granularity (a stop off-screen with a reveal jump):
+rows are known, so the walk is the window's exactly.
+
+**Tests.** `the_zone_reads_the_whole_conversation_and_tab_walks_the_links_on_screen` (two
+turns; the first reply's link is above a 30-row window and is not a stop until `{` brings it in;
+past the last link Enter is `focus` again); the two live goldens remade (reviewed: the person's
+turn under `you`, the reply under `claude`, the shin on the rail's foot in both, the composer
+and the dialog as before); `the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field`
+now asserts the field between the rules with one prompt row on screen. Not measured: the heads'
+clocks on a real transcript (the fixtures carry no timestamps), Codex's `›` composer.

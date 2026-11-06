@@ -552,6 +552,9 @@ pub enum Verb {
     TranscriptLinkPrev,
     /// Open the transcript's selected link.
     TranscriptLinkOpen,
+    /// Tab on the ticket page (T-1143): the next link among the rows the
+    /// zone is showing of the conversation, then none again.
+    TicketLinkNext,
     /// `^h` on the board or the ticket page: the PULL REQUESTS dialog over
     /// the ticket's pull requests (T-759). Inert while the forge has bound
     /// none, so the dialog is never opened empty.
@@ -1430,6 +1433,12 @@ pub struct Ctx {
     /// height is a fact of the frame, not of the board), which is also what
     /// keeps `{ }` inert — and unhinted — under a reply that fits.
     pub preview_scrolls: bool,
+    /// The ticket page's zone shows a row of the conversation with a link
+    /// on it (T-1143): `tab` walks those rows' links.
+    pub ticket_links: bool,
+    /// One of the zone's links is selected: Enter opens it (or copies a
+    /// command), `tab` moves on.
+    pub ticket_link_selected: bool,
     pub update_ready: bool,
     /// A newer release than this build is published, and taking the offer
     /// downloads it. Never true beside `update_ready`: a binary already
@@ -3309,12 +3318,30 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The conversation's links (T-1143), the rows on screen only:
+        // `tab` forward, round to none; `shift+tab` is the workspace's
+        // here, so there is no walk back.
+        keys: &[Key::Tab],
+        verb: Verb::TicketLinkNext,
+        show: "tab",
+        hint: |_| "link",
+        avail: |c| c.ticket_links,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 12,
+    },
+    Binding {
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
         hint: |c| {
             if c.shell_close_armed {
                 "enter again confirms"
+            } else if c.ticket_link_selected && c.link_command {
+                "copy command"
+            } else if c.ticket_link_selected {
+                "open link"
             } else if c.sel_new_agent {
                 "start agent"
             } else if c.sel_note && c.team_viewer {
@@ -3335,7 +3362,13 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| c.sel_session || c.sel_note || c.sel_new_agent || c.sel_terminal,
+        avail: |c| {
+            c.sel_session
+                || c.sel_note
+                || c.sel_new_agent
+                || c.sel_terminal
+                || c.ticket_link_selected
+        },
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,

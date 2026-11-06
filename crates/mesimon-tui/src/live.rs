@@ -85,6 +85,13 @@ impl Shot {
         }
         n.saturating_sub(FALLBACK_ROWS)
     }
+
+    /// The composer's own prompt row, where the words are typed: the row
+    /// under its top rule. `None` while a dialog has the box's place.
+    pub(crate) fn prompt_row(&self) -> Option<usize> {
+        let n = self.rows.len();
+        (1..n).rev().find(|&i| is_prompt(&self.rows[i].text) && is_rule(&self.rows[i - 1].text))
+    }
 }
 
 /// A row's words past a dialog frame's left edge and the pad after it.

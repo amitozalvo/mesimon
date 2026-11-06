@@ -1326,6 +1326,37 @@ pub enum LinkTarget {
 /// what it resolved to on the live board.
 pub(crate) type TranscriptLinks = Vec<(mesimon_core::links::Found, TicketLink)>;
 
+/// One link of the conversation the ticket page's zone shows (T-1143):
+/// the row it is on in the zone's document, the candidate as written and
+/// where it leads.
+#[derive(Debug, Clone)]
+pub(crate) struct PageLink {
+    pub row: usize,
+    pub source: mesimon_core::links::Found,
+    pub link: TicketLink,
+}
+
+/// The zone's conversation document as the last draw laid it out: the
+/// pager's key for it, and its links by row. What `tab` walks, against the
+/// window the same draw measured (`Pager::view`).
+#[derive(Debug, Clone)]
+pub(crate) struct PageDoc {
+    pub key: u64,
+    pub links: std::rc::Rc<Vec<PageLink>>,
+}
+
+/// One message's rows and links, rendered once for its words, width and
+/// theme (T-1143): the zone's document is the held messages' entries end
+/// to end, so a conversation of hundreds re-renders only the one message
+/// that grew.
+pub(crate) struct PageMessage {
+    pub stamp: (usize, usize, crate::theme::Flavor),
+    pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
+    pub links: std::rc::Rc<TranscriptLinks>,
+    /// Each link's row within `rows`.
+    pub link_rows: Vec<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketLink {
     pub label: Option<String>,
@@ -2040,6 +2071,20 @@ pub struct App {
     /// Where the last frame drew the live window's rows (the pane's own
     /// glyphs and attributes, a picture the L1 laws know by position).
     pub live_rect: std::cell::Cell<Option<ratatui::layout::Rect>>,
+    /// The selected agent session's conversation, whole, for the ticket
+    /// page's zone (T-1143): the transcript dialog's reader, opened on the
+    /// rail's row and polled while the cursor stays there.
+    pub page_transcript: Option<(uuid::Uuid, crate::transcript::Transcript)>,
+    /// The last session a page transcript was asked of and when: a record
+    /// with nothing said yet is asked again only after a while.
+    page_transcript_tried: Option<(uuid::Uuid, std::time::Instant)>,
+    /// Each held message's rendered rows and links, by its key.
+    pub page_messages: std::cell::RefCell<std::collections::HashMap<(u64, usize), PageMessage>>,
+    /// The zone's conversation document as the last draw laid it out.
+    pub page_doc: std::cell::RefCell<Option<PageDoc>>,
+    /// The zone's selected link (`tab`): the session it belongs to and the
+    /// candidate, so a conversation that grows under it keeps it.
+    pub page_link: std::cell::RefCell<Option<(uuid::Uuid, mesimon_core::links::Found)>>,
     /// Per ticket, what its agent last said against what the cursor has
     /// seen of it (`Spoke`): a card whose entry disagrees keeps its done
     /// mark in the calm register; one that agrees wears it grey. Kept by
@@ -2532,6 +2577,11 @@ impl App {
             live: None,
             tmux_sock: None,
             live_rect: std::cell::Cell::new(None),
+            page_transcript: None,
+            page_transcript_tried: None,
+            page_messages: std::cell::RefCell::new(std::collections::HashMap::new()),
+            page_doc: std::cell::RefCell::new(None),
+            page_link: std::cell::RefCell::new(None),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
             links: Vec::new(),
@@ -3014,6 +3064,7 @@ impl App {
             Mode::Links { links, idx, .. } => links.get(*idx).cloned(),
             Mode::Transcript { .. } => self.transcript_cursor_link(),
             Mode::Editor(ed) if ed.reading => self.reader_cursor_link(ed),
+            Mode::Normal if matches!(self.screen, Screen::Ticket { .. }) => self.page_cursor_link(),
             _ => None,
         }
     }
@@ -4688,6 +4739,7 @@ impl App {
         if wire {
             dirty |= self.poll_shell_tail();
             dirty |= self.poll_live();
+            dirty |= self.poll_page_transcript();
             dirty |= self.hover_rail();
             dirty |= self.poll_notes();
             dirty |= self.poll_summaries();
@@ -5905,6 +5957,109 @@ impl App {
                 true
             }
         }
+    }
+
+    /// The zone's conversation (T-1143): the selected agent session's
+    /// transcript opened whole, the way the board's `{ }` dialog opens it,
+    /// kept and polled while the rail's cursor stays on that session and
+    /// dropped when it leaves. A record with nothing said yet is asked
+    /// again after a second, not every tick.
+    pub(crate) fn poll_page_transcript(&mut self) -> bool {
+        const AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
+        let want = match self.rail_row() {
+            Some(RailRow::Session(s)) if s.kind.is_agent() && s.transcript_path.is_some() => {
+                Some(s.clone())
+            }
+            _ => None,
+        };
+        match (want, &mut self.page_transcript) {
+            (None, None) => false,
+            (None, Some(_)) => {
+                self.page_transcript = None;
+                self.page_messages.borrow_mut().clear();
+                true
+            }
+            (Some(rec), Some((id, t))) if *id == rec.id => {
+                let path = rec.transcript_path.as_deref();
+                let changed = t.poll(path.map(|p| (rec.kind, p)));
+                if changed {
+                    self.rich_cache.borrow_mut().take();
+                }
+                changed
+            }
+            (Some(rec), _) => {
+                let tried = self.page_transcript_tried;
+                if tried.is_some_and(|(id, at)| id == rec.id && at.elapsed() < AGAIN) {
+                    return false;
+                }
+                self.page_transcript_tried = Some((rec.id, std::time::Instant::now()));
+                self.page_messages.borrow_mut().clear();
+                self.rich_cache.borrow_mut().take();
+                self.page_transcript =
+                    crate::transcript::Transcript::open(&rec).map(|t| (rec.id, t));
+                self.page_transcript.is_some()
+            }
+        }
+    }
+
+    /// A message's link candidates resolved against the live board, as
+    /// the transcript dialog resolves its message's.
+    pub(crate) fn page_links(&self, ticket: ulid::Ulid, text: &str) -> TranscriptLinks {
+        let dir = self.link_dir(ticket);
+        mesimon_core::links::extract(text)
+            .iter()
+            .filter_map(|link| {
+                self.resolve_link(ticket, &dir, link)
+                    .map(|resolved| (link.target.clone(), resolved))
+            })
+            .collect()
+    }
+
+    /// The zone's links on the rows the last draw showed, in reading
+    /// order, each with its index in the document's list.
+    fn page_visible_links(&self) -> Vec<(usize, PageLink)> {
+        let v = self.preview.view.get();
+        let doc = self.page_doc.borrow();
+        let Some(doc) = doc.as_ref().filter(|d| Some(d.key) == v.key) else { return Vec::new() };
+        let last = v.offset + v.page;
+        doc.links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.row >= v.offset && l.row <= last)
+            .map(|(i, l)| (i, l.clone()))
+            .collect()
+    }
+
+    /// The zone's selected link, if the cursor is still on its session.
+    fn page_selected(&self) -> Option<(usize, PageLink)> {
+        let Some(RailRow::Session(s)) = self.rail_row() else { return None };
+        let id = s.id;
+        let held = self.page_link.borrow();
+        let (_, source) = held.as_ref().filter(|(of, _)| *of == id)?;
+        let doc = self.page_doc.borrow();
+        let doc = doc.as_ref()?;
+        let i = doc.links.iter().position(|l| l.source == *source)?;
+        Some((i, doc.links[i].clone()))
+    }
+
+    pub(crate) fn page_cursor_link(&self) -> Option<TicketLink> {
+        self.page_selected().map(|(_, l)| l.link)
+    }
+
+    /// `tab` on the ticket page (T-1143): the next link among the rows on
+    /// screen, after the selected one; past the last, none — the walk is
+    /// the window's, and the window is the reader's to move.
+    fn page_link_next(&mut self) {
+        let Some(RailRow::Session(s)) = self.rail_row() else { return };
+        let id = s.id;
+        let visible = self.page_visible_links();
+        let selected = self.page_selected().map(|(i, _)| i);
+        let next = match selected {
+            Some(i) => visible.iter().find(|(j, _)| *j > i).map(|(_, l)| l.source.clone()),
+            None => visible.first().map(|(_, l)| l.source.clone()),
+        };
+        *self.page_link.borrow_mut() = next.map(|source| (id, source));
+        self.ctx_dirty();
     }
 
     /// The window's newest capture of `session`'s pane, if the window is
@@ -8038,6 +8193,8 @@ impl App {
             new_replies: self.prefs.new_replies,
             card_prs_word: self.prefs.card_prs.key(),
             preview_scrolls: self.preview.view.get().max > 0,
+            ticket_links: !self.page_visible_links().is_empty(),
+            ticket_link_selected: self.page_cursor_link().is_some(),
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
             // what you have before fetching it again. This is also what keeps
@@ -10276,6 +10433,7 @@ impl App {
                     self.open_link(link);
                 }
             }
+            Verb::TicketLinkNext => self.page_link_next(),
             Verb::PullRequests => {
                 if let Some(ticket) = self.subject() {
                     self.mode = Mode::PullRequests { ticket, idx: 0 };
@@ -10913,6 +11071,17 @@ impl App {
             },
             Scope::Ticket => {
                 if let Screen::Ticket { ticket, .. } = self.screen {
+                    // The zone's selected link (T-1143) takes the press
+                    // before the row does: it was asked for with `tab`.
+                    if let Some(link) = self.page_cursor_link() {
+                        if link.target == LinkTarget::Command {
+                            let (subject, text) = link.copied();
+                            self.status = self.copy(subject, &text);
+                        } else {
+                            self.open_link(link);
+                        }
+                        return Ok(());
+                    }
                     if let Some(note) = self.selected_note() {
                         return self.open_note_editor(ticket, Some(note));
                     }

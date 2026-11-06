@@ -914,24 +914,32 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             shell,
             note,
             seat,
-            if hybrid { field_rows } else { 0 },
         );
         // Under the content where it ends, at the zone's foot where it does
         // not: `used` is the whole zone exactly when the content overflowed.
+        // With the live window (T-1143) `used` names the composer's own
+        // prompt row, and the field is typed over it.
         draw_field(f, area.x + 1, body_y + (used as u16).min(body_h - field_rows));
-        draw_rail(
-            f,
-            Rect {
-                x: area.x + left_w + 3,
-                y: rail_y,
-                width: RAIL_W.saturating_sub(1),
-                height: rail_h,
-            },
-            app,
-            ticket_id,
-            rail_idx,
-            now,
-        );
+        let rail = Rect {
+            x: area.x + left_w + 3,
+            y: rail_y,
+            width: RAIL_W.saturating_sub(1),
+            height: rail_h,
+        };
+        // The small shin on the rail's foot beside the pane's input field
+        // (T-1143), in one place for good: the rail's rows stop a row short
+        // of it, so a long rail never runs under its feet.
+        let shin = if hybrid {
+            sel.and_then(|rec| rail_shin(app, rail, body_y + body_h, rec, peek.as_deref()))
+        } else {
+            None
+        };
+        let rows_h = shin.as_ref().map_or(rail_h, |(_, _, y)| y.saturating_sub(rail_y + 1));
+        draw_rail(f, Rect { height: rows_h, ..rail }, app, ticket_id, rail_idx, now);
+        if let Some((stage, x, y)) = shin {
+            stage.paint(f.buffer_mut(), x, y, rail);
+            *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
+        }
     } else {
         // No zone, nothing to page: the footer must not offer `{ }`.
         app.preview.view.set(View::default());
@@ -974,7 +982,6 @@ fn draw_preview(
     shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
-    field_rows: u16,
 ) -> usize {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -1102,10 +1109,11 @@ fn draw_preview(
         // The live window (T-1143): the pane as tmux holds it at the zone's
         // foot — the composer, a question, a prompt, in the agent's own
         // inks — under up to `FADE_ROWS` of the pane's rows going out toward
-        // the page ground, under the reply as mesimon reads it. The seam is
-        // where the pane's composer or dialog begins (`Shot::anchor`); a
-        // dialog taller than the box moves it up, and the turn's end moves
-        // it back. No rule between them: the fade is the seam.
+        // the page ground, under the conversation as mesimon reads it. The
+        // seam is where the pane's composer or dialog begins
+        // (`Shot::anchor`); a dialog taller than the box moves it up, and
+        // the turn's end moves it back. No rule between them: the fade is
+        // the seam.
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
         let zone_h = (area.height as usize).saturating_sub(lines.len());
@@ -1118,41 +1126,35 @@ fn draw_preview(
         let live_from = n - live_n;
         let fade_n = live::FADE_ROWS.min(live_from).min(zone_h - live_n);
         let top_n = zone_h - live_n - fade_n;
-        // The reply keeps what the window and the field leave it, paged as
-        // before; two rows or fewer is a heading over nothing.
-        let budget = top_n.saturating_sub(field_rows as usize);
-        if let (Some(text), true) = (reply, budget >= 2) {
+        // The conversation keeps the rows over the window, at its foot
+        // until `{` asks for earlier; two rows or fewer is a heading over
+        // nothing.
+        if top_n >= 2 {
             let width = (area.width as usize).saturating_sub(4);
-            let key = doc_key(rec.id, Some(text));
-            let rows = rendered(app, key, width, || text, Newline::Space);
-            let shown = window(app, Some(key), &rows, budget, width, false);
+            let doc = match conversation(app, rec, width) {
+                Some((key, rows)) => Some((key, rows, true)),
+                None => reply.map(|text| {
+                    let key = doc_key(rec.id, Some(text));
+                    (key, rendered(app, key, width, || text, Newline::Space), false)
+                }),
+            };
+            let shown = match &doc {
+                Some((key, rows, tail)) => window(app, Some(*key), rows, top_n, width, *tail),
+                None => Vec::new(),
+            };
             for row in shown {
                 let mut spans = vec![Span::raw("   ")];
                 spans.extend(row.spans);
                 lines.push(Line::from(spans));
             }
         }
-        let used = lines.len().min(area.height as usize);
         f.render_widget(Paragraph::new(lines), area);
         let foot_y = area.bottom() - live_n as u16;
-        // The small shin stands on the seam, at its right end, and climbs
-        // with it when a dialog comes up. The fade rows it stands over stop
-        // short of it: a going-out row showing through its gaps reads as
-        // noise, and the live rows under its feet are the pane's whole.
-        let beside = seam_companion(app, area, rec, peek, foot_y);
-        let gutter_from = beside.as_ref().map(|(stage, x, y)| (*x, *y, y + stage.rows));
         if fade_n + live_n > 0 {
             let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + live_n);
             for r in 0..fade_n {
                 let row = &shot.rows[live_from - fade_n + r];
-                let mut line = faded_line(theme, row, live::fade_keep(r, fade_n));
-                let y = foot_y - (fade_n - r) as u16;
-                if let Some((x, top, bottom)) = gutter_from {
-                    if y >= top && y < bottom {
-                        line = cut_line(line, x.saturating_sub(area.x + 1) as usize);
-                    }
-                }
-                raw.push(line);
+                raw.push(faded_line(theme, row, live::fade_keep(r, fade_n)));
             }
             raw.extend(shot.rows[live_from..n].iter().map(|row| live_line(theme, row)));
             let rect = Rect {
@@ -1172,11 +1174,15 @@ fn draw_preview(
                 }
             }
         }
-        if let Some((stage, x, y)) = beside {
-            stage.paint(f.buffer_mut(), x, y, area);
-            *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
-        }
-        return used;
+        // The ask field's row (T-1143): over the composer's own prompt row,
+        // between the pane's rules, so the words are typed where the agent
+        // reads them; over a dialog, which has the box's place, the seam
+        // itself.
+        let field_y = match shot.prompt_row() {
+            Some(p) if p >= live_from => foot_y + (p - live_from) as u16,
+            _ => foot_y,
+        };
+        return (field_y - area.y) as usize;
     } else if reply.is_some() {
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
@@ -1192,16 +1198,27 @@ fn draw_preview(
             // ticket page is the surface with room to read it as such
             // (rich.rs — value, weight, paint and space only).
             let width = (area.width as usize).saturating_sub(4 + gutter);
-            // Keyed to the reply as well as the session: a page into this
-            // reply must not open the next one halfway down.
-            let key = session.map(|s| doc_key(s, Some(text)));
-            let rows = match key {
-                Some(key) => rendered(app, key, width, || text, Newline::Space),
+            // The whole conversation where the page holds one (T-1143), at
+            // its foot; else the reply alone, keyed to the reply as well
+            // as the session: a page into this reply must not open the
+            // next one halfway down.
+            let (key, rows, tail) = match record.and_then(|rec| conversation(app, rec, width)) {
+                Some((key, rows)) => (Some(key), rows, true),
                 None => {
-                    std::rc::Rc::new(crate::rich::render_all(text, width, theme, Newline::Space))
+                    let key = session.map(|s| doc_key(s, Some(text)));
+                    let rows = match key {
+                        Some(key) => rendered(app, key, width, || text, Newline::Space),
+                        None => std::rc::Rc::new(crate::rich::render_all(
+                            text,
+                            width,
+                            theme,
+                            Newline::Space,
+                        )),
+                    };
+                    (key, rows, false)
                 }
             };
-            let shown = window(app, key, &rows, budget, width, false);
+            let shown = window(app, key, &rows, budget, width, tail);
             for row in shown {
                 let mut spans = vec![Span::raw("   ")];
                 spans.extend(row.spans);
@@ -1544,27 +1561,205 @@ fn companion(
     })
 }
 
-/// The small shin on the live window's seam (T-1143): its feet on the row
-/// over the pane's first live row, at the zone's right end. `None` in mono,
-/// in a zone too narrow for a reply beside it, or where the seam is too
-/// high for its stage.
-fn seam_companion(
+/// The small shin on the rail's foot (T-1143): beside the pane's input
+/// field, its feet on the zone's last row, at the rail's left — the one
+/// spot on the page that never moves, whatever the pane or the
+/// conversation does. `None` in mono, for a shell, and on a page too
+/// short to keep the rail's heading and a row over it.
+fn rail_shin(
     app: &App,
-    area: Rect,
+    rail: Rect,
+    floor: u16,
     rec: &mesimon_core::board::SessionRecord,
     peek: Option<&crate::peek::Peek>,
-    seam_y: u16,
 ) -> Option<(creature::Stage, u16, u16)> {
-    const MIN_ZONE: u16 = 72;
-    if !rec.kind.is_agent() || area.width < MIN_ZONE {
+    if !rec.kind.is_agent() {
         return None;
     }
     let anim = agent_anim(rec, peek);
     let ms = app.creature_ms(crate::text::hash64((rec.id, anim)));
     let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
-    let y = seam_y.checked_sub(stage.rows)?;
-    let x = area.right().checked_sub(stage.cols + 1)?;
-    (y >= area.y + 2).then_some((stage, x, y))
+    let y = floor.checked_sub(stage.rows)?;
+    (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, rail.x + 1, y))
+}
+
+/// The whole conversation the zone reads (T-1143): every message the
+/// page's transcript holds, oldest first, each under a row saying who and
+/// when, as the transcript dialog heads a message — a person's words
+/// behind the quote bar, a notice in the quiet ink. Each message's rows
+/// and links are rendered once (`App::page_messages`), so a conversation
+/// of hundreds lays out again only the message that grew; the document's
+/// links by row land on `App::page_doc` for `tab`. Returns the pager's
+/// key and the rows, or `None` while the page holds no transcript for
+/// `rec`.
+fn conversation(
+    app: &App,
+    rec: &mesimon_core::board::SessionRecord,
+    width: usize,
+) -> Option<(u64, Rc<Vec<Line<'static>>>)> {
+    use mesimon_core::mesophon::RowKind;
+    let (id, t) = app.page_transcript.as_ref()?;
+    if *id != rec.id || width < 8 {
+        return None;
+    }
+    let messages = t.messages();
+    let first = messages.first()?;
+    let theme = &app.theme;
+    let flavor = theme.flavor;
+    // The pager's key: the session and the document's first message —
+    // steady while messages land at the end, so a page back into the
+    // conversation is not thrown to its foot by the agent's next words.
+    let key = crate::text::hash64((8u8, rec.id, first.key));
+    let selected = app
+        .page_link
+        .borrow()
+        .as_ref()
+        .filter(|(of, _)| *of == rec.id)
+        .map(|(_, source)| source.clone());
+    // The draw cache's key: everything a row depends on, and the minute,
+    // for the heads' clocks.
+    let now = mesimon_core::clock::now_ms();
+    let last = messages.last().map(|m| (m.key, t.text(m).len(), m.steps));
+    let stamp = crate::text::hash64((key, messages.len(), last, now / 60_000));
+    {
+        let slot = app.rich_cache.borrow();
+        if let Some(c) = slot.as_ref() {
+            if c.key == stamp && c.width == width && c.flavor == flavor && c.selected == selected {
+                return Some((key, Rc::clone(&c.rows)));
+            }
+        }
+    }
+    let mark = if theme.glyph_tier() == glyphs::Tier::Ascii { "> " } else { "▎ " };
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut links: Vec<crate::app::PageLink> = Vec::new();
+    let mut cache = app.page_messages.borrow_mut();
+    for m in messages {
+        let prompt = m.kind == RowKind::Prompt;
+        let bar = if prompt { 2 } else { 0 };
+        let newline = if prompt { Newline::Break } else { Newline::Space };
+        let text = t.text(m);
+        let stamp = (text.len(), width, flavor);
+        if !cache.get(&m.key).is_some_and(|e| e.stamp == stamp) {
+            let clean = crate::peek::sanitize(text);
+            let body = crate::rich::render_all(&clean, width - bar, theme, newline);
+            let found = app.page_links(rec.ticket, &clean);
+            let link_rows = found.iter().map(|(_, link)| row_of(&body, &link.text)).collect();
+            cache.insert(
+                m.key,
+                crate::app::PageMessage {
+                    stamp,
+                    rows: Rc::new(body),
+                    links: Rc::new(found),
+                    link_rows,
+                },
+            );
+        }
+        let entry = &cache[&m.key];
+        // The selected link's message is laid out again with the mark on
+        // it, as the dialog does; the mark never enters the cache.
+        let body = match selected.as_ref().filter(|s| entry.links.iter().any(|(f, _)| f == *s)) {
+            Some(source) => Rc::new(crate::rich::render_all_with_link(
+                &crate::peek::sanitize(text),
+                width - bar,
+                theme,
+                newline,
+                source,
+            )),
+            None => Rc::clone(&entry.rows),
+        };
+        rows.push(message_head(theme, t.kind, m, width, now));
+        let body_at = rows.len();
+        for (j, (source, link)) in entry.links.iter().enumerate() {
+            let row = entry.link_rows.get(j).copied().unwrap_or(0);
+            links.push(crate::app::PageLink {
+                row: body_at + row,
+                source: source.clone(),
+                link: link.clone(),
+            });
+        }
+        for line in body.iter() {
+            let mut line = line.clone();
+            if m.kind == RowKind::Notice {
+                for s in &mut line.spans {
+                    s.style = s.style.fg(theme.rest.dim2);
+                }
+            }
+            if prompt {
+                line.spans.insert(0, Span::styled(mark, theme.dim3()));
+            }
+            rows.push(line);
+        }
+        rows.push(Line::default());
+    }
+    // The last blank is the document's end, not a row to page to.
+    rows.pop();
+    let rows = Rc::new(rows);
+    *app.page_doc.borrow_mut() = Some(crate::app::PageDoc { key, links: Rc::new(links) });
+    *app.rich_cache.borrow_mut() =
+        Some(RichCache { key: stamp, width, flavor, selected, rows: Rc::clone(&rows) });
+    Some((key, rows))
+}
+
+/// A message's first row in the zone's conversation: who, when, and at the
+/// right the steps that followed it (the dialog's head, at the zone's
+/// width).
+fn message_head(
+    theme: &crate::theme::Theme,
+    kind: SessionKind,
+    m: &crate::transcript::Message,
+    width: usize,
+    now: u64,
+) -> Line<'static> {
+    use mesimon_core::mesophon::RowKind;
+    let who = match (m.kind, kind) {
+        (RowKind::Prompt, _) => "you",
+        (RowKind::Notice, _) => "",
+        (_, SessionKind::Codex) => "codex",
+        _ => "claude",
+    };
+    let who_style = match m.kind {
+        RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
+        _ => theme.dim1(),
+    };
+    let time = match m.ms {
+        Some(ms) if now.saturating_sub(ms) < 20 * 3_600_000 => {
+            crate::localtime::clock_word(ms / 1000).unwrap_or_default()
+        }
+        Some(ms) => crate::text::age_slot(now, ms, false),
+        None => String::new(),
+    };
+    let steps = match m.steps {
+        0 => String::new(),
+        1 => format!("1 step ∙ {}", m.tools.join(", ")),
+        n => format!("{n} steps ∙ {}", m.tools.join(", ")),
+    };
+    let mut head = Vec::new();
+    if who.is_empty() {
+        head.push(Span::styled(time.clone(), theme.dim2()));
+    } else {
+        head.push(Span::styled(who.to_string(), who_style));
+        head.push(Span::styled(format!("  {time}"), theme.dim2()));
+    }
+    let left = super::spans_width(&head);
+    let steps = truncate(&steps, width.saturating_sub(left + 2));
+    let gap = width.saturating_sub(left + steps.width());
+    head.push(Span::raw(" ".repeat(gap)));
+    head.push(Span::styled(steps, theme.dim3()));
+    Line::from(head)
+}
+
+/// The row of `rows` a link's spelling is on: the first that holds its
+/// text, or its first dozen characters where the wrap split it; the first
+/// row when neither is found.
+fn row_of(rows: &[Line<'static>], text: &str) -> usize {
+    let needle: String = text.chars().take(12).collect();
+    let find = |needle: &str| {
+        rows.iter().position(|line| {
+            let row: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            row.contains(needle)
+        })
+    };
+    find(text).or_else(|| find(&needle)).unwrap_or(0)
 }
 
 /// A pane row as it is: its own inks, the page's base ink where it named
@@ -1579,36 +1774,6 @@ fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
         s.fg = Some(theme.rest.base);
     }
     s
-}
-
-/// The line's first `width` cells, no marker: what stands past them is
-/// under the shin.
-fn cut_line(line: Line<'static>, width: usize) -> Line<'static> {
-    let mut left = width;
-    let mut spans = Vec::new();
-    for span in line.spans {
-        if left == 0 {
-            break;
-        }
-        let w = span.content.width();
-        if w <= left {
-            left -= w;
-            spans.push(span);
-            continue;
-        }
-        let mut cut = String::new();
-        for ch in span.content.chars() {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if cw > left {
-                break;
-            }
-            left -= cw;
-            cut.push(ch);
-        }
-        spans.push(Span::styled(cut, span.style));
-        break;
-    }
-    Line::from(spans)
 }
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {

@@ -14581,26 +14581,52 @@ fn live_shot(dialog: bool) -> crate::live::Shot {
     crate::live::Shot { rows: crate::live::parse(&rows.join("\n")), cols: 80, cursor }
 }
 
-fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
-    let path = write_transcript(
-        name,
-        &reply_record(
-            "Research is mostly done. Measured facts so far: every agent pane is on tmux's \
-             alternate screen, an unattached pane sits at 80×24 while an attached one is 187×52.",
-        ),
+/// A conversation for the live window's zone (T-1143): two turns, a link
+/// in each reply — the first one's far enough up the document to be off a
+/// 30-row screen, the last one's on it.
+fn live_conversation() -> String {
+    let user = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "user", "message": { "role": "user", "content": text } })
+            .to_string()
+    };
+    let said = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "assistant", "message": { "role": "assistant",
+            "content": [{ "type": "text", "text": text }] } })
+        .to_string()
+    };
+    let first = format!(
+        "Starting from the research note at https://mesimon.dev/research and the layout.\n\n{}",
+        (1..=12).map(|i| format!("- step {i} of the plan")).collect::<Vec<_>>().join("\n")
     );
+    let lines = [
+        user("Research the hybrid view and write it up."),
+        said(&first),
+        user("Go on; measure the pane sizes too."),
+        said(
+            "Research is mostly done, the write-up is at https://mesimon.dev/proposal. \
+              Measured facts so far: every agent pane is on tmux's alternate screen, an \
+              unattached pane sits at 80×24 while an attached one is 187×52.",
+        ),
+    ];
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
+fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
+    let path = write_transcript(name, &live_conversation());
     let mut b = fixture(false);
     attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), live_shot(dialog)));
+    assert!(app.poll_page_transcript(), "the page opens the conversation");
     (app, path)
 }
 
 /// The zone with the pane at its foot: the composer, its rules and the
 /// footer as the pane holds them, the spinner row kept over the rule, the
-/// pane's rows above going out, and the reply over those. The pane's
-/// cursor is the frame's.
+/// pane's rows above going out, and the conversation over those, at its
+/// newest. The pane's cursor is the frame's; the shin stands on the
+/// rail's foot, beside the composer.
 #[test]
 fn golden_ticket_live_120() {
     let (app, path) = app_live("tlive-calm", false);
@@ -14608,15 +14634,18 @@ fn golden_ticket_live_120() {
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("▎ Go on; measure")), "the person's turn: {lines:#?}");
     let rect = app.live_rect.get().expect("the window is on screen");
     assert_eq!(rect.bottom(), 29, "the window ends over the footer: {rect:?}");
-    assert!(app.mascot.borrow().is_some(), "the shin stands on the seam");
+    let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin stands on the rail");
+    assert!(shin.x >= 120 - 30, "on the rail, not the zone: {shin:?}");
+    assert_eq!(shin.bottom(), 29, "its feet on the zone's last row: {shin:?}");
     golden("ticket_live_120x30", &lines);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// A dialog where the composer was: the seam rises to the blank row over
-/// the box, and the shin climbs with it.
+/// the box. The shin does not move: it stands where it stood.
 #[test]
 fn golden_ticket_live_dialog_120() {
     let (app, path) = app_live("tlive-dialog", true);
@@ -14624,12 +14653,54 @@ fn golden_ticket_live_dialog_120() {
     assert!(lines.iter().any(|l| l.contains("Do you want to run this command?")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("❯ 1. Yes")), "{lines:#?}");
     let rect = app.live_rect.get().expect("the window is on screen");
+    let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin");
     let (calm, calm_path) = app_live("tlive-dialog-calm", false);
     render(&calm, 120, 30);
     let _ = std::fs::remove_dir_all(calm_path.parent().expect("dir"));
     let calm_rect = calm.live_rect.get().expect("the window is on screen");
+    let calm_shin = calm.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin");
     assert!(rect.y < calm_rect.y, "the seam rises for a dialog: {rect:?} vs {calm_rect:?}");
+    assert_eq!((shin.x, shin.bottom()), (calm_shin.x, calm_shin.bottom()), "the shin stays put");
     golden("ticket_live_dialog_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The zone reads the whole conversation, newest at its foot, and `tab`
+/// walks the links on the rows it shows — only those: the first reply's
+/// link is above the window and is not a stop until `{` brings it in.
+/// Past the last link the walk lets go, so Enter is the row's again.
+#[test]
+fn the_zone_reads_the_whole_conversation_and_tab_walks_the_links_on_screen() {
+    let (mut app, path) = app_live("tlive-links", false);
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(lines.iter().any(|l| l.trim() == "you"), "the person's turns are headed:\n{text}");
+    assert!(text.contains("mesimon.dev/proposal"), "{text}");
+    assert!(!text.contains("mesimon.dev/research"), "the first reply is above the window:\n{text}");
+    assert!(lines.last().is_some_and(|l| l.contains("tab link")), "the walk is offered:\n{text}");
+    next_link(&mut app);
+    let link = app.page_cursor_link().expect("the visible link is selected");
+    assert_eq!(link.text, "https://mesimon.dev/proposal");
+    let lines = render(&app, 120, 30);
+    assert!(lines.last().is_some_and(|l| l.contains("enter open link")), "{lines:#?}");
+    next_link(&mut app);
+    assert!(app.page_cursor_link().is_none(), "past the last link the walk lets go");
+    let lines = render(&app, 120, 30);
+    assert!(lines.last().is_some_and(|l| l.contains("enter focus")), "{lines:#?}");
+    // A page up brings the first reply's link onto the screen, and the
+    // walk starts from it.
+    let mut lines = render(&app, 120, 30);
+    for _ in 0..4 {
+        if lines.iter().any(|l| l.contains("mesimon.dev/research")) {
+            break;
+        }
+        page(&mut app, '{');
+        lines = render(&app, 120, 30);
+    }
+    assert!(lines.iter().any(|l| l.contains("mesimon.dev/research")), "{lines:#?}");
+    next_link(&mut app);
+    let link = app.page_cursor_link().expect("the link that came into view");
+    assert_eq!(link.text, "https://mesimon.dev/research");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -14694,7 +14765,8 @@ fn the_live_window_is_the_one_place_the_panes_glyphs_reach() {
 }
 
 /// The window leaves with the cursor (T-1143): a note row reads the note,
-/// as before, and the ask field hangs under the reply, over the pane.
+/// as before. The ask field is typed over the composer's own prompt row,
+/// between the pane's rules.
 #[test]
 fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let (mut app, path) = app_live("tlive-field", false);
@@ -14721,7 +14793,10 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let lines = render(&app, 120, 30);
     let field = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
     let rect = app.live_rect.get().expect("the window is on screen");
-    assert!((field as u16) < rect.y, "the field sits over the pane's rows: {lines:#?}");
+    assert!((field as u16) >= rect.y, "the field is in the window: {lines:#?}");
+    assert!(lines[field - 1].contains("────"), "under the box's top rule: {lines:#?}");
+    assert!(lines[field + 1].contains("────"), "over its bottom rule: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
