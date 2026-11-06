@@ -536,7 +536,7 @@ fn play<B: Backend<Error = io::Error>>(
     loop {
         let ms = start.elapsed().as_millis() as u64 * pace + ahead;
         let beat = beat_at(&beats, ms).unwrap_or_else(|| Beat {
-            hero: Hero::Shin(*creature::frame_at(Anim::Seat, ms - end)),
+            hero: Hero::Shin(*creature::frame_at(Size::Medium, Anim::Seat, ms - end)),
             ..last
         });
         term.draw(|f| {

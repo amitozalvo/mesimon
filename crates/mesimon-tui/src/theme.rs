@@ -1312,7 +1312,6 @@ pub(crate) struct CreatureInk {
     pub screen: Color,
     pub code: Color,
     pub add: Color,
-    pub del: Color,
 }
 
 /// How many tag tints exist. A tag's index is `stable_hash(name) % PIPS`, so
@@ -1784,8 +1783,8 @@ impl Theme {
     /// The value ramp carries the form: top edges catch the light and the
     /// underside falls away. The tag ring lends the blush and the drop their
     /// tints, and `attn` is the needs-you "!" and nothing else of it. The
-    /// laptop's screen is a diff in the diff viewer's own registers, `calm`
-    /// added and `err` removed, on a screen darker than the ground.
+    /// laptop's screen types its line in `calm` above old code in a quiet
+    /// ink, on a screen darker than the ground.
     /// Truecolor may blend two of its own tokens; an indexed profile picks
     /// from its ramp, with no blush where there is no ring. No ink is ever
     /// `Reset`: a half block paints its lower pixel as a background, where
@@ -1845,7 +1844,6 @@ impl Theme {
             screen,
             code,
             add: self.calm,
-            del: self.err,
         };
         if faded {
             let sink = |c: Color| match self.bg {

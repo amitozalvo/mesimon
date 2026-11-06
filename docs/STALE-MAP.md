@@ -41732,3 +41732,30 @@ the log instead of a sum. Refuted for this fix: moving the startup flags sample 
 worker. Forty-eight readers of `wt_agg`/`wt_repos` (crown wakes, the train, column evictions,
 gates, the first snapshot) would see no flags for the first seconds of every daemon life, and
 each one would need its own check. That is its own change if startup keeps growing.
+
+## The shin types in a loop with no seam (T-1150, 2026-11-06, user: "it should be a seamless loop, I don't like the expressions it does as if there's a bug, doesn't read correctly")
+
+**Refuted.** The T-451 working pose told a story: two lines typed, one turned `err`, the mouth
+set (`Mouth::Firm`) and the eyes squeezed `>` `<` (`Eyes::Squeeze`) to delete it, a grin at
+the save, then the cycle jumped back to a screen showing different code. The red line and the
+squeeze read as something going wrong, and the jump showed the seam every 5 s.
+
+**Shipped** (approved on artifact `LgGLtLMNGDA9hjUn8zZK81`, with its three recommended picks:
+focused face, nod on each Enter, one blink a loop). Each size's laptop has `code` (lines as
+indent and length) and `rows` (2 small, 3 medium). `Scene::Laptop { line, chars, press }`
+types line `line` of the code in `calm`, with the lines before it in the quiet `code` ink
+above it and the cursor always after it. An Enter (300 ms, with the head nod `tilt(1)`) scrolls
+the screen up one row onto the next line, the last line wrapping to the first, so the last
+frame leads into the first. Keys are 200 ms down, 100 ms up, with no nod. The face is
+`Mouth::Flat`, `look(1, 0)` throughout, with one `Blink` at the pause after the second line.
+The cycles are 4.5 s on the small laptop and 5.4 s on the medium one.
+
+**Mechanics.** Line lengths differ by size (small 3/2/1, medium 4/3/2), so the timeline is per
+size: `Anim::timeline(size)` and `frame_at(size, anim, ms)`, with `working(size)` building
+both loops once in a `OnceLock`. `Eyes::Squeeze`, `Mouth::Firm`, `Role::Del`, `CreatureInk::del`
+and the 13-step `Laptop::script` are gone. `working_types_line_after_line_with_no_seam` checks
+that each frame either types one character or scrolls on an Enter (the wrap included), that a
+scrolled screen is the previous one moved up a row, that the face is one with a single blink,
+and that only an Enter nods. A no-scroll mutation fails it. The ticket-page goldens changed
+only on the laptop's screen. The artifact was drawn from the engine's dumped pixels, and the
+shipped frames are identical to it.
