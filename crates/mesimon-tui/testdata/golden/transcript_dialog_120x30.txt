@@ -3,8 +3,11 @@
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   Fixed the OSC-11 race:
+   Keymap validator       >1y      the query now runs once,    x Flaky e2e on runner  >1y
                                    ✻ claude ⠋  $ bash ◦
-   Keymap validator       >1y                                  x Flaky e2e on runner  >1y
+                                                        T-3
+
           ╭─ TRANSCRIPT (4 of 4) ────────────┴─────────────────────────────────╮
           │  claude                                                            │
           │                                                                    │
@@ -21,9 +24,6 @@
           │  Tests                                                             │
           │  • ground_reply_after_first_frame replays a reply 90 ms late.~     │
           ╰───────────────────────────────── { } message ∙ jk scroll ∙ c copy ─╯
-
-
-
 
 
 

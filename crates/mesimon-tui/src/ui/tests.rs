@@ -7032,6 +7032,28 @@ fn golden_transcript_dialog_120() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The card the dialog hangs from stays open under it, as under the note
+/// reader (T-1145): its rows above the dialog are the rows it had before.
+#[test]
+fn test_transcript_dialog_keeps_its_card_open() {
+    let (mut app, dir) = app_transcript("peek");
+    app.peek = true;
+    let before = render(&app, 120, 30);
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    let after = render(&app, 120, 30);
+    let top = after.iter().position(|l| l.contains("TRANSCRIPT")).expect("dialog");
+    let card: Vec<&String> = before.iter().take(top).collect();
+    let kept: Vec<&String> = after.iter().take(top).collect();
+    assert!(
+        card.iter().any(|l| l.contains("Fixed the OSC-11")),
+        "the open card shows its reply above the dialog:\n{}",
+        after.join("\n")
+    );
+    assert_eq!(card, kept, "the card above the dialog is unchanged:\n{}", after.join("\n"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `{ }` step the messages and land where each was left; `jk` scrolls the
 /// one on show; Esc closes. A person's words wear the quote bar.
 #[test]
@@ -7048,7 +7070,14 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     assert!(lines.last().is_some_and(|l| l.contains("esc close")), "esc is the footer's");
     press(&mut app, 'j');
     press(&mut app, 'j');
-    let after = render(&app, 120, 30).join("\n");
+    // The dialog's rows alone: the open card above it keeps the reply's
+    // start (T-1145).
+    let dialog = |app: &App| {
+        let lines = render(app, 120, 30);
+        let top = lines.iter().position(|l| l.contains("TRANSCRIPT")).expect("dialog");
+        lines[top..].join("\n")
+    };
+    let after = dialog(&app);
     assert!(!after.contains("Fixed the OSC-11 race"), "two rows down:\n{after}");
     press(&mut app, '{');
     let prompt = render(&app, 120, 30).join("\n");
@@ -7061,7 +7090,7 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     assert!(first.contains("3 steps ∙ Read, Grep"), "the steps that followed:\n{first}");
     press(&mut app, '}');
     press(&mut app, '}');
-    let back = render(&app, 120, 30).join("\n");
+    let back = dialog(&app);
     assert!(!back.contains("Fixed the OSC-11 race"), "landed where it was left:\n{back}");
     // A small terminal still frames it, under the card or over it.
     for (w, h) in [(80, 24), (60, 20), (120, 20)] {
@@ -7122,7 +7151,9 @@ fn transcript_enter(app: &mut App) {
 /// The marker on the terminal, not merely an internal cursor index.
 fn transcript_mark(buffer: &ratatui::buffer::Buffer, row_word: &str, needle: &str, marked: bool) {
     let lines = lines_of(buffer);
-    let y = lines.iter().position(|line| line.contains(row_word)).expect(row_word);
+    // Inside the dialog: the open card above it can show the same words.
+    let top = lines.iter().position(|line| line.contains("TRANSCRIPT")).unwrap_or(0);
+    let y = top + lines[top..].iter().position(|line| line.contains(row_word)).expect(row_word);
     let line = &lines[y];
     let byte = line.find(needle).expect(needle);
     let x = line[..byte].width() as u16;

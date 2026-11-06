@@ -41583,3 +41583,14 @@ light, on purpose: a hover says what a click does, so lighting the title while t
 still opened the column would have been a lie. Refuted: keeping the whole strip clickable with a
 title-only light. Test: `a_folded_column_lights_and_opens_on_its_title_only` (rows 2..=7 light at
 100×24, row 12 neither lights nor opens). No golden moved.
+
+## The card under its transcript dialog stays open (T-1145, 2026-11-06, the author: "transcript popup closes the origin ticket peak ∙ should stay peaked, just like notes render popup")
+
+T-921 drew the card under its transcript dialog as its title alone ("the peek would repeat the
+dialog"). The note reader (T-1139) hangs from its card the same way and leaves it as it was, and
+the author wants the two alike: the card keeps its open rows (reply, agents, tags) under the
+transcript dialog too, and the dialog hangs below them. **Refuted: "the repeat is noise".** The
+author asked for the card's rows back; the peek is the card's, the dialog is the conversation.
+`ui/board.rs` drops the `reading` gate. Tests: `test_transcript_dialog_keeps_its_card_open`
+(fails without the change); the dialog-scroll and link-mark tests now look inside the dialog,
+since the card above can show the same words; golden `transcript_dialog_120x30` moved.
