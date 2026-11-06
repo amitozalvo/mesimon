@@ -1237,14 +1237,10 @@ fn draw_preview(
             };
             f.render_widget(Paragraph::new(raw), rect);
             app.live_rect.set(Some(rect));
-            // The pane's own cursor, where its box has it: the one place on
-            // the page that is being typed into, even when not by you.
-            if let Some((cx, cy)) = shot.cursor {
-                let row = view[live_from..].iter().position(|&i| i == cy as usize);
-                if let (Some(p), true) = (row, (cx as usize) < area.width as usize) {
-                    f.set_cursor_position((area.x + cx, foot_y + p as u16));
-                }
-            }
+            // No cursor in the pane's picture: the terminal's cursor blinks,
+            // and a blinking cursor says "type here", which is true only
+            // once the ask field is open. The pane's cursor is read for the
+            // seam (`Shot::cursor_prompt`), never shown.
         }
         // The ask field's row (T-1143): over the composer's own prompt row,
         // between the pane's rules, so the words are typed where the agent

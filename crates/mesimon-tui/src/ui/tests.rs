@@ -14625,8 +14625,8 @@ fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
 /// The zone with the pane at its foot: the composer, its rules and the
 /// footer as the pane holds them, the spinner row kept over the rule, the
 /// pane's rows above going out, and the conversation over those, at its
-/// newest. The pane's cursor is the frame's; the shin stands on the
-/// rail's foot, beside the composer.
+/// newest. The frame has no cursor until the field opens; the shin stands
+/// on the rail's foot, beside the composer.
 #[test]
 fn golden_ticket_live_120() {
     let (app, path) = app_live("tlive-calm", false);
@@ -15069,6 +15069,44 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     let lines = render(&app, 120, 30);
     assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The terminal's cursor blinks, and a blinking cursor says "type here".
+/// The live window shows the pane's composer with no cursor on it, so
+/// the page reads as a picture; `shift+enter` opens the field and the
+/// cursor appears on that row, the one place on the page that takes words.
+#[test]
+fn the_cursor_blinks_only_once_the_field_is_open() {
+    let (mut app, path) = app_live("tlive-cursor", false);
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let lines = lines_of(terminal.backend().buffer());
+    let composer = lines
+        .iter()
+        .position(|l| l.chars().take(90).collect::<String>().trim() == "❯")
+        .expect("the bare composer");
+    assert!(!terminal.backend().cursor_visible(), "a picture has no cursor: {lines:#?}");
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+    };
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    assert!(terminal.backend().cursor_visible(), "the field has the cursor");
+    assert_eq!(
+        terminal.backend().cursor_position().y as usize,
+        composer,
+        "on the composer's row: {:#?}",
+        lines_of(terminal.backend().buffer())
+    );
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

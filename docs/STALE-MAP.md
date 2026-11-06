@@ -41995,3 +41995,17 @@ entry (`page_composed`, `Composed`: the stamp, width, flavor, selected link, row
 `PageDoc`). A session's first open still reads on the UI thread once per page visit.
 `the_conversation_is_kept_for_the_ticket_page` (fails with the old drop): to another row and back,
 the same transcript and the same rows; the board keeps them; another ticket drops them.
+
+## T-1143: no cursor on the pane's composer (2026-11-06)
+
+The live window placed the terminal's cursor where the pane's cursor was, on Claude Code's
+input row. The person read it as "input is active, type here", which it is not until
+`shift+enter`. The blink was the board's: a `capture-pane` carries cells, never a cursor, so
+the pane's cursor arrives as coordinates alone and only the page could put a blinking cursor
+on the picture. Now `draw_preview` sets no cursor in the live branch; the pane's cursor is
+still read for the seam (`Shot::cursor_prompt`). The ask field sets its own cursor after the
+preview, so the one blinking cursor on the page is the one that takes words. Refuted: hiding
+"only Claude Code's cursor" in the capture; there is none to hide. Goldens are text-only and
+did not move. Test: `the_cursor_blinks_only_once_the_field_is_open` (`TestBackend::
+cursor_visible`, fails with the placement restored).
+
