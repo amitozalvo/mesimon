@@ -42026,3 +42026,15 @@ through `card::ask_placeholder`. Refuted: a full-width selected band on the comp
 page would say "selected" where the pane says "type"); the chip on the rule row (a rule with
 words in it reads as the pane's). Golden: `ticket_live_ask_120x30`.
 
+## T-1143: the delivery row is under the words (2026-11-06)
+
+The chip at the pane's right edge was missed: nobody looks right of the words. The person
+asked for it on the row below with its key, and a space between the mark and the first letter
+(the agent's own column reads as glued to the `❯`). `composer_row` types one space past
+`words_col`; `delivery_row` draws the card's mode row (`queued  shift+tab`, the tier) across
+the pane's width on the selected ground, its words level with the typed ones, in the row
+under the composer — the pane's bottom rule while the field is open, Codex's blank row. The
+band is drawn to the pane's edge and no further, which was the fault of the first version (a
+half row over the rule). Over a dialog the field had sat on the box's first row, over its
+question, since the first build; now the words and the delivery row go above the box, over the
+pane rows the seam left, and the box stays whole. Golden `ticket_live_ask_120x30` reminted.

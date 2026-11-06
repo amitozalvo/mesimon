@@ -14799,7 +14799,7 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let rect = app.live_rect.get().expect("the window is on screen");
     assert!((field as u16) >= rect.y, "the field is in the window: {lines:#?}");
     assert!(lines[field - 1].contains("────"), "under the box's top rule: {lines:#?}");
-    assert!(lines[field + 1].contains("────"), "over its bottom rule: {lines:#?}");
+    assert!(lines[field + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     let pane = &lines[rect.y as usize..];
     assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
@@ -15072,8 +15072,8 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
     assert_eq!(
         lines[at].find("summarise"),
-        Some(col),
-        "typed where the agent puts the words, after its own mark: {:?}",
+        Some(col + 1),
+        "typed one space past where the agent puts the words: {:?}",
         lines[at]
     );
     assert!(lines[at].starts_with(" ›"), "the pane's mark stays: {:?}", lines[at]);
@@ -15081,10 +15081,10 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
 }
 
 /// The ask field over a pane is the pane's composer row (T-1143): the
-/// words after the pane's own mark, in its ink, with the delivery word as
-/// one chip at the pane's right edge, and nothing of the page's over the
-/// pane's rules. Over a dialog, which has no composer, the seam row takes
-/// the words after a mark of the page's own.
+/// words a space after the pane's own mark, in its ink, nothing painted,
+/// and under them the delivery row with its key, across the pane on the
+/// selected ground. Over a dialog, which has no composer, the seam row
+/// takes the words after a mark of the page's own.
 #[test]
 fn golden_ticket_live_ask_120() {
     let (mut app, path) = app_live("tlive-ask", false);
@@ -15106,19 +15106,17 @@ fn golden_ticket_live_ask_120() {
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     let buf = terminal.backend().buffer();
     let lines = lines_of(buf);
-    let y = lines.iter().position(|l| l.starts_with(" ❯ later then")).expect("typed after the mark");
-    let row = &lines[y];
-    assert_eq!(terminal.backend().cursor_position(), (13u16, y as u16).into(), "after the words");
-    // The chip ends at the pane's right edge (80 columns from column 1).
-    let pane: String = row.chars().take(81).collect();
-    assert!(pane.ends_with(" queued "), "the chip ends at the pane's edge: {pane:?}");
-    assert_ne!(buf[(3, y as u16)].bg, buf[(79, y as u16)].bg, "only the chip is painted");
-    assert_eq!(buf[(3, y as u16)].bg, buf[(0, y as u16)].bg, "the words sit on the page ground");
-    for r in [y - 1, y + 1] {
-        assert!(lines[r].contains(&"─".repeat(78)), "the pane's rules are whole: {:?}", lines[r]);
-    }
-    let pane_hint = lines.iter().filter(|l| l.contains("shift+tab")).count();
-    assert_eq!(pane_hint, 2, "the key is the footer's and Claude Code's, not a row of ours");
+    let y = lines.iter().position(|l| l.starts_with(" ❯  later then")).expect("a space, then typed");
+    let y16 = y as u16;
+    assert_eq!(terminal.backend().cursor_position(), (14u16, y16).into(), "after the words");
+    assert_eq!(buf[(4, y16)].bg, buf[(0, y16)].bg, "the words sit on the page ground");
+    assert!(lines[y - 1].contains(&"─".repeat(78)), "the top rule is whole: {:?}", lines[y - 1]);
+    // The delivery row under the words, level with them, painted across the
+    // pane's width and no further.
+    assert!(lines[y + 1].starts_with("    queued  shift+tab"), "{:?}", lines[y + 1]);
+    assert_eq!(buf[(1, y16 + 1)].bg, buf[(80, y16 + 1)].bg, "painted to the pane's edge");
+    assert_ne!(buf[(1, y16 + 1)].bg, buf[(0, y16 + 1)].bg, "painted");
+    assert_eq!(buf[(81, y16 + 1)].bg, buf[(0, y16 + 1)].bg, "and no further");
     golden("ticket_live_ask_120x30", &lines);
     // Over a dialog: the seam row, with a mark of the page's own.
     let (mut dialog, dialog_path) = app_live("tlive-ask-dialog", true);
@@ -15127,9 +15125,11 @@ fn golden_ticket_live_ask_120() {
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let lines = render(&dialog, 120, 30);
-    let seam = lines.iter().position(|l| l.starts_with(" ❯ ask agent")).expect("the seam row");
+    let seam = lines.iter().position(|l| l.starts_with(" ❯  ask agent")).expect("the seam row");
     let box_top = lines.iter().position(|l| l.contains("Do you want to run")).expect("the dialog");
-    assert!(seam < box_top, "over the box: {lines:#?}");
+    assert!(lines[seam + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
+    assert!(lines[seam + 2].starts_with(" ╭─"), "both over the box's top: {lines:#?}");
+    assert_eq!(seam + 3, box_top, "which stays whole: {lines:#?}");
     let _ = std::fs::remove_dir_all(dialog_path.parent().expect("dir"));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }

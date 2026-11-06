@@ -957,16 +957,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             (Some(c), Some((buf, queued, immediately, accept_plan, plan, tier)))
                 if field.is_some() =>
             {
-                let chip = (app.ask_queueable(ticket_id) || plan || tier.is_some()).then(|| {
-                    let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
-                    match app.field_tier_word(Some(ticket_id), tier) {
-                        Some(t) => format!("{word} ∙ {t}"),
-                        None => word.to_string(),
-                    }
-                });
+                let delivery = app.ask_queueable(ticket_id) || plan || tier.is_some();
+                // Over a dialog the rows go above the box, which stays
+                // whole with its question: the words, then the delivery
+                // row, over the pane's rows the seam left there.
+                let field_y = if c.bare {
+                    field_y.saturating_sub(1 + u16::from(delivery)).max(body_y)
+                } else {
+                    field_y
+                };
                 let placeholder =
                     super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
-                let (line, cx) = composer_row(theme, c, buf, placeholder, chip.as_deref());
+                let (line, cx) = composer_row(theme, c, buf, placeholder);
                 // The pane's own mark stays as the pane drew it: the row
                 // begins at its words' column; over a dialog, at the mark's.
                 let x = if c.bare { c.x } else { c.words_x };
@@ -975,6 +977,19 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 let at = (x + cx.min(rect.width.saturating_sub(1)), field_y);
                 f.set_cursor_position(at);
                 super::field_spot(app, rect, at);
+                // The delivery row under the words, the card's, across the
+                // pane's width on the selected ground: where the eye goes
+                // after the words, with the key that cycles it.
+                let under = field_y + 1;
+                if delivery && under < body_y + body_h {
+                    let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
+                    let tier_word = app.field_tier_word(Some(ticket_id), tier);
+                    let cycles =
+                        app.ask_queueable(ticket_id) && !app.ticket_plan_ready(ticket_id);
+                    let line = delivery_row(theme, c, word, tier_word.as_deref(), cycles);
+                    let rect = Rect { x: c.x, y: under, width: c.right - c.x, height: 1 };
+                    f.render_widget(Paragraph::new(line), rect);
+                }
             }
             _ => draw_field(f, area.x + 1, field_y),
         }
@@ -1363,7 +1378,7 @@ fn draw_preview(
 /// The pane's composer, where the ask field is typed (T-1143): the row's
 /// first column and its words' column, past the pane's own mark, and one
 /// past the pane's last column. Over a dialog, which has no composer, the
-/// seam's row with a mark of the page's own.
+/// rows over the box with a mark of the page's own (`bare`).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Composer {
     pub x: u16,
@@ -1373,31 +1388,29 @@ pub(super) struct Composer {
 }
 
 /// The ask field as one row on the pane's composer (T-1143), drawn as the
-/// agent would draw what is typed: the words in the pane's ink from its
-/// words' column, the placeholder dim where there are none, and the
-/// delivery word (`now`, `queued`, `accept plan`…) as a chip at the pane's
-/// right edge, on the selected ground, the one painted thing on the row.
-/// The pane's own placeholder under it is covered to the edge. The row
-/// starts at the words' column, after the pane's own mark, or at the mark's
-/// where the page draws one (`bare`). Returns the row and the cursor's
-/// column offset from its first column.
+/// agent would draw what is typed: the words in the pane's ink one space
+/// past its words' column (the agent's own is too close to the mark to
+/// read as typed), the placeholder dim where there are none, nothing
+/// painted. The pane's own placeholder under it is covered to the edge.
+/// The row starts at the words' column, after the pane's own mark, or at
+/// the mark's where the page draws one (`bare`). Returns the row and the
+/// cursor's column offset from its first column.
 fn composer_row(
     theme: &crate::theme::Theme,
     c: Composer,
     buffer: &crate::text::EditBuffer,
     placeholder: &str,
-    chip: Option<&str>,
 ) -> (Line<'static>, u16) {
-    let lead = if c.bare { (c.words_x - c.x) as usize } else { 0 };
-    let width = (c.right - c.words_x) as usize + lead;
-    let chip = chip.map(|w| format!(" {w} "));
-    let chip_w = chip.as_ref().map_or(0, |w| w.width() + 1);
+    let lead = if c.bare { (c.words_x - c.x) as usize } else { 0 } + 1;
+    let width = (c.right - c.words_x) as usize + lead - 1;
     // One cell past the words for the cursor to rest on.
-    let budget = width.saturating_sub(lead + chip_w + 1);
+    let budget = width.saturating_sub(lead + 1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
     let mut spans = Vec::new();
     if c.bare {
         spans.push(Span::styled(format!("{:<lead$}", "❯"), theme.dim2()));
+    } else {
+        spans.push(Span::raw(" "));
     }
     let words = if buffer.as_str().is_empty() {
         Span::styled(truncate(placeholder, budget), theme.dim3())
@@ -1406,12 +1419,36 @@ fn composer_row(
     };
     let used = lead + words.width();
     spans.push(words);
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used + chip_w))));
-    if let Some(chip) = chip {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(chip, theme.selected_row().fg(theme.sel.dim1)));
-    }
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
     (Line::from(spans), (lead as u16) + cx)
+}
+
+/// The delivery row under the composer row (T-1143): the card's mode row
+/// (`now`, `queued`, `accept plan`, `queued ∙ plan mode`, the tier) and the
+/// key that cycles it, in the card's inks on the selected ground across
+/// the pane's width, its words level with the typed ones.
+fn delivery_row(
+    theme: &crate::theme::Theme,
+    c: Composer,
+    word: &str,
+    tier_word: Option<&str>,
+    cycles: bool,
+) -> Line<'static> {
+    let width = (c.right - c.x) as usize;
+    let lead = (c.words_x - c.x) as usize + 1;
+    let mut spans = vec![
+        Span::raw(" ".repeat(lead)),
+        Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
+    ];
+    if let Some(t) = tier_word {
+        spans.push(Span::styled(format!(" ∙ {t}"), Style::default().fg(theme.sel.dim1)));
+    }
+    if cycles {
+        spans.push(Span::styled("  shift+tab", Style::default().fg(theme.sel.dim2)));
+    }
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+    Line::from(spans).style(theme.selected_row())
 }
 
 /// The reading rows' gutter: the pane's marks' two columns.
