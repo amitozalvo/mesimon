@@ -42038,3 +42038,16 @@ band is drawn to the pane's edge and no further, which was the fault of the firs
 half row over the rule). Over a dialog the field had sat on the box's first row, over its
 question, since the first build; now the words and the delivery row go above the box, over the
 pane rows the seam left, and the box stays whole. Golden `ticket_live_ask_120x30` reminted.
+
+## T-1143: a woken pane is fitted again (2026-11-06)
+
+After sleep and wake the live window drew the pane at 80 columns in a wider zone. A wake runs
+`new-session -d` under the same session name (T-245) with no size, so tmux makes the new pane
+at its default 80×24, and the reader fitted only when it started or when the zone's size
+changed; the zone had not moved, so nothing asked again. Now `Fitting::lost` reads each
+capture: one at another size than the one asked, with the last try a `SIZE_WAIT` old, fits
+again and holds captures back as a fresh fit does. A fit refused while a terminal is attached
+is retried on the same clock (one `list-clients` a second, only while the page shows that
+pane). Tests: `a_pane_that_lost_its_fit_is_fitted_again` (unit) and
+`a_woken_pane_is_fitted_again` (real tmux, `--ignored`; kills and remakes the session under its
+name, and fails at 80×24 with the refit off).

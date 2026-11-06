@@ -568,6 +568,9 @@ struct Fitting {
     since: Instant,
     settle: Option<Instant>,
     fitted: bool,
+    /// The last time a fit was tried, so a pane that keeps another size is
+    /// fitted again at most once a `SIZE_WAIT`.
+    tried: Instant,
 }
 
 impl Fitting {
@@ -576,10 +579,23 @@ impl Fitting {
             self.want = Some((cols, rows));
             self.since = Instant::now();
         }
+        self.tried = Instant::now();
         if fit(sock, sid16, cols, rows) {
             self.fitted = true;
             self.settle = Some(Instant::now() + SETTLE);
         }
+    }
+
+    /// The size to fit again to, when `shot` is not at the size asked and
+    /// the last try is a `SIZE_WAIT` old. A wake (T-1143) replaces the pane
+    /// under the same session name at tmux's default size, and the zone,
+    /// whose size has not moved, asks for nothing new: the capture is what
+    /// says the fit was lost. A fit refused (a terminal attached) is tried
+    /// again on the same clock.
+    fn lost(&self, shot: &Shot) -> Option<(u16, u16)> {
+        let (c, r) = self.want?;
+        let off = shot.cols != c || shot.rows.len() != r as usize;
+        (off && self.tried.elapsed() >= SIZE_WAIT).then_some((c, r))
     }
 
     /// Whether a capture of `shot`'s size may go: the size asked, or the
@@ -608,7 +624,13 @@ fn read_loop(
     first: Option<(u16, u16)>,
 ) {
     let mut last = 0u64;
-    let mut f = Fitting { want: None, since: Instant::now(), settle: None, fitted: false };
+    let mut f = Fitting {
+        want: None,
+        since: Instant::now(),
+        settle: None,
+        fitted: false,
+        tried: Instant::now(),
+    };
     if let Some((cols, rows)) = first {
         f.to(sock, sid16, cols, rows);
     }
@@ -629,7 +651,14 @@ fn read_loop(
         if f.settle.is_none_or(|t| Instant::now() >= t) {
             f.settle = None;
             if let Some((hash, shot)) = capture(sock, sid16) {
-                if hash != last && f.takes(&shot) {
+                if let Some((cols, rows)) = f.lost(&shot) {
+                    // Held back like any capture of another size until the
+                    // agent has redrawn for the fit.
+                    f.since = Instant::now();
+                    f.to(sock, sid16, cols, rows);
+                    last = 0;
+                }
+                if hash != last && f.settle.is_none() && f.takes(&shot) {
                     last = hash;
                     if tx.send(shot).is_err() {
                         return f.done(sock, sid16);
@@ -954,14 +983,86 @@ mod tests {
     fn a_capture_of_another_size_waits_for_the_fit() {
         let screen =
             |cols: u16, rows: usize| Shot { rows: vec![Row::default(); rows], cols, cursor: None };
-        let mut f =
-            Fitting { want: Some((107, 32)), since: Instant::now(), settle: None, fitted: true };
+        let mut f = Fitting {
+            want: Some((107, 32)),
+            since: Instant::now(),
+            settle: None,
+            fitted: true,
+            tried: Instant::now(),
+        };
         assert!(!f.takes(&screen(140, 41)), "the attached terminal's size, not yet refitted");
         assert!(f.takes(&screen(107, 32)));
         f.since = Instant::now() - SIZE_WAIT;
         assert!(f.takes(&screen(140, 41)), "a fit that never lands is not waited on for good");
         f.want = None;
         assert!(f.takes(&screen(80, 24)), "no size asked: any capture");
+    }
+
+    /// A capture at another size than the one asked says the fit was lost
+    /// (a wake replaced the pane at tmux's default size): fit again, once a
+    /// `SIZE_WAIT` at most, and never with no size asked.
+    #[test]
+    fn a_pane_that_lost_its_fit_is_fitted_again() {
+        let screen =
+            |cols: u16, rows: usize| Shot { rows: vec![Row::default(); rows], cols, cursor: None };
+        let mut f = Fitting {
+            want: Some((107, 32)),
+            since: Instant::now() - SIZE_WAIT,
+            settle: None,
+            fitted: true,
+            tried: Instant::now(),
+        };
+        assert_eq!(f.lost(&screen(80, 24)), None, "a try a moment ago is not repeated");
+        f.tried = Instant::now() - SIZE_WAIT;
+        assert_eq!(f.lost(&screen(80, 24)), Some((107, 32)), "the woken pane, fitted again");
+        assert_eq!(f.lost(&screen(107, 32)), None, "a pane at its size is left alone");
+        f.want = None;
+        assert_eq!(f.lost(&screen(80, 24)), None, "no size asked: nothing to fit");
+    }
+
+    /// Against a real tmux (ignored in `cargo ut`; run with `--ignored`):
+    /// the session killed and made again under its name, as a wake does,
+    /// at tmux's default size: the running reader fits the new pane back
+    /// to the zone's size without the zone asking again.
+    #[test]
+    #[ignore = "starts a tmux server"]
+    fn a_woken_pane_is_fitted_again() {
+        let sock = PathBuf::from(format!("/tmp/msmn-wake-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let script = "draw() { clear; printf '%s x %s\\n' $(tput cols) $(tput lines); }; \
+                      trap draw WINCH; draw; while :; do sleep 0.02; done";
+        let up = |s: &str| tmux(&sock, &["new-session", "-d", "-s", "wakeprobe", s]);
+        // A second session keeps the server up across the kill.
+        assert!(tmux(&sock, &["new-session", "-d", "-s", "keep", "sleep 30"]).is_some());
+        assert!(up(script).is_some(), "tmux starts");
+        std::thread::sleep(Duration::from_millis(300));
+        let mut live =
+            Live::start(sock.clone(), uuid::Uuid::nil(), "wakeprobe".into(), Some((60, 20)), None);
+        let at = |live: &mut Live, cols: u16, secs: u64| {
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < deadline {
+                live.poll();
+                if live.shot.as_ref().is_some_and(|s| s.cols == cols) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(at(&mut live, 60, 3), "fitted at the start");
+        let _ = tmux(&sock, &["kill-session", "-t", "wakeprobe"]);
+        assert!(up(script).is_some(), "woken under its name");
+        // The old pane's last picture is 60 wide too: only a capture of
+        // the new pane counts.
+        live.shot = None;
+        let fitted = at(&mut live, 60, 4);
+        let shot = live.shot.clone();
+        drop(live);
+        let _ = tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_file(&sock);
+        let shot = shot.expect("a capture");
+        assert!(fitted, "fitted again: {}x{}", shot.cols, shot.rows.len());
+        assert!(shot.rows.iter().any(|r| r.text.contains("60 x 20")), "and drawn for it");
     }
 
     /// Against a real tmux (ignored in `cargo ut`; run with `--ignored`):
