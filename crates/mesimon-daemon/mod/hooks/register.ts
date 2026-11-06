@@ -1269,7 +1269,14 @@ export const register: Register = on => {
     } catch (err) {
       out = { content: [{ type: 'text', text: `mesimon could not answer the call: ${String(err)}` }], isError: true }
     }
-    return toolAnswer(out)
+    const answer: any = toolAnswer(out)
+    // The engine fires no `PostToolUse` for a call a hook answered, and the
+    // hook set's twin (the MCP shim's tool) does: a turn that opened with no
+    // prompt, as the one on a `!` command's output, is seen working by it
+    // (T-1140). A refusal is none, as a tool's error is on the hook set. The
+    // native road's every-call relay already wraps this one.
+    if (answer?.deny === undefined) void relayClassic($, 'PostToolUse', undefined, postToolUseBody(e, answer?.result), false)
+    return answer
   })
 
   // ---- The question (T-576): the native dialog is drawn as ever, and the

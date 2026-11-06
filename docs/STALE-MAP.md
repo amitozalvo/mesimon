@@ -41473,3 +41473,53 @@ Tests: `keymap::the_reader_reads_and_enter_edits`, `the_editor_never_walks_the_n
 app), `tab_walks_the_links_in_the_reader_and_enter_opens_one`; goldens `editor_reader_120x30`,
 `editor_reader_unwrapped_120x30`, `editor_reader_link_120x30`; `editor_note_ring_120x30`,
 `editor_note_120x30` and `editor_picture_120x30` lost `tab next note`.
+
+## The turn after a `!` command reads working at its first board tool (T-1140, 2026-11-06, "agent working after manual !bash command moved to REVIEW and not marked as working")
+
+**Seen** on the simbly board's crown (T-132, Claude Code 2.1.318, classic mod road), off the
+feed and the transcript:
+
+- 13:18:41.97 `Stop`. The person's `!` command had been queued during the turn (a
+  `queue-operation` record), so it started 54 ms later. Its shell is a young direct child that
+  leads its own process group, so T-1044's hold counted it as an async hook (`async_hook_wait`,
+  1 child) and kept the turn open while the command ran.
+- 13:19:11.15 `<bash-stdout>`. 13:19:11.31 Claude Code's `api-request`: the follow-on turn on the
+  output began, with no prompt and no hook.
+- 13:19:14.64 the hold released 3 s after the shell exited (`REWAKE_MS`). Its saved `Stop` landed
+  `Idle{EndTurn}` and the card went to REVIEW **inside** that turn.
+- 13:19:15 to 13:19:38 the turn called `get_ticket` ×3 and `ask_agent` ×2. These are registered
+  tools, and **a call a mod hook answers fires no `PostToolUse`**, so nothing reached the
+  machine. The card read REVIEW and idle until the turn's one Bash at 13:19:41 (T-228's arm).
+  Its `Stop` at 13:19:46 was the real end.
+
+**Built.**
+- **The classic mod relays a `PostToolUse` for a board tool's answered call** (`register.ts`,
+  the `mcp__mesimon__` `tool.call` hook). It has the hook set's shape: a subagent's call names its
+  `agent_id`, and a refusal sends none, as a tool's error sends none there. The hook set's MCP shim
+  tool always fired one. The native road's every-call relay already wrapped the board hook, so
+  `relayClassic` keeps the frame single. A crown turn made of board tools is now seen working
+  from its first call.
+- **The lead's own tool completion cancels a held `Stop`** (`asynchooks::hold_async_stop`), as
+  its tool start and a new prompt already did. A non-nested `PostToolUse` after a `Stop` is a turn
+  of its own (T-228's reading), so the hold's later release can no longer land an idle edge inside
+  it. A subagent's completion keeps the hold.
+
+In the T-132 sequence the card now leaves REVIEW at the first `get_ticket`, about 1 s after the
+release. With a longer hold, that completion cancels the release outright.
+
+**Refuted: "a `!` command's end starts a turn".** Of 60 `<bash-stdout>` records in two weeks of
+local transcripts (2.1.295 to 2.1.319), 47 were followed by a model turn and 13 were not. Most of
+the 13 were long `ship.sh` runs, and their next record was a person's prompt or a task
+notification minutes later. Marking working at the command's end would strand a card on
+"working". **Refuted: not counting a `!` shell as hook work.** The hold is what kept the queued
+command's card in IN PROGRESS. Released at once, the card would read idle for the whole command,
+because T-1100's foreground probe only counts a shell younger than the idle spell and this one
+started in the same second.
+
+**Not built:** a follow-on turn that calls no tool (text alone) still reads idle for its few
+seconds, as T-707 accepted. There is no signal for its start on the classic road.
+
+Tests: `register.test.ts` `classic:`/`native: a board tool's answer is one PostToolUse …`, which
+fails on the classic road without the relay; `asynchooks::the_leads_tool_completion_cancels_a_held_stop`.
+Run: `cargo ut`, `mod_plugin`, and `async_hook_e2e` + `bash_mode_e2e` on both roads plus
+`mod_bridge_e2e`, all green on the first run. No rig case: no agent-facing text changed.

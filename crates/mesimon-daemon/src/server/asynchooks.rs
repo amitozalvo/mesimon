@@ -78,7 +78,12 @@ impl Daemon {
         now: u64,
     ) -> Signal {
         match &sig {
-            Signal::UserPromptSubmit | Signal::ToolStarted { nested: false } => {
+            // The lead's own tool, started or done, is a turn after the held
+            // Stop: the one Claude Code runs on a `!` command's output opens
+            // with no prompt (T-1140), and its first frame is a completion.
+            Signal::UserPromptSubmit
+            | Signal::ToolStarted { nested: false }
+            | Signal::ToolCompleted { nested: false } => {
                 self.async_hooks.pending.remove(&id);
             }
             Signal::PaneDied { .. }
@@ -373,6 +378,52 @@ mod tests {
             activity: None,
             title: String::new(),
         }
+    }
+
+    // T-1140: a `!` command queued behind a turn is a young child that holds
+    // its Stop; the turn Claude Code then runs on the output opens with no
+    // prompt. That turn's own tool completion cancels the hold, so its later
+    // release cannot land an idle edge inside the turn. A subagent's does not.
+    #[test]
+    fn the_leads_tool_completion_cancels_a_held_stop() {
+        let dir = std::env::temp_dir()
+            .join(format!("msmn-hkc-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let (mut d, _sid, _rx) = crate::server::queued_person_push_tests::daemon(&dir);
+        let id = d.board.sessions[0].id;
+        let rec = &mut d.board.sessions[0];
+        rec.state = SessionState::Running;
+        rec.pane_key = Some("1:%0".into());
+        d.machines.insert(id, Machine::new(SessionState::Running, 1_000));
+        let frame = HookFrame {
+            session: id.to_string(),
+            event: "Stop".into(),
+            reason: None,
+            pane: None,
+            road: Road::Mod,
+            payload: serde_json::json!({}),
+        };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        let nested = Signal::ToolCompleted { nested: true };
+        assert!(matches!(
+            d.hold_async_stop(id, nested, &frame, None, 2_000),
+            Signal::ToolCompleted { nested: true }
+        ));
+        assert!(d.async_stop_pending(id), "a subagent's completion keeps the hold");
+        let lead = Signal::ToolCompleted { nested: false };
+        assert!(matches!(
+            d.hold_async_stop(id, lead, &frame, None, 3_000),
+            Signal::ToolCompleted { nested: false }
+        ));
+        assert!(!d.async_stop_pending(id), "the lead's completion is a turn of its own");
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1104,6 +1104,32 @@ test('native: a question the board answers is its ModAnswer alone, with no PostT
   expect(only(runs, 'PostToolUse').map(r => bodyOf(r).tool_use_id)).toEqual(['toolu_10'])
 })
 
+// T-1140: a board tool's call is answered here, so the engine fires no
+// `PostToolUse` for it; the hook set's twin (the MCP shim's) does. A turn
+// that opened with no prompt (the one Claude Code runs on a `!` command's
+// output) is seen working by that frame.
+for (const road of ['classic', 'native'] as const) {
+  test(`${road}: a board tool's answer is one PostToolUse, a subagent's names its agent, a refusal is none (T-1140)`, async ($, on) => {
+    mock.env(on, road === 'native' ? { ...TOOLS_ENV, MESIMON_MOD_NATIVE: '1' } : TOOLS_ENV)
+    const runs = mesimonMcp(on, (argv, stdin) =>
+      JSON.parse(stdin).key === 'NOPE'
+        ? { content: [{ type: 'text', text: 'no ticket NOPE' }], isError: true }
+        : { content: [{ type: 'text', text: '{"key":"T-1"}' }], isError: false },
+    )
+    on('session.id', () => ({ value: 'sid-1' }) as any)
+    await startWithTools($, on)
+    await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_1', key: 'T-1' } as any)
+    await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_2', agentId: 'a1', key: 'T-1' } as any)
+    await $.tool.call({ tool: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_3', key: 'NOPE' } as any)
+    await settle()
+    const posts = only(runs, 'PostToolUse').map(bodyOf)
+    expect(posts).toEqual([
+      { hook_event_name: 'PostToolUse', tool_name: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_1', tool_input: { key: 'T-1' }, tool_response: '{"key":"T-1"}' },
+      { hook_event_name: 'PostToolUse', tool_name: 'mcp__mesimon__get_ticket', tool_use_id: 'toolu_2', tool_input: { key: 'T-1' }, tool_response: '{"key":"T-1"}', agent_id: 'a1' },
+    ])
+  })
+}
+
 test('native: the task ledger lists a backgrounded command on the Stop as a shell until its notification, a background agent as a subagent until the list says it is over, and nothing a TaskStop ended', async ($, on) => {
   const runs = nativeSession(on)
   let agents: any[] = []
