@@ -933,7 +933,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 rail_shin(app, rail, (body_y + body_h).saturating_sub(1), rec, shin_peek.as_deref())
             })
             .filter(|(_, _, y)| rail.y + rail_used + 2 <= *y);
-        let used = draw_preview(
+        let (used, composer) = draw_preview(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h },
             app,
@@ -949,7 +949,35 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // not: `used` is the whole zone exactly when the content overflowed.
         // With the live window (T-1143) `used` names the composer's own
         // prompt row, and the field is typed over it.
-        draw_field(f, area.x + 1, body_y + (used as u16).min(body_h - field_rows));
+        let field_y = body_y + (used as u16).min(body_h - field_rows);
+        match (composer, ask) {
+            // Typed on the pane's composer row (T-1143), where the agent
+            // reads it, in one row: no field of the page's own over the
+            // pane's rules.
+            (Some(c), Some((buf, queued, immediately, accept_plan, plan, tier)))
+                if field.is_some() =>
+            {
+                let chip = (app.ask_queueable(ticket_id) || plan || tier.is_some()).then(|| {
+                    let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
+                    match app.field_tier_word(Some(ticket_id), tier) {
+                        Some(t) => format!("{word} ∙ {t}"),
+                        None => word.to_string(),
+                    }
+                });
+                let placeholder =
+                    super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
+                let (line, cx) = composer_row(theme, c, buf, placeholder, chip.as_deref());
+                // The pane's own mark stays as the pane drew it: the row
+                // begins at its words' column; over a dialog, at the mark's.
+                let x = if c.bare { c.x } else { c.words_x };
+                let rect = Rect { x, y: field_y, width: c.right - x, height: 1 };
+                f.render_widget(Paragraph::new(line), rect);
+                let at = (x + cx.min(rect.width.saturating_sub(1)), field_y);
+                f.set_cursor_position(at);
+                super::field_spot(app, rect, at);
+            }
+            _ => draw_field(f, area.x + 1, field_y),
+        }
         if let Some((stage, x, y)) = shin {
             stage.paint(f.buffer_mut(), x, y, rail);
             *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
@@ -997,7 +1025,7 @@ fn draw_preview(
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
     shin_on_rail: bool,
-) -> usize {
+) -> (usize, Option<Composer>) {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1055,7 +1083,7 @@ fn draw_preview(
                 lines[0] = heading(w);
             }
             f.render_widget(Paragraph::new(lines), area);
-            return used;
+            return (used, None);
         };
         if tail.is_empty() {
             lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
@@ -1246,11 +1274,19 @@ fn draw_preview(
         // between the pane's rules, so the words are typed where the agent
         // reads them; over a dialog, which has the box's place, the seam
         // itself.
-        let field_y = shot
+        let prompt = shot
             .prompt_row()
-            .and_then(|p| view[live_from..].iter().position(|&i| i == p))
-            .map_or(foot_y, |p| foot_y + p as u16);
-        return (field_y - area.y) as usize;
+            .and_then(|p| view[live_from..].iter().position(|&i| i == p).map(|r| (p, r)));
+        let field_y = prompt.map_or(foot_y, |(_, r)| foot_y + r as u16);
+        let right = area.x + shot.cols.min(area.width);
+        let composer = match prompt {
+            Some((p, _)) => {
+                let words_x = area.x + live::words_col(&shot.rows[p].text) as u16;
+                Composer { x: area.x, words_x: words_x.min(right - 1), right, bare: false }
+            }
+            None => Composer { x: area.x, words_x: (area.x + 2).min(right - 1), right, bare: true },
+        };
+        return ((field_y - area.y) as usize, Some(composer));
     } else if reply.is_some() {
         word = Some("PREVIEW");
         lines.push(Line::default());
@@ -1321,7 +1357,61 @@ fn draw_preview(
         lines[0] = heading(w);
     }
     f.render_widget(Paragraph::new(lines), area);
-    used
+    (used, None)
+}
+
+/// The pane's composer, where the ask field is typed (T-1143): the row's
+/// first column and its words' column, past the pane's own mark, and one
+/// past the pane's last column. Over a dialog, which has no composer, the
+/// seam's row with a mark of the page's own.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Composer {
+    pub x: u16,
+    pub words_x: u16,
+    pub right: u16,
+    pub bare: bool,
+}
+
+/// The ask field as one row on the pane's composer (T-1143), drawn as the
+/// agent would draw what is typed: the words in the pane's ink from its
+/// words' column, the placeholder dim where there are none, and the
+/// delivery word (`now`, `queued`, `accept plan`…) as a chip at the pane's
+/// right edge, on the selected ground, the one painted thing on the row.
+/// The pane's own placeholder under it is covered to the edge. The row
+/// starts at the words' column, after the pane's own mark, or at the mark's
+/// where the page draws one (`bare`). Returns the row and the cursor's
+/// column offset from its first column.
+fn composer_row(
+    theme: &crate::theme::Theme,
+    c: Composer,
+    buffer: &crate::text::EditBuffer,
+    placeholder: &str,
+    chip: Option<&str>,
+) -> (Line<'static>, u16) {
+    let lead = if c.bare { (c.words_x - c.x) as usize } else { 0 };
+    let width = (c.right - c.words_x) as usize + lead;
+    let chip = chip.map(|w| format!(" {w} "));
+    let chip_w = chip.as_ref().map_or(0, |w| w.width() + 1);
+    // One cell past the words for the cursor to rest on.
+    let budget = width.saturating_sub(lead + chip_w + 1);
+    let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
+    let mut spans = Vec::new();
+    if c.bare {
+        spans.push(Span::styled(format!("{:<lead$}", "❯"), theme.dim2()));
+    }
+    let words = if buffer.as_str().is_empty() {
+        Span::styled(truncate(placeholder, budget), theme.dim3())
+    } else {
+        Span::styled(shown, Style::default().fg(theme.rest.base))
+    };
+    let used = lead + words.width();
+    spans.push(words);
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used + chip_w))));
+    if let Some(chip) = chip {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(chip, theme.selected_row().fg(theme.sel.dim1)));
+    }
+    (Line::from(spans), (lead as u16) + cx)
 }
 
 /// The reading rows' gutter: the pane's marks' two columns.

@@ -199,8 +199,9 @@ permission prompt, a plan to approve or a trust prompt shows whole, the plan's t
 dialog makes the window taller and the turn's end makes it shorter. The shin stands on the rail's
 foot level with the input box, wherever the cursor is, whenever the rail leaves it the room. The
 pane's input box shows no blinking cursor: the page is a picture until `shift+enter`
-opens the ask field over that box, between its rules, and the cursor appears there, so what you
-type goes where the agent reads it. While the page shows a pane, the pane is sized to the page (never while a terminal is
+opens the ask field on that box's own row, after its mark, and the cursor appears there, so what you
+type reads as it will to the agent; the delivery word (`now`, `queued`) is a chip at the box's
+right edge, and `shift+tab` in the footer cycles it. While the page shows a pane, the pane is sized to the page (never while a terminal is
 attached to it), and it takes your terminal's size again when you step in. The pointer resting
 on a row of the rail moves the cursor there, as it does on a card. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
 fast-forward only, so mesimon never mints a merge commit. A second `m` tells the agent its branch

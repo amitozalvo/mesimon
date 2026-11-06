@@ -42009,3 +42009,20 @@ preview, so the one blinking cursor on the page is the one that takes words. Ref
 did not move. Test: `the_cursor_blinks_only_once_the_field_is_open` (`TestBackend::
 cursor_visible`, fails with the placement restored).
 
+## T-1143: the ask field is the pane's composer row (2026-11-06)
+
+Over a pane the field drew the board card's two rows at the page's own indent: `  › words` on
+the selected ground two columns right of the pane's `❯`, and under it `now  shift+tab` on half
+a row, painted over the pane's bottom rule. The person asked for the words aligned as if typed
+on the input, fewer visuals, and the delivery word drawn properly with its ground. Now
+`draw_preview` returns a `Composer` (the pane's words column from `live::words_col`, its right
+edge) and the page draws one row, `ticket::composer_row`: the pane's own mark stays, the words
+follow it in the pane's ink (placeholder dim), the pane's own placeholder under them is
+covered, and the delivery word is a chip (` queued `) on the selected ground at the pane's
+right edge — the one painted thing on the row. The `shift+tab` hint is the footer's. Over a
+dialog (no composer) the seam row takes the words after a `❯` of the page's own. The board card
+and the page without a pane keep `card::render_ask_field`; the placeholder words are shared
+through `card::ask_placeholder`. Refuted: a full-width selected band on the composer row (the
+page would say "selected" where the pane says "type"); the chip on the rule row (a rule with
+words in it reads as the pane's). Golden: `ticket_live_ask_120x30`.
+

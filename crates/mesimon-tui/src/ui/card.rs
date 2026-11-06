@@ -123,11 +123,36 @@ pub(super) fn render_prompt(
     (Line::from(spans).style(theme.selected_row()), lead + cx)
 }
 
+/// What a blank Enter would do in the seat's own words (see
+/// `render_ask_field`), for the empty field's placeholder: the board card's
+/// and the ticket page's, over a pane (`ticket::composer_row`, T-1143).
+pub(super) fn ask_placeholder(
+    app: &crate::app::App,
+    ticket: ulid::Ulid,
+    accept_plan: bool,
+    queued: bool,
+) -> &'static str {
+    let starts = app.board.live_agent(ticket).is_none();
+    if accept_plan {
+        "enter accepts the plan"
+    } else if app.ticket_queued(ticket) && !(starts && !queued) {
+        "enter drops"
+    } else if starts {
+        "start on the title"
+    } else if app.ticket_unprompted(ticket) {
+        "send the brief"
+    } else {
+        "ask agent"
+    }
+}
+
 /// The whole ask field for one ticket's seat — the prompt row and, when the
 /// seat has a delivery to name, the row under it — with the cursor's x
 /// offset in the prompt row. The board card (under the card) and the ticket
 /// page (under the zone's content, T-476) draw the same rows from here, so
-/// the two surfaces cannot say different things about one seat.
+/// the two surfaces cannot say different things about one seat. Over a
+/// pane the page types on the pane's own composer row instead
+/// (`ticket::composer_row`, T-1143), from the same words.
 ///
 /// The placeholder is what a blank Enter would do, in the seat's own words,
 /// and by the same rule `commit_input` judges it: drop the entry that is
@@ -146,18 +171,7 @@ pub(super) fn render_ask_field(
     plan: bool,
     tier: Option<&str>,
 ) -> (Vec<Line<'static>>, u16) {
-    let starts = app.board.live_agent(ticket).is_none();
-    let placeholder = if accept_plan {
-        "enter accepts the plan"
-    } else if app.ticket_queued(ticket) && !(starts && !queued) {
-        "enter drops"
-    } else if starts {
-        "start on the title"
-    } else if app.ticket_unprompted(ticket) {
-        "send the brief"
-    } else {
-        "ask agent"
-    };
+    let placeholder = ask_placeholder(app, ticket, accept_plan, queued);
     let (line, x_off) = render_prompt(ctx, buffer, placeholder);
     let mut rows = vec![line];
     // The delivery row, where the ask can wait (2026-09-04): after the

@@ -179,6 +179,15 @@ fn unframed(t: &str) -> &str {
     t.trim_start_matches([' ', '│'])
 }
 
+/// The column a prompt row's words start in: past its frame, its mark and
+/// the one space after the mark — where the agent puts what is typed.
+pub(crate) fn words_col(t: &str) -> usize {
+    let lead = t.chars().take_while(|c| matches!(c, ' ' | '│')).count();
+    let rest = unframed(t);
+    let mark = rest.chars().next().map_or(0, |c| c.len_utf8());
+    lead + usize::from(mark > 0) + usize::from(rest[mark..].starts_with(' '))
+}
+
 fn is_rule(t: &str) -> bool {
     let t = t.trim();
     t.chars().count() >= RULE_MIN && t.chars().all(|c| c == '─')

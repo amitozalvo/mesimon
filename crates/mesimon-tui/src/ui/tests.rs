@@ -15066,9 +15066,71 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
         },
         buffer,
     };
+    let col = lines[at].find("Ask Codex").expect("the agent's placeholder");
     let lines = render(&app, 120, 30);
     assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
+    assert_eq!(
+        lines[at].find("summarise"),
+        Some(col),
+        "typed where the agent puts the words, after its own mark: {:?}",
+        lines[at]
+    );
+    assert!(lines[at].starts_with(" ›"), "the pane's mark stays: {:?}", lines[at]);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The ask field over a pane is the pane's composer row (T-1143): the
+/// words after the pane's own mark, in its ink, with the delivery word as
+/// one chip at the pane's right edge, and nothing of the page's over the
+/// pane's rules. Over a dialog, which has no composer, the seam row takes
+/// the words after a mark of the page's own.
+#[test]
+fn golden_ticket_live_ask_120() {
+    let (mut app, path) = app_live("tlive-ask", false);
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "later then".chars() {
+        buffer.insert(c);
+    }
+    let purpose = |queued| InputPurpose::Prompt {
+        target: crate::app::AskTarget::Ticket(ulid_n(3)),
+        walk: None,
+        queued,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+    };
+    app.mode = Mode::Input { purpose: purpose(true), buffer };
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let lines = lines_of(buf);
+    let y = lines.iter().position(|l| l.starts_with(" ❯ later then")).expect("typed after the mark");
+    let row = &lines[y];
+    assert_eq!(terminal.backend().cursor_position(), (13u16, y as u16).into(), "after the words");
+    // The chip ends at the pane's right edge (80 columns from column 1).
+    let pane: String = row.chars().take(81).collect();
+    assert!(pane.ends_with(" queued "), "the chip ends at the pane's edge: {pane:?}");
+    assert_ne!(buf[(3, y as u16)].bg, buf[(79, y as u16)].bg, "only the chip is painted");
+    assert_eq!(buf[(3, y as u16)].bg, buf[(0, y as u16)].bg, "the words sit on the page ground");
+    for r in [y - 1, y + 1] {
+        assert!(lines[r].contains(&"─".repeat(78)), "the pane's rules are whole: {:?}", lines[r]);
+    }
+    let pane_hint = lines.iter().filter(|l| l.contains("shift+tab")).count();
+    assert_eq!(pane_hint, 2, "the key is the footer's and Claude Code's, not a row of ours");
+    golden("ticket_live_ask_120x30", &lines);
+    // Over a dialog: the seam row, with a mark of the page's own.
+    let (mut dialog, dialog_path) = app_live("tlive-ask-dialog", true);
+    dialog.mode = Mode::Input {
+        purpose: purpose(false),
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+    };
+    let lines = render(&dialog, 120, 30);
+    let seam = lines.iter().position(|l| l.starts_with(" ❯ ask agent")).expect("the seam row");
+    let box_top = lines.iter().position(|l| l.contains("Do you want to run")).expect("the dialog");
+    assert!(seam < box_top, "over the box: {lines:#?}");
+    let _ = std::fs::remove_dir_all(dialog_path.parent().expect("dir"));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
