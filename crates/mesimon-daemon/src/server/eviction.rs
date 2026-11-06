@@ -80,22 +80,27 @@ impl Daemon {
         // for every leg. `ticket_merged` would fork git here; the gates may,
         // on a keypress, a tick stage may not (T-857). A merge made since
         // the last sample is a bucket's wait, never a wrong answer, and the
-        // worker refuses a tip moved since the verdict.
+        // worker refuses a tip moved since the verdict. The legs fold as the
+        // card's do (`aggregate`, T-1147): a leg the branch never left is
+        // silent, else a workspace whose ticket touched one repository of
+        // thirteen was never merged.
         if self.open_pr(id).is_some() {
             return Err("branch is not merged".into());
         }
         let mut legs = self.binding_legs(&b);
         let flags = self.wt_repos.get(&id).ok_or_else(|| "merge state not read yet".to_string())?;
+        let mut judged = Vec::with_capacity(legs.len());
         for leg in &mut legs {
             let f = flags
                 .iter()
                 .find(|f| f.name == leg.name)
                 .filter(|f| !f.unchecked && !f.tip.is_empty())
                 .ok_or_else(|| "merge state not read yet".to_string())?;
-            if !f.merged {
-                return Err("branch is not merged".into());
-            }
             leg.branch_oid = f.tip.clone();
+            judged.push(f.clone());
+        }
+        if !worktree::aggregate(&judged).merged {
+            return Err("branch is not merged".into());
         }
         Ok((b, legs))
     }
@@ -115,6 +120,37 @@ impl Daemon {
     /// showed goes with it.
     fn eviction_dropped(&mut self, id: ulid::Ulid) -> bool {
         self.column_evictions.remove(&id).is_some_and(|e| e.refusal.is_some())
+    }
+
+    /// An arrival for every ticket already standing in a column that frees
+    /// worktrees, with its tree still attached (T-1147). Arrivals are
+    /// runtime state: without this, a daemon restart or the setting switched
+    /// on left every tree there standing until its ticket moved again. A
+    /// freed tree is `Evicted`, so success is still consumed.
+    pub(super) fn seed_column_evictions(&mut self) {
+        let now = Instant::now();
+        let due: Vec<(ulid::Ulid, String)> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| {
+                !t.is_archived()
+                    && t.workspace_strategy() == WorkspaceStrategy::Worktree
+                    && !self.column_evictions.contains_key(&t.id)
+                    && self.board.column(&t.column).is_some_and(|c| c.settings.free_worktree)
+                    && self
+                        .worktrees
+                        .get(&t.id)
+                        .is_some_and(|b| b.status == BindingStatus::Attached)
+            })
+            .map(|t| (t.id, t.column.clone()))
+            .collect();
+        for (id, column) in due {
+            self.column_evictions.insert(
+                id,
+                ColumnEviction { column, due: now, refusal: None, probing: false },
+            );
+        }
     }
 
     /// The tick's half: in-memory admission, then the pane sample the
@@ -371,6 +407,94 @@ mod tests {
         assert!(!outcome.evicted);
         assert!(outcome.trouble.as_deref().unwrap_or_default().contains("branch changed"));
         assert!(path.join("file").exists());
+    }
+
+    /// T-1147: a workspace's legs fold as the card's do. A leg the branch
+    /// never left is silent, so a ticket that touched one repository of
+    /// several is admitted once that one is merged, and refused while it is
+    /// not.
+    #[test]
+    fn an_untouched_workspace_leg_is_silent_as_on_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, id, _rx) = bed(dir.path());
+        let leg = |name: &str, base_oid: &str| worktree::RepoBinding {
+            name: name.into(),
+            base: "main".into(),
+            default_base: String::new(),
+            base_oid: base_oid.into(),
+            branch_oid: base_oid.into(),
+        };
+        d.worktrees.get_mut(&id).unwrap().repos = vec![leg("", "b0"), leg("web", "b1")];
+        let flags = |root_merged: bool, web_tip: &str, web_merged: bool| {
+            vec![
+                worktree::RepoFlags {
+                    name: String::new(),
+                    base_oid: "b0".into(),
+                    tip: "t0".into(),
+                    merged: root_merged,
+                    ..Default::default()
+                },
+                worktree::RepoFlags {
+                    name: "web".into(),
+                    base_oid: "b1".into(),
+                    tip: web_tip.into(),
+                    merged: web_merged,
+                    ..Default::default()
+                },
+            ]
+        };
+        let judge = |d: &mut Daemon| {
+            let e = d.column_evictions.get_mut(&id).unwrap();
+            e.due = Instant::now();
+            e.probing = false;
+            d.process_column_evictions();
+        };
+        // Root touched and unmerged, web untouched: kept.
+        d.wt_repos.insert(id, flags(false, "b1", false));
+        judge(&mut d);
+        assert_eq!(refusal(&d, id), "worktree kept: branch is not merged");
+        // Web touched too and unmerged: kept, though root is merged.
+        d.wt_repos.insert(id, flags(true, "t1", false));
+        judge(&mut d);
+        assert_eq!(refusal(&d, id), "worktree kept: branch is not merged");
+        // Root merged, web untouched: admitted, each leg at its verdict's tip.
+        d.wt_repos.insert(id, flags(true, "b1", false));
+        judge(&mut d);
+        assert!(d.column_evictions[&id].probing, "admitted: the sample decides");
+        let (_, legs) = d.eviction_admission(id).unwrap();
+        let tips: Vec<_> = legs.iter().map(|l| l.branch_oid.as_str()).collect();
+        assert_eq!(tips, ["t0", "b1"]);
+    }
+
+    /// T-1147: arrivals are runtime state, so a restart and the setting
+    /// switched on queue the trees the column already holds; a freed tree
+    /// and a column that does not free are left alone.
+    #[test]
+    fn a_restart_and_the_setting_switched_on_queue_the_trees_already_standing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, id, _rx) = bed(dir.path());
+        assert!(d.column_evictions.contains_key(&id), "the arrival queued it");
+        // A restart: the arrival is gone, the ticket still stands in DONE.
+        d.column_evictions.clear();
+        d.seed_column_evictions();
+        let e = &d.column_evictions[&id];
+        assert_eq!(e.column, "DONE");
+        assert!(e.refusal.is_none() && !e.probing);
+        // A freed tree is not queued again.
+        d.column_evictions.clear();
+        d.worktrees.get_mut(&id).unwrap().status = BindingStatus::Evicted;
+        d.seed_column_evictions();
+        assert!(d.column_evictions.is_empty());
+        d.worktrees.get_mut(&id).unwrap().status = BindingStatus::Attached;
+        // The setting off queues nothing; switched on, it queues the tree.
+        let mut settings = d.board.column("DONE").unwrap().settings.clone();
+        settings.free_worktree = false;
+        assert!(matches!(d.set_column_settings("DONE", settings.clone()), Response::Ok));
+        d.seed_column_evictions();
+        assert!(d.column_evictions.is_empty(), "a column that does not free");
+        settings.free_worktree = true;
+        assert!(matches!(d.set_column_settings("DONE", settings), Response::Ok));
+        assert!(d.column_evictions.contains_key(&id), "switched on, it queues");
     }
 
     /// A sample out past its grace does not hold the arrival: the tick

@@ -41692,3 +41692,22 @@ or none; with a turn, delivered; same tip with a turn, finished; a worktree bran
 delivered. Forge news is a different road (`hear_forge`, diffed against `forge.json`, written in
 the pass's own tick) and was not part of this; the lab "replays" of 2026-10-29 were archived
 tickets (T-1076) and the stub moving a PR's head.
+
+## A freeing column frees a workspace's tree, and after a restart (T-1147, 2026-11-06)
+
+On a 13-repository workspace board (simbly) DONE's `free_worktree` freed nothing: 26 merged,
+clean, parked trees stood, with no `worktree_freed` or `worktree_free_refused` in the feed.
+Two causes. **Admission asked every leg `merged`**, and `compute_flags` calls a leg the
+branch never left not merged ("no work yet"), so a ticket that committed in one repository was
+refused "branch is not merged" forever, while the card's `aggregate` (untouched legs silent)
+read it merged and DONE's gate let it in. `eviction_admission` now folds the legs' flags
+through `aggregate`, as the card does; each leg still carries its verdict's tip, so the
+worker's unchanged-tip and clean-status checks are unchanged and an untouched leg's branch is
+kept like any other. **Arrivals were seeded only by a move into the column**, so a daemon
+restart or the setting switched on left every tree there standing. `seed_column_evictions`
+queues every ticket in a freeing column with an `Attached` binding at startup (after
+`reclaim_archived`) and when `set_column_settings` turns `free_worktree` on. An `Evicted`
+binding is not queued, so success stays consumed; a ticket woken in place after its tree was
+freed and parked again is freed at the next restart, which is what the column asks. Refuted:
+seeding on every tick (re-judges each refused ticket every 2 s for its whole stay, the
+T-1040 review's complaint).

@@ -1676,6 +1676,9 @@ pub fn run(paths: Paths) -> Result<()> {
     // On fresh flags: the landed trees of archived tickets the last daemon
     // left standing (T-481). The first tick tears them down.
     d.reclaim_archived();
+    // The trees a freeing column still holds (T-1147): the last daemon's
+    // arrivals died with it.
+    d.seed_column_evictions();
     // Whether the repo already tells its sessions to read their ticket. One
     // read at startup, then only when a `stat` says the file moved.
     d.claude_md.refresh(&d.paths.repo_root);
@@ -17969,8 +17972,13 @@ impl Daemon {
             return Response::Ok;
         }
         let offers_changed = col.settings.offers() != settings.offers();
+        let starts_freeing = !col.settings.free_worktree && settings.free_worktree;
         if let Err(message) = self.board.set_column_settings(name, settings) {
             return Response::Err { message };
+        }
+        if starts_freeing {
+            // Switched on, it frees what already stands there (T-1147).
+            self.seed_column_evictions();
         }
         if offers_changed {
             // Changing eligibility should not leave the old offer standing
