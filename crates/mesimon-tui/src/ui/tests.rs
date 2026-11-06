@@ -14634,7 +14634,7 @@ fn golden_ticket_live_120() {
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
-    assert!(lines.iter().any(|l| l.contains("▎ Go on; measure")), "the person's turn: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("❯ Go on; measure")), "the person's turn: {lines:#?}");
     let rect = app.live_rect.get().expect("the window is on screen");
     assert_eq!(rect.bottom(), 29, "the window ends over the footer: {rect:?}");
     let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin stands on the rail");
@@ -14800,8 +14800,92 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!((field as u16) >= rect.y, "the field is in the window: {lines:#?}");
     assert!(lines[field - 1].contains("────"), "under the box's top rule: {lines:#?}");
     assert!(lines[field + 1].contains("────"), "over its bottom rule: {lines:#?}");
-    assert!(!lines.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
+    let pane = &lines[rect.y as usize..];
+    assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// An idle Claude Code pane over the conversation, its last reply drawn
+/// in the pane as well (`fresh` adds a sentence the transcript has not
+/// caught up with), then the turn's spinner line and the composer.
+fn pane_after_reply(fresh: Option<&str>) -> crate::live::Shot {
+    let rule = "─".repeat(78);
+    let mut rows: Vec<String> = vec![
+        "⏺ Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured facts so far:".into(),
+        "  every agent pane is on tmux's alternate screen, an unattached pane sits at 80×24 while an attached".into(),
+        "  one is 187×52.".into(),
+        String::new(),
+    ];
+    if let Some(fresh) = fresh {
+        rows.extend([format!("⏺ {fresh}"), String::new()]);
+    }
+    rows.extend([
+        "✻ Churned for 28s · done 6:03 PM".to_string(),
+        String::new(),
+        rule.clone(),
+        "❯ ".to_string(),
+        rule,
+        "  ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul".to_string(),
+        "  ⏵⏵ auto mode on (shift+tab to cycle)".to_string(),
+    ]);
+    while rows.len() < 24 {
+        rows.insert(0, String::new());
+    }
+    let prompt = rows.iter().position(|r| r.starts_with("❯")).expect("the composer") as u16;
+    crate::live::Shot {
+        rows: crate::live::parse(&rows.join("\n")),
+        cols: 80,
+        cursor: Some((2, prompt)),
+    }
+}
+
+/// A person's words read as Claude Code draws them (the author,
+/// 2026-11-06): the `❯` in the gutter the pane's marks stand in, the row on
+/// the page's raised surface, the head's `you` as bold as `claude`.
+#[test]
+fn a_persons_words_read_as_claude_code_draws_them() {
+    let (app, path) = app_live("tlive-prompt", false);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let y = lines.iter().position(|l| l.contains("Go on; measure")).expect("the prompt") as u16;
+    let x = lines[y as usize].find('❯').map(|b| lines[y as usize][..b].chars().count());
+    assert_eq!(x, Some(1), "the mark in the pane's marks' column: {lines:#?}");
+    let bg = app.theme.selected_bg.expect("graphite paints a raised surface");
+    for cx in [1u16, 5, 60, 85] {
+        assert_eq!(buf[(cx, y)].bg, bg, "the raised surface at {cx},{y}");
+    }
+    assert!(!lines[y as usize].contains('▎'), "no quote bar");
+    let head = lines.iter().position(|l| l.trim() == "you").expect("the head") as u16;
+    let at = lines[head as usize].find("you").expect("you") as u16;
+    assert!(buf[(at, head)].modifier.contains(Modifier::BOLD), "`you` is bold");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The pane's copy of the last reply is not drawn under the conversation's
+/// (T-1143, the author: "last sentence is duplicated"): the fade stops at
+/// the first row the conversation already says. What the transcript has
+/// not caught up with still goes out into the page — the spinner line, a
+/// sentence still being written.
+#[test]
+fn the_fade_never_repeats_the_conversation() {
+    let (mut app, path) = app_live("tlive-repeat", false);
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), pane_after_reply(None)));
+    let lines = render(&app, 120, 30);
+    let says = |lines: &[String], words: &str| lines.iter().filter(|l| l.contains(words)).count();
+    assert_eq!(says(&lines, "187×52"), 1, "the reply's last words, once: {lines:#?}");
+    assert_eq!(says(&lines, "Research is mostly done"), 1, "{lines:#?}");
+    let spin = lines.iter().position(|l| l.contains("Churned for 28s")).expect("the spinner line");
+    assert!(lines[spin - 1].trim().is_empty(), "a blank parts it from the conversation");
+    assert!(lines[spin - 2].contains("187×52"), "the conversation rests over it: {lines:#?}");
+
+    app.live = Some(crate::live::Live::fixed(
+        uuid_n(31),
+        pane_after_reply(Some("Now running the golden tests.")),
+    ));
+    let lines = render(&app, 120, 30);
+    assert_eq!(says(&lines, "Now running the golden tests"), 1, "fresh words stay: {lines:#?}");
+    assert_eq!(says(&lines, "187×52"), 1, "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

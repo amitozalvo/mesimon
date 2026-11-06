@@ -1145,29 +1145,66 @@ fn draw_preview(
         if above > 0 && shot.rows[view[above - 1]].blank() {
             above -= 1;
         }
-        let fade_n = live::FADE_ROWS.min(above).min(zone_h - live_n);
+        // Two columns in from the pane's own left edge (`margin`), the
+        // pane's `⏺` and `❯` marks out to their left.
+        let width = (area.width as usize).saturating_sub(3);
+        let doc = match conversation(app, rec, width) {
+            Some((key, rows)) => Some((key, rows, true)),
+            None => reply.map(|text| {
+                let key = doc_key(rec.id, Some(text));
+                (key, rendered(app, key, width, || text, Newline::Space), false)
+            }),
+        };
+        // The conversation's rows carry their gutter; a bare reply's get it
+        // here. `tail` says which, as only the conversation follows its foot.
+        // The fade is the pane's rows the conversation does not hold yet:
+        // walked up from the seam, it stops at the first row whose words
+        // the conversation's newest rows already say (`live::Said`), so an
+        // idle agent's last sentence is read once, and what the file has
+        // not caught up with — a sentence still streaming, a running tool,
+        // the turn's spinner line — still goes out into the page.
+        let said = doc.as_ref().map(|(_, rows, _)| {
+            let tail: Vec<String> = rows
+                .iter()
+                .rev()
+                .take(SAID_ROWS)
+                .rev()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect();
+            live::Said::of(tail.iter().map(String::as_str))
+        });
+        let room = live::FADE_ROWS.min(zone_h - live_n);
+        let mut from = above;
+        while from > 0 && above - from < room {
+            if said.as_ref().is_some_and(|s| s.holds(&shot.rows[view[from - 1]].text)) {
+                break;
+            }
+            from -= 1;
+        }
+        // A blank row the walk took stays: it parts the conversation from
+        // the pane's fresh rows the way the pane parts its messages.
+        let fade_n = above - from;
         let top_n = zone_h - live_n - fade_n;
         // The conversation keeps the rows over the window, resting on the
         // fade — at its foot until `{` asks for earlier, so a short one
         // reads into the pane rather than hanging under the heading; two
         // rows or fewer is a heading over nothing.
         if top_n >= 2 {
-            // Two columns in from the pane's own left edge (`margin`), the
-            // pane's `⏺` and `❯` marks out to their left.
-            let width = (area.width as usize).saturating_sub(3);
-            let doc = match conversation(app, rec, width) {
-                Some((key, rows)) => Some((key, rows, true)),
-                None => reply.map(|text| {
-                    let key = doc_key(rec.id, Some(text));
-                    (key, rendered(app, key, width, || text, Newline::Space), false)
-                }),
-            };
-            let shown = match &doc {
-                Some((key, rows, tail)) => window(app, Some(*key), rows, top_n, width, *tail),
-                None => Vec::new(),
+            let (shown, gutter) = match &doc {
+                Some((key, rows, true)) => {
+                    (window(app, Some(*key), rows, top_n, width + GUTTER.len(), true), true)
+                }
+                Some((key, rows, false)) => {
+                    (window(app, Some(*key), rows, top_n, width, false), false)
+                }
+                None => (Vec::new(), true),
             };
             lines.extend((shown.len()..top_n).map(|_| Line::default()));
-            lines.extend(margin(shown));
+            if gutter {
+                lines.extend(shown);
+            } else {
+                lines.extend(margin(shown));
+            }
         }
         f.render_widget(Paragraph::new(lines), area);
         let foot_y = area.bottom() - live_n as u16;
@@ -1222,6 +1259,7 @@ fn draw_preview(
             // as the session: a page into this reply must not open the
             // next one halfway down.
             let (key, rows, tail) = match record.and_then(|rec| conversation(app, rec, width)) {
+                // The conversation brings its gutter (`tail` marks it).
                 Some((key, rows)) => (Some(key), rows, true),
                 None => {
                     let key = session.map(|s| doc_key(s, Some(text)));
@@ -1237,7 +1275,11 @@ fn draw_preview(
                     (key, rows, false)
                 }
             };
-            lines.extend(margin(window(app, key, &rows, budget, width, tail)));
+            if tail {
+                lines.extend(window(app, key, &rows, budget, width + GUTTER.len(), true));
+            } else {
+                lines.extend(margin(window(app, key, &rows, budget, width, false)));
+            }
             if working {
                 lines.push(Line::default());
             }
@@ -1266,11 +1308,18 @@ fn draw_preview(
     used
 }
 
+/// The reading rows' gutter: the pane's marks' two columns.
+const GUTTER: &str = "  ";
+
+/// How many of the conversation's last rows the fade is checked against:
+/// more than a pane's screen of one reply.
+const SAID_ROWS: usize = 120;
+
 /// The zone's reading rows two columns in (T-1143: the author asked for
 /// flush with the pane, then one column, then one more).
 fn margin(rows: Vec<Line<'static>>) -> impl Iterator<Item = Line<'static>> {
     rows.into_iter().map(|row| {
-        let mut spans = vec![Span::raw("  ")];
+        let mut spans = vec![Span::raw(GUTTER)];
         spans.extend(row.spans);
         Line::from(spans)
     })
@@ -1638,13 +1687,24 @@ fn conversation(
             }
         }
     }
-    let mark = if theme.glyph_tier() == glyphs::Tier::Ascii { "> " } else { "▎ " };
+    // A person's words as Claude Code draws them (the author, 2026-11-06:
+    // "use same theme like claude code does (the background color + >)"):
+    // on the page's raised surface, the prompt mark in the gutter on the
+    // first row. Every row carries the two-column gutter the pane's own
+    // marks stand in, so the words line up with the pane's.
+    let mark = if theme.glyph_tier() == glyphs::Tier::Ascii { "> " } else { "❯ " };
+    let raised = theme.selected_bg.map_or(Style::default(), |bg| Style::default().bg(bg));
+    let gutter = |line: Line<'static>| {
+        let mut spans = vec![Span::raw(GUTTER)];
+        spans.extend(line.spans);
+        Line::from(spans)
+    };
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut links: Vec<crate::app::PageLink> = Vec::new();
     let mut cache = app.page_messages.borrow_mut();
     for m in messages {
         let prompt = m.kind == RowKind::Prompt;
-        let bar = if prompt { 2 } else { 0 };
+        let bar = 0;
         let newline = if prompt { Newline::Break } else { Newline::Space };
         let text = t.text(m);
         let stamp = (text.len(), width, flavor);
@@ -1676,7 +1736,7 @@ fn conversation(
             )),
             None => Rc::clone(&entry.rows),
         };
-        rows.push(message_head(theme, t.kind, m, width, now));
+        rows.push(gutter(message_head(theme, t.kind, m, width, now)));
         let body_at = rows.len();
         for (j, (source, link)) in entry.links.iter().enumerate() {
             let row = entry.link_rows.get(j).copied().unwrap_or(0);
@@ -1686,17 +1746,23 @@ fn conversation(
                 link: link.clone(),
             });
         }
-        for line in body.iter() {
+        for (r, line) in body.iter().enumerate() {
             let mut line = line.clone();
             if m.kind == RowKind::Notice {
                 for s in &mut line.spans {
                     s.style = s.style.fg(theme.rest.dim2);
                 }
             }
-            if prompt {
-                line.spans.insert(0, Span::styled(mark, theme.dim3()));
+            if !prompt {
+                rows.push(gutter(line));
+                continue;
             }
-            rows.push(line);
+            let lead = if r == 0 { mark } else { GUTTER };
+            let mut spans = vec![Span::styled(lead, theme.dim2())];
+            spans.extend(line.spans);
+            let used = super::spans_width(&spans);
+            spans.push(Span::raw(" ".repeat((width + GUTTER.len()).saturating_sub(used))));
+            rows.push(Line::from(spans).style(raised));
         }
         rows.push(Line::default());
     }
@@ -1727,7 +1793,9 @@ fn message_head(
         _ => "claude",
     };
     let who_style = match m.kind {
-        RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
+        RowKind::Reply | RowKind::Prompt => {
+            Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
+        }
         _ => theme.dim1(),
     };
     let time = match m.ms {

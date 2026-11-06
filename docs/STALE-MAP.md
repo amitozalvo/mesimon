@@ -41934,3 +41934,23 @@ through a tmux client (it arrives as Enter), so the field's row is pinned by
 `ui::tests`: `a_link_paged_away_is_let_go_and_tab_starts_on_screen` (fails with the old
 selection rule), `on_a_codex_pane_the_field_is_typed_on_its_prompt_row`. 36 ticket-page goldens
 moved for the shin's one place and the margin, reviewed by eye.
+
+**Then (same day, the author: "last sentence is duplicated"; "the 'you' in transcript should be
+bold like 'claude', remove the | before each line of the user prompt"; "use same theme like
+claude code does (the background color + >) for user prompts").** The fade repeated the
+conversation: an idle Claude Code draws its last reply above its composer, and with the
+conversation resting on the fade the same sentence showed twice. The fade now walks up from the
+seam and stops at the first pane row whose words the conversation's last 120 rows already say
+(`live::Said`, `live::words_of`: leading marks off, spaces collapsed, so the two wraps compare;
+a row under 8 characters never counts). Rows newer than the transcript stay: a streaming
+sentence, a running tool, the spinner line (the file lags the pane by minutes on a long tool
+call). A blank the walk took stays as the separator. Lists and tables the two sides lay out
+differently may still repeat; that falls back to today's look, never to a lost row. The
+person's words are drawn as Claude Code draws them: the row on the page's raised surface
+(`selected_bg`, the ticket band's), `❯` (ASCII `>`) in the two-column gutter on its first row,
+the quote bar gone; the head's `you` is bold like `claude`. The conversation now carries that
+gutter itself (`GUTTER`), so the live and reply branches page it at `width + 2` and add no
+margin; a bare reply and a note still get `margin`. Tests:
+`live::tests::a_pane_row_the_conversation_holds_is_said`,
+`the_fade_never_repeats_the_conversation` (fails without the stop),
+`a_persons_words_read_as_claude_code_draws_them`; the two live goldens remade.

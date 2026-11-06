@@ -204,6 +204,43 @@ fn is_mark(t: &str) -> bool {
     t.starts_with(['⏺', '⎿', '•', '▔', '✻', '✶', '✳', '✢', '✽'])
 }
 
+/// The shortest row the fade drops as already said: "ok" or "Done." is
+/// in every conversation, and saying it twice costs less than dropping a
+/// fresh one.
+const REPEAT_MIN: usize = 8;
+
+/// The marks a row opens with, on the pane (Claude Code's message, tool
+/// and prompt marks, Codex's bullet and prompt, the spinners) and on the
+/// page (a person's quote bar, its ASCII form, a list bullet).
+const MARKS: &[char] =
+    &['⏺', '⎿', '❯', '›', '•', '▎', '>', '!', '✻', '✶', '✳', '✢', '✽', '·', '*', '-'];
+
+/// A row's words, for telling the pane's rows from the conversation's: its
+/// leading marks gone and its spaces collapsed, so a sentence wrapped at
+/// the pane's width and at the zone's reads the same.
+pub(crate) fn words_of(t: &str) -> String {
+    let t = t.trim_start().trim_start_matches(MARKS);
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What the conversation's newest rows say, as one run of words: a pane row
+/// whose words are in it is a row the page already shows (T-1143, the
+/// author: "last sentence is duplicated").
+pub(crate) struct Said(String);
+
+impl Said {
+    pub(crate) fn of<'a>(rows: impl Iterator<Item = &'a str>) -> Said {
+        let words: Vec<String> = rows.map(words_of).filter(|w| !w.is_empty()).collect();
+        Said(words.join(" "))
+    }
+
+    /// Whether `row`'s words are already said. A short row never is.
+    pub(crate) fn holds(&self, row: &str) -> bool {
+        let w = words_of(row);
+        w.chars().count() >= REPEAT_MIN && self.0.contains(&w)
+    }
+}
+
 /// How much of a fade row's colour is kept: row `r` of `f`, top first.
 pub(crate) fn fade_keep(r: usize, f: usize) -> f32 {
     (r as f32 + 1.0) / (f as f32 + 1.0)
@@ -811,6 +848,30 @@ mod tests {
             30,
         );
         assert_eq!(s.anchor(), 2);
+    }
+
+    /// The pane's rows of a reply are its words, wherever either side
+    /// wrapped: the marks and the indents fall away, a short row is never
+    /// counted, and a row the conversation does not hold is fresh.
+    #[test]
+    fn a_pane_row_the_conversation_holds_is_said() {
+        let said = Said::of(
+            [
+                "claude  18:03",
+                "The pane's marks stand out to the left, as they do in Claude",
+                "Code itself. Moving the pane right instead would break that line.",
+                "▎ press U on your board",
+                "Done.",
+            ]
+            .into_iter(),
+        );
+        assert!(said
+            .holds("⏺ The pane's marks stand out to the left, as they do in Claude Code itself."));
+        assert!(said.holds("  itself. Moving the pane right instead would break   that line."));
+        assert!(said.holds("❯ press U on your board"), "the person's words, echoed");
+        assert!(!said.holds("⏺ Done."), "too short to count");
+        assert!(!said.holds("✻ Churned for 28s · done 6:03 PM"), "the pane's own line");
+        assert!(!said.holds("⏺ Bash(cargo test -p mesimon-tui)"), "newer than the transcript");
     }
 
     /// A framed dialog option under the cursor is not a composer.

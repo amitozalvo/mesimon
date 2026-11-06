@@ -11,7 +11,7 @@
    • step 12 of the plan                                                                   x sleep
 
    you
-   ▎ Go on; measure the pane sizes too.
+ ❯ Go on; measure the pane sizes too.
 
    claude
    Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
