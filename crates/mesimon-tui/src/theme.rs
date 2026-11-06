@@ -1685,7 +1685,7 @@ impl Theme {
         }
     }
 
-    fn has_colour(&self) -> bool {
+    pub(crate) fn has_colour(&self) -> bool {
         self.profile != Profile::Mono
     }
 

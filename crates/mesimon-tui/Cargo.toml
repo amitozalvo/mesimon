@@ -14,6 +14,8 @@ test-support = []
 [dependencies]
 mesimon-core.workspace = true
 mesimon-daemon = { path = "../mesimon-daemon" }
+# T-1143: the live window reads a pane through the same tmux the server runs.
+mesimon-backend-tmux = { path = "../mesimon-backend-tmux" }
 anyhow.workspace = true
 serde_json.workspace = true
 ulid.workspace = true

@@ -2031,6 +2031,15 @@ pub struct App {
     /// transcript file to read the way `peek_cache` reads an agent's, so
     /// this comes over the wire, and only while a shell is being looked at.
     pub shell_tail: Option<ShellTail>,
+    /// The live window (T-1143): the selected agent session's pane, read by
+    /// a thread of this client's for as long as the cursor stays on it.
+    pub live: Option<crate::live::Live>,
+    /// The private tmux server's socket, for the live window's reads. Set
+    /// by `lib.rs::run`, never by `App::new`: a test app reads no pane.
+    pub tmux_sock: Option<std::path::PathBuf>,
+    /// Where the last frame drew the live window's rows (the pane's own
+    /// glyphs and attributes, a picture the L1 laws know by position).
+    pub live_rect: std::cell::Cell<Option<ratatui::layout::Rect>>,
     /// Per ticket, what its agent last said against what the cursor has
     /// seen of it (`Spoke`): a card whose entry disagrees keeps its done
     /// mark in the calm register; one that agrees wears it grey. Kept by
@@ -2520,6 +2529,9 @@ impl App {
             layout_flash: None,
             status_flash: None,
             shell_tail: None,
+            live: None,
+            tmux_sock: None,
+            live_rect: std::cell::Cell::new(None),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
             links: Vec::new(),
@@ -4675,6 +4687,8 @@ impl App {
         // the one thing on screen the daemon does not push.
         if wire {
             dirty |= self.poll_shell_tail();
+            dirty |= self.poll_live();
+            dirty |= self.hover_rail();
             dirty |= self.poll_notes();
             dirty |= self.poll_summaries();
             dirty |= self.poll_transcript();
@@ -5868,6 +5882,66 @@ impl App {
     /// live pane — the only session kind whose story is on a pane and not in
     /// a transcript — or the ticket's terminal (T-366), which is that story
     /// before adoption.
+    /// The live window (T-1143) follows the rail's cursor: the agent session
+    /// under it with a pane gets a reader of its own, and leaving the row,
+    /// the page or the board's socket ends it (the drop undoes its fit).
+    fn poll_live(&mut self) -> bool {
+        let want = match (&self.tmux_sock, self.rail_row()) {
+            (Some(_), Some(RailRow::Session(s))) if s.kind.is_agent() && s.state.has_pane() => {
+                Some((s.id, s.sid16()))
+            }
+            _ => None,
+        };
+        match (want, &mut self.live) {
+            (None, None) => false,
+            (None, Some(_)) => {
+                self.live = None;
+                true
+            }
+            (Some((id, _)), Some(live)) if live.session == id => live.poll(),
+            (Some((id, sid16)), _) => {
+                let sock = self.tmux_sock.clone().expect("the socket gates the want");
+                self.live = Some(crate::live::Live::start(sock, id, sid16));
+                true
+            }
+        }
+    }
+
+    /// The window's newest capture of `session`'s pane, if the window is
+    /// on it and has read it once.
+    pub(crate) fn live_shot(&self, session: uuid::Uuid) -> Option<std::rc::Rc<crate::live::Shot>> {
+        self.live.as_ref().filter(|l| l.session == session).and_then(|l| l.shot.clone())
+    }
+
+    /// The zone's size for the pane, from the draw.
+    pub(crate) fn live_wish(&self, cols: u16, rows: u16) {
+        if let Some(l) = &self.live {
+            l.wish(cols, rows);
+        }
+    }
+
+    /// The pointer resting on a rail row for `HOVER_PEEK` moves the cursor
+    /// there (T-1143), as a card's reply floats after the same rest: the
+    /// zone reads the row under the cursor, so a hover reads it too, and a
+    /// sweep across the rail flips nothing.
+    pub(crate) fn hover_rail(&mut self) -> bool {
+        if !self.prefs.mouse || !matches!(self.mode, Mode::Normal) {
+            return false;
+        }
+        let Screen::Ticket { ticket, rail_idx } = self.screen else { return false };
+        if self.scope() != Scope::Ticket {
+            return false;
+        }
+        let Some((crate::mouse::Target::Rail(to), since)) = self.hover.get() else {
+            return false;
+        };
+        if to == rail_idx || since.elapsed() < HOVER_PEEK {
+            return false;
+        }
+        self.screen = Screen::Ticket { ticket, rail_idx: to };
+        true
+    }
+
     fn selected_shell(&self) -> Option<TailKey> {
         match self.rail_row()? {
             RailRow::Session(s) => (s.kind == SessionKind::Bash && s.state.has_pane())

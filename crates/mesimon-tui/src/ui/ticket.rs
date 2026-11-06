@@ -23,6 +23,7 @@ use mesimon_core::keymap;
 use crate::app::{App, AskTarget, InputPurpose, Mode, RailRow, TailKey, View};
 use crate::creature::{self, Anim, Size};
 use crate::glyphs;
+use crate::live;
 use crate::text::{
     age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
     marquee_window, truncate,
@@ -898,7 +899,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
                                               // The content keeps the rows over the field: a zone that overflows
                                               // is cut at the field, not under it.
-        let content_h = body_h - field_rows;
+                                              // With the live window at the zone's foot (T-1143) the field hangs
+                                              // under the reply, above the pane's rows: the zone keeps its whole
+                                              // height and leaves the field's rows between the two.
+        let hybrid = sel.is_some_and(|s| app.live_shot(s.id).is_some());
+        let content_h = if hybrid { body_h } else { body_h - field_rows };
         let used = draw_preview(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h },
@@ -909,10 +914,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             shell,
             note,
             seat,
+            if hybrid { field_rows } else { 0 },
         );
         // Under the content where it ends, at the zone's foot where it does
         // not: `used` is the whole zone exactly when the content overflowed.
-        draw_field(f, area.x + 1, body_y + (used as u16).min(content_h));
+        draw_field(f, area.x + 1, body_y + (used as u16).min(body_h - field_rows));
         draw_rail(
             f,
             Rect {
@@ -968,6 +974,7 @@ fn draw_preview(
     shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
+    field_rows: u16,
 ) -> usize {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -1091,6 +1098,85 @@ fn draw_preview(
                 }
             }
         }
+    } else if let Some((rec, shot)) = record.and_then(|r| app.live_shot(r.id).map(|s| (r, s))) {
+        // The live window (T-1143): the pane as tmux holds it at the zone's
+        // foot — the composer, a question, a prompt, in the agent's own
+        // inks — under up to `FADE_ROWS` of the pane's rows going out toward
+        // the page ground, under the reply as mesimon reads it. The seam is
+        // where the pane's composer or dialog begins (`Shot::anchor`); a
+        // dialog taller than the box moves it up, and the turn's end moves
+        // it back. No rule between them: the fade is the seam.
+        lines.push(heading("PREVIEW"));
+        lines.push(Line::default());
+        let zone_h = (area.height as usize).saturating_sub(lines.len());
+        // The pane is asked to be the zone's size, so the agent lays its
+        // screen out for the room it has here.
+        app.live_wish(area.width, zone_h as u16);
+        let n = shot.rows.len();
+        let anchor = shot.anchor().min(n);
+        let live_n = (n - anchor).min(zone_h);
+        let live_from = n - live_n;
+        let fade_n = live::FADE_ROWS.min(live_from).min(zone_h - live_n);
+        let top_n = zone_h - live_n - fade_n;
+        // The reply keeps what the window and the field leave it, paged as
+        // before; two rows or fewer is a heading over nothing.
+        let budget = top_n.saturating_sub(field_rows as usize);
+        if let (Some(text), true) = (reply, budget >= 2) {
+            let width = (area.width as usize).saturating_sub(4);
+            let key = doc_key(rec.id, Some(text));
+            let rows = rendered(app, key, width, || text, Newline::Space);
+            let shown = window(app, Some(key), &rows, budget, width, false);
+            for row in shown {
+                let mut spans = vec![Span::raw("   ")];
+                spans.extend(row.spans);
+                lines.push(Line::from(spans));
+            }
+        }
+        let used = lines.len().min(area.height as usize);
+        f.render_widget(Paragraph::new(lines), area);
+        let foot_y = area.bottom() - live_n as u16;
+        // The small shin stands on the seam, at its right end, and climbs
+        // with it when a dialog comes up. The fade rows it stands over stop
+        // short of it: a going-out row showing through its gaps reads as
+        // noise, and the live rows under its feet are the pane's whole.
+        let beside = seam_companion(app, area, rec, peek, foot_y);
+        let gutter_from = beside.as_ref().map(|(stage, x, y)| (*x, *y, y + stage.rows));
+        if fade_n + live_n > 0 {
+            let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + live_n);
+            for r in 0..fade_n {
+                let row = &shot.rows[live_from - fade_n + r];
+                let mut line = faded_line(theme, row, live::fade_keep(r, fade_n));
+                let y = foot_y - (fade_n - r) as u16;
+                if let Some((x, top, bottom)) = gutter_from {
+                    if y >= top && y < bottom {
+                        line = cut_line(line, x.saturating_sub(area.x + 1) as usize);
+                    }
+                }
+                raw.push(line);
+            }
+            raw.extend(shot.rows[live_from..n].iter().map(|row| live_line(theme, row)));
+            let rect = Rect {
+                x: area.x,
+                y: foot_y - fade_n as u16,
+                width: area.width,
+                height: (fade_n + live_n) as u16,
+            };
+            f.render_widget(Paragraph::new(raw), rect);
+            app.live_rect.set(Some(rect));
+            // The pane's own cursor, where its box has it: the one place on
+            // the page that is being typed into, even when not by you.
+            if let Some((cx, cy)) = shot.cursor {
+                let (cx, cy) = (cx as usize, cy as usize);
+                if cy >= live_from && cy < n && cx < area.width as usize {
+                    f.set_cursor_position((area.x + cx as u16, foot_y + (cy - live_from) as u16));
+                }
+            }
+        }
+        if let Some((stage, x, y)) = beside {
+            stage.paint(f.buffer_mut(), x, y, area);
+            *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
+        }
+        return used;
     } else if reply.is_some() {
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
@@ -1456,6 +1542,106 @@ fn companion(
         let x = area.right() - stage.cols;
         (stage, x, area.y + 1)
     })
+}
+
+/// The small shin on the live window's seam (T-1143): its feet on the row
+/// over the pane's first live row, at the zone's right end. `None` in mono,
+/// in a zone too narrow for a reply beside it, or where the seam is too
+/// high for its stage.
+fn seam_companion(
+    app: &App,
+    area: Rect,
+    rec: &mesimon_core::board::SessionRecord,
+    peek: Option<&crate::peek::Peek>,
+    seam_y: u16,
+) -> Option<(creature::Stage, u16, u16)> {
+    const MIN_ZONE: u16 = 72;
+    if !rec.kind.is_agent() || area.width < MIN_ZONE {
+        return None;
+    }
+    let anim = agent_anim(rec, peek);
+    let ms = app.creature_ms(crate::text::hash64((rec.id, anim)));
+    let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
+    let y = seam_y.checked_sub(stage.rows)?;
+    let x = area.right().checked_sub(stage.cols + 1)?;
+    (y >= area.y + 2).then_some((stage, x, y))
+}
+
+/// A pane row as it is: its own inks, the page's base ink where it named
+/// none, and no colour at all on a mono profile.
+fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
+    let mut s = s;
+    if !theme.has_colour() {
+        s.fg = None;
+        s.bg = None;
+    }
+    if s.fg.is_none() {
+        s.fg = Some(theme.rest.base);
+    }
+    s
+}
+
+/// The line's first `width` cells, no marker: what stands past them is
+/// under the shin.
+fn cut_line(line: Line<'static>, width: usize) -> Line<'static> {
+    let mut left = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if left == 0 {
+            break;
+        }
+        let w = span.content.width();
+        if w <= left {
+            left -= w;
+            spans.push(span);
+            continue;
+        }
+        let mut cut = String::new();
+        for ch in span.content.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if cw > left {
+                break;
+            }
+            left -= cw;
+            cut.push(ch);
+        }
+        spans.push(Span::styled(cut, span.style));
+        break;
+    }
+    Line::from(spans)
+}
+
+fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {
+    Line::from(
+        row.runs
+            .iter()
+            .map(|(t, s)| Span::styled(t.clone(), live_style(theme, *s)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// A pane row going out: its inks mixed toward the page ground by `keep`,
+/// its weight and any reverse video gone. Below TrueColor the mix is a
+/// step (`Theme::toward_ground`), which is the fade the profile can draw.
+fn faded_line(theme: &crate::theme::Theme, row: &live::Row, keep: f32) -> Line<'static> {
+    let rgb = |c: ratatui::style::Color| match c {
+        ratatui::style::Color::Indexed(n) if theme.profile == crate::theme::Profile::TrueColor => {
+            live::indexed_rgb(n)
+        }
+        c => c,
+    };
+    let spans = row
+        .runs
+        .iter()
+        .map(|(t, s)| {
+            let mut s = live_style(theme, *s);
+            s.fg = s.fg.map(|c| theme.toward_ground(rgb(c), keep));
+            s.bg = s.bg.map(|c| theme.toward_ground(rgb(c), keep));
+            s = s.remove_modifier(Modifier::BOLD | Modifier::REVERSED);
+            Span::styled(t.clone(), s)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
 }
 
 /// The sentences under the mark. The first says what the session will be, in

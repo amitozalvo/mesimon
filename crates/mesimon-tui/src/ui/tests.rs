@@ -14524,3 +14524,221 @@ fn the_board_footer_keeps_the_cards_keys_and_u_moves_up() {
     assert!(rows[29].contains("u undo archive"), "{}", rows[29]);
     assert!(!rows[28].contains("undo"), "{}", rows[28]);
 }
+
+// ---------------------------------------------------------------------------
+// The live window (T-1143)
+// ---------------------------------------------------------------------------
+
+/// A Claude Code 2.1.319 screen as tmux captures it with `-e` (measured
+/// 2026-11-06): 80 by 24 on the alternate screen, its foot the footer, the
+/// composer between two rules and the spinner over it — or, with `dialog`,
+/// a permission prompt in a box where the composer was.
+fn live_shot(dialog: bool) -> crate::live::Shot {
+    let rule = format!("\x1b[38;5;244m{}\x1b[39m", "─".repeat(78));
+    let mut rows: Vec<String> = vec![
+        "\x1b[38;5;231m⏺\x1b[39m Still reading the code: pane capture in the tmux backend, the ticket"
+            .into(),
+        "  page's layout, the theme's colour profiles, and the tick rate.".into(),
+        String::new(),
+        "\x1b[38;5;246m⏺ Checking Codex's composer detection, Mesophon's pane screen, and the L1 law"
+            .into(),
+        "  tests\x1b[38;5;246m · 7s\x1b[39m".into(),
+        "\x1b[38;5;246m  ⎿  $ ls crates/mesimon-daemon/src/agents/ \x1b[39m".into(),
+        String::new(),
+    ];
+    if dialog {
+        rows.extend(
+            [
+                "\x1b[38;5;231m⏺ \x1b[1mBash\x1b[22m\x1b[38;5;246m(cargo test -p mesimon-tui ticket)\x1b[39m",
+                "",
+                "╭──────────────────────────────────────────────────────────────────────────────╮",
+                "│ \x1b[1mDo you want to run this command?\x1b[22m                                             │",
+                "│   Run the ticket page tests                                                  │",
+                "│                                                                              │",
+                "│ \x1b[38;5;110m❯ 1. Yes\x1b[39m                                                                   │",
+                "│   2. Yes, and don't ask again for cargo test in this session                 │",
+                "│   3. No, and tell Claude what to do differently \x1b[2m(esc)\x1b[22m                        │",
+                "╰──────────────────────────────────────────────────────────────────────────────╯",
+            ]
+            .map(String::from),
+        );
+    } else {
+        rows.extend([
+            "\x1b[38;5;174m·\x1b[39m \x1b[38;5;180mVibing…\x1b[39m \x1b[38;5;246m(5m 55s · ↓ 22.2k tokens)\x1b[39m".to_string(),
+            rule.clone(),
+            "\x1b[38;5;246m❯ \x1b[39m".to_string(),
+            rule,
+        ]);
+    }
+    rows.extend([
+        "  \x1b[2m\x1b[34m~/…/T-1143-ticket-page-rehaul\x1b[0m\x1b[38;5;246m | \x1b[2m\x1b[32m⎇ msmn/T-1143-ticket-page-rehaul\x1b[0m\x1b[38;5;246m | \x1b[2m\x1b[36mFable 5.1\x1b[0m".to_string(),
+        "  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle)\x1b[39m".to_string(),
+    ]);
+    while rows.len() < 24 {
+        rows.insert(0, String::new());
+    }
+    let cursor = rows.iter().position(|r| r.starts_with("\x1b[38;5;246m❯")).map(|y| (2, y as u16));
+    crate::live::Shot { rows: crate::live::parse(&rows.join("\n")), cols: 80, cursor }
+}
+
+fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
+    let path = write_transcript(
+        name,
+        &reply_record(
+            "Research is mostly done. Measured facts so far: every agent pane is on tmux's \
+             alternate screen, an unattached pane sits at 80×24 while an attached one is 187×52.",
+        ),
+    );
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), live_shot(dialog)));
+    (app, path)
+}
+
+/// The zone with the pane at its foot: the composer, its rules and the
+/// footer as the pane holds them, the spinner row kept over the rule, the
+/// pane's rows above going out, and the reply over those. The pane's
+/// cursor is the frame's.
+#[test]
+fn golden_ticket_live_120() {
+    let (app, path) = app_live("tlive-calm", false);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
+    let rect = app.live_rect.get().expect("the window is on screen");
+    assert_eq!(rect.bottom(), 29, "the window ends over the footer: {rect:?}");
+    assert!(app.mascot.borrow().is_some(), "the shin stands on the seam");
+    golden("ticket_live_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A dialog where the composer was: the seam rises to the blank row over
+/// the box, and the shin climbs with it.
+#[test]
+fn golden_ticket_live_dialog_120() {
+    let (app, path) = app_live("tlive-dialog", true);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Do you want to run this command?")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("❯ 1. Yes")), "{lines:#?}");
+    let rect = app.live_rect.get().expect("the window is on screen");
+    let (calm, calm_path) = app_live("tlive-dialog-calm", false);
+    render(&calm, 120, 30);
+    let _ = std::fs::remove_dir_all(calm_path.parent().expect("dir"));
+    let calm_rect = calm.live_rect.get().expect("the window is on screen");
+    assert!(rect.y < calm_rect.y, "the seam rises for a dialog: {rect:?} vs {calm_rect:?}");
+    golden("ticket_live_dialog_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The pane's own glyphs and attributes — box drawing, dim — reach cells
+/// inside the window and nowhere else (L1, by position, as the shin's
+/// cells are), on every profile.
+#[test]
+fn the_live_window_is_the_one_place_the_panes_glyphs_reach() {
+    use ratatui::layout::Position;
+    for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Mono] {
+        let (mut app, path) = app_live(&format!("tlive-law-{profile:?}"), true);
+        app.theme = Theme::new(Flavor::Graphite, profile);
+        let buf = cells(&app, 120, 30);
+        let rect = app.live_rect.get().expect("the window is on screen");
+        let mascot = app.mascot.borrow().clone();
+        let mut boxed = 0;
+        for y in 0..30 {
+            for x in 0..120 {
+                let inside = rect.contains(Position { x, y });
+                let cell = &buf[(x, y)];
+                for ch in cell.symbol().chars() {
+                    if !(0x2500..=0x259F).contains(&(ch as u32)) {
+                        continue;
+                    }
+                    if inside {
+                        boxed += 1;
+                    } else {
+                        assert!(
+                            ch == '▉'
+                                || ch == '▎'
+                                || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch)),
+                            "{ch:?} at {x},{y} outside the window ({profile:?})"
+                        );
+                    }
+                }
+                // Mono's own structure is reverse video (06 §2.8); the
+                // attribute law is the coloured profiles'.
+                if !inside && profile != Profile::Mono {
+                    let m = cell.modifier;
+                    assert!(
+                        !m.intersects(
+                            Modifier::DIM
+                                | Modifier::ITALIC
+                                | Modifier::SLOW_BLINK
+                                | Modifier::CROSSED_OUT
+                                | Modifier::REVERSED
+                        ),
+                        "banned attribute at {x},{y} outside the window ({profile:?})"
+                    );
+                }
+            }
+        }
+        assert!(boxed > 40, "the dialog's box must be ON SCREEN, or this law does not bite");
+        if profile == Profile::Mono {
+            assert!(
+                buf.content().iter().all(|c| c.fg == app.theme.rest.base || c.fg == Color::Reset),
+                "mono draws the pane in the page's ink"
+            );
+        }
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+}
+
+/// The window leaves with the cursor (T-1143): a note row reads the note,
+/// as before, and the ask field hangs under the reply, over the pane.
+#[test]
+fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
+    let (mut app, path) = app_live("tlive-field", false);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 };
+    let lines = render(&app, 120, 30);
+    assert!(app.live_rect.get().is_none(), "a note row shows no pane: {lines:#?}");
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "rebase onto main".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let lines = render(&app, 120, 30);
+    let field = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
+    let rect = app.live_rect.get().expect("the window is on screen");
+    assert!((field as u16) < rect.y, "the field sits over the pane's rows: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The pointer resting on a rail row moves the cursor there, as a card's
+/// reply floats after the same rest; a sweep moves nothing.
+#[test]
+fn a_pointer_resting_on_a_rail_row_moves_the_cursor_there() {
+    use std::time::{Duration, Instant};
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.hover.set(Some((crate::mouse::Target::Rail(3), Instant::now())));
+    assert!(!app.hover_rail(), "a pointer passing through moves nothing");
+    assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 });
+    app.hover
+        .set(Some((crate::mouse::Target::Rail(3), Instant::now() - Duration::from_millis(500))));
+    assert!(app.hover_rail());
+    assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 });
+    assert!(!app.hover_rail(), "resting on the cursor's own row is quiet");
+}

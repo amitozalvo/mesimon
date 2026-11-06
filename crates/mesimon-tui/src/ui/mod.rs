@@ -89,6 +89,8 @@ pub(crate) struct RichCache {
 pub fn draw(f: &mut Frame, app: &App) {
     app.hits.borrow_mut().clear(f.area());
     crate::mouse::forget_hints();
+    // The live window is a fact of the frame that draws it (T-1143).
+    app.live_rect.set(None);
     draw_screen(f, app);
     // The mouse's half (T-716): the hints the frame left whole are what a
     // click presses, and the hover lights what the pointer is over.

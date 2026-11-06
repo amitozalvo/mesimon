@@ -961,6 +961,7 @@ dependencies = [
  "base64",
  "image",
  "libc",
+ "mesimon-backend-tmux",
  "mesimon-core",
  "mesimon-daemon",
  "qrcodegen",

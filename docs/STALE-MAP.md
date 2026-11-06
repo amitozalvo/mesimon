@@ -41759,3 +41759,55 @@ scrolled screen is the previous one moved up a row, that the face is one with a 
 and that only an Enter nods. A no-scroll mutation fails it. The ticket-page goldens changed
 only on the laptop's screen. The artifact was drawn from the engine's dumped pixels, and the
 shipped frames are identical to it.
+
+## The ticket page shows the session's pane at the foot of its preview (T-1143, 2026-11-06, the author: "ticket page is thought by users as redundant and waste of key press … hybrid view where you can see the actual tmux terminal at the bottom as it is, and gradually showing mesimon … the mascot would sit somewhere along the gradient on the right side")
+
+**Research first** (the artifact at https://claude.ai/artifact/7FPf5fyxNMpXnm2ZdHP56h, a note on
+the ticket), then "build it, use recommended". **Measured on this board**: every Claude Code
+2.1.319 pane runs on tmux's alternate screen (the visible screen is the whole interface, nothing
+in scrollback); a pane nobody is attached to is 80×24 and an attached one its terminal's size
+(`window-size latest`); `capture-pane -e` returns the screen with a small SGR subset (bold, dim,
+reset, `38;5;n`, a few named colours), the rules as U+2500 and the `❯` row, and
+`display-message` in the same queue gives the cursor.
+
+**What shipped.** `tui/src/live.rs`: a reader thread per selected agent session, started by
+`App::poll_live` when the rail's cursor is on an agent session with a pane and ended when it
+leaves (or the page does); it captures through the private server's socket every 200 ms, hashes
+the raw answer and sends only a changed screen; a parser folds the SGR escapes into styled runs
+(`scrub_text`, not `scrub_cells`: the pane's rules and boxes are the picture, and the window is a
+position-scoped exception to the L1 law the way the shin is — `App::live_rect`, set by the frame
+that draws it). `Shot::anchor` finds the seam: the composer's top rule (a `❯`/`›`/`!` row with a
+rule of ≥8 `─` directly above it) less one row for the spinner; else a dialog from the blank row
+over its heading (a `❯ `/`› ` option row, looked up to 12 rows); else the last 8 rows.
+`ui/ticket.rs::draw_preview` lays the zone out bottom-up: the live rows (the pane's own inks,
+the page's base ink where it named none, no colour in mono), up to 4 fade rows above them (each
+run's inks mixed toward the page ground by `fade_keep`, bold and reverse dropped; below TrueColor
+`toward_ground`'s step), the reply as before over those (paged by `{ }`), and the ask field
+between the reply and the fade (the caller keeps the zone whole and hands `field_rows` in). The
+pane's cursor is the frame's. The small shin stands on the seam at the zone's right
+(`seam_companion`), the fade rows it stands over cut short of it. **The fit**: while shown, the
+reader asks tmux to size the window to the zone (`resize-window -x -y`, which marks the window
+`manual`), never while `list-clients` names an attached client; the drop unsets `window-size`
+back to the server's `latest`, synchronously (the reader is joined), and `lib.rs` drops the
+window before every exec: the attach handover, the reload, `mesimon open`. **Hover**: the
+pointer resting on a rail row for `HOVER_PEEK` moves the cursor there (`App::hover_rail`), so a
+hovered session reads too and a sweep flips nothing. `Theme::has_colour` went `pub(crate)`.
+
+**Not built, named for a follow-up.** Answering a question or a plan from the page with number
+keys: the phone's road (`mesophon::Request::Dialog`, screen-verified, confirmed by the hook edge)
+is not reachable from the local client (`Command::Mesophon` carries `LocalAction` only), so it
+needs a wire command with the person as principal; a permission prompt's request id is not on
+the snapshot at all. Enter goes in, one press. Codex panes were not measured (no Codex session
+on the board); the window still works as a picture, and `›` is read as a prompt and a marker.
+Refuted on the way: `scrub_cells` on the pane (it strips U+2500–259F, the rules the seam is
+found by); a daemon-side capture (a 200 ms fork on the writer, T-857); typing every key into the
+pane from the page (enter is one press and exact).
+
+**Tests.** `live::tests` (the SGR runs, dropped escapes, the three anchor shapes, the fade
+curve); goldens `ticket_live_120x30` and `ticket_live_dialog_120x30` (the seam rises for a
+dialog, the shin climbs); `the_live_window_is_the_one_place_the_panes_glyphs_reach` (box glyphs
+and banned attributes inside `live_rect` only, on TrueColor, Ansi256 and mono);
+`the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field`;
+`a_pointer_resting_on_a_rail_row_moves_the_cursor_there`. No existing golden moved. Known
+risk: a glyph the terminal draws two cells wide that `unicode-width` counts as one strands a
+cell past the zone's right edge (the T-485 class); the window redraws whole on every change.
