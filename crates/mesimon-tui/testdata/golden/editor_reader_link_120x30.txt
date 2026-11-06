@@ -21,10 +21,10 @@
           │    cargo test -p mesimon-tui                                       │
           │                                                                    │
           │  › Still open: the --color=never path is untested.~                │
-          ╰───── enter open link ∙ { } note ∙ jk scroll ∙ tab link ∙ w unwrap ─╯
+          ╰─────── enter open link ∙ { } note ∙ jk scroll ∙ tab link ∙ c copy ─╯
 
 
 
 
 
- enter open link ∙ { } note ∙ jk scroll ∙ tab link ∙ w unwrap ∙ esc close                                        ? keys
+ enter open link ∙ { } note ∙ jk scroll ∙ tab link ∙ c copy ∙ w unwrap ∙ esc close                               ? keys

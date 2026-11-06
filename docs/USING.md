@@ -317,8 +317,8 @@ stops a snake that is out.
 
 `tab` on a card shows its description, the brief its agent starts from, drawn as markdown under
 the card: `j` and `k` scroll, `{` and `}` walk to the ticket's other notes, `tab` walks the
-note's links and on into the next note (`shift-tab` back), `enter` opens the selected link, and
-`w` turns the wrap off so `h` and `l`
+note's links and on into the next note (`shift-tab` back), `enter` opens the selected link (`c`
+copies it), and `w` turns the wrap off so `h` and `l`
 scroll a long line sideways. With no link selected, `enter` edits the note on screen; `ctrl-s`
 saves it and `esc` leaves the editor, both back to the note, and `ctrl-g` opens the text in your
 own editor instead. A card with no description opens the editor straight away. In the new-ticket
@@ -330,9 +330,12 @@ Notes are markdown.
 
 `ctrl-k`, on the board or on a ticket page, lists every link in the ticket's notes and in its
 agent's latest reply: web addresses, files in the ticket's worktree or checkout (with a line
-number when one is written), other tickets, and pasted pictures. `enter` opens one: a web
-address in your browser, a text file in your editor, another ticket by moving to it. `c` copies
-it instead.
+number when one is written), other tickets, pasted pictures, and the commands in a shell code
+block (` ```bash `, `sh`, `zsh`, `shell` or `console`; one per line, the `$ ` prompt left off).
+`enter` opens one: a web address in your browser, a text file in your editor, another ticket by
+moving to it. `c` copies it instead. A command is only copied, never run, and `enter` does
+nothing on one. The transcript's `tab` walks the same commands, and there `c` copies the one
+selected.
 
 A note section headed `Summary` is the ticket's checklist. Write it in the description or let the
 agent write it in a note of its own:

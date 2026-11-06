@@ -12,7 +12,9 @@
 //!
 //! This is the second markdown-link parser in the tree — `tui/src/rich.rs`
 //! has one for DRAWING a body, and its walk returns painted spans. The two
-//! agree on `[label](target)` and nothing else needs to be shared.
+//! agree on `[label](target)`, and share the fence rule (`fence_open`,
+//! `fence_closes`) and the shell fence's commands (`commands`, T-1141), so
+//! the command a list names is the rows the draw marks.
 
 use crate::board::KEY_PREFIX;
 
@@ -30,6 +32,10 @@ pub enum Found {
         path: String,
         line: Option<u32>,
     },
+    /// A command from a shell fence (T-1141), its prompt off and its
+    /// continuation lines kept, joined by `\n`: what pasted into a shell
+    /// runs as written. Copied, never run.
+    Command(String),
 }
 
 impl Found {
@@ -37,7 +43,7 @@ impl Found {
     /// `:LINE` back on, an attachment's `attachment:` word.
     pub fn spelling(&self) -> String {
         match self {
-            Found::Url(s) | Found::Ticket(s) => s.clone(),
+            Found::Url(s) | Found::Ticket(s) | Found::Command(s) => s.clone(),
             Found::Path { path, line } => {
                 line.map_or_else(|| path.clone(), |n| format!("{path}:{n}"))
             }
@@ -61,9 +67,11 @@ pub fn looks_text(head: &[u8]) -> bool {
 }
 
 /// Every link in `body`, document order, deduplicated by target (the first
-/// occurrence keeps its label). One pass: a `[label](target)` is one link,
-/// never a label and a bare target, and every other whitespace-delimited word
-/// is read on its own.
+/// occurrence keeps its label). A shell fence's lines are its commands
+/// (`commands`) and nothing else; every other line is prose, a fence of
+/// another language included. In prose a `[label](target)` is one link,
+/// never a label and a bare target, and every other whitespace-delimited
+/// word is read on its own.
 pub fn extract(body: &str) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
     let mut push = |link: Link| {
@@ -71,6 +79,53 @@ pub fn extract(body: &str) -> Vec<Link> {
             out.push(link);
         }
     };
+    let lines: Vec<&str> = body.lines().collect();
+    let mut prose = String::new();
+    let mut at = 0;
+    while at < lines.len() {
+        let line = lines[at];
+        at += 1;
+        prose.push_str(line);
+        prose.push('\n');
+        let Some((ch, len, info)) = fence_open(line) else { continue };
+        let start = at;
+        while at < lines.len() && !fence_closes(lines[at], ch, len) {
+            at += 1;
+        }
+        let rows = &lines[start..at];
+        if is_shell(info) {
+            scan(&prose, &mut push);
+            prose.clear();
+            for (command, _) in commands(info, rows) {
+                push(Link { label: None, target: Found::Command(command) });
+            }
+        } else {
+            for row in rows {
+                prose.push_str(row);
+                prose.push('\n');
+            }
+        }
+        at += 1; // the closing line, if there is one
+    }
+    scan(&prose, &mut push);
+    out
+}
+
+/// Every target `body` names in its words, a shell fence's rows read as
+/// prose too: `extract` before T-1141. What a picture's reference check
+/// reads, so a picture named anywhere in the words stays named.
+pub fn words(body: &str) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::new();
+    scan(body, &mut |link: Link| {
+        if !out.iter().any(|l| l.target == link.target) {
+            out.push(link);
+        }
+    });
+    out
+}
+
+/// The prose walk: markdown links and bare words, in order.
+fn scan(body: &str, push: &mut impl FnMut(Link)) {
     let chars: Vec<char> = body.chars().collect();
     let mut word = String::new();
     let mut i = 0;
@@ -103,7 +158,122 @@ pub fn extract(body: &str) -> Vec<Link> {
     if let Some(target) = classify(&word) {
         push(Link { label: None, target });
     }
+}
+
+/// A fence's opening line: three or more backticks or tildes, indented or
+/// not, and the first word of its info string (`bash` of ```` ```bash ````,
+/// empty when it names none).
+pub fn fence_open(line: &str) -> Option<(char, usize, &str)> {
+    let t = line.trim_start();
+    for ch in ['`', '~'] {
+        let n = t.chars().take_while(|c| *c == ch).count();
+        if n >= 3 {
+            let info = t[n..].trim_start();
+            let end = info.find(|c: char| c.is_whitespace() || c == '{' || c == ',');
+            return Some((ch, n, &info[..end.unwrap_or(info.len())]));
+        }
+    }
+    None
+}
+
+/// Does `line` close a fence opened by `len` of `ch`: a run at least as
+/// long, and nothing else on the line?
+pub fn fence_closes(line: &str, ch: char, len: usize) -> bool {
+    let t = line.trim();
+    t.chars().count() >= len && t.chars().all(|c| c == ch)
+}
+
+/// The info words that say a fence holds shell (T-1141). An untagged fence
+/// is not one: it holds output and trees as often as commands.
+pub fn is_shell(info: &str) -> bool {
+    ["sh", "bash", "zsh", "shell", "console", "shell-session", "shellsession", "fish", "ksh"]
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(info))
+}
+
+/// A shell fence's commands, each with the rows it spans. One command per
+/// line; a blank line and a `#` comment are none; a leading `$ ` or `% `
+/// prompt comes off. A line ending in `\`, `|`, `&&` or `||` runs on into
+/// the next, and a heredoc (`<<EOF`) runs to its terminator, so the command
+/// keeps every row it needs, joined by `\n`. In a `console` fence only a
+/// prompted line starts a command: the rest is the session's output.
+pub fn commands(info: &str, rows: &[&str]) -> Vec<(String, std::ops::Range<usize>)> {
+    let session = ["console", "shell-session", "shellsession"]
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(info));
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < rows.len() {
+        let start = at;
+        let line = rows[at].trim();
+        at += 1;
+        let line = match prompt_off(line) {
+            Some(rest) => rest,
+            None if session => continue,
+            None => line,
+        };
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut text = line.to_string();
+        let mut last = line.to_string();
+        loop {
+            if let Some(word) = heredoc(&last) {
+                while at < rows.len() {
+                    let row = rows[at].trim_end();
+                    at += 1;
+                    text.push('\n');
+                    text.push_str(row);
+                    if row.trim() == word {
+                        break;
+                    }
+                }
+            }
+            if !runs_on(&last) || at >= rows.len() {
+                break;
+            }
+            let row = rows[at].trim();
+            at += 1;
+            // A session's continuation wears the shell's `> `.
+            let row = if session { row.strip_prefix("> ").unwrap_or(row) } else { row };
+            text.push('\n');
+            text.push_str(row);
+            last = row.to_string();
+        }
+        out.push((text, start..at));
+    }
     out
+}
+
+/// `$ cmd` or `% cmd` → `cmd`; a bare `$` is an empty command.
+fn prompt_off(line: &str) -> Option<&str> {
+    if line == "$" || line == "%" {
+        return Some("");
+    }
+    line.strip_prefix("$ ").or_else(|| line.strip_prefix("% ")).map(str::trim_start)
+}
+
+/// Does the shell read on past this line?
+fn runs_on(line: &str) -> bool {
+    let l = line.trim_end();
+    (l.ends_with('\\') && !l.ends_with("\\\\")) || l.ends_with('|') || l.ends_with("&&")
+}
+
+/// The terminator of a heredoc this line opens: `<<EOF`, `<<-EOF`,
+/// `<< 'EOF'`, `<<"EOF"`. A here-string (`<<<`) opens none.
+fn heredoc(line: &str) -> Option<String> {
+    let at = line.find("<<")?;
+    let rest = &line[at + 2..];
+    if rest.starts_with('<') {
+        return None;
+    }
+    let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+    let word: String = rest
+        .chars()
+        .skip_while(|c| *c == '\'' || *c == '"')
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!word.is_empty()).then_some(word)
 }
 
 /// `[label](target)` with `chars[open] == '['`: the link, if the target
@@ -330,6 +500,72 @@ mod tests {
         // No `(` after `]`, or the `)` is on another line: the words stay words.
         assert_eq!(targets("[x] https://a.test/y"), vec![url("https://a.test/y")]);
         assert_eq!(targets("[x](https://a.test/z\n)"), vec![url("https://a.test/z")]);
+    }
+
+    fn command(s: &str) -> Found {
+        Found::Command(s.into())
+    }
+
+    #[test]
+    fn a_shell_fence_holds_one_command_a_line() {
+        let body = "Run:\n\n```bash\n# build first\n$ cargo ut\n\ncargo build --workspace\n```\n\nthen `cargo ut` again";
+        assert_eq!(targets(body), vec![command("cargo ut"), command("cargo build --workspace")]);
+        // `console` is a session: only a prompted line is a command.
+        let session = "```console\n$ ls src/\nmain.rs lib.rs\n$ echo hi\nhi\n```";
+        assert_eq!(targets(session), vec![command("ls src/"), command("echo hi")]);
+        // Indented in a list item, tagged with attributes, tildes.
+        assert_eq!(targets("- x\n  ```sh {.copy}\n  make\n  ```"), vec![command("make")]);
+        assert_eq!(targets("~~~zsh\nmake\n~~~"), vec![command("make")]);
+    }
+
+    #[test]
+    fn a_command_keeps_the_rows_it_runs_on() {
+        let body = "```sh\ncargo test -p x \\\n  --test hook_e2e\nls |\n  wc -l\ncat <<'EOF' > a.txt\none\n  two\nEOF\necho done\n```";
+        assert_eq!(
+            targets(body),
+            vec![
+                command("cargo test -p x \\\n--test hook_e2e"),
+                command("ls |\nwc -l"),
+                command("cat <<'EOF' > a.txt\none\n  two\nEOF"),
+                command("echo done"),
+            ]
+        );
+        let rows: Vec<&str> = body.lines().skip(1).take(9).collect();
+        let spans: Vec<_> = commands("sh", &rows).into_iter().map(|(_, r)| r).collect();
+        assert_eq!(spans, vec![0..2, 2..4, 4..8, 8..9]);
+        // A here-string is one line.
+        assert_eq!(targets("```bash\ngrep x <<< \"$v\"\nls\n```").len(), 2);
+    }
+
+    #[test]
+    fn only_a_shell_fence_holds_commands() {
+        // Untagged and other languages stay prose: their paths are paths.
+        assert_eq!(targets("```\ncargo ut\nsrc/a.rs\n```"), vec![path("src/a.rs", None)]);
+        assert_eq!(targets("```rust\nlet x = 1;\n```"), vec![]);
+        // A shell fence's words are its commands, not paths; prose around
+        // it keeps its links, in document order; an unterminated fence runs
+        // to the end, as the draw shows it.
+        assert_eq!(
+            targets("see T-4\n```bash\npython3 ci/rig.py\n```\nand docs/a.md\n```sh\nmake"),
+            vec![
+                Found::Ticket("T-4".into()),
+                command("python3 ci/rig.py"),
+                path("docs/a.md", None),
+                command("make"),
+            ]
+        );
+        // A fence inside another (a longer run) is its row, not a fence.
+        assert_eq!(targets("````md\n```bash\nmake\n```\n````"), vec![]);
+        assert_eq!(fence_open("```bash title=x"), Some(('`', 3, "bash")));
+        assert!(fence_closes("  ````  ", '`', 3) && !fence_closes("``", '`', 3));
+    }
+
+    #[test]
+    fn words_read_a_shell_fence_as_prose() {
+        let body = "```bash\nopen docs/a.md\n```";
+        assert_eq!(targets(body), vec![command("open docs/a.md")]);
+        let words: Vec<Found> = words(body).into_iter().map(|l| l.target).collect();
+        assert_eq!(words, vec![path("docs/a.md", None)]);
     }
 
     #[test]

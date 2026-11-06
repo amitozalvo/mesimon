@@ -25,7 +25,7 @@ pub fn parse_target(text: &str) -> Option<Ulid> {
 }
 
 pub fn references(text: &str) -> Vec<Ulid> {
-    crate::links::extract(text)
+    crate::links::words(text)
         .into_iter()
         .filter_map(|link| match link.target {
             crate::links::Found::Attachment(id) => Some(id),

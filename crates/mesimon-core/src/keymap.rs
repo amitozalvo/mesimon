@@ -1523,8 +1523,12 @@ pub struct Ctx {
     /// The note on the reader holds a link it can open (T-1139): `tab`
     /// walks them.
     pub reader_links: bool,
-    /// A link is selected in the reader: Enter opens it, Esc lets it go.
+    /// A link is selected in the reader: Enter opens it, `c` copies it,
+    /// Esc lets it go.
     pub reader_link_selected: bool,
+    /// The link under the cursor of `^k`, the transcript or the reader is
+    /// a shell command (T-1141): `c` copies it, and Enter opens nothing.
+    pub link_command: bool,
     /// The forge has bound at least one pull request to the subject ticket
     /// (T-739), as the last snapshot said. What `^h` gates on.
     pub has_prs: bool,
@@ -7418,7 +7422,8 @@ static LINKS: &[Binding] = &[
         verb: Verb::Act,
         show: "enter",
         hint: |_| "open",
-        avail: always,
+        // A command is copied, never run (T-1141).
+        avail: |c| !c.link_command,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -7620,7 +7625,7 @@ static TRANSCRIPT: &[Binding] = &[
         verb: Verb::TranscriptLinkOpen,
         show: "enter",
         hint: |_| "open link",
-        avail: |c| c.transcript_link_selected,
+        avail: |c| c.transcript_link_selected && !c.link_command,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -7678,7 +7683,8 @@ static READER: &[Binding] = &[
         verb: Verb::NoteEdit,
         show: "enter",
         hint: |c| if c.reader_link_selected { "open link" } else { "edit" },
-        avail: always,
+        // A selected command has nothing to open (T-1141): `c` copies it.
+        avail: |c| !c.link_command,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -7721,6 +7727,18 @@ static READER: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 12,
+    },
+    Binding {
+        // The selected link or command, as `^k`'s `c` copies a row.
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: |c| c.reader_link_selected,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 13,
     },
     Binding {
         // The page keys page; `{ }` are the notes'. Overlay-only.
@@ -11857,6 +11875,31 @@ mod tests {
             resolve(Scope::Transcript, Key::Char('c'), &Ctx::default()),
             Some(Verb::LinkCopy)
         );
+    }
+
+    /// T-1141: a shell command is a link to copy, never to open. On one,
+    /// Enter is unbound in `^k`, the transcript and the reader (its hint
+    /// goes with it), and `c` copies; the reader's `c` is live only while
+    /// something is selected.
+    #[test]
+    fn a_command_is_copied_and_enter_opens_nothing() {
+        let command = Ctx { link_command: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Links, Key::Enter, &Ctx::default()), Some(Verb::Act));
+        assert_eq!(resolve(Scope::Links, Key::Enter, &command), None);
+        assert_eq!(hint_for(Scope::Links, Verb::Act, &command), None);
+        assert_eq!(resolve(Scope::Links, Key::Char('c'), &command), Some(Verb::LinkCopy));
+        let picked = Ctx { transcript_links: true, transcript_link_selected: true, ..command.clone() };
+        assert_eq!(resolve(Scope::Transcript, Key::Enter, &picked), None);
+        assert_eq!(resolve(Scope::Transcript, Key::Char('c'), &picked), Some(Verb::LinkCopy));
+        let read = Ctx { reader_links: true, reader_link_selected: true, ..command.clone() };
+        assert_eq!(resolve(Scope::Reader, Key::Enter, &read), None);
+        assert_eq!(resolve(Scope::Reader, Key::Char('c'), &read), Some(Verb::LinkCopy));
+        assert_eq!(hint_for(Scope::Reader, Verb::LinkCopy, &read), Some(("c", "copy")));
+        let url = Ctx { link_command: false, ..read.clone() };
+        assert_eq!(resolve(Scope::Reader, Key::Enter, &url), Some(Verb::NoteEdit));
+        assert_eq!(resolve(Scope::Reader, Key::Char('c'), &url), Some(Verb::LinkCopy));
+        let none = Ctx { reader_links: true, ..Default::default() };
+        assert_ne!(resolve(Scope::Reader, Key::Char('c'), &none), Some(Verb::LinkCopy));
     }
 
     /// `q` pops one level and `?` is reachable from every screen — the two

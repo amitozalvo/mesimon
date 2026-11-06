@@ -1315,6 +1315,9 @@ pub enum LinkTarget {
         path: PathBuf,
         line: Option<u32>,
     },
+    /// A shell fence's command (T-1141): the row's `text` is it, and `c`
+    /// copies it. Nothing opens one.
+    Command,
 }
 
 /// One row of the links dialog: the markdown label when there was one,
@@ -1331,6 +1334,12 @@ pub struct TicketLink {
 }
 
 impl TicketLink {
+    /// What `c` copies, and the word its status names it by.
+    pub(crate) fn copied(&self) -> (&'static str, String) {
+        let subject = if self.target == LinkTarget::Command { "command" } else { "link" };
+        (subject, self.text.clone())
+    }
+
     /// The row's kind word.
     pub fn kind(&self) -> &'static str {
         match self.target {
@@ -1338,6 +1347,7 @@ impl TicketLink {
             LinkTarget::Url(_) => "url",
             LinkTarget::Ticket(_) => "ticket",
             LinkTarget::File { .. } => "file",
+            LinkTarget::Command => "command",
         }
     }
 }
@@ -2983,6 +2993,17 @@ impl App {
     /// them again.
     fn transcript_links_dirty(&self) {
         self.transcript_links_cache.borrow_mut().take();
+    }
+
+    /// The link under the cursor of `^k`, the transcript or the reader:
+    /// what Enter would open and `c` copy.
+    fn cursor_link(&self) -> Option<TicketLink> {
+        match &self.mode {
+            Mode::Links { links, idx, .. } => links.get(*idx).cloned(),
+            Mode::Transcript { .. } => self.transcript_cursor_link(),
+            Mode::Editor(ed) if ed.reading => self.reader_cursor_link(ed),
+            _ => None,
+        }
     }
 
     pub(crate) fn transcript_cursor_link(&self) -> Option<TicketLink> {
@@ -8241,6 +8262,7 @@ impl App {
             reader_link_selected: editor
                 .filter(|e| e.reading)
                 .is_some_and(|e| self.reader_cursor_link(e).is_some()),
+            link_command: self.cursor_link().is_some_and(|l| l.target == LinkTarget::Command),
             editor_word: self.editor().map_or("", |e| e.word),
             editor_pick: self.prefs.editor.unwrap_or(crate::prefs::AUTO),
             editor_from: self.editors.source().map_or("", crate::external::Source::words),
@@ -10188,7 +10210,7 @@ impl App {
             Verb::LinkFirst => {
                 if let Some(ticket) = self.subject() {
                     let links = self.fetch_links(ticket);
-                    match links.first() {
+                    match links.iter().find(|l| l.target != LinkTarget::Command) {
                         Some(first) => self.open_link(first.clone()),
                         None => self.status = self.no_links_status(ticket),
                     }
@@ -10197,9 +10219,16 @@ impl App {
             Verb::LinkCopy => {
                 // Keep the target visible so terminal-only copies can be selected manually.
                 let text = match &self.mode {
-                    Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
-                    Mode::Summary { .. } => self.summary_cursor().map(|(_, r)| r.text),
-                    Mode::PullRequests { .. } => self.pr_cursor().map(|p| p.url.clone()),
+                    Mode::Links { links, idx, .. } => links.get(*idx).map(TicketLink::copied),
+                    Mode::Summary { .. } => self.summary_cursor().map(|(_, r)| ("link", r.text)),
+                    Mode::PullRequests { .. } => self.pr_cursor().map(|p| ("link", p.url.clone())),
+                    // The selected link or command (T-1141), as `^k` copies it.
+                    Mode::Transcript { link_idx: Some(_), .. } => {
+                        self.transcript_cursor_link().as_ref().map(TicketLink::copied)
+                    }
+                    Mode::Editor(ed) if ed.reading => {
+                        self.reader_cursor_link(ed).as_ref().map(TicketLink::copied)
+                    }
                     // The message whole, as the transcript holds it (T-921).
                     Mode::Transcript { .. } => {
                         let text = self
@@ -10212,8 +10241,8 @@ impl App {
                     }
                     _ => None,
                 };
-                if let Some(text) = text {
-                    self.status = self.copy("link", &text);
+                if let Some((subject, text)) = text {
+                    self.status = self.copy(subject, &text);
                 }
             }
             Verb::ThemeSlot => self.cycle_theme_slot(),
@@ -16014,6 +16043,7 @@ impl App {
                 }
                 LinkTarget::File { path: full, line: *line }
             }
+            Found::Command(_) => LinkTarget::Command,
         };
         Some(TicketLink { label: link.label.clone(), text: link.target.spelling(), target })
     }
@@ -16078,6 +16108,8 @@ impl App {
     /// on a page. The status says `opening`, never `opened`.
     fn open_link(&mut self, link: TicketLink) {
         match link.target {
+            // Enter is unbound on one (T-1141); the first-link road skips them.
+            LinkTarget::Command => self.status = "c copies the command".into(),
             LinkTarget::Url(url) => self.open_outside(url),
             LinkTarget::Attachment { ticket, attachment } => {
                 match self.req(Command::ReadAttachment { ticket, attachment }) {
@@ -19590,6 +19622,52 @@ mod tests {
         assert_eq!(at(&app), (Some(90), None));
         back(&mut app);
         assert_eq!(at(&app), (Some(90), Some(0)));
+    }
+
+    /// T-1141: a shell fence's command is a link to copy. The reader's tab
+    /// lands on it beside a URL, `c` copies the selected one (and is no key
+    /// with nothing selected), and Enter on a command neither opens nor
+    /// edits. `^k` lists it as a `command` row, where Enter is inert too,
+    /// `c` copies it and the first-link key skips it.
+    #[test]
+    fn a_command_in_a_note_is_copied_from_the_reader_and_the_links_dialog() {
+        let copied = || crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+        let body = "Try:\n\n```sh\n$ make test\n```\n\nthen https://a.test/x";
+        let (mut app, _) = app_with_notes_state(None, &[(90, body)]);
+        app.opener = Some("open".into());
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading);
+        let before = copied();
+        press(&mut app, 'c');
+        assert_eq!(copied(), before, "nothing selected: c copies nothing");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().link_command);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading, "enter neither edits nor closes");
+        assert!(app.pending_open.is_none());
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("make test"));
+        assert_eq!(app.status, "command copied");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.ctx().link_command, "the URL is a link");
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("https://a.test/x"));
+        assert_eq!(app.status, "link copied");
+
+        let (mut app, _) = app_with_notes_state(None, &[(90, body)]);
+        app.opener = Some("open".into());
+        ctrl(&mut app, 'k');
+        let Mode::Links { links, .. } = &app.mode else { panic!("{:?}", app.mode) };
+        let rows: Vec<_> = links.iter().map(|l| (l.kind(), l.text.as_str())).collect();
+        assert_eq!(rows, vec![("command", "make test"), ("url", "https://a.test/x")]);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Links { .. }), "enter on a command is inert");
+        press(&mut app, 'c');
+        assert_eq!(copied().as_deref(), Some("make test"));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Char('K'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.pending_open, Some(vec!["open".into(), "https://a.test/x".into()]));
     }
 
     /// A card with no description has nothing to read: `tab` opens the

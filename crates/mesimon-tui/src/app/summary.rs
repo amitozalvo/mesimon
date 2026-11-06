@@ -113,6 +113,8 @@ impl App {
     /// every card's notes with no key pressed, and words an agent wrote
     /// must not make the board stat `/net/…`, `~/…` or a mount on the draw
     /// thread; such a path is `^k`'s to look up when the person asks.
+    /// A shell command (T-1141) leads nowhere: `^k` lists it to copy, and
+    /// the card's `↗` does not count it.
     fn followable(
         &self,
         owner: Option<ulid::Ulid>,
@@ -130,6 +132,7 @@ impl App {
                     let full = resolve_link_path(&dir, path);
                     inside && full.starts_with(&dir) && full.is_file()
                 }
+                Found::Command(_) => false,
                 _ => true,
             })
             .collect()

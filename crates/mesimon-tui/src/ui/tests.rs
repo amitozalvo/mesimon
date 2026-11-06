@@ -7256,6 +7256,41 @@ fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
     }
 }
 
+/// T-1141: a shell fence's command is a link of its own. Tab lands on it,
+/// its rows are marked past the prompt (a continuation row too, and no
+/// other row of the fence), `c` copies it as written, and Enter opens
+/// nothing. With nothing selected `c` copies the message, as before.
+#[test]
+fn transcript_commands_are_selected_marked_and_copied() {
+    let copied = || crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+    let text = "Run:\n\n```bash\n$ cargo test -p x \\\n    --test hook_e2e\nls src/lib.rs\n```";
+    let (mut app, dir) = linked_transcript("commands", &[text], false);
+    app.opener = Some("open".into());
+    press(&mut app, '}');
+    press(&mut app, 'c');
+    assert_eq!(copied().as_deref(), Some(text), "nothing selected: the message");
+    next_link(&mut app);
+    let buf = cells(&app, 120, 30);
+    transcript_mark(&buf, "cargo test", "cargo test -p x \\", true);
+    transcript_mark(&buf, "cargo test", "$", false);
+    transcript_mark(&buf, "--test hook_e2e", "--test hook_e2e", true);
+    transcript_mark(&buf, "ls src/lib.rs", "ls src/lib.rs", false);
+    assert!(app.ctx().link_command);
+    use mesimon_core::keymap::{hint_for, Scope, Verb};
+    assert_eq!(hint_for(Scope::Transcript, Verb::TranscriptLinkOpen, &app.ctx()), None);
+    transcript_enter(&mut app);
+    assert!(matches!(app.mode, Mode::Transcript { .. }), "enter opens nothing");
+    assert!(app.pending_open.is_none());
+    press(&mut app, 'c');
+    assert_eq!(copied().as_deref(), Some("cargo test -p x \\\n--test hook_e2e"));
+    assert!(app.status.starts_with("command"), "{}", app.status);
+    // The fence's words are commands, not paths: two links in all.
+    next_link(&mut app);
+    assert_eq!(app.transcript_cursor_link().unwrap().text, "ls src/lib.rs");
+    assert_eq!(app.transcript_links().len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);

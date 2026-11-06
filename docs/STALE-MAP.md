@@ -41539,3 +41539,36 @@ top; `shift+tab` back past a top lands on the previous note's last link (its top
 none). A lone note comes round to its own top. The binding is live with links or a ring of notes
 (`reader_links || editor_cycles`) and says `next note` when the note holds no link. `{ }` still
 walk the notes directly. Test: `tab_runs_on_from_the_links_into_the_next_note`.
+
+## A shell fence's commands are links to copy (T-1141, 2026-11-06, the author: "bash commands in MD note / transcript parsed as link ∙ will appear in ^k window ∙ will be supported in tab to cycle links in transcript / notes popup ∙ currently, support only c to copy")
+
+`links::Found::Command`: `extract` reads a fence tagged `sh`, `bash`, `zsh`, `shell`, `console`,
+`shell-session`, `fish` or `ksh` as commands (`links::commands`), one per line; a blank line and a
+`#` comment are none, a `$ `/`% ` prompt comes off, a line ending in `\`, `|` or `&&` runs on, a
+heredoc runs to its terminator, and in a `console` fence only a prompted line is a command (the
+rest is output). The command keeps its rows joined by `\n`, so the copy pastes into a shell as
+written; `^k` shows it on one line. The author picked the rule from three (asked before
+building): **shell fences only** — not untagged fences (output, trees) and not inline code
+(identifiers like `App::foo`).
+
+- **Where.** `^k` lists it as a `command` row; the transcript's and the reader's `tab` walk it,
+  and `rich::Out::slab` underlines its rows past the prompt (`command_row`). Both parses share
+  `links::fence_open`/`fence_closes`, so the rows marked are the command listed. A shell fence's
+  words are no longer read as prose: a path inside a command is not a file link any more.
+- **Keys.** `c` copies (`TicketLink::copied`, status `command copied`); Enter is unbound on a
+  command (`Ctx::link_command`) in `^k`, the transcript and the reader, so its hint goes too.
+  The reader gained `c` for any selected link (it had none); the transcript's `c` copies the
+  selected link or command, and the whole message only with nothing selected. `^K` (first link)
+  skips commands.
+- **Not counted** for the card's `↗` and the footer's `^k` hint (`followable`): agent notes are
+  full of shell fences, and a command leads nowhere. Offered, not done.
+- **Unchanged on purpose:** `attachment::references` and `image_paste::unpack` read
+  `links::words` (the old prose-only walk), so a picture named inside a shell fence is still named
+  and the daemon's save check does not refuse it.
+
+Tests: `links::tests::a_shell_fence_holds_one_command_a_line`,
+`a_command_keeps_the_rows_it_runs_on`, `only_a_shell_fence_holds_commands`,
+`words_read_a_shell_fence_as_prose`; `keymap::a_command_is_copied_and_enter_opens_nothing`;
+`a_command_in_a_note_is_copied_from_the_reader_and_the_links_dialog` (app);
+`transcript_commands_are_selected_marked_and_copied` (ui). Golden `editor_reader_link_120x30`:
+the frame's edge says `c copy` where `w unwrap` was (the footer keeps both).

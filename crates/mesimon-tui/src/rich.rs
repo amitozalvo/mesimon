@@ -237,7 +237,7 @@ fn plain_blocks(bs: &[Block], out: &mut String) {
                 }
                 push_plain(out, rs);
             }
-            Block::Code { rows } => out.push_str(&rows.join("\n")),
+            Block::Code { rows, .. } => out.push_str(&rows.join("\n")),
             Block::Table { head, rows, .. } => {
                 for row in std::iter::once(head).chain(rows) {
                     for cell in row {
@@ -314,9 +314,12 @@ enum Block {
         task: Option<bool>,
         runs: Vec<Run>,
     },
-    /// A fenced block. The info string is dropped: naming the language costs
-    /// a whole row of a 15-row zone and the slab already says "this is code".
+    /// A fenced block. The info string is not drawn: naming the language
+    /// costs a whole row of a 15-row zone and the slab already says "this
+    /// is code". Its first word is kept for a shell fence's commands
+    /// (T-1141), which the transcript and the reader select.
     Code {
+        info: String,
         rows: Vec<String>,
     },
     /// A pipe table: a header row, the delimiter row under it (dropped — with
@@ -360,7 +363,7 @@ fn blocks(
 ) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut pending = Pending::None;
-    let mut fence: Option<(char, usize, Vec<String>)> = None;
+    let mut fence: Option<(char, usize, String, Vec<String>)> = None;
 
     // Indexed, because a table is only a table if the line under its header
     // is a delimiter row.
@@ -370,19 +373,18 @@ fn blocks(
         let raw = lines[at];
         at += 1;
         // Inside a fence every line is verbatim until the closing marker.
-        if let Some((ch, len, rows)) = fence.as_mut() {
-            let t = raw.trim();
-            if t.starts_with(&ch.to_string().repeat(*len)) && t.chars().all(|c| c == *ch) {
-                let (_, _, rows) = fence.take().expect("fence open");
-                out.push(Block::Code { rows });
+        if let Some((ch, len, _, rows)) = fence.as_mut() {
+            if mesimon_core::links::fence_closes(raw, *ch, *len) {
+                let (_, _, info, rows) = fence.take().expect("fence open");
+                out.push(Block::Code { info, rows });
             } else {
                 rows.push(raw.to_string());
             }
             continue;
         }
-        if let Some((ch, len)) = fence_open(raw) {
+        if let Some((ch, len, info)) = mesimon_core::links::fence_open(raw) {
             flush(&mut pending, &mut out, newline, selected);
-            fence = Some((ch, len, Vec::new()));
+            fence = Some((ch, len, info.to_string(), Vec::new()));
             continue;
         }
         let trimmed = raw.trim_end();
@@ -419,7 +421,10 @@ fn blocks(
             let mut rows = Vec::new();
             // The table runs to the first line that cannot be a row of it.
             while let Some(next) = lines.get(at).map(|l| l.trim()) {
-                if next.is_empty() || !next.contains('|') || fence_open(next).is_some() {
+                if next.is_empty()
+                    || !next.contains('|')
+                    || mesimon_core::links::fence_open(next).is_some()
+                {
                     break;
                 }
                 rows.push(row(next));
@@ -472,8 +477,8 @@ fn blocks(
             }
         }
     }
-    if let Some((_, _, rows)) = fence.take() {
-        out.push(Block::Code { rows }); // unterminated fence: show it anyway
+    if let Some((_, _, info, rows)) = fence.take() {
+        out.push(Block::Code { info, rows }); // unterminated fence: show it anyway
     }
     flush(&mut pending, &mut out, newline, selected);
     out
@@ -559,17 +564,6 @@ fn alert(line: &str) -> Option<&'static str> {
     ["Note", "Tip", "Important", "Warning", "Caution"]
         .into_iter()
         .find(|k| k.eq_ignore_ascii_case(kind))
-}
-
-fn fence_open(line: &str) -> Option<(char, usize)> {
-    let t = line.trim_start();
-    for ch in ['`', '~'] {
-        let n = t.chars().take_while(|c| *c == ch).count();
-        if n >= 3 {
-            return Some((ch, n));
-        }
-    }
-    None
 }
 
 fn is_break(body: &str) -> bool {
@@ -738,7 +732,30 @@ fn literal(
     if selected.is_none() {
         return vec![Span::styled(crate::text::truncate(text, width), style)];
     }
-    let mut spans = mark_literal(vec![Span::styled(text.to_string(), style)], selected);
+    let spans = mark_literal(vec![Span::styled(text.to_string(), style)], selected);
+    fit(spans, text, width, style)
+}
+
+/// A row of the selected shell command (T-1141): its indent and prompt as
+/// written, the rest marked, then clipped as every literal row is.
+fn command_row(text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let body = text.trim_start();
+    let lead = text.len() - body.len()
+        + ["$ ", "% ", "> "].iter().find(|p| body.starts_with(**p)).map_or(0, |p| p.len());
+    let (lead, rest) = text.split_at(lead);
+    let spans = vec![
+        Span::styled(lead.to_string(), style),
+        Span::styled(rest.to_string(), style.add_modifier(Modifier::UNDERLINED)),
+    ];
+    fit(spans, text, width, style)
+}
+
+/// `text`'s styled spans in `width`: whole when they fit, else clipped with
+/// the `~` cut, which is itself marked when a marked span runs past it.
+fn fit(mut spans: Vec<Span<'static>>, text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
     if text.width() > width {
         let budget = width - 1;
         let mut end = 0;
@@ -1293,7 +1310,7 @@ impl Out<'_> {
                     ];
                     self.flow(&runs, lead, hang, Role::Body);
                 }
-                Block::Code { rows } => self.slab(&rows),
+                Block::Code { info, rows } => self.slab(&info, &rows),
                 Block::Table { head, align, rows } => self.table(&head, &align, &rows),
                 Block::Raw { text } => self.raw(&text),
             }
@@ -1347,16 +1364,41 @@ impl Out<'_> {
     /// (L1), no reflow — code that rewraps is code that lies. The slab is
     /// shrink-wrapped to its widest row, so it reads as a block of code and
     /// not as a band across the page.
-    fn slab(&mut self, rows: &[String]) {
+    ///
+    /// A shell fence's lines are its commands (T-1141), not prose: the
+    /// selected command's rows are marked, past their prompt, and no other
+    /// target is looked for in them.
+    fn slab(&mut self, info: &str, rows: &[String]) {
         let ink = Style::default().fg(self.paint.ink.dim1);
         let dim2 = self.paint.dim2();
         let inner =
             rows.iter().map(|r| r.width()).max().unwrap_or(0).min(self.width.saturating_sub(3));
-        for r in rows {
+        let shell = mesimon_core::links::is_shell(info);
+        let marked = match self.selected {
+            Some(mesimon_core::links::Found::Command(c)) if shell => {
+                let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+                mesimon_core::links::commands(info, &rows)
+                    .into_iter()
+                    .filter(|(text, _)| text == c)
+                    .map(|(_, at)| at)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let selected = if shell { None } else { self.selected };
+        for (i, r) in rows.iter().enumerate() {
+            let command = marked.iter().any(|at| at.contains(&i));
+            let row = |style: Style| {
+                if command {
+                    command_row(r, inner, style)
+                } else {
+                    literal(r, inner, style, selected)
+                }
+            };
             let spans = match self.paint.code_bg {
                 Some(bg) => {
                     let style = ink.bg(bg);
-                    let body = literal(r, inner, style, self.selected);
+                    let body = row(style);
                     let pad = inner.saturating_sub(crate::ui::spans_width(&body));
                     let mut spans = vec![Span::raw(" "), Span::styled(" ", style)];
                     spans.extend(body);
@@ -1366,7 +1408,7 @@ impl Out<'_> {
                 // Nothing to paint with: the inset carries the block.
                 None => {
                     let mut spans = vec![Span::styled("   ", dim2)];
-                    spans.extend(literal(r, inner, dim2, self.selected));
+                    spans.extend(row(dim2));
                     spans
                 }
             };

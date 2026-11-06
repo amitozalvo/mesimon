@@ -293,7 +293,7 @@ fn encode(image: arboard::ImageData<'_>) -> Result<Vec<u8>> {
 pub fn unpack(text: &str) -> (String, Vec<DraftImage>) {
     let mut body = text.to_string();
     let mut images = Vec::new();
-    for link in mesimon_core::links::extract(text) {
+    for link in mesimon_core::links::words(text) {
         let mesimon_core::links::Found::Attachment(id) = link.target else { continue };
         let Some(label) = link.label else { continue };
         let Some(number) = label.strip_prefix("Image #").and_then(|n| n.parse().ok()) else {
