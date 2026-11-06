@@ -23,8 +23,8 @@
           │                                                                    │
           │  Tests                                                             │
           │  • ground_reply_after_first_frame replays a reply 90 ms late.~     │
-          ╰───────────────────────────────── { } message ∙ jk scroll ∙ c copy ─╯
+          ╰────────────────────── { } message ∙ tab link ∙ jk scroll ∙ c copy ─╯
 
 
 
- TRANSCRIPT  { } message ∙ jk scroll ∙ c copy ∙ esc close                                                        ? keys
+ TRANSCRIPT  { } message ∙ tab link ∙ jk scroll ∙ c copy ∙ esc close                                             ? keys

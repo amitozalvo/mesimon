@@ -695,6 +695,27 @@ fn target_runs(text: &str, emph: Emph, selected: Option<&mesimon_core::links::Fo
     out
 }
 
+/// A code span that is a command (T-1141): marked past its prompt when it
+/// is the selected one, and no other target looked for in it.
+fn command_runs(
+    text: &str,
+    command: &str,
+    emph: Emph,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Run> {
+    let chosen = matches!(selected, Some(mesimon_core::links::Found::Command(c)) if c == command);
+    let lead = text.len() - command.len();
+    if !chosen {
+        return vec![Run { text: text.into(), emph }];
+    }
+    let mut out = Vec::new();
+    if lead > 0 {
+        out.push(Run { text: text[..lead].into(), emph });
+    }
+    out.push(Run { text: text[lead..].into(), emph: Emph { selected: true, ..emph } });
+    out
+}
+
 fn mark_literal(
     spans: Vec<Span<'static>>,
     selected: Option<&mesimon_core::links::Found>,
@@ -736,15 +757,17 @@ fn literal(
     fit(spans, text, width, style)
 }
 
-/// A row of the selected shell command (T-1141): its indent and prompt as
-/// written, the rest marked, then clipped as every literal row is.
-fn command_row(text: &str, width: usize, style: Style) -> Vec<Span<'static>> {
+/// A row of the selected command (T-1141): its indent and prompt as
+/// written (`! ` one only in an untagged fence, `bang`), the rest marked,
+/// then clipped as every literal row is.
+fn command_row(text: &str, width: usize, style: Style, bang: bool) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
     let body = text.trim_start();
+    let prompts: &[&str] = if bang { &["$ ", "% ", "> ", "! "] } else { &["$ ", "% ", "> "] };
     let lead = text.len() - body.len()
-        + ["$ ", "% ", "> "].iter().find(|p| body.starts_with(**p)).map_or(0, |p| p.len());
+        + prompts.iter().find(|p| body.starts_with(**p)).map_or(0, |p| p.len());
     let (lead, rest) = text.split_at(lead);
     let spans = vec![
         Span::styled(lead.to_string(), style),
@@ -878,7 +901,10 @@ fn inline(s: &str, selected: Option<&mesimon_core::links::Found>) -> Vec<Run> {
                     push_run(&mut out, &mut cur, emph, selected);
                     let mut e = emph;
                     e.code = true;
-                    let mut runs = target_runs(&text, e, selected);
+                    let mut runs = match mesimon_core::links::inline_command(&text) {
+                        Some(command) => command_runs(&text, &command, e, selected),
+                        None => target_runs(&text, e, selected),
+                    };
                     if let Some(first) = runs.first_mut() {
                         first.emph.code_start = true;
                     }
@@ -1370,32 +1396,33 @@ impl Out<'_> {
     /// shrink-wrapped to its widest row, so it reads as a block of code and
     /// not as a band across the page.
     ///
-    /// A shell fence's lines are its commands (T-1141), not prose: the
-    /// selected command's rows are marked, past their prompt, and no other
-    /// target is looked for in them.
+    /// A shell fence's lines are its commands (T-1141), not prose, and so
+    /// are an untagged fence's command lines: the selected command's rows
+    /// are marked, past their prompt, and no other target is looked for in
+    /// a command's rows (in a shell fence, in any row).
     fn slab(&mut self, info: &str, rows: &[String]) {
+        use mesimon_core::links::{commands, holds_commands, is_shell, Found};
         let ink = Style::default().fg(self.paint.ink.dim1);
         let dim2 = self.paint.dim2();
         let inner =
             rows.iter().map(|r| r.width()).max().unwrap_or(0).min(self.width.saturating_sub(3));
-        let shell = mesimon_core::links::is_shell(info);
-        let marked = match self.selected {
-            Some(mesimon_core::links::Found::Command(c)) if shell => {
-                let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
-                mesimon_core::links::commands(info, &rows)
-                    .into_iter()
-                    .filter(|(text, _)| text == c)
-                    .map(|(_, at)| at)
-                    .collect()
-            }
-            _ => Vec::new(),
+        let loose = info.is_empty();
+        let held = if holds_commands(info) {
+            let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+            commands(info, &rows)
+        } else {
+            Vec::new()
         };
-        let selected = if shell { None } else { self.selected };
+        let chosen = |text: &String| matches!(self.selected, Some(Found::Command(c)) if c == text);
+        let marked: Vec<_> =
+            held.iter().filter(|(text, _)| chosen(text)).map(|(_, at)| at.clone()).collect();
         for (i, r) in rows.iter().enumerate() {
             let command = marked.iter().any(|at| at.contains(&i));
+            let held_row = is_shell(info) || held.iter().any(|(_, at)| at.contains(&i));
+            let selected = if held_row { None } else { self.selected };
             let row = |style: Style| {
                 if command {
-                    command_row(r, inner, style)
+                    command_row(r, inner, style, loose)
                 } else {
                     literal(r, inner, style, selected)
                 }

@@ -68,9 +68,11 @@ pub fn looks_text(head: &[u8]) -> bool {
 
 /// Every link in `body`, document order, deduplicated by target (the first
 /// occurrence keeps its label). A shell fence's lines are its commands
-/// (`commands`) and nothing else; every other line is prose, a fence of
+/// (`commands`) and nothing else; an untagged fence's command lines are
+/// commands and its other lines prose; every other line is prose, a fence of
 /// another language included. In prose a `[label](target)` is one link,
-/// never a label and a bare target, and every other whitespace-delimited
+/// never a label and a bare target, an inline code span that is a command
+/// (`inline_command`) is that command, and every other whitespace-delimited
 /// word is read on its own.
 pub fn extract(body: &str) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
@@ -93,11 +95,28 @@ pub fn extract(body: &str) -> Vec<Link> {
             at += 1;
         }
         let rows = &lines[start..at];
-        if is_shell(info) {
-            scan(&prose, &mut push);
-            prose.clear();
-            for (command, _) in commands(info, rows) {
+        if holds_commands(info) {
+            // An untagged fence's other rows are prose; a shell fence's are
+            // its comments and output.
+            let loose = info.is_empty();
+            let mut row = 0;
+            for (command, span) in commands(info, rows) {
+                if loose {
+                    for r in &rows[row..span.start] {
+                        prose.push_str(r);
+                        prose.push('\n');
+                    }
+                }
+                scan(&prose, true, &mut push);
+                prose.clear();
                 push(Link { label: None, target: Found::Command(command) });
+                row = span.end;
+            }
+            if loose {
+                for r in &rows[row..] {
+                    prose.push_str(r);
+                    prose.push('\n');
+                }
             }
         } else {
             for row in rows {
@@ -107,16 +126,16 @@ pub fn extract(body: &str) -> Vec<Link> {
         }
         at += 1; // the closing line, if there is one
     }
-    scan(&prose, &mut push);
+    scan(&prose, true, &mut push);
     out
 }
 
-/// Every target `body` names in its words, a shell fence's rows read as
-/// prose too: `extract` before T-1141. What a picture's reference check
+/// Every target `body` names in its words, every fence's rows and code span
+/// read as prose too: `extract` before T-1141. What a picture's reference check
 /// reads, so a picture named anywhere in the words stays named.
 pub fn words(body: &str) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
-    scan(body, &mut |link: Link| {
+    scan(body, false, &mut |link: Link| {
         if !out.iter().any(|l| l.target == link.target) {
             out.push(link);
         }
@@ -124,13 +143,33 @@ pub fn words(body: &str) -> Vec<Link> {
     out
 }
 
-/// The prose walk: markdown links and bare words, in order.
-fn scan(body: &str, push: &mut impl FnMut(Link)) {
+/// The prose walk: markdown links and bare words, in order, and with
+/// `spans` a code span that is a command (`inline_command`) as that command.
+fn scan(body: &str, spans: bool, push: &mut impl FnMut(Link)) {
     let chars: Vec<char> = body.chars().collect();
     let mut word = String::new();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        if spans && c == '`' {
+            let ticks = chars[i..].iter().take_while(|x| **x == '`').count();
+            let command = span_close(&chars, i + ticks, ticks).and_then(|close| {
+                let text: String = chars[i + ticks..close].iter().collect();
+                inline_command(&text).map(|command| (command, close + ticks))
+            });
+            if let Some((command, end)) = command {
+                if let Some(target) = classify(&word) {
+                    push(Link { label: None, target });
+                }
+                word.clear();
+                push(Link { label: None, target: Found::Command(command) });
+                i = end;
+            } else {
+                word.extend(&chars[i..i + ticks]);
+                i += ticks;
+            }
+            continue;
+        }
         if c == '[' || (c == '!' && chars.get(i + 1) == Some(&'[')) {
             let open = if c == '!' { i + 1 } else { i };
             if let Some((link, end)) = markdown_link(&chars, open) {
@@ -160,6 +199,20 @@ fn scan(body: &str, push: &mut impl FnMut(Link)) {
     }
 }
 
+/// Where a code span opened by `len` backticks closes: the next run of
+/// exactly `len` on the same line (rich.rs's rule, held to the line).
+fn span_close(chars: &[char], from: usize, len: usize) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() && chars[i] != '\n' {
+        let n = chars[i..].iter().take_while(|x| **x == '`').count();
+        if n == len {
+            return Some(i);
+        }
+        i += n.max(1);
+    }
+    None
+}
+
 /// A fence's opening line: three or more backticks or tildes, indented or
 /// not, and the first word of its info string (`bash` of ```` ```bash ````,
 /// empty when it names none).
@@ -184,32 +237,43 @@ pub fn fence_closes(line: &str, ch: char, len: usize) -> bool {
 }
 
 /// The info words that say a fence holds shell (T-1141). An untagged fence
-/// is not one: it holds output and trees as often as commands.
+/// is not one: it holds output and trees as often as commands, so only its
+/// command lines are commands (`commands`).
 pub fn is_shell(info: &str) -> bool {
     ["sh", "bash", "zsh", "shell", "console", "shell-session", "shellsession", "fish", "ksh"]
         .iter()
         .any(|w| w.eq_ignore_ascii_case(info))
 }
 
-/// A shell fence's commands, each with the rows it spans. One command per
-/// line; a blank line and a `#` comment are none; a leading `$ ` or `% `
-/// prompt comes off. A line ending in `\`, `|`, `&&` or `||` runs on into
-/// the next, and a heredoc (`<<EOF`) runs to its terminator, so the command
+/// Does a fence tagged `info` hold commands: a shell fence, or an untagged
+/// one (its command lines only)?
+pub fn holds_commands(info: &str) -> bool {
+    info.is_empty() || is_shell(info)
+}
+
+/// A fence's commands, each with the rows it spans. One command per line; a
+/// blank line and a `#` comment are none; a leading `$ ` or `% ` prompt
+/// comes off. A line ending in `\`, `|`, `&&` or `||` runs on into the
+/// next, and a heredoc (`<<EOF`) runs to its terminator, so the command
 /// keeps every row it needs, joined by `\n`. In a `console` fence only a
-/// prompted line starts a command: the rest is the session's output.
+/// prompted line starts a command: the rest is the session's output. In an
+/// untagged fence (`info` empty) a line starts one when it is prompted, the
+/// agent's `! ` included, or led by a known program (`led_by_program`).
 pub fn commands(info: &str, rows: &[&str]) -> Vec<(String, std::ops::Range<usize>)> {
     let session = ["console", "shell-session", "shellsession"]
         .iter()
         .any(|w| w.eq_ignore_ascii_case(info));
+    let loose = info.is_empty();
     let mut out = Vec::new();
     let mut at = 0;
     while at < rows.len() {
         let start = at;
         let line = rows[at].trim();
         at += 1;
-        let line = match prompt_off(line) {
+        let line = match prompt_off(line, loose) {
             Some(rest) => rest,
             None if session => continue,
+            None if loose && !led_by_program(line) => continue,
             None => line,
         };
         if line.is_empty() || line.starts_with('#') {
@@ -245,12 +309,57 @@ pub fn commands(info: &str, rows: &[&str]) -> Vec<(String, std::ops::Range<usize
     out
 }
 
-/// `$ cmd` or `% cmd` → `cmd`; a bare `$` is an empty command.
-fn prompt_off(line: &str) -> Option<&str> {
+/// `$ cmd` or `% cmd` → `cmd`, and with `bang` Claude Code's `! cmd` too
+/// (in a shell fence `!` is the shell's own); a bare `$` is an empty
+/// command.
+pub fn prompt_off(line: &str, bang: bool) -> Option<&str> {
     if line == "$" || line == "%" {
         return Some("");
     }
-    line.strip_prefix("$ ").or_else(|| line.strip_prefix("% ")).map(str::trim_start)
+    line.strip_prefix("$ ")
+        .or_else(|| line.strip_prefix("% "))
+        .or_else(|| line.strip_prefix("! ").filter(|_| bang))
+        .map(str::trim_start)
+}
+
+/// The programs whose name leading a line or a code span outside a shell
+/// fence makes it a command (T-1141).
+const PROGRAMS: &[&str] = &[
+    "apt", "apt-get", "aws", "bash", "brew", "bun", "cargo", "cat", "cd", "chmod", "chown",
+    "claude", "cmake", "code", "codex", "cp", "curl", "deno", "df", "diff", "docker", "du",
+    "echo", "env", "export", "fd", "find", "gcloud", "gh", "git", "go", "grep", "head", "helm",
+    "jq", "just", "kill", "kubectl", "less", "ln", "ls", "make", "man", "mesimon", "mkdir",
+    "mv", "node", "npm", "npx", "nvim", "open", "pip", "pip3", "pkill", "pnpm", "printf", "ps",
+    "psql", "python", "python3", "rg", "rm", "rmdir", "rsync", "rustc", "rustup", "scp", "sed",
+    "sh", "source", "sqlite3", "ssh", "sudo", "tail", "tar", "terraform", "tmux", "touch", "uv",
+    "vim", "wget", "which", "xdg-open", "yarn", "zip", "unzip", "zsh", "awk",
+];
+
+/// Is `line` led by a known program, past any `NAME=value` assignments?
+pub fn led_by_program(line: &str) -> bool {
+    let assignment = |w: &str| {
+        w.split_once('=').is_some_and(|(name, _)| {
+            name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    line.split_whitespace().find(|w| !assignment(w)).is_some_and(|w| PROGRAMS.contains(&w))
+}
+
+/// The command an inline code span holds, if it holds one: a prompted span
+/// (`$ `, `% `, `! `) past its prompt, or a span led by a known program and
+/// given an argument (`cat ~/a.txt`, never a bare `git`).
+pub fn inline_command(span: &str) -> Option<String> {
+    let s = span.trim();
+    if s.contains('\n') {
+        return None;
+    }
+    let command = match prompt_off(s, true) {
+        Some(rest) => rest,
+        None if led_by_program(s) && s.split_whitespace().count() > 1 => s,
+        None => return None,
+    };
+    (!command.is_empty()).then(|| command.to_string())
 }
 
 /// Does the shell read on past this line?
@@ -538,10 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn only_a_shell_fence_holds_commands() {
-        // Untagged and other languages stay prose: their paths are paths.
-        assert_eq!(targets("```\ncargo ut\nsrc/a.rs\n```"), vec![path("src/a.rs", None)]);
-        assert_eq!(targets("```rust\nlet x = 1;\n```"), vec![]);
+    fn a_shell_fence_holds_commands_and_another_language_none() {
+        assert_eq!(targets("```rust\nlet x = 1;\ncat(a, b);\n```"), vec![]);
         // A shell fence's words are its commands, not paths; prose around
         // it keeps its links, in document order; an unterminated fence runs
         // to the end, as the draw shows it.
@@ -558,6 +665,48 @@ mod tests {
         assert_eq!(targets("````md\n```bash\nmake\n```\n````"), vec![]);
         assert_eq!(fence_open("```bash title=x"), Some(('`', 3, "bash")));
         assert!(fence_closes("  ````  ", '`', 3) && !fence_closes("``", '`', 3));
+    }
+
+    #[test]
+    fn an_untagged_fence_holds_its_prompted_and_program_led_lines() {
+        // The agent's `! ` comes off; the line's path is the command's.
+        let body = "Run:\n\n```\n! bash /tmp/s/reset.sh\n```\n";
+        assert_eq!(targets(body), vec![command("bash /tmp/s/reset.sh")]);
+        // Its other rows are prose, so a tree's path is a path; a program's
+        // output line (`cat: x`) and code are not commands.
+        let body = "```\nsrc/a.rs\nRUST_LOG=1 cargo ut \\\n  -q\ncat: x: No such file\n$ make\nfoo(bar)\n```";
+        assert_eq!(
+            targets(body),
+            vec![path("src/a.rs", None), command("RUST_LOG=1 cargo ut \\\n-q"), command("make")]
+        );
+        // In a shell fence `!` is the shell's own.
+        assert_eq!(targets("```sh\n! grep -q x a\n```"), vec![command("! grep -q x a")]);
+    }
+
+    #[test]
+    fn a_code_span_is_a_command_when_prompted_or_led_by_a_program() {
+        let body = "Then `cat ~/.cache/s/owner.pw`, type it in as `a@b.test`, run `$ make up`.";
+        assert_eq!(targets(body), vec![command("cat ~/.cache/s/owner.pw"), command("make up")]);
+        // A bare program, an identifier, a path: not commands; a path stays a path.
+        assert_eq!(
+            targets("use `git`, call `find(x)`, edit `src/a.rs:3` or ``ls `x` ``"),
+            vec![path("src/a.rs", Some(3)), command("ls `x`")]
+        );
+        // Its order is the document's, and an unclosed tick is a word's.
+        assert_eq!(
+            targets("T-1 `git status` T-2 `oops docs/a.md"),
+            vec![
+                Found::Ticket("T-1".into()),
+                command("git status"),
+                Found::Ticket("T-2".into()),
+                path("docs/a.md", None),
+            ]
+        );
+        // `words` reads a span as words.
+        assert_eq!(
+            words("`cat ~/a.txt`").into_iter().map(|l| l.target).collect::<Vec<_>>(),
+            vec![path("~/a.txt", None)]
+        );
     }
 
     #[test]

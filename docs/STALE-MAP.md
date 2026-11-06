@@ -41625,3 +41625,33 @@ the dialog's title covers the card's row), `editor::tests::the_dialog_snaps_to_c
 `editor_describe_120x30`, `editor_note_ring_120x30`, `editor_wrapped_description_120x30` now show
 the IN PROGRESS card whole beside a dialog over REVIEW + DONE. Run: `cargo ut`, tui clippy. No
 e2e reaches this draw.
+
+## Untagged fences and code spans hold commands too (T-1141, 2026-11-06, widened)
+
+The author's report on the shipped rule: "missed \"bash /\" on the first, the second wasn't
+offered by tab at all" — an agent's ```` ``` ```` untagged fence holding `! bash /private/tmp/…sh`
+(only the path was a link) and an inline `` `cat ~/.cache/…pw` `` (nothing). Asked again, the
+author picked **prompt or known program** over every untagged-fence line (trees and output would
+be commands) and prompted lines only (misses the span).
+
+- **Untagged fence** (`links::holds_commands`, `commands` with `info` empty): a line starts a
+  command when prompted (`$ `, `% `, and Claude Code's `! `, which comes off) or led by a
+  `PROGRAMS` name past `NAME=value` words (`led_by_program`); continuations as in a shell fence.
+  Its other rows stay prose, so a tree's path is still a path. In a shell fence `!` stays: it
+  is the shell's negation there.
+- **Code span** (`links::inline_command`, read in `scan` behind its `spans` flag; `words` passes
+  false so the picture check is unchanged): prompted, or program-led with at least one argument,
+  so `git` or `find(x)` alone is not one. One line only (core's `span_close`; rich's
+  `find_ticks` spans the paragraph — a multi-line span is no command).
+- **Draw:** `rich::command_runs` marks a selected span past its prompt; `slab` marks an untagged
+  fence's command rows (`command_row`'s `bang` takes `! ` as a prompt) and still marks paths in
+  its other rows.
+- The program list is a fixed ~90 names, not a `PATH` probe: core is pure, and the agent may
+  name a program this machine lacks.
+
+Tests: `an_untagged_fence_holds_its_prompted_and_program_led_lines`,
+`a_code_span_is_a_command_when_prompted_or_led_by_a_program` (core, the old
+`only_a_shell_fence_holds_commands` renamed and its untagged case moved);
+`an_agents_bang_line_and_a_code_span_are_commands_too` (ui, the reported message's shape).
+Golden `transcript_dialog_120x30`: its fixture's untagged ```` ``` ```` holds `$ cargo test …`, so
+the frame now offers `tab link`.

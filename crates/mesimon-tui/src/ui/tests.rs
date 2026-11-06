@@ -7323,6 +7323,31 @@ fn transcript_commands_are_selected_marked_and_copied() {
 }
 
 #[test]
+fn an_agents_bang_line_and_a_code_span_are_commands_too() {
+    // The shape that was missed: `! ` in an untagged fence, then a command
+    // in a code span beside an email in another.
+    let copied = || crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+    let text = "Run:\n\n```\n! bash /tmp/s/reset.sh\n```\n\nThen `cat ~/.cache/s/owner.pw`, type it in as `a@b.test`.";
+    let (mut app, dir) = linked_transcript("loose-commands", &[text], false);
+    press(&mut app, '}');
+    next_link(&mut app);
+    let buf = cells(&app, 120, 30);
+    transcript_mark(&buf, "reset.sh", "bash /tmp/s/reset.sh", true);
+    transcript_mark(&buf, "reset.sh", "!", false);
+    transcript_mark(&buf, "owner.pw", "cat ~/.cache/s/owner.pw", false);
+    press(&mut app, 'c');
+    assert_eq!(copied().as_deref(), Some("bash /tmp/s/reset.sh"));
+    next_link(&mut app);
+    let buf = cells(&app, 120, 30);
+    transcript_mark(&buf, "owner.pw", "cat ~/.cache/s/owner.pw", true);
+    transcript_mark(&buf, "reset.sh", "bash /tmp/s/reset.sh", false);
+    press(&mut app, 'c');
+    assert_eq!(copied().as_deref(), Some("cat ~/.cache/s/owner.pw"));
+    assert_eq!(app.transcript_links().len(), 2, "the email is no link");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);
     press(&mut app, '}');

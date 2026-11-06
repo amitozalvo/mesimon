@@ -330,8 +330,10 @@ Notes are markdown.
 
 `ctrl-k`, on the board or on a ticket page, lists every link in the ticket's notes and in its
 agent's latest reply: web addresses, files in the ticket's worktree or checkout (with a line
-number when one is written), other tickets, pasted pictures, and the commands in a shell code
-block (` ```bash `, `sh`, `zsh`, `shell` or `console`; one per line, the `$ ` prompt left off).
+number when one is written), other tickets, pasted pictures, and commands: every line of a shell
+code block (` ```bash `, `sh`, `zsh`, `shell` or `console`; the `$ ` prompt left off), a line of
+an untagged code block that starts with a prompt (`$ `, `! `) or a program's name (`cat`, `git`,
+`cargo`…), and inline code that does the same, such as `` `cat ~/notes.txt` ``.
 `enter` opens one: a web address in your browser, a text file in your editor, another ticket by
 moving to it. `c` copies it instead. A command is only copied, never run, and `enter` does
 nothing on one. The transcript's `tab` walks the same commands, and there `c` copies the one
