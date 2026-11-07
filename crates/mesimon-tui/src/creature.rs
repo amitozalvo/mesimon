@@ -1170,17 +1170,19 @@ pub(crate) struct Stage {
 pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Option<Stage> {
     // The ש (T-1156): the intro's letter or its morph, on the body's own
     // pixels, so its stage is the shin's to the cell.
+    // A size with no letter (Large) plays the poses instead.
     if let Some((_, t, dx, lift)) = letter_beat(anim, ms) {
-        let ink = theme.creature_ink(false)?;
-        let px = crate::intro::letter_pixels(size, t, dx)?;
-        let b = Body::get(size);
-        let pic = Picture { w: b.w, h: b.h, px, lift, marks: Vec::new() };
-        let mut st = stage(&pic, &ink, theme.block_gaps);
-        st.body = b.w as u16;
-        return Some(st);
+        if let Some(px) = crate::intro::letter_pixels(size, t, dx) {
+            let ink = theme.creature_ink(false)?;
+            let b = Body::get(size);
+            let pic = Picture { w: b.w, h: b.h, px, lift, marks: Vec::new() };
+            let mut st = stage(&pic, &ink, theme.block_gaps);
+            st.body = b.w as u16;
+            return Some(st);
+        }
     }
     // The waking shin's poses start where its morph ends.
-    let ms = if anim == Anim::Waking { ms - beats_ms(MORPH) } else { ms };
+    let ms = if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
     let frame = frame_at(size, anim, ms);
     let ink = theme.creature_ink(frame.faded)?;
     let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink, theme.block_gaps);

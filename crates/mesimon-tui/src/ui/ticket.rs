@@ -1344,10 +1344,13 @@ fn draw_preview(
             // box. Open, the pane's own rules frame the field as before.
             let closed = !asking_here(app, rec.ticket);
             let boxed = shot.page_box();
+            // The rules at the rows' drawn width: a capture from before a
+            // resize is wider or narrower than the zone until the next.
+            let box_w = shot.cols.min(area.width) as usize;
             raw.extend(view[live_from..].iter().map(|&i| {
                 let row = &shot.rows[i];
                 match boxed {
-                    Some(b) if closed => closed_box_row(app, rec, shot, b, i)
+                    Some(b) if closed => closed_box_row(app, rec, shot, b, i, box_w)
                         .unwrap_or_else(|| live_line(theme, row)),
                     _ => live_line(theme, row),
                 }
@@ -1468,6 +1471,12 @@ fn draw_preview(
             let words_x = (area.x + FOOT_WORDS - 1).min(right - 1);
             return (h - 2, Some(Composer { x: area.x, words_x, right, bare: false }));
         }
+    }
+    // A seat or a launch too short for its box (T-1156): the zone was
+    // given the field's rows as well (`hybrid`), so the words give the
+    // field's two back, as a zone that is not hybrid never had them.
+    if foot.is_some() && lines.len() + 2 > h {
+        lines.truncate(h.saturating_sub(2).max(1));
     }
     // How many rows the zone wrote, for the ask field to hang under (T-476)
     // — never more than the zone has, which is what pins the field at the
@@ -1938,16 +1947,32 @@ fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'stati
             rule,
         ];
     }
-    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
     let lead = " ".repeat(FOOT_WORDS as usize);
+    let mut bottom = vec![Span::raw("  ")];
+    bottom.extend(tail_rule(theme, rule_w, None));
     vec![
         closed_rule(app, 2, rule_w, None),
         Line::from(vec![
             Span::raw(lead.clone()),
             Span::styled(truncate(words, width.saturating_sub(lead.len() + 2)), theme.dim3()),
         ]),
-        Line::from(vec![Span::raw("  "), Span::styled(dash.repeat(rule_w), fade)]),
+        Line::from(bottom),
     ]
+}
+
+/// A closed box's rule gone out toward the page ground (T-1156), `width`
+/// wide, with `tail` near its right end where one is given and fits:
+/// ` words ` then three more dashes.
+fn tail_rule(theme: &crate::theme::Theme, width: usize, tail: Option<&str>) -> Vec<Span<'static>> {
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    let tail = tail.map(|t| format!(" {t} ")).filter(|t| t.width() + 5 <= width);
+    let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
+    let mut spans = vec![Span::styled("-".repeat(width - tail_w), fade)];
+    if let Some(t) = tail {
+        spans.push(Span::styled(t, theme.dim3()));
+        spans.push(Span::styled("---", fade));
+    }
+    spans
 }
 
 /// A closed box's top rule (T-1156): `lead` blank columns, then `width`
@@ -1988,13 +2013,7 @@ fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Lin
             used = w;
         }
     }
-    let tail = right.map(|r| format!(" {r} ")).filter(|r| used + r.width() + 5 <= width);
-    let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
-    spans.push(Span::styled(dash.repeat(width - used - tail_w), fade));
-    if let Some(t) = tail {
-        spans.push(Span::styled(t, theme.dim3()));
-        spans.push(Span::styled(dash.repeat(3), fade));
-    }
+    spans.extend(tail_rule(theme, width - used, right));
     Line::from(spans)
 }
 
@@ -2389,10 +2408,9 @@ fn closed_box_row(
     shot: &live::Shot,
     (top, prompt, bottom): (usize, usize, usize),
     i: usize,
+    width: usize,
 ) -> Option<Line<'static>> {
     let theme = &app.theme;
-    let width = shot.cols as usize;
-    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
     if i == top && top != prompt {
         let right = glyphs::is_working(rec).then(|| {
             let who = if rec.kind == SessionKind::Codex { "codex" } else { "claude" };
@@ -2401,14 +2419,7 @@ fn closed_box_row(
         return Some(closed_rule(app, 0, width, right.as_deref()));
     }
     if i == bottom {
-        let tail = facts(app, rec).map(|f| format!(" {f} ")).filter(|t| t.width() + 6 <= width);
-        let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
-        let mut spans = vec![Span::styled("-".repeat(width - tail_w), fade)];
-        if let Some(t) = tail {
-            spans.push(Span::styled(t, theme.dim3()));
-            spans.push(Span::styled("---", fade));
-        }
-        return Some(Line::from(spans));
+        return Some(Line::from(tail_rule(theme, width, facts(app, rec).as_deref())));
     }
     if !(prompt..bottom).contains(&i) {
         return None;
@@ -2474,6 +2485,10 @@ fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Option<String> 
 }
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {
+    // A rule the page drew (Codex's frame, T-1156) has no runs of its own.
+    if live::is_page_rule(row) {
+        return Line::from(Span::styled(row.text.clone(), theme.dim2()));
+    }
     Line::from(
         row.runs
             .iter()

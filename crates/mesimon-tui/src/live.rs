@@ -124,10 +124,8 @@ impl Shot {
     /// agent draws it where the input starts and parks the cursor before it
     /// (the daemon's `composer::read` reads the same). `None` with no box.
     pub(crate) fn box_holds(&self) -> Option<bool> {
-        let (top, bottom) = self.box_rows()?;
-        let p = self.prompt_row()?;
+        let (p, bottom, col) = self.box_words()?;
         let row = &self.rows[p].text;
-        let col = words_col(row);
         let first = row.chars().skip(col).collect::<String>();
         let wrapped = (p + 1..bottom).any(|i| !self.rows[i].blank());
         if first.trim_matches([' ', '\u{a0}']).is_empty() && !wrapped {
@@ -139,8 +137,15 @@ impl Shot {
         let parked = self
             .cursor
             .is_some_and(|(x, y)| y as usize == p && (x as usize) <= col + 1 && !wrapped);
-        let _ = top;
         Some(!parked)
+    }
+
+    /// Where the box's words are: its prompt row, the row under its last
+    /// words (the bottom rule), and the column the words start in.
+    fn box_words(&self) -> Option<(usize, usize, usize)> {
+        let (_, bottom) = self.box_rows()?;
+        let p = self.prompt_row()?;
+        Some((p, bottom, words_col(&self.rows[p].text)))
     }
 
     /// The words in the box (T-1156): the prompt row's past its mark, and
@@ -150,9 +155,7 @@ impl Shot {
         if self.box_holds() != Some(true) {
             return None;
         }
-        let (_, bottom) = self.box_rows()?;
-        let p = self.prompt_row()?;
-        let col = words_col(&self.rows[p].text);
+        let (p, bottom, col) = self.box_words()?;
         let first: String = self.rows[p].text.chars().skip(col).collect();
         let rest = (p + 1..bottom).map(|i| self.rows[i].text.as_str());
         let words: Vec<&str> =
@@ -176,12 +179,13 @@ impl Shot {
             *row = strip_hints(row);
         }
         // Codex's box is its prompt row alone: the page frames it with rules
-        // of its own (`PAGE_RULE`), the blank row over it and one under it,
-        // so it closes and opens as Claude Code's does and the field's
-        // delivery row has the row it covers.
+        // of its own, the blank row over it and one under it, so it closes
+        // and opens as Claude Code's does and the field's delivery row has
+        // the row it covers. A page rule has words and no runs, which no
+        // parsed row has: an agent's own row of hyphens is never taken for
+        // one.
         if top == bottom {
-            let rule = "-".repeat(self.cols as usize);
-            let rule = Row { runs: vec![(rule.clone(), Style::default())], text: rule };
+            let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
             if top > 0 && rows[top - 1].blank() {
                 rows[top - 1] = rule.clone();
             }
@@ -198,7 +202,7 @@ impl Shot {
         if top != bottom {
             return Some((top, top + 1, bottom));
         }
-        let page_rule = |i: usize| self.rows.get(i).is_some_and(|r| is_page_rule(&r.text));
+        let page_rule = |i: usize| self.rows.get(i).is_some_and(is_page_rule);
         let p = top;
         let up = if p > 0 && page_rule(p - 1) { p - 1 } else { p };
         page_rule(p + 1).then_some((up, p, p + 1))
@@ -286,7 +290,7 @@ pub(crate) fn words_col(t: &str) -> usize {
 /// The marks Claude Code's status rows open with (T-1156): its spinner
 /// frames and the tool result's elbow. Only these rows carry its key hints
 /// on screen; prose and prompts never pass through `strip_hints`.
-const CHROME: &[char] = &['✻', '✶', '✳', '✢', '✽', '·', '*', '⎿'];
+const CHROME: &[char] = &['✻', '✶', '✳', '✢', '✽', '·', '⎿'];
 
 /// A status row with the agent's key hints taken out (T-1156): a
 /// parenthesised group whose every `·` segment is a hint goes whole, with
@@ -295,7 +299,9 @@ const CHROME: &[char] = &['✻', '✶', '✳', '✢', '✽', '·', '*', '⎿'];
 /// row goes. Any other row is returned as it came.
 pub(crate) fn strip_hints(row: &Row) -> Row {
     let lead = row.text.trim_start();
-    if !lead.starts_with(CHROME) {
+    // `·` is a spinner frame and a bullet both: only a spinner row's
+    // `Verbing…` makes it chrome.
+    if !lead.starts_with(CHROME) || (lead.starts_with('·') && !lead.contains('…')) {
         return row.clone();
     }
     if lead.trim_start_matches(['⎿', ' ', '\u{a0}']).starts_with("Tip:") {
@@ -396,9 +402,9 @@ fn is_hint(seg: &str) -> bool {
     parts.iter().all(|m| mods.contains(m)) && (named.contains(&last) || last.chars().count() == 1)
 }
 
-/// A rule the page drew into a screen (`Shot::for_page`).
-fn is_page_rule(t: &str) -> bool {
-    !t.is_empty() && t.chars().all(|c| c == '-')
+/// A rule the page drew into a screen (`Shot::for_page`): words, no runs.
+pub(crate) fn is_page_rule(row: &Row) -> bool {
+    row.runs.is_empty() && !row.text.is_empty() && row.text.chars().all(|c| c == '-')
 }
 
 /// The composer's row: Claude Code's `❯` (`!` in bash mode, T-876), Codex's `›`.
@@ -1514,6 +1520,10 @@ mod tests {
         let prose = "⏺ Press ctrl+c to stop it (esc to interrupt).";
         assert_eq!(strip(prose), prose);
         assert_eq!(strip("❯ (tab to complete)"), "❯ (tab to complete)");
+        // A bullet is not a spinner: only `Verbing…` makes a `·` row chrome,
+        // and `*` is nobody's spinner.
+        assert_eq!(strip("· run the suite (ctrl+c to stop)"), "· run the suite (ctrl+c to stop)");
+        assert_eq!(strip("* see docs (? for shortcuts)"), "* see docs (? for shortcuts)");
         // Words that are not a key stay.
         assert_eq!(strip("  ⎿  (moved to trash)"), "  ⎿  (moved to trash)");
         assert_eq!(strip("  ⎿  (see docs for details)"), "  ⎿  (see docs for details)");
@@ -1565,6 +1575,14 @@ mod tests {
         assert_eq!(page.page_box(), Some((2, 3, 4)));
         assert_eq!(page.rows[4].text, "-".repeat(40));
         assert_eq!(page.prompt_row(), Some(3), "the field still finds its row");
+        // An agent's own row of hyphens over the prompt is the agent's: the
+        // page's rule is the one with no runs.
+        let mut lines: Vec<&str> = vec!["\x1b[1m•\x1b[0m done", "----------"];
+        lines.extend(["\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m", ""]);
+        let shot = Shot { rows: parse(&lines.join("\n")), cols: 40, cursor: Some((2, 2)) };
+        let page = shot.for_page();
+        assert_eq!(page.rows[1].text, "----------", "the agent's row stays");
+        assert_eq!(page.page_box(), Some((2, 2, 3)), "no page rule over the prompt");
     }
 
     /// The installed agents' own screens (T-1156), captured by

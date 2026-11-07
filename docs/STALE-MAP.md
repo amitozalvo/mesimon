@@ -42482,3 +42482,16 @@ New goldens `ticket_init_running`, `ticket_init_failed`, `ticket_live_closed`, `
 eight remade (the seat's six, the two live), reviewed by eye. Not built: the rail's
 `⠋ agent starting` row while a start is parked (the rail keeps `+ agent session`); a spike for a
 clean clear key that could lift the hold for one-line drafts.
+
+**Review before the merge** (2026-11-07, `/code-review medium`, nine fixed): a seat or launch
+too short for its box gives the field its two rows back (the zone is `hybrid` there); a
+launch's own words (`booting`: `pending_submit`) never hold the key; a size with no letter
+(Large) plays the poses; the page's Codex rules are rows with words and no runs, so an agent's
+own `----` row over `›` is never taken for one, and `live_line` draws them dim when the box is
+open; a parked start or a held box stops the agent's Shift+Enter only (a shell's or terminal's
+capture keeps it); the closed box's rules are the drawn width (`shot.cols.min(area.width)`),
+not the capture's; `·` is chrome only on a spinner's `Verbing…` row and `*` is nobody's
+spinner; one `box_words` and one `tail_rule` where there were three. Left as it is, for a
+decision: the hold is the page's, so the board's ask, the column's, the crown's `ask_agent`
+and Remote Control still type beside a person's draft (T-966's rule), which a daemon-side
+refusal on `composer::read` would close for every road.

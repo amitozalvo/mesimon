@@ -3422,7 +3422,13 @@ static TICKET: &[Binding] = &[
         // The ShiftEnter clause, as on the board: where the terminal spells
         // this as a plain Enter the key must be inert AND unhinted, or the
         // press would act on the rail row instead of opening a field.
-        avail: |c| c.has_ticket && c.shift_enter() && !c.ticket_launching && !c.ticket_box_held,
+        // A parked start or a held box (T-1156) stops the agent's road
+        // only: a shell's or terminal's capture stays.
+        avail: |c| {
+            c.has_ticket
+                && c.shift_enter()
+                && (c.sel_shell || c.sel_terminal || !(c.ticket_launching || c.ticket_box_held))
+        },
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -9526,6 +9532,22 @@ mod tests {
         assert_eq!(resolve(Scope::PullRequests, Key::Ctrl('h'), &none), Some(Verb::Back));
         assert_eq!(resolve(Scope::PullRequests, Key::Char('c'), &none), Some(Verb::LinkCopy));
         assert_ne!(resolve(Scope::Input, Key::Ctrl('h'), &on), Some(Verb::PullRequests));
+    }
+
+    /// T-1156: a parked start or a held box stops the agent's road only;
+    /// a shell row's capture keeps its key.
+    #[test]
+    fn a_parked_start_holds_the_agents_shift_enter_and_not_a_shells() {
+        let mut ctx = Ctx { has_ticket: true, rich_keys: true, ..Ctx::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), Some(Verb::Prompt));
+        ctx.ticket_launching = true;
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), None);
+        ctx.sel_shell = true;
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), Some(Verb::Prompt));
+        ctx = Ctx { has_ticket: true, rich_keys: true, ticket_box_held: true, ..Ctx::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), None);
+        ctx.sel_terminal = true;
+        assert_eq!(resolve(Scope::Ticket, Key::ShiftEnter, &ctx), Some(Verb::Prompt));
     }
 
     /// The ambiguity clause itself: every binding on `atom` must be

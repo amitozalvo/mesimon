@@ -173,6 +173,10 @@ impl App {
     /// words, which Shift+Enter sends again.
     pub(crate) fn box_held(&self, ticket: ulid::Ulid) -> bool {
         let Some(rec) = self.board.live_agent(ticket) else { return false };
+        // A launch's own words, waiting on the Enter mesimon owes them.
+        if booting(rec) {
+            return false;
+        }
         let Some(text) = self.live_shot(rec.id).and_then(|s| s.box_text()) else { return false };
         let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
         let typed = rec.typed_title.as_deref().is_some_and(|t| norm(t).starts_with(&norm(&text)));

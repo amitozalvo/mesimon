@@ -15944,8 +15944,17 @@ fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
     }
     let _ = render(&app, 120, 30);
     assert!(!app.ctx().ticket_box_held, "the start's title");
+    // A launch's own words, waiting on the Enter mesimon owes them.
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
+        s.state = SessionState::Idle { stop_reason: StopReason::Unknown };
+        s.pending_submit = true;
+    }
+    let _ = render(&app, 120, 30);
+    assert!(!app.ctx().ticket_box_held, "a start's ask is mesimon's");
     // A placeholder is nothing typed.
     for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
+        s.state = SessionState::Running;
+        s.pending_submit = false;
         s.typed_title = None;
     }
     app.live = Some(crate::live::Live::fixed(uuid_n(31), pane("build it, use recommended", 2)));
@@ -15999,4 +16008,43 @@ fn the_seats_box_opens_in_place() {
     for y in 0..at - 1 {
         assert_eq!(open[y], closed[y], "row {y} moved");
     }
+
+    // A zone too short for the box (a description takes the rows): the
+    // field hangs under the words, which give its rows up, never over them.
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.rich_keys = true;
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let closed = render(&app, 120, 20);
+    assert!(!closed.iter().any(|l| l.contains("--  shift+enter")), "no box fits: {closed:#?}");
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    buffer.insert('x');
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(1)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let open = render(&app, 120, 20);
+    let field = open
+        .iter()
+        .position(|l| l.contains("now  shift+tab"))
+        .unwrap_or_else(|| panic!("the delivery row: {open:#?}"))
+        - 1;
+    let zone = |l: &String| l.chars().take(88).collect::<String>();
+    assert!(
+        zone(&closed[field]).trim().is_empty(),
+        "the words gave the field its row: {closed:#?}"
+    );
+    assert!(zone(&closed[field + 1]).trim().is_empty(), "and the delivery row's: {closed:#?}");
 }
