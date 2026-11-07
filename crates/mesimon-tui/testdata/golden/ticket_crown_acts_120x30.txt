@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+   you  >1y                                                                               ⠋ ✻ claude               >1y
+ ❯ Fix the login redirect loop.                                                           ◦ $ bash                 >1y
+                                                                                           x sleep
+   claude  >1y
+   Found it: the refresh sets the cookie path to /api. Fixed, with a test.
+
+   ♛ crown moved this ticket to REVIEW  >1y
+   after you asked the crown
+
+   ♛ crown asked  >1y
+   Token v2 ships Monday. Does the fix still hold with the new format?
+   after the relay board's crown asked
+
+   claude  >1y
+   It holds: the format changes, the cookie does not.
+                                                                                             ▀█ ▄▀▀   █▀
+    ● working                                                                               ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+                                                                                            ███▀▀████▀▀█ █▀████
+                                                                                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+                                                                                            ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

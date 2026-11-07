@@ -42346,3 +42346,60 @@ another ticket that changed since it was read is refused with its current state.
   answered, the title exact, no crown rename). Live 2026-11-07 on claude 2.1.319, crown
   claude-opus-5-5, worker the rig's claude-sonnet-5-5: PASS. The first run's verdict crashed in the
   check itself (a local `calls` shadowed the helper); the worker had renamed its ticket there too.
+
+## The crown's acts read in the ticket page's transcript, with the bolt (T-1162, 2026-11-07, the author: "add crown actions inside ticket page transcript … blue text, crown icon, like the raise hand indication. written for humans … who called it with what, ask from different or to different boards / agents … lightning from/to mascot animation in ticket page to the transcript / title bar for/from connected boards")
+
+Proposed first as a simulation Artifact (the ticket page, four scenes), then built on the author's
+"go". The board's "blue" is the crown's tint (`Theme::crown_text`, ring 5), as T-733 read it: one
+saturated colour stays needs-you's.
+
+**The record.** Every crown touch (`crown_mark`: moved, asked, merged, tagged/untagged, renamed,
+started, parked, held, note, answered …) and every word mesimon carried into the crown (a wake,
+a linked board's ask or reply) and out of it (`ask_board`) is one `core::crownact::CrownAct` in
+`<state>/crown-acts.jsonl` (`daemon/src/crownacts.rs`). Its `detail` is a board fact read off the
+board at the touch (`act_detail`: the column, the title, the tier) or handed by the call site
+(`Daemon::act_extra`: the tag, the crown's answer, the other board's name). `words` is a FNV-1a key
+of the words an act put in a conversation (`crownact::words_key`, whitespace-blind, stable across
+builds), never their text (D11; the feed never logs words either). `sent` and the bolt's `woke`
+write no line: the `asked` already kept is that ask, and the wake's own `woke_crown` says the wake.
+**The cause** (`Cause`: a person, the board's wake and its news, a linked board asking or
+replying) is set at the crown's `UserPromptSubmit` (`crown_prompted`): its words' key against
+the words mesimon last carried in (`crown_cause_owed`), a person's when they differ. Codex has
+no such hook, so a Codex crown's acts carry none; a restart forgets it (memory only).
+
+**The page.** The TUI reads the file off its draw thread (`tui/src/crownacts.rs`, a stat every
+400 ms, the read on a thread). `transcript::acts_of` picks a conversation's acts: on a worker's
+page those done to its ticket, "this ticket", with the cause on a quiet line under the row; on
+the crown's own page those it did to every ticket, named by key and title, no cause line (its own
+prompts above say it), and the road words. An act that carried words marks the prompt that holds
+them (`Message::crown`): the head reads `♛ crown asked` (or `♛ the board woke the crown`,
+`↯ the relay board's crown replied`) instead of `you`, and the words leave the person's raised
+ground. Any other act is a row of its own placed by its time, as T-1155 places a hand; one before
+the first message only once the file's start is held, one after the last only in the ticket's
+newest conversation. The `{ }` dialog draws the same messages (`ticket::head_ink`, `persons`,
+`cause_row` are shared). Phones still read the plain rows: no wire change.
+
+**The bolt** (`strike::draw_page`, over the finished frame, T-544's `bolt` and `paint`): a touch on
+a worker's ticket lights `♛ T-1 moved` right of the page's header row (`page_label`, for the
+touch's lit beat) and strikes from it to the newest crown head drawn in the conversation (found
+on the drawn buffer by its mark in the crown's tint, else the zone's foot); on the crown's page an
+act on another ticket strikes from the shin to that row, and words across boards light
+`↯ sent ask to relay` there and strike between it and the shin, up for words that left, down for
+words that came. `striking`/`link_striking` now run the fast frame loop on the ticket page too.
+
+**Tests.** `crownact` (sentences, key, cause, an older line), `crownacts` (rotation, a torn line,
+a log that cannot open), `the_crown_s_acts_are_kept_with_their_object_and_their_cause` (daemon:
+cause by the wake's words, then a person's; `sent`/`woke` write nothing),
+`the_crown_s_page_names_the_ticket_and_the_worker_s_says_why`, golden `ticket_crown_acts_120x30`,
+`the_crown_s_bolt_runs_from_the_header_to_its_row`, `the_crown_s_own_bolt_leaves_the_shin`,
+`the_crown_s_words_across_boards_strike_between_the_shin_and_the_header`.
+
+**Refuted or left:** quoting the person's words in the cause line, as the simulation did
+("after you told the crown: “…”"): that is prompt text in a log (D11), so the line names who, not
+what. Deriving the acts from the crown's own transcript: a tool row holds neither its arguments nor
+whether the board refused it. The landing's light sweep on the new row (the board's
+`crown_land`) is not drawn on the page; the bolt alone lands.
+
+**Owed:** a CHANGELOG line at the next bump — **Added:** a ticket's conversation shows what the
+crown did to it and what started the crown's turn, and the crown's own page shows what it did
+to every ticket and the words between it and other boards, with the crown's lightning on the page.

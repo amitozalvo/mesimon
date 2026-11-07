@@ -14924,6 +14924,217 @@ fn golden_ticket_live_hand_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// A worker's conversation with the crown in it (T-1162): the person's ask,
+/// the crown's move between the agent's words, and the crown's ask, which
+/// the transcript holds as a prompt.
+const CROWN_ASK: &str = "Token v2 ships Monday. Does the fix still hold with the new format?";
+fn app_crowned_worker(name: &str) -> (App, std::path::PathBuf) {
+    const T0: u64 = 1_730_973_600_000; // 2024-11-07T10:00:00Z: heads read `>1y`
+    let stamp = |s: u64| format!("2024-11-07T10:{:02}:{:02}.000Z", s / 60, s % 60);
+    let user = |text: &str, s: u64| {
+        serde_json::json!({ "uuid": text, "type": "user", "timestamp": stamp(s),
+            "message": { "role": "user", "content": text } })
+        .to_string()
+    };
+    let said = |text: &str, s: u64| {
+        serde_json::json!({ "uuid": text, "type": "assistant", "timestamp": stamp(s),
+            "message": { "role": "assistant", "content": [{ "type": "text", "text": text }] } })
+        .to_string()
+    };
+    let lines = [
+        user("Fix the login redirect loop.", 0),
+        said("Found it: the refresh sets the cookie path to /api. Fixed, with a test.", 60),
+        user(CROWN_ASK, 300),
+        said("It holds: the format changes, the cookie does not.", 330),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    let path = write_transcript(name, &body);
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    b.crown = Some(ulid_n(1));
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    use mesimon_core::crownact::{words_key, Cause, CrownAct};
+    let act = |at: u64, word: &str, detail: &str, words, cause| CrownAct {
+        at_ms: T0 + at * 1000,
+        crown: ulid_n(1),
+        ticket: ulid_n(3),
+        act: word.into(),
+        detail: detail.into(),
+        words,
+        cause,
+    };
+    app.crown_acts.set(vec![
+        act(120, "moved", "REVIEW", None, Some(Cause::Person)),
+        act(
+            298,
+            "asked",
+            "",
+            Some(words_key(CROWN_ASK)),
+            Some(Cause::Board { board: "relay".into(), reply: false }),
+        ),
+    ]);
+    assert!(app.poll_page_transcript(), "the page opens the conversation");
+    let _ = app.poll_page_transcript();
+    (app, path)
+}
+
+/// The crown's acts read in a worker's conversation (T-1162): its move a
+/// row of its own, placed by its time, saying why; its ask the prompt it
+/// was, headed as the crown's, not the person's, off the person's raised
+/// ground; both in the crown's tint.
+#[test]
+fn golden_ticket_crown_acts_120() {
+    let (app, path) = app_crowned_worker("tcrown-acts");
+    let lines = render(&app, 120, 30);
+    let row = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {lines:#?}"))
+    };
+    let found = row("Found it");
+    let moved = row("♛ crown moved this ticket to REVIEW");
+    let asked = row("♛ crown asked");
+    let words = row("Token v2 ships Monday");
+    let holds = row("It holds");
+    assert!(found < moved && moved < asked && asked < holds, "by time: {lines:#?}");
+    assert_eq!(words, asked + 1, "the words under the head: {lines:#?}");
+    assert_eq!(row("after you asked the crown"), moved + 1, "the move's cause: {lines:#?}");
+    let cause = row("after the relay board's crown asked");
+    assert!(words < cause && cause < holds, "the ask's cause under its words: {lines:#?}");
+    assert!(!lines[asked].contains("you "), "not the person's: {}", lines[asked]);
+    let buf = cells(&app, 120, 30);
+    let at = |y: usize, needle: &str| (spot_of(&lines[y..], needle).0, y as u16);
+    let tint = app.theme.crown_text().fg;
+    assert_eq!(Some(buf[at(moved, "crown moved")].fg), tint, "the move in the crown's tint");
+    assert_eq!(Some(buf[at(asked, "crown asked")].fg), tint, "the head in the crown's tint");
+    let person = row("Fix the login redirect loop");
+    let raised = app.theme.selected_bg;
+    assert_eq!(Some(buf[at(person, "Fix the")].bg), raised, "the person's on the raised ground");
+    assert_ne!(Some(buf[at(words, "Token v2")].bg), raised, "the crown's ask is not theirs");
+    golden("ticket_crown_acts_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The crown's bolt on a worker's page (T-1162): its touch lights the
+/// header's word, which crown did what, and the bolt runs from that word
+/// down to the crown's newest row in the conversation.
+#[test]
+fn the_crown_s_bolt_runs_from_the_header_to_its_row() {
+    let (mut app, path) = app_crowned_worker("tcrown-bolt");
+    let at = mesimon_core::clock::now_ms() - 300;
+    app.strikes.push(crate::strike::Strike {
+        target: ulid_n(3),
+        from: Some(ulid_n(1)),
+        action: "moved".into(),
+        at_ms: at,
+        seen: at,
+        was: None,
+    });
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].trim_end().ends_with("♛ T-1 moved"), "the header's word: {}", lines[0]);
+    let buf = cells(&app, 120, 30);
+    let tint = app.theme.crown_text().fg;
+    let x = lines[0].chars().count() as u16 - "♛ T-1 moved".chars().count() as u16;
+    assert_eq!(Some(buf[(x + 2, 0)].fg), tint, "in the crown's tint");
+    let bolt = bolt_cells(&mut app, &buf);
+    let row = lines.iter().rposition(|l| l.contains("♛ crown asked")).expect("the newest row");
+    assert!(!bolt.is_empty(), "a bolt: {lines:#?}");
+    assert!(bolt.iter().all(|&(_, y)| usize::from(y) <= row), "down to its row: {bolt:?}");
+    assert!(bolt.iter().any(|&(_, y)| y <= 2), "from the header: {bolt:?}");
+    // Its beat over, the word goes and nothing is drawn.
+    app.strikes.clear();
+    let lines = render(&app, 120, 30);
+    assert!(!lines[0].contains("T-1 moved"), "{}", lines[0]);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// On the crown's own page the bolt leaves the shin (T-1162): an act on
+/// another ticket strikes from it to the act's row, which names that
+/// ticket.
+#[test]
+fn the_crown_s_own_bolt_leaves_the_shin() {
+    let (mut app, path) = app_crowned_worker("tcrown-own");
+    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(3));
+    let mut acts = app.crown_acts.all().as_ref().clone();
+    for a in &mut acts {
+        (a.crown, a.ticket) = (ulid_n(3), ulid_n(1));
+    }
+    acts.truncate(1);
+    app.crown_acts.set(acts);
+    let _ = app.poll_page_transcript();
+    let at = mesimon_core::clock::now_ms() - 300;
+    app.strikes.push(crate::strike::Strike {
+        target: ulid_n(1),
+        from: Some(ulid_n(3)),
+        action: "moved".into(),
+        at_ms: at,
+        seen: at,
+        was: None,
+    });
+    let lines = render(&app, 120, 30);
+    let row = lines
+        .iter()
+        .position(|l| l.contains("♛ crown moved T-1 “Decay treatments” to REVIEW"))
+        .unwrap_or_else(|| panic!("the act names the ticket: {lines:#?}"));
+    assert!(!lines[row + 1].contains("after you asked"), "no cause on its own page");
+    assert!(!lines[0].contains("♛"), "no word in its header: {}", lines[0]);
+    let buf = cells(&app, 120, 30);
+    let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin");
+    let bolt = bolt_cells(&mut app, &buf);
+    assert!(!bolt.is_empty(), "a bolt: {lines:#?}");
+    assert!(bolt.iter().any(|&(x, _)| x >= shin.x), "from the shin: {bolt:?} {shin:?}");
+    assert!(bolt.iter().any(|&(x, _)| x < 40), "to the conversation: {bolt:?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// Words across boards on the crown's own page (T-1162): the header says
+/// what they did, and the bolt runs between that word and the shin — up
+/// from the shin for words that left.
+#[test]
+fn the_crown_s_words_across_boards_strike_between_the_shin_and_the_header() {
+    let (mut app, path) = app_crowned_worker("tcrown-road");
+    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(3));
+    let now = mesimon_core::clock::now_ms();
+    app.link_lit = Some(crate::app::boards::LinkLit {
+        board: "relay".into(),
+        words: "sent ask to relay".into(),
+        refused: false,
+        seen: now,
+    });
+    app.link_strikes.push(crate::strike::LinkStrike {
+        board: "relay".into(),
+        up: true,
+        crown: Some(ulid_n(3)),
+        at_ms: now - 300,
+        seen: now - 300,
+    });
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].trim_end().ends_with("↯ sent ask to relay"), "{}", lines[0]);
+    let buf = cells(&app, 120, 30);
+    let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin");
+    let strikes = std::mem::take(&mut app.link_strikes);
+    let still = cells(&app, 120, 30);
+    app.link_strikes = strikes;
+    let braille =
+        |s: &str| s.chars().next().is_some_and(|c| (0x2800..=0x28FF).contains(&(c as u32)));
+    let bolt: Vec<(u16, u16)> = (0..30u16)
+        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            braille(buf[(x, y)].symbol()) && buf[(x, y)].symbol() != still[(x, y)].symbol()
+        })
+        .collect();
+    assert!(!bolt.is_empty(), "a bolt: {lines:#?}");
+    assert!(bolt.iter().all(|&(x, _)| x >= 60), "between the shin and the word: {bolt:?}");
+    assert!(bolt.iter().any(|&(_, y)| y < shin.y / 2), "up to the header: {bolt:?} {shin:?}");
+    // A worker's page wears no word for another board's words.
+    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(1));
+    let lines = render(&app, 120, 30);
+    assert!(!lines[0].contains("relay"), "{}", lines[0]);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// A dialog where the composer was: the seam rises to the blank row over
 /// the box. The shin does not move: it stands where it stood.
 #[test]

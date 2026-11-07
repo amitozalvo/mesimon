@@ -955,6 +955,21 @@ pub struct Daemon {
     /// (T-783), by the receiving ticket, for the card's line under its
     /// title. In memory, like the touches: the transcript is the record.
     crown_said: HashMap<ulid::Ulid, mesimon_core::command::CrownSaid>,
+    /// Every crown act, kept for the ticket page's conversation (T-1162):
+    /// `crown-acts.jsonl`, board facts and the words' keys alone.
+    crown_acts: crate::crownacts::Log,
+    /// What an act about to be marked says beyond its word (T-1162): the
+    /// tag a `tagged` put on, the words' key an `asked` carried. Taken by
+    /// the next `crown_mark` on the same ticket.
+    act_extra: Option<(ulid::Ulid, ActExtra)>,
+    /// What started the crown's turn (T-1162): set at the crown's
+    /// `UserPromptSubmit`, by the words mesimon carried into it
+    /// (`crown_cause_owed`) or else a person's. Codex has no such edge, so
+    /// a Codex crown's acts carry none. In memory: a restart forgets it.
+    crown_cause: Option<mesimon_core::crownact::Cause>,
+    /// The words mesimon just carried into the crown, by key, and whose they
+    /// were, until the crown's next prompt says whether it took them.
+    crown_cause_owed: Option<(u64, mesimon_core::crownact::Cause)>,
     /// The last receipt per ticket, with allowances for only its own
     /// launch, ask or merged notice (T-1035, T-1042; `crownreceipt`).
     /// A foreign prompt or needs-you stop revokes it. In memory, like
@@ -1968,6 +1983,7 @@ impl Daemon {
             tx,
             self_exe,
         } = seed;
+        let crown_acts = crate::crownacts::Log::open(&paths.crown_acts_file());
         Daemon {
             paths,
             board,
@@ -2094,6 +2110,10 @@ impl Daemon {
             agent_replay: HashMap::new(),
             crown_touches: HashMap::new(),
             crown_said: HashMap::new(),
+            crown_acts,
+            act_extra: None,
+            crown_cause: None,
+            crown_cause_owed: None,
             receipts: HashMap::new(),
             moved_by_hand: HashMap::new(),
             crown_asks: Tracked::default(),
@@ -2740,6 +2760,16 @@ struct Forgotten {
     entry: QueuedAsk,
     ask: Option<crownask::CrownAsk>,
     control: Option<mesophon::Cancelled>,
+}
+
+/// What a crown act says beyond its touch's word (T-1162).
+#[derive(Default)]
+struct ActExtra {
+    /// The line's own word where the touch's is the card's (`untagged`
+    /// for a tag taken off, which the card lights as `tagged`).
+    word: Option<&'static str>,
+    detail: String,
+    words: Option<u64>,
 }
 
 /// An ask parked until its checkout is quiet (see `Daemon::queued`). The
@@ -5895,6 +5925,7 @@ impl Daemon {
                 }
                 *self.prompts_heard.entry(id).or_default() += 1;
                 if let Some(t) = self.board.session(id).map(|s| s.ticket) {
+                    self.crown_prompted(t);
                     self.moves.asked_by_hand(t);
                     // Our own paste's ack — the owed Enter paid, by us or by
                     // the user typing their own — or the user talking to the
@@ -8609,6 +8640,7 @@ impl Daemon {
                     QueuedSeat::Wake(id) => Some(id),
                     _ => None,
                 };
+                let words = mesimon_core::crownact::words_key(&text);
                 if let Err(message) =
                     self.park_ask(target, seat, text, Asker::Agent(ticket), false, plan)
                 {
@@ -8648,6 +8680,8 @@ impl Daemon {
                     Some(target),
                     road.word(),
                 );
+                self.act_extra =
+                    Some((target, ActExtra { words: Some(words), ..ActExtra::default() }));
                 self.crown_mark(ticket, target, "asked");
                 match road {
                     // Sent now (T-600): the person's `^y` on the parked words,
@@ -9275,6 +9309,10 @@ impl Daemon {
                 let write = self.receipt_write(target, None);
                 match self.agent_tag_ticket(&by, target, &name, group, remove) {
                     Response::AgentTagged { tags, replaced, board_version, .. } => {
+                        let word = remove.then_some("untagged");
+                        let detail = name.clone();
+                        self.act_extra =
+                            Some((target, ActExtra { word, detail, ..ActExtra::default() }));
                         let seen = self.crown_touched(ticket, target, "tagged", write);
                         // A tag already worn changes nothing and broadcasts
                         // nothing; the touch still needs its snapshot (T-719).
@@ -9781,6 +9819,99 @@ impl Daemon {
             target,
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
         );
+        self.record_crown_act(own, target, action, now);
+    }
+
+    /// The touch, kept for the ticket page's conversation (T-1162). `sent`
+    /// is the `asked` already kept going out, and `woke` the bolt of a
+    /// worker's news, which the wake's own act says; neither is a line.
+    fn record_crown_act(&mut self, crown: ulid::Ulid, target: ulid::Ulid, word: &str, at_ms: u64) {
+        let extra = self.act_extra.take().filter(|(t, _)| *t == target).map(|(_, e)| e);
+        if matches!(word, "sent" | "woke") {
+            return;
+        }
+        let ActExtra { word: told, detail, words } = extra.unwrap_or_default();
+        let word = told.unwrap_or(word);
+        let detail = if detail.is_empty() { self.act_detail(target, word) } else { detail };
+        let act = mesimon_core::crownact::CrownAct {
+            at_ms,
+            crown,
+            ticket: target,
+            act: word.to_string(),
+            detail: mesimon_core::text::cap_bytes(
+                &mesimon_core::text::scrub_text(&detail),
+                mesimon_core::crownact::DETAIL_BYTES,
+            )
+            .into(),
+            words,
+            cause: self.crown_cause.clone(),
+        };
+        self.crown_acts.append(&act);
+    }
+
+    /// An act's object read off the board as it now stands: the column a
+    /// move put the ticket in, the title it was given, the tier it started on.
+    fn act_detail(&self, target: ulid::Ulid, word: &str) -> String {
+        let Some(t) = self.board.ticket(target) else { return String::new() };
+        match word {
+            "moved" => t.column.clone(),
+            "renamed" | "created" => t.title.clone(),
+            "started" => t.tier.clone().unwrap_or_default(),
+            "workspace" => t.workspace.map(|w| w.word().to_string()).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// Words mesimon carried into the crown (T-1162): a wake, a linked
+    /// board's ask or reply. Kept as an act on the crown's own ticket, and
+    /// owed as the cause of the turn that takes them.
+    fn crown_heard_road(
+        &mut self,
+        crown: ulid::Ulid,
+        word: &'static str,
+        detail: &str,
+        text: &str,
+    ) {
+        use mesimon_core::crownact::{Cause, BOARD_REPLIED, WOKE_CROWN};
+        let words = mesimon_core::crownact::words_key(text);
+        let cause = match word {
+            WOKE_CROWN => Cause::Wake {
+                news: mesimon_core::text::cap_bytes(detail, mesimon_core::crownact::DETAIL_BYTES)
+                    .into(),
+            },
+            _ => Cause::Board { board: detail.to_string(), reply: word == BOARD_REPLIED },
+        };
+        self.crown_cause_owed = Some((words, cause));
+        self.act_extra =
+            Some((crown, ActExtra { word: Some(word), detail: detail.into(), words: Some(words) }));
+        self.record_crown_act(crown, crown, word, mesimon_core::clock::now_ms());
+    }
+
+    /// A linked board's crown's words went into this board's crown.
+    fn crown_heard_board(&mut self, crown: ulid::Ulid, fb: &peer::FromBoard, text: &str) {
+        use mesimon_core::crownact::{BOARD_ASKED, BOARD_REPLIED};
+        let word = if fb.reply { BOARD_REPLIED } else { BOARD_ASKED };
+        self.crown_heard_road(crown, word, &fb.name.clone(), text);
+    }
+
+    /// The crown's prompt reached it (T-1162): the turn answers the words
+    /// mesimon carried, when these are they, or else a person.
+    fn crown_prompted(&mut self, ticket: ulid::Ulid) {
+        if self.board.crown_holder().map(|t| t.id) != Some(ticket) {
+            return;
+        }
+        let said = self.frame_words.as_deref().map(mesimon_core::crownact::words_key);
+        self.crown_cause = match self.crown_cause_owed.take() {
+            Some((words, cause)) if Some(words) == said => Some(cause),
+            // Words the hook did not carry: the owed words may still be
+            // what this turn took, and nothing says otherwise.
+            Some(owed) if said.is_none() => {
+                let cause = owed.1.clone();
+                self.crown_cause_owed = Some(owed);
+                Some(cause)
+            }
+            _ => Some(mesimon_core::crownact::Cause::Person),
+        };
     }
 
     /// Words went between the crown and `ticket`'s agent (T-783): the card
@@ -10307,11 +10438,15 @@ impl Daemon {
                 (frame, pane, Some(now_ms() + INFLIGHT_MS), false)
             }
             _ => {
+                let news = telling.news.clone();
+                self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, &text);
                 let wakes = std::mem::take(&mut *self.crown_wakes);
                 self.told(crown, telling, &wakes);
                 return true;
             }
         };
+        let news = telling.news.clone();
+        self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, &text);
         let (frame, pane, expires_ms, parked) = waits;
         let wakes = std::mem::take(&mut *self.crown_wakes);
         *self.crown_wake_entering = Some(crownwake::Entering {
@@ -16469,6 +16604,7 @@ impl Daemon {
             // pane since the sample gets no key, and the entry goes back.
             let kept = entry.clone();
             let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = entry;
+            let delivered = if from_board.is_some() { text.clone() } else { String::new() };
             changed = true;
             let word = seat.word();
             let words = by.map(|_| text.clone());
@@ -16552,6 +16688,7 @@ impl Daemon {
                     self.feed.board("peer", "board_ask_sent", Some(ticket));
                     if let Some(fb) = from_board {
                         self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
+                        self.crown_heard_board(ticket, &fb, &delivered);
                     }
                 }
                 None => {
@@ -17028,6 +17165,7 @@ impl Daemon {
         }
         let immediately = q.deliver == Deliver::Immediately;
         let words = q.by.map(|_| q.text.clone());
+        let delivered = if q.from_board.is_some() { q.text.clone() } else { String::new() };
         let (seat_id, working) = self.ask_seat(&q.seat);
         let response =
             self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
@@ -17063,6 +17201,7 @@ impl Daemon {
         if let (Some(fb), false) = (q.from_board, matches!(response, Response::Err { .. })) {
             self.feed.board("peer", "board_ask_sent", Some(ticket));
             self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
+            self.crown_heard_board(ticket, &fb, &delivered);
         }
         self.broadcast();
         response

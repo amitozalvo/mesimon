@@ -1785,6 +1785,9 @@ pub struct App {
     pending_paste: Option<crate::image_paste::Pending>,
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
+    /// The crown's acts the board's daemon kept (T-1162), for the
+    /// conversations the ticket page and the `{ }` dialog read.
+    pub(crate) crown_acts: crate::crownacts::Acts,
     /// Shared, not owned (T-686): every snapshot replaces it whole, nothing
     /// in `App` edits it after, and the notification thread scans the very
     /// same allocation the board draws from — no second snapshot built.
@@ -2528,10 +2531,12 @@ impl App {
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
+        let crown_acts = crate::crownacts::Acts::new(&repo_root);
         let (columns_sorted, columns_pinned, columns_width) = column_index(&snap.board);
         let mut app = Self {
             client,
             repo_root,
+            crown_acts,
             board: Arc::new(snap.board),
             grace: snap.grace,
             external: snap.external,
@@ -3190,6 +3195,13 @@ impl App {
         let mut changed = t.poll(record);
         let hand = session.and_then(|s| crate::transcript::hand_of(&self.board, t.ticket, s.id));
         changed |= t.set_hand(hand);
+        let acts_moved = self.crown_acts.poll();
+        let t = self.transcript.as_mut().expect("held above");
+        if acts_moved || t.acts_seen != Some(self.crown_acts.version) {
+            t.acts_seen = Some(self.crown_acts.version);
+            let lines = crate::transcript::acts_of(&self.board, &self.crown_acts.all(), t.ticket);
+            changed |= t.set_acts(lines, true);
+        }
         if changed {
             let same_message = before == t.message().map(crate::transcript::doc_key);
             self.rich_cache.borrow_mut().take();
@@ -3264,7 +3276,7 @@ impl App {
     fn striking(&self) -> bool {
         let now = mesimon_core::clock::now_ms();
         self.motion()
-            && matches!(self.screen, Screen::Board)
+            && matches!(self.screen, Screen::Board | Screen::Ticket { .. })
             && self.strikes.iter().any(|s| s.moving(now))
     }
 
@@ -6056,9 +6068,21 @@ impl App {
             })
             .collect();
         let mut changed = false;
+        self.crown_acts.poll();
+        let version = self.crown_acts.version;
+        let newest = crate::transcript::session_of(&self.board, ticket).map(|s| s.id);
+        let lines = self
+            .page_transcripts
+            .values()
+            .any(|t| t.acts_seen != Some(version))
+            .then(|| crate::transcript::acts_of(&self.board, &self.crown_acts.all(), ticket));
         for (id, kind, path, hand) in records {
             let Some(t) = self.page_transcripts.get_mut(&id) else { continue };
-            let moved = t.poll(path.as_deref().map(|p| (kind, p)));
+            let mut moved = t.poll(path.as_deref().map(|p| (kind, p)));
+            if let Some(lines) = lines.as_ref().filter(|_| t.acts_seen != Some(version)) {
+                t.acts_seen = Some(version);
+                moved |= t.set_acts(lines.clone(), newest == Some(id));
+            }
             if moved | t.set_hand(hand) {
                 // Laid out again on the next draw, the entry kept: it names
                 // the first message held then, so a reader paged back keeps

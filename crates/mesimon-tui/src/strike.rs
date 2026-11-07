@@ -610,6 +610,98 @@ pub(crate) fn draw(f: &mut Frame, app: &App, header: Rect, area: Rect) {
     }
 }
 
+/// The ticket page's word for the bolt (T-1162), right of its header row
+/// while it is lit: on a worker's page, which crown did what to it
+/// (`♛ T-1 moved`); on the crown's own, what its words did across boards
+/// (`↯ sent ask to relay`). The bolt leaves from it or lands on it.
+pub(crate) fn page_label(app: &App, ticket: ulid::Ulid, now: u64) -> Option<String> {
+    let tier = app.theme.glyph_tier();
+    let crowned = app.board.crown == Some(ticket);
+    if let Some(lit) = app.link_lit().filter(|l| crowned && !l.refused) {
+        return Some(format!("{} {}", crate::glyphs::bolt(tier), lit.words));
+    }
+    let s = app
+        .strikes
+        .iter()
+        .rev()
+        .find(|s| s.target == ticket && s.from.is_some_and(|f| f != ticket) && !s.over(now))?;
+    let key = s.from.and_then(|f| app.board.ticket(f)).map(|t| t.short_key.clone())?;
+    Some(format!("{} {key} {}", crate::glyphs::crown(tier), s.action))
+}
+
+/// Where `page_label` stands on the header row: right-aligned, a cell in.
+pub(crate) fn page_label_at(header: Rect, label: &str) -> (u16, u16) {
+    let w = label.width() as u16;
+    (header.right().saturating_sub(w + 1).max(header.x), header.y)
+}
+
+/// The newest crown head drawn in the conversation (T-1162): the lowest
+/// row of `zone` whose crown or bolt mark is in the crown's tint.
+fn newest_crown_head(buf: &Buffer, zone: Rect, theme: &Theme) -> Option<(u16, u16)> {
+    let tint = theme.crown_text().fg?;
+    let tier = theme.glyph_tier();
+    let marks = [crate::glyphs::crown(tier), crate::glyphs::bolt(tier)];
+    (zone.y..zone.bottom()).rev().find_map(|y| {
+        (zone.x..zone.right())
+            .find(|&x| buf[(x, y)].fg == tint && marks.contains(&buf[(x, y)].symbol()))
+            .map(|x| (x, y))
+    })
+}
+
+/// The bolt on the ticket page (T-1162), drawn over the finished frame: on
+/// a worker's page from the header's word to the crown's newest row in the
+/// conversation; on the crown's own from the shin to that row for an act on
+/// another ticket, and between the shin and the header's word for words
+/// across boards — up for words that left, down for words that came.
+pub(crate) fn draw_page(f: &mut Frame, app: &App, ticket: ulid::Ulid, zone: Rect) {
+    if !app.motion() {
+        return;
+    }
+    let now = mesimon_core::clock::now_ms();
+    let screen = f.area();
+    let header = Rect { height: 1, ..screen };
+    let label = page_label(app, ticket, now).map(|l| page_label_at(header, &l));
+    let shin = app.mascot.borrow().as_ref().map(|d| (d.rect.x + d.rect.width / 2, d.rect.y));
+    let theme = &app.theme;
+    let row = newest_crown_head(f.buffer_mut(), zone, theme);
+    let foot = (zone.x + 3, zone.bottom().saturating_sub(1));
+    let mut bolts: Vec<(Vec<Dot>, u64)> = Vec::new();
+    for s in &app.strikes {
+        let t = now.saturating_sub(s.seen);
+        if t >= BOLT_MS {
+            continue;
+        }
+        let from_crown = s.from.is_some_and(|f| f != ticket);
+        let ends = match (s.target == ticket && from_crown, s.from == Some(ticket)) {
+            (true, _) => label.map(|l| (l, row.unwrap_or(foot))),
+            (false, true) if s.target != ticket => shin.map(|m| (m, row.unwrap_or(foot))),
+            _ => None,
+        };
+        if let Some((a, b)) = ends.filter(|(a, b)| a != b) {
+            bolts.push((bolt(s.seed(), &[a, b], header.y), t));
+        }
+    }
+    if app.board.crown == Some(ticket) {
+        for s in &app.link_strikes {
+            let t = now.saturating_sub(s.seen);
+            let (Some(l), Some(m)) = (label, shin) else { continue };
+            if t >= BOLT_MS || l == m {
+                continue;
+            }
+            let stops = if s.up { [m, l] } else { [l, m] };
+            bolts.push((bolt(s.seed(), &stops, header.y), t));
+        }
+    }
+    if bolts.is_empty() {
+        return;
+    }
+    // Never over the word it leaves from, nor the row it lands on.
+    let skip = |x: u16, y: u16| {
+        label.is_some_and(|(lx, ly)| y == ly && x >= lx) || row.is_some_and(|(_, ry)| y == ry)
+    };
+    paint(f.buffer_mut(), screen, theme, &bolts, &skip);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

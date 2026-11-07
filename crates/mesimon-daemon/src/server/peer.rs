@@ -55,6 +55,8 @@ pub(super) type MachineLinksCache = super::tiers::MachineFileCache<Links>;
 pub(super) struct FromBoard {
     pub(super) name: String,
     pub(super) words: String,
+    /// The words answer an ask this board's crown made there (T-1162).
+    pub(super) reply: bool,
 }
 
 /// One request to another board's daemon over its `orch.sock`: connect,
@@ -233,6 +235,16 @@ impl Daemon {
                     None,
                 );
                 self.crown_said(ticket, &format!("→ {name}: {text}"));
+                let word = if reply {
+                    mesimon_core::crownact::REPLIED_BOARD
+                } else {
+                    mesimon_core::crownact::ASKED_BOARD
+                };
+                self.act_extra = Some((
+                    ticket,
+                    super::ActExtra { word: Some(word), detail: name.clone(), words: None },
+                ));
+                self.record_crown_act(ticket, ticket, word, now_ms());
                 self.feed.board_outcome("agent", "ask_board", Some(ticket), asked.road.word());
                 self.broadcast();
                 Response::AgentAskedBoard { board: name, asked: PeerAnswer { reply, ..asked } }
@@ -326,7 +338,7 @@ impl Daemon {
                 &[("board", &from_name), ("key", &crown_key), ("title", &title), ("text", &text)],
             )
         };
-        let from_board = FromBoard { name: from_name.clone(), words: text.clone() };
+        let from_board = FromBoard { name: from_name.clone(), words: text.clone(), reply };
         if let Err(message) = self.park_peer_ask(crown, seat, words, from_board) {
             return Response::Err { message };
         }

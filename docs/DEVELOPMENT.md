@@ -206,7 +206,11 @@ ledger's fields are `Tracked` (T-839): any `&mut` marks them and an unmarked one
 serialised, so a tick stage reads before it writes. `crown.json` (T-602) is the crown's
 wake ledger, so a restart neither loses a wake nor says one twice; `train.json` (T-635) keeps
 the merge train's rebase asks whose turn is still open, so a restart mid-rebase keeps the hold; `forge.json` (T-752) keeps each ticket's PRs, so a
-restart's first snapshot carries them. The ask queue's starts and wakes ride `queue.json` (T-418) and come
+restart's first snapshot carries them. `crown-acts.jsonl` (T-1162, `daemon/src/crownacts.rs`) is
+not one of those: an append-only log like the feed, one `core::crownact::CrownAct` per crown act,
+written at once from `crown_mark` and rotated to `.1` at 1 MiB, read by the TUI straight from the
+file for the ticket page's conversation. It holds board facts and a key of the words an act
+carried, never their text (D11). The ask queue's starts and wakes ride `queue.json` (T-418) and come
 back after a restart; a queued PANE ask is memory-only on purpose and dies with the daemon.
 `started.json` (T-441) keeps every conversation a spawned session held, out of the External
 drawer after the record is gone; `costs.json` (T-327) keeps every transcript a ticket's sessions

@@ -88,6 +88,10 @@ impl Paths {
     pub fn crown_file(&self) -> PathBuf {
         self.state_dir.join("crown.json")
     }
+    /// What the crown did, for the ticket page's conversation (T-1162).
+    pub fn crown_acts_file(&self) -> PathBuf {
+        self.state_dir.join("crown-acts.jsonl")
+    }
     /// The merge train's rebase asks whose turn is still open (T-635): the
     /// hold a restart in the middle of one kept dropping.
     pub fn train_file(&self) -> PathBuf {

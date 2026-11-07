@@ -294,7 +294,7 @@ impl App {
     pub(crate) fn link_striking(&self) -> bool {
         let now = mesimon_core::clock::now_ms();
         self.motion()
-            && matches!(self.screen, Screen::Board)
+            && matches!(self.screen, Screen::Board | Screen::Ticket { .. })
             && self.link_strikes.iter().any(|s| s.moving(now))
     }
 }

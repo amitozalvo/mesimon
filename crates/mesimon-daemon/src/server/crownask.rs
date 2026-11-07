@@ -1402,6 +1402,51 @@ pub(in crate::server) mod ledger_tests {
         }
     }
 
+    /// The crown's acts land in `crown-acts.jsonl` (T-1162) with what the
+    /// page says of them: the column a move put the ticket in, the words'
+    /// key an ask carried, and what started the crown's turn — the board's
+    /// wake when the crown's prompt is its words, a person otherwise.
+    #[test]
+    fn the_crown_s_acts_are_kept_with_their_object_and_their_cause() {
+        use mesimon_core::crownact::{words_key, Cause, WOKE_CROWN};
+        let mut b = bed("acts");
+        let (crown, worker) = (b.crown, b.worker);
+        b.d.board.crown = Some(crown);
+        // The board's wake went in, and the crown's prompt is its words.
+        b.d.crown_heard_road(crown, WOKE_CROWN, "T-2 \"x\" delivered", "wake words here");
+        b.d.frame_words = Some("wake  words\nhere".into());
+        b.d.crown_prompted(crown);
+        b.d.board.ticket_mut(worker).unwrap().column = "REVIEW".into();
+        b.d.crown_mark(crown, worker, "moved");
+        // A person's words next: the turn is theirs.
+        b.d.frame_words = Some("move it back".into());
+        b.d.crown_prompted(crown);
+        b.d.act_extra = Some((
+            worker,
+            super::ActExtra { words: Some(words_key("fix it")), ..Default::default() },
+        ));
+        b.d.crown_mark(crown, worker, "asked");
+        // The ask going out is the same act, and the bolt's `woke` none.
+        b.d.crown_mark(crown, worker, "sent");
+        b.d.crown_mark(worker, crown, "woke");
+        let acts = crate::crownacts::read(&b.d.paths.crown_acts_file());
+        let said: Vec<_> =
+            acts.iter().map(|a| (a.act.as_str(), a.ticket, a.cause.clone())).collect();
+        let wake = Cause::Wake { news: "T-2 \"x\" delivered".into() };
+        assert_eq!(
+            said,
+            vec![
+                (WOKE_CROWN, crown, None),
+                ("moved", worker, Some(wake)),
+                ("asked", worker, Some(Cause::Person)),
+            ]
+        );
+        assert_eq!(acts[0].words, Some(words_key("wake words here")));
+        assert_eq!(acts[1].detail, "REVIEW");
+        assert_eq!(acts[2].words, Some(words_key("fix it")));
+        assert!(acts.iter().all(|a| a.crown == crown));
+    }
+
     /// A steer beside the ask out: both records held, the idle rule still
     /// refuses naming the first, the steer's ack leaves the turn the
     /// first's, and that turn's end takes the first and releases the steer.

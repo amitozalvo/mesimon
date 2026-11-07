@@ -58,6 +58,84 @@ pub(crate) struct Message {
     pub tools: Vec<String>,
     /// A raised hand's reason (T-1155), and whether the hand is up.
     pub hand: Option<Raise>,
+    /// The crown's (T-1162): an act of its own, or a prompt whose words
+    /// the board carried (the crown's ask, a wake, another board's).
+    pub crown: Option<Crowned>,
+}
+
+/// What a crown row says over its words (T-1162).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Crowned {
+    /// The sentence the head says, without its mark or time.
+    pub head: String,
+    /// Words across boards, which wear the bolt's mark instead.
+    pub road: bool,
+    /// An act's own row: its words are `ActLine::body`, by this index.
+    pub act: Option<usize>,
+    /// What started the crown's turn, said on a line under the words.
+    pub cause: Option<String>,
+}
+
+/// One crown act as a conversation places it (T-1162).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ActLine {
+    pub ms: u64,
+    pub head: String,
+    pub road: bool,
+    /// Words the act carries itself (the crown's answer), else empty.
+    pub body: String,
+    pub cause: Option<String>,
+    /// The key of the words it put in a conversation: that prompt is
+    /// marked, and the act is no row of its own.
+    pub words: Option<u64>,
+}
+
+/// How long before an act a prompt it carried may be dated: the two
+/// clocks are the daemon's and the transcript's.
+const ACT_SLACK_MS: u64 = 5_000;
+
+/// The acts `ticket`'s conversation says (T-1162), oldest first: on a
+/// worker's, what the crown did to it and why; on the crown's own, what it
+/// did to every other ticket and the words the board carried into it.
+pub(crate) fn acts_of(
+    board: &mesimon_core::board::Board,
+    acts: &[mesimon_core::crownact::CrownAct],
+    ticket: ulid::Ulid,
+) -> Vec<ActLine> {
+    use mesimon_core::crownact::{self as ca, Subject};
+    let mut out = Vec::new();
+    for a in acts {
+        let own = a.crown == ticket;
+        if !own && a.ticket != ticket {
+            continue;
+        }
+        let (name, owns);
+        let subject = if own && a.ticket != ticket {
+            let Some(t) = board.ticket(a.ticket) else { continue };
+            name = format!("{} “{}”", t.short_key, t.title);
+            owns = format!("{}'s", t.short_key);
+            Subject { name: &name, own: &owns }
+        } else {
+            Subject { name: "this ticket", own: "this ticket's" }
+        };
+        let head = match a.words.and(ca::words_head(a)) {
+            Some(head) => head,
+            None => match ca::sentence(a, &subject) {
+                Some(s) => s,
+                None => continue,
+            },
+        };
+        out.push(ActLine {
+            ms: a.at_ms,
+            head,
+            road: ca::is_board_road(a),
+            body: ca::body(a).unwrap_or_default().to_string(),
+            // The crown's own conversation says what started its turn.
+            cause: a.cause.as_ref().filter(|_| !own).map(ca::cause_line),
+            words: a.words,
+        });
+    }
+    out
 }
 
 /// A raised hand among the messages (T-1155).
@@ -131,6 +209,7 @@ fn place_hand(out: &mut Vec<Message>, hand: &Hand) {
             steps: 0,
             tools: Vec::new(),
             hand: Some(Raise::Board),
+            crown: None,
         },
     );
 }
@@ -172,6 +251,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
             steps: 0,
             tools: Vec::new(),
             hand,
+            crown: None,
         });
     }
     out
@@ -254,6 +334,12 @@ pub(crate) struct Transcript {
     floor: Option<u64>,
     /// The ticket's raised hand, while it is up (T-1155).
     hand: Option<Hand>,
+    /// The crown's acts this conversation says (T-1162), and whether it is
+    /// the ticket's newest, which alone says the acts after its last words.
+    acts: Vec<ActLine>,
+    newest: bool,
+    /// The `crownacts::Acts::version` the acts were read from.
+    pub acts_seen: Option<u64>,
     messages: Vec<Message>,
     /// The message on show.
     pub idx: usize,
@@ -312,6 +398,9 @@ impl Transcript {
             end: 0,
             floor: None,
             hand,
+            acts: Vec::new(),
+            newest: true,
+            acts_seen: None,
             messages: Vec::new(),
             idx: 0,
             seen: None,
@@ -396,6 +485,9 @@ impl Transcript {
 
     /// A message's words, whole up to `ROW_MAX`.
     pub(crate) fn text(&self, m: &Message) -> &str {
+        if let Some(i) = m.crown.as_ref().and_then(|c| c.act) {
+            return self.acts.get(i).map_or("", |a| a.body.as_str());
+        }
         match (&self.hand, m.hand) {
             (Some(h), Some(Raise::Board)) => &h.reason,
             _ => &self.rows[m.row].text,
@@ -404,7 +496,7 @@ impl Transcript {
 
     /// The rows' messages, the board's hand among them: up on the newest
     /// call that says its words, else placed by its time.
-    fn composed(&self) -> Vec<Message> {
+    fn with_hand(&self) -> Vec<Message> {
         let mut out = messages(&self.rows);
         let Some(h) = &self.hand else { return out };
         let newest = out.iter().rposition(|m| m.hand.is_some());
@@ -413,6 +505,94 @@ impl Transcript {
             None => place_hand(&mut out, h),
         }
         out
+    }
+
+    /// The rows' messages with the board's hand and the crown's acts.
+    fn composed(&self) -> Vec<Message> {
+        let mut out = self.with_hand();
+        self.place_acts(&mut out);
+        out
+    }
+
+    /// The crown's acts among the messages (T-1162): an act that carried
+    /// words marks the prompt that holds them, the first not yet marked
+    /// dated no earlier than the act; any other is a row of its own, after
+    /// the last message written by its time. An act before the first
+    /// message is placed only once the file's start is held, and one after
+    /// the last only in the ticket's newest conversation.
+    fn place_acts(&self, out: &mut Vec<Message>) {
+        use mesimon_core::crownact::words_key;
+        let Some(first) = out.first().map(|m| m.key) else { return };
+        if out.iter().all(|m| m.ms.is_none()) {
+            return;
+        }
+        let first_ms = out.iter().find_map(|m| m.ms).unwrap_or(0);
+        let last_ms = out.iter().rev().find_map(|m| m.ms).unwrap_or(0);
+        for (i, a) in self.acts.iter().enumerate() {
+            let crowned =
+                |act| Crowned { head: a.head.clone(), road: a.road, act, cause: a.cause.clone() };
+            if let Some(w) = a.words {
+                let carried = out.iter().position(|m| {
+                    m.kind == RowKind::Prompt
+                        && m.crown.is_none()
+                        && m.hand.is_none()
+                        && m.ms.is_none_or(|ms| ms + ACT_SLACK_MS >= a.ms)
+                        && words_key(&self.rows[m.row].text) == w
+                });
+                if let Some(j) = carried {
+                    out[j].crown = Some(crowned(None));
+                    continue;
+                }
+            }
+            if (a.ms < first_ms && self.floor.is_some()) || (a.ms > last_ms && !self.newest) {
+                continue;
+            }
+            let at = out.iter().rposition(|m| m.ms.is_some_and(|ms| ms <= a.ms));
+            let (index, key, row) = match at {
+                Some(mut at) => {
+                    // After the record's own rows, before its hand: the
+                    // keys stay in order.
+                    let (rec, nth) = (out[at].key.0, usize::MAX / 2 + i);
+                    while out.get(at + 1).is_some_and(|m| m.key.0 == rec && m.key.1 < nth) {
+                        at += 1;
+                    }
+                    (at + 1, (rec, nth), out[at].row)
+                }
+                // Before every message: under the first one's record,
+                // which no other message's key reaches.
+                None => (0, (first.0.saturating_sub(1), i), out[0].row),
+            };
+            out.insert(
+                index,
+                Message {
+                    key,
+                    kind: RowKind::Reply,
+                    row,
+                    ms: Some(a.ms),
+                    steps: 0,
+                    tools: Vec::new(),
+                    hand: None,
+                    crown: Some(crowned(Some(i))),
+                },
+            );
+        }
+    }
+
+    /// The crown's acts for this conversation, as each poll reads them:
+    /// true when the messages moved.
+    pub(crate) fn set_acts(&mut self, acts: Vec<ActLine>, newest: bool) -> bool {
+        if self.acts == acts && self.newest == newest {
+            return false;
+        }
+        self.acts = acts;
+        self.newest = newest;
+        self.rebuild();
+        true
+    }
+
+    /// What the acts are, for a draw cache's key.
+    pub(crate) fn acts_stamp(&self) -> u64 {
+        crate::text::hash64((&self.acts, self.newest))
     }
 
     pub(crate) fn hand(&self) -> Option<&Hand> {
@@ -603,6 +783,69 @@ pub(crate) mod tests {
 
     fn row(at: u64, kind: RowKind, text: &str) -> TranscriptRow {
         TranscriptRow { at, kind, text: text.into(), ms: None }
+    }
+
+    /// The crown's own conversation names the ticket each act touched and
+    /// says no cause (its own prompts above say it); a worker's says "this
+    /// ticket" and why; the words the board carried head their prompt with
+    /// whose they were, across boards with the bolt.
+    #[test]
+    fn the_crown_s_page_names_the_ticket_and_the_worker_s_says_why() {
+        use mesimon_core::crownact::{words_key, Cause, CrownAct, BOARD_REPLIED};
+        let mut board = mesimon_core::board::Board::default();
+        let worker = ulid::Ulid(14);
+        let t: mesimon_core::board::Ticket = serde_json::from_value(serde_json::json!({
+            "id": worker, "short_key": "T-14", "title": "Fix login", "column": "TODO",
+            "order": "a", "created_at": "@1",
+        }))
+        .expect("a ticket");
+        board.tickets.push(t);
+        let crown = ulid::Ulid(1);
+        let acts = [
+            CrownAct {
+                at_ms: 5,
+                crown,
+                ticket: worker,
+                act: "merged".into(),
+                detail: String::new(),
+                words: None,
+                cause: Some(Cause::Person),
+            },
+            CrownAct {
+                at_ms: 6,
+                crown,
+                ticket: crown,
+                act: BOARD_REPLIED.into(),
+                detail: "relay".into(),
+                words: Some(words_key("cookie path stays")),
+                cause: None,
+            },
+            // Another crown's act on another ticket: neither page's.
+            CrownAct {
+                at_ms: 7,
+                crown: ulid::Ulid(9),
+                ticket: ulid::Ulid(8),
+                act: "moved".into(),
+                detail: String::new(),
+                words: None,
+                cause: None,
+            },
+        ];
+        let own = acts_of(&board, &acts, crown);
+        let heads: Vec<_> =
+            own.iter().map(|a| (a.head.as_str(), a.road, a.cause.clone())).collect();
+        assert_eq!(
+            heads,
+            vec![
+                ("crown merged T-14's branch", false, None),
+                ("the relay board's crown replied", true, None),
+            ]
+        );
+        assert_eq!(own[1].words, Some(words_key("cookie path stays")));
+        let theirs = acts_of(&board, &acts, worker);
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].head, "crown merged this ticket's branch");
+        assert_eq!(theirs[0].cause.as_deref(), Some("after you asked the crown"));
     }
 
     #[test]

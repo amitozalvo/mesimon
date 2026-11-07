@@ -495,7 +495,7 @@ pub(super) struct Telling {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     raised: Vec<ulid::Ulid>,
     #[serde(default)]
-    news: String,
+    pub(super) news: String,
 }
 
 /// The crown's wake pasted into a Codex crown's box (T-918) and not yet

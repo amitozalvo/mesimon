@@ -274,11 +274,21 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         return;
     };
     let now = mesimon_core::clock::now_ms();
+    // The conversation's zone, where the page's bolt lands (T-1162).
+    let mut page_zone: Option<Rect> = None;
     // ---- row 0: the header (chip + breadcrumb, `chrome::draw_header`);
     // row 2: the TITLE, the page's own headline (T-158 — it lived only in
     // the breadcrumb before). `r` edits it right here (hardware cursor,
     // tail kept visible).
-    chrome::draw_header(f, Rect { x: area.x, y: area.y, width: area.width, height: 1 }, app, None);
+    let header = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
+    chrome::draw_header(f, header, app, None);
+    // The crown's word while its bolt is lit (T-1162): which crown did what
+    // to this ticket, or what the crown's words did across boards.
+    if let Some(label) = crate::strike::page_label(app, ticket_id, now) {
+        let (x, y) = crate::strike::page_label_at(header, &label);
+        let rect = Rect { x, y, width: header.right().saturating_sub(x), height: 1 };
+        f.render_widget(Paragraph::new(Span::styled(label, theme.crown_text())), rect);
+    }
     // The header SECTION — title, state line, description — is a band on the
     // elevated surface (author 2026-09-03: "more distinctive"), read in the
     // `sel` ramp; the chip row above and the zones below stay on the page
@@ -939,9 +949,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 rail_shin(app, rail, (body_y + body_h).saturating_sub(1), rec, shin_peek.as_deref())
             })
             .filter(|(_, _, y)| rail.y + rail_used + 2 <= *y);
+        let zone = Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h };
+        page_zone = Some(zone);
         let (used, composer) = draw_preview(
             f,
-            Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h },
+            zone,
             app,
             sel,
             peek.as_deref(),
@@ -1031,6 +1043,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
     );
+    if let Some(zone) = page_zone {
+        crate::strike::draw_page(f, app, ticket_id, zone);
+    }
 }
 
 /// Draws the zone and returns the rows it wrote, capped at the zone's height.
@@ -1829,7 +1844,8 @@ fn conversation(
     // for the heads' clocks.
     let now = mesimon_core::clock::now_ms();
     let last = messages.last().map(|m| (m.key, t.text(m).len(), m.steps));
-    let stamp = crate::text::hash64((key, messages.len(), last, t.hand(), now / 60_000));
+    let stamp =
+        crate::text::hash64((key, messages.len(), last, t.hand(), t.acts_stamp(), now / 60_000));
     // Laid out already for all of that: as it is (the session's own
     // entry, so a note read in between evicts nothing).
     if let Some(c) = app.page_composed.borrow().get(&rec.id) {
@@ -1853,7 +1869,8 @@ fn conversation(
     // A message's body rows as the zone draws them: in the message's ink,
     // behind the gutter, a person's on the raised surface.
     let finish = |m: &crate::transcript::Message, body: &[Line<'static>]| -> Vec<Line<'static>> {
-        let prompt = m.kind == RowKind::Prompt;
+        let prompt = persons(m);
+        let cause = cause_row(theme, m, width);
         body.iter()
             .enumerate()
             .map(|(r, line)| {
@@ -1869,6 +1886,7 @@ fn conversation(
                 spans.push(Span::raw(" ".repeat((width + GUTTER.len()).saturating_sub(used))));
                 Line::from(spans).style(raised)
             })
+            .chain(cause.clone().map(gutter))
             .collect()
     };
     let mut rows: Vec<Line<'static>> = Vec::new();
@@ -1878,10 +1896,12 @@ fn conversation(
     for m in messages {
         let newline = if m.kind == RowKind::Prompt { Newline::Break } else { Newline::Space };
         let text = t.text(m);
-        // A hand's words change in place when it is raised again.
-        let size = match m.hand {
-            Some(raise) => crate::text::hash64((text, raise)) as usize,
-            None => text.len(),
+        // A hand's words change in place when it is raised again, and a
+        // prompt's head when the crown's act that carried it lands.
+        let size = match (m.hand, &m.crown) {
+            (Some(raise), _) => crate::text::hash64((text, raise)) as usize,
+            (None, Some(c)) => crate::text::hash64((text, c)) as usize,
+            (None, None) => text.len(),
         };
         let stamp = (size, width, flavor);
         if !cache.get(&(rec.id, m.key)).is_some_and(|e| e.stamp == stamp) {
@@ -1962,6 +1982,11 @@ pub(super) fn who_word(
 ) -> String {
     use mesimon_core::mesophon::RowKind;
     let agent = if kind == SessionKind::Codex { "codex" } else { "claude" };
+    if let Some(c) = &m.crown {
+        let tier = theme.glyph_tier();
+        let mark = if c.road { crate::glyphs::bolt(tier) } else { crate::glyphs::crown(tier) };
+        return format!("{mark} {}", c.head);
+    }
     match (m.hand, m.kind) {
         (Some(raise), _) => {
             let mark =
@@ -1972,6 +1997,37 @@ pub(super) fn who_word(
         (_, RowKind::Notice) => String::new(),
         _ => agent.into(),
     }
+}
+
+/// A message head's ink: a hand's, the crown's tint for the crown's
+/// (T-1162), the base ink for the person and the agent, a notice quiet.
+pub(super) fn head_ink(theme: &crate::theme::Theme, m: &crate::transcript::Message) -> Style {
+    use mesimon_core::mesophon::RowKind;
+    match (m.hand, &m.crown, m.kind) {
+        (Some(raise), _, _) => hand_ink(theme, raise).add_modifier(Modifier::BOLD),
+        (None, Some(_), _) => theme.crown_text().add_modifier(Modifier::BOLD),
+        (None, None, RowKind::Reply | RowKind::Prompt) => {
+            Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
+        }
+        (None, None, _) => theme.dim1(),
+    }
+}
+
+/// Whether a message is the person's words, which ride the raised ground
+/// behind the prompt mark: a prompt the board did not carry (T-1162).
+pub(super) fn persons(m: &crate::transcript::Message) -> bool {
+    m.kind == mesimon_core::mesophon::RowKind::Prompt && m.crown.is_none()
+}
+
+/// The quiet line under a crown row saying what started the crown's turn
+/// (T-1162), cut to the width.
+pub(super) fn cause_row(
+    theme: &crate::theme::Theme,
+    m: &crate::transcript::Message,
+    width: usize,
+) -> Option<Line<'static>> {
+    let cause = m.crown.as_ref()?.cause.as_deref()?;
+    Some(Line::from(Span::styled(truncate(cause, width), theme.dim2())))
 }
 
 /// A raised hand's ink (T-1155), as the board's hand row inks one: the
@@ -2014,15 +2070,8 @@ fn message_head(
     width: usize,
     now: u64,
 ) -> Line<'static> {
-    use mesimon_core::mesophon::RowKind;
     let who = who_word(theme, m, kind);
-    let who_style = match (m.hand, m.kind) {
-        (Some(raise), _) => hand_ink(theme, raise).add_modifier(Modifier::BOLD),
-        (None, RowKind::Reply | RowKind::Prompt) => {
-            Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
-        }
-        (None, _) => theme.dim1(),
-    };
+    let who_style = head_ink(theme, m);
     let time = super::transcript::when(m.ms, now);
     let steps = super::transcript::steps_word(m.steps, &m.tools);
     let mut head = Vec::new();

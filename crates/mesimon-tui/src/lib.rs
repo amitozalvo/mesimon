@@ -7,6 +7,7 @@ mod caffeine;
 mod caffeine_watch;
 mod clipboard;
 mod creature;
+mod crownacts;
 mod image_paste;
 mod intro;
 mod keys;

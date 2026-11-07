@@ -133,15 +133,7 @@ fn words(
     // Who, when, and the steps that followed, at the right.
     let who = super::ticket::who_word(theme, m, t.kind);
     // `you` as bold as the agent's name, as the ticket page heads both.
-    let who_style = match m.hand {
-        Some(raise) => super::ticket::hand_ink(theme, raise).add_modifier(Modifier::BOLD),
-        None => match m.kind {
-            RowKind::Reply | RowKind::Prompt => {
-                Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
-            }
-            _ => theme.dim1(),
-        },
-    };
+    let who_style = super::ticket::head_ink(theme, m);
     let time = when(m.ms, mesimon_core::clock::now_ms());
     let left = if who.is_empty() { time.clone() } else { format!("{who}  {time}") };
     let room = width.saturating_sub(left.width() + 2);
@@ -161,8 +153,8 @@ fn words(
     // behind the prompt mark (the ticket page's look, T-1152); the agent's
     // as the ticket page reads a reply; a notice in the quiet ink; a raised
     // hand's in the needs-you colour (T-1155).
-    let prompt = m.kind == RowKind::Prompt;
-    let newline = if prompt { Newline::Break } else { Newline::Space };
+    let prompt = super::ticket::persons(m);
+    let newline = if m.kind == RowKind::Prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
     let rows = super::ticket::rendered_with_link(
         app,
@@ -172,6 +164,11 @@ fn words(
         newline,
         app.transcript_cursor_source(),
     );
+    // What started the crown's turn, under its words (T-1162).
+    let rows = match super::ticket::cause_row(theme, m, width) {
+        Some(cause) => std::rc::Rc::new(rows.iter().cloned().chain([cause]).collect::<Vec<_>>()),
+        None => rows,
+    };
     let budget = usize::from(body.height.saturating_sub(2));
     let mut at = t.pager.window(Some(key), rows.len(), budget, false);
     if t.reveal_link.replace(false) {

@@ -9,6 +9,7 @@ pub mod claudemd;
 #[cfg(all(test, target_os = "macos"))]
 mod cloexec_probe;
 pub mod cost;
+pub mod crownacts;
 pub mod diff;
 pub mod feed;
 pub mod forge;
