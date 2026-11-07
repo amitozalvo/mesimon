@@ -42707,3 +42707,16 @@ own pill, read out of the 2.1.319 binary (`dd` and `ste` there) rather than gues
 Test: `the_conversation_wears_a_jump_pill_above_its_foot` (ui/tests.rs) — absent at the foot,
 centred over the live window, the mark, 1 and 2 counted, the click's spot, the mouse-off word,
 `end` releasing. No golden moved: no fixture scrolls up. Not seen in the TUI by the author yet.
+
+**The pill lights under the pointer** (the author, after using it: "add hover indication").
+`Theme::pill(hovered)` owns its paint now. In true colour the ground goes a step lighter
+(`PILL_HOVER_STEP` = 14 per channel), which is Claude Code's `userMessageBackgroundHover`: read
+from the 2.1.319 binary, that is 55 → 70 on dark and 220 → 232 / 240 → 252 on light, lighter on
+both grounds. The generic hover (`mouse::paint_hover`) does nothing visible here, because it
+lifts only dim inks and paints only cells on the page's own ground, and the pill is base ink on
+`selected_bg`. Where the profile has no lighter step: an indexed ground gets bold. Mono, which
+has no ground, gets inverted (SGR 7 is legal there). Chalk on 256 colours (light-256, §2.6,
+no `selected_bg`, SGR 7 illegal) gets an underline. Hover is read from `App::pointer` against
+the pill's rect, and only while the mouse pref is on.
+Tests: `the_jump_pill_lights_under_the_pointer_on_every_profile` (theme.rs, every flavour ×
+four profiles), plus the ground under and off the pointer in the pill's draw test.

@@ -2825,12 +2825,7 @@ fn foot_pill(app: &App, rec_id: uuid::Uuid, key: u64, width: usize) -> Option<Li
         .into_iter()
         .find(|w| w.width() + 2 <= width)
         .unwrap_or(what);
-    let ink = Style::default().fg(app.theme.rest.base);
-    let style = match app.theme.selected_bg {
-        Some(bg) => ink.bg(bg),
-        None => ink.add_modifier(Modifier::BOLD),
-    };
-    Some(Line::from(Span::styled(format!(" {words} "), style)))
+    Some(Line::from(Span::raw(format!(" {words} "))))
 }
 
 /// The agent's messages after `mark`, counted as Claude Code counts its
@@ -2853,11 +2848,17 @@ fn unseen(messages: &[crate::transcript::Message], mark: (u64, usize)) -> usize 
 }
 
 /// Draws `pill` centred on row `y` of `area`, over what the zone drew
-/// there, and makes it the `end` key for the mouse.
+/// there, and makes it the `end` key for the mouse. Under the pointer its
+/// ground lightens, as Claude Code's does (`Theme::pill`).
 fn draw_foot_pill(f: &mut Frame, app: &App, area: Rect, y: u16, pill: Line<'static>) {
     let w = (super::spans_width(&pill.spans) as u16).min(area.width);
     let rect = Rect { x: area.x + (area.width - w) / 2, y, width: w, height: 1 };
-    f.render_widget(Paragraph::new(pill), rect);
+    let hovered = app.prefs.mouse
+        && app
+            .pointer
+            .get()
+            .is_some_and(|(x, y)| rect.contains(ratatui::layout::Position { x, y }));
+    f.render_widget(Paragraph::new(pill.style(app.theme.pill(hovered))), rect);
     app.hits.borrow_mut().record(rect, crate::mouse::Target::Key(keymap::Key::End));
 }
 

@@ -15556,8 +15556,27 @@ fn the_conversation_wears_a_jump_pill_above_its_foot() {
         }
         hit => panic!("the pill is the end key: {hit:?}"),
     }
-    // Mouse off, the key is said instead.
+    // Under the pointer its ground lightens, Claude Code's hover: the
+    // person's raised ground a step lighter, the words unmoved.
+    let px = x.expect("x") as u16;
+    let ground = |app: &App| cells(app, 120, 30)[(px, y)].bg;
+    let rest = ground(&app);
+    assert_eq!(Some(rest), app.theme.selected_bg, "the person's raised ground");
+    app.pointer.set(Some((px, y)));
+    let lit = ground(&app);
+    assert_eq!(lit, app.theme.pill(true).bg.expect("a hover ground"));
+    assert_ne!(lit, rest, "lit under the pointer");
+    match (rest, lit) {
+        (Color::Rgb(a, ..), Color::Rgb(b, ..)) => assert!(b > a, "lighter: {rest:?} {lit:?}"),
+        other => panic!("true colour: {other:?}"),
+    }
+    assert!(has(&render(&app, 120, 30), "2 new messages (click) ↓"), "the words stay");
+    app.pointer.set(Some((px, y - 1)));
+    assert_eq!(ground(&app), rest, "off it, at rest");
+    // Mouse off, the key is said instead, and nothing lights.
+    app.pointer.set(Some((px, y)));
     app.seed_pref(|p| p.mouse = false);
+    assert_eq!(ground(&app), rest, "no pointer to light it");
     assert!(has(&render(&app, 120, 30), "2 new messages (end) ↓"));
     // `end`: at the foot, and the mark goes with the pill.
     app.handle_key(KeyCode::End, KeyModifiers::NONE).expect("end");

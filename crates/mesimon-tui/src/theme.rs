@@ -1334,6 +1334,10 @@ const LOWERED_KEEP: f32 = 0.5;
 
 /// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
 /// have a halfway; anything else is `a` from the half up and `b` below it.
+/// How much lighter the jump pill's ground is under the pointer, per
+/// channel (T-1174): Claude Code's own step, 15 dark and 12 light.
+const PILL_HOVER_STEP: u8 = 14;
+
 pub(crate) fn mix(a: Color, b: Color, k: f32) -> Color {
     let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
         return if k >= 0.5 { a } else { b };
@@ -2166,6 +2170,30 @@ impl Theme {
         }
     }
 
+    /// The conversation's jump pill (T-1174), Claude Code's: base ink on
+    /// the person's raised ground, and under the pointer that ground a step
+    /// lighter, as Claude Code's `userMessageBackgroundHover` is (55 → 70
+    /// dark, 240 → 252 light). An indexed profile has no lighter step it was
+    /// authored with: the pointer adds weight there. With no ground at all
+    /// (mono, light-256) the pill is bold, and the pointer inverts it where
+    /// SGR 7 is legal, else underlines it.
+    pub fn pill(&self, hovered: bool) -> Style {
+        let ink = Style::default().fg(self.rest.base);
+        match (self.selected_bg, self.profile) {
+            (Some(Color::Rgb(r, g, b)), Profile::TrueColor) if hovered => {
+                let up = |c: u8| c.saturating_add(PILL_HOVER_STEP);
+                ink.bg(Color::Rgb(up(r), up(g), up(b)))
+            }
+            (Some(bg), _) if hovered => ink.bg(bg).add_modifier(Modifier::BOLD),
+            (Some(bg), _) => ink.bg(bg),
+            (None, _) if hovered && self.reverse_allowed() => {
+                ink.add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            }
+            (None, _) if hovered => ink.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            (None, _) => ink.add_modifier(Modifier::BOLD),
+        }
+    }
+
     /// `fg` one step up its ramp (T-716's hover): `dim3` to `dim2` and so
     /// on to `base`. `None` for a colour on no ramp's dim steps — a full
     /// ink, a state hue, the needs-you colour — which the hover leaves be.
@@ -2538,6 +2566,25 @@ const MONO_RAMP: Ramp =
 mod tests {
     use super::*;
     use crate::glyphs::Register;
+
+    /// The jump pill's hover (T-1174) shows on every profile: a lighter
+    /// ground in true colour, on every flavour, light and dark; weight
+    /// where the ground is indexed; inversion in mono, an underline on a
+    /// light 256-colour page, which has no ground to raise.
+    #[test]
+    fn the_jump_pill_lights_under_the_pointer_on_every_profile() {
+        for flavor in Flavor::ALL {
+            for profile in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Mono] {
+                let theme = Theme::new(flavor, profile);
+                let (rest, lit) = (theme.pill(false), theme.pill(true));
+                assert_ne!(rest, lit, "{flavor:?} {profile:?}");
+                assert_eq!(lit.fg, rest.fg, "the words keep their ink: {flavor:?} {profile:?}");
+                if let (Some(Color::Rgb(r, ..)), Some(Color::Rgb(l, ..))) = (rest.bg, lit.bg) {
+                    assert!(l > r || r == 255, "lighter: {flavor:?} {profile:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn plain_summary_progress_keeps_its_fraction_through_pulses_and_theme_changes() {
