@@ -2383,7 +2383,7 @@ fn closed_box_row(
         return Some(closed_rule(app, 0, width, right.as_deref()));
     }
     if i == bottom {
-        let tail = facts(rec).map(|f| format!(" {f} ")).filter(|t| t.width() + 6 <= width);
+        let tail = facts(app, rec).map(|f| format!(" {f} ")).filter(|t| t.width() + 6 <= width);
         let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
         let mut spans = vec![Span::styled("-".repeat(width - tail_w), fade)];
         if let Some(t) = tail {
@@ -2413,16 +2413,45 @@ fn closed_box_row(
 const CLOSED_WORDS: &str = "closed ∙ shift+enter opens it";
 
 /// What the session runs on, for the closed box's bottom rule (T-1156): the
-/// page's own facts in place of the agent's footer, from its record.
-/// `None` with nothing known.
-fn facts(rec: &mesimon_core::board::SessionRecord) -> Option<String> {
+/// page's own facts in place of the agent's footer — its model and effort
+/// from its launch, its context fill from the ticket's account, its mode
+/// from its newest frame. `None` with nothing known.
+fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Option<String> {
     let flag = |name: &str| {
         rec.argv
             .windows(2)
             .find(|w| w[0] == name)
             .map(|w| w[1].trim_end_matches("[1m]").to_string())
     };
-    let facts: Vec<String> = [flag("--model"), flag("--effort")].into_iter().flatten().collect();
+    // Codex takes its tier as config (`-c model="…"`).
+    let config = |key: &str| {
+        rec.argv.windows(2).find_map(|w| {
+            let v = w[1].strip_prefix(key)?.strip_prefix('=')?;
+            (w[0] == "-c").then(|| v.trim_matches('"').to_string())
+        })
+    };
+    let context = app
+        .costs
+        .iter()
+        .find(|c| c.ticket == rec.ticket)
+        .and_then(|c| c.context_pct)
+        .map(|p| format!("context {p}%"));
+    let mode = rec.mode.as_deref().and_then(|m| match m {
+        "default" => None,
+        "acceptEdits" => Some("accept edits".to_string()),
+        "bypassPermissions" => Some("bypass permissions".to_string()),
+        "dontAsk" => Some("don't ask".to_string()),
+        other => Some(format!("{} mode", other.to_lowercase())),
+    });
+    let facts: Vec<String> = [
+        flag("--model").or_else(|| config("model")),
+        flag("--effort").or_else(|| config("model_reasoning_effort")),
+        context,
+        mode,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     (!facts.is_empty()).then(|| facts.join(" ∙ "))
 }
 

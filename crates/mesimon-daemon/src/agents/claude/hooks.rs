@@ -404,6 +404,12 @@ pub fn plan_of(frame: &HookFrame) -> Option<String> {
     (!plan.trim().is_empty()).then(|| plan.to_string())
 }
 
+/// The permission mode the frame names (T-1156): Claude Code puts its
+/// `permission_mode` on every tool and prompt event. `None` where absent.
+pub fn mode_of(frame: &HookFrame) -> Option<&str> {
+    frame.payload.get("permission_mode").and_then(Value::as_str).filter(|m| !m.is_empty())
+}
+
 /// The card excerpt for this event, if it carries one worth showing.
 pub fn detail_of(frame: &HookFrame) -> Option<String> {
     let text = match frame.event.as_str() {
@@ -840,6 +846,7 @@ mod tests {
         );
         assert_eq!(signal_of(&f), Some(Signal::PermissionRequest));
         assert_eq!(detail_of(&f), Some("Bash(rm -rf node_modules)".into()));
+        assert_eq!(mode_of(&f), Some("default"), "the mode rides every frame (T-1156)");
         // The interaction tools' approval dialogs keep their sharp reason —
         // never the generic Permission (see signal_of).
         let f = frame(

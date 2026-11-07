@@ -202,6 +202,13 @@ impl AgentAdapter for Claude {
                 }
             }
         }
+        // The permission mode every frame names (T-1156), for the page.
+        if let Some(mode) = hooks::mode_of(frame) {
+            if record.mode.as_deref() != Some(mode) {
+                record.mode = Some(mode.to_string());
+                result.metadata_changed = true;
+            }
+        }
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         result.detail = hooks::detail_of(frame);
         result.plan = hooks::plan_of(frame);
@@ -583,6 +590,32 @@ mod failure_tests {
         let seen = Claude.parse_hook(&session_start("compact", cleared), &mut record);
         assert!(!seen.metadata_changed, "the same id again changes nothing");
         assert_eq!(record.claude_session_id, Some(cleared));
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// T-1156: the permission mode every tool and prompt frame names lands
+    /// on the record for the ticket page; a frame naming none leaves it,
+    /// and the same mode again changes nothing.
+    #[test]
+    fn the_frames_permission_mode_lands_on_the_record() {
+        let (mut record, path) = record_on(&[prompt()]);
+        let frame = |event: &str, payload: serde_json::Value| {
+            let header = serde_json::json!({"v": 1, "session": "s", "event": event});
+            crate::ingest::parse_frame(format!("{header}\n{payload}").as_bytes()).unwrap()
+        };
+        let tool = |mode: &str| {
+            frame("PreToolUse", serde_json::json!({"tool_name": "Read", "permission_mode": mode}))
+        };
+        assert_eq!(record.mode, None);
+        let seen = Claude.parse_hook(&tool("plan"), &mut record);
+        assert!(seen.metadata_changed);
+        assert_eq!(record.mode.as_deref(), Some("plan"));
+        let seen = Claude.parse_hook(&tool("plan"), &mut record);
+        assert!(!seen.metadata_changed, "the same mode again changes nothing");
+        let _ = Claude.parse_hook(&frame("Stop", serde_json::json!({})), &mut record);
+        assert_eq!(record.mode.as_deref(), Some("plan"), "a frame naming none leaves it");
+        let _ = Claude.parse_hook(&tool("acceptEdits"), &mut record);
+        assert_eq!(record.mode.as_deref(), Some("acceptEdits"));
         let _ = std::fs::remove_file(path);
     }
 

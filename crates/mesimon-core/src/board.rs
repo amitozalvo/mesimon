@@ -383,6 +383,12 @@ pub struct SessionRecord {
     /// when the launch typed nothing (a resume). Renewed with `launched_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed_title: Option<String>,
+    /// The agent's permission mode as its newest hook frame named it
+    /// (T-1156): `default`, `acceptEdits`, `plan`, `auto`, … in Claude
+    /// Code's own words. The ticket page says it along the closed box's
+    /// bottom rule. `None` until a frame names one; never guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     /// The road this record's process reports on (T-574): `mod` when its
     /// launch was handed the mod mesimon lays. Re-decided at every launch and
     /// wake, like the tier; absent means the hook set alone. Since T-577 a
@@ -715,6 +721,7 @@ impl SessionRecord {
             pane_key: None,
             launched_at: None,
             typed_title: None,
+            mode: None,
             road: crate::road::Road::Hooks,
             native: false,
             codex_thread_id: None,

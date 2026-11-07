@@ -26,5 +26,5 @@
  · Vibing… (5m 55s · ↓ 22.2k tokens)                                                        ███▀▀████▀▀█ █▀████
  --  shift+enter  ask agent ----------------------------- ⠋ claude is working ---           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
     closed ∙ shift+enter opens it                                                           ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
- ----------------------------------------------------------------------- opus ---
+ -------------------------------------- opus ∙ high ∙ context 21% ∙ plan mode ---
  jk select session ∙ tab link ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe           ? keys

@@ -13151,6 +13151,7 @@ fn cost_fixture() -> Vec<mesimon_core::cost::TicketCost> {
         day,
         week: usd,
         month: usd,
+        context_pct: None,
     };
     vec![
         c(1, 0.42, 48_000, 0, 0.0),
@@ -15846,14 +15847,25 @@ fn the_box_opens_where_it_stood_and_nothing_moves() {
     app.rich_keys = true;
     for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
         s.argv.extend(["--model".to_string(), "opus".to_string()]);
+        s.argv.extend(["--effort".to_string(), "high".to_string()]);
+        s.mode = Some("plan".into());
     }
+    app.costs = vec![mesimon_core::cost::TicketCost {
+        ticket: ulid_n(3),
+        tokens: 1,
+        context_pct: Some(21),
+        ..Default::default()
+    }];
     let closed = render(&app, 120, 30);
     let at = closed
         .iter()
         .position(|l| l.contains("closed ∙ shift+enter opens it"))
         .expect("the closed box");
     assert!(closed[at - 1].contains(" shift+enter "), "the key on its top rule: {closed:#?}");
-    assert!(closed[at + 1].contains("opus"), "the facts on its bottom rule: {closed:#?}");
+    assert!(
+        closed[at + 1].contains(" opus ∙ high ∙ context 21% ∙ plan mode "),
+        "the facts on its bottom rule: {closed:#?}"
+    );
     assert!(!closed.iter().any(|l| l.contains('❯') && l.contains("closed")), "no prompt mark");
     golden("ticket_live_closed_120x30", &closed);
     let rect = app.live_rect.get().expect("the window");

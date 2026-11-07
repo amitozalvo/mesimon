@@ -12427,7 +12427,15 @@ impl Daemon {
             usage: self.usage.view(),
             prs: self.forge_items(),
             forge: self.forge_status(),
-            costs: self.costs.view(now_ms()),
+            costs: self
+                .costs
+                .view(now_ms())
+                .into_iter()
+                .map(|mut c| {
+                    c.context_pct = self.agent_context_view(c.ticket).and_then(|v| v.pct);
+                    c
+                })
+                .collect(),
         }
     }
 

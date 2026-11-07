@@ -363,6 +363,12 @@ pub struct TicketCost {
     pub week: f64,
     #[serde(default)]
     pub month: f64,
+    /// How full the ticket's agent's context window is, in percent
+    /// (T-1156, read as `agent_context_view` reads it for the crown,
+    /// T-969): the ticket page's closed box says it. Absent where unknown,
+    /// and then left off the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_pct: Option<u64>,
 }
 
 impl TicketCost {
@@ -439,6 +445,24 @@ pub fn tokens_word(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The facts the ticket page reads (T-1156) are off the wire while
+    /// unknown: a snapshot without them is byte for byte what it was.
+    #[test]
+    fn the_new_facts_are_off_the_wire_while_unknown() {
+        let cost = serde_json::to_string(&TicketCost::default()).unwrap();
+        assert!(!cost.contains("context_pct"), "{cost}");
+        let rec = crate::board::SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            crate::board::SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/".into(),
+            crate::board::SessionState::Spawning,
+        );
+        let rec = serde_json::to_string(&rec).unwrap();
+        assert!(!rec.contains("\"mode\""), "{rec}");
+    }
 
     #[test]
     fn a_mod_turn_is_the_engines_four_counts_and_its_model() {
