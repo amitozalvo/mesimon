@@ -3,17 +3,17 @@
   │                                                      │
   │  Keep this machine awake   ○ off                     │
   │  Snake while idle          ○ off                     │
+  │  Enter on a working card   ● agent   ○ ticket page   │
   │  Mouse                     ● on                      │
   │  Editor                    auto                      │
   │                                                      │
   │ SNOOZE                                               │
-  │  Comes back                ● lit    ○ quiet          │
+  │  Comes back                ● lit     ○ quiet         │
   │  Week starts on            Monday                    │
   │                                                      │
   │ MERGE                                                │
-  │  Merge into                ● main   ○ pull requests  │
+  │  Merge into                ● main    ○ pull requests │
   │  Integration branch        not set                   │
-  │                                                      │
   │                                                      │
   │ the machine sleeps on its own clock, agents or not   │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯

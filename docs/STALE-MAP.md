@@ -42654,3 +42654,25 @@ needed two setup-navigation corrections (both failed attempts cleaned their owne
 before the successful page-key run. These were verification-environment/driver failures,
 not product repairs. No full workspace suite or model-behavior rig was required for
 this parser-only production change.
+
+## Enter on a working card can open the ticket page (T-1173, 2026-11-07, the author: "setting to go to ticket page instead (always)")
+
+**What changed.** Settings › Behaviour › `Enter on a working card` (`● agent ○ ticket page`),
+the machine pref `enter_opens_ticket_page` (`PrefKey::EnterTicketPage`, machine-only: how a
+person moves is theirs, like the editor). Off is today's T-117 road: Enter on a running or
+needs-you agent focuses its pane. On, `board_enter` opens the ticket page with the rail on
+that agent, so one more Enter is the pane. The pref is folded into `Ctx::ticket_hot` in
+`App::ctx()`, so the footer reads `enter ticket` before the press and `space ticket` falls
+silent, the same as on a cold card; `ticket_hot` has no other reader.
+
+**Kept:** the just-composed ticket's Enter still starts and focuses an agent: it is not a
+working card, and the status line names that Enter as it offers it. A click on a card
+presses the key, so it follows the setting with no code of its own.
+
+**Visual:** every Behaviour choice column moves one cell right, because `● agent` is wider
+than `● main` and the options share one grid. Goldens reminted and read.
+
+**Verified:** `cargo ut` with the new `enter_on_a_working_card_can_open_the_ticket_page`
+(running and needs-you, hint before and after, the row toggling) and
+`enter_ticket_page_defaults_off_and_round_trips`; six Settings goldens reminted. TUI-only,
+so no e2e or full suite.

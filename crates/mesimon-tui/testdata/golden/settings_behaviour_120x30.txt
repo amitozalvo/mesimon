@@ -4,24 +4,24 @@
       │                                                                                                          │
    Dec│  Theme               Keep this machine awake   ○ off                                                     │
       │                      Snake while idle          ○ off                                                     │
-   Key│  Appearance          Mouse                     ● on                                                      │
-      │                      Editor                    auto                                                      │
-      │  Notifications                                                                                           │
-      │                     SNOOZE                                                                               │
-      │▎ Behaviour           Comes back                ● lit    ○ quiet                                          │
-      │                      Week starts on            Monday                                                    │
-      │  Agents                                                                                                  │
-      │                     MERGE                                                                                │
-      │  Crown               Merge into                ● main   ○ pull requests                                  │
-      │                      Integration branch        not set                                                   │
-      │  Terminal                                                                                                │
-      │                     REMOTE                                                                               │
-      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min             │
+   Key│  Appearance          Enter on a working card   ● agent   ○ ticket page                                   │
+      │                      Mouse                     ● on                                                      │
+      │  Notifications       Editor                    auto                                                      │
       │                                                                                                          │
-      │  About              AUTO MERGE                                                                           │
+      │▎ Behaviour          SNOOZE                                                                               │
+      │                      Comes back                ● lit     ○ quiet                                         │
+      │  Agents              Week starts on            Monday                                                    │
+      │                                                                                                          │
+      │  Crown              MERGE                                                                                │
+      │                      Merge into                ● main    ○ pull requests                                 │
+      │  Terminal            Integration branch        not set                                                   │
+      │                                                                                                          │
+      │  Usage              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off     ○ 1 min           ○ 5 min   ○ 15 min            │
+      │  About                                                                                                   │
+      │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                                      │
       │                      Tells the agent           ● on                                                      │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                     the machine sleeps on its own clock, agents or not                                   │

@@ -8279,7 +8279,9 @@ impl App {
             ticket_archived: subject
                 .and_then(|t| self.board.ticket(t))
                 .is_some_and(|t| t.is_archived()),
-            ticket_hot: sessions.iter().any(|s| is_hot(s)),
+            // Enter goes to the agent only while the setting leaves it
+            // there (T-1173): on, Enter is the page and `space` falls silent.
+            ticket_hot: !self.prefs.enter_ticket_page && sessions.iter().any(|s| is_hot(s)),
             can_undo: undo.is_some(),
             undo_word: match undo {
                 Some(LastUndo::Archive(_)) => "undo archive",
@@ -8599,6 +8601,7 @@ impl App {
             terminal_posts: self.terminal.poster().is_some(),
             keep_awake: self.prefs.keep_awake,
             idle_snake: self.prefs.idle_snake,
+            enter_ticket_page: self.prefs.enter_ticket_page,
             game_human: self.arcade.borrow().as_ref().is_some_and(|g| !g.cpu()),
             header_chip: if self.header_focus { self.header_chip } else { HeaderChip::Git },
             remote_mark: self.control.enabled,
@@ -10222,6 +10225,15 @@ impl App {
                 if !on {
                     self.arcade.borrow_mut().take();
                 }
+            }
+            Verb::EnterTicketPage => {
+                let on = !self.prefs.enter_ticket_page;
+                let word = if on {
+                    "enter on a working card opens the ticket page"
+                } else {
+                    "enter on a working card goes to the agent"
+                };
+                self.set_pref(word, |p| p.enter_ticket_page = on);
             }
             Verb::WeekStart => {
                 let day = self.prefs.week_start.next();
@@ -12695,6 +12707,8 @@ impl App {
     /// Board Enter is "get me working": a live agent focuses directly, a
     /// just-composed ticket starts one, and only then does Enter mean the
     /// ticket page. The hint says which BEFORE the press (`ticket_hot`).
+    /// Settings › Behaviour › Enter on a working card (T-1173) can send a
+    /// live agent's card to the page as well.
     fn board_enter(&mut self) -> Result<()> {
         if self.on_column_header() {
             return self.open_column_settings();
@@ -12705,7 +12719,10 @@ impl App {
         let ticket = t.id;
         let fresh = self.just_created.take() == Some(ticket);
         let hot = self.rail_sessions(ticket).iter().position(|s| is_hot(s));
-        if let Some(rail_idx) = hot {
+        if let Some(rail_idx) = hot.filter(|_| self.prefs.enter_ticket_page) {
+            // The page, its rail on the agent Enter would have gone to.
+            self.screen = Screen::Ticket { ticket, rail_idx };
+        } else if let Some(rail_idx) = hot {
             let sid = self.rail_sessions(ticket)[rail_idx].id;
             self.focus_session(sid)?;
             if self.pending_attach.is_none() {
@@ -26658,6 +26675,38 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "FocusStart"));
         assert_eq!(app.screen, Screen::Board);
+    }
+
+    /// Settings › Behaviour › Enter on a working card (T-1173): on, Enter
+    /// on a running or needs-you agent opens the ticket page, its rail on
+    /// that agent, the footer says `ticket` before the press and `space`
+    /// falls silent; the row's Enter flips it back.
+    #[test]
+    fn enter_on_a_working_card_can_open_the_ticket_page() {
+        let needs_you =
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Permission };
+        for state in [SessionState::Running, needs_you] {
+            let (mut app, sent, _sid) = app_with_claude(state.clone(), false);
+            assert_eq!(
+                keymap::hint_for(Scope::Board, Verb::Act, &app.ctx()),
+                Some(("enter", "agent"))
+            );
+            app.seed_pref(|p| p.enter_ticket_page = true);
+            let ctx = app.ctx();
+            assert_eq!(keymap::hint_for(Scope::Board, Verb::Act, &ctx), Some(("enter", "ticket")));
+            assert_eq!(keymap::hint_for(Scope::Board, Verb::TicketScreen, &ctx), None);
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(!sent_contains(&sent, "FocusStart"), "{state:?} must not focus");
+            assert!(app.pending_attach.is_none());
+            assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+        }
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
+        let ctx = app.ctx();
+        app.dispatch(Verb::EnterTicketPage, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(app.prefs.enter_ticket_page);
+        let ctx = app.ctx();
+        app.dispatch(Verb::EnterTicketPage, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(!app.prefs.enter_ticket_page);
     }
 
     #[test]

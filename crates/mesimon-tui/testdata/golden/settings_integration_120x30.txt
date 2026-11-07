@@ -4,25 +4,25 @@
       │                                                                                                          │
    Dec│  Theme               Keep this machine awake   ○ off                                                     │
       │                      Snake while idle          ○ off                                                     │
-   Key│  Appearance          Mouse                     ● on                                                      │
-      │                      Editor                    auto                                                      │
-      │  Notifications                                                                                           │
-      │                     SNOOZE                                                                               │
-      │▎ Behaviour           Comes back                ● lit   ○ quiet                                           │
-      │                      Week starts on            Monday                                                    │
-      │  Agents                                                                                                  │
-      │                     MERGE                                                                                │
-      │  Crown               Merge into                staging (integration)                                     │
-      │                      Integration branch        staging                                                   │
-      │  Terminal            Promote to main           ready                                                     │
+   Key│  Appearance          Enter on a working card   ● agent   ○ ticket page                                   │
+      │                      Mouse                     ● on                                                      │
+      │  Notifications       Editor                    auto                                                      │
       │                                                                                                          │
-      │  Usage              REMOTE                                                                               │
-      │                      Fetch from the remote     ● off   ○ 1 min   ○ 5 min   ○ 15 min                      │
-      │  About                                                                                                   │
+      │▎ Behaviour          SNOOZE                                                                               │
+      │                      Comes back                ● lit     ○ quiet                                         │
+      │  Agents              Week starts on            Monday                                                    │
+      │                                                                                                          │
+      │  Crown              MERGE                                                                                │
+      │                      Merge into                staging (integration)                                     │
+      │  Terminal            Integration branch        staging                                                   │
+      │                      Promote to main           ready                                                     │
+      │  Usage                                                                                                   │
+      │                     REMOTE                                                                               │
+      │  About               Fetch from the remote     ● off     ○ 1 min         ○ 5 min   ○ 15 min              │
+      │                                                                                                          │
       │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                                      │
       │                      Tells the agent           ● on                                                      │
-      │                                                                                                          │
       │                                                                                                          │
       │                     fast-forward main from staging                                                       │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯

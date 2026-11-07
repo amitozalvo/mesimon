@@ -780,6 +780,9 @@ pub enum Verb {
     KeepAwake,
     /// The Settings row for the idle snake (T-870).
     IdleSnake,
+    /// The Settings row for where board Enter goes on a card whose agent is
+    /// running (T-1173): its pane, or the ticket page as on any other card.
+    EnterTicketPage,
     /// Its five rows. The first is the master switch: off means the board
     /// says nothing out loud, and the other four are not offered.
     NotifyToggle,
@@ -1259,6 +1262,7 @@ impl SettingsSection {
             | Verb::WeekStart
             | Verb::KeepAwake
             | Verb::IdleSnake
+            | Verb::EnterTicketPage
             | Verb::Mouse
             | Verb::EditorChoice => Self::Behaviour,
             Verb::SystemPrompt
@@ -1815,6 +1819,9 @@ pub struct Ctx {
     /// whether a person holds the snake now (its steering keys are theirs)
     /// rather than the cpu.
     pub idle_snake: bool,
+    /// Board Enter opens the ticket page even where an agent is running
+    /// (T-1173): the preference, and already folded into `ticket_hot`.
+    pub enter_ticket_page: bool,
     pub game_human: bool,
     /// The header chip the cursor is on, while the header has it.
     pub header_chip: HeaderChip,
@@ -5546,6 +5553,23 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // closes it. Reading the mouse takes the terminal's own text selection,
     // so a drag selects on the board and copies on release — and off is for
     // whoever would rather have the terminal's own back outright.
+    // Where the board's Enter goes on a card whose agent is running
+    // (T-1173, user: "setting to go to ticket page instead (always)"). The
+    // agent by default, the way it has gone since T-117; the ticket page is
+    // for whoever would rather read before stepping into a pane.
+    MenuItem {
+        verb: Verb::EnterTicketPage,
+        label: |_| "Enter on a working card".into(),
+        detail: |c| {
+            if c.enter_ticket_page {
+                "its pane is a key away from the page".into()
+            } else {
+                "space opens the ticket page instead".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::Mouse,
         label: |_| "Mouse".into(),
@@ -6500,7 +6524,9 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
             // What the board does with its empty cells while nobody is
             // at the keys.
             Verb::IdleSnake,
-            // How the board is driven: by keys alone, or the mouse too.
+            // How the board is driven: where Enter goes, and whether the
+            // mouse is read too.
+            Verb::EnterTicketPage,
             Verb::Mouse,
             // What `^g` and a file link open.
             Verb::EditorChoice,
@@ -6641,6 +6667,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::NotifySoundDone => Value::Word(or(c.notify_sound_done, "Tick").into()),
         Verb::KeepAwake => Value::Switch(c.keep_awake),
         Verb::IdleSnake => Value::Switch(c.idle_snake),
+        Verb::EnterTicketPage => pick(&["agent", "ticket page"], c.enter_ticket_page),
         Verb::Mouse => Value::Switch(c.mouse),
         Verb::EditorChoice => Value::Word(or(c.editor_pick, "auto").into()),
         Verb::SnoozeQuiet => pick(&["lit", "quiet"], !c.snooze_needs_you),
@@ -6756,6 +6783,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::NotifyVia => PrefKey::NotifyVia,
         Verb::KeepAwake => PrefKey::KeepAwake,
         Verb::IdleSnake => PrefKey::IdleSnake,
+        Verb::EnterTicketPage => PrefKey::EnterTicketPage,
         Verb::NotifyToggle => PrefKey::Notify,
         Verb::NotifyDone => PrefKey::NotifyDone,
         Verb::NotifyFocused => PrefKey::NotifyFocused,
@@ -11485,6 +11513,7 @@ mod tests {
                 vec![
                     Verb::KeepAwake,
                     Verb::IdleSnake,
+                    Verb::EnterTicketPage,
                     Verb::Mouse,
                     Verb::EditorChoice,
                     Verb::SnoozeQuiet,
@@ -12369,6 +12398,7 @@ mod tests {
             Verb::TabIcon,
             Verb::KeepAwake,
             Verb::IdleSnake,
+            Verb::EnterTicketPage,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
             Verb::MergeTrain,

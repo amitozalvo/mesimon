@@ -50,6 +50,10 @@ pub enum PrefKey {
     /// click (T-870), only once the person turns it on (T-884). About the
     /// person, so the machine's alone.
     IdleSnake,
+    /// Enter on a card whose agent is running opens the ticket page, as it
+    /// does on every other card, instead of the agent's pane (T-1173). Off
+    /// by default; about how the person moves, so the machine's alone.
+    EnterTicketPage,
     Notify,
     NotifyDone,
     NotifyFocused,
@@ -136,7 +140,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 48] = [
+    pub const ALL: [PrefKey; 49] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -155,6 +159,7 @@ impl PrefKey {
         PrefKey::TabIcon,
         PrefKey::KeepAwake,
         PrefKey::IdleSnake,
+        PrefKey::EnterTicketPage,
         PrefKey::Notify,
         PrefKey::NotifyDone,
         PrefKey::NotifyFocused,
@@ -208,6 +213,7 @@ impl PrefKey {
             PrefKey::TabIcon => "tab_icon",
             PrefKey::KeepAwake => "keep_awake",
             PrefKey::IdleSnake => "snake_while_idle",
+            PrefKey::EnterTicketPage => "enter_opens_ticket_page",
             PrefKey::Notify => "notify",
             PrefKey::NotifyDone => "notify_done",
             PrefKey::NotifyFocused => "notify_focused",
@@ -254,7 +260,8 @@ impl PrefKey {
     /// (T-327) are about the person's subscription,
     /// which is one sign-in whichever board shows it. Who posts the banner
     /// (T-676) is a question about the terminal, so it is the machine's,
-    /// and the editor (T-864) is the person's. The release channel (T-946)
+    /// and the editor (T-864) is the person's, as is where Enter on a
+    /// working card goes (T-1173). The release channel (T-946)
     /// is about the binary installed, which every board on the machine runs.
     pub fn board_overridable(self) -> bool {
         !matches!(
@@ -289,6 +296,7 @@ impl PrefKey {
                 | PrefKey::CardPrs
                 | PrefKey::Editor
                 | PrefKey::IdleSnake
+                | PrefKey::EnterTicketPage
                 | PrefKey::ReleaseChannel
         )
     }
@@ -314,6 +322,7 @@ impl PrefKey {
             PrefKey::TabIcon => "tab icon",
             PrefKey::KeepAwake => "keep awake",
             PrefKey::IdleSnake => "snake while idle",
+            PrefKey::EnterTicketPage => "enter on a working card",
             PrefKey::Notify => "notifications",
             PrefKey::NotifyDone => "notify when a turn lands",
             PrefKey::NotifyFocused => "notify while focused",
@@ -405,6 +414,7 @@ mod tests {
                 PrefKey::TabSubtitle,
                 PrefKey::TabIcon,
                 PrefKey::IdleSnake,
+                PrefKey::EnterTicketPage,
                 PrefKey::NotifyVia,
                 PrefKey::Peek,
                 PrefKey::CrownLightning,

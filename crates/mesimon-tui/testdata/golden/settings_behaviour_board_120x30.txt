@@ -4,24 +4,24 @@
       │                                                                                                          │
    Dec│  Theme               Keep this machine awake   ○ off                                          inherited  │
       │                      Snake while idle          ○ off                                            machine  │
-   Key│  Appearance          Mouse                     ● on                                             machine  │
-      │                      Editor                    auto                                             machine  │
-      │  Notifications                                                                                           │
-      │                     SNOOZE                                                                               │
-      │▎ Behaviour           Comes back                ● lit    ○ quiet                               inherited  │
-      │                      Week starts on            Monday                                           machine  │
-      │  Agents                                                                                                  │
-      │                     MERGE                                                                                │
-      │  Crown               Merge into                ● main   ○ pull requests                                  │
-      │                      Integration branch        not set                                                   │
-      │  Terminal                                                                                                │
-      │                     REMOTE                                                                               │
-      │  Usage               Fetch from the remote     ● off    ○ 1 min           ○ 5 min   ○ 15 min  inherited  │
+   Key│  Appearance          Enter on a working card   ● agent   ○ ticket page                          machine  │
+      │                      Mouse                     ● on                                             machine  │
+      │  Notifications       Editor                    auto                                             machine  │
       │                                                                                                          │
-      │  About              AUTO MERGE                                                                           │
+      │▎ Behaviour          SNOOZE                                                                               │
+      │                      Comes back                ● lit     ○ quiet                              inherited  │
+      │  Agents              Week starts on            Monday                                           machine  │
+      │                                                                                                          │
+      │  Crown              MERGE                                                                                │
+      │                      Merge into                ● main    ○ pull requests                                 │
+      │  Terminal            Integration branch        not set                                                   │
+      │                                                                                                          │
+      │  Usage              REMOTE                                                                               │
+      │                      Fetch from the remote     ● off     ○ 1 min           ○ 5 min   ○ 15 min inherited  │
+      │  About                                                                                                   │
+      │                     AUTO MERGE                                                                           │
       │                      Auto merge                ● on                                            set here  │
       │                      Tells the agent           ● on                                           inherited  │
-      │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                     machine: on ∙ merges quiet REVIEW branches, asks idle agents to rebase ∙ arming… ∙ ~ │

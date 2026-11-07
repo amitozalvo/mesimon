@@ -1,7 +1,7 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ BEHAVIOUR ∙ MACHINE ─────────────────────╮
   │                                                      │
-  │  Comes back                ● lit   ○ quiet           │
+  │  Comes back                ● lit     ○ quiet         │
   │  Week starts on            Monday                    │
   │                                                      │
   │ MERGE                                                │
