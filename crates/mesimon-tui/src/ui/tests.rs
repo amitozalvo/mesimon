@@ -15306,11 +15306,21 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!(lines[field + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     let pane = &lines[rect.y as usize..];
     assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
-    // Open, the field's rows take the status line's room: the rule stays
-    // where it stood and nothing over it moves on the press.
-    assert_eq!(field, rule + 1, "the field under the rule's row: {lines:#?}");
-    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
-    assert_eq!(&lines[..rule], &closed[..rule], "the rows over the box moved");
+    // Open, the status line stays under the field (the author: "don't hide
+    // the lines below it"); the box's two more rows move the rows over it
+    // up by two.
+    assert_eq!(field, rule - 1, "the field over the rule's row: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    let zone = closed.iter().position(|l| l.contains("PREVIEW")).expect("the heading") + 1;
+    // The zone's columns: the rail shares the rows and does not move. The
+    // conversation's top row is the window's own (a blank over a paged
+    // conversation): the rows under it are compared.
+    let cols = |l: &String| l.chars().take(88).collect::<String>().trim_end().to_string();
+    assert_eq!(
+        lines[zone + 1..rule - 2].iter().map(cols).collect::<Vec<_>>(),
+        closed[zone + 3..rule].iter().map(cols).collect::<Vec<_>>(),
+        "the zone's rows moved by two"
+    );
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15679,10 +15689,10 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     assert!(lines[at - 4].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
     ask_field(&mut app, "summarise the ticket", false);
     let open = render(&app, 120, 30);
-    // Open, the field is on the `›` row under the page's rule. Codex has
-    // one row under its box (its hints row is blank), so the field's rows
-    // take that one and one from over the box: the field lands where the
-    // closed rule stood.
+    // Open, the field is on the `›` row between the page's rules, the
+    // status row under them as the pane has it: the box grows by two rows
+    // over the rule's place.
+    let at = at - 1;
     assert!(open[at].contains("summarise the ticket"), "on the `›` row: {open:#?}");
     assert!(!open.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
     // Columns, not bytes: the pane's `›` is three of them.
@@ -15691,6 +15701,7 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     assert!(open[at].starts_with(" ›"), "the pane's mark stays: {:?}", open[at]);
     assert!(open[at - 1].contains("----"), "under the page's rule: {open:#?}");
     assert!(open[at - 2].contains("Worked for 8s"), "the pane's words over it: {open:#?}");
+    assert!(open[at + 2].contains("Context 2% used"), "its status row stays: {open:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15753,7 +15764,7 @@ fn the_cursor_blinks_only_once_the_field_is_open() {
     assert!(terminal.backend().cursor_visible(), "the field has the cursor");
     assert_eq!(
         terminal.backend().cursor_position().y as usize,
-        composer + 1,
+        composer - 1,
         "on the composer's row: {:#?}",
         lines_of(terminal.backend().buffer())
     );
@@ -15881,7 +15892,7 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
 /// bottom rule; opened by the key, the field types in the column its words
 /// stood in, on the same row, and no row of the page moves.
 #[test]
-fn the_box_opens_where_it_stood_and_nothing_moves() {
+fn the_box_opens_over_its_rule_and_the_status_line_stays() {
     let (mut app, path) = app_live("tlive-closed", false);
     app.rich_keys = true;
     for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
@@ -15931,15 +15942,20 @@ fn the_box_opens_where_it_stood_and_nothing_moves() {
         buffer,
     };
     let open = render(&app, 120, 30);
-    // The field opens under the rule, on the rows the status line had:
-    // nothing over the box moves, and the status line is back on Esc.
-    assert!(open[at + 1].contains("measure it"), "typed under the rule: {open:#?}");
-    assert!(open[at].contains("────"), "the pane's own rule frames it, open");
-    assert!(open[at + 2].contains("shift+tab"), "the delivery row on its bottom rule");
-    assert!(!open.iter().any(|l| l.contains("Fable 5.1")), "the status line gives it the room");
-    assert_eq!(app.live_rect.get(), Some(rect), "the window does not move");
-    for y in 0..at {
-        assert_eq!(open[y], closed[y], "row {y} moved");
+    // The field opens between the pane's own rules, the status line still
+    // under them; the box's two more rows move what is over it up by two.
+    assert!(open[at - 1].contains("measure it"), "typed over the rule's row: {open:#?}");
+    assert!(open[at - 2].contains("────"), "the pane's own rule frames it, open");
+    assert!(open[at].contains("shift+tab"), "the delivery row on its bottom rule");
+    assert!(open[at + 1].contains("Fable 5.1"), "the status line stays: {open:#?}");
+    let grown = app.live_rect.get().expect("the window");
+    assert_eq!((grown.y + 2, grown.height), (rect.y, rect.height + 2), "two rows taller");
+    let zone = closed.iter().position(|l| l.contains("PREVIEW")).expect("the heading") + 1;
+    // The zone's columns: the rail shares the rows and does not move; the
+    // conversation's top row is the window's own.
+    let cols = |l: &String| l.chars().take(88).collect::<String>().trim_end().to_string();
+    for y in zone + 1..at - 2 {
+        assert_eq!(cols(&open[y]), cols(&closed[y + 2]), "row {y} moved");
     }
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }

@@ -42449,9 +42449,10 @@ shift enter hint to open it and the current state of it, no input look at all �
 below kept". (The first cut drew three rows — the words in the field's column, an empty box
 saying `closed ∙ shift+enter opens it`, the facts on a bottom rule — and the author called the
 words redundant.) The conversation rests on the rule, two rows taller for it. Open: the pane's
-own rules frame today's field on the rows the status line had, so nothing over the rule moves
-on the press and the status line is back on Esc; with fewer rows under the box than the field
-needs (no statusLine, Codex) the rows over it move by the rest. Codex's lone
+own rules frame today's field and the status line stays under it as the pane has it, the
+rows over the box moving up by the two the field takes (a first cut had the field take the
+status line's rows so nothing over it moved; the author: "it should look like the original,
+open the input, don't hide the lines below it"). Codex's lone
 `›` row gets page rules over and under (`Shot::page_box`), so it opens without moving. Key
 hints come out of Claude Code's status rows only (`strip_hints`: spinner and `⎿` rows; a
 parenthesised `key to/for action` `·` segment; a `⎿ Tip:` row); prose and prompts never pass
@@ -42507,7 +42508,7 @@ them. Run on Claude Code 2.1.319 (idle, idle with a statusLine, working, permiss
 **Tests.** `the_launch_list_follows_the_binding_and_the_record`,
 `the_letter_stirs_and_wakes_into_the_shin`, `the_small_letter_stands_where_the_small_shin_does`,
 `the_empty_seat_keeps_its_words_and_the_rail_its_letter`,
-`the_box_opens_where_it_stood_and_nothing_moves`, `the_session_survey_goes_wherever_it_stands`,
+`the_box_opens_over_its_rule_and_the_status_line_stays`, `the_session_survey_goes_wherever_it_stands`,
 `the_zone_holds_for_the_panes_first_capture`, `a_message_sent_mid_turn_is_the_persons_row`,
 `a_draft_in_the_box_holds_shift_enter_and_the_title_does_not`, `live::tests`
 (`the_page_cuts_the_footer_and_the_hints`, `a_hint_is_a_key_and_what_it_does`,

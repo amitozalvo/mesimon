@@ -1260,15 +1260,12 @@ fn draw_preview(
         let anchor = shot.anchor();
         // The box, closed (T-1156), is its top rule alone: the rows under
         // it to its bottom rule are not drawn, and the zone has their room.
-        // Open, the field's rows take the room of the rows under the box
-        // instead, so nothing over the box moves on the press.
+        // Open, the pane's rows are all drawn, the status line under the
+        // field as the pane has it (the author: "don't hide the lines
+        // below it"); the rows over the box move up by the two the field
+        // takes.
         let closed = !asking_here(app, rec.ticket);
         let boxed = shot.page_box();
-        let end = match boxed {
-            Some((_, _, bottom)) if !closed => view.partition_point(|&r| r <= bottom),
-            _ => view.len(),
-        };
-        let view = &view[..end];
         let at = view.partition_point(|&r| r < anchor);
         let collapse = if closed { boxed.map_or(0, |(top, _, bottom)| bottom - top) } else { 0 };
         let live_n = (view.len() - at).min(zone_h + collapse);
