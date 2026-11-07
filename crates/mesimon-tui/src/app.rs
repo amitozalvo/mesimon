@@ -15901,8 +15901,10 @@ impl App {
             // reports the same way and means something else: a session
             // that did not exist a moment ago (T-294).
             Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ {ask}"),
-            // An idle pane parked and woken into plan mode (T-434).
-            Response::Spawned { fresh: false, .. } if plan && !waking => {
+            // An idle pane parked and woken into plan mode (T-434) or onto
+            // the field's tier pick (T-1163): a pane was there, so it was
+            // restarted, not woken.
+            Response::Spawned { fresh: false, .. } if !waking => {
                 format!("restarted {word}{mode} ∙ {ask}")
             }
             Response::Spawned { fresh: false, .. } => format!("{woke} {word}{mode} ∙ {ask}"),
@@ -17199,7 +17201,7 @@ pub(crate) mod test_support {
                     rec.pending_submit = true;
                     return Ok(Response::Ok);
                 }
-                Command::PromptSession { ticket, queued, accept_plan, plan, .. } => {
+                Command::PromptSession { ticket, queued, accept_plan, plan, tier, .. } => {
                     // An accept (T-420) is always a queued entry, its flag
                     // on the row until the daemon presses.
                     let queued = queued || accept_plan;
@@ -17247,10 +17249,11 @@ pub(crate) mod test_support {
                         });
                         return Ok(Response::Queued { behind: waits_on, asking, held });
                     }
-                    // A claude pane in plan mode (T-434) is parked and
-                    // woken: the record comes back Spawning with the flag in
-                    // its argv. A codex pane takes `/plan` (T-847): `Ok`.
-                    if seat == PendingAction::Ask && plan {
+                    // A claude pane in plan mode (T-434), or on a tier pick
+                    // (T-1163), is parked and woken: the record comes back
+                    // Spawning, plan mode's flag in its argv. A codex pane
+                    // takes `/plan` (T-847): `Ok`.
+                    if seat == PendingAction::Ask && (plan || tier.is_some()) {
                         if let Some(rec) = self
                             .board
                             .sessions
@@ -17259,8 +17262,13 @@ pub(crate) mod test_support {
                         {
                             rec.state = SessionState::Spawning;
                             rec.pending_submit = true;
-                            rec.argv =
-                                vec!["claude".into(), "--permission-mode".into(), "plan".into()];
+                            if plan {
+                                rec.argv = vec![
+                                    "claude".into(),
+                                    "--permission-mode".into(),
+                                    "plan".into(),
+                                ];
+                            }
                             let id = rec.id;
                             return Ok(Response::Spawned { id, fresh: false });
                         }
@@ -24928,6 +24936,41 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.status, "restarted agent in plan mode ∙ asked");
+    }
+
+    /// T-1163: an ask with a `^n` pick at an idle pane is a park and a wake
+    /// on the new tier, and the receipt says the agent restarted on it —
+    /// never a refusal, and never a shake of the card.
+    #[test]
+    fn an_ask_with_a_tier_pick_at_an_idle_pane_restarts_it_on_the_tier() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        let (mut app, sent, _) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        app.board_mut().tiers.push(Tier {
+            id: "01QUICK".into(),
+            name: "quick".into(),
+            provider: AgentProvider::ClaudeCode,
+            model: "sonnet".into(),
+            effort: Effort::High,
+            description: String::new(),
+        });
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        if app.ctx().ask_queued {
+            app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.ctx().prompting && !app.ctx().ask_queued);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        for ch in "go".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "01QUICK"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "restarted agent ∙ asked ∙ on quick");
+        assert!(app.refused.is_none(), "the card does not shake");
     }
 
     /// T-434: `^p` in the composer — one-line and grown — starts the new

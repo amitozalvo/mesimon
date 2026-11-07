@@ -42495,3 +42495,19 @@ spinner; one `box_words` and one `tail_rule` where there were three. Left as it 
 decision: the hold is the page's, so the board's ask, the column's, the crown's `ask_agent`
 and Remote Control still type beside a person's draft (T-966's rule), which a daemon-side
 refusal on `composer::read` would close for every road.
+
+## An ask with a tier pick at an idle pane is a restart, not a refusal (T-1163, 2026-11-07)
+
+**Bug.** A queued ask with the field's `^n` pick at an idle pane parked, and `enqueue_ask`'s own
+drain relaunched the pane onto the new tier with the words held for it (`relaunches`: tier owed
+and at rest), so the queue entry was gone and no `Ack::QUEUED` marker existed. The receipt then
+fell to `could not deliver`: only a start, a wake or plan mode were read as a relaunch. The card
+shook and the status refused although the tier changed and the words were sent (feed:
+`queued_ask`, `tier_switch`, `queued_ask_sent`).
+
+**Fix.** `enqueue_ask` reads `relaunches` on the seat before parking, and a relaunched pane
+answers `Spawned` as plan mode's does. The TUI says `restarted agent ∙ asked ∙ on <tier>`
+for any `Spawned { fresh: false }` at a seat that had a pane, which only a relaunch answers.
+
+**Tests.** `tier_e2e`'s queued-ask-at-an-idle-pane block (fails with `could not deliver` without
+the fix), `an_ask_with_a_tier_pick_at_an_idle_pane_restarts_it_on_the_tier`.

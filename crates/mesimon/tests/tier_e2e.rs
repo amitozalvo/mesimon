@@ -212,6 +212,36 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     let rec = record(&mut c, s1);
     assert!(flag(&rec, "--model").is_none() && flag(&rec, "--effort").is_none(), "{:?}", rec.argv);
 
+    // ---- a queued ask with a pick at an idle pane (T-1163): the drain's
+    //      relaunch carries the words at once, and the receipt says so ------
+    hook_send(
+        &h.paths.hook_sock(),
+        &s1.to_string(),
+        "SessionStart",
+        &serde_json::json!({"session_id": conversation, "source": "resume",
+            "transcript_path": h.dir.join(format!("{conversation}.jsonl"))})
+        .to_string(),
+    );
+    c.await_state(s1, "resumed idle", |s| matches!(s, SessionState::Idle { .. }));
+    let pane = record(&mut c, s1).pane_key;
+    match c.request(Command::PromptSession {
+        ticket: t1,
+        text: "mesimon-probe-1163 on the new tier".into(),
+        queued: true,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: Some("01QUICK".into()),
+        resend: false,
+        uploads: Vec::new(),
+    }) {
+        Response::Spawned { id, fresh: false } => assert_eq!(id, s1),
+        other => panic!("the relaunch delivered the words, so no refusal: {other:?}"),
+    }
+    await_relaunch(&mut c, s1, &pane, "01QUICK");
+    assert!(record(&mut c, s1).pending_submit, "the words are parked for the relaunched pane");
+    assert!(pending_of(&mut c, Some(t1)).is_empty(), "the ask left the queue with the switch");
+
     // ---- an ask with a pick, sent now at a working pane: it queues, then the
     //      switch carries it -------------------------------------------------
     hook_send(

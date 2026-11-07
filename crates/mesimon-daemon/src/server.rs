@@ -15975,6 +15975,9 @@ impl Daemon {
         plan: bool,
     ) -> Response {
         let word = seat.word();
+        // A pane owed a tier switch at rest takes its words through the
+        // relaunch the drain does right here (T-1163), as plan mode's does.
+        let relaunch = matches!(&seat, QueuedSeat::Pane(id) if self.relaunches(*id, plan));
         if let Err(message) = self.park_ask(ticket, seat, text, Asker::Person, accept_plan, plan) {
             return Response::Err { message };
         }
@@ -15990,9 +15993,10 @@ impl Daemon {
             }
         } else if self.ask_in_flight(ticket) {
             Response::Ok
-        } else if word != "ask" || plan {
+        } else if word != "ask" || plan || relaunch {
             // A start or a wake delivered on the spot — or a pane relaunched
-            // into plan mode (T-434), which is a wake — holds the checkout
+            // into plan mode (T-434) or onto a new tier (T-1163), which is a
+            // wake — holds the checkout
             // through its own record (`Spawning` + an owed Enter), so there
             // is no in-flight marker to look for — the session is the receipt.
             match self.board.live_agent(ticket) {
