@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui  !1    7 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+
+   Decay treatments       >1y    ! Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   Two ways to keep the se~
+   Keymap validator       >1y      Fixed the OSC-11 race:      x Flaky e2e on runner  >1y
+                                   the query now runs once,
+                                   ✻ claude ⠋  $ bash ◦
+                                                        T-3
+
+          ╭─ TRANSCRIPT (5 of 5) ────────────┴─────────────────────────────────╮
+          │  ! claude raised a hand  >1y                                       │
+          │                                                                    │
+          │  Two ways to keep the session: an Auth0 tenant or a signed         │
+          │  cookie. Which one?                                                │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          │                                                                    │
+          ╰───────────────────────────────────────────── { } message ∙ c copy ─╯
+
+
+ TRANSCRIPT  { } message ∙ c copy ∙ esc close                                                                    ? keys

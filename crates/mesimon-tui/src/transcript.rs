@@ -56,6 +56,66 @@ pub(crate) struct Message {
     /// once each.
     pub steps: usize,
     pub tools: Vec<String>,
+    /// The ticket's raised hand (T-1155), not a row of the file: its words
+    /// are `Transcript::hand`'s.
+    pub hand: bool,
+}
+
+/// The ticket's raised hand as its agent's conversation reads it
+/// (T-1155): the ask, in the conversation where it was made, while the
+/// hand is up. The board holds it, not the file, so it comes down with the
+/// hand; the `raise_hand` call stays one of the steps.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Hand {
+    /// When it went up, epoch ms: the board's stamp is whole seconds.
+    pub ms: u64,
+    pub reason: String,
+}
+
+/// `ticket`'s raised hand, for `session`'s conversation: none when another
+/// agent raised it.
+pub(crate) fn hand_of(
+    board: &mesimon_core::board::Board,
+    ticket: ulid::Ulid,
+    session: uuid::Uuid,
+) -> Option<Hand> {
+    let raised = board.ticket(ticket)?.raised.as_ref()?;
+    if raised.by.strip_prefix("agent:").is_some_and(|by| by != session.to_string()) {
+        return None;
+    }
+    let secs = mesimon_core::board::stamp_secs(&raised.at)?;
+    Some(Hand { ms: secs * 1000, reason: raised.reason.clone() })
+}
+
+/// The hand among `out` by its time: after the last message written in or
+/// before its second, and that message's record (a key stays in order). A
+/// conversation with no clock has it last; one whose every message is
+/// later never held the ask (an earlier page, another conversation).
+fn place_hand(out: &mut Vec<Message>, hand: &Hand) {
+    let up_to = hand.ms + 999;
+    let before = match out.iter().rposition(|m| m.ms.is_some_and(|ms| ms <= up_to)) {
+        Some(i) => i,
+        None if out.iter().all(|m| m.ms.is_none()) && !out.is_empty() => out.len() - 1,
+        None => return,
+    };
+    let mut at = before;
+    while out.get(at + 1).is_some_and(|m| m.key.0 == out[before].key.0) {
+        at += 1;
+    }
+    let key = (out[at].key.0, usize::MAX);
+    let row = out[at].row;
+    out.insert(
+        at + 1,
+        Message {
+            key,
+            kind: RowKind::Reply,
+            row,
+            ms: Some(hand.ms),
+            steps: 0,
+            tools: Vec::new(),
+            hand: true,
+        },
+    );
 }
 
 /// The tool a step's line names (`Read src/main.rs`, `Bash(cargo test)`).
@@ -94,6 +154,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
             ms: row.ms,
             steps: 0,
             tools: Vec::new(),
+            hand: false,
         });
     }
     out
@@ -174,6 +235,8 @@ pub(crate) struct Transcript {
     /// once the file's start is held).
     end: u64,
     floor: Option<u64>,
+    /// The ticket's raised hand, while it is up (T-1155).
+    hand: Option<Hand>,
     messages: Vec<Message>,
     /// The message on show.
     pub idx: usize,
@@ -211,9 +274,10 @@ fn stat_of(path: &Path) -> (u64, u64) {
 }
 
 impl Transcript {
-    /// The newest page of `rec`'s conversation, on the newest message.
-    /// `None` when there is no file to read or nothing said in it.
-    pub(crate) fn open(rec: &SessionRecord) -> Option<Self> {
+    /// The newest page of `rec`'s conversation, on the newest message (a
+    /// raised `hand`, when it is the newest). `None` when there is no file
+    /// to read or nothing said in it.
+    pub(crate) fn open(rec: &SessionRecord, hand: Option<Hand>) -> Option<Self> {
         let record = PathBuf::from(rec.transcript_path.as_ref()?);
         let path = mesimon_daemon::agents::transcript_file(rec.kind, &record);
         let stat = stat_of(&path);
@@ -230,6 +294,7 @@ impl Transcript {
             rows: Vec::new(),
             end: 0,
             floor: None,
+            hand,
             messages: Vec::new(),
             idx: 0,
             seen: None,
@@ -257,7 +322,7 @@ impl Transcript {
         self.rows = page.rows;
         self.end = page.end;
         self.floor = page.next_before;
-        self.messages = messages(&self.rows);
+        self.messages = self.composed();
         self.idx = self.messages.len().saturating_sub(1);
         self.seen = None;
         self.saw();
@@ -314,7 +379,35 @@ impl Transcript {
 
     /// A message's words, whole up to `ROW_MAX`.
     pub(crate) fn text(&self, m: &Message) -> &str {
-        &self.rows[m.row].text
+        match (&self.hand, m.hand) {
+            (Some(h), true) => &h.reason,
+            _ => &self.rows[m.row].text,
+        }
+    }
+
+    /// The rows' messages, the hand among them.
+    fn composed(&self) -> Vec<Message> {
+        let mut out = messages(&self.rows);
+        if let Some(h) = &self.hand {
+            place_hand(&mut out, h);
+        }
+        out
+    }
+
+    pub(crate) fn hand(&self) -> Option<&Hand> {
+        self.hand.as_ref()
+    }
+
+    /// The board's hand for this conversation, as each snapshot says it:
+    /// raised, it is a message (new, after the one on show); lowered, it
+    /// is gone. True when the messages moved.
+    pub(crate) fn set_hand(&mut self, hand: Option<Hand>) -> bool {
+        if self.hand == hand {
+            return false;
+        }
+        self.hand = hand;
+        self.rebuild();
+        true
     }
 
     pub(crate) fn links(&self) -> Rc<Vec<mesimon_core::links::Link>> {
@@ -365,7 +458,7 @@ impl Transcript {
     fn rebuild(&mut self) {
         self.links.get_mut().take();
         let on = self.message().map(|m| m.key);
-        self.messages = messages(&self.rows);
+        self.messages = self.composed();
         self.idx = match on {
             Some(k) => self.messages.partition_point(|m| m.key <= k).saturating_sub(1),
             None => self.messages.len().saturating_sub(1),
@@ -487,6 +580,63 @@ pub(crate) mod tests {
         assert_eq!(m[2].key, (50, 0));
     }
 
+    fn timed(at: u64, kind: RowKind, text: &str, ms: u64) -> TranscriptRow {
+        TranscriptRow { at, kind, text: text.into(), ms: Some(ms) }
+    }
+
+    /// A raised hand (T-1155) is a message where it was raised: after the
+    /// record written in or before its second, before what came later.
+    #[test]
+    fn a_hand_lands_among_the_messages_by_its_time() {
+        let rows = [
+            timed(10, RowKind::Prompt, "fix it", 1_000),
+            timed(20, RowKind::Reply, "two ways; asking", 5_400),
+            timed(20, RowKind::Reply, "and a second row", 5_400),
+            timed(30, RowKind::Tool, "mcp__mesimon__raise_hand", 5_600),
+            timed(40, RowKind::Reply, "waiting on the person", 9_000),
+        ];
+        let hand = Hand { ms: 5_000, reason: "Auth0 or cookie?".into() };
+        let mut m = messages(&rows);
+        place_hand(&mut m, &hand);
+        let hands: Vec<usize> = (0..m.len()).filter(|&i| m[i].hand).collect();
+        assert_eq!(hands, [3], "after its second's record, before what came after: {m:?}");
+        assert!(m.windows(2).all(|w| w[0].key < w[1].key), "keys stay in order: {m:?}");
+        assert_eq!(m[3].ms, Some(5_000));
+        // No clock in the file: the hand is the newest thing said.
+        let bare = [row(10, RowKind::Prompt, "fix it"), row(20, RowKind::Reply, "asking")];
+        let mut m = messages(&bare);
+        place_hand(&mut m, &hand);
+        assert!(m.last().is_some_and(|m| m.hand), "{m:?}");
+        // Every message held came later: the ask is not in what is held.
+        let later = [timed(10, RowKind::Prompt, "after a /clear", 60_000)];
+        let mut m = messages(&later);
+        place_hand(&mut m, &hand);
+        assert!(!m.iter().any(|m| m.hand), "{m:?}");
+    }
+
+    /// The dialog's hand follows the board's: raised, a new message after
+    /// the one on show, whose words are the reason; lowered, gone.
+    #[test]
+    fn a_raised_hand_is_new_and_a_lowered_one_is_gone() {
+        let dir = scratch("raised");
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, lines(&[("user", "pick one"), ("a", "asking")])).unwrap();
+        let mut t = Transcript::open(&rec(&path), None).expect("a conversation");
+        let hand = Hand { ms: 0, reason: "Auth0 or cookie?".into() };
+        assert!(t.set_hand(Some(hand.clone())));
+        assert!(!t.set_hand(Some(hand.clone())), "the same hand moves nothing");
+        assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 3, 1));
+        t.step(1);
+        assert_eq!(t.message().map(|m| (m.hand, t.text(m))), Some((true, "Auth0 or cookie?")));
+        assert!(t.set_hand(None));
+        assert_eq!(texts(&t), ["pick one", "asking"]);
+        assert_eq!(t.idx, 1, "back on the message it followed");
+        // Opened with the hand up, the dialog is on it.
+        let t = Transcript::open(&rec(&path), Some(hand)).expect("a conversation");
+        assert!(t.message().is_some_and(|m| m.hand));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A conversation on disk, as Claude Code writes one.
     pub(crate) fn claude_line(kind: &str, text: &str) -> String {
         match kind {
@@ -559,7 +709,7 @@ pub(crate) mod tests {
         let path = dir.join("t.jsonl");
         std::fs::write(&path, lines(&[("user", "fix the race"), ("a", "found it")])).unwrap();
         let rec = rec(&path);
-        let mut t = Transcript::open(&rec).expect("a conversation");
+        let mut t = Transcript::open(&rec, None).expect("a conversation");
         assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 2, 0));
         assert_eq!(t.message().map(|m| t.text(m)), Some("found it"));
         // The agent says more: the reader stays where they are.
@@ -589,7 +739,7 @@ pub(crate) mod tests {
         let path = dir.join("t.jsonl");
         let long = "word ".repeat(4096);
         std::fs::write(&path, lines(&[("user", "plan it"), ("a", &long)])).unwrap();
-        let t = Transcript::open(&rec(&path)).expect("a conversation");
+        let t = Transcript::open(&rec(&path), None).expect("a conversation");
         assert_eq!(t.message().map(|m| t.text(m).len()), Some(long.trim_end().len()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -602,7 +752,7 @@ pub(crate) mod tests {
         let (old, new) = (dir.join("a.jsonl"), dir.join("b.jsonl"));
         std::fs::write(&old, lines(&[("user", "first"), ("a", "first reply")])).unwrap();
         let mut rec = rec(&old);
-        let mut t = Transcript::open(&rec).expect("a conversation");
+        let mut t = Transcript::open(&rec, None).expect("a conversation");
         t.step(-1);
         std::fs::write(&new, lines(&[("user", "second"), ("a", "on it"), ("a", "done")])).unwrap();
         rec.transcript_path = Some(new.to_string_lossy().into_owned());
@@ -624,7 +774,7 @@ pub(crate) mod tests {
         let path = dir.join("t.jsonl");
         std::fs::write(&path, lines(&[("user", "fix it"), ("a", "fixed")])).unwrap();
         let rec = rec(&path);
-        let mut t = Transcript::open(&rec).expect("a conversation");
+        let mut t = Transcript::open(&rec, None).expect("a conversation");
         std::fs::write(&path, "").unwrap();
         settle(&mut t, &rec, |t| t.messages().is_empty());
         t.step(1);

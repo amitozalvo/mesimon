@@ -7032,6 +7032,60 @@ fn golden_transcript_dialog_120() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T-3's hand raised by its agent (T-1155), whose conversation is on disk.
+fn raise_t3(app: &mut App, reason: &str) {
+    let b = std::sync::Arc::make_mut(&mut app.board);
+    b.tickets.iter_mut().find(|t| t.id == ulid_n(3)).expect("T-3").raised =
+        Some(mesimon_core::board::Raised {
+            at: "@100".into(),
+            by: format!("agent:{}", uuid_n(31)),
+            reason: reason.into(),
+        });
+}
+
+/// Only the agent that raised a hand has it in its conversation.
+#[test]
+fn a_hand_is_its_raisers_own() {
+    let (mut app, dir) = app_transcript("hand-own");
+    assert_eq!(crate::transcript::hand_of(&app.board, ulid_n(3), uuid_n(31)), None);
+    raise_t3(&mut app, "Auth0 or cookie?");
+    let hand = crate::transcript::hand_of(&app.board, ulid_n(3), uuid_n(31)).expect("its own");
+    assert_eq!((hand.ms, hand.reason.as_str()), (100_000, "Auth0 or cookie?"));
+    assert_eq!(crate::transcript::hand_of(&app.board, ulid_n(3), uuid_n(32)), None, "another's");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A raised hand is the conversation's newest message (T-1155): the
+/// dialog opens on it, its head says what it is and its words wear the
+/// needs-you colour, as the card's hand does; lowered, it is gone.
+#[test]
+fn golden_transcript_dialog_hand_120() {
+    let (mut app, dir) = app_transcript("dialog-hand");
+    raise_t3(
+        &mut app,
+        "Two ways to keep the session: an Auth0 tenant or a signed cookie. Which one?",
+    );
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let head = lines.iter().position(|l| l.contains("! claude raised a hand")).expect("the head");
+    let words = lines.iter().position(|l| l.contains("Two ways to keep")).expect("the words");
+    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
+    let buf = cells(&app, 120, 30);
+    let x = lines[words].find("Two ways").expect("x") as u16;
+    let x = lines[words][..x as usize].chars().count() as u16;
+    assert_eq!(buf[(x, words as u16)].fg, app.theme.attn, "the words wear attn");
+    let hx = lines[head][..lines[head].find('!').expect("!")].chars().count() as u16;
+    assert_eq!(buf[(hx, head as u16)].fg, app.theme.attn, "the head wears attn");
+    golden("transcript_dialog_hand_120x30", &lines);
+    std::sync::Arc::make_mut(&mut app.board).tickets.iter_mut().for_each(|t| t.raised = None);
+    assert!(app.poll_transcript(), "the lowered hand moves the dialog");
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("raised a hand")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (4 of 4)")), "{lines:#?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The card the dialog hangs from stays open under it, as under the note
 /// reader (T-1145): its rows above the dialog are the rows it had before.
 #[test]
@@ -14698,6 +14752,34 @@ fn golden_ticket_live_120() {
         "its feet a row over the zone's foot, level with the input: {shin:?}"
     );
     golden("ticket_live_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The ticket page's conversation reads a raised hand as its newest
+/// message (T-1155), in the needs-you colour; the page follows the hand
+/// down.
+#[test]
+fn golden_ticket_live_hand_120() {
+    let (mut app, path) = app_live("tlive-hand", false);
+    raise_t3(&mut app, "The proposal is up. Ship the hybrid view, or measure more first?");
+    assert!(app.poll_page_transcript(), "the raised hand moves the page");
+    let lines = render(&app, 120, 30);
+    let head = lines.iter().position(|l| l.contains("! claude raised a hand")).expect("the head");
+    let words = head + 1;
+    assert!(lines[words].contains("The proposal is up"), "its words under it: {lines:#?}");
+    let reply = lines.iter().position(|l| l.contains("Research is mostly done")).expect("reply");
+    assert!(reply < head, "the newest message: {lines:#?}");
+    let buf = cells(&app, 120, 30);
+    let col =
+        |y: usize, needle: &str| lines[y][..lines[y].find(needle).expect("x")].chars().count();
+    let attn = app.theme.attn;
+    assert_eq!(buf[(col(words, "The proposal") as u16, words as u16)].fg, attn, "words in attn");
+    assert_eq!(buf[(col(head, "!") as u16, head as u16)].fg, attn, "head in attn");
+    golden("ticket_live_hand_120x30", &lines);
+    std::sync::Arc::make_mut(&mut app.board).tickets.iter_mut().for_each(|t| t.raised = None);
+    assert!(app.poll_page_transcript(), "the lowered hand moves the page");
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("raised a hand")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

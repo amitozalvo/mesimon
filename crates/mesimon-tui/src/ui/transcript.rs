@@ -12,7 +12,6 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::board::SessionKind;
 use mesimon_core::keymap::{self, Scope, Verb};
 use mesimon_core::mesophon::RowKind;
 
@@ -119,13 +118,9 @@ fn words(
     let width = body.width as usize;
 
     // Who, when, and the steps that followed, at the right.
-    let who = match (m.kind, t.kind) {
-        (RowKind::Prompt, _) => "you",
-        (RowKind::Notice, _) => "",
-        (_, SessionKind::Codex) => "codex",
-        _ => "claude",
-    };
+    let who = super::ticket::who_word(m, t.kind);
     let who_style = match m.kind {
+        _ if m.hand => theme.attn_text().add_modifier(Modifier::BOLD),
         RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
         _ => theme.dim1(),
     };
@@ -146,7 +141,7 @@ fn words(
 
     // The words: a person's behind the quote bar, read as they typed
     // them; the agent's as the ticket page reads a reply; a notice in
-    // the quiet ink.
+    // the quiet ink; a raised hand's in the needs-you colour (T-1155).
     let prompt = m.kind == RowKind::Prompt;
     let bar = if prompt { 2 } else { 0 };
     let newline = if prompt { Newline::Break } else { Newline::Space };
@@ -178,11 +173,7 @@ fn words(
         crate::rich::mark_cut(&mut shown, width - bar, theme);
     }
     for line in &mut shown {
-        if m.kind == RowKind::Notice {
-            for s in &mut line.spans {
-                s.style = s.style.fg(theme.rest.dim2);
-            }
-        }
+        super::ticket::ink_message(theme, m, line);
         if prompt {
             let mark = if theme.glyph_tier() == Tier::Ascii { "> " } else { "▎ " };
             line.spans.insert(0, Span::styled(mark, theme.dim3()));

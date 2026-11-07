@@ -3163,9 +3163,10 @@ impl App {
     pub(crate) fn open_transcript(&mut self) {
         let Some(ticket) = self.subject() else { return };
         let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-        match crate::transcript::session_of(&self.board, ticket)
-            .and_then(crate::transcript::Transcript::open)
-        {
+        match crate::transcript::session_of(&self.board, ticket).and_then(|rec| {
+            let hand = crate::transcript::hand_of(&self.board, ticket, rec.id);
+            crate::transcript::Transcript::open(rec, hand)
+        }) {
             Some(t) => {
                 self.transcript = Some(t);
                 self.mode = Mode::Transcript { ticket, link_idx: None };
@@ -3179,7 +3180,7 @@ impl App {
 
     /// The open transcript's pages landing and its tail read again (T-921),
     /// following the conversation the board says the card's agent holds.
-    fn poll_transcript(&mut self) -> bool {
+    pub(crate) fn poll_transcript(&mut self) -> bool {
         if !matches!(self.mode, Mode::Transcript { .. }) {
             self.transcript = None;
             return false;
@@ -3187,9 +3188,11 @@ impl App {
         let selected = self.transcript_cursor_source();
         let Some(t) = self.transcript.as_mut() else { return false };
         let before = t.message().map(crate::transcript::doc_key);
-        let record = crate::transcript::session_of(&self.board, t.ticket)
-            .and_then(|s| Some((s.kind, s.transcript_path.as_deref()?)));
-        let changed = t.poll(record);
+        let session = crate::transcript::session_of(&self.board, t.ticket);
+        let record = session.and_then(|s| Some((s.kind, s.transcript_path.as_deref()?)));
+        let mut changed = t.poll(record);
+        let hand = session.and_then(|s| crate::transcript::hand_of(&self.board, t.ticket, s.id));
+        changed |= t.set_hand(hand);
         if changed {
             let same_message = before == t.message().map(crate::transcript::doc_key);
             self.rich_cache.borrow_mut().take();
@@ -6048,17 +6051,22 @@ impl App {
             }
             _ => None,
         };
-        let records: Vec<(uuid::Uuid, SessionKind, Option<String>)> = self
+        type Record = (uuid::Uuid, SessionKind, Option<String>, Option<crate::transcript::Hand>);
+        let records: Vec<Record> = self
             .board
             .sessions
             .iter()
             .filter(|s| self.page_transcripts.contains_key(&s.id))
-            .map(|s| (s.id, s.kind, s.transcript_path.clone()))
+            .map(|s| {
+                let hand = crate::transcript::hand_of(&self.board, s.ticket, s.id);
+                (s.id, s.kind, s.transcript_path.clone(), hand)
+            })
             .collect();
         let mut changed = false;
-        for (id, kind, path) in records {
+        for (id, kind, path, hand) in records {
             let Some(t) = self.page_transcripts.get_mut(&id) else { continue };
-            if t.poll(path.as_deref().map(|p| (kind, p))) {
+            let moved = t.poll(path.as_deref().map(|p| (kind, p)));
+            if moved | t.set_hand(hand) {
                 self.page_composed.borrow_mut().remove(&id);
                 changed |= selected.as_ref().is_some_and(|s| s.id == id);
             }
@@ -6069,7 +6077,8 @@ impl App {
                 return changed;
             }
             self.page_transcript_tried = Some((rec.id, std::time::Instant::now()));
-            if let Some(t) = crate::transcript::Transcript::open(&rec) {
+            let hand = crate::transcript::hand_of(&self.board, rec.ticket, rec.id);
+            if let Some(t) = crate::transcript::Transcript::open(&rec, hand) {
                 self.page_transcripts.insert(rec.id, t);
                 changed = true;
             }

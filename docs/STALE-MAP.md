@@ -42139,3 +42139,19 @@ straight over the footer. The reply branch of `draw_preview` (`ui/ticket.rs`) no
 blank row at the zone's foot when the agent is not working (a working one already reserves two:
 the blank and the indicator). Only an overflowing zone changes, so no golden moved. Test:
 `ui::tests::a_parked_conversation_keeps_a_row_over_the_hints` (fails without the reserve).
+
+## T-1155: a raised hand is a message in the transcript (2026-11-07)
+
+The ticket's raised hand reads in its agent's conversation, on the ticket page's zone and in the
+`{ }` dialog, as one more message: head `! claude raised a hand` and the reason, both in the
+needs-you colour (`attn_text`), placed by the hand's time after the record written in or before
+its second. The dialog opens on it when it is the newest and counts it `new` when it lands while
+open. It comes from the board, not the file (`transcript::hand_of`, `Transcript::set_hand`, each
+poll): only the raising agent's conversation (`Raised.by`) holds it, and a lowered hand leaves the
+conversation whole again, so the needs-you colour never outlives the need. The `raise_hand` call
+stays one of the steps.
+
+Refuted: a `RowKind::Hand` row parsed from the `raise_hand` tool call. It would keep every past
+hand, but it is a wire change (phones read `RowKind`), and a lowered hand in the needs-you colour
+breaks the one-colour law; drawn quiet, it is one more step. Goldens `transcript_dialog_hand`,
+`ticket_live_hand`.
