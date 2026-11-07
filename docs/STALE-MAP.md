@@ -42741,3 +42741,27 @@ Tests: `box_rule` (ui/tests.rs) finds the rule by its hyphen run;
 fixture and asserts none reaches the rule. Three goldens moved, the rule row only:
 `ticket_live_120x30`, `ticket_live_hand_120x30`, `ticket_live_closed_120x30`. Not seen in the
 TUI by the author yet.
+
+## The seat's closed box is its top rule alone (T-1176, 2026-11-07, the author: "currently shows open input field with the title there, not good. should show the input field collapsed as if agent exists")
+
+T-1156's box at the foot of a ticket page with no agent (the `+ agent session` seat, and the
+launch list until the pane draws) was three rows closed: the rule with its key cap, the ticket
+title in dim ink, a bottom rule. It read as an open field holding the title. The live window's
+closed box has been its top rule alone since T-1156; the seat's is now the same.
+
+- **`foot_box` closed is `closed_rule` over two blank rows** (`ui/ticket.rs`); the title and the
+  bottom rule are gone, and with them its `words` parameter. Open it is unchanged.
+- **The rule keeps the open box's top row.** The zone still reserves `FOOT_ROWS`, so the press
+  that opens the box moves nothing and the field types on the middle row as before; the two
+  blank rows stand where an agent's status line would.
+- **Refuted: the rule on the zone's last row.** Opening would then move it up two rows, and the
+  rail's shin, centred on the box's middle row, would stand over the rule rather than beside it.
+- **The seat's words keep `enter start agent ∙ the title waits in its box, unsent`**: what the
+  press does, not what the page shows.
+
+Tests: `the_seats_box_opens_in_place` finds the rule by its key cap, asserts nothing under it
+closed, and the field on the row under it open with the rows above unmoved;
+`golden_ticket_new_claude_120` asserts the rule and two blank rows. Eight goldens moved, the
+title and bottom-rule rows only: `ticket_new_claude`, `ticket_new_claude_worktree`,
+`ticket_new_codex`, `ticket_tier`, `ticket_crowned`, `ticket_starting`, `ticket_init_running`,
+`ticket_init_failed` (all `_120x30`). Not seen in the TUI by the author yet.

@@ -8585,15 +8585,21 @@ fn golden_ticket_new_claude_120() {
     golden("ticket_new_claude_120x30", &lines);
     // The zone the row sits beside is no longer blank (T-308): the press in
     // the keymap's own words beside what becomes of the box's words (T-1156),
-    // what the session would be, and the box at the zone's foot holding the
-    // title a start types.
+    // what the session would be, and the box at the zone's foot, closed:
+    // its top rule alone over the rows it opens into, no title in it
+    // (T-1176), as an agent's closed box has none.
     assert!(lines.iter().any(|l| l.contains("no agent yet")), "the seat: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starts in the checkout")), "where: {lines:?}");
     assert!(
         lines.iter().any(|l| l.contains("enter start agent  ∙ the title waits in its box, unsent")),
         "the contract this road keeps: {lines:?}"
     );
-    assert!(lines[27].trim_start().starts_with("Decay treatments"), "the box's words: {lines:?}");
+    assert!(lines[26].trim_start().starts_with("---"), "the box's rule: {lines:?}");
+    assert!(
+        lines[27..29].iter().all(|l| l.chars().take(80).all(|c| c == ' ')),
+        "nothing under: {lines:?}"
+    );
+    assert_eq!(lines.iter().filter(|l| l.contains("Decay treatments")).count(), 1, "{lines:?}");
 }
 
 /// The same zone on a ticket whose column narrows what its claude gets
@@ -16084,10 +16090,7 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
     // One rule: the key, and nothing at its right end (T-1175) — no state,
     // no model, effort, context or mode, which the agent's own footer
     // shows under it.
-    let at = closed
-        .iter()
-        .position(|l| l.contains(" shift+enter "))
-        .expect("the closed box");
+    let at = closed.iter().position(|l| l.contains(" shift+enter ")).expect("the closed box");
     for gone in ["is working", "opus", "high", "context 21%", "plan mode", "∙"] {
         assert!(!closed[at].contains(gone), "{gone:?} on the rule: {closed:#?}");
     }
@@ -16208,12 +16211,15 @@ fn the_seats_box_opens_in_place() {
     app.rich_keys = true;
     app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
     let closed = render(&app, 120, 30);
-    let at = closed
+    // Closed, the box is its top rule alone (T-1176): the key and what it
+    // does on it, and no title under it, as an agent's closed box.
+    let at = 1 + closed
         .iter()
-        .position(|l| l.trim_start().starts_with("Keymap validator") && l.starts_with("    "))
-        .expect("the title in the closed box");
-    assert!(closed[at - 1].contains(" shift+enter "), "the key on its rule: {closed:#?}");
+        .position(|l| l.contains(" shift+enter ") && l.trim_start().starts_with("--"))
+        .expect("the closed box's rule");
     assert!(closed[at - 1].contains("start + ask agent"), "and what it does: {closed:#?}");
+    assert!(closed[at].chars().take(80).all(|c| c == ' '), "no words under the rule: {closed:#?}");
+    assert!(closed[at + 1].chars().take(80).all(|c| c == ' '), "nor a bottom rule: {closed:#?}");
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "measure it".chars() {
         buffer.insert(c);
@@ -16235,11 +16241,7 @@ fn the_seats_box_opens_in_place() {
     let open = lines_of(terminal.backend().buffer());
     assert!(terminal.backend().cursor_visible(), "the cursor is in the field");
     let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
-    assert_eq!(
-        column(&open[at], "measure it"),
-        column(&closed[at], "Keymap validator"),
-        "{open:#?}"
-    );
+    assert_eq!(column(&open[at], "measure it"), Some(5), "typed under the rule: {open:#?}");
     assert!(open[at + 1].contains("now  shift+tab"), "the delivery row under: {open:#?}");
     for y in 0..at - 1 {
         assert_eq!(open[y], closed[y], "row {y} moved");

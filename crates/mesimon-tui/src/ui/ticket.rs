@@ -1510,18 +1510,19 @@ fn draw_preview(
         lines.extend(empty_seat(app, ticket, area));
         foot = Some(ticket.id);
     }
-    // The closed box at the zone's foot (T-1156), on the rows the agent's
-    // own box will take: the ask field is typed on its words row, so the
-    // press that opens it moves nothing. Only where the words above leave
-    // it room; else the field hangs under them, as it did.
+    // The box at the zone's foot (T-1156), on the rows the agent's own box
+    // will take. Closed, it is its top rule alone, as the live window's
+    // closed box is (T-1176: the title under it read as an open field),
+    // over the two rows the open box takes, where an agent's status line
+    // stands: the press that opens it moves nothing, and the field is
+    // typed on its middle row. Only where the words above leave it room;
+    // else the field hangs under them, as it did.
     let h = area.height as usize;
     if let Some(ticket) = foot.and_then(|id| app.board.ticket(id)) {
         if lines.len() + FOOT_ROWS <= h && area.width >= 12 {
-            lines.resize(h - FOOT_ROWS, Line::default());
             let open = asking_here(app, ticket.id);
-            let sends = launch.is_some_and(|l| l.sends);
-            let words = if sends { "" } else { ticket.title.as_str() };
-            lines.extend(foot_box(app, area.width as usize, words, open));
+            lines.resize(h - FOOT_ROWS, Line::default());
+            lines.extend(foot_box(app, area.width as usize, open));
             if let Some(w) = word {
                 lines[0] = heading(w);
             }
@@ -1998,7 +1999,7 @@ fn launch_rows(
 const LAUNCH_LABEL: usize = 30;
 const LAUNCH_SECS: usize = 5;
 
-/// The closed box's rows and where its words start (T-1156).
+/// The box's rows and where its words start (T-1156).
 const FOOT_ROWS: usize = 3;
 const FOOT_WORDS: u16 = 4;
 
@@ -2011,38 +2012,25 @@ fn asking_here(app: &App, ticket: ulid::Ulid) -> bool {
     )
 }
 
-/// The box at the zone's foot (T-1156), closed: rules dashed and gone out
-/// toward the page ground, no prompt mark, the words that will be in it
-/// dim — a picture of the box, not a box — and on its top rule the key that
-/// opens it as a key cap, with what it does, in the keymap's own words.
-/// Open, it is the ask field's frame: the rules in the reading ink, the
-/// mark back; the field types on its middle row. The rules are hyphens: no
-/// box-drawing glyph is the page's own outside a dialog's frame (L1); the
-/// live window's are the pane's.
-fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'static>> {
+/// The box at the zone's foot (T-1156), its `FOOT_ROWS`. Closed, its top
+/// rule alone over two blank rows, with the key that opens it as a key cap
+/// and what it does, in the keymap's own words — the live window's closed
+/// box (T-1176). Open, it is the ask field's frame: the rules in the
+/// reading ink, the prompt mark; the field types on its middle row. The
+/// rules are hyphens: no box-drawing glyph is the page's own outside a
+/// dialog's frame (L1); the live window's are the pane's.
+fn foot_box(app: &App, width: usize, open: bool) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let rule_w = width.saturating_sub(4);
-    let dash = "-";
-    if open {
-        let rule =
-            Line::from(vec![Span::raw("  "), Span::styled(dash.repeat(rule_w), theme.dim2())]);
-        let mark = glyphs::prompt_mark(theme.glyph_tier());
-        return vec![
-            rule.clone(),
-            Line::from(vec![Span::raw("  "), Span::styled(mark.to_string(), theme.dim2())]),
-            rule,
-        ];
+    if !open {
+        return vec![closed_rule(app, 2, rule_w), Line::default(), Line::default()];
     }
-    let lead = " ".repeat(FOOT_WORDS as usize);
-    let mut bottom = vec![Span::raw("  ")];
-    bottom.push(tail_rule(theme, rule_w));
+    let rule = Line::from(vec![Span::raw("  "), Span::styled("-".repeat(rule_w), theme.dim2())]);
+    let mark = glyphs::prompt_mark(theme.glyph_tier());
     vec![
-        closed_rule(app, 2, rule_w),
-        Line::from(vec![
-            Span::raw(lead.clone()),
-            Span::styled(truncate(words, width.saturating_sub(lead.len() + 2)), theme.dim3()),
-        ]),
-        Line::from(bottom),
+        rule.clone(),
+        Line::from(vec![Span::raw("  "), Span::styled(mark.to_string(), theme.dim2())]),
+        rule,
     ]
 }
 
