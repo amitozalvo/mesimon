@@ -4359,11 +4359,23 @@ impl Daemon {
                 changed |= self.apply_change(id, &change, None, Some(observation.source));
             }
             // The preview outlives the state word: apply_change may clear
-            // detail, so apply the authorized preview after the transition.
+            // detail, so apply the authorized preview after the transition —
+            // onto a seat the person is owed (needs-you, failed, limited),
+            // the states `apply_change` keeps a detail for, and no other
+            // (T-1165). A tail read of a working or resting seat carries the
+            // agent's own reply, which the card and the page draw off the
+            // transcript already: written here it drew twice for the whole
+            // turn after a restart, and over a crown's answer line.
             if let Some(preview) = observation.preview {
                 if let Some(record) = self.board.sessions.iter_mut().find(|record| record.id == id)
                 {
-                    if record.detail.as_deref() != Some(preview.as_str()) {
+                    let owed = matches!(
+                        record.state,
+                        SessionState::RequiresAction { .. }
+                            | SessionState::Failed { .. }
+                            | SessionState::Throttled
+                    );
+                    if owed && record.detail.as_deref() != Some(preview.as_str()) {
                         record.detail = Some(preview);
                         changed = true;
                     }
@@ -23174,6 +23186,79 @@ mod permission_release_tests {
                 assert!(!releases_permission(&frame(event, road, json!({}))), "{event}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod restart_preview_tests {
+    use super::*;
+
+    /// T-1165: after a restart the tail re-derives a working seat's state
+    /// from its transcript, and that read carries the agent's last words.
+    /// They never land in `detail`: the card draws them off the transcript
+    /// already, so a `detail` copy drew the reply twice for the whole turn.
+    /// A failure's words, read the same way, still do: that seat is owed.
+    #[test]
+    fn a_restart_s_tail_read_keeps_a_working_seat_s_detail_empty() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let id = d.board.sessions[0].id;
+        let path = dir.path().join("history.jsonl");
+        let append = |value: serde_json::Value| {
+            let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&path).unwrap();
+            writeln!(f, "{value}").unwrap();
+        };
+        // The turn is open across the restart: the prompt is the last word.
+        append(serde_json::json!({"uuid":"p", "type":"user", "message":{"content":"go"}}));
+        {
+            let rec = &mut d.board.sessions[0];
+            rec.transcript_path = Some(path.display().to_string());
+            rec.set_state(SessionState::Unknown {
+                reason: mesimon_core::board::UnknownReason::DaemonRestarted,
+            });
+            rec.state_changed_at = Some(now_ms());
+        }
+        // The machine a restart restores for the seat, at Low.
+        let seat = |d: &mut Daemon| {
+            let state = d.board.sessions[0].state.clone();
+            d.machines.insert(id, Machine::restore(state, Confidence::Low, now_ms()));
+        };
+        seat(&mut d);
+        // The first read seeds the cursor at the file's end and proves
+        // nothing of an open turn.
+        d.poll_agent_recovery(RecoveryChannel::Transcript);
+        assert!(matches!(d.board.sessions[0].state, SessionState::Unknown { .. }));
+        // Then the agent speaks mid-turn, the way Claude Code writes it: a
+        // text block alone, the turn going on (the live card's record,
+        // 2026-11-07 16:31). The next read moves the seat on those words.
+        append(serde_json::json!({"uuid":"r", "type":"assistant",
+            "message":{"stop_reason":"tool_use",
+                "content":[{"type":"text","text":"Finishing the last box test, then two new items."}]}}));
+        assert!(d.poll_agent_recovery(RecoveryChannel::Transcript));
+        let rec = &d.board.sessions[0];
+        assert_eq!(rec.state, SessionState::Running, "the tail read moved the seat");
+        assert_eq!(rec.detail, None, "the reply is the transcript's to draw, once");
+
+        // A native failure's words are what the seat is owed: kept.
+        {
+            let rec = &mut d.board.sessions[0];
+            rec.native = true;
+            rec.set_state(SessionState::Failed {
+                reason: mesimon_core::board::FailReason::Unknown,
+            });
+            rec.state_changed_at = Some(now_ms());
+        }
+        d.recovery.remove(&id);
+        seat(&mut d);
+        append(crate::agents::claude::tail::error_row(
+            "rate_limit",
+            "API Error: Rate limit reached",
+        ));
+        assert!(d.poll_agent_recovery(RecoveryChannel::Transcript));
+        let rec = &d.board.sessions[0];
+        assert_ne!(rec.state, SessionState::Running);
+        assert_eq!(rec.detail.as_deref(), Some("API Error: Rate limit reached"));
     }
 }
 

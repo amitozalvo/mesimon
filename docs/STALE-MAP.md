@@ -42547,3 +42547,34 @@ for any `Spawned { fresh: false }` at a seat that had a pane, which only a relau
 
 **Tests.** `tier_e2e`'s queued-ask-at-an-idle-pane block (fails with `could not deliver` without
 the fix), `an_ask_with_a_tier_pick_at_an_idle_pane_restarts_it_on_the_tier`.
+
+## A restart's transcript read no longer copies the agent's reply onto the card twice (T-1165, 2026-11-07, the author: "ticket preview and transcript duplicate … why?")
+
+**Seen.** T-1156's card, working, showed its agent's sentence twice: once on the dim line under
+the title, cut with `~`, and again whole in the reply rows below. The card's "answered by" row
+(`card.rs`, T-569) draws a running or idle session's `detail`, assuming only the crown's answer
+line can be there; the reply rows read the transcript. Both held the same words.
+
+**Why.** After the `U` at 16:31:05 the daemon restarted and the working seat went
+`Unknown{DaemonRestarted}`; the tail re-derived its state. The first read seeds the cursor at the
+file's end and carries no preview, but the next line the transcript gained (the agent's mid-turn
+text, 16:31:15) came up as `TailHint::AssistantText` with its preview, and `feed_recovery` wrote
+every observation's preview into `detail` after the transition, whatever state the seat was in —
+since the tail poller's first day (aefa7a33, 2026-08-29). `apply_change` clears `detail` on every
+state that is not needs-you, failed or throttled, and this write undid that: the copy stayed for
+the whole turn, until the next state edge. The same write put a turn's close (`TurnComplete`
+with the reply) onto an idle seat's `detail`, and would overwrite a crown's "answered by" line.
+The phone mirrors `detail` too. The hook road never did this: a hook frame's `detail` goes
+through `apply_change`'s arms.
+
+**Fix.** `feed_recovery` writes a preview only onto a seat at `RequiresAction`, `Failed` or
+`Throttled` — the arms `apply_change` keeps a detail for. A native failure's words off the tail
+(T-659) still land; a working or resting seat's reply is the transcript's to draw, once.
+
+**Refuted.** Hiding `detail` on the card for running sessions: the daemon's record would still be
+wrong, and the ticket page and the phone read it too. Clearing `detail` in the TUI's preview
+reader: a sanitizer on the draw side for a daemon write.
+
+**Test.** `server::restart_preview_tests::a_restart_s_tail_read_keeps_a_working_seat_s_detail_empty`:
+a restart's first read, then the reply landing, then a native failure's row; fails without the
+guard with the live sentence in `detail`.
