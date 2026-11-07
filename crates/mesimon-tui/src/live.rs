@@ -143,6 +143,23 @@ impl Shot {
         Some(!parked)
     }
 
+    /// The words in the box (T-1156): the prompt row's past its mark, and
+    /// the rows its words wrapped onto, joined by a space. `None` with no
+    /// box, or with nothing typed (`box_holds`).
+    pub(crate) fn box_text(&self) -> Option<String> {
+        if self.box_holds() != Some(true) {
+            return None;
+        }
+        let (_, bottom) = self.box_rows()?;
+        let p = self.prompt_row()?;
+        let col = words_col(&self.rows[p].text);
+        let first: String = self.rows[p].text.chars().skip(col).collect();
+        let rest = (p + 1..bottom).map(|i| self.rows[i].text.as_str());
+        let words: Vec<&str> =
+            std::iter::once(first.as_str()).chain(rest).flat_map(str::split_whitespace).collect();
+        Some(words.join(" "))
+    }
+
     /// The screen as the ticket page draws it (T-1156): nothing under the
     /// box — Claude Code's footer, the person's status line, Codex's hints
     /// row; the page draws its own facts row there — and the agent's key
@@ -1525,6 +1542,12 @@ mod tests {
             "wrapped words are words wherever the cursor is"
         );
         assert_eq!(shot(&["⏺ no box here"]).box_holds(), None);
+        // What it holds, its wrapped rows joined; a placeholder holds none.
+        assert_eq!(
+            boxed("❯ retry with backoff", Some("  cap it at 30 s"), (16, 2)).box_text().as_deref(),
+            Some("retry with backoff cap it at 30 s")
+        );
+        assert_eq!(boxed("❯\u{a0}build it", None, (2, 1)).box_text(), None);
     }
 
     /// Codex's lone prompt row gets the page's own rules, over and under,

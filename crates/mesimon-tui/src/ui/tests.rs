@@ -15900,3 +15900,56 @@ fn the_box_opens_where_it_stood_and_nothing_moves() {
     }
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
+
+/// Words in the agent's box that mesimon did not type hold Shift+Enter
+/// (T-1156): the page can neither read them back whole nor empty the box
+/// safely, so the key is shown out, with why, on the box's top rule, and
+/// the footer stops naming it. The title a start typed is mesimon's own.
+#[test]
+fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
+    let (mut app, path) = app_live("tlive-held", false);
+    app.rich_keys = true;
+    let rule = "─".repeat(78);
+    let pane = |words: &str, cursor: u16| {
+        let mut rows: Vec<String> = vec!["⏺ Done.".into(), String::new()];
+        rows.extend([rule.clone(), format!("❯ {words}"), rule.clone()]);
+        rows.extend(["  ? for shortcuts".to_string()]);
+        while rows.len() < 24 {
+            rows.insert(0, String::new());
+        }
+        let prompt = rows.iter().position(|r| r.starts_with('❯')).expect("the box") as u16;
+        crate::live::Shot {
+            rows: crate::live::parse(&rows.join("\n")),
+            cols: 80,
+            cursor: Some((cursor, prompt)),
+        }
+    };
+    let draft = "half a thought about the retry";
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), pane(draft, 2 + draft.len() as u16)));
+    let lines = render(&app, 120, 30);
+    assert!(app.ctx().ticket_box_held, "a person's draft");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("held ∙ words in its box ∙ enter finishes them in the pane")),
+        "why, where the key would be: {lines:#?}"
+    );
+    assert!(lines.iter().any(|l| l.contains(draft)), "the draft, quiet: {lines:#?}");
+    assert!(!lines.last().is_some_and(|l| l.contains("shift+enter")), "not offered: {lines:#?}");
+    golden("ticket_live_held_120x30", &lines);
+
+    // The title mesimon typed is its own: the key stays.
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
+        s.typed_title = Some(draft.into());
+    }
+    let _ = render(&app, 120, 30);
+    assert!(!app.ctx().ticket_box_held, "the start's title");
+    // A placeholder is nothing typed.
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
+        s.typed_title = None;
+    }
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), pane("build it, use recommended", 2)));
+    let _ = render(&app, 120, 30);
+    assert!(!app.ctx().ticket_box_held, "the agent's suggestion");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}

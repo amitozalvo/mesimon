@@ -1961,7 +1961,22 @@ fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Lin
     let ctx = app.frame_ctx();
     let mut spans = vec![Span::raw(" ".repeat(lead))];
     let mut used = 0;
-    if let Some((key, verb)) = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx) {
+    // Held (T-1156): words in the box that are not mesimon's. The key is
+    // shown out, and why, where it would be.
+    if ctx.ticket_box_held && ctx.shift_enter() {
+        let cap = " shift+enter ".to_string();
+        let said = format!(" {HELD_WORDS} ");
+        let w = 3 + cap.width() + said.width();
+        if w + 2 <= width {
+            spans.push(Span::styled(dash.repeat(2), fade));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(cap, theme.dim3()));
+            spans.push(Span::styled(said, theme.dim2()));
+            used = w;
+        }
+    } else if let Some((key, verb)) =
+        keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx)
+    {
         let cap = format!(" {key} ");
         let said = format!(" {verb} ");
         let w = 3 + cap.width() + said.width();
@@ -1982,6 +1997,9 @@ fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Lin
     }
     Line::from(spans)
 }
+
+/// Why Shift+Enter is held over a box with someone else's words (T-1156).
+const HELD_WORDS: &str = "held ∙ words in its box ∙ enter finishes them in the pane";
 
 /// How far the closed box's rules go toward the page ground.
 const FOOT_FADE: f32 = 0.55;

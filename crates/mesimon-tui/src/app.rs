@@ -8371,6 +8371,7 @@ impl App {
             sel_new_agent: matches!(row, Some(RailRow::NewAgent))
                 && !subject.is_some_and(|t| self.launch_parked(t)),
             ticket_launching: subject.is_some_and(|t| self.launch_parked(t)),
+            ticket_box_held: subject.is_some_and(|t| self.box_held(t)),
             sel_terminal: matches!(row, Some(RailRow::Terminal(_))),
             adopt_armed: matches!((row, self.adopt_armed, subject), (Some(RailRow::Terminal(_)), Some(armed), Some(t)) if armed == t),
             ticket_shells: self.ticket_shells,

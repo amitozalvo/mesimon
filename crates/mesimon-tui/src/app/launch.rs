@@ -166,6 +166,19 @@ impl App {
         Some(Launch { worktree, init, agent, sends, fresh: s.fresh })
     }
 
+    /// The ticket's agent's box holds words mesimon did not type (T-1156),
+    /// as the page's live window last saw it: a person's draft, a shell
+    /// line, a paste. The title a start typed (`typed_title`, or the part
+    /// of it the box shows) is mesimon's, and so are a launch's undelivered
+    /// words, which Shift+Enter sends again.
+    pub(crate) fn box_held(&self, ticket: ulid::Ulid) -> bool {
+        let Some(rec) = self.board.live_agent(ticket) else { return false };
+        let Some(text) = self.live_shot(rec.id).and_then(|s| s.box_text()) else { return false };
+        let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+        let typed = rec.typed_title.as_deref().is_some_and(|t| norm(t).starts_with(&norm(&text)));
+        !typed && self.unsent_of(ticket).is_none()
+    }
+
     /// The ms since `ticket`'s launch gave way to its agent's box, while the
     /// ready hop still plays; `None` after, or for a launch this client did
     /// not watch.
