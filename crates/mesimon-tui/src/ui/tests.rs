@@ -15724,12 +15724,11 @@ fn golden_ticket_live_ask_120() {
     assert_eq!(terminal.backend().cursor_position(), (14u16, y16).into(), "after the words");
     assert_eq!(buf[(4, y16)].bg, buf[(0, y16)].bg, "the words sit on the page ground");
     assert!(lines[y - 1].contains(&"─".repeat(78)), "the top rule is whole: {:?}", lines[y - 1]);
-    // The delivery row under the words, level with them, painted across the
-    // pane's width and no further.
-    assert!(lines[y + 1].starts_with("    queued  shift+tab"), "{:?}", lines[y + 1]);
-    assert_eq!(buf[(1, y16 + 1)].bg, buf[(80, y16 + 1)].bg, "painted to the pane's edge");
-    assert_ne!(buf[(1, y16 + 1)].bg, buf[(0, y16 + 1)].bg, "painted");
-    assert_eq!(buf[(81, y16 + 1)].bg, buf[(0, y16 + 1)].bg, "and no further");
+    // The delivery row is the box's bottom rule with the words set into it,
+    // level with the typed ones (T-1156): nothing painted.
+    assert!(lines[y + 1].starts_with(" ── queued  shift+tab ───"), "{:?}", lines[y + 1]);
+    assert!(lines[y + 1].contains(&"─".repeat(50)), "the rule goes on: {:?}", lines[y + 1]);
+    assert_eq!(buf[(4, y16 + 1)].bg, buf[(0, y16 + 1)].bg, "on the page ground");
     golden("ticket_live_ask_120x30", &lines);
     // Over a dialog: the seam row, with a mark of the page's own.
     let (mut dialog, dialog_path) = app_live("tlive-ask-dialog", true);

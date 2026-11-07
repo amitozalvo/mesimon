@@ -1394,9 +1394,21 @@ fn draw_preview(
         let composer = match prompt {
             Some((p, _)) => {
                 let words_x = area.x + live::words_col(&shot.rows[p].text) as u16;
-                Composer { x: area.x, words_x: words_x.min(right - 1), right, bare: false }
+                // The box's bottom rule, as the pane draws it, is the row
+                // under the field: the delivery row is set into it.
+                let rule = boxed
+                    .and_then(|(_, _, bottom)| shot.rows.get(bottom))
+                    .and_then(|r| r.text.trim_start().chars().next())
+                    .filter(|c| *c == '-' || *c == '─');
+                Composer { x: area.x, words_x: words_x.min(right - 1), right, bare: false, rule }
             }
-            None => Composer { x: area.x, words_x: (area.x + 2).min(right - 1), right, bare: true },
+            None => Composer {
+                x: area.x,
+                words_x: (area.x + 2).min(right - 1),
+                right,
+                bare: true,
+                rule: None,
+            },
         };
         return ((field_y - area.y) as usize, Some(composer));
     } else if record.is_some_and(|r| app.live_pending(r)) {
@@ -1489,7 +1501,8 @@ fn draw_preview(
             f.render_widget(Paragraph::new(lines), area);
             let right = area.x + area.width;
             let words_x = (area.x + FOOT_WORDS - 1).min(right - 1);
-            return (h - 2, Some(Composer { x: area.x, words_x, right, bare: false }));
+            let composer = Composer { x: area.x, words_x, right, bare: false, rule: Some('-') };
+            return (h - 2, Some(composer));
         }
     }
     // A seat or a launch too short for its box (T-1156): the zone was
@@ -1519,6 +1532,10 @@ pub(super) struct Composer {
     pub words_x: u16,
     pub right: u16,
     pub bare: bool,
+    /// The glyph of the box's bottom rule under the field, which the
+    /// delivery row is set into (T-1156): the pane's `─`, the page's `-`;
+    /// none over a dialog.
+    pub rule: Option<char>,
 }
 
 /// The ask field as one row on the pane's composer (T-1143), drawn as the
@@ -1559,8 +1576,12 @@ fn composer_row(
 
 /// The delivery row under the composer row (T-1143): the card's mode row
 /// (`now`, `queued`, `accept plan`, `queued ∙ plan mode`, the tier) and the
-/// key that cycles it, in the card's inks on the selected ground across
-/// the pane's width, its words level with the typed ones.
+/// key that cycles it, its words level with the typed ones. On a box it is
+/// the box's bottom rule with the words set into it (T-1156, the author:
+/// "the line below should be solid line, not background. the text
+/// explaining should be integrated to that line"): the rule's glyph in the
+/// reading ink around them. Over a dialog, which has no rule, the card's
+/// inks on the selected ground across the pane's width.
 fn delivery_row(
     theme: &crate::theme::Theme,
     c: Composer,
@@ -1570,19 +1591,34 @@ fn delivery_row(
 ) -> Line<'static> {
     let width = (c.right - c.x) as usize;
     let lead = (c.words_x - c.x) as usize + 1;
-    let mut spans = vec![
-        Span::raw(" ".repeat(lead)),
-        Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
-    ];
+    let (word_ink, key_ink) = match c.rule {
+        Some(_) => (theme.dim1(), theme.dim2()),
+        None => (Style::default().fg(theme.sel.dim1), Style::default().fg(theme.sel.dim2)),
+    };
+    let mut words = vec![Span::styled(word.to_string(), word_ink)];
     if let Some(t) = tier_word {
-        spans.push(Span::styled(format!(" ∙ {t}"), Style::default().fg(theme.sel.dim1)));
+        words.push(Span::styled(format!(" ∙ {t}"), word_ink));
     }
     if cycles {
-        spans.push(Span::styled("  shift+tab", Style::default().fg(theme.sel.dim2)));
+        words.push(Span::styled("  shift+tab".to_string(), key_ink));
     }
-    let used: usize = spans.iter().map(|s| s.width()).sum();
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
-    Line::from(spans).style(theme.selected_row())
+    let said: usize = words.iter().map(|s| s.width()).sum();
+    let Some(rule) = c.rule else {
+        let mut spans = vec![Span::raw(" ".repeat(lead))];
+        spans.extend(words);
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(lead + said))));
+        return Line::from(spans).style(theme.selected_row());
+    };
+    // The rule to the words' column less one, a space, the words, a space,
+    // the rule to the edge.
+    let glyph = rule.to_string();
+    let before = lead.saturating_sub(1);
+    let after = width.saturating_sub(before + said + 2);
+    let mut spans = vec![Span::styled(glyph.repeat(before), theme.dim2()), Span::raw(" ")];
+    spans.extend(words);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(glyph.repeat(after), theme.dim2()));
+    Line::from(spans)
 }
 
 /// The reading rows' gutter: the pane's marks' two columns.

@@ -42452,7 +42452,12 @@ words redundant.) The conversation rests on the rule, two rows taller for it. Op
 own rules frame today's field and the status line stays under it as the pane has it, the
 rows over the box moving up by the two the field takes (a first cut had the field take the
 status line's rows so nothing over it moved; the author: "it should look like the original,
-open the input, don't hide the lines below it"). Codex's lone
+open the input, don't hide the lines below it"). The field's delivery row is the box's bottom
+rule with the words set into it, level with the typed ones (`── queued  shift+tab ────`,
+`Composer::rule`: the pane's `─`, the page's `-`), nothing painted; the author, from a
+screenshot of the selected-ground row: "the line below should be solid line, not
+background. the text explaining should be integrated to that line". Over a dialog, which has
+no rule, the row stays on the selected ground. Codex's lone
 `›` row gets page rules over and under (`Shot::page_box`), so it opens without moving. Key
 hints come out of Claude Code's status rows only (`strip_hints`: spinner and `⎿` rows; a
 parenthesised `key to/for action` `·` segment; a `⎿ Tip:` row); prose and prompts never pass

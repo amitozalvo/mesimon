@@ -24,7 +24,7 @@
  · Vibing… (5m 55s · ↓ 22.2k tokens)                                                         ▀█ ▄▀▀   █▀
  ──────────────────────────────────────────────────────────────────────────────             ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
  ❯  later then                                                                              ███▀▀████▀▀█ █▀████
-    queued  shift+tab                                                                       █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+ ── queued  shift+tab ───────────────────────────────────────────────────────────           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
    ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
    ⏵⏵ auto mode on
  ASK  enter queue ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued / immediately
