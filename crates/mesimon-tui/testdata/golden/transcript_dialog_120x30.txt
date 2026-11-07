@@ -1,4 +1,4 @@
- BOARD   mesimon › kanban-tui   7 tickets
+ TRANSCRIPT   mesimon › kanban-tui
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
@@ -8,7 +8,7 @@
                                    ✻ claude ⠋  $ bash ◦
                                                         T-3
 
-          ╭─ TRANSCRIPT (4 of 4) ────────────┴─────────────────────────────────╮
+          ╭─ ✻ TRANSCRIPT ∙ 4 of 4 ──────────┴─────────────────────────────────╮
           │  claude                                                            │
           │                                                                    │
           │  Fixed the OSC-11 race: the query now runs once, before raw mode,  │
@@ -27,4 +27,4 @@
 
 
 
- TRANSCRIPT  { } message ∙ tab link ∙ jk scroll ∙ c copy ∙ esc close                                             ? keys
+ { } message ∙ tab link ∙ jk scroll ∙ c copy ∙ esc close                                                         ? keys

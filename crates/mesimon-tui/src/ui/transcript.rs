@@ -1,9 +1,12 @@
 //! The transcript dialog (T-921): one message of the cursor card's agent
-//! conversation, hung under the card over a receded board. The title says
-//! where in the conversation the reader is, `TRANSCRIPT (i of n)`, and
-//! what came since; the message's first row says who wrote it, when, and
-//! the steps that followed it; the rest is the message as the ticket
-//! page's preview renders a reply, scrolled by `jk`.
+//! conversation, hung under the card over a receded board. The title wears
+//! the session's mark, the one its card row shows, and says where in the
+//! conversation the reader is, `✻ TRANSCRIPT ∙ i of n`, and what came since
+//! (T-1152: the note reader hangs in the same place, and the mark is how
+//! the two tell apart); the message's first row says who wrote it, when,
+//! and the steps that followed it; the rest is the message as the ticket
+//! page draws it — a reply as its preview renders one, a person's words on
+//! the raised ground behind the prompt mark — scrolled by `jk`.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -26,6 +29,9 @@ use crate::text::truncate;
 /// The note reader (T-1139) hangs at the same measure.
 pub(super) const ROWS: u16 = 14;
 pub(super) const WIDTH: u16 = 68;
+/// The two cells between the frame and the words, where a person's
+/// message wears its prompt mark.
+const PAD: &str = "  ";
 
 /// When a message was written: the clock today, how long ago before that.
 pub(super) fn when(ms: Option<u64>, now_ms: u64) -> String {
@@ -70,10 +76,11 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let words = t.message().filter(|_| fits).map(|m| words(app, t, m, body));
     app.preview_measured();
 
-    let mut title = dialog::title(&theme.rest, "TRANSCRIPT");
+    let mark = crate::glyphs::kind_mark(t.kind, theme.glyph_tier());
+    let mut title = dialog::title(&theme.rest, format!("{mark} TRANSCRIPT"));
     if !t.messages().is_empty() {
         title.push(Span::styled(
-            format!(" ({} of {})", t.idx + 1, t.messages().len()),
+            format!(" ∙ {} of {}", t.idx + 1, t.messages().len()),
             theme.dim2(),
         ));
     }
@@ -103,7 +110,13 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         return;
     };
     f.render_widget(Paragraph::new(head), Rect { height: 1, ..body });
-    f.render_widget(Paragraph::new(shown), Rect { y: body.y + 2, height: body.height - 2, ..body });
+    // The words are drawn from the frame's inner edge: a person's carry
+    // their mark in the two-cell pad and the raised ground across the
+    // whole inside, as the ticket page's do.
+    f.render_widget(
+        Paragraph::new(shown),
+        Rect { y: body.y + 2, height: body.height - 2, ..inner },
+    );
 }
 
 /// The message's first row (who, when, the steps that followed it) and its
@@ -119,10 +132,13 @@ fn words(
 
     // Who, when, and the steps that followed, at the right.
     let who = super::ticket::who_word(theme, m, t.kind);
+    // `you` as bold as the agent's name, as the ticket page heads both.
     let who_style = match m.hand {
         Some(raise) => super::ticket::hand_ink(theme, raise).add_modifier(Modifier::BOLD),
         None => match m.kind {
-            RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
+            RowKind::Reply | RowKind::Prompt => {
+                Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
+            }
             _ => theme.dim1(),
         },
     };
@@ -141,17 +157,17 @@ fn words(
     head.push(Span::raw(" ".repeat(gap)));
     head.push(Span::styled(steps, theme.dim3()));
 
-    // The words: a person's behind the quote bar, read as they typed
-    // them; the agent's as the ticket page reads a reply; a notice in
-    // the quiet ink; a raised hand's in the needs-you colour (T-1155).
+    // The words: a person's read as they typed them, on the raised ground
+    // behind the prompt mark (the ticket page's look, T-1152); the agent's
+    // as the ticket page reads a reply; a notice in the quiet ink; a raised
+    // hand's in the needs-you colour (T-1155).
     let prompt = m.kind == RowKind::Prompt;
-    let bar = if prompt { 2 } else { 0 };
     let newline = if prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
     let rows = super::ticket::rendered_with_link(
         app,
         key,
-        width - bar,
+        width,
         || crate::peek::sanitize(t.text(m)),
         newline,
         app.transcript_cursor_source(),
@@ -172,14 +188,23 @@ fn words(
     }
     let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
     if at + shown.len() < rows.len() {
-        crate::rich::mark_cut(&mut shown, width - bar, theme);
+        crate::rich::mark_cut(&mut shown, width, theme);
     }
-    for line in &mut shown {
+    let mark = if theme.glyph_tier() == Tier::Ascii { "> " } else { "❯ " };
+    let raised = theme.selected_bg.map_or(Style::default(), |bg| Style::default().bg(bg));
+    for (r, line) in shown.iter_mut().enumerate() {
         super::ticket::ink_message(theme, m, line);
-        if prompt {
-            let mark = if theme.glyph_tier() == Tier::Ascii { "> " } else { "▎ " };
-            line.spans.insert(0, Span::styled(mark, theme.dim3()));
+        if !prompt {
+            line.spans.insert(0, Span::raw(PAD));
+            continue;
         }
+        // The mark on the message's first row only, not a scrolled
+        // window's; the ground runs to the frame on both sides.
+        let lead = if at + r == 0 { mark } else { PAD };
+        line.spans.insert(0, Span::styled(lead, theme.dim2()));
+        let used = super::spans_width(&line.spans);
+        line.spans.push(Span::raw(" ".repeat((width + 2 * PAD.len()).saturating_sub(used))));
+        *line = std::mem::take(line).style(raised);
     }
     (Line::from(head), shown)
 }

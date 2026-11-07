@@ -7068,9 +7068,9 @@ fn golden_transcript_dialog_hand_120() {
     press(&mut app, '}');
     let _ = render(&app, 120, 30);
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("✻ TRANSCRIPT ∙ 5 of 5")), "{lines:#?}");
     // Inside the dialog: the open card above it shows the same words.
-    let top = lines.iter().position(|l| l.contains("TRANSCRIPT")).expect("the dialog");
+    let top = lines.iter().position(|l| l.contains("TRANSCRIPT ∙")).expect("the dialog");
     let (hx, head) = spot_of(&lines[top..], "! claude raised a hand");
     let (x, words) = spot_of(&lines[top..], "Two ways to keep");
     let (head, words) = (head + top as u16, words + top as u16);
@@ -7082,7 +7082,7 @@ fn golden_transcript_dialog_hand_120() {
     assert!(app.poll_transcript(), "the lowered hand moves the dialog");
     let lines = render(&app, 120, 30);
     assert!(!lines.iter().any(|l| l.contains("raised a hand")), "{lines:#?}");
-    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (4 of 4)")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("✻ TRANSCRIPT ∙ 4 of 4")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7110,7 +7110,7 @@ fn golden_transcript_dialog_lowered_hand_120() {
         .unwrap_or_else(|| panic!("the lowered hand's head: {lines:#?}"));
     let words = head + 2;
     assert!(lines[words].contains("Two ways to keep"), "the words under it: {lines:#?}");
-    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("✻ TRANSCRIPT ∙ 5 of 5")), "{lines:#?}");
     let buf = cells(&app, 120, 30);
     let col = |y: usize, needle: &str| spot_of(&lines[y..], needle).0;
     let faded = app.theme.attn_faded().fg;
@@ -7123,7 +7123,7 @@ fn golden_transcript_dialog_lowered_hand_120() {
     assert!(app.poll_transcript(), "the raised hand moves the dialog");
     let lines = render(&app, 120, 30);
     let head = lines.iter().position(|l| l.contains("! claude raised a hand")).expect("up");
-    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "one hand: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("✻ TRANSCRIPT ∙ 5 of 5")), "one hand: {lines:#?}");
     let buf = cells(&app, 120, 30);
     let words = head + 2;
     let x = spot_of(&lines[words..], "Two ways").0;
@@ -7141,9 +7141,10 @@ fn test_transcript_dialog_keeps_its_card_open() {
     press(&mut app, '}');
     let _ = render(&app, 120, 30);
     let after = render(&app, 120, 30);
-    let top = after.iter().position(|l| l.contains("TRANSCRIPT")).expect("dialog");
-    let card: Vec<&String> = before.iter().take(top).collect();
-    let kept: Vec<&String> = after.iter().take(top).collect();
+    let top = after.iter().position(|l| l.contains("TRANSCRIPT ∙")).expect("dialog");
+    // Under the header, which names the dialog (T-1152).
+    let card: Vec<&String> = before.iter().take(top).skip(1).collect();
+    let kept: Vec<&String> = after.iter().take(top).skip(1).collect();
     assert!(
         card.iter().any(|l| l.contains("Fixed the OSC-11")),
         "the open card shows its reply above the dialog:\n{}",
@@ -7154,14 +7155,14 @@ fn test_transcript_dialog_keeps_its_card_open() {
 }
 
 /// `{ }` step the messages and land where each was left; `jk` scrolls the
-/// one on show; Esc closes. A person's words wear the quote bar.
+/// one on show; Esc closes. A person's words wear the prompt mark.
 #[test]
 fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     let (mut app, dir) = app_transcript("keys");
     press(&mut app, '{');
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");
-    assert!(text.contains("TRANSCRIPT (4 of 4)"), "{text}");
+    assert!(text.contains("✻ TRANSCRIPT ∙ 4 of 4"), "{text}");
     assert!(text.contains("claude"), "{text}");
     assert!(text.contains("Fixed the OSC-11 race"), "{text}");
     assert!(text.contains("jk scroll"), "a long reply scrolls, offered on its first frame");
@@ -7173,19 +7174,19 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     // start (T-1145).
     let dialog = |app: &App| {
         let lines = render(app, 120, 30);
-        let top = lines.iter().position(|l| l.contains("TRANSCRIPT")).expect("dialog");
+        let top = lines.iter().position(|l| l.contains("TRANSCRIPT ∙")).expect("dialog");
         lines[top..].join("\n")
     };
     let after = dialog(&app);
     assert!(!after.contains("Fixed the OSC-11 race"), "two rows down:\n{after}");
     press(&mut app, '{');
     let prompt = render(&app, 120, 30).join("\n");
-    assert!(prompt.contains("TRANSCRIPT (3 of 4)"), "{prompt}");
-    assert!(prompt.contains("▎ Go ahead"), "a person's words behind the bar:\n{prompt}");
+    assert!(prompt.contains("✻ TRANSCRIPT ∙ 3 of 4"), "{prompt}");
+    assert!(prompt.contains("❯ Go ahead"), "a person's words behind the prompt mark:\n{prompt}");
     assert!(prompt.contains("you"), "{prompt}");
     press(&mut app, '{');
     let first = render(&app, 120, 30).join("\n");
-    assert!(first.contains("TRANSCRIPT (2 of 4)"), "{first}");
+    assert!(first.contains("✻ TRANSCRIPT ∙ 2 of 4"), "{first}");
     assert!(first.contains("3 steps ∙ Read, Grep"), "the steps that followed:\n{first}");
     press(&mut app, '}');
     press(&mut app, '}');
@@ -7194,7 +7195,7 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     // A small terminal still frames it, under the card or over it.
     for (w, h) in [(80, 24), (60, 20), (120, 20)] {
         let small = render(&app, w, h).join("\n");
-        assert!(small.contains("TRANSCRIPT"), "{w}x{h}:\n{small}");
+        assert!(small.contains("TRANSCRIPT ∙"), "{w}x{h}:\n{small}");
     }
     press(&mut app, 'c');
     assert!(app.status.contains("message"), "{}", app.status);
@@ -7205,6 +7206,90 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
     assert!(
         app.transcript.is_none() || render(&app, 120, 30).iter().all(|l| !l.contains("TRANSCRIPT"))
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The cell column `needle` starts at on `line`.
+fn col_of(line: &str, needle: &str) -> u16 {
+    let byte = line.find(needle).unwrap_or_else(|| panic!("{needle} on {line}"));
+    line[..byte].width() as u16
+}
+
+/// A dialog's edges: its top row, and its frame's left and right columns.
+fn dialog_edges(lines: &[String], title: &str) -> (usize, u16, u16) {
+    let top = lines.iter().position(|l| l.contains(title)).unwrap_or_else(|| panic!("{title}"));
+    (top, col_of(&lines[top], "╭"), col_of(&lines[top], "╮"))
+}
+
+/// The transcript and the note reader hang in the same place under their
+/// card (T-1152, the author: "transcript and notes quick view is too
+/// similar"): the reader stands on the card's surface, the editor's, and
+/// the transcript on the board's ground; the header names which is open.
+#[test]
+fn the_note_reader_and_the_transcript_stand_on_different_grounds() {
+    let (mut app, dir) = app_transcript("grounds");
+    let raised = app.theme.selected_bg.expect("graphite paints a card surface");
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    assert!(lines[0].starts_with(" TRANSCRIPT "), "the header names it: {lines:?}");
+    let (top, left, _) = dialog_edges(&lines, "✻ TRANSCRIPT ∙");
+    let y = top as u16 + 3;
+    assert!(lines[y as usize].contains("Fixed the OSC-11"), "{lines:?}");
+    assert_ne!(buf[(left + 1, y)].bg, raised, "the transcript is on the board's ground");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut b = fixture_tagged();
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        READER_NOTE,
+    );
+    ed.reader = Some(crate::app::Reader::default());
+    ed.reading = true;
+    app.mode = Mode::Editor(ed);
+    let _ = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    assert!(lines[0].starts_with(" NOTE "), "{lines:?}");
+    let (top, left, right) = dialog_edges(&lines, "DESCRIPTION");
+    let row = top as u16 + 3;
+    for x in [left, left + 1, right - 1, right] {
+        assert_eq!(buf[(x, row)].bg, raised, "the reader is on the card's surface at {x}");
+    }
+    let (x, y) = spot_of(&lines, "What changed");
+    assert_eq!(buf[(x, y)].fg, app.theme.sel.base, "in the surface's own ink");
+}
+
+/// A person's message in the transcript reads as the ticket page draws it
+/// (T-1152): `you` as bold as the agent's name, the words on the raised
+/// ground from frame to frame behind the prompt mark.
+#[test]
+fn a_persons_message_in_the_transcript_reads_as_on_the_ticket_page() {
+    let (mut app, dir) = app_transcript("prompt-look");
+    let raised = app.theme.selected_bg.expect("graphite paints a card surface");
+    press(&mut app, '{');
+    press(&mut app, '{');
+    let _ = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let (top, left, right) = dialog_edges(&lines, "✻ TRANSCRIPT ∙ 3 of 4");
+    let head = top + 1;
+    let you = col_of(&lines[head], "you");
+    assert!(buf[(you, head as u16)].modifier.contains(Modifier::BOLD), "{lines:?}");
+    assert_eq!(buf[(you, head as u16)].fg, app.theme.rest.base, "in the agent name's ink");
+    let y = lines.iter().position(|l| l.contains("❯ Go ahead")).expect("the prompt mark") as u16;
+    assert_eq!(col_of(&lines[y as usize], "❯"), left + 1, "the mark sits in the pad");
+    for x in [left + 1, left + 3, right - 1] {
+        assert_eq!(buf[(x, y)].bg, raised, "the raised ground at {x}");
+    }
+    assert_ne!(buf[(right, y)].bg, raised, "the frame stays the board's");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7251,7 +7336,7 @@ fn transcript_enter(app: &mut App) {
 fn transcript_mark(buffer: &ratatui::buffer::Buffer, row_word: &str, needle: &str, marked: bool) {
     let lines = lines_of(buffer);
     // Inside the dialog: the open card above it can show the same words.
-    let top = lines.iter().position(|line| line.contains("TRANSCRIPT")).unwrap_or(0);
+    let top = lines.iter().position(|line| line.contains("TRANSCRIPT ∙")).unwrap_or(0);
     let y = top + lines[top..].iter().position(|line| line.contains(row_word)).expect(row_word);
     let line = &lines[y];
     let byte = line.find(needle).expect(needle);
@@ -8250,7 +8335,7 @@ fn golden_editor_describe_120() {
 }
 
 /// T-440: on a ticket with three notes the dialog counts where it stands
-/// — `NOTE 2/3` in the frame's top edge. Since T-1139 the editor walks no
+/// — `NOTE ∙ 2 of 3` in the frame's top edge. Since T-1139 the editor walks no
 /// notes (the reader does), so its bottom edge offers no `tab`. Dirty, the
 /// context row says ` ∙ unsaved` in the dim register.
 #[test]
@@ -8270,7 +8355,7 @@ fn golden_editor_note_ring_120() {
     );
     app.mode = Mode::Editor(ed.clone());
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("NOTE 2/3")), "the frame counts: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("NOTE ∙ 2 of 3")), "the frame counts: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("next note")), "the editor walks none: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("unsaved")), "clean says nothing: {lines:?}");
     golden("editor_note_ring_120x30", &lines);
@@ -8323,7 +8408,7 @@ fn golden_editor_reader_120() {
     // The footer was drawn before the note was measured; it says the
     // same keys from the next frame on.
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("DESCRIPTION 1/2")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION ∙ 1 of 2")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("enter edit")), "the edge offers it: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("## What")), "markdown is drawn: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("**once**")), "{lines:?}");

@@ -6,7 +6,7 @@
 //!
 //! The newest page is read on the key, so the dialog opens on its last
 //! message at once; the pages before it are read on a thread of their own,
-//! back to the file's start, so `(i of n)` counts the whole conversation
+//! back to the file's start, so `i of n` counts the whole conversation
 //! once they land. While the dialog is open the UI thread only stats the
 //! file, every `FRESH`; what was written since is read on another thread,
 //! one read at a time, and lands in `pump`, as a snapshot does (T-812).

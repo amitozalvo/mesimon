@@ -784,6 +784,8 @@ pub struct ReaderRows {
     pub width: usize,
     pub unwrapped: bool,
     pub flavor: crate::theme::Flavor,
+    /// Laid out for the dialog's elevated surface, not the page's ground.
+    pub surface: crate::rich::Surface,
     pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
     /// The widest row's cells, for the sideways clamp.
     pub widest: usize,

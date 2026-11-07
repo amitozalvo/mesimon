@@ -6,7 +6,7 @@
                                ▉▉   ✻ claude ⠋  $ bash ◦
     Keymap validator      >1y  ▉▉    BUG   STAGING      T-3     x Flaky e2e on runner >1y
 
-          ╭─ DESCRIPTION 1/2 ────────────────┴─────────────────────────────────╮
+          ╭─ DESCRIPTION ∙ 1 of 2 ───────────┴─────────────────────────────────╮
           │  edited by you >1y ago                                             │
           │                                                                    │
           │  The OSC-11 query now runs once, before raw mode, and the answer   │

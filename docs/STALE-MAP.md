@@ -42246,3 +42246,40 @@ caching it threads new fields through every `Shot`).
 - Setup's probe forks `auth status` per CLI only to pick "pull" or "merge request"; setup keeps
   multi-page scaffolding (`asks`, `rail`, a map keyed by its one `Ask`).
 - `App::live_rect` is set every frame for tests alone.
+
+## The transcript and the note reader tell apart (T-1152, 2026-11-07, the author: "transcript and notes quick view is too similar ∙ can confuse users. need a better indication")
+
+T-1139 hung the note reader where the transcript hangs and T-1145 made the two alike on purpose,
+so `{ }` and `tab` on a card opened the same frame, notch, title ink and keys edge; only the title
+word and a counter spelled two ways (`(4 of 4)`, `1/2`) differed. Frames were approved before
+building (artifact on the ticket). No new colour; four cues, all already the board's:
+
+- **The reader stands on the card's surface**, the note editor's (`editor::surface`): the frame,
+  the context row and the edge keys in `sel` ink, the note rendered on `rich::Surface::Elevated`
+  (`rich::render_all_on`, `ReaderRows.surface` in the cache key). The ticket page's full-screen
+  reader stays on the ground. Mono and light-256 paint no card surface, so there the cue is the
+  title and the chip alone.
+- **The transcript's title wears the session's mark**, `glyphs::kind_mark` (`✻`, `>` for Codex,
+  `*` in ASCII): `✻ TRANSCRIPT ∙ 4 of 4`. Both dialogs count `∙ i of n` in the quiet ink; the
+  editor dialog's edge too (`editor::edge_heading`), so reading and writing a note keep one
+  heading. The context rows' `NOTE 2/3` text is unchanged.
+- **The header chip names the open dialog**: TRANSCRIPT (`chrome::screen_word`), as it already
+  said NOTE over the reader; the footer's TRANSCRIPT chip goes (`mode_word`) and the board's
+  ticket count goes with BOARD. This makes the transcript the one board dialog the header names;
+  raised to the author, who kept it.
+- **A person's message reads as on the ticket page** (the author: "the 'you' should be bold
+  exactly like the agent title … mimic the same style as the user prompts in the ticket page"):
+  `you` bold in base ink, and the words on the raised ground from frame to frame with `❯` (`>`
+  ASCII) in the pad on the message's first row, replacing the `▎` quote bar.
+
+**Refuted:** the card's tag stripe down the reader's edge (in the first frames): T-1151 took every
+block off the dialogs' left edge. Square corners for a note (no other dialog has them, too small
+to see). The quote bar on the agent's words (it marked the person's). A `≡` on the note's
+heading for mono was offered and not taken.
+
+Tests: `the_note_reader_and_the_transcript_stand_on_different_grounds`,
+`a_persons_message_in_the_transcript_reads_as_on_the_ticket_page` (both fail on the old
+drawing); transcript needles moved to `✻ TRANSCRIPT ∙`. Goldens `transcript_dialog`,
+`transcript_dialog_hand`, `transcript_dialog_lowered_hand`, `editor_reader`,
+`editor_reader_link`, `editor_reader_unwrapped`, `editor_note_ring`: title, header and footer
+rows only.

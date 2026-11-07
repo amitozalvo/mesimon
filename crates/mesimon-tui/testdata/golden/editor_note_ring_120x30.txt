@@ -1,7 +1,7 @@
  NOTE   mesimon › kanban-tui
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
-                                                            ╭─ NOTE 2/3 ───────────────────────────────────────────────╮
+                                                            ╭─ NOTE ∙ 2 of 3 ──────────────────────────────────────────╮
     Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y │  Fix OSC-11 detection                                    │
                                ▉▉   ✻ claude ⠋  $ bash ◦    │  ⎇ shared ∙ edited by you >1y ago                        │
     Keymap validator      >1y  ▉▉    BUG   STAGING      T-3 │                                                          │

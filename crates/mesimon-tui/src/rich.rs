@@ -172,6 +172,19 @@ pub(crate) fn render_all_with_link(
     render_with(src, width, usize::MAX, theme, Surface::Ground, newline, Some(selected))
 }
 
+/// `render_all` or `render_all_with_link` on a chosen surface: the note
+/// reader's dialog stands on the card's elevated surface (T-1152).
+pub(crate) fn render_all_on(
+    src: &str,
+    width: usize,
+    theme: &Theme,
+    surface: Surface,
+    newline: Newline,
+    selected: Option<&mesimon_core::links::Found>,
+) -> Vec<Line<'static>> {
+    render_with(src, width, usize::MAX, theme, surface, newline, selected)
+}
+
 /// End `lines` in the `~` cut marker — the same mark `render` leaves when it
 /// runs out of rows, for a window that stops short of the last one. Clips
 /// the last row to make the cell if it has to.

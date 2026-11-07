@@ -61,6 +61,9 @@ fn screen_word(app: &App) -> String {
         // and the ask room (T-380) are dialogs over the board and the board
         // is still the room.
         (_, Mode::Editor(ed)) if !ed.composing() && !ed.asking() => "NOTE".into(),
+        // The transcript hangs where the note reader does: the header names
+        // which of the two is open, the way it says NOTE (T-1152).
+        (Screen::Board, Mode::Transcript { .. }) => "TRANSCRIPT".into(),
         (Screen::Board, _) => "BOARD".into(),
         (Screen::Ticket { ticket, .. }, _) => match app.board.ticket(*ticket) {
             Some(t) => format!("TICKET ({})", t.short_key),
@@ -848,6 +851,8 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // The ask field in its bigger room is still the ask field (T-380).
         Mode::Editor(e) if e.asking() => "ASK",
         Mode::Editor(_) => return None,
+        // The header names it (`screen_word`).
+        Mode::Transcript { .. } if matches!(app.screen, Screen::Board) => return None,
         // The column dialog's name field (T-117).
         Mode::ColumnSettings { naming: Some(_), .. } => "NAME",
         Mode::ColumnSettings { describing: Some(_), .. } => "DESCRIPTION",

@@ -1796,8 +1796,8 @@ fn rail_shin(
 
 /// The whole conversation the zone reads (T-1143): every message the
 /// page's transcript holds, oldest first, each under a row saying who and
-/// when, as the transcript dialog heads a message — a person's words
-/// behind the quote bar, a notice in the quiet ink. Each message's rows
+/// when, as the transcript dialog heads a message — a person's words on
+/// the raised ground behind the prompt mark, a notice in the quiet ink. Each message's rows
 /// and links are rendered once (`App::page_messages`), so a conversation
 /// of hundreds lays out again only the message that grew; the document's
 /// links by row land on `App::page_doc` for `tab`. Returns the pager's

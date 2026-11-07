@@ -118,7 +118,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
         height: area.height.saturating_sub(HEAD_ROWS + 1),
     };
     if ed.reading {
-        let lines = reader_lines(app, ed, body, PAGE_PAD);
+        let lines = reader_lines(app, ed, body, PAGE_PAD, crate::rich::Surface::Ground);
         f.render_widget(Paragraph::new(lines), body);
     } else {
         if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
@@ -182,7 +182,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         surface,
         ink,
         dialog::Edges {
-            title: dialog::title(ink, heading(app, ed)),
+            title: edge_heading(app, ed, ink),
             tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
         },
     );
@@ -579,6 +579,17 @@ fn heading(app: &App, ed: &Editor) -> String {
     }
 }
 
+/// The heading in a dialog's top edge: the word, then where the note
+/// stands in the ring in the quiet ink, `NOTE ∙ 2 of 3` — the transcript's
+/// count, so the two dialogs count alike (T-1152).
+fn edge_heading(app: &App, ed: &Editor, ink: &Ramp) -> Vec<Span<'static>> {
+    let mut spans = dialog::title(ink, heading_word(app, ed));
+    if let Some((at, n)) = app.note_ring(ed) {
+        spans.push(Span::styled(format!(" ∙ {} of {n}", at + 1), Style::default().fg(ink.dim2)));
+    }
+    spans
+}
+
 fn heading_word(app: &App, ed: &Editor) -> &'static str {
     match &ed.purpose {
         EditorPurpose::Compose { .. } => "NEW TICKET",
@@ -675,9 +686,12 @@ fn draw_body(
 /// sight (author: "why is the popup hiding the ticket? it should come
 /// below it"). The heading counts the notes in the top edge, the context
 /// row leads, the note follows; the reading keys sit in the bottom edge
-/// and Esc is the footer's.
+/// and Esc is the footer's. It stands on the card's surface, the editor's
+/// (T-1152): the transcript hangs in the same place on the board's ground,
+/// and the ground is what tells a note from a conversation at a glance.
 fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
     let theme = &app.theme;
+    let (surface, ink) = surface(theme);
     let screen = f.area();
     let mut area = dialog::placed(app, screen, super::transcript::ROWS, super::transcript::WIDTH);
     // The row above the footer stays the screen's, as a list's does.
@@ -694,21 +708,18 @@ fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
     // The note is measured before the edge is drawn, so the edge's `jk`
     // offers a scroll on the very frame that has one.
     let words = Rect { y: body.y + 2, height: body.height.saturating_sub(2), ..body };
-    let lines = fits.then(|| reader_lines(app, ed, words, 0));
+    // Elevated reads as the ground where the profile paints no card.
+    let lines = fits.then(|| reader_lines(app, ed, words, 0, crate::rich::Surface::Elevated));
     app.preview_measured();
     let ctx = app.frame_ctx();
     let (own, _) = keymap::footer_split(Scope::Reader, &ctx);
     let own: Vec<_> = own.into_iter().filter(|b| b.verb != keymap::Verb::Back).collect();
-    let tail =
-        super::chrome::hint_spans(&own, &ctx, &theme.rest, inner.width.saturating_sub(4).into());
-    let title = dialog::title(&theme.rest, heading(app, ed));
-    dialog::frame(f, app, area, None, &theme.rest, dialog::Edges { title, tail });
+    let tail = super::chrome::hint_spans(&own, &ctx, ink, inner.width.saturating_sub(4).into());
+    let title = edge_heading(app, ed, ink);
+    dialog::frame(f, app, area, surface, ink, dialog::Edges { title, tail });
     dialog::notch(f, app, area);
     let Some(lines) = lines else { return };
-    f.render_widget(
-        Paragraph::new(context_line(app, ed, &theme.rest, true)),
-        Rect { height: 1, ..body },
-    );
+    f.render_widget(Paragraph::new(context_line(app, ed, ink, true)), Rect { height: 1, ..body });
     f.render_widget(Paragraph::new(lines), words);
 }
 
@@ -717,7 +728,13 @@ fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
 /// the wrap off (`w`) the lines are laid out as wide as the widest needs
 /// and the window shows `x` cells in from their left (`hl`). A window that
 /// stops short of the last row ends in the `~` cut mark, as the preview's.
-fn reader_lines(app: &App, ed: &Editor, area: Rect, pad: u16) -> Vec<Line<'static>> {
+fn reader_lines(
+    app: &App,
+    ed: &Editor,
+    area: Rect,
+    pad: u16,
+    surface: crate::rich::Surface,
+) -> Vec<Line<'static>> {
     let Some(r) = ed.reader.as_ref() else { return Vec::new() };
     let theme = &app.theme;
     let budget = area.height as usize;
@@ -759,22 +776,22 @@ fn reader_lines(app: &App, ed: &Editor, area: Rect, pad: u16) -> Vec<Line<'stati
                 && c.width == lay
                 && c.unwrapped == unwrapped
                 && c.flavor == theme.flavor
+                && c.surface == surface
                 && c.selected == selected
         });
         if !fresh {
             // A note's words are a person's or an agent's: scrubbed as the
             // ticket page's preview scrubs them before they are drawn.
             let text = crate::peek::sanitize(ed.body.as_str());
-            let rows = match selected.as_ref() {
-                Some(found) => crate::rich::render_all_with_link(&text, lay, theme, newline, found),
-                None => crate::rich::render_all(&text, lay, theme, newline),
-            };
+            let rows =
+                crate::rich::render_all_on(&text, lay, theme, surface, newline, selected.as_ref());
             let widest = rows.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0);
             *slot = Some(crate::app::ReaderRows {
                 key,
                 width: lay,
                 unwrapped,
                 flavor: theme.flavor,
+                surface,
                 rows: std::rc::Rc::new(rows),
                 widest,
                 selected: selected.clone(),

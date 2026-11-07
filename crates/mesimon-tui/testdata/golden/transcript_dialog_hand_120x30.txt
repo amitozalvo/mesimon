@@ -1,4 +1,4 @@
- BOARD   mesimon › kanban-tui  !1    7 tickets
+ TRANSCRIPT   mesimon › kanban-tui  !1
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
@@ -9,7 +9,7 @@
                                    ✻ claude ⠋  $ bash ◦
                                                         T-3
 
-          ╭─ TRANSCRIPT (5 of 5) ────────────┴─────────────────────────────────╮
+          ╭─ ✻ TRANSCRIPT ∙ 5 of 5 ──────────┴─────────────────────────────────╮
           │  ! claude raised a hand  >1y                                       │
           │                                                                    │
           │  Two ways to keep the session: an Auth0 tenant or a signed         │
@@ -27,4 +27,4 @@
           ╰───────────────────────────────────────────── { } message ∙ c copy ─╯
 
 
- TRANSCRIPT  { } message ∙ c copy ∙ esc close                                                                    ? keys
+ { } message ∙ c copy ∙ esc close                                                                                ? keys
