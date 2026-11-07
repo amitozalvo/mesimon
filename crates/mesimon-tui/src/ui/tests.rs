@@ -14920,6 +14920,56 @@ fn golden_ticket_live_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// The folder trust dialog in the live window (T-1167): Claude Code's
+/// question and folder as it draws them, the pointer off `No, exit` and the
+/// dialog's `Enter to confirm · Esc to cancel` replaced by the page's row —
+/// the key that trusts the folder, and what Enter does here. The author:
+/// "the user might be confused and think they can actually interact with
+/// the prompt even though we have a way to approve from inside".
+#[test]
+fn golden_ticket_live_trust_120() {
+    let (mut app, path) = app_live("tlive-trust", false);
+    let yellow = |s: &str| format!("\x1b[38;5;220m{s}\x1b[39m");
+    let mut rows: Vec<String> = vec![
+        String::new(),
+        yellow(&"─".repeat(78)),
+        format!(" {}", yellow("\x1b[1mAccessing workspace:\x1b[22m")),
+        String::new(),
+        " \x1b[1m/Users/x/.local/state/mesimon/ac41/worktrees/T-3-trust\x1b[22m".into(),
+        String::new(),
+        " Quick safety check: Is this a project you created or one you trust?".into(),
+        String::new(),
+        " Claude Code'll be able to read, edit, and execute files here.".into(),
+        String::new(),
+        " \x1b[38;5;246mSecurity guide\x1b[39m".into(),
+        String::new(),
+        " \x1b[38;5;153m❯ No, exit\x1b[39m".into(),
+        "   Yes, I trust this folder".into(),
+        String::new(),
+        " \x1b[38;5;246mEnter to confirm · Esc to cancel\x1b[39m".into(),
+    ];
+    rows.resize(24, String::new());
+    let shot =
+        crate::live::Shot { rows: crate::live::parse(&rows.join("\n")), cols: 80, cursor: None };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
+    let rec = std::sync::Arc::make_mut(&mut app.board)
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == uuid_n(31))
+        .expect("the seat");
+    rec.state = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust };
+    rec.detail = Some("Claude Code asks to trust this folder".into());
+    let lines = render(&app, 120, 30);
+    let all = lines.join("\n");
+    assert!(all.contains("Accessing workspace:"), "the dialog is drawn: {all}");
+    assert!(all.contains("No, exit") && !all.contains("❯ No, exit"), "no pointer: {all}");
+    assert!(!all.contains("Enter to confirm"), "the dialog's keys are not the page's: {all}");
+    let row = lines.iter().find(|l| l.contains("trust this folder ∙")).expect("the page's row");
+    assert!(row.contains(" w  trust this folder ∙ enter answers it in its pane"), "{all}");
+    golden("ticket_live_trust_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The ticket page's conversation reads a raised hand as its newest
 /// message (T-1155), in the needs-you colour; the page follows the hand
 /// down.

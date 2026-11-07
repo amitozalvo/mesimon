@@ -223,6 +223,47 @@ impl Shot {
         Shot { rows, cols: self.cols, cursor: self.cursor }
     }
 
+    /// The folder trust dialog as the ticket page draws it (T-1167), with
+    /// the row the page sets its own keys in. The page cannot move the
+    /// dialog's pointer and its Enter opens the pane, where the next Enter
+    /// answers the option the pointer is on (`No, exit` on Claude Code):
+    /// so the pointer goes, the option keeping its words in the plain ink,
+    /// and the dialog's key row (`Enter to confirm · Esc to cancel`,
+    /// Codex's `enter continue · esc back`) becomes a page rule, its index
+    /// returned. A dialog with no key row gets the rule under its last
+    /// words, past a blank. Rows are only added at the end, so the seam is
+    /// the pane's own screen's (`anchor` finds it by the pointer). No dialog on the screen: the screen as
+    /// `for_page` has it, and no row.
+    pub(crate) fn for_trust(&self) -> (Shot, Option<usize>) {
+        let n = self.rows.len();
+        let Some(m) = (0..n).rev().find(|&i| is_marker(&self.rows[i].text)) else {
+            return (self.for_page(), None);
+        };
+        let mut rows = self.rows.clone();
+        let text = &rows[m].text;
+        let lead = text.chars().take_while(|c| matches!(c, ' ' | '│')).count();
+        let plain: String = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| if i == lead { ' ' } else { c })
+            .collect::<String>()
+            .trim_end()
+            .to_string();
+        rows[m] = Row { runs: vec![(plain.clone(), Style::default())], text: plain };
+        let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
+        let last = rows.iter().rposition(|r| !r.blank()).unwrap_or(m);
+        let keys = if last > m && is_dialog_keys(&rows[last].text) {
+            rows[last] = rule;
+            last
+        } else {
+            rows.truncate(last + 1);
+            rows.push(Row::default());
+            rows.push(rule);
+            last + 2
+        };
+        (Shot { rows, cols: self.cols, cursor: self.cursor }, Some(keys))
+    }
+
     /// The box on a screen `for_page` made (T-1156): its top rule, its
     /// prompt row and its bottom rule — Codex's the page's own, the top one
     /// only where a blank row stood over the prompt.
@@ -483,6 +524,14 @@ fn is_hint(seg: &str) -> bool {
         "?",
     ];
     parts.iter().all(|m| mods.contains(m)) && (named.contains(&last) || last.chars().count() == 1)
+}
+
+/// A dialog's own key row (T-1167): Claude Code's `Enter to confirm · Esc
+/// to cancel`, Codex's `enter continue · esc back` — Enter and Esc named
+/// together, with nothing else on the row that is not a hint.
+fn is_dialog_keys(t: &str) -> bool {
+    let t = t.trim().to_lowercase();
+    t.starts_with("enter") && t.contains("esc") && t.split_whitespace().count() <= 10
 }
 
 /// A rule the page drew into a screen (`Shot::for_page`): words, no runs.
@@ -1155,6 +1204,61 @@ mod tests {
         assert_eq!(s.prompt_row(), None);
         let view = s.view();
         assert_eq!(view.last(), Some(&13), "the view ends at the dialog's last words");
+    }
+
+    /// The trust dialog as the page draws it (T-1167): the pointer gone
+    /// from `No, exit`, its words kept, and the dialog's own key row the
+    /// page's rule, its index the one the page sets its keys in.
+    #[test]
+    fn the_trust_dialog_loses_its_pointer_and_its_keys() {
+        let s = screen(
+            &[
+                "",
+                CLAUDE_RULE,
+                " Accessing workspace:",
+                "",
+                " Claude Code'll be able to read, edit, and execute files here.",
+                "",
+                " \x1b[38;5;153m❯ No, exit\x1b[39m",
+                "   Yes, I trust this folder",
+                "",
+                " Enter to confirm · Esc to cancel",
+            ],
+            32,
+        );
+        let (page, keys) = s.for_trust();
+        assert_eq!(keys, Some(9));
+        assert!(is_page_rule(&page.rows[9]), "the key row is the page's: {:?}", page.rows[9]);
+        assert_eq!(page.rows[6].text, "   No, exit");
+        assert_eq!(page.rows[6].runs, vec![("   No, exit".to_string(), Style::default())]);
+        assert!(page.rows.iter().all(|r| !r.text.contains('❯')), "no pointer left");
+        assert_eq!(
+            s.anchor(),
+            1,
+            "the seam, read off the pane's screen (`for_trust` adds rows only at the end)"
+        );
+        assert_eq!(page.view().last(), Some(&9), "the page's row ends the view");
+    }
+
+    /// Codex's older trust dialog has no key row: the page's goes under
+    /// its options, past a blank. A screen with no dialog is `for_page`'s.
+    #[test]
+    fn a_trust_dialog_without_keys_gets_the_page_row_under_it() {
+        let s = screen(
+            &[
+                "  Trust this folder? Codex can read, edit, and run files here.",
+                "› 1. Trust and continue",
+                "  2. Quit",
+            ],
+            32,
+        );
+        let (page, keys) = s.for_trust();
+        assert_eq!(keys, Some(4));
+        assert!(page.rows[3].blank());
+        assert!(is_page_rule(&page.rows[4]));
+        assert_eq!(page.rows[1].text, "  1. Trust and continue");
+        let calm = screen(&["⏺ Done.", CLAUDE_RULE, "❯ ", CLAUDE_RULE], 8);
+        assert_eq!(calm.for_trust(), (calm.for_page(), None));
     }
 
     /// A question parks the cursor on its selected option: that row is not

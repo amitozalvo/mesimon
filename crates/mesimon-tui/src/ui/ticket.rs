@@ -1246,7 +1246,14 @@ fn draw_preview(
         // The screen as the page shows it (T-1156): nothing under the box,
         // whose place a row of the page's own facts takes, and the agent's
         // key hints out of its status rows.
-        let shot = &shot.for_page();
+        // On the folder trust dialog (T-1167) the page's keys answer it, not
+        // the dialog's: its pointer goes and its key row is the page's.
+        // The seam is found by the pointer, so a trust dialog's is read off
+        // the pane's own screen: `for_trust` only adds rows at the end.
+        let (page, trust_keys) =
+            if rec.on_trust_dialog() { shot.for_trust() } else { (shot.for_page(), None) };
+        let trust_anchor = trust_keys.map(|_| shot.anchor());
+        let shot = &page;
         let zone_h = (area.height as usize).saturating_sub(lines.len());
         // The pane is asked to be the zone's size, so the agent lays its
         // screen out for the room it has here.
@@ -1257,7 +1264,7 @@ fn draw_preview(
         // most, keeping the bottom: a dialog taller than the zone loses its
         // top, never its options.
         let view = shot.view();
-        let anchor = shot.anchor();
+        let anchor = trust_anchor.unwrap_or_else(|| shot.anchor());
         // The box, closed (T-1156), is its top rule alone: the rows under
         // it to its bottom rule are not drawn, and the zone has their room.
         // Open, the pane's rows are all drawn, the status line under the
@@ -1360,6 +1367,7 @@ fn draw_preview(
             raw.extend(view[live_from..].iter().filter_map(|&i| {
                 let row = &shot.rows[i];
                 match boxed {
+                    _ if trust_keys == Some(i) => Some(trust_rule(app, box_w)),
                     Some((top, ..)) if closed && i == top => Some(closed_box_rule(app, rec, box_w)),
                     Some((top, _, bottom)) if closed && (top..=bottom).contains(&i) => None,
                     _ => Some(live_line(theme, row)),
@@ -2077,6 +2085,50 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     ];
     (spans, used)
 }
+
+/// The folder trust dialog's key row on the page (T-1167), in the place of
+/// the dialog's own `Enter to confirm · Esc to cancel`: the closed box's
+/// rule, carrying the key that trusts the folder as a key cap — the same
+/// accept as the card's `trust folder? ∙ w confirm` — and what Enter does
+/// here, which is open the pane, where the dialog is answered by hand.
+/// Words that do not fit go from the right; the rule alone where even the
+/// cap does not.
+fn trust_rule(app: &App, width: usize) -> Line<'static> {
+    let theme = &app.theme;
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    let ctx = app.frame_ctx();
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if let Some((key, _)) = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::AcceptTrust, &ctx)
+    {
+        let cap = format!(" {key} ");
+        let said = format!(" {TRUST_WORDS} ");
+        let enter = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Act, &ctx)
+            .filter(|(_, verb)| *verb == "focus")
+            .map(|(key, _)| format!("∙ {key} {TRUST_ENTER} "));
+        let base = 2 + cap.width() + said.width();
+        if base + 2 <= width {
+            let bold = theme.selected_row().add_modifier(Modifier::BOLD);
+            spans.push(Span::styled("--".to_string(), fade));
+            spans.push(Span::styled(cap, bold));
+            spans.push(Span::styled(said, theme.dim1()));
+            used = base;
+            if let Some(enter) = enter.filter(|e| base + e.width() + 2 <= width) {
+                used += enter.width();
+                spans.push(Span::styled(enter, theme.dim2()));
+            }
+        }
+    }
+    spans.extend(tail_rule(theme, width - used, None));
+    Line::from(spans)
+}
+
+/// What the trust row's key does (T-1167): the dialog's own `Yes`, named
+/// as the dialog names it, since `confirm` beside a dialog that offers
+/// `No, exit` does not say which answer it gives.
+const TRUST_WORDS: &str = "trust this folder";
+/// What Enter does on the trust dialog's page (T-1167): it opens the pane.
+const TRUST_ENTER: &str = "answers it in its pane";
 
 /// Why Shift+Enter is held over a box with someone else's words (T-1156).
 const HELD_WORDS: &str = "held ∙ words in its box ∙ enter finishes them in the pane";

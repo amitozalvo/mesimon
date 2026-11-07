@@ -42587,3 +42587,22 @@ reader: a sanitizer on the draw side for a daemon write.
 **Test.** `server::restart_preview_tests::a_restart_s_tail_read_keeps_a_working_seat_s_detail_empty`:
 a restart's first read, then the reply landing, then a native failure's row; fails without the
 guard with the live sentence in `detail`.
+
+## The ticket page's trust dialog wears the page's key row (T-1167, 2026-11-07)
+
+The live window (T-1143) drew Claude Code's folder trust dialog verbatim: `❯ No, exit` and
+`Enter to confirm · Esc to cancel`. On the page Enter opens the pane, and there the next Enter
+answers the pointer's option, `No, exit`, which quits the agent; the accept (`w`) was only on
+the owed row under the title. The author: "the user might be confused and think they can
+actually interact with the prompt even though we have a way to approve from inside".
+
+- While the seat is on its trust dialog, `Shot::for_trust` replaces `for_page`: the pointer
+  goes (the option's words kept, plain ink) and the dialog's key row becomes a page rule, or
+  one is added under a dialog with none (older Codex). The page draws `trust_rule` there:
+  `-- w trust this folder ∙ enter answers it in its pane ---`, the closed box's rule grammar.
+- The seam is read off the pane's own screen, since `anchor` finds a dialog by its pointer.
+- Words: `trust this folder`, not the keymap's `confirm` — beside a dialog offering `No, exit`,
+  `confirm` does not say which answer it gives. The card's row keeps `trust folder? ∙ w confirm`.
+- Refuted: replacing the dialog with the page's own words (option B of the proposal) — it loses
+  Claude Code's warning text; the author chose A.
+- Golden: `ticket_live_trust_120x30`.
