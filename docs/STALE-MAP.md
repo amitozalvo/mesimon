@@ -42403,3 +42403,82 @@ whether the board refused it. The landing's light sweep on the new row (the boar
 **Owed:** a CHANGELOG line at the next bump — **Added:** a ticket's conversation shows what the
 crown did to it and what started the crown's turn, and the crown's own page shows what it did
 to every ticket and the words between it and other boards, with the crown's lightning on the page.
+
+## The ticket page before its agent, its launch, and the agent's box as a picture (T-1156, 2026-11-07, the author: "the current zero state of ticket page is not good … shift+enter hint … loading after started, the worktree initialization not indicated"; then "the input field is very misleading and can cause users to attempt to write prompts when not ready yet … users should be able to know that shift+enter will focus this input field")
+
+Designed first as two simulations the author locked: https://claude.ai/artifact/Px4UWqbC7LP7inPhakM4mF
+(the zero state) and https://claude.ai/artifact/9VV6aDxVcxvkNWcLjMfTzi (the box), with the
+decisions in the ticket's notes.
+
+**The zero state** (`ui/ticket.rs::empty_seat`). `no agent yet`, then each press in the
+keymap's own spans beside what becomes of the box's words (`enter start agent ∙ the title waits
+in its box, unsent`, `shift+enter start + ask agent ∙ your words go as its first prompt`), then
+the seat's clauses; a closed box at the zone's foot (`foot_box`) holds the title a start types,
+and the ask field opens on its words row (`Composer`, so nothing moves). The zone draws no
+creature: the author asked for the mascot "always on the right side". The rail's foot holds a
+small ש (`intro::SMALL_SHIN`, 10×10, a new drawing): `Anim::Letter` still on the seat (only
+where the rail offers `+ agent session`; an archived ticket has none), `Anim::Stir` while a start
+is parked behind its worktree, `Anim::Waking` from the record's first frame (the intro's morph,
+`intro::morph` made size-generic, then asleep, lid, awake, a look round), `Anim::Ready` for
+`creature::ready_ms` once the launch ends. The letter's beats are pixels, not poses
+(`creature::letter_beat`, staged on the body's own width so its stage is the shin's to the
+cell). The wake plays only for a launch that began with no agent (`Launch::fresh`), so a wake of
+a sleeping agent keeps its old waking.
+
+**The launch** (`app/launch.rs`). While the binding is `queued`/`provisioning` with no agent, or
+the agent is `Spawning` (or `Idle{Unknown}` owing its Enter), the zone lists the steps:
+worktree (the branch), init script (`init script running` is the binding's detail; a failure
+reads its `InitRun::detail` and `the agent starts anyway`), the agent, and what becomes of the
+words. Seconds are this client's own, stamped the frame each step is first seen (draw-side
+memory like the shin's clock); a client that opens the page mid-launch lists only what it saw
+begin. `Ctx::ticket_launching` withholds Enter and Shift+Enter while the parked start runs.
+**Measured** before the change: during provisioning the zone still offered `enter start agent`.
+
+**The box** (`live.rs::Shot::for_page`, `ui/ticket.rs::closed_box_row`). Everything under the
+box is cut by position alone (Claude Code's footer, the person's status line, Codex's hints
+row), so no wording or statusLine setting is parsed. Closed: hyphen rules gone toward the page
+ground, the top one carrying the key cap and the keymap's verb (`claude is working` at its
+right), the bottom one the page's own facts (`opus ∙ high ∙ context 21% ∙ plan mode`); the
+prompt mark gone and the words in the field's column; an empty box (a placeholder is nothing:
+the cursor parked before it, as the daemon's `composer::read` reads it) says `closed ∙
+shift+enter opens it`. Open: the pane's own rules frame today's field, same rows. Codex's lone
+`›` row gets page rules over and under (`Shot::page_box`), so it opens without moving. Key
+hints come out of Claude Code's status rows only (`strip_hints`: spinner and `⎿` rows; a
+parenthesised `key to/for action` `·` segment; a `⎿ Tip:` row); prose and prompts never pass
+through it, and an unknown shape stays on screen. Words mesimon did not type (`box_text` vs
+`typed_title`, and not a launch's undelivered words) hold Shift+Enter (`Ctx::ticket_box_held`):
+the cap shows out with `held ∙ words in its box ∙ enter finishes them in the pane`.
+
+**Wire.** `SessionRecord::mode` (the hook frame's `permission_mode`, `hooks::mode_of`, set in
+`Claude::parse_hook`) and `TicketCost::context_pct` (the crown's `agent_context_view`, put on
+each snapshot's account); both `#[serde(default)]` and off the wire while unknown.
+
+**Refuted.** Box-drawing rules for the seat's box: L1 allows `─`/`╌` only on a dialog's frame,
+the mascot and the live window; hyphens everywhere instead. Italic for the empty box's words: a
+banned attribute. Moving a draft into the field and emptying Claude's box on send (the author's
+first choice): a wrapped line and a newline look alike on screen, a paste shows only its
+placeholder, the mod's submit leaves a draft (T-931), and Esc interrupts a turn and makes Claude
+Code refuse plugin input (T-894); held with the reason instead. A separate facts row under the
+box: it moved Claude Code's `❯` off the shin's line; the facts ride the bottom rule. A colour
+rule for hints: `(shift+tab to cycle)` is the same 38;5;246 as tool output (measured in a
+mesimon pane).
+
+**Kept current.** `ci/pane-capture.py` (`release-watch.py --capture`): each installed CLI in a
+private tmux server, every shape the page reads captured with colours and cursor into
+`~/.local/state/mesimon/release-watch/captures/` (never the repo: a banner can carry the
+account), then `live::tests::every_capture_anchors_cuts_the_footer_and_strips_the_chrome` over
+them. Run on Claude Code 2.1.319 (idle, idle with a statusLine, working, permission) and Codex
+0.166.0 (idle, past its update offer and its `Trust this folder?`): both read.
+
+**Tests.** `the_launch_list_follows_the_binding_and_the_record`,
+`the_letter_stirs_and_wakes_into_the_shin`, `the_small_letter_stands_where_the_small_shin_does`,
+`the_empty_seat_keeps_its_words_and_the_rail_its_letter`,
+`the_box_opens_where_it_stood_and_nothing_moves`,
+`a_draft_in_the_box_holds_shift_enter_and_the_title_does_not`, `live::tests`
+(`the_page_cuts_the_footer_and_the_hints`, `a_hint_is_a_key_and_what_it_does`,
+`the_box_holds_words_only_past_its_placeholder`, `codex_is_framed_by_the_page`),
+`the_frames_permission_mode_lands_on_the_record`, `the_new_facts_are_off_the_wire_while_unknown`.
+New goldens `ticket_init_running`, `ticket_init_failed`, `ticket_live_closed`, `ticket_live_held`;
+eight remade (the seat's six, the two live), reviewed by eye. Not built: the rail's
+`⠋ agent starting` row while a start is parked (the rail keeps `+ agent session`); a spike for a
+clean clear key that could lift the hold for one-line drafts.
