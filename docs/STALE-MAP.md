@@ -42434,24 +42434,54 @@ memory like the shin's clock); a client that opens the page mid-launch lists onl
 begin. `Ctx::ticket_launching` withholds Enter and Shift+Enter while the parked start runs.
 **Measured** before the change: during provisioning the zone still offered `enter start agent`.
 
-**The box** (`live.rs::Shot::for_page`, `ui/ticket.rs::closed_box_row`). The rows under the
+**The box** (`live.rs::Shot::for_page`, `ui/ticket.rs::closed_box_rule`). The rows under the
 box are chrome by position: the person's status line stays as they set it (first cut, then put
 back the same day, the author: "you removed the statusline … that wasn't my intention"), and
 the mode and hints row loses its key hints wherever they stand (`cut_hints` with `bare`:
 `⏵⏵ auto mode on (shift+tab to cycle)` reads `⏵⏵ auto mode on`; Codex's `← for agents · ? for
 shortcuts` row, hints alone, goes blank). No wording or statusLine setting is parsed to keep
-them. Closed: hyphen rules gone toward the page
-ground, the top one carrying the key cap and the keymap's verb (`claude is working` at its
-right), the bottom one the page's own facts (`opus ∙ high ∙ context 21% ∙ plan mode`); the
-prompt mark gone and the words in the field's column; an empty box (a placeholder is nothing:
-the cursor parked before it, as the daemon's `composer::read` reads it) says `closed ∙
-shift+enter opens it`. Open: the pane's own rules frame today's field, same rows. Codex's lone
+them. Closed: one hyphen rule gone toward the page ground in the box's place, carrying the
+key cap and the keymap's verb at its left and, at its right, the agent's state (`⠋ claude is
+working`, `claude is idle`) with as many of the page's own facts as fit (`∙ opus ∙ high ∙
+context 21% ∙ plan mode`, dropped from the right); no prompt row, no bottom rule, no words:
+the author, the same day, "if input not focused … just show the top dashed line with the
+shift enter hint to open it and the current state of it, no input look at all … but above and
+below kept". (The first cut drew three rows — the words in the field's column, an empty box
+saying `closed ∙ shift+enter opens it`, the facts on a bottom rule — and the author called the
+words redundant.) The conversation rests on the rule, two rows taller for it. Open: the pane's
+own rules frame today's field on the rows the status line had, so nothing over the rule moves
+on the press and the status line is back on Esc; with fewer rows under the box than the field
+needs (no statusLine, Codex) the rows over it move by the rest. Codex's lone
 `›` row gets page rules over and under (`Shot::page_box`), so it opens without moving. Key
 hints come out of Claude Code's status rows only (`strip_hints`: spinner and `⎿` rows; a
 parenthesised `key to/for action` `·` segment; a `⎿ Tip:` row); prose and prompts never pass
-through it, and an unknown shape stays on screen. Words mesimon did not type (`box_text` vs
+through it, and an unknown shape stays on screen. Claude Code's session survey (`● How is
+Claude doing this session? (optional)` over `1: Bad   2: Fine   3: Good   0: Dismiss`) asks
+for keys the page answers differently: its options row — every group a digit, a colon and a
+word, two at least (`is_survey_keys`) — goes wherever it stands, with the question row over
+it (`is_survey_question`: ends in `?` or `(optional)`); the author, from a screenshot: "this
+should be mitigated". Words mesimon did not type (`box_text` vs
 `typed_title`, and not a launch's undelivered words) hold Shift+Enter (`Ctx::ticket_box_held`):
-the cap shows out with `held ∙ words in its box ∙ enter finishes them in the pane`.
+the cap shows out with `held ∙ words in its box ∙ enter finishes them in the pane`, the draft
+itself not drawn.
+
+**The zone holds for the pane** (`App::live_pending`, `live::GRACE`). Entering the page drew
+the conversation at once and the pane under it a frame later, moving every row (the author:
+"subtle but very annoying when entering the ticket page"). Now an agent with a pane whose
+window has no picture yet keeps the zone blank under its heading for up to 1.5 s (a fit, its
+settle and a capture take ~100 ms; a fit held back takes `SIZE_WAIT`), then draws the
+conversation without the pane as before; and `App::live_last` keeps every session's last
+picture (a map, not the one last parked), so back on any row the page is the one that was
+left. **Refuted:** drawing the conversation where it will rest: the pane's row count is not
+known before its capture.
+
+**A mid-turn message is a row** (`claude/history.rs::rows`, `queued_prompt`). Words sent while
+the agent works leave no `user` record (Claude Code 2.1.319): an `attachment` record of type
+`queued_command` with the prompt, which the API turn carries inside a tool result's message.
+The page's conversation and the phone's transcript both read `rows`, and neither showed it
+(the author: "my ask is not rendered in transcript of ticket page or transcript popup"); now
+it is the person's row through `user_said`. The card's peek (`walk`) still reads `user`
+records only: what the agent is on is the turn's prompt.
 
 **Wire.** `SessionRecord::mode` (the hook frame's `permission_mode`, `hooks::mode_of`, set in
 `Claude::parse_hook`) and `TicketCost::context_pct` (the crown's `agent_context_view`, put on
@@ -42477,7 +42507,8 @@ them. Run on Claude Code 2.1.319 (idle, idle with a statusLine, working, permiss
 **Tests.** `the_launch_list_follows_the_binding_and_the_record`,
 `the_letter_stirs_and_wakes_into_the_shin`, `the_small_letter_stands_where_the_small_shin_does`,
 `the_empty_seat_keeps_its_words_and_the_rail_its_letter`,
-`the_box_opens_where_it_stood_and_nothing_moves`,
+`the_box_opens_where_it_stood_and_nothing_moves`, `the_session_survey_goes_wherever_it_stands`,
+`the_zone_holds_for_the_panes_first_capture`, `a_message_sent_mid_turn_is_the_persons_row`,
 `a_draft_in_the_box_holds_shift_enter_and_the_title_does_not`, `live::tests`
 (`the_page_cuts_the_footer_and_the_hints`, `a_hint_is_a_key_and_what_it_does`,
 `the_box_holds_words_only_past_its_placeholder`, `codex_is_framed_by_the_page`),

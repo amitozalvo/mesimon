@@ -14900,7 +14900,10 @@ fn golden_ticket_live_120() {
     // out (T-1156), and the box is closed.
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("shift+tab to cycle")), "{lines:#?}");
-    assert!(lines.iter().any(|l| l.contains("closed ∙ shift+enter opens it")), "{lines:#?}");
+    // The box is its rule alone, with the agent's state (the key is not
+    // live in this fixture, so no cap): no field to be typed in.
+    assert!(lines.iter().any(|l| l.contains("claude is working ---")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains('❯') && !l.contains("Go on")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("❯ Go on; measure")), "the person's turn: {lines:#?}");
@@ -15287,6 +15290,13 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let lines = render(&app, 120, 30);
     assert!(app.live_rect.get().is_none(), "a note row shows no pane: {lines:#?}");
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    // Closed, the person's status line stays under the box (T-1156, the
+    // author: "that wasn't my intention"); the agent's key hint beside it
+    // is out.
+    let closed = render(&app, 120, 30);
+    assert!(closed.iter().any(|l| l.contains("auto mode on")), "{closed:#?}");
+    assert!(!closed.iter().any(|l| l.contains("shift+tab to cycle")), "{closed:#?}");
+    let rule = closed.iter().position(|l| l.contains("claude is working ---")).expect("the rule");
     ask_field(&mut app, "rebase onto main", false);
     let lines = render(&app, 120, 30);
     let field = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
@@ -15296,10 +15306,11 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!(lines[field + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     let pane = &lines[rect.y as usize..];
     assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
-    // The person's status line stays under the box (T-1156, the author:
-    // "that wasn't my intention"); the agent's key hint beside it is out.
-    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
-    assert!(!lines.iter().any(|l| l.contains("shift+tab to cycle")), "{lines:#?}");
+    // Open, the field's rows take the status line's room: the rule stays
+    // where it stood and nothing over it moves on the press.
+    assert_eq!(field, rule + 1, "the field under the rule's row: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    assert_eq!(&lines[..rule], &closed[..rule], "the rows over the box moved");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15416,10 +15427,32 @@ fn a_parked_window_keeps_its_picture_and_size() {
     let size = app.live_size.get().expect("the draw asked a size");
     app.park_live();
     assert!(app.live.is_none());
-    let (session, shot) = app.live_last.clone().expect("the picture kept");
-    assert_eq!(session, uuid_n(31));
+    let shot = app.live_last.get(&uuid_n(31)).cloned().expect("the picture kept");
     assert!(shot.rows.iter().any(|r| r.text.contains("auto mode on")));
     assert_eq!(app.live_size.get(), Some(size), "the zone's size kept");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// Entering the page, the zone holds until the pane's first capture lands
+/// (T-1156, the author: "the jump … is subtle but very annoying"): the
+/// conversation is never drawn where the pane will move it. A window whose
+/// capture is overdue draws the conversation without the pane, as before.
+#[test]
+fn the_zone_holds_for_the_panes_first_capture() {
+    let (mut app, path) = app_live("tlive-hold", false);
+    let now = std::time::Instant::now();
+    app.live = Some(crate::live::Live::waiting(uuid_n(31), now));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("PREVIEW")), "the heading: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("Research is mostly done")), "held: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("Go on; measure")), "held: {lines:#?}");
+    app.live = Some(crate::live::Live::waiting(uuid_n(31), now - crate::live::GRACE * 2));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "overdue: {lines:#?}");
+    // No window and no socket to start one: nothing to wait for.
+    app.live = None;
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15631,33 +15664,33 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
     let lines = render(&app, 120, 30);
-    // Its placeholder is nothing typed (the cursor parked before it): the
-    // closed box says so in its place (T-1156). Its status row stays, its
-    // hints row goes.
+    // Closed, the box is one rule in its place, with the key and the
+    // state (T-1156). Its status row stays, its hints row goes.
     assert!(!lines.iter().any(|l| l.contains("for shortcuts")), "its hints row: {lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Context 2% used")), "its status row: {lines:#?}");
     let at = lines
         .iter()
-        .position(|l| l.contains("closed ∙ shift+enter opens it"))
-        .expect("the composer");
-    // The blank run between the pane's words and its composer is one row.
-    assert!(lines[at - 2].contains("Worked for 8s"), "{lines:#?}");
-    assert!(lines[at - 4].contains("Hi! 👋"), "the pane's words over its composer: {lines:#?}");
-    assert!(lines[at - 5].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
+        .position(|l| l.contains("is working ---"))
+        .unwrap_or_else(|| panic!("the closed box: {lines:#?}"));
+    assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "its placeholder: {lines:#?}");
+    // The blank run between the pane's words and its box is one row.
+    assert!(lines[at - 1].contains("Worked for 8s"), "{lines:#?}");
+    assert!(lines[at - 3].contains("Hi! 👋"), "the pane's words over its box: {lines:#?}");
+    assert!(lines[at - 4].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
     ask_field(&mut app, "summarise the ticket", false);
+    let open = render(&app, 120, 30);
+    // Open, the field is on the `›` row under the page's rule. Codex has
+    // one row under its box (its hints row is blank), so the field's rows
+    // take that one and one from over the box: the field lands where the
+    // closed rule stood.
+    assert!(open[at].contains("summarise the ticket"), "on the `›` row: {open:#?}");
+    assert!(!open.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
     // Columns, not bytes: the pane's `›` is three of them.
     let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
-    let col = column(&lines[at], "closed").expect("the closed box's words");
-    let lines = render(&app, 120, 30);
-    assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
-    assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
-    assert_eq!(
-        column(&lines[at], "summarise"),
-        Some(col),
-        "typed where the closed box's words stood, nothing moving: {:?}",
-        lines[at]
-    );
-    assert!(lines[at].starts_with(" ›"), "the pane's mark stays: {:?}", lines[at]);
+    assert_eq!(column(&open[at], "summarise"), Some(4), "a space after the mark: {:?}", open[at]);
+    assert!(open[at].starts_with(" ›"), "the pane's mark stays: {:?}", open[at]);
+    assert!(open[at - 1].contains("----"), "under the page's rule: {open:#?}");
+    assert!(open[at - 2].contains("Worked for 8s"), "the pane's words over it: {open:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15712,15 +15745,15 @@ fn the_cursor_blinks_only_once_the_field_is_open() {
     let lines = lines_of(terminal.backend().buffer());
     let composer = lines
         .iter()
-        .position(|l| l.contains("closed ∙ shift+enter opens it"))
-        .expect("the closed composer");
+        .position(|l| l.contains("claude is working ---"))
+        .expect("the closed box's rule");
     assert!(!terminal.backend().cursor_visible(), "a picture has no cursor: {lines:#?}");
     ask_field(&mut app, "", false);
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     assert!(terminal.backend().cursor_visible(), "the field has the cursor");
     assert_eq!(
         terminal.backend().cursor_position().y as usize,
-        composer,
+        composer + 1,
         "on the composer's row: {:#?}",
         lines_of(terminal.backend().buffer())
     );
@@ -15863,16 +15896,21 @@ fn the_box_opens_where_it_stood_and_nothing_moves() {
         ..Default::default()
     }];
     let closed = render(&app, 120, 30);
+    // One rule: the key, the state, and as many facts as fit its 80 columns.
     let at = closed
         .iter()
-        .position(|l| l.contains("closed ∙ shift+enter opens it"))
+        .position(|l| l.contains(" shift+enter ") && l.contains("claude is working"))
         .expect("the closed box");
-    assert!(closed[at - 1].contains(" shift+enter "), "the key on its top rule: {closed:#?}");
     assert!(
-        closed[at + 1].contains(" opus ∙ high ∙ context 21% ∙ plan mode "),
-        "the facts on its bottom rule: {closed:#?}"
+        closed[at].contains(" ⠋ claude is working ∙ opus ∙ high ---"),
+        "the facts after the state: {closed:#?}"
     );
-    assert!(!closed.iter().any(|l| l.contains('❯') && l.contains("closed")), "no prompt mark");
+    assert!(!closed[at].contains("context"), "two facts too many for 80 columns: {closed:#?}");
+    assert!(
+        !closed.iter().any(|l| l.contains('❯') && !l.contains("Go on")),
+        "no prompt mark: {closed:#?}"
+    );
+    assert!(closed[at + 1].contains("Fable 5.1"), "the status line under it: {closed:#?}");
     golden("ticket_live_closed_120x30", &closed);
     let rect = app.live_rect.get().expect("the window");
 
@@ -15893,15 +15931,14 @@ fn the_box_opens_where_it_stood_and_nothing_moves() {
         buffer,
     };
     let open = render(&app, 120, 30);
-    let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
-    assert_eq!(
-        column(&open[at], "measure it"),
-        column(&closed[at], "closed"),
-        "typed where its words stood: {open:#?}"
-    );
-    assert!(open[at - 1].contains("────"), "the pane's own rule frames it, open");
+    // The field opens under the rule, on the rows the status line had:
+    // nothing over the box moves, and the status line is back on Esc.
+    assert!(open[at + 1].contains("measure it"), "typed under the rule: {open:#?}");
+    assert!(open[at].contains("────"), "the pane's own rule frames it, open");
+    assert!(open[at + 2].contains("shift+tab"), "the delivery row on its bottom rule");
+    assert!(!open.iter().any(|l| l.contains("Fable 5.1")), "the status line gives it the room");
     assert_eq!(app.live_rect.get(), Some(rect), "the window does not move");
-    for y in 0..at - 1 {
+    for y in 0..at {
         assert_eq!(open[y], closed[y], "row {y} moved");
     }
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -15940,7 +15977,7 @@ fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
             .any(|l| l.contains("held ∙ words in its box ∙ enter finishes them in the pane")),
         "why, where the key would be: {lines:#?}"
     );
-    assert!(lines.iter().any(|l| l.contains(draft)), "the draft, quiet: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains(draft)), "no field, no draft shown: {lines:#?}");
     assert!(!lines.last().is_some_and(|l| l.contains("shift+enter")), "not offered: {lines:#?}");
     golden("ticket_live_held_120x30", &lines);
 

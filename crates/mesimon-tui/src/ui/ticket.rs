@@ -1258,9 +1258,22 @@ fn draw_preview(
         // top, never its options.
         let view = shot.view();
         let anchor = shot.anchor();
+        // The box, closed (T-1156), is its top rule alone: the rows under
+        // it to its bottom rule are not drawn, and the zone has their room.
+        // Open, the field's rows take the room of the rows under the box
+        // instead, so nothing over the box moves on the press.
+        let closed = !asking_here(app, rec.ticket);
+        let boxed = shot.page_box();
+        let end = match boxed {
+            Some((_, _, bottom)) if !closed => view.partition_point(|&r| r <= bottom),
+            _ => view.len(),
+        };
+        let view = &view[..end];
         let at = view.partition_point(|&r| r < anchor);
-        let live_n = (view.len() - at).min(zone_h);
+        let collapse = if closed { boxed.map_or(0, |(top, _, bottom)| bottom - top) } else { 0 };
+        let live_n = (view.len() - at).min(zone_h + collapse);
         let live_from = view.len() - live_n;
+        let drawn_n = live_n - collapse;
         // The fade is the screen's last rows over the seam, past the blank
         // between them: Claude Code keeps its composer at the foot of an
         // empty screen, and four blank rows going out are a gap.
@@ -1296,7 +1309,7 @@ fn draw_preview(
                 .collect();
             live::Said::of(tail.iter().map(String::as_str))
         });
-        let room = live::FADE_ROWS.min(zone_h - live_n);
+        let room = live::FADE_ROWS.min(zone_h - drawn_n);
         let mut from = above;
         while from > 0 && above - from < room {
             if said.as_ref().is_some_and(|s| s.holds(&shot.rows[view[from - 1]].text)) {
@@ -1307,7 +1320,7 @@ fn draw_preview(
         // A blank row the walk took stays: it parts the conversation from
         // the pane's fresh rows the way the pane parts its messages.
         let fade_n = above - from;
-        let top_n = zone_h - live_n - fade_n;
+        let top_n = zone_h - drawn_n - fade_n;
         // The conversation keeps the rows over the window, resting on the
         // fade — at its foot until `{` asks for earlier, so a short one
         // reads into the pane rather than hanging under the heading; two
@@ -1333,33 +1346,33 @@ fn draw_preview(
             lines[0] = heading(w);
         }
         f.render_widget(Paragraph::new(lines), area);
-        let foot_y = area.bottom() - live_n as u16;
-        if fade_n + live_n > 0 {
-            let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + live_n);
+        let foot_y = area.bottom() - drawn_n as u16;
+        if fade_n + drawn_n > 0 {
+            let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + drawn_n);
             for r in 0..fade_n {
                 let row = &shot.rows[view[above - fade_n + r]];
                 raw.push(faded_line(theme, row, live::fade_keep(r, fade_n)));
             }
-            // The box, closed (T-1156): a picture of the agent's box, not a
-            // box. Open, the pane's own rules frame the field as before.
-            let closed = !asking_here(app, rec.ticket);
-            let boxed = shot.page_box();
-            // The rules at the rows' drawn width: a capture from before a
+            // The box, closed (T-1156): one rule in the box's place, with
+            // the key that opens it and the agent's state — no field to be
+            // typed in — and the pane's rows over and under it as they
+            // are. Open, the pane's own rules frame the field as before.
+            // The rule at the rows' drawn width: a capture from before a
             // resize is wider or narrower than the zone until the next.
             let box_w = shot.cols.min(area.width) as usize;
-            raw.extend(view[live_from..].iter().map(|&i| {
+            raw.extend(view[live_from..].iter().filter_map(|&i| {
                 let row = &shot.rows[i];
                 match boxed {
-                    Some(b) if closed => closed_box_row(app, rec, shot, b, i, box_w)
-                        .unwrap_or_else(|| live_line(theme, row)),
-                    _ => live_line(theme, row),
+                    Some((top, ..)) if closed && i == top => Some(closed_box_rule(app, rec, box_w)),
+                    Some((top, _, bottom)) if closed && (top..=bottom).contains(&i) => None,
+                    _ => Some(live_line(theme, row)),
                 }
             }));
             let rect = Rect {
                 x: area.x,
                 y: foot_y - fade_n as u16,
                 width: area.width,
-                height: (fade_n + live_n) as u16,
+                height: (fade_n + drawn_n) as u16,
             };
             f.render_widget(Paragraph::new(raw), rect);
             app.live_rect.set(Some(rect));
@@ -1375,7 +1388,11 @@ fn draw_preview(
         let prompt = shot
             .prompt_row()
             .and_then(|p| view[live_from..].iter().position(|&i| i == p).map(|r| (p, r)));
-        let field_y = prompt.map_or(foot_y, |(_, r)| foot_y + r as u16);
+        // Closed, the prompt row is drawn as the rule over it.
+        let field_y = prompt.map_or(foot_y, |(p, r)| {
+            let up = boxed.filter(|_| closed).map_or(0, |(top, ..)| p.saturating_sub(top));
+            foot_y + r.saturating_sub(up) as u16
+        });
         let right = area.x + shot.cols.min(area.width);
         let composer = match prompt {
             Some((p, _)) => {
@@ -1385,6 +1402,12 @@ fn draw_preview(
             None => Composer { x: area.x, words_x: (area.x + 2).min(right - 1), right, bare: true },
         };
         return ((field_y - area.y) as usize, Some(composer));
+    } else if record.is_some_and(|r| app.live_pending(r)) {
+        // The pane's first capture is on its way (T-1156): the zone holds
+        // under its heading rather than draw the conversation where the
+        // pane will move it a frame later.
+        word = Some("PREVIEW");
+        lines.push(Line::default());
     } else if reply.is_some() {
         word = Some("PREVIEW");
         lines.push(Line::default());
@@ -1980,41 +2003,43 @@ fn tail_rule(theme: &crate::theme::Theme, width: usize, tail: Option<&str>) -> V
 /// key that opens the box as a key cap and what it does, in the keymap's
 /// own words — where the key is live — and `right` near its right end.
 fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(lead))];
+    let (cap, used) = closed_cap(app, width);
+    spans.extend(cap);
+    spans.extend(tail_rule(&app.theme, width - used, right));
+    Line::from(spans)
+}
+
+/// The closed rule's left end (T-1156): two dashes, the key that opens the
+/// box as a key cap and what it does — or, held, why it is not live — and
+/// the columns those take of `width`. Nothing where they do not fit.
+fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     let theme = &app.theme;
     let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
-    let dash = "-";
     let ctx = app.frame_ctx();
-    let mut spans = vec![Span::raw(" ".repeat(lead))];
-    let mut used = 0;
     // Held (T-1156): words in the box that are not mesimon's. The key is
     // shown out, and why, where it would be.
-    if ctx.ticket_box_held && ctx.shift_enter() {
-        let cap = " shift+enter ".to_string();
-        let said = format!(" {HELD_WORDS} ");
-        let w = 3 + cap.width() + said.width();
-        if w + 2 <= width {
-            spans.push(Span::styled(dash.repeat(2), fade));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(cap, theme.dim3()));
-            spans.push(Span::styled(said, theme.dim2()));
-            used = w;
-        }
+    let (cap, said, cap_style, said_style) = if ctx.ticket_box_held && ctx.shift_enter() {
+        (" shift+enter ".to_string(), format!(" {HELD_WORDS} "), theme.dim3(), theme.dim2())
     } else if let Some((key, verb)) =
         keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx)
     {
-        let cap = format!(" {key} ");
-        let said = format!(" {verb} ");
-        let w = 3 + cap.width() + said.width();
-        if w + 2 <= width {
-            spans.push(Span::styled(dash.repeat(2), fade));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(cap, theme.selected_row().add_modifier(Modifier::BOLD)));
-            spans.push(Span::styled(said, theme.dim1()));
-            used = w;
-        }
+        let bold = theme.selected_row().add_modifier(Modifier::BOLD);
+        (format!(" {key} "), format!(" {verb} "), bold, theme.dim1())
+    } else {
+        return (Vec::new(), 0);
+    };
+    let used = 3 + cap.width() + said.width();
+    if used + 2 > width {
+        return (Vec::new(), 0);
     }
-    spans.extend(tail_rule(theme, width - used, right));
-    Line::from(spans)
+    let spans = vec![
+        Span::styled("--".to_string(), fade),
+        Span::raw(" "),
+        Span::styled(cap, cap_style),
+        Span::styled(said, said_style),
+    ];
+    (spans, used)
 }
 
 /// Why Shift+Enter is held over a box with someone else's words (T-1156).
@@ -2396,56 +2421,42 @@ fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
     s
 }
 
-/// One row of the agent's box, closed (T-1156), or `None` for a row that is
-/// not the box's. Its rules go out toward the page ground as hyphens: the
-/// top one carries the key that opens it (`closed_rule`), the bottom one
-/// what the session runs on (`facts`). Its prompt row loses its mark, its
-/// words gone quiet in the column the field types them; an empty box (a
-/// placeholder is nothing) says it is closed.
-fn closed_box_row(
+/// The agent's box, closed (T-1156): one rule of hyphens gone out toward
+/// the page ground in the box's place, carrying the key that opens it
+/// (`closed_rule`) and, near its right end, the agent's state — working,
+/// with the spinner, or idle — and what the session runs on (`facts`),
+/// as many of those as fit. No field: a picture of the agent at its box,
+/// not a box.
+fn closed_box_rule(
     app: &App,
     rec: &mesimon_core::board::SessionRecord,
-    shot: &live::Shot,
-    (top, prompt, bottom): (usize, usize, usize),
-    i: usize,
     width: usize,
-) -> Option<Line<'static>> {
+) -> Line<'static> {
     let theme = &app.theme;
-    if i == top && top != prompt {
-        let right = glyphs::is_working(rec).then(|| {
-            let who = if rec.kind == SessionKind::Codex { "codex" } else { "claude" };
-            format!("{} {who} is working", glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
-        });
-        return Some(closed_rule(app, 0, width, right.as_deref()));
-    }
-    if i == bottom {
-        return Some(Line::from(tail_rule(theme, width, facts(app, rec).as_deref())));
-    }
-    if !(prompt..bottom).contains(&i) {
-        return None;
-    }
-    let col = live::words_col(&shot.rows[prompt].text);
-    if i == prompt && shot.box_holds() == Some(false) {
-        return Some(Line::from(vec![
-            Span::raw(" ".repeat(col + 1)),
-            Span::styled(CLOSED_WORDS, theme.dim3()),
-        ]));
-    }
-    let words: String = shot.rows[i].text.chars().skip(col).collect();
-    Some(Line::from(vec![
-        Span::raw(" ".repeat(col + 1)),
-        Span::styled(words.trim_start_matches([' ', '\u{a0}']).to_string(), theme.dim3()),
-    ]))
+    let who = if rec.kind == SessionKind::Codex { "codex" } else { "claude" };
+    let state = if glyphs::is_working(rec) {
+        format!("{} {who} is working", glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
+    } else {
+        format!("{who} is idle")
+    };
+    // The state with as many of the facts as the rule has room for.
+    let facts = facts(app, rec);
+    let right: Vec<String> = (0..=facts.len())
+        .rev()
+        .map(|n| {
+            std::iter::once(&state).chain(&facts[..n]).cloned().collect::<Vec<_>>().join(" ∙ ")
+        })
+        .collect();
+    let (_, used) = closed_cap(app, width);
+    let fits = right.iter().find(|t| t.width() + 2 + 5 <= width - used);
+    closed_rule(app, 0, width, fits.map(String::as_str))
 }
 
-/// What a closed box with nothing in it says (T-1156).
-const CLOSED_WORDS: &str = "closed ∙ shift+enter opens it";
-
-/// What the session runs on, for the closed box's bottom rule (T-1156): the
+/// What the session runs on, for the closed box's rule (T-1156): the
 /// page's own facts in place of the agent's footer — its model and effort
 /// from its launch, its context fill from the ticket's account, its mode
-/// from its newest frame. `None` with nothing known.
-fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Option<String> {
+/// from its newest frame — those known, in that order.
+fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Vec<String> {
     let flag = |name: &str| {
         rec.argv
             .windows(2)
@@ -2472,7 +2483,7 @@ fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Option<String> 
         "dontAsk" => Some("don't ask".to_string()),
         other => Some(format!("{} mode", other.to_lowercase())),
     });
-    let facts: Vec<String> = [
+    [
         flag("--model").or_else(|| config("model")),
         flag("--effort").or_else(|| config("model_reasoning_effort")),
         context,
@@ -2480,8 +2491,7 @@ fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Option<String> 
     ]
     .into_iter()
     .flatten()
-    .collect();
-    (!facts.is_empty()).then(|| facts.join(" ∙ "))
+    .collect()
 }
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {

@@ -326,8 +326,32 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
         Some("system") if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
             row(RowKind::Notice, "conversation compacted").into_iter().collect()
         }
+        // Words sent while the agent works (Claude Code 2.1.319, T-1156):
+        // no `user` record, an `attachment` of the queued command, its
+        // prompt the person's as typed.
+        Some("attachment") => queued_prompt(v)
+            .and_then(|words| match user_said(words) {
+                Some(Said::Words(words)) => row(RowKind::Prompt, &words),
+                Some(Said::Command(command)) => row(RowKind::Notice, &command),
+                Some(Said::Shell(shell)) => row(RowKind::Prompt, &format!("! {shell}")),
+                None => None,
+            })
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The prompt a mid-turn message was queued with: the attachment record
+/// `{"type":"attachment","attachment":{"type":"queued_command","prompt":…}}`
+/// is the only record of it (2.1.319; the API turn carries it inside a
+/// tool result's message).
+fn queued_prompt(v: &Value) -> Option<&str> {
+    let a = v.get("attachment")?;
+    (a.get("type").and_then(Value::as_str) == Some("queued_command"))
+        .then(|| a.get("prompt").and_then(Value::as_str))
+        .flatten()
+        .filter(|p| !p.trim().is_empty())
 }
 
 /// A record's identity as a number the board can compare and keep.
@@ -610,6 +634,37 @@ mod tests {
         assert_eq!(pk.text.as_deref(), Some("new answer"));
         assert_eq!(pk.activity, None);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// A message sent while the agent works is an `attachment` record of
+    /// the queued command, no `user` record (2.1.319): it is the person's
+    /// row all the same, and the agent's reply after it is theirs to read.
+    #[test]
+    fn a_message_sent_mid_turn_is_the_persons_row() {
+        let queued = serde_json::json!({
+            "type": "attachment",
+            "uuid": "d7ff888a-c129-44b0-a9ab-9edd07807dbc",
+            "isSidechain": false,
+            "timestamp": "2026-11-07T16:28:55.572Z",
+            "attachment": {
+                "type": "queued_command",
+                "prompt": "also, is there a way to prevent the jump?",
+                "commandMode": "prompt",
+                "origin": {"kind": "human"}
+            },
+            "rendered": [{"content": "<system-reminder>\nThe user sent a new message while you were working:\nalso, is there a way to prevent the jump?\n</system-reminder>"}],
+            "renderedRole": "system"
+        });
+        let got = rows(7, &queued);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].kind, RowKind::Prompt);
+        assert_eq!(got[0].text, "also, is there a way to prevent the jump?");
+        // Another attachment is nobody's row.
+        let other = serde_json::json!({
+            "type": "attachment", "uuid": "x", "isSidechain": false,
+            "attachment": {"type": "edited_text_file", "filename": "a.rs"}
+        });
+        assert!(rows(8, &other).is_empty());
     }
 
     #[test]

@@ -45,6 +45,12 @@ const SETTLE: Duration = Duration::from_millis(60);
 /// it is sent all the same: a fit refused while a client is attached, an
 /// agent that never redraws.
 const SIZE_WAIT: Duration = Duration::from_millis(1000);
+/// How long the page waits for a window's first capture before it draws
+/// the conversation without the pane (T-1156, the author: the jump when the
+/// pane lands under rows already drawn "is subtle but very annoying"): a
+/// fit, its settle and a capture take ~100 ms; a fit held back takes
+/// `SIZE_WAIT`.
+pub(crate) const GRACE: Duration = Duration::from_millis(1500);
 /// The most rows of the pane that fade above the live rows.
 pub(crate) const FADE_ROWS: usize = 4;
 /// Rows of the pane's own context above the composer's rule kept live: the
@@ -176,6 +182,19 @@ impl Shot {
         };
         for row in rows.iter_mut().take(top) {
             *row = strip_hints(row);
+        }
+        // Claude Code's session survey (`How is Claude doing this session?
+        // (optional)` over `1: Bad  2: Fine  3: Good  0: Dismiss`) asks
+        // for keys the page answers differently, wherever it stands: its
+        // options row goes, and the question over it.
+        for i in 0..rows.len() {
+            if (top..=bottom).contains(&i) || !is_survey_keys(&rows[i].text) {
+                continue;
+            }
+            rows[i] = Row::default();
+            if i > 0 && is_survey_question(&rows[i - 1].text) {
+                rows[i - 1] = Row::default();
+            }
         }
         // Under the box the rows are the agent's chrome by position: the
         // person's status line, which stays as they set it, and the mode
@@ -405,6 +424,27 @@ fn cut_hints(row: &Row, bare: bool) -> Row {
         }
     }
     out
+}
+
+/// A row of numbered keys and nothing else (T-1156): `1: Bad   2: Fine
+/// 3: Good   0: Dismiss`, the session survey's. Two groups at least, each
+/// a digit, a colon and a word.
+fn is_survey_keys(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.len() >= 4
+        && words.len().is_multiple_of(2)
+        && words.chunks(2).all(|pair| {
+            let key = pair[0].strip_suffix(':').unwrap_or_default();
+            !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_digit())
+                && pair[1].chars().all(char::is_alphabetic)
+        })
+}
+
+/// The row a survey asks on: a question, or marked optional.
+fn is_survey_question(text: &str) -> bool {
+    let t = text.trim_end();
+    !t.is_empty() && (t.ends_with('?') || t.to_lowercase().ends_with("(optional)"))
 }
 
 /// One `·` segment of a status row's parentheses that names a key and what
@@ -726,6 +766,8 @@ enum Ask {
 pub(crate) struct Live {
     pub session: uuid::Uuid,
     pub shot: Option<Rc<Shot>>,
+    /// When the reader started: its first capture is on its way for `GRACE`.
+    started: Instant,
     rx: Receiver<Shot>,
     ask: Option<Sender<Ask>>,
     wished: Cell<Option<(u16, u16)>>,
@@ -752,11 +794,18 @@ impl Live {
         Live {
             session,
             shot: seed,
+            started: Instant::now(),
             rx,
             ask: Some(ask_tx),
             wished: Cell::new(size),
             reader: Some(reader),
         }
+    }
+
+    /// No picture yet, and the first capture still due: the page holds
+    /// the zone rather than draw rows the pane will move.
+    pub(crate) fn pending(&self) -> bool {
+        self.shot.is_none() && self.started.elapsed() < GRACE
     }
 
     /// The size the reader was last asked for.
@@ -772,11 +821,20 @@ impl Live {
         Live {
             session,
             shot: Some(Rc::new(shot)),
+            started: Instant::now(),
             rx,
             ask: None,
             wished: Cell::new(None),
             reader: None,
         }
+    }
+
+    /// A window started at `started` whose first capture has not landed,
+    /// for a test.
+    #[cfg(test)]
+    pub(crate) fn waiting(session: uuid::Uuid, started: Instant) -> Self {
+        let (_tx, rx) = channel();
+        Live { session, shot: None, started, rx, ask: None, wished: Cell::new(None), reader: None }
     }
 
     /// Take what the reader sent since; whether the screen changed.
@@ -1553,6 +1611,40 @@ mod tests {
         assert_eq!(page.page_box(), Some((5, 6, 7)));
         // The kept words keep their own inks.
         assert!(page.rows[2].runs.iter().any(|(t, _)| t.contains("Philosophizing")));
+    }
+
+    #[test]
+    fn the_session_survey_goes_wherever_it_stands() {
+        let survey = [
+            "● How is Claude doing this session? (optional)",
+            "  1: Bad    2: Fine    3: Good   0: Dismiss",
+        ];
+        let rule = "─".repeat(60);
+        let body = ["⏺ Done.", "", rule.as_str(), "❯ ", rule.as_str()];
+        // Over the box, and under it.
+        for (over, screen) in
+            [(true, [&survey[..], &body[..]].concat()), (false, [&body[..], &survey[..]].concat())]
+        {
+            let shot = Shot {
+                rows: screen.iter().map(|t| parse_row(t)).collect(),
+                cols: 60,
+                cursor: Some((2, if over { 5 } else { 3 })),
+            };
+            let page = shot.for_page();
+            let (q, k) = if over { (0, 1) } else { (5, 6) };
+            assert!(page.rows[q].blank(), "the question goes ({over}): {:?}", page.rows[q]);
+            assert!(page.rows[k].blank(), "its keys go ({over}): {:?}", page.rows[k]);
+            assert_eq!(page.rows[if over { 2 } else { 0 }].text, "⏺ Done.", "prose stays");
+            assert!(page.page_box().is_some());
+        }
+        assert!(is_survey_keys("1: Bad   2: Fine   3: Good   0: Dismiss"));
+        assert!(is_survey_keys("  1: Yes  2: No"));
+        assert!(!is_survey_keys("1: Bad"), "one key is a list item");
+        assert!(!is_survey_keys("1: run it  2: skip"), "a sentence is not a key");
+        assert!(!is_survey_keys("step 1: build  step 2: test"));
+        assert!(is_survey_question("● How is Claude doing this session? (optional)"));
+        assert!(is_survey_question("  Rate this session?"));
+        assert!(!is_survey_question("⏺ Done."));
     }
 
     #[test]

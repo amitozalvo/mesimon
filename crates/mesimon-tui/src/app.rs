@@ -2099,7 +2099,10 @@ pub struct App {
     pub tmux_sock: Option<std::path::PathBuf>,
     /// The last window's session and picture, and the zone's size it was
     /// fitted to (`park_live`): what the next window starts from.
-    pub live_last: Option<(uuid::Uuid, std::rc::Rc<crate::live::Shot>)>,
+    pub live_last: std::collections::HashMap<uuid::Uuid, std::rc::Rc<crate::live::Shot>>,
+    /// A window the page waits for before it has started (`live_pending`):
+    /// the session and when the wait began.
+    pub live_wait: std::cell::Cell<Option<(uuid::Uuid, std::time::Instant)>>,
     pub live_size: std::cell::Cell<Option<(u16, u16)>>,
     /// Where the last frame drew the live window's rows (the pane's own
     /// glyphs and attributes, a picture the L1 laws know by position).
@@ -2627,7 +2630,8 @@ impl App {
             live: None,
             tmux_sock: None,
             live_rect: std::cell::Cell::new(None),
-            live_last: None,
+            live_last: std::collections::HashMap::new(),
+            live_wait: std::cell::Cell::new(None),
             live_size: std::cell::Cell::new(None),
             page_ticket: None,
             page_transcripts: std::collections::HashMap::new(),
@@ -6011,15 +6015,37 @@ impl App {
             (Some((id, sid16)), _) => {
                 self.park_live();
                 let sock = self.tmux_sock.clone().expect("the socket gates the want");
-                let seed = self
-                    .live_last
-                    .as_ref()
-                    .filter(|(s, _)| *s == id)
-                    .map(|(_, shot)| std::rc::Rc::clone(shot));
+                let seed = self.live_last.get(&id).map(std::rc::Rc::clone);
                 let size = self.live_size.get();
                 self.live = Some(crate::live::Live::start(sock, id, sid16, size, seed));
                 true
             }
+        }
+    }
+
+    /// The page's zone waits for `rec`'s pane (T-1156): an agent with a
+    /// pane whose window has no picture yet and whose first capture is
+    /// still due (`live::GRACE`) — or whose window the next tick starts.
+    /// Drawing the conversation first and the pane under it a frame later
+    /// moved every row; the zone holds instead, ~100 ms.
+    pub(crate) fn live_pending(&self, rec: &mesimon_core::board::SessionRecord) -> bool {
+        if !(rec.kind.is_agent() && rec.state.has_pane()) || self.live_shot(rec.id).is_some() {
+            return false;
+        }
+        match &self.live {
+            Some(l) if l.session == rec.id => l.pending(),
+            _ if self.tmux_sock.is_some() => {
+                let now = std::time::Instant::now();
+                let since = match self.live_wait.get() {
+                    Some((s, t)) if s == rec.id => t,
+                    _ => {
+                        self.live_wait.set(Some((rec.id, now)));
+                        now
+                    }
+                };
+                now.duration_since(since) < crate::live::GRACE
+            }
+            _ => false,
         }
     }
 
@@ -6030,7 +6056,7 @@ impl App {
     pub(crate) fn park_live(&mut self) {
         if let Some(live) = self.live.take() {
             if let Some(shot) = live.shot.clone() {
-                self.live_last = Some((live.session, shot));
+                self.live_last.insert(live.session, shot);
             }
             if let Some(size) = live.wished() {
                 self.live_size.set(Some(size));
