@@ -42416,9 +42416,13 @@ in its box, unsent`, `shift+enter start + ask agent ∙ your words go as its fir
 the seat's clauses; a closed box at the zone's foot (`foot_box`) holds the title a start types,
 and the ask field opens on its words row (`Composer`, so nothing moves). The zone draws no
 creature: the author asked for the mascot "always on the right side". The rail's foot holds a
-small ש (`intro::SMALL_SHIN`, 11×10, a new drawing: three-pixel stems with one-pixel gaps, so
-each stem has a lit, a body and a shaded column — the first cut's 10×10 with two-pixel stems
-was lit and shade only, the author: "very thin, should be a little wider"): `Anim::Letter` still on the seat (only
+small ש (`intro::SMALL_SHIN`, 13×10, a new drawing in the intro letter's proportions: stems
+three, gaps two, as the large one's are four and three of eighteen; it starts at the
+twelve-pixel body's left edge and its last stem reaches a pixel onto the morph's margin, so
+`intro::letter_pixels` returns the margin's width and the stage (`Stage::shift`) is drawn that
+much left of the shin's place. Two cuts before it: 10×10 with two-pixel stems and gaps, the
+author: "very thin, should be a little wider"; 11×10 with three-pixel stems and one-pixel gaps,
+"the lines should be thinner, and I think the whole shin supposed to be wider"): `Anim::Letter` still on the seat (only
 where the rail offers `+ agent session`; an archived ticket has none), `Anim::Stir` while a start
 is parked behind its worktree, `Anim::Waking` from the record's first frame (the intro's morph,
 `intro::morph` made size-generic, then asleep, lid, awake, a look round), `Anim::Ready` for

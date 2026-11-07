@@ -8720,7 +8720,8 @@ fn the_empty_seat_keeps_its_words_and_the_rail_its_letter() {
     app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
     let tall = render(&app, 120, 30);
     let drawn = app.mascot.borrow().clone().expect("the letter fits at 30");
-    assert!(drawn.rect.x > 120 - super::ticket::RAIL_W, "on the rail: {:?}", drawn.rect);
+    // The letter stage's margin column lands on the rail's own first column.
+    assert!(drawn.rect.x >= 120 - super::ticket::RAIL_W, "on the rail: {:?}", drawn.rect);
     assert!(tall.iter().any(|l| l.contains("no agent yet")), "the zone's words: {tall:?}");
     // The description's rows come off the page's height; the rail keeps
     // every row it lists and drops the letter before one of them.

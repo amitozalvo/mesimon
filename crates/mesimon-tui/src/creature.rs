@@ -1161,6 +1161,9 @@ pub(crate) struct Stage {
     pub cols: u16,
     pub rows: u16,
     pub body: u16,
+    /// Columns the stage is drawn left of a body stage's place, so its
+    /// body stands where the shin's does: the letter's margin (T-1156).
+    pub shift: u16,
     cells: Vec<Option<(char, Style)>>,
 }
 
@@ -1172,12 +1175,13 @@ pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Optio
     // pixels, so its stage is the shin's to the cell.
     // A size with no letter (Large) plays the poses instead.
     if let Some((_, t, dx, lift)) = letter_beat(anim, ms) {
-        if let Some(px) = crate::intro::letter_pixels(size, t, dx) {
+        if let Some((pad, px)) = crate::intro::letter_pixels(size, t, dx) {
             let ink = theme.creature_ink(false)?;
             let b = Body::get(size);
-            let pic = Picture { w: b.w, h: b.h, px, lift, marks: Vec::new() };
+            let pic = Picture { w: b.w + 2 * pad, h: b.h, px, lift, marks: Vec::new() };
             let mut st = stage(&pic, &ink, theme.block_gaps);
             st.body = b.w as u16;
+            st.shift = pad as u16;
             return Some(st);
         }
     }
@@ -1283,7 +1287,7 @@ fn stage(pic: &Picture, ink: &CreatureInk, block_gaps: bool) -> Stage {
             *cell = Some((m.ch, if m.bold { style.add_modifier(Modifier::BOLD) } else { style }));
         }
     }
-    Stage { cols, rows, body: pic.w as u16, cells }
+    Stage { cols, rows, body: pic.w as u16, shift: 0, cells }
 }
 
 impl Stage {

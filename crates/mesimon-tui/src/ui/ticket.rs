@@ -2197,7 +2197,10 @@ fn rail_shin(
     let ms = app.creature_ms(crate::text::hash64((key, anim)));
     let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
     let y = floor.checked_sub(stage.rows)?;
-    (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, rail.x + 1, y))
+    // A letter stage is wider by its margin and drawn that much left, so
+    // the body stands where the shin's does.
+    let x = (rail.x + 1).saturating_sub(stage.shift);
+    (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, x, y))
 }
 
 /// The whole conversation the zone reads (T-1143): every message the
