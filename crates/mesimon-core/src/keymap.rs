@@ -961,6 +961,9 @@ pub enum Verb {
     PageUp,
     HalfPageDown,
     HalfPageUp,
+    /// The ticket page's reading zone to its foot (T-1174): `end`, and a
+    /// click on the conversation's jump pill.
+    Foot,
     NextFile,
     /// Switch the checkout diff between changes and upstream commit lists.
     GitCommits,
@@ -3329,6 +3332,20 @@ static TICKET: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         // On the PREVIEW heading (T-158), beside the zone it pages.
+        prio: 0,
+    },
+    Binding {
+        // The zone to its foot (T-1174), Claude Code's ctrl+end: the
+        // conversation's jump pill says the key (or the click) itself, so
+        // no hint repeats it.
+        keys: &[Key::End],
+        verb: Verb::Foot,
+        show: "end",
+        hint: |_| "",
+        avail: |c| c.preview_scrolls,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
         prio: 0,
     },
     Binding {

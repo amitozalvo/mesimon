@@ -1106,6 +1106,9 @@ fn draw_preview(
     // The ticket whose closed box stands at the zone's foot (T-1156): the
     // seat's, and a launch's, where the agent's box will be.
     let mut foot: Option<ulid::Ulid> = None;
+    // The conversation's jump pill (T-1174) and the row it stands on, drawn
+    // over the zone's rows once they are.
+    let mut pill: Option<(u16, Line<'static>)> = None;
     // The word names what the zone is holding, in the page's own heading
     // vocabulary: PREVIEW for a session, because neither a transcript tail
     // nor a pane capture is the record (author 2026-09-01) — and, since
@@ -1345,11 +1348,18 @@ fn draw_preview(
             } else {
                 lines.extend(margin(shown));
             }
+            if let Some((key, _, true)) = &doc {
+                let y = area.y + lines.len() as u16 - 1;
+                pill = foot_pill(app, rec.id, *key, area.width as usize).map(|p| (y, p));
+            }
         }
         if let Some(w) = word {
             lines[0] = heading(w);
         }
         f.render_widget(Paragraph::new(lines), area);
+        if let Some((y, p)) = pill.take() {
+            draw_foot_pill(f, app, area, y, p);
+        }
         let foot_y = area.bottom() - drawn_n as u16;
         if fade_n + drawn_n > 0 {
             let mut raw: Vec<Line<'static>> = Vec::with_capacity(fade_n + drawn_n);
@@ -1464,7 +1474,15 @@ fn draw_preview(
                 }
             };
             if tail {
-                lines.extend(window(app, key, &rows, budget, width + GUTTER.len(), true));
+                let shown = window(app, key, &rows, budget, width + GUTTER.len(), true);
+                let drawn = !shown.is_empty();
+                lines.extend(shown);
+                let y = area.y + lines.len() as u16 - 1;
+                pill = key
+                    .zip(record)
+                    .filter(|_| drawn)
+                    .and_then(|(key, rec)| foot_pill(app, rec.id, key, area.width as usize))
+                    .map(|p| (y, p));
             } else {
                 lines.extend(margin(window(app, key, &rows, budget, width, false)));
             }
@@ -1527,6 +1545,9 @@ fn draw_preview(
         lines[0] = heading(w);
     }
     f.render_widget(Paragraph::new(lines), area);
+    if let Some((y, p)) = pill {
+        draw_foot_pill(f, app, area, y, p);
+    }
     (used, None)
 }
 
@@ -2765,6 +2786,79 @@ fn window(
         crate::rich::mark_cut(&mut shown, width, &app.theme);
     }
     shown
+}
+
+/// The jump pill over the conversation's foot (T-1174), Claude Code's own
+/// (the author: "use same strategy as claude code does it"): while the
+/// window `key` was drawn at stands above the conversation's foot, one
+/// row of the person's raised ground, centred on the zone, saying how many
+/// messages the agent has written since the reader left the foot (`App::
+/// page_unseen`), or `Jump to bottom` while none, and how to go there: a
+/// click where the mouse is on, else `end`. A zone too narrow for the whole
+/// sentence drops the key, then the arrow. Back at the foot, the mark goes.
+fn foot_pill(app: &App, rec_id: uuid::Uuid, key: u64, width: usize) -> Option<Line<'static>> {
+    let v = app.preview.view.get();
+    let messages = app.page_transcripts.get(&rec_id)?.messages();
+    if v.key != Some(key) || v.offset >= v.max {
+        if app.page_unseen.get().is_some_and(|(k, _)| k == key) {
+            app.page_unseen.set(None);
+        }
+        return None;
+    }
+    let newest = messages.last()?.key;
+    let mark = match app.page_unseen.get() {
+        Some((k, mark)) if k == key => mark,
+        _ => {
+            app.page_unseen.set(Some((key, newest)));
+            newest
+        }
+    };
+    let n = unseen(messages, mark);
+    let what = match n {
+        0 => "Jump to bottom".to_string(),
+        1 => "1 new message".to_string(),
+        n => format!("{n} new messages"),
+    };
+    let arrow = glyphs::behind_mark(app.theme.glyph_tier());
+    let how = if app.prefs.mouse { "click" } else { "end" };
+    let words = [format!("{what} ({how}) {arrow}"), format!("{what} {arrow}")]
+        .into_iter()
+        .find(|w| w.width() + 2 <= width)
+        .unwrap_or(what);
+    let ink = Style::default().fg(app.theme.rest.base);
+    let style = match app.theme.selected_bg {
+        Some(bg) => ink.bg(bg),
+        None => ink.add_modifier(Modifier::BOLD),
+    };
+    Some(Line::from(Span::styled(format!(" {words} "), style)))
+}
+
+/// The agent's messages after `mark`, counted as Claude Code counts its
+/// unseen ones: each run of the agent's words is one, and a run ends at
+/// anything that is not them — the person's words, a notice, a tool call
+/// (a reply with steps after it). The crown's rows are not the agent's.
+fn unseen(messages: &[crate::transcript::Message], mark: (u64, usize)) -> usize {
+    use mesimon_core::mesophon::RowKind;
+    let Some(at) = messages.iter().position(|m| m.key == mark) else { return 0 };
+    let mut n = 0;
+    let mut run = false;
+    for m in &messages[at + 1..] {
+        let agent = m.kind == RowKind::Reply && m.crown.is_none();
+        if agent && !run {
+            n += 1;
+        }
+        run = agent && m.steps == 0;
+    }
+    n
+}
+
+/// Draws `pill` centred on row `y` of `area`, over what the zone drew
+/// there, and makes it the `end` key for the mouse.
+fn draw_foot_pill(f: &mut Frame, app: &App, area: Rect, y: u16, pill: Line<'static>) {
+    let w = (super::spans_width(&pill.spans) as u16).min(area.width);
+    let rect = Rect { x: area.x + (area.width - w) / 2, y, width: w, height: 1 };
+    f.render_widget(Paragraph::new(pill), rect);
+    app.hits.borrow_mut().record(rect, crate::mouse::Target::Key(keymap::Key::End));
 }
 
 /// Draws the rail and returns the rows it wrote: what the shin under it

@@ -2128,6 +2128,11 @@ pub struct App {
     pub page_composed: std::cell::RefCell<std::collections::HashMap<uuid::Uuid, Composed>>,
     /// The zone's conversation document as the last draw laid it out.
     pub page_doc: std::cell::RefCell<Option<PageDoc>>,
+    /// Where the reader left the conversation's foot (T-1174): the
+    /// document's pager key and its newest message's key at that moment.
+    /// The jump pill counts the agent's messages after it, as Claude Code
+    /// counts from where its reader scrolled up; back at the foot it goes.
+    pub page_unseen: std::cell::Cell<Option<(u64, (u64, usize))>>,
     /// Whether the last ticket page drew its two zones (the terminal wide
     /// enough): the live window has nowhere to stand otherwise.
     pub page_zone: std::cell::Cell<bool>,
@@ -2639,6 +2644,7 @@ impl App {
             page_messages: std::cell::RefCell::new(std::collections::HashMap::new()),
             page_composed: std::cell::RefCell::new(std::collections::HashMap::new()),
             page_doc: std::cell::RefCell::new(None),
+            page_unseen: std::cell::Cell::new(None),
             page_link: std::cell::RefCell::new(None),
             page_zone: std::cell::Cell::new(true),
             terminals: Vec::new(),
@@ -10488,6 +10494,13 @@ impl App {
                     self.commit_nav(dir * rows.max(1) as isize);
                 } else if let Some(p) = self.pager() {
                     p.page(dir, half);
+                }
+            }
+            // The zone to its foot (T-1174): no motion, as Claude Code's
+            // jump; a conversation's tail is released there to follow.
+            Verb::Foot => {
+                if let Some(p) = self.pager() {
+                    p.jump(usize::MAX);
                 }
             }
             Verb::OpenCommit => self.open_commit(),

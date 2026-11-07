@@ -15511,6 +15511,63 @@ fn a_parked_conversation_keeps_a_row_over_the_hints() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// Scrolled up from the conversation's foot, the zone wears Claude Code's
+/// jump pill (T-1174) on its last conversation row, centred: `Jump to
+/// bottom` while nothing new has landed, the agent's new messages counted
+/// once there are — a run of its words is one, the person's words between
+/// part two — and how to go there, a click with the mouse on, else `end`.
+/// `end` goes, and at the foot the pill and its mark are gone; a click on
+/// the pill is that key.
+#[test]
+fn the_conversation_wears_a_jump_pill_above_its_foot() {
+    let (mut app, path) = app_live("tlive-pill", false);
+    let has = |lines: &[String], words: &str| lines.iter().any(|l| l.contains(words));
+    let lines = render(&app, 120, 30);
+    assert!(!has(&lines, "Jump to bottom"), "at the foot: {lines:#?}");
+    assert!(app.page_unseen.get().is_none());
+    let key = app.page_doc.borrow().as_ref().map(|d| d.key).expect("the conversation");
+    app.preview.request.set(Some((key, 0)));
+    let lines = render(&app, 120, 30);
+    let row = lines.iter().position(|l| l.contains("Jump to bottom (click) ↓")).expect("the pill");
+    // Centred on the zone, over the conversation's last row, above the pane.
+    let x = lines[row].find("Jump").map(|b| lines[row][..b].chars().count()).expect("x");
+    let live = app.live_rect.get().expect("the window");
+    let pill_w = " Jump to bottom (click) ↓ ".chars().count();
+    let centred = live.x as usize + (live.width as usize - pill_w) / 2;
+    assert_eq!(x - 1, centred, "{:?}", lines[row]);
+    assert!(row < live.y as usize, "over the pane: {lines:#?}");
+    // The mark is the newest message when the reader left.
+    let t = app.page_transcripts.get(&uuid_n(31)).expect("held");
+    let keys: Vec<_> = t.messages().iter().map(|m| m.key).collect();
+    assert_eq!(app.page_unseen.get(), Some((key, *keys.last().expect("messages"))));
+    // Left before the second prompt: one reply since; before the first
+    // reply's prompt: two, the person's words between parting them.
+    app.page_unseen.set(Some((key, keys[2])));
+    assert!(has(&render(&app, 120, 30), "1 new message (click) ↓"));
+    app.page_unseen.set(Some((key, keys[0])));
+    let lines = render(&app, 120, 30);
+    assert!(has(&lines, "2 new messages (click) ↓"), "{lines:#?}");
+    // A click on it is `end`.
+    let y = lines.iter().position(|l| l.contains("2 new messages")).expect("pill") as u16;
+    let x = lines[y as usize].find("2 new").map(|b| lines[y as usize][..b].chars().count());
+    match app.hits.borrow().at(x.expect("x") as u16, y) {
+        crate::mouse::Hit::Spot(s) => {
+            assert_eq!(s.target, crate::mouse::Target::Key(mesimon_core::keymap::Key::End))
+        }
+        hit => panic!("the pill is the end key: {hit:?}"),
+    }
+    // Mouse off, the key is said instead.
+    app.seed_pref(|p| p.mouse = false);
+    assert!(has(&render(&app, 120, 30), "2 new messages (end) ↓"));
+    // `end`: at the foot, and the mark goes with the pill.
+    app.handle_key(KeyCode::End, KeyModifiers::NONE).expect("end");
+    let lines = render(&app, 120, 30);
+    assert!(!has(&lines, "new message") && !has(&lines, "Jump to bottom"), "{lines:#?}");
+    assert!(app.preview.request.get().is_none(), "released to follow the foot");
+    assert!(app.page_unseen.get().is_none());
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The paging keys stand on the heading on the frame that first overflows
 /// (T-1143: read from the last frame's measurement, `{ }` came a frame
 /// late each time the zone changed shape).

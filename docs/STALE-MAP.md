@@ -42676,3 +42676,34 @@ than `● main` and the options share one grid. Goldens reminted and read.
 (running and needs-you, hint before and after, the row toggling) and
 `enter_ticket_page_defaults_off_and_round_trips`; six Settings goldens reminted. TUI-only,
 so no e2e or full suite.
+
+## The conversation's jump pill (T-1174, 2026-11-07, "ticket page show \"jump to bottom\" indication on transcript … use same strategy as claude code does it")
+
+Scrolled up from the ticket page conversation's foot, its last drawn row wears Claude Code's
+own pill, read out of the 2.1.319 binary (`dd` and `ste` there) rather than guessed:
+
+- **Words, ground, place are Claude Code's.** `Jump to bottom`, or `N new message(s)` once the
+  agent has written since the reader left the foot, then `(click) ↓` with the mouse pref on and
+  `(end) ↓` with it off (Claude Code: `(click)` under full mouse, else its `ctrl+end`); a zone
+  too narrow drops the key, then the arrow. One space either side on the person's raised ground
+  (`selected_bg`, Claude Code's `userMessageBackground`, the ground the person's own prompts
+  already wear on this page since T-1162), base ink, centred on the zone, drawn over whatever
+  the row holds. Mono, with no raised ground, draws it bold.
+- **The count is Claude Code's rule.** It records the transcript length when the reader leaves
+  the bottom and counts runs of assistant text after it, a run broken by anything else (a tool
+  result is a user message there). Here `App::page_unseen` keeps the pager key and the newest
+  message's KEY when the window first draws above its foot (a key, not an index, because a long
+  conversation's earlier pages land at the top for seconds after the page opens), and
+  `ticket::unseen` counts `Reply` messages after it, a reply with `steps == 0` joining the next
+  one's run. The crown's rows are not the agent's. Back at the foot the mark goes.
+- **`end` is the jump, and the click is `end`.** `Verb::Foot` (Ticket scope, `avail:
+  preview_scrolls`, no hint: the pill says it) calls `Pager::jump(usize::MAX)`, no glide, as
+  Claude Code's jump; `land` releases the tail there so it follows the foot again. The pill's
+  rect is a `Target::Key(Key::End)` spot, the one-road rule for the mouse. `end` also takes a
+  long note to its end; it was free in the Ticket scope.
+- Only the conversation (`tail == true`) wears it: a bare reply and a note start at the top, a
+  shell tail keeps the `~` cut mark alone. The `~` stays at the right of the pill's row.
+
+Test: `the_conversation_wears_a_jump_pill_above_its_foot` (ui/tests.rs) — absent at the foot,
+centred over the live window, the mark, 1 and 2 counted, the click's spot, the mouse-off word,
+`end` releasing. No golden moved: no fixture scrolls up. Not seen in the TUI by the author yet.
