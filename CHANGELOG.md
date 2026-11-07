@@ -10,6 +10,48 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.17.unstable.1 — 2026-11-07
+
+An unstable build. Nothing changes a state file's format.
+
+### Added
+
+- **The ticket page shows the agent's own screen.** The bottom of the page is
+  the agent's live terminal, fading up into the whole conversation above it;
+  `{ }` page through the conversation and `Tab` walks its links. `Shift+Enter`
+  opens the ask box on the agent's own input row.
+- **The ticket page before its agent says what each key does.** `enter` starts
+  the agent with the title waiting in its box; `shift+enter` starts it and sends
+  your words as the first prompt. While it starts, the page lists each step:
+  the worktree, the init script, the agent.
+- **`Tab` on a card reads its description as formatted markdown**, and `Enter`
+  edits it. In the reader, `{ }` walk the notes and `Tab` walks the links.
+- **Commands in a note or transcript are links you can copy.** A shell block's
+  commands show in `^k`, `Tab` reaches them, and `c` copies one.
+- **A raised hand shows in the agent's conversation**, in the needs-you colour,
+  and stays there after the hand comes down.
+
+### Changed
+
+- **A `now` message reaches a working Claude agent at its next step**, instead
+  of waiting for its turn to end.
+- **The editor stands beside the card it came from**, and the rest of the board
+  dims behind it, as under the transcript.
+- **Dialogs are plainer.** Their left edge is a plain bar, and a card's second
+  tag hangs as a short block under the first.
+- **A folded column opens only from its title**, not from anywhere on its strip.
+
+### Fixed
+
+- **A card no longer shows the agent's reply twice** after the daemon restarts.
+- **A board opened while the daemon is still starting waits for it** instead of
+  failing.
+- **Moving a ticket into a column that frees its workspace frees it**, also for
+  worktrees held from before a restart.
+- **A restart no longer repeats notices already sent** about a checkout's new
+  commits.
+- **Codex starts past its current folder trust dialog.**
+
 ## v0.1.0-beta.17 — 2026-11-05
 
 Wider columns when you want them, a footer that names what the card holds, and
