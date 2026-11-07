@@ -42312,3 +42312,12 @@ Tests: `a_second_tag_hangs_under_the_stripe_with_a_space`, `the_hang_takes_one_c
 (replaces `a_second_tag_on_any_ticket_widens_every_bar`), the overflow-edge and waiting-card
 tests rewritten for one cell. 21 goldens reminted: every bar narrowed by a cell, the titles it
 freed gained one, two-tag cards end on `▁` with `▀` under them.
+
+## T-1160: RESEARCH and READY tags gate a session (2026-11-07)
+
+`AGENTS.md` gains "RESEARCH and READY tickets", a rule for this repository's own board, not the
+product: a group-2 RESEARCH ticket is read-only (no edit, commit or STALE-MAP block); a proposal
+moves it to READY (still read-only); the person's go removes the group-2 tag, retitles the
+ticket and lifts the limit. It sits in `AGENTS.md` so Codex reads it too. A worker cannot
+retitle its own ticket (`rename_ticket` is crown-only, for another ticket), so the rule has the
+worker hand the person the new title.

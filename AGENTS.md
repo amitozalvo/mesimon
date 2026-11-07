@@ -23,6 +23,24 @@ for the places a change touches, `.claude/skills/release/SKILL.md` for a release
   do not load the whole record. **Append a block when you ship something**: what changed, what
   was refuted and why. That is how a decision survives; routine edits need no essay.
 
+## RESEARCH and READY tickets
+
+On this repository's board, a ticket's group-2 tag gates what its session may change. This is
+how this repository works, not something mesimon the product does.
+
+- **RESEARCH: read-only.** Research and answer; edit no file, commit nothing, append no
+  STALE-MAP block (this overrides "commit when done"). When the research gives a proposal, write
+  it up (on Claude Code, an Artifact where a page fits) and `tag_ticket` READY, which replaces
+  RESEARCH. With no proposal yet, keep RESEARCH and say what input from the person is missing.
+- **READY: the proposal waits for the person.** Still read-only; revise the proposal if asked.
+- **A go** (the person's "go", or any plain consent to build): remove the group-2 tag
+  (`tag_ticket` READY with `remove`), retitle the ticket for what will be built (a question title
+  becomes the change; only a crown can `rename_ticket` another ticket, so a worker gives the
+  person the new title), then work normally with no read-only limit.
+
+Example: "Redesign titlebar" [IMPROVEMENT][RESEARCH] → proposal Artifact, [IMPROVEMENT][READY] →
+the person says go → [IMPROVEMENT], retitled, built and committed.
+
 ## Where you are running
 
 - **A branch starting with `msmn/` is a ticket worktree** cut by mesimon, with `MESIMON_TICKET`
