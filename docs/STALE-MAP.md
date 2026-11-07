@@ -42323,3 +42323,26 @@ ticket and lifts the limit. It sits in `AGENTS.md` so Codex reads it too.
 **Refuted:** "a worker cannot retitle its own ticket". `rename_ticket`'s description says crown
 only, for another ticket, but a worker's call with its own key and seen stamp retitled this
 ticket; the rule names the tool.
+
+## rename_ticket says a session retitles its own ticket (T-1161, 2026-11-07, "rename_ticket says crown only, yet a worker retitles its own ticket")
+
+The tool text read "Retitles another mesimon ticket (crown only)", but T-411's `crown_target`
+always took a key naming the caller's own ticket as an own-ticket call, crown or not, so an
+uncrowned worker's rename of its own ticket was applied (T-1160's worker did it, after telling the
+person it could not). AGENTS.md's RESEARCH/READY rule (T-1160) relies on that rename, so **the
+text was the bug, not the authorization**. It now reads "Retitles this session's ticket, or
+another mesimon ticket (crown only). key names the ticket and seen is get_ticket's stamp for it;
+another ticket that changed since it was read is refused with its current state."; `key` reads
+"This session's ticket key, or another's from list_board."
+
+- **Schema unchanged, on purpose:** `key` and `seen` stay required, so an own-ticket call still
+  names its key and passes a stamp the daemon does not check. Making `key` optional, as
+  `tag_ticket`/`move_ticket` have it, changes `Command::AgentRenameTicket` on the wire; it was
+  left out to keep this a text fix.
+- **Test:** `the_crown_lets_one_agent_edit_the_others` (crown_e2e) now has an uncrowned worker
+  rename another ticket (refused, title kept) and its own (applied). Before, only a refusal after
+  the crown moved away covered rename, and nothing covered the own-ticket road.
+- **Rig:** RN1 and the check `own_renamed:<title>` (the worker's keyed rename of its own ticket
+  answered, the title exact, no crown rename). Live 2026-11-07 on claude 2.1.319, crown
+  claude-opus-5-5, worker the rig's claude-sonnet-5-5: PASS. The first run's verdict crashed in the
+  check itself (a local `calls` shadowed the helper); the worker had renamed its ticket there too.

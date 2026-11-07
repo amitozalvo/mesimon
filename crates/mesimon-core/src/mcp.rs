@@ -845,19 +845,25 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
-        // The three that exist only for the crown (T-411). They take a key
-        // and a `seen` stamp; the daemon refuses every call from a ticket
-        // that does not wear the crown, and the refusal says how a person
-        // grants one.
+        // The three keyed writers of T-411. They take a key and a `seen`
+        // stamp; the daemon refuses a key naming another ticket from a
+        // ticket that does not wear the crown, and the refusal says how a
+        // person grants one. A key naming the caller's own ticket is an
+        // own-ticket call (`crown_target`), which rename_ticket says (T-1161):
+        // a worker retitles its own ticket after the person's go.
         json!({
             "name": "rename_ticket",
-            "description": "Retitles another mesimon ticket (crown only). The seen stamp \
-                            get_ticket returned for it is required, and a ticket that changed \
-                            since it was read is refused with its current state.",
+            "description": "Retitles this session's ticket, or another mesimon ticket (crown \
+                            only). key names the ticket and seen is get_ticket's stamp for it; \
+                            another ticket that changed since it was read is refused with its \
+                            current state.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "key": { "type": "string", "description": "The ticket's key, from list_board." },
+                    "key": {
+                        "type": "string",
+                        "description": "This session's ticket key, or another's from list_board.",
+                    },
                     // T-1073: as `create_ticket`'s title says.
                     "title": {
                         "type": "string",

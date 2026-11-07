@@ -1839,6 +1839,21 @@ checks = ["road:mod", "started_by_crown", "fed:raise_hand", "hand:rh4-key", "wok
   until = { stops = 1, state = "idle" }
   wake = true
 
+# T-1161: rename_ticket's text said crown only, so a worker told by the
+# person to retitle its own ticket believed it could not (T-1160's did).
+[[test]]
+id = "RN1"
+title = "RN1 · a worker retitles its own ticket: do the steps below"
+workspace = "worktree"
+brief = "The person's go: retitle this ticket on the board to RN1 retitled by its worker. Then reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, an uncrowned session. The worker retitles its own ticket itself with rename_ticket, keyed to its own key with get_ticket's seen stamp, and the board applies it; the crown renames nothing. Before T-1161 rename_ticket's text read Retitles another mesimon ticket (crown only), and a worker told to retitle its ticket said it could not."
+checks = ["road:mod", "started_by_crown", "own_renamed:RN1 retitled by its worker", "reply:done"]
+
+  [[test.steps]]
+  crown = "RN1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RN1 started. When the board wakes you because {key}'s agent finished, end your turn with the single line: RN1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
 [[test]]
 id = "DL1"
 title = "DL1 · the crown hears work asked for in a person's words: do the steps below"

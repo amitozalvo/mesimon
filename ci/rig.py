@@ -4255,6 +4255,19 @@ Reply with the single word ready and end your turn."""
                 ok = answered if want == "ok" else refused
                 check(c, ok, f"{len(got)} keyed {tool} calls, {len(answered)} answered, "
                       f"{len(refused)} refused: {[r['text'][:60] for r in got[-2:]]}")
+            elif name == "own_renamed":
+                # T-1161: the worker retitled its own ticket itself: one of
+                # its rename_ticket calls, keyed to its own key, answered;
+                # the ticket now reads `arg` exactly; no rename of the
+                # crown's stood in for it.
+                got = keyed_calls(rows, "rename_ticket", key)
+                answered = [r for r in got if not r["is_error"]]
+                crowns = [i for n, i in tool_inputs(crown_rows)
+                          if (n or "").endswith("__rename_ticket") and str(i.get("key", "")).strip() == key]
+                now = self.ticket(board, tid)["title"]
+                check(c, answered and now == arg and not crowns,
+                      f"{len(got)} own rename_ticket calls, {len(answered)} answered; title {now!r}; "
+                      f"crown renames {len(crowns)}: {[r['text'][:60] for r in got[-2:]]}")
             elif name == "hand":
                 # The worker's own hand (T-908), its reason naming `arg`,
                 # case aside: what the worker wrote, from its transcript.

@@ -1139,8 +1139,9 @@ pub enum Command {
         #[serde(default)]
         key: Option<String>,
     },
-    /// Retitle another ticket, by key (T-411). Crown only; `seen` is the
-    /// stamp `get_ticket` returned for it. `sanitize_title` at the boundary
+    /// Retitle a ticket by key (T-411): the caller's own, or another for the
+    /// crown alone (T-1161); `seen` is the stamp `get_ticket` returned for
+    /// it, checked only for another's. `sanitize_title` at the boundary
     /// as for the human's `RenameTicket`.
     AgentRenameTicket {
         key: String,

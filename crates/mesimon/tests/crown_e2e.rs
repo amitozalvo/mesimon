@@ -137,6 +137,33 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(own.crowned, Some(false), "its own read says it either way");
     assert!(own.crown.is_none(), "an uncrowned ticket carries no wake words");
     assert!(own.seen.is_some(), "every read carries a stamp");
+    // T-1161: rename_ticket is the same road. A worker retitles its own
+    // ticket by key (the RESEARCH/READY rule relies on it) and never
+    // another's, whose title stays the person's.
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentRenameTicket {
+            key: kb.clone(),
+            title: "taken over".into(),
+            seen: other.seen.clone(),
+        },
+    ) {
+        Response::Err { message } => assert!(message.contains("crown"), "{message}"),
+        other => panic!("an uncrowned rename of another ticket: {other:?}"),
+    }
+    assert_eq!(c.board().ticket(b).unwrap().title, "fix the thing");
+    match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentRenameTicket {
+            key: ka.clone(),
+            title: "triage the board, retitled".into(),
+            seen: own.seen.clone(),
+        },
+    ) {
+        Response::AgentTicketUpdated { .. } => {}
+        other => panic!("an uncrowned rename of its own ticket: {other:?}"),
+    }
+    assert_eq!(c.board().ticket(a).unwrap().title, "triage the board, retitled");
     // An unknown key is an answer, not a crown question.
     let unknown = c.agent_read(sa, "T-999").expect_err("no such ticket");
     assert!(unknown.contains("no such ticket"), "{unknown}");
