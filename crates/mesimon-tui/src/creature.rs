@@ -495,6 +495,97 @@ const UNKNOWN: &[Frame] = &[
     plain(500),
 ];
 
+/// Half asleep, the cheeks not yet showing: the waking letter's first poses.
+const fn drowsy(ms: u32, eyes: Eyes, mouth: Mouth) -> Frame {
+    Frame { blush: false, ..f(ms).eyes(eyes).mouth(mouth) }
+}
+/// The shin the ש has just become (T-1156), as the intro's wakes: asleep,
+/// heavy, shut again, awake at once, then a look at each neighbour.
+const WAKING: &[Frame] = &[
+    drowsy(800, Eyes::Closed, Mouth::None),
+    drowsy(500, Eyes::Lid, Mouth::Flat),
+    drowsy(300, Eyes::Closed, Mouth::Flat),
+    Frame { blush: false, ..alarmed(500).lift() },
+    BLINK,
+    plain(600).look(-1, 0),
+    plain(200),
+    plain(600).look(1, 0),
+    BLINK,
+];
+/// The launch over and the agent at its box (T-1156): the intro's smile,
+/// wave and happy hop with its sparkle.
+const READY: &[Frame] = &[
+    f(300).mouth(Mouth::Grin).wave(),
+    f(200).mouth(Mouth::Grin),
+    f(200).mouth(Mouth::Grin),
+    f(300).mouth(Mouth::Grin).wave(),
+    f(400).mouth(Mouth::Grin),
+    f(200).eyes(Eyes::Happy).mouth(Mouth::Grin).lift().props(&[Prop::Sparkle(0)]),
+    f(200).eyes(Eyes::Happy).mouth(Mouth::Grin).props(&[Prop::Sparkle(1)]),
+    f(200).eyes(Eyes::Happy).mouth(Mouth::Grin).lift().props(&[Prop::Sparkle(0)]),
+    f(700).eyes(Eyes::Happy).mouth(Mouth::Grin).props(&[Prop::Sparkle(1)]),
+    f(500).eyes(Eyes::Happy),
+];
+
+/// The letter's beats (T-1156): how long, then the morph's `t` (`None` for
+/// the letter itself), the letter's shift right and whether it is up a
+/// pixel. Every beat a multiple of the redraw clock's 100 ms.
+type LetterBeat = (u32, Option<f32>, i16, bool);
+/// A breath, a long hold, a shiver, a hold: the letter while it waits on
+/// the worktree.
+const STIR: &[LetterBeat] = &[
+    (1200, None, 0, false),
+    (200, None, 0, true),
+    (200, None, 0, false),
+    (900, None, 0, false),
+    (100, None, 1, false),
+    (100, None, -1, false),
+    (100, None, 1, false),
+    (100, None, -1, false),
+    (100, None, 0, false),
+    (600, None, 0, false),
+];
+/// The intro's morph, its beats at the redraw clock: a held letter, then
+/// the stems swelling into the body from the bottom up, a breath held.
+const MORPH: &[LetterBeat] = &[
+    (300, None, 0, false),
+    (100, Some(0.2), 0, false),
+    (100, Some(0.3), 0, false),
+    (100, Some(0.4), 0, false),
+    (100, Some(0.5), 0, false),
+    (100, Some(0.6), 0, false),
+    (100, Some(0.7), 0, false),
+    (100, Some(0.82), 0, false),
+    (100, Some(1.0), 0, false),
+    (100, Some(1.1), 0, false),
+    (100, Some(1.1), 0, false),
+    (100, Some(1.0), 0, false),
+];
+fn beats_ms(beats: &[LetterBeat]) -> u64 {
+    beats.iter().map(|b| u64::from(b.0)).sum()
+}
+/// The letter's beat `ms` into `anim`, or `None` where the shin's own
+/// poses play: past the morph, and in every other animation.
+fn letter_beat(anim: Anim, ms: u64) -> Option<LetterBeat> {
+    let (beats, mut t) = match anim {
+        Anim::Letter => return Some((0, None, 0, false)),
+        Anim::Stir => (STIR, ms % beats_ms(STIR)),
+        Anim::Waking if ms < beats_ms(MORPH) => (MORPH, ms),
+        _ => return None,
+    };
+    for b in beats {
+        if t < u64::from(b.0) {
+            return Some(*b);
+        }
+        t -= u64::from(b.0);
+    }
+    None
+}
+/// How long the launch's last act plays before the shin settles (T-1156).
+pub(crate) fn ready_ms() -> u64 {
+    READY.iter().map(|f| u64::from(f.ms)).sum()
+}
+
 /// What the creature acts out: the empty seat's invitation, or a session's
 /// state as the rail names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -513,11 +604,23 @@ pub(crate) enum Anim {
     Failed,
     Exited,
     Unknown,
+    /// The rail's ש on a ticket with no agent yet (T-1156): the letter of
+    /// the intro, still.
+    Letter,
+    /// The ש stirring while the agent's worktree is made and its init
+    /// script runs: a breath, a hold, now and then a shiver.
+    Stir,
+    /// The ש waking into the shin as the agent starts: the intro's morph,
+    /// then asleep, half awake, awake, a look round; then `IDLE`.
+    Waking,
+    /// The agent ready, the launch over: a smile, a wave, the happy hop;
+    /// then `IDLE`.
+    Ready,
 }
 
 impl Anim {
     #[cfg(test)]
-    pub(crate) const ALL: [Anim; 14] = [
+    pub(crate) const ALL: [Anim; 18] = [
         Anim::Seat,
         Anim::Spawning,
         Anim::Idle,
@@ -532,6 +635,10 @@ impl Anim {
         Anim::Failed,
         Anim::Exited,
         Anim::Unknown,
+        Anim::Letter,
+        Anim::Stir,
+        Anim::Waking,
+        Anim::Ready,
     ];
 
     /// A session's animation. Exhaustive: a new state does not compile until
@@ -583,6 +690,11 @@ impl Anim {
             Anim::Failed => (&[], FAILED),
             Anim::Exited => (&[], EXITED),
             Anim::Unknown => (&[], UNKNOWN),
+            // The letter's beats are pixels, not poses (`letter_beat`); the
+            // cycle here is what a shin after them would do.
+            Anim::Letter | Anim::Stir => (&[], IDLE),
+            Anim::Waking => (WAKING, IDLE),
+            Anim::Ready => (READY, IDLE),
         }
     }
 }
@@ -1056,6 +1168,19 @@ pub(crate) struct Stage {
 /// theme draws no picture (mono). Every frame of one animation has the same
 /// stage, so a reply beside it wraps once per state, not once per frame.
 pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Option<Stage> {
+    // The ש (T-1156): the intro's letter or its morph, on the body's own
+    // pixels, so its stage is the shin's to the cell.
+    if let Some((_, t, dx, lift)) = letter_beat(anim, ms) {
+        let ink = theme.creature_ink(false)?;
+        let px = crate::intro::letter_pixels(size, t, dx)?;
+        let b = Body::get(size);
+        let pic = Picture { w: b.w, h: b.h, px, lift, marks: Vec::new() };
+        let mut st = stage(&pic, &ink, theme.block_gaps);
+        st.body = b.w as u16;
+        return Some(st);
+    }
+    // The waking shin's poses start where its morph ends.
+    let ms = if anim == Anim::Waking { ms - beats_ms(MORPH) } else { ms };
     let frame = frame_at(size, anim, ms);
     let ink = theme.creature_ink(frame.faded)?;
     let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink, theme.block_gaps);
@@ -1435,16 +1560,18 @@ mod tests {
             let ink = theme.creature_ink(fr.faded).expect("ink");
             stage(&compose(Size::Medium, fr, 0), &ink, false).cells
         };
-        let firsts: Vec<_> =
-            Anim::ALL.iter().map(|&a| glyphs(frame_at(Size::Medium, a, 0))).collect();
-        for (i, a) in Anim::ALL.iter().enumerate() {
-            for (j, b) in Anim::ALL.iter().enumerate().skip(i + 1) {
+        // The ש's two (T-1156) are pixels, not poses: `letter_beat`.
+        let posed: Vec<Anim> =
+            Anim::ALL.into_iter().filter(|a| !matches!(a, Anim::Letter | Anim::Stir)).collect();
+        let firsts: Vec<_> = posed.iter().map(|&a| glyphs(frame_at(Size::Medium, a, 0))).collect();
+        for (i, a) in posed.iter().enumerate() {
+            for (j, b) in posed.iter().enumerate().skip(i + 1) {
                 if [*a, *b] != [Anim::Seat, Anim::Idle] {
                     assert_ne!(firsts[i], firsts[j], "{a:?} and {b:?} open on the same face");
                 }
             }
         }
-        for anim in Anim::ALL.into_iter().filter(|a| *a != Anim::Exited) {
+        for anim in posed.into_iter().filter(|a| *a != Anim::Exited) {
             let moves = frames(Size::Medium, anim).windows(2).any(|w| glyphs(w[0]) != glyphs(w[1]));
             assert!(moves, "{anim:?} never moves");
         }

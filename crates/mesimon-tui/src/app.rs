@@ -5,6 +5,7 @@
 
 pub(crate) mod boards;
 mod images;
+pub(crate) mod launch;
 mod summary;
 mod tiers;
 
@@ -2276,6 +2277,9 @@ pub struct App {
     /// and the animation) and since when. Draw-side, like `spin_epoch`, so
     /// the first frame of anything is frame 0 and the goldens stay stable.
     pub creature_clock: Cell<Option<(u64, Instant)>>,
+    /// What the ticket page has seen of each launch (T-1156): the steps
+    /// from the press to the agent's box, and when each began and ended.
+    pub(crate) launches: launch::Launches,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -2695,6 +2699,7 @@ impl App {
             mascot: std::cell::RefCell::new(None),
             qr: std::cell::RefCell::new(None),
             creature_clock: Cell::new(None),
+            launches: launch::Launches::default(),
             spin_epoch: Cell::new(None),
             diff: None,
             releases: None,
@@ -8361,7 +8366,11 @@ impl App {
             git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
-            sel_new_agent: matches!(row, Some(RailRow::NewAgent)),
+            // A start parked behind its worktree (T-1156) has had its press:
+            // the row's Enter waits for the agent the launch is making.
+            sel_new_agent: matches!(row, Some(RailRow::NewAgent))
+                && !subject.is_some_and(|t| self.launch_parked(t)),
+            ticket_launching: subject.is_some_and(|t| self.launch_parked(t)),
             sel_terminal: matches!(row, Some(RailRow::Terminal(_))),
             adopt_armed: matches!((row, self.adopt_armed, subject), (Some(RailRow::Terminal(_)), Some(armed), Some(t)) if armed == t),
             ticket_shells: self.ticket_shells,

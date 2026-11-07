@@ -7,19 +7,11 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                     ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                      + agent session
-                      ▀▀▀▄▀█▀▀    ███
-                      ▄▀███▀▄▄▄▄▄▄▀█▀▄
-                    ▄▀████████████████▀▄
-                    ████▀████████▀██████
-                    ████▀▀▀██████▀▀▀████
-                    ▀▀▀█████▀▀▀▀█████▀▀▀
-                     ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    no agent yet                                                                           + agent session
 
-    enter start agent
+    enter start agent  ∙ the title waits in its box, unsent
 
     starts in a worktree of its own ∙ plan mode ∙ read tools
-    types the ticket title into its box, and sends nothing
 
 
 
@@ -27,4 +19,12 @@
 
 
 
+
+
+                                                                                             █▀  █▀  █▀
+                                                                                             ██  ██  ██
+                                                                                             █▀▄ ██ ▄▀█
+   -----------------------------------------------------------------------------------       ▀██▀██▀██▀
+     Keymap validator                                                                         ▀▀▀▀▀▀▀▀
+   -----------------------------------------------------------------------------------
  enter start agent ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe                                ? keys

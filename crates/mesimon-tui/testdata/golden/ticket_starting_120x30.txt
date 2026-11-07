@@ -6,10 +6,10 @@
 
   PREVIEW                                                                                  SESSIONS                  1
 
-    starting up                                                                           ⠋ ✻ claude               >1y
-    the ticket title is in its box ∙ mesimon presses enter when it is ready                x sleep
-
-
+    starting the agent                                                                    ⠋ ✻ claude               >1y
+                                                                                           x sleep
+    ⠋ starting claude                                                                0 s
+    · your words go when it is ready
 
 
 
@@ -24,7 +24,7 @@
                                                                                             ▀█ ▄▀▀   █▀
                                                                                             ▄▀▀▀▄▄▄▄▄▀▀▄
                                                                                             ██▀▀████▀▀██
-                                                                                            █▀▀▀█▀▀█▀▀▀█
+   -----------------------------------------------------------------------------------      █▀▀▀█▀▀█▀▀▀█
                                                                                             ▀▀▀▀▀▀▀▀▀▀▀▀
-
+   -----------------------------------------------------------------------------------
  enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

@@ -1,0 +1,30 @@
+ TICKET (T-2)   mesimon › kanban-tui
+
+ Keymap validator
+ TODO for >1y ∙ created >1y ago
+ ⎇ msmn/T-2-keymap-validator ∙ init failed ∙ exit 2
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+    starting the agent                                                                    ⠋ ✻ claude               >1y
+                                                                                           x sleep
+    ✓ worktree made                  msmn/T-2-keymap-validator                       0 s
+    ✗ init failed ∙ exit 2
+      the agent starts anyway
+    ⠋ starting claude                                                                0 s
+    · title typed, unsent
+
+
+
+
+
+
+
+                                                                                             █▀  █▀  █▀
+                                                                                             ██  ██  ██
+                                                                                             █▀▄ ██ ▄▀█
+   -----------------------------------------------------------------------------------       ▀██▀██▀██▀
+     Keymap validator                                                                         ▀▀▀▀▀▀▀▀
+   -----------------------------------------------------------------------------------
+ enter focus ∙ v diff ∙ t merge by hand ∙ r rename ∙ d delete ∙ n describe                                       ? keys

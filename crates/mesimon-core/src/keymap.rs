@@ -1568,6 +1568,9 @@ pub struct Ctx {
     /// asked the reader to know which of `c` and `s` they wanted before
     /// they knew what either was.
     pub sel_new_agent: bool,
+    /// The ticket's start is parked behind its worktree (T-1156): the
+    /// press was made, and neither Enter nor Shift+Enter starts another.
+    pub ticket_launching: bool,
     /// The rail cursor is on the ticket's terminal (T-366): the `!` shell,
     /// alive and not yet adopted, shown as a ghost row under the sessions.
     /// Enter arms adoption; `adopt_armed` says the next Enter does it.
@@ -3415,7 +3418,7 @@ static TICKET: &[Binding] = &[
         // The ShiftEnter clause, as on the board: where the terminal spells
         // this as a plain Enter the key must be inert AND unhinted, or the
         // press would act on the rail row instead of opening a field.
-        avail: |c| c.has_ticket && c.shift_enter(),
+        avail: |c| c.has_ticket && c.shift_enter() && !c.ticket_launching,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,

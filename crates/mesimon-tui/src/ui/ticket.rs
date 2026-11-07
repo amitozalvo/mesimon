@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
+use crate::app::launch::{self, Launch, Step};
 use crate::app::{App, AskTarget, InputPurpose, Mode, RailRow, TailKey, View};
 use crate::creature::{self, Anim, Size};
 use crate::glyphs;
@@ -36,7 +37,7 @@ use super::chrome;
 /// Below this width the rail IS the screen (06 §6.5 band model, simplified:
 /// M3.5 has no PTY pane on this screen yet, so the left zone is what yields).
 const TWO_ZONE_MIN_W: u16 = 107;
-const RAIL_W: u16 = 30;
+pub(super) const RAIL_W: u16 = 30;
 /// The workspace row's branch name keeps at least this many cells against
 /// the merge state beside it: enough for ` ⎇ msmn/T-163~`, so a narrow
 /// terminal still names where the ticket's code lives.
@@ -912,7 +913,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                                               // With the live window at the zone's foot (T-1143) the field hangs
                                               // under the reply, above the pane's rows: the zone keeps its whole
                                               // height and leaves the field's rows between the two.
-        let hybrid = sel.is_some_and(|s| app.live_shot(s.id).is_some());
+                                              // The launch (T-1156): this frame's view of it, drawn by the zone and
+                                              // acted out by the rail's shin. Asked every frame, so each step is
+                                              // stamped the frame it is first seen.
+        let launch = app.launch(ticket_id);
+        // The seat and a launch keep a closed box at the zone's foot
+        // (T-1156), which the ask field opens in place, as the live window's.
+        let boxed = seat.is_some() || sel.is_some_and(|s| launch.is_some() && launch::booting(s));
+        let hybrid = boxed || sel.is_some_and(|s| app.live_shot(s.id).is_some());
         let content_h = if hybrid { body_h } else { body_h - field_rows };
         // Before the window's first capture the zone already asks the size
         // the live rows will have (`draw_preview`'s live branch: the zone
@@ -944,9 +952,29 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .or_else(|| app.board.live_agent(ticket_id))
             .or_else(|| app.rail_sessions(ticket_id).into_iter().find(|s| s.kind.is_agent()));
         let shin_peek = shin_rec.and_then(|s| app.peek_cache.peek_of(s));
-        let shin = shin_rec
-            .and_then(|rec| {
-                rail_shin(app, rail, (body_y + body_h).saturating_sub(1), rec, shin_peek.as_deref())
+        // What it acts out (T-1156): the ש on a ticket with no agent, still
+        // until the press and stirring while the worktree is made; waking
+        // into the shin as a fresh agent starts, and a hop once it is at its
+        // box; the agent's own state after that.
+        let shin_act = match shin_rec {
+            Some(rec) if !rec.kind.is_agent() => None,
+            Some(rec) => Some(match &launch {
+                Some(l) if l.fresh => (Anim::Waking, crate::text::hash64(rec.id)),
+                _ if app.launch_ready_ms(ticket_id).is_some() => {
+                    (Anim::Ready, crate::text::hash64(rec.id))
+                }
+                _ => (agent_anim(rec, shin_peek.as_deref()), crate::text::hash64(rec.id)),
+            }),
+            None if launch.is_some() => Some((Anim::Stir, crate::text::hash64(ticket_id))),
+            // Only where a start is offered: an archived ticket has no seat.
+            None if app.rail_rows(ticket_id).iter().any(|r| matches!(r, RailRow::NewAgent)) => {
+                Some((Anim::Letter, crate::text::hash64(ticket_id)))
+            }
+            None => None,
+        };
+        let shin = shin_act
+            .and_then(|(anim, key)| {
+                rail_shin(app, rail, (body_y + body_h).saturating_sub(1), anim, key)
             })
             .filter(|(_, _, y)| rail.y + rail_used + 2 <= *y);
         let zone = Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h };
@@ -961,6 +989,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             shell,
             note,
             seat,
+            launch.as_ref(),
             shin.is_some(),
         );
         // Under the content where it ends, at the zone's foot where it does
@@ -1060,6 +1089,7 @@ fn draw_preview(
     shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
+    launch: Option<&Launch>,
     shin_on_rail: bool,
 ) -> (usize, Option<Composer>) {
     let theme = &app.theme;
@@ -1073,6 +1103,9 @@ fn draw_preview(
     // blank row and names its word; `head` puts the heading in its place
     // once the rows below are measured.
     let mut word: Option<&'static str> = None;
+    // The ticket whose closed box stands at the zone's foot (T-1156): the
+    // seat's, and a launch's, where the agent's box will be.
+    let mut foot: Option<ulid::Ulid> = None;
     // The word names what the zone is holding, in the page's own heading
     // vocabulary: PREVIEW for a session, because neither a transcript tail
     // nor a pane capture is the record (author 2026-09-01) — and, since
@@ -1186,6 +1219,17 @@ fn draw_preview(
                 }
                 lines.extend(margin(window(app, Some(key), &rows, budget, width, false)));
             }
+        }
+    } else if let Some(l) = launch.filter(|_| record.map_or(seat.is_some(), launch::booting)) {
+        // The launch (T-1156): from the press to the agent's box, what the
+        // board is doing, step by step, with its seconds — in place of the
+        // seat's invitation (its press is spent) and of a pane still drawing
+        // its first screen.
+        word = Some("PREVIEW");
+        lines.push(Line::default());
+        foot = record.map(|r| r.ticket).or(seat);
+        if let Some(ticket) = foot {
+            lines.extend(launch_rows(app, ticket, record, l, area));
         }
     } else if let Some((rec, shot)) = record.and_then(|r| app.live_shot(r.id).map(|s| (r, s))) {
         // The live window (T-1143): the pane as tmux holds it at the zone's
@@ -1386,7 +1430,29 @@ fn draw_preview(
     } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
         word = Some("PREVIEW");
         lines.push(Line::default());
-        lines.extend(empty_seat(app, ticket, area, shin_on_rail));
+        lines.extend(empty_seat(app, ticket, area));
+        foot = Some(ticket.id);
+    }
+    // The closed box at the zone's foot (T-1156), on the rows the agent's
+    // own box will take: the ask field is typed on its words row, so the
+    // press that opens it moves nothing. Only where the words above leave
+    // it room; else the field hangs under them, as it did.
+    let h = area.height as usize;
+    if let Some(ticket) = foot.and_then(|id| app.board.ticket(id)) {
+        if lines.len() + FOOT_ROWS <= h && area.width >= 12 {
+            lines.resize(h - FOOT_ROWS, Line::default());
+            let open = asking_here(app, ticket.id);
+            let sends = launch.is_some_and(|l| l.sends);
+            let words = if sends { "" } else { ticket.title.as_str() };
+            lines.extend(foot_box(app, area.width as usize, words, open));
+            if let Some(w) = word {
+                lines[0] = heading(w);
+            }
+            f.render_widget(Paragraph::new(lines), area);
+            let right = area.x + area.width;
+            let words_x = (area.x + FOOT_WORDS - 1).min(right - 1);
+            return (h - 2, Some(Composer { x: area.x, words_x, right, bare: false }));
+        }
     }
     // How many rows the zone wrote, for the ask field to hang under (T-476)
     // — never more than the zone has, which is what pins the field at the
@@ -1695,50 +1761,199 @@ fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
     }
 }
 
-/// What the `+ agent session` row would do, previewed (T-308). The zone
-/// stood empty on that row — the one row on the page whose whole purpose is
-/// a press nobody has made yet — so it now shows the mark, the press in the
-/// keymap's own words, and the clauses that say what the session about to
-/// exist will BE. Every fact is one the page already holds; nothing is asked
-/// of the daemon to draw it.
-fn empty_seat(
-    app: &App,
-    ticket: &mesimon_core::board::Ticket,
-    area: Rect,
-    shin_on_rail: bool,
-) -> Vec<Line<'static>> {
+/// What the `+ agent session` row would do, previewed (T-308): since
+/// T-1156 in words alone — the creature is the rail's ש — `no agent yet`,
+/// then each press beside what becomes of the box's words, in the keymap's
+/// own keys, then what the session about to exist will BE. Every fact is
+/// one the page already holds; nothing is asked of the daemon to draw it.
+fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let w = area.width as usize;
-    // The words first: they are what sizes the block, and the mark is hung
-    // over their middle rather than over the zone's. The zone is far wider
-    // than these sentences, so centring the art in IT would leave the
-    // picture floating off to the right of everything it is about.
     let ctx = app.frame_ctx();
-    let press = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::Act, &ctx);
-    let rows = seat_rows(app, ticket);
-    let mut text: Vec<Line<'static>> = Vec::new();
-    if let Some(b) = press {
-        let mut spans = vec![Span::raw("   ")];
-        spans.extend(chrome::hint_spans(&[b], &ctx, &theme.rest, w.saturating_sub(3)));
-        text.push(Line::from(spans));
-        text.push(Line::default());
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled("   no agent yet", theme.dim1())),
+        Line::default(),
+    ];
+    // Each press, its key and verb in the footer's own spans, then what it
+    // does with the box's words; the two clauses line up.
+    let presses: Vec<(Vec<Span<'static>>, &str)> = [
+        (keymap::Verb::Act, "the title waits in its box, unsent"),
+        (keymap::Verb::Prompt, "your words go as its first prompt"),
+    ]
+    .into_iter()
+    .filter_map(|(verb, what)| {
+        let b = keymap::binding_for(keymap::Scope::Ticket, verb, &ctx)?;
+        Some((chrome::hint_spans(&[b], &ctx, &theme.rest, w.saturating_sub(3)), what))
+    })
+    .collect();
+    let col = presses.iter().map(|(spans, _)| super::spans_width(spans)).max().unwrap_or(0) + 2;
+    for (spans, what) in presses {
+        let used = super::spans_width(&spans);
+        let mut row = vec![Span::raw("   ")];
+        row.extend(spans);
+        row.push(Span::raw(" ".repeat(col - used)));
+        row.push(Span::styled(
+            truncate(&format!("∙ {what}"), w.saturating_sub(3 + col + 1)),
+            theme.dim2(),
+        ));
+        lines.push(Line::from(row));
     }
-    for row in &rows {
-        text.push(Line::from(vec![
+    lines.push(Line::default());
+    for row in seat_rows(app, ticket) {
+        lines.push(Line::from(vec![
             Span::raw("   "),
-            Span::styled(truncate(row, w.saturating_sub(4)), theme.dim2()),
+            Span::styled(truncate(&row, w.saturating_sub(4)), theme.dim2()),
         ]));
     }
-    let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
-
-    let mut lines = if shin_on_rail {
-        vec![Line::default()]
-    } else {
-        creature_rows(app, area, block_w, text.len(), Anim::Seat, ticket.id)
-    };
-    lines.extend(text);
     lines
 }
+
+/// The launch's rows (T-1156): `starting the agent`, then one row a step —
+/// its mark, what it is doing or did, the branch where there is one, its
+/// seconds — in the order the board takes them.
+fn launch_rows(
+    app: &App,
+    ticket: ulid::Ulid,
+    record: Option<&mesimon_core::board::SessionRecord>,
+    l: &Launch,
+    area: Rect,
+) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let tier = theme.glyph_tier();
+    let w = area.width as usize;
+    let agent = match record.map(|r| r.kind) {
+        Some(SessionKind::Codex) => "codex",
+        Some(_) => "claude",
+        None if app.tiers().start_provider(ticket) == mesimon_core::board::AgentProvider::Codex => {
+            "codex"
+        }
+        None => "claude",
+    };
+    let mut lines = vec![
+        Line::default(),
+        Line::from(Span::styled("   starting the agent", theme.dim1())),
+        Line::default(),
+    ];
+    let row = |step: &Step, doing: &str, done: &str, what: &str| -> Line<'static> {
+        let (mark, label, ink, secs) = match step {
+            Step::Doing(n) => (
+                glyphs::spinner(tier, app.spin_frame()),
+                doing.to_string(),
+                theme.base(),
+                format!("{n} s"),
+            ),
+            Step::Done(n) => {
+                (glyphs::merged_mark(tier), done.to_string(), theme.dim2(), format!("{n} s"))
+            }
+            Step::Failed(words) => (
+                if tier == glyphs::Tier::Ascii { 'x' } else { '✗' },
+                words.clone(),
+                theme.base().add_modifier(Modifier::BOLD),
+                String::new(),
+            ),
+            Step::Todo => ('·', done.to_string(), theme.dim3(), String::new()),
+        };
+        let label = truncate(&label, LAUNCH_LABEL);
+        let what_w = w.saturating_sub(5 + LAUNCH_LABEL + 1 + LAUNCH_SECS);
+        let what = truncate(what, what_w);
+        let mut spans = vec![
+            Span::styled(format!("   {mark} "), ink),
+            Span::styled(format!("{label:<LAUNCH_LABEL$} "), ink),
+        ];
+        if what_w > 0 {
+            spans.push(Span::styled(format!("{what:<what_w$}"), theme.dim3()));
+            spans.push(Span::styled(format!("{secs:>LAUNCH_SECS$}"), theme.dim2()));
+        }
+        Line::from(spans)
+    };
+    if let Some((step, branch)) = &l.worktree {
+        lines.push(row(step, "making the worktree", "worktree made", branch));
+    }
+    if let Some(step) = &l.init {
+        lines.push(row(step, "running the init script", "init script ran", ""));
+        if matches!(step, Step::Failed(_)) {
+            lines.push(Line::from(Span::styled("     the agent starts anyway", theme.dim2())));
+        }
+    }
+    let starting = format!("starting {agent}");
+    let started = format!("{agent} starts");
+    lines.push(row(&l.agent, &starting, &started, ""));
+    let words = if l.sends { "your words go when it is ready" } else { "title typed, unsent" };
+    lines.push(row(&Step::Todo, words, words, ""));
+    lines
+}
+
+/// The launch list's columns: a step's words, and its seconds.
+const LAUNCH_LABEL: usize = 30;
+const LAUNCH_SECS: usize = 5;
+
+/// The closed box's rows and where its words start (T-1156).
+const FOOT_ROWS: usize = 3;
+const FOOT_WORDS: u16 = 4;
+
+/// Is the ask field open on this ticket's page?
+fn asking_here(app: &App, ticket: ulid::Ulid) -> bool {
+    matches!(
+        &app.mode,
+        Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Ticket(t), .. }, .. }
+            if *t == ticket
+    )
+}
+
+/// The box at the zone's foot (T-1156), closed: rules dashed and gone out
+/// toward the page ground, no prompt mark, the words that will be in it
+/// dim — a picture of the box, not a box — and on its top rule the key that
+/// opens it as a key cap, with what it does, in the keymap's own words.
+/// Open, it is the ask field's frame: the rules in the reading ink, the
+/// mark back; the field types on its middle row. The rules are hyphens: no
+/// box-drawing glyph is the page's own outside a dialog's frame (L1); the
+/// live window's are the pane's.
+fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let rule_w = width.saturating_sub(4);
+    let dash = "-";
+    if open {
+        let rule =
+            Line::from(vec![Span::raw("  "), Span::styled(dash.repeat(rule_w), theme.dim2())]);
+        let mark = glyphs::prompt_mark(theme.glyph_tier());
+        return vec![
+            rule.clone(),
+            Line::from(vec![Span::raw("  "), Span::styled(mark.to_string(), theme.dim2())]),
+            rule,
+        ];
+    }
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    let ctx = app.frame_ctx();
+    let mut top = vec![Span::raw("  ")];
+    if let Some((key, verb)) = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx) {
+        let cap = format!(" {key} ");
+        let said = format!(" {verb} ");
+        let used = 3 + cap.width() + said.width();
+        if used + 2 <= rule_w {
+            top.push(Span::styled(dash.repeat(2), fade));
+            top.push(Span::raw(" "));
+            top.push(Span::styled(cap, theme.selected_row().add_modifier(Modifier::BOLD)));
+            top.push(Span::styled(said, theme.dim1()));
+            top.push(Span::styled(dash.repeat(rule_w - used), fade));
+        }
+    }
+    if top.len() == 1 {
+        top.push(Span::styled(dash.repeat(rule_w), fade));
+    }
+    let lead = " ".repeat(FOOT_WORDS as usize);
+    vec![
+        Line::from(top),
+        Line::from(vec![
+            Span::raw(lead.clone()),
+            Span::styled(truncate(words, width.saturating_sub(lead.len() + 2)), theme.dim3()),
+        ]),
+        Line::from(vec![Span::raw("  "), Span::styled(dash.repeat(rule_w), fade)]),
+    ]
+}
+
+/// How far the closed box's rules go toward the page ground.
+const FOOT_FADE: f32 = 0.55;
 
 /// The rows from the heading down to the words: the shin acting out `anim`,
 /// centred over the block with its props, then a breathing row (T-451). The
@@ -1795,14 +2010,10 @@ fn rail_shin(
     app: &App,
     rail: Rect,
     floor: u16,
-    rec: &mesimon_core::board::SessionRecord,
-    peek: Option<&crate::peek::Peek>,
+    anim: Anim,
+    key: u64,
 ) -> Option<(creature::Stage, u16, u16)> {
-    if !rec.kind.is_agent() {
-        return None;
-    }
-    let anim = agent_anim(rec, peek);
-    let ms = app.creature_ms(crate::text::hash64((rec.id, anim)));
+    let ms = app.creature_ms(crate::text::hash64((key, anim)));
     let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
     let y = floor.checked_sub(stage.rows)?;
     (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, rail.x + 1, y))
@@ -2196,7 +2407,6 @@ fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
         clauses.push(format!("{} tools", tools.word()));
     }
     let mut rows = vec![format!("starts {}", clauses.join(" ∙ "))];
-    rows.push("types the ticket title into its box, and sends nothing".to_string());
     if app.checkout_busy(ticket.id) {
         rows.push("another agent is already writing in this checkout".to_string());
     }

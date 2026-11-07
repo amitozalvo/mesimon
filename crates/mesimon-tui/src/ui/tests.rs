@@ -8577,14 +8577,17 @@ fn golden_ticket_new_claude_120() {
     assert!(lines.iter().any(|l| l.contains("enter start agent")), "and the press: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("s shell")), "the gated key is silent: {lines:?}");
     golden("ticket_new_claude_120x30", &lines);
-    // The zone the row sits beside is no longer blank (T-308): the mark, the
-    // press in the keymap's own words, and what the session would be.
-    assert!(app.mascot.borrow().is_some(), "the shin: {lines:?}");
+    // The zone the row sits beside is no longer blank (T-308): the press in
+    // the keymap's own words beside what becomes of the box's words (T-1156),
+    // what the session would be, and the box at the zone's foot holding the
+    // title a start types.
+    assert!(lines.iter().any(|l| l.contains("no agent yet")), "the seat: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starts in the checkout")), "where: {lines:?}");
     assert!(
-        lines.iter().any(|l| l.contains("types the ticket title into its box, and sends nothing")),
+        lines.iter().any(|l| l.contains("enter start agent  ∙ the title waits in its box, unsent")),
         "the contract this road keeps: {lines:?}"
     );
+    assert!(lines[27].trim_start().starts_with("Decay treatments"), "the box's words: {lines:?}");
 }
 
 /// The same zone on a ticket whose column narrows what its claude gets
@@ -8640,9 +8643,12 @@ fn golden_ticket_starting_120() {
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     assert!(app.mascot.borrow().is_some(), "the shin: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("starting up")), "the state: {lines:?}");
+    // The launch list (T-1156): the agent starting, and the words mesimon
+    // still owes it.
+    assert!(lines.iter().any(|l| l.contains("starting the agent")), "the launch: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("starting claude")), "its step: {lines:?}");
     assert!(
-        lines.iter().any(|l| l.contains("mesimon presses enter when it is ready")),
+        lines.iter().any(|l| l.contains("your words go when it is ready")),
         "whose Enter it waits on: {lines:?}"
     );
     golden("ticket_starting_120x30", &lines);
@@ -8699,24 +8705,29 @@ fn the_quiet_zone_says_why_there_are_no_words() {
     assert_eq!(words(&dead).0, "exited");
 }
 
-/// The picture is what the zone gives up first: when its full drawing and the text cannot fit the
-/// words stay whole and the mark goes, because the sentence is what the
-/// press needs and the art is what it earns.
+/// The empty seat's creature is the rail's ש (T-1156), never the zone's: the
+/// zone keeps its words at any height, and the letter stands at the rail's
+/// foot while the page has the rows for it.
 #[test]
-fn the_empty_seat_drops_its_mark_before_its_words() {
+fn the_empty_seat_keeps_its_words_and_the_rail_its_letter() {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
         t.notes.push(note_meta(90, "What changed", "local"));
     }
     let mut app = app_graphite(b);
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
-    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    // A ticket with no description leaves the rail its foot.
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
     let tall = render(&app, 120, 30);
-    assert!(app.mascot.borrow().is_some(), "the shin fits at 30: {tall:?}");
+    let drawn = app.mascot.borrow().clone().expect("the letter fits at 30");
+    assert!(drawn.rect.x > 120 - super::ticket::RAIL_W, "on the rail: {:?}", drawn.rect);
+    assert!(tall.iter().any(|l| l.contains("no agent yet")), "the zone's words: {tall:?}");
+    // The description's rows come off the page's height; the rail keeps
+    // every row it lists and drops the letter before one of them.
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     // A description takes the rows off the top of the zone, which is the
     // ordinary way it runs out.
     let short = render(&app, 120, 20);
-    assert!(app.mascot.borrow().is_none(), "the shin goes: {short:?}");
     assert!(short.iter().any(|l| l.contains("enter start agent")), "the press stays: {short:?}");
     assert!(
         short.iter().any(|l| l.contains("starts in the checkout")),
@@ -8732,7 +8743,7 @@ fn the_shin_acts_out_every_agent_state() {
     let mut app = app_graphite(fixture(false));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let buf = cells(&app, 120, 30);
-    let drawn = app.mascot.borrow().clone().expect("the empty seat has the shin");
+    let drawn = app.mascot.borrow().clone().expect("the empty seat has the rail's letter");
     let mut blocks = 0;
     for y in drawn.rect.y..drawn.rect.bottom() {
         for x in drawn.rect.x..drawn.rect.right() {
@@ -8743,7 +8754,7 @@ fn the_shin_acts_out_every_agent_state() {
             }
         }
     }
-    assert!(blocks > 60, "the medium shin is a picture, {blocks} cells");
+    assert!(blocks > 20, "the small letter is a picture, {blocks} cells");
     // Frame 0 is what a first draw shows; its own clock moves it on.
     assert_eq!(buf, cells(&app, 120, 30), "a redraw inside a frame is the same frame");
     let at = |ms: u64| {
@@ -8752,16 +8763,14 @@ fn the_shin_acts_out_every_agent_state() {
             .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(ms))));
         cells(&app, 120, 30)
     };
-    assert_ne!(buf, at(2850), "the invitation waves");
+    // The letter waits, still (T-1156): the press is what wakes it.
+    assert_eq!(buf, at(2850), "the ש stands still");
 
     app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
     let lines = render(&app, 120, 30);
     assert!(app.mascot.borrow().is_none());
     assert!(!lines.iter().any(|row| row.contains('█') || row.contains('▄')));
-    assert!(
-        lines.iter().any(|row| row.trim_start().starts_with("mesimon")),
-        "mono gets the wordmark"
-    );
+    assert!(lines.iter().any(|l| l.contains("no agent yet")), "mono keeps the words");
 
     app.theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let states = [
@@ -8785,7 +8794,10 @@ fn the_shin_acts_out_every_agent_state() {
     app.board_mut().sessions.retain(|s| s.ticket != ulid_n(1));
     app.board_mut().sessions.push(session(11, ulid_n(1), SessionKind::Bash, SessionState::Running));
     let _ = cells(&app, 120, 30);
-    assert!(app.mascot.borrow().is_none(), "a shell has no agent to be");
+    // A shell has no agent to be: the ticket still has none, so the rail's ש
+    // waits for one (T-1156), never a shin acting the shell out.
+    let drawn = app.mascot.borrow().clone().expect("the ticket's letter");
+    assert!(drawn.rect.height <= 6, "the small letter, not a shin at work: {:?}", drawn.rect);
 
     app.screen = Screen::Board;
     let _ = cells(&app, 120, 30);
@@ -12342,11 +12354,14 @@ fn the_crowning_sweeps_the_title_on_the_card_and_the_page() {
         app
     };
     // The title's own cells, on every row that shows it — above the board's
-    // hover row (T-471), which names the card in the grey ramp.
+    // hover row (T-471), which names the card in the grey ramp. On the page,
+    // its header: the closed box at the zone's foot (T-1156) holds the title
+    // as the words a start would type, in the box's ink.
     let title_cells = |app: &App| {
         let buf = cells(app, 120, 30);
+        let rows = if matches!(app.screen, Screen::Ticket { .. }) { 6 } else { 28 };
         let mut out = Vec::new();
-        for (y, line) in lines_of(&buf).iter().enumerate().take(28) {
+        for (y, line) in lines_of(&buf).iter().enumerate().take(rows) {
             let Some(at) = line.find(title) else { continue };
             let x0 = line[..at].width() as u16;
             for x in x0..x0 + title.width() as u16 {
@@ -15708,4 +15723,102 @@ fn a_pointer_resting_on_a_rail_row_moves_the_cursor_there() {
     assert!(app.hover_rail());
     assert_eq!(app.screen, Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 });
     assert!(!app.hover_rail(), "resting on the cursor's own row is quiet");
+}
+
+/// The launch list (T-1156): from the press to the agent's box, the page
+/// says what the board is doing, step by step, off the binding and the
+/// record alone — and the spent press is not offered again meanwhile.
+#[test]
+fn the_launch_list_follows_the_binding_and_the_record() {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(2)) {
+        t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+    }
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
+    let wt = |status: &str, detail: Option<&str>| mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(2),
+        branch: "msmn/T-2-keymap-validator".into(),
+        status: status.into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 0,
+        needs_rebase: false,
+        counted: String::new(),
+        detail: detail.map(Into::into),
+        path: None,
+        repos: vec![],
+    };
+    let has = |lines: &[String], s: &str| lines.iter().any(|l| l.contains(s));
+
+    // Seen with no agent first: the launch that follows is the letter's.
+    let seat = render(&app, 120, 30);
+    assert!(has(&seat, "no agent yet"), "{seat:?}");
+
+    app.worktrees = vec![wt("queued", None)];
+    let lines = render(&app, 120, 30);
+    assert!(has(&lines, "starting the agent"), "{lines:?}");
+    assert!(has(&lines, "making the worktree"), "{lines:?}");
+    assert!(has(&lines, "msmn/T-2-keymap-validator"), "the branch: {lines:?}");
+    assert!(has(&lines, "claude starts"), "the step to come: {lines:?}");
+    assert!(!has(&lines, "no agent yet"), "the invitation is spent: {lines:?}");
+    let ctx = app.ctx();
+    assert!(ctx.ticket_launching && !ctx.sel_new_agent, "enter is not offered twice");
+    assert!(!lines.last().is_some_and(|l| l.contains("start agent")), "nor in the footer");
+
+    app.worktrees = vec![wt("provisioning", Some(crate::app::launch::INIT_RUNNING))];
+    let lines = render(&app, 120, 30);
+    assert!(has(&lines, "worktree made"), "{lines:?}");
+    assert!(has(&lines, "running the init script"), "{lines:?}");
+    golden("ticket_init_running_120x30", &lines);
+
+    // The tree attached with its script failed, the agent starting anyway.
+    app.worktrees = vec![wt("attached", Some("init failed ∙ exit 2"))];
+    app.board_mut().sessions.push(session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Spawning,
+    ));
+    let lines = render(&app, 120, 30);
+    assert!(has(&lines, "init failed ∙ exit 2"), "{lines:?}");
+    assert!(has(&lines, "the agent starts anyway"), "{lines:?}");
+    assert!(has(&lines, "starting claude"), "{lines:?}");
+    assert!(has(&lines, "title typed, unsent"), "the enter road's words: {lines:?}");
+    golden("ticket_init_failed_120x30", &lines);
+    assert!(!app.ctx().ticket_launching, "an agent exists: its own keys apply");
+
+    // At its box, the list gives way.
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(2)) {
+        s.state = SessionState::Idle { stop_reason: StopReason::Unknown };
+    }
+    let lines = render(&app, 120, 30);
+    assert!(!has(&lines, "starting the agent"), "{lines:?}");
+}
+
+/// The rail's letter (T-1156): still on a seat, stirring while the worktree
+/// is made, and waking from the letter into the shin as the agent starts.
+#[test]
+fn the_letter_stirs_and_wakes_into_the_shin() {
+    use crate::creature::{stage_for, Anim, Size};
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let lines = |anim: Anim, ms: u64| {
+        let st = stage_for(Size::Small, anim, ms, &theme).expect("truecolor draws it");
+        (0..st.rows).map(|r| format!("{}", st.line(r, 0))).collect::<Vec<_>>()
+    };
+    let letter = lines(Anim::Letter, 0);
+    assert_eq!(letter, lines(Anim::Letter, 9_000), "the seat's letter is still");
+    assert!((0..5_000).step_by(100).any(|ms| lines(Anim::Stir, ms) != letter), "it stirs");
+    assert_eq!(lines(Anim::Waking, 0), letter, "the wake opens on the letter");
+    let woken = lines(Anim::Waking, 1_400);
+    assert_ne!(woken, letter, "and ends on the shin");
+    assert_eq!(
+        lines(Anim::Waking, 1_400).len(),
+        lines(Anim::Idle, 0).len(),
+        "on the shin's own stage"
+    );
+    assert!(stage_for(Size::Small, Anim::Letter, 0, &Theme::new(Flavor::Graphite, Profile::Mono))
+        .is_none());
 }

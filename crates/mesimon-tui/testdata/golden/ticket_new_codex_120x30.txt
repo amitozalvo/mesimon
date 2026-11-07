@@ -6,19 +6,11 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                    ▀▀▀▄  ▄▄▄   ▀▀▀▄                                                       + agent session
-                     ▀▀▀▄▀█▀▀    ███
-                     ▄▀███▀▄▄▄▄▄▄▀█▀▄
-                   ▄▀████████████████▀▄
-                   ████▀████████▀██████
-                   ████▀▀▀██████▀▀▀████
-                   ▀▀▀█████▀▀▀▀█████▀▀▀
-                    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    no agent yet                                                                           + agent session
 
-    enter start agent
+    enter start agent  ∙ the title waits in its box, unsent
 
     starts in the checkout
-    types the ticket title into its box, and sends nothing
     another agent is already writing in this checkout
 
 
@@ -27,4 +19,12 @@
 
 
 
+
+
+                                                                                             █▀  █▀  █▀
+                                                                                             ██  ██  ██
+                                                                                             █▀▄ ██ ▄▀█
+   -----------------------------------------------------------------------------------       ▀██▀██▀██▀
+     Decay treatments                                                                         ▀▀▀▀▀▀▀▀
+   -----------------------------------------------------------------------------------
  enter start agent ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                                   ? keys
