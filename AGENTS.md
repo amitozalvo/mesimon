@@ -34,9 +34,9 @@ how this repository works, not something mesimon the product does.
   RESEARCH. With no proposal yet, keep RESEARCH and say what input from the person is missing.
 - **READY: the proposal waits for the person.** Still read-only; revise the proposal if asked.
 - **A go** (the person's "go", or any plain consent to build): remove the group-2 tag
-  (`tag_ticket` READY with `remove`), retitle the ticket for what will be built (a question title
-  becomes the change; only a crown can `rename_ticket` another ticket, so a worker gives the
-  person the new title), then work normally with no read-only limit.
+  (`tag_ticket` READY with `remove`), retitle the ticket for what will be built with
+  `rename_ticket` (its own key and `get_ticket`'s seen stamp; a question title becomes the
+  change), then work normally with no read-only limit.
 
 Example: "Redesign titlebar" [IMPROVEMENT][RESEARCH] → proposal Artifact, [IMPROVEMENT][READY] →
 the person says go → [IMPROVEMENT], retitled, built and committed.

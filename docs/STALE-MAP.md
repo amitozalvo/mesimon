@@ -42318,6 +42318,8 @@ freed gained one, two-tag cards end on `▁` with `▀` under them.
 `AGENTS.md` gains "RESEARCH and READY tickets", a rule for this repository's own board, not the
 product: a group-2 RESEARCH ticket is read-only (no edit, commit or STALE-MAP block); a proposal
 moves it to READY (still read-only); the person's go removes the group-2 tag, retitles the
-ticket and lifts the limit. It sits in `AGENTS.md` so Codex reads it too. A worker cannot
-retitle its own ticket (`rename_ticket` is crown-only, for another ticket), so the rule has the
-worker hand the person the new title.
+ticket and lifts the limit. It sits in `AGENTS.md` so Codex reads it too.
+
+**Refuted:** "a worker cannot retitle its own ticket". `rename_ticket`'s description says crown
+only, for another ticket, but a worker's call with its own key and seen stamp retitled this
+ticket; the rule names the tool.
