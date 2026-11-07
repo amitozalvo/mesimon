@@ -42765,3 +42765,19 @@ closed, and the field on the row under it open with the rows above unmoved;
 title and bottom-rule rows only: `ticket_new_claude`, `ticket_new_claude_worktree`,
 `ticket_new_codex`, `ticket_tier`, `ticket_crowned`, `ticket_starting`, `ticket_init_running`,
 `ticket_init_failed` (all `_120x30`). Not seen in the TUI by the author yet.
+
+## A background task's wake is no "you" row on the ticket page (T-1172, 2026-11-08, "task notification in claude rendered in transcript as user prompt and unformatted")
+
+Reported with a picture: the ticket page's conversation drew a `you` row of raw
+`<task-notification><task-id>…</task-notification>` tags. The `user`-record form of the wake was
+already refused (`adopt::user_text`, by its tag). This one arrived **mid-turn** (the agent was in
+a `Wait`), and Claude Code 2.1.319 writes that as a `queued_command` attachment
+(`commandMode: "task-notification"`, `origin.kind: "task-notification"`), the road T-1156 opened
+for the person's mid-turn words; `history::rows` read every queued prompt as the person's.
+
+**Built.** The tag test moved from `user_text` into `adopt::user_said`, the one reader both roads
+share, so a wake is nobody's words on either. No other reader changes: `user_text`'s only callers
+(`user_prompt`, `history::rows`) go through `user_said`. Refuted: drawing the wake as a notice
+with its `<summary>`; the page shows nothing of the harness's (T-626) and the user-record form
+already drew no row. Tests: `history::a_message_sent_mid_turn_is_the_persons_row` (the real
+record's shape), `adopt` `user_said` on a wake.

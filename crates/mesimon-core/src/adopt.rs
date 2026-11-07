@@ -476,10 +476,7 @@ pub fn user_text(v: &Value) -> Option<&str> {
         }
     };
     let text = text.trim();
-    if text.is_empty() || text.starts_with(TASK_NOTIFICATION_TAG) {
-        return None;
-    }
-    Some(text)
+    (!text.is_empty()).then_some(text)
 }
 
 /// What the person typed, read off a prompt record's text. Claude Code writes
@@ -500,8 +497,14 @@ pub enum Said {
 /// `text` as the person typed it, or `None` when it is the terminal's: a
 /// `!` command's `<bash-stdout>`/`<bash-stderr>` or a slash command's
 /// `<local-command-stdout>`/`<local-command-stderr>`, which the harness
-/// records as `user` and which the person never wrote.
+/// records as `user` and which the person never wrote. Nor is a background
+/// task's `<task-notification>` wake, whether written as a `user` record or,
+/// arriving mid-turn, as a queued command's prompt (T-1172: the ticket page
+/// drew the queued one as the person's, tags and all).
 pub fn user_said(text: &str) -> Option<Said> {
+    if text.trim_start().starts_with(TASK_NOTIFICATION_TAG) {
+        return None;
+    }
     if let Some(command) = command_words(text) {
         return Some(Said::Command(command));
     }
@@ -957,6 +960,7 @@ mod tests {
         assert_eq!(user_said("<bash-input>ls</bash-input>"), Some(Said::Shell("ls".into())));
         assert_eq!(user_said("plain words"), Some(Said::Words("plain words".into())));
         assert_eq!(user_said("<local-command-stderr>x</local-command-stderr>"), None);
+        assert_eq!(user_said("\n<task-notification>\n<task-id>x</task-id>"), None);
         assert_eq!(command_words("plain words"), None);
     }
 

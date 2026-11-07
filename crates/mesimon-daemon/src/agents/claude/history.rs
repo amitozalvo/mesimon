@@ -659,6 +659,21 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0].kind, RowKind::Prompt);
         assert_eq!(got[0].text, "also, is there a way to prevent the jump?");
+        // A background task's wake, queued mid-turn (T-1172: the page read
+        // it as the person's, tags and all), is the harness's.
+        let wake = serde_json::json!({
+            "type": "attachment",
+            "uuid": "5d7a067e-8bcb-4bed-855f-2da0e4f34d53",
+            "isSidechain": false,
+            "timestamp": "2026-11-07T17:52:24.414Z",
+            "attachment": {
+                "type": "queued_command",
+                "prompt": "<task-notification>\n<task-id>bo47y1ii2</task-id>\n<status>completed</status>\n<summary>Background command \"gate\" completed (exit code 0)</summary>\n</task-notification>",
+                "commandMode": "task-notification",
+                "origin": {"kind": "task-notification", "producer": "session-task"}
+            }
+        });
+        assert!(rows(9, &wake).is_empty());
         // Another attachment is nobody's row.
         let other = serde_json::json!({
             "type": "attachment", "uuid": "x", "isSidechain": false,
