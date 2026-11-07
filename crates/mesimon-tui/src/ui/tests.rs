@@ -14896,8 +14896,10 @@ fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
 fn golden_ticket_live_120() {
     let (app, path) = app_live("tlive-calm", false);
     let lines = render(&app, 120, 30);
-    // The pane's footer is not the page's (T-1156), and its box is closed.
-    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    // The person's status line stays under the box, the agent's key hint
+    // out (T-1156), and the box is closed.
+    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("shift+tab to cycle")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("closed ∙ shift+enter opens it")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
@@ -15294,8 +15296,10 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!(lines[field + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     let pane = &lines[rect.y as usize..];
     assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
-    // Nothing of the pane's under its box (T-1156): the page's keys, not its.
-    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    // The person's status line stays under the box (T-1156, the author:
+    // "that wasn't my intention"); the agent's key hint beside it is out.
+    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("shift+tab to cycle")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15628,8 +15632,10 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
     let lines = render(&app, 120, 30);
     // Its placeholder is nothing typed (the cursor parked before it): the
-    // closed box says so in its place (T-1156).
+    // closed box says so in its place (T-1156). Its status row stays, its
+    // hints row goes.
     assert!(!lines.iter().any(|l| l.contains("for shortcuts")), "its hints row: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("Context 2% used")), "its status row: {lines:#?}");
     let at = lines
         .iter()
         .position(|l| l.contains("closed ∙ shift+enter opens it"))

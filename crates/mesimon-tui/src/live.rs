@@ -174,22 +174,32 @@ impl Shot {
         let Some((top, bottom)) = self.box_rows() else {
             return Shot { rows, ..self.clone() };
         };
-        rows.truncate(bottom + 1);
         for row in rows.iter_mut().take(top) {
             *row = strip_hints(row);
         }
+        // Under the box the rows are the agent's chrome by position: the
+        // person's status line, which stays as they set it, and the mode
+        // and hints row, whose key hints come out wherever they stand
+        // (`⏵⏵ auto mode on (shift+tab to cycle)`, Codex's `← for agents
+        // · ? for shortcuts`); a row of hints alone goes.
+        for row in rows.iter_mut().skip(bottom + 1) {
+            *row = cut_hints(row, true);
+        }
         // Codex's box is its prompt row alone: the page frames it with rules
-        // of its own, the blank row over it and one under it, so it closes
-        // and opens as Claude Code's does and the field's delivery row has
-        // the row it covers. A page rule has words and no runs, which no
-        // parsed row has: an agent's own row of hyphens is never taken for
-        // one.
+        // of its own, the blank row over it and the one under it, so it
+        // closes and opens as Claude Code's does and the field's delivery
+        // row has the row it covers. A page rule has words and no runs,
+        // which no parsed row has: an agent's own row of hyphens is never
+        // taken for one.
         if top == bottom {
             let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
             if top > 0 && rows[top - 1].blank() {
                 rows[top - 1] = rule.clone();
             }
-            rows.push(rule);
+            match rows.get_mut(top + 1) {
+                Some(under) if under.blank() => *under = rule,
+                _ => rows.insert(top + 1, rule),
+            }
         }
         Shot { rows, cols: self.cols, cursor: self.cursor }
     }
@@ -307,8 +317,37 @@ pub(crate) fn strip_hints(row: &Row) -> Row {
     if lead.trim_start_matches(['⎿', ' ', '\u{a0}']).starts_with("Tip:") {
         return Row::default();
     }
+    cut_hints(row, false)
+}
+
+/// The key hints cut out of a row known to be chrome: every parenthesised
+/// group's hint segments, and with `bare` the row's own `·` segments
+/// outside any parentheses too (the rows under the box). A row left with
+/// nothing is blank.
+fn cut_hints(row: &Row, bare: bool) -> Row {
     let chars: Vec<char> = row.text.chars().collect();
     let mut cut: Vec<std::ops::Range<usize>> = Vec::new();
+    let hint = |&(a, b): &(usize, usize)| is_hint(&chars[a..b].iter().collect::<String>());
+    // The hint segments of `segs`, with their separators: the one before,
+    // or after for the first.
+    let cut_segments = |segs: &[(usize, usize)], cut: &mut Vec<std::ops::Range<usize>>| {
+        for (k, seg) in segs.iter().enumerate() {
+            if !hint(seg) {
+                continue;
+            }
+            let (a, b) = *seg;
+            if k > 0 {
+                let sep = segs[k - 1].1;
+                let from = if sep > 0 && chars[sep - 1] == ' ' { sep - 1 } else { sep };
+                cut.push(from..b);
+            } else if let Some(next) = segs.get(k + 1) {
+                let to = if chars.get(next.0) == Some(&' ') { next.0 + 1 } else { next.0 };
+                cut.push(a..to);
+            } else {
+                cut.push(a..b);
+            }
+        }
+    };
     let mut i = 0;
     while let Some(open) = (i..chars.len()).find(|&j| chars[j] == '(') {
         let Some(close) = (open + 1..chars.len()).find(|&j| chars[j] == ')') else { break };
@@ -321,30 +360,34 @@ pub(crate) fn strip_hints(row: &Row) -> Row {
                 from = j + 1;
             }
         }
-        let hint = |&(a, b): &(usize, usize)| is_hint(&chars[a..b].iter().collect::<String>());
         if segs.iter().all(hint) {
             let start = if open > 0 && chars[open - 1] == ' ' { open - 1 } else { open };
             cut.push(start..close + 1);
         } else {
-            for (k, seg) in segs.iter().enumerate() {
-                if !hint(seg) {
-                    continue;
-                }
-                // The segment with the separator before it, or after it
-                // when it is the first.
-                let (a, b) = *seg;
-                if k > 0 {
-                    let sep = segs[k - 1].1;
-                    let from = if sep > 0 && chars[sep - 1] == ' ' { sep - 1 } else { sep };
-                    cut.push(from..b);
-                } else {
-                    let next = segs[k + 1].0;
-                    let to = if chars.get(next) == Some(&' ') { next + 1 } else { next };
-                    cut.push(a..to);
-                }
-            }
+            cut_segments(&segs, &mut cut);
         }
         i = close + 1;
+    }
+    if bare {
+        // The row's own segments, outside any parentheses.
+        let mut segs: Vec<(usize, usize)> = Vec::new();
+        let (mut from, mut depth) = (0, 0u32);
+        for (j, c) in chars.iter().enumerate() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                '·' | '∙' if depth == 0 => {
+                    segs.push((from, j));
+                    from = j + 1;
+                }
+                _ => {}
+            }
+        }
+        segs.push((from, chars.len()));
+        if segs.iter().all(|s| hint(s) || chars[s.0..s.1].iter().all(|c| c.is_whitespace())) {
+            return Row::default();
+        }
+        cut_segments(&segs, &mut cut);
     }
     if cut.is_empty() {
         return row.clone();
@@ -1497,7 +1540,13 @@ mod tests {
         let shot = claude_working();
         assert_eq!(shot.box_rows(), Some((5, 7)));
         let page = shot.for_page();
-        assert_eq!(page.rows.len(), 8, "nothing under the bottom rule");
+        assert_eq!(page.rows.len(), 10, "the rows under the box stay");
+        assert!(page.rows[8].text.contains("Opus 5.5 (high)"), "the person's status line");
+        assert_eq!(
+            page.rows[9].text, "  ⏵⏵ auto mode on · ⧉ 2",
+            "its hint out: {:?}",
+            page.rows[9]
+        );
         assert_eq!(page.rows[2].text, "✳ Philosophizing… (17s · ↓ 1.2k tokens)", "the timer stays");
         assert!(page.rows[3].blank(), "the tip goes");
         assert_eq!(page.rows[0], shot.rows[0], "prose is untouched");
@@ -1571,9 +1620,11 @@ mod tests {
         assert_eq!(shot.box_rows(), Some((3, 3)));
         assert_eq!(shot.box_holds(), Some(false), "its placeholder");
         let page = shot.for_page();
-        assert_eq!(page.rows.len(), 5, "its status and hints rows go");
+        assert_eq!(page.rows.len(), 7, "its status row stays, its hints row is blank");
         assert_eq!(page.page_box(), Some((2, 3, 4)));
         assert_eq!(page.rows[4].text, "-".repeat(40));
+        assert!(page.rows[5].text.contains("Context 2% used"), "{:?}", page.rows[5]);
+        assert!(page.rows[6].blank(), "a row of hints alone: {:?}", page.rows[6]);
         assert_eq!(page.prompt_row(), Some(3), "the field still finds its row");
         // An agent's own row of hyphens over the prompt is the agent's: the
         // page's rule is the one with no runs.
@@ -1615,10 +1666,9 @@ mod tests {
             let page = shot.for_page();
             assert!(page.page_box().is_some(), "{name}: the page's box");
             let (_, _, bottom) = page.page_box().expect("the box");
-            assert_eq!(page.rows.len(), bottom + 1, "{name}: rows under the box survive");
-            for row in &page.rows[..top] {
+            for (i, row) in page.rows.iter().enumerate() {
                 for hint in ["to interrupt", "to expand", "for shortcuts", "to cycle", "Tip:"] {
-                    let chrome = row.text.trim_start().starts_with(CHROME);
+                    let chrome = i > bottom || row.text.trim_start().starts_with(CHROME);
                     assert!(
                         !(chrome && row.text.contains(hint)),
                         "{name}: a hint survives: {:?}",
@@ -1626,6 +1676,7 @@ mod tests {
                     );
                 }
             }
+            let _ = top;
             if name.starts_with("idle") {
                 assert_eq!(shot.box_holds(), Some(false), "{name}: an idle box holds nothing");
             }

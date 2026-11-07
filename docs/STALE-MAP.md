@@ -42434,9 +42434,13 @@ memory like the shin's clock); a client that opens the page mid-launch lists onl
 begin. `Ctx::ticket_launching` withholds Enter and Shift+Enter while the parked start runs.
 **Measured** before the change: during provisioning the zone still offered `enter start agent`.
 
-**The box** (`live.rs::Shot::for_page`, `ui/ticket.rs::closed_box_row`). Everything under the
-box is cut by position alone (Claude Code's footer, the person's status line, Codex's hints
-row), so no wording or statusLine setting is parsed. Closed: hyphen rules gone toward the page
+**The box** (`live.rs::Shot::for_page`, `ui/ticket.rs::closed_box_row`). The rows under the
+box are chrome by position: the person's status line stays as they set it (first cut, then put
+back the same day, the author: "you removed the statusline … that wasn't my intention"), and
+the mode and hints row loses its key hints wherever they stand (`cut_hints` with `bare`:
+`⏵⏵ auto mode on (shift+tab to cycle)` reads `⏵⏵ auto mode on`; Codex's `← for agents · ? for
+shortcuts` row, hints alone, goes blank). No wording or statusLine setting is parsed to keep
+them. Closed: hyphen rules gone toward the page
 ground, the top one carrying the key cap and the keymap's verb (`claude is working` at its
 right), the bottom one the page's own facts (`opus ∙ high ∙ context 21% ∙ plan mode`); the
 prompt mark gone and the words in the field's column; an empty box (a placeholder is nothing:
