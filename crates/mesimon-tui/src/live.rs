@@ -108,6 +108,85 @@ impl Shot {
         self.boxed_prompt().or_else(|| self.cursor_prompt())
     }
 
+    /// The composer's box (T-1156): its top rule to its bottom rule
+    /// (Claude Code), or Codex's lone prompt row. `None` while a dialog has
+    /// the box's place.
+    pub(crate) fn box_rows(&self) -> Option<(usize, usize)> {
+        if let Some(p) = self.boxed_prompt() {
+            let n = self.rows.len();
+            let bottom = (p + 1..(p + BOX_REACH).min(n)).find(|&j| is_rule(&self.rows[j].text))?;
+            return Some((p - 1, bottom));
+        }
+        self.cursor_prompt().map(|p| (p, p))
+    }
+
+    /// Whether the box holds words (T-1156). A placeholder is none: the
+    /// agent draws it where the input starts and parks the cursor before it
+    /// (the daemon's `composer::read` reads the same). `None` with no box.
+    pub(crate) fn box_holds(&self) -> Option<bool> {
+        let (top, bottom) = self.box_rows()?;
+        let p = self.prompt_row()?;
+        let row = &self.rows[p].text;
+        let col = words_col(row);
+        let first = row.chars().skip(col).collect::<String>();
+        let wrapped = (p + 1..bottom).any(|i| !self.rows[i].blank());
+        if first.trim_matches([' ', '\u{a0}']).is_empty() && !wrapped {
+            return Some(false);
+        }
+        // The cursor parked at the input's start, past the mark and its
+        // space (a no-break space on Claude Code 2.1.3xx), with nothing
+        // wrapped under it: the words are the agent's placeholder.
+        let parked = self
+            .cursor
+            .is_some_and(|(x, y)| y as usize == p && (x as usize) <= col + 1 && !wrapped);
+        let _ = top;
+        Some(!parked)
+    }
+
+    /// The screen as the ticket page draws it (T-1156): nothing under the
+    /// box — Claude Code's footer, the person's status line, Codex's hints
+    /// row; the page draws its own facts row there — and the agent's key
+    /// hints out of its status rows (`strip_hints`), whose keys the page
+    /// answers differently. A screen with no box keeps its rows: a dialog's
+    /// own keys are the dialog's.
+    pub(crate) fn for_page(&self) -> Shot {
+        let mut rows = self.rows.clone();
+        let Some((top, bottom)) = self.box_rows() else {
+            return Shot { rows, ..self.clone() };
+        };
+        rows.truncate(bottom + 1);
+        for row in rows.iter_mut().take(top) {
+            *row = strip_hints(row);
+        }
+        // Codex's box is its prompt row alone: the page frames it with rules
+        // of its own (`PAGE_RULE`), the blank row over it and one under it,
+        // so it closes and opens as Claude Code's does and the field's
+        // delivery row has the row it covers.
+        if top == bottom {
+            let rule = "-".repeat(self.cols as usize);
+            let rule = Row { runs: vec![(rule.clone(), Style::default())], text: rule };
+            if top > 0 && rows[top - 1].blank() {
+                rows[top - 1] = rule.clone();
+            }
+            rows.push(rule);
+        }
+        Shot { rows, cols: self.cols, cursor: self.cursor }
+    }
+
+    /// The box on a screen `for_page` made (T-1156): its top rule, its
+    /// prompt row and its bottom rule — Codex's the page's own, the top one
+    /// only where a blank row stood over the prompt.
+    pub(crate) fn page_box(&self) -> Option<(usize, usize, usize)> {
+        let (top, bottom) = self.box_rows()?;
+        if top != bottom {
+            return Some((top, top + 1, bottom));
+        }
+        let page_rule = |i: usize| self.rows.get(i).is_some_and(|r| is_page_rule(&r.text));
+        let p = top;
+        let up = if p > 0 && page_rule(p - 1) { p - 1 } else { p };
+        page_rule(p + 1).then_some((up, p, p + 1))
+    }
+
     /// Claude Code's composer: a prompt row under a rule, with a rule
     /// below it (the box's bottom, under any wrapped words). A question's
     /// `❯ 4. Chat about this` sits under a rule with none below it, and
@@ -185,6 +264,124 @@ pub(crate) fn words_col(t: &str) -> usize {
     let rest = unframed(t);
     let mark = rest.chars().next().map_or(0, |c| c.len_utf8());
     lead + usize::from(mark > 0) + usize::from(rest[mark..].starts_with(' '))
+}
+
+/// The marks Claude Code's status rows open with (T-1156): its spinner
+/// frames and the tool result's elbow. Only these rows carry its key hints
+/// on screen; prose and prompts never pass through `strip_hints`.
+const CHROME: &[char] = &['✻', '✶', '✳', '✢', '✽', '·', '*', '⎿'];
+
+/// A status row with the agent's key hints taken out (T-1156): a
+/// parenthesised group whose every `·` segment is a hint goes whole, with
+/// the space before it (`(ctrl+o to expand)`); a group that also says
+/// something keeps it (`(12s · esc to interrupt)` reads `(12s)`); a `⎿ Tip:`
+/// row goes. Any other row is returned as it came.
+pub(crate) fn strip_hints(row: &Row) -> Row {
+    let lead = row.text.trim_start();
+    if !lead.starts_with(CHROME) {
+        return row.clone();
+    }
+    if lead.trim_start_matches(['⎿', ' ', '\u{a0}']).starts_with("Tip:") {
+        return Row::default();
+    }
+    let chars: Vec<char> = row.text.chars().collect();
+    let mut cut: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut i = 0;
+    while let Some(open) = (i..chars.len()).find(|&j| chars[j] == '(') {
+        let Some(close) = (open + 1..chars.len()).find(|&j| chars[j] == ')') else { break };
+        // The group's segments, split at its `·` separators.
+        let mut segs: Vec<(usize, usize)> = Vec::new();
+        let mut from = open + 1;
+        for (j, c) in chars.iter().enumerate().take(close + 1).skip(open + 1) {
+            if j == close || *c == '·' || *c == '∙' {
+                segs.push((from, j));
+                from = j + 1;
+            }
+        }
+        let hint = |&(a, b): &(usize, usize)| is_hint(&chars[a..b].iter().collect::<String>());
+        if segs.iter().all(hint) {
+            let start = if open > 0 && chars[open - 1] == ' ' { open - 1 } else { open };
+            cut.push(start..close + 1);
+        } else {
+            for (k, seg) in segs.iter().enumerate() {
+                if !hint(seg) {
+                    continue;
+                }
+                // The segment with the separator before it, or after it
+                // when it is the first.
+                let (a, b) = *seg;
+                if k > 0 {
+                    let sep = segs[k - 1].1;
+                    let from = if sep > 0 && chars[sep - 1] == ' ' { sep - 1 } else { sep };
+                    cut.push(from..b);
+                } else {
+                    let next = segs[k + 1].0;
+                    let to = if chars.get(next) == Some(&' ') { next + 1 } else { next };
+                    cut.push(a..to);
+                }
+            }
+        }
+        i = close + 1;
+    }
+    if cut.is_empty() {
+        return row.clone();
+    }
+    let keep = |c: usize| !cut.iter().any(|r| r.contains(&c));
+    let mut out = Row::default();
+    let mut at = 0;
+    for (text, style) in &row.runs {
+        let kept: String =
+            text.chars().enumerate().filter(|(k, _)| keep(at + k)).map(|(_, c)| c).collect();
+        at += text.chars().count();
+        if !kept.is_empty() {
+            out.text.push_str(&kept);
+            out.runs.push((kept, *style));
+        }
+    }
+    out
+}
+
+/// One `·` segment of a status row's parentheses that names a key and what
+/// it does: `esc to interrupt`, `ctrl+o to expand`, `shift+tab to cycle`,
+/// `? for shortcuts`, `Press Esc again to clear`.
+fn is_hint(seg: &str) -> bool {
+    let s = seg.trim().to_lowercase();
+    let s = s.strip_prefix("press ").unwrap_or(&s);
+    let Some((key, rest)) = s.split_once(' ') else { return false };
+    let rest = rest.strip_prefix("again ").unwrap_or(rest);
+    let Some(what) = rest.strip_prefix("to ").or_else(|| rest.strip_prefix("for ")) else {
+        return false;
+    };
+    if what.trim().is_empty() {
+        return false;
+    }
+    let mut parts: Vec<&str> = key.split('+').collect();
+    let last = parts.pop().unwrap_or_default();
+    let mods = ["ctrl", "shift", "alt", "cmd", "opt", "option", "meta"];
+    let named = [
+        "esc",
+        "tab",
+        "enter",
+        "return",
+        "space",
+        "backspace",
+        "delete",
+        "up",
+        "down",
+        "left",
+        "right",
+        "↑",
+        "↓",
+        "←",
+        "→",
+        "?",
+    ];
+    parts.iter().all(|m| mods.contains(m)) && (named.contains(&last) || last.chars().count() == 1)
+}
+
+/// A rule the page drew into a screen (`Shot::for_page`).
+fn is_page_rule(t: &str) -> bool {
+    !t.is_empty() && t.chars().all(|c| c == '-')
 }
 
 /// The composer's row: Claude Code's `❯` (`!` in bash mode, T-876), Codex's `›`.
@@ -1245,5 +1442,105 @@ mod tests {
         assert_eq!(indexed_rgb(246), Color::Rgb(148, 148, 148));
         assert_eq!(indexed_rgb(196), Color::Rgb(255, 0, 0));
         assert_eq!(indexed_rgb(16), Color::Rgb(0, 0, 0));
+    }
+
+    /// The bottom of a Claude Code screen with the person's status line, as
+    /// captured from a mesimon pane on 2026-11-07 (Claude Code 2.1.3xx, 152
+    /// columns; the words shortened): the spinner and its tip, the box with
+    /// the prompt mark and a no-break space, the status line, the mode row
+    /// with its hint in the timer's grey.
+    fn claude_working() -> Shot {
+        let rule = format!("\x1b[38;5;244m{}", "─".repeat(60));
+        let lines = [
+            "\x1b[38;5;231m⏺\x1b[39m Measuring before answering.".to_string(),
+            String::new(),
+            "\x1b[38;5;174m✳\x1b[39m \x1b[38;5;216mPhilosophizing…\x1b[38;5;174m \x1b[38;5;246m(17s · ↓\x1b[39m \x1b[38;5;246m1.2k tokens · esc to interrupt)\x1b[39m".into(),
+            "\x1b[38;5;246m  ⎿ \u{a0}Tip: Just want the answer? Run /focus now to hide the steps\x1b[39m".into(),
+            String::new(),
+            rule.clone(),
+            "\x1b[38;5;246m❯\u{a0}\x1b[39m".into(),
+            rule,
+            "\x1b[39m  \x1b[2m\x1b[34m…/T-1-retry\x1b[38;5;246m |\x1b[0m \x1b[2m\x1b[32m⎇ msmn/T-1\x1b[38;5;246m |\x1b[0m \x1b[2m\x1b[36mOpus 5.5 (high)\x1b[0m".into(),
+            "  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle) · \x1b[38;5;174m⧉\x1b[39m \x1b[38;5;246m2\x1b[39m".into(),
+        ];
+        let rows = parse(&lines.join("\n"));
+        Shot { rows, cols: 60, cursor: Some((2, 6)) }
+    }
+
+    /// The page cuts everything under the box and takes the agent's key
+    /// hints out of its status rows, keeping what they said (T-1156).
+    #[test]
+    fn the_page_cuts_the_footer_and_the_hints() {
+        let shot = claude_working();
+        assert_eq!(shot.box_rows(), Some((5, 7)));
+        let page = shot.for_page();
+        assert_eq!(page.rows.len(), 8, "nothing under the bottom rule");
+        assert_eq!(page.rows[2].text, "✳ Philosophizing… (17s · ↓ 1.2k tokens)", "the timer stays");
+        assert!(page.rows[3].blank(), "the tip goes");
+        assert_eq!(page.rows[0], shot.rows[0], "prose is untouched");
+        assert_eq!(page.page_box(), Some((5, 6, 7)));
+        // The kept words keep their own inks.
+        assert!(page.rows[2].runs.iter().any(|(t, _)| t.contains("Philosophizing")));
+    }
+
+    #[test]
+    fn a_hint_is_a_key_and_what_it_does() {
+        let strip = |t: &str| strip_hints(&parse_row(t)).text;
+        assert_eq!(strip("  ⎿  Read 212 lines (ctrl+o to expand)"), "  ⎿  Read 212 lines");
+        assert_eq!(strip("✻ Thinking… (12s · esc to interrupt)"), "✻ Thinking… (12s)");
+        assert_eq!(strip("· Vibing… (esc to interrupt · 4s)"), "· Vibing… (4s)");
+        assert_eq!(strip("✢ Baking… (esc to interrupt · ctrl+t to show todos)"), "✢ Baking…");
+        assert_eq!(strip("✻ Churned for 28s · done 6:03 PM"), "✻ Churned for 28s · done 6:03 PM");
+        assert_eq!(strip("✶ Waiting (? for shortcuts)"), "✶ Waiting");
+        assert_eq!(strip("✶ Waiting (Press Esc again to clear)"), "✶ Waiting");
+        // Prose and prompts never pass through it, whatever they say.
+        let prose = "⏺ Press ctrl+c to stop it (esc to interrupt).";
+        assert_eq!(strip(prose), prose);
+        assert_eq!(strip("❯ (tab to complete)"), "❯ (tab to complete)");
+        // Words that are not a key stay.
+        assert_eq!(strip("  ⎿  (moved to trash)"), "  ⎿  (moved to trash)");
+        assert_eq!(strip("  ⎿  (see docs for details)"), "  ⎿  (see docs for details)");
+    }
+
+    /// A placeholder is nothing typed: the cursor parked before it. Words
+    /// with the cursor after them, or wrapped under the prompt, are held.
+    #[test]
+    fn the_box_holds_words_only_past_its_placeholder() {
+        let boxed = |prompt: &str, wrapped: Option<&str>, cursor: (u16, u16)| {
+            let mut lines = vec![RULE, prompt];
+            lines.extend(wrapped);
+            lines.push(RULE);
+            Shot { rows: parse(&lines.join("\n")), cols: 80, cursor: Some(cursor) }
+        };
+        assert_eq!(boxed("❯\u{a0}", None, (2, 1)).box_holds(), Some(false), "empty");
+        assert_eq!(
+            boxed("❯\u{a0}build it, use recommended", None, (2, 1)).box_holds(),
+            Some(false),
+            "the agent's suggestion"
+        );
+        assert_eq!(boxed("❯ half a thought", None, (16, 1)).box_holds(), Some(true), "a draft");
+        assert_eq!(
+            boxed("❯ retry with backoff", Some("  cap it at 30 s"), (2, 1)).box_holds(),
+            Some(true),
+            "wrapped words are words wherever the cursor is"
+        );
+        assert_eq!(shot(&["⏺ no box here"]).box_holds(), None);
+    }
+
+    /// Codex's lone prompt row gets the page's own rules, over and under,
+    /// so it closes and opens as Claude Code's box does (T-1156).
+    #[test]
+    fn codex_is_framed_by_the_page() {
+        let mut lines: Vec<&str> = vec!["\x1b[1m•\x1b[0m done"];
+        lines.extend(["", "", "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m"]);
+        lines.extend(["", "  GPT high · Context 2% used", "  ? for shortcuts"]);
+        let shot = Shot { rows: parse(&lines.join("\n")), cols: 40, cursor: Some((2, 3)) };
+        assert_eq!(shot.box_rows(), Some((3, 3)));
+        assert_eq!(shot.box_holds(), Some(false), "its placeholder");
+        let page = shot.for_page();
+        assert_eq!(page.rows.len(), 5, "its status and hints rows go");
+        assert_eq!(page.page_box(), Some((2, 3, 4)));
+        assert_eq!(page.rows[4].text, "-".repeat(40));
+        assert_eq!(page.prompt_row(), Some(3), "the field still finds its row");
     }
 }

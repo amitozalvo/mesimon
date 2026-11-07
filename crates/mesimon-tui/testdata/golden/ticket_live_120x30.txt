@@ -6,9 +6,11 @@
 
   PREVIEW                                                              { } page preview    SESSIONS                  2
 
-   • step 10 of the plan                                                                  ⠋ ✻ claude               >1y
-   • step 11 of the plan                                                                  ◦ $ bash                 >1y
-   • step 12 of the plan                                                                   x sleep
+   • step 8 of the plan                                                                   ⠋ ✻ claude               >1y
+   • step 9 of the plan                                                                   ◦ $ bash                 >1y
+   • step 10 of the plan                                                                   x sleep
+   • step 11 of the plan
+   • step 12 of the plan
 
    you
  ❯ Go on; measure the pane sizes too.
@@ -19,12 +21,10 @@
    sits at 80×24 while an attached one is 187×52.
 
  ⏺ Checking Codex's composer detection, Mesophon's pane screen, and the L1 law
-   tests · 7s
-   ⎿  $ ls crates/mesimon-daemon/src/agents/
- · Vibing… (5m 55s · ↓ 22.2k tokens)                                                         ▀█ ▄▀▀   █▀
- ──────────────────────────────────────────────────────────────────────────────             ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
- ❯                                                                                          ███▀▀████▀▀█ █▀████
- ──────────────────────────────────────────────────────────────────────────────             █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
-   ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
-   ⏵⏵ auto mode on (shift+tab to cycle)
+   tests · 7s                                                                                ▀█ ▄▀▀   █▀
+   ⎿  $ ls crates/mesimon-daemon/src/agents/                                                ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+ · Vibing… (5m 55s · ↓ 22.2k tokens)                                                        ███▀▀████▀▀█ █▀████
+ -------------------------------------------------------- ⠋ claude is working ---           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+    closed ∙ shift+enter opens it                                                           ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+ --------------------------------------------------------------------------------
  jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys

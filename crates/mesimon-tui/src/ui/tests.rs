@@ -14895,7 +14895,9 @@ fn app_live(name: &str, dialog: bool) -> (App, std::path::PathBuf) {
 fn golden_ticket_live_120() {
     let (app, path) = app_live("tlive-calm", false);
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    // The pane's footer is not the page's (T-1156), and its box is closed.
+    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("closed ∙ shift+enter opens it")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("❯ Go on; measure")), "the person's turn: {lines:#?}");
@@ -15291,7 +15293,8 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     assert!(lines[field + 1].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     let pane = &lines[rect.y as usize..];
     assert!(!pane.iter().any(|l| l.contains("❯ ") && !l.contains("rebase")), "one prompt row");
-    assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
+    // Nothing of the pane's under its box (T-1156): the page's keys, not its.
+    assert!(!lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15542,7 +15545,8 @@ fn the_fade_never_repeats_the_conversation() {
     assert_eq!(says(&lines, "187×52"), 1, "the reply's last words, once: {lines:#?}");
     assert_eq!(says(&lines, "Research is mostly done"), 1, "{lines:#?}");
     let spin = lines.iter().position(|l| l.contains("Churned for 28s")).expect("the spinner line");
-    assert!(lines[spin - 1].trim().is_empty(), "a blank parts it from the conversation");
+    let zone = |l: &String| l.chars().take(88).collect::<String>();
+    assert!(zone(&lines[spin - 1]).trim().is_empty(), "a blank parts it from the conversation");
     assert!(lines[spin - 2].contains("187×52"), "the conversation rests over it: {lines:#?}");
 
     app.live = Some(crate::live::Live::fixed(
@@ -15622,20 +15626,28 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
     let lines = render(&app, 120, 30);
-    let at = lines.iter().position(|l| l.contains("Ask Codex")).expect("the composer");
+    // Its placeholder is nothing typed (the cursor parked before it): the
+    // closed box says so in its place (T-1156).
+    assert!(!lines.iter().any(|l| l.contains("for shortcuts")), "its hints row: {lines:#?}");
+    let at = lines
+        .iter()
+        .position(|l| l.contains("closed ∙ shift+enter opens it"))
+        .expect("the composer");
     // The blank run between the pane's words and its composer is one row.
     assert!(lines[at - 2].contains("Worked for 8s"), "{lines:#?}");
     assert!(lines[at - 4].contains("Hi! 👋"), "the pane's words over its composer: {lines:#?}");
     assert!(lines[at - 5].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
     ask_field(&mut app, "summarise the ticket", false);
-    let col = lines[at].find("Ask Codex").expect("the agent's placeholder");
+    // Columns, not bytes: the pane's `›` is three of them.
+    let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
+    let col = column(&lines[at], "closed").expect("the closed box's words");
     let lines = render(&app, 120, 30);
     assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "the field covers the prompt row");
     assert_eq!(
-        lines[at].find("summarise"),
-        Some(col + 1),
-        "typed one space past where the agent puts the words: {:?}",
+        column(&lines[at], "summarise"),
+        Some(col),
+        "typed where the closed box's words stood, nothing moving: {:?}",
         lines[at]
     );
     assert!(lines[at].starts_with(" ›"), "the pane's mark stays: {:?}", lines[at]);
@@ -15693,8 +15705,8 @@ fn the_cursor_blinks_only_once_the_field_is_open() {
     let lines = lines_of(terminal.backend().buffer());
     let composer = lines
         .iter()
-        .position(|l| l.chars().take(90).collect::<String>().trim() == "❯")
-        .expect("the bare composer");
+        .position(|l| l.contains("closed ∙ shift+enter opens it"))
+        .expect("the closed composer");
     assert!(!terminal.backend().cursor_visible(), "a picture has no cursor: {lines:#?}");
     ask_field(&mut app, "", false);
     terminal.draw(|f| super::draw(f, &app)).unwrap();
@@ -15821,4 +15833,58 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
     );
     assert!(stage_for(Size::Small, Anim::Letter, 0, &Theme::new(Flavor::Graphite, Profile::Mono))
         .is_none());
+}
+
+/// The agent's box on the page (T-1156): closed, a picture of it — hyphen
+/// rules gone out toward the page ground, the key that opens it as a key
+/// cap on its top rule, no prompt mark, what the session runs on along its
+/// bottom rule; opened by the key, the field types in the column its words
+/// stood in, on the same row, and no row of the page moves.
+#[test]
+fn the_box_opens_where_it_stood_and_nothing_moves() {
+    let (mut app, path) = app_live("tlive-closed", false);
+    app.rich_keys = true;
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
+        s.argv.extend(["--model".to_string(), "opus".to_string()]);
+    }
+    let closed = render(&app, 120, 30);
+    let at = closed
+        .iter()
+        .position(|l| l.contains("closed ∙ shift+enter opens it"))
+        .expect("the closed box");
+    assert!(closed[at - 1].contains(" shift+enter "), "the key on its top rule: {closed:#?}");
+    assert!(closed[at + 1].contains("opus"), "the facts on its bottom rule: {closed:#?}");
+    assert!(!closed.iter().any(|l| l.contains('❯') && l.contains("closed")), "no prompt mark");
+    golden("ticket_live_closed_120x30", &closed);
+    let rect = app.live_rect.get().expect("the window");
+
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "measure it".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let open = render(&app, 120, 30);
+    let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
+    assert_eq!(
+        column(&open[at], "measure it"),
+        column(&closed[at], "closed"),
+        "typed where its words stood: {open:#?}"
+    );
+    assert!(open[at - 1].contains("────"), "the pane's own rule frames it, open");
+    assert_eq!(app.live_rect.get(), Some(rect), "the window does not move");
+    for y in 0..at - 1 {
+        assert_eq!(open[y], closed[y], "row {y} moved");
+    }
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }

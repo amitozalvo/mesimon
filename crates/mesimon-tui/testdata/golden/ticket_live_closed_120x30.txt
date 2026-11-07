@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                              { } page preview    SESSIONS                  2
+
+   • step 8 of the plan                                                                   ⠋ ✻ claude               >1y
+   • step 9 of the plan                                                                   ◦ $ bash                 >1y
+   • step 10 of the plan                                                                   x sleep
+   • step 11 of the plan
+   • step 12 of the plan
+
+   you
+ ❯ Go on; measure the pane sizes too.
+
+   claude
+   Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
+   facts so far: every agent pane is on tmux's alternate screen, an unattached pane
+   sits at 80×24 while an attached one is 187×52.
+
+ ⏺ Checking Codex's composer detection, Mesophon's pane screen, and the L1 law
+   tests · 7s                                                                                ▀█ ▄▀▀   █▀
+   ⎿  $ ls crates/mesimon-daemon/src/agents/                                                ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+ · Vibing… (5m 55s · ↓ 22.2k tokens)                                                        ███▀▀████▀▀█ █▀████
+ --  shift+enter  ask agent ----------------------------- ⠋ claude is working ---           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+    closed ∙ shift+enter opens it                                                           ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+ ----------------------------------------------------------------------- opus ---
+ jk select session ∙ tab link ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe           ? keys

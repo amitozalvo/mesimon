@@ -1243,6 +1243,10 @@ fn draw_preview(
         word = Some("PREVIEW");
         lines.push(Line::default());
         lines.push(Line::default());
+        // The screen as the page shows it (T-1156): nothing under the box,
+        // whose place a row of the page's own facts takes, and the agent's
+        // key hints out of its status rows.
+        let shot = &shot.for_page();
         let zone_h = (area.height as usize).saturating_sub(lines.len());
         // The pane is asked to be the zone's size, so the agent lays its
         // screen out for the room it has here.
@@ -1336,7 +1340,18 @@ fn draw_preview(
                 let row = &shot.rows[view[above - fade_n + r]];
                 raw.push(faded_line(theme, row, live::fade_keep(r, fade_n)));
             }
-            raw.extend(view[live_from..].iter().map(|&i| live_line(theme, &shot.rows[i])));
+            // The box, closed (T-1156): a picture of the agent's box, not a
+            // box. Open, the pane's own rules frame the field as before.
+            let closed = !asking_here(app, rec.ticket);
+            let boxed = shot.page_box();
+            raw.extend(view[live_from..].iter().map(|&i| {
+                let row = &shot.rows[i];
+                match boxed {
+                    Some(b) if closed => closed_box_row(app, rec, shot, b, i)
+                        .unwrap_or_else(|| live_line(theme, row)),
+                    _ => live_line(theme, row),
+                }
+            }));
             let rect = Rect {
                 x: area.x,
                 y: foot_y - fade_n as u16,
@@ -1924,32 +1939,48 @@ fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'stati
         ];
     }
     let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
-    let ctx = app.frame_ctx();
-    let mut top = vec![Span::raw("  ")];
-    if let Some((key, verb)) = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx) {
-        let cap = format!(" {key} ");
-        let said = format!(" {verb} ");
-        let used = 3 + cap.width() + said.width();
-        if used + 2 <= rule_w {
-            top.push(Span::styled(dash.repeat(2), fade));
-            top.push(Span::raw(" "));
-            top.push(Span::styled(cap, theme.selected_row().add_modifier(Modifier::BOLD)));
-            top.push(Span::styled(said, theme.dim1()));
-            top.push(Span::styled(dash.repeat(rule_w - used), fade));
-        }
-    }
-    if top.len() == 1 {
-        top.push(Span::styled(dash.repeat(rule_w), fade));
-    }
     let lead = " ".repeat(FOOT_WORDS as usize);
     vec![
-        Line::from(top),
+        closed_rule(app, 2, rule_w, None),
         Line::from(vec![
             Span::raw(lead.clone()),
             Span::styled(truncate(words, width.saturating_sub(lead.len() + 2)), theme.dim3()),
         ]),
         Line::from(vec![Span::raw("  "), Span::styled(dash.repeat(rule_w), fade)]),
     ]
+}
+
+/// A closed box's top rule (T-1156): `lead` blank columns, then `width`
+/// of hyphens gone out toward the page ground, carrying near its left the
+/// key that opens the box as a key cap and what it does, in the keymap's
+/// own words — where the key is live — and `right` near its right end.
+fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Line<'static> {
+    let theme = &app.theme;
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    let dash = "-";
+    let ctx = app.frame_ctx();
+    let mut spans = vec![Span::raw(" ".repeat(lead))];
+    let mut used = 0;
+    if let Some((key, verb)) = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Prompt, &ctx) {
+        let cap = format!(" {key} ");
+        let said = format!(" {verb} ");
+        let w = 3 + cap.width() + said.width();
+        if w + 2 <= width {
+            spans.push(Span::styled(dash.repeat(2), fade));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(cap, theme.selected_row().add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(said, theme.dim1()));
+            used = w;
+        }
+    }
+    let tail = right.map(|r| format!(" {r} ")).filter(|r| used + r.width() + 5 <= width);
+    let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
+    spans.push(Span::styled(dash.repeat(width - used - tail_w), fade));
+    if let Some(t) = tail {
+        spans.push(Span::styled(t, theme.dim3()));
+        spans.push(Span::styled(dash.repeat(3), fade));
+    }
+    Line::from(spans)
 }
 
 /// How far the closed box's rules go toward the page ground.
@@ -2326,6 +2357,73 @@ fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
         s.fg = Some(theme.rest.base);
     }
     s
+}
+
+/// One row of the agent's box, closed (T-1156), or `None` for a row that is
+/// not the box's. Its rules go out toward the page ground as hyphens: the
+/// top one carries the key that opens it (`closed_rule`), the bottom one
+/// what the session runs on (`facts`). Its prompt row loses its mark, its
+/// words gone quiet in the column the field types them; an empty box (a
+/// placeholder is nothing) says it is closed.
+fn closed_box_row(
+    app: &App,
+    rec: &mesimon_core::board::SessionRecord,
+    shot: &live::Shot,
+    (top, prompt, bottom): (usize, usize, usize),
+    i: usize,
+) -> Option<Line<'static>> {
+    let theme = &app.theme;
+    let width = shot.cols as usize;
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    if i == top && top != prompt {
+        let right = glyphs::is_working(rec).then(|| {
+            let who = if rec.kind == SessionKind::Codex { "codex" } else { "claude" };
+            format!("{} {who} is working", glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
+        });
+        return Some(closed_rule(app, 0, width, right.as_deref()));
+    }
+    if i == bottom {
+        let tail = facts(rec).map(|f| format!(" {f} ")).filter(|t| t.width() + 6 <= width);
+        let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
+        let mut spans = vec![Span::styled("-".repeat(width - tail_w), fade)];
+        if let Some(t) = tail {
+            spans.push(Span::styled(t, theme.dim3()));
+            spans.push(Span::styled("---", fade));
+        }
+        return Some(Line::from(spans));
+    }
+    if !(prompt..bottom).contains(&i) {
+        return None;
+    }
+    let col = live::words_col(&shot.rows[prompt].text);
+    if i == prompt && shot.box_holds() == Some(false) {
+        return Some(Line::from(vec![
+            Span::raw(" ".repeat(col + 1)),
+            Span::styled(CLOSED_WORDS, theme.dim3()),
+        ]));
+    }
+    let words: String = shot.rows[i].text.chars().skip(col).collect();
+    Some(Line::from(vec![
+        Span::raw(" ".repeat(col + 1)),
+        Span::styled(words.trim_start_matches([' ', '\u{a0}']).to_string(), theme.dim3()),
+    ]))
+}
+
+/// What a closed box with nothing in it says (T-1156).
+const CLOSED_WORDS: &str = "closed ∙ shift+enter opens it";
+
+/// What the session runs on, for the closed box's bottom rule (T-1156): the
+/// page's own facts in place of the agent's footer, from its record.
+/// `None` with nothing known.
+fn facts(rec: &mesimon_core::board::SessionRecord) -> Option<String> {
+    let flag = |name: &str| {
+        rec.argv
+            .windows(2)
+            .find(|w| w[0] == name)
+            .map(|w| w[1].trim_end_matches("[1m]").to_string())
+    };
+    let facts: Vec<String> = [flag("--model"), flag("--effort")].into_iter().flatten().collect();
+    (!facts.is_empty()).then(|| facts.join(" ∙ "))
 }
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {
