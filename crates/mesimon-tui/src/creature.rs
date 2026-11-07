@@ -145,6 +145,15 @@ pub(crate) enum Eyes {
     UpLeft,
 }
 
+impl Eyes {
+    /// Whether a click on the shin shuts these eyes for its blink (T-1177):
+    /// eyes open, wide, heavy or rolled up. Eyes already shut, or the happy
+    /// arcs and the X of a failure, stay as the frame draws them.
+    fn shut_by_a_click(self) -> bool {
+        matches!(self, Eyes::Open | Eyes::Wide | Eyes::Lid | Eyes::UpRight | Eyes::UpLeft)
+    }
+}
+
 /// An eye, from its top-left anchor: `o` is the eye, `*` its glint (or the
 /// white of an eye that has one), `.` leaves the body showing.
 fn eye(size: Size, e: Eyes) -> &'static [&'static str] {
@@ -1170,7 +1179,16 @@ pub(crate) struct Stage {
 /// The stage for `anim`, `ms` into it, in `theme`'s inks. `None` where the
 /// theme draws no picture (mono). Every frame of one animation has the same
 /// stage, so a reply beside it wraps once per state, not once per frame.
-pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Option<Stage> {
+/// `blink`: a click's blink (T-1177) shuts the frame's eyes where they are
+/// open, and nothing else of the frame or its clock changes; the letter has
+/// no face to blink.
+pub(crate) fn stage_for(
+    size: Size,
+    anim: Anim,
+    ms: u64,
+    blink: bool,
+    theme: &Theme,
+) -> Option<Stage> {
     // The ש (T-1156): the intro's letter or its morph, on the body's own
     // pixels, so its stage is the shin's to the cell.
     // A size with no letter (Large) plays the poses instead.
@@ -1187,9 +1205,12 @@ pub(crate) fn stage_for(size: Size, anim: Anim, ms: u64, theme: &Theme) -> Optio
     }
     // The waking shin's poses start where its morph ends.
     let ms = if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
-    let frame = frame_at(size, anim, ms);
+    let mut frame = *frame_at(size, anim, ms);
+    if blink && frame.eyes.shut_by_a_click() {
+        frame.eyes = Eyes::Blink;
+    }
     let ink = theme.creature_ink(frame.faded)?;
-    let mut st = stage(&compose(size, frame, anim_pad(size, anim)), &ink, theme.block_gaps);
+    let mut st = stage(&compose(size, &frame, anim_pad(size, anim)), &ink, theme.block_gaps);
     st.body = Body::get(size).w as u16;
     Some(st)
 }
@@ -1378,6 +1399,43 @@ mod tests {
     fn frames(size: Size, anim: Anim) -> Vec<&'static Frame> {
         let (intro, cycle) = anim.timeline(size);
         intro.iter().chain(cycle).collect()
+    }
+
+    /// A click's blink (T-1177): every frame whose eyes are open draws them
+    /// shut and changes nothing else; a frame with its eyes already shut,
+    /// happy or X'd, and the letter, draws as it always does.
+    #[test]
+    fn a_click_blinks_open_eyes_and_leaves_the_rest_of_the_frame() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        for size in SIZES {
+            for anim in Anim::ALL {
+                let (intro, cycle) = anim.timeline(size);
+                let span: u64 = intro.iter().chain(cycle).map(|f| u64::from(f.ms)).sum::<u64>()
+                    + if anim == Anim::Waking { beats_ms(MORPH) } else { 0 };
+                for ms in (0..span).step_by(100) {
+                    let cells = |blink| stage_for(size, anim, ms, blink, &theme).map(|s| s.cells);
+                    let (open, blinked) = (cells(false), cells(true));
+                    let pose_ms =
+                        if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
+                    let fr = frame_at(size, anim, pose_ms);
+                    // The letter has no face; Large has no letter.
+                    let face = letter_beat(anim, ms).is_none() || size == Size::Large;
+                    if face && fr.eyes.shut_by_a_click() {
+                        assert_ne!(open, blinked, "{size:?} {anim:?} at {ms}: the eyes shut");
+                        let as_blink = fr.eyes(Eyes::Blink);
+                        let ink = theme.creature_ink(fr.faded).expect("truecolor");
+                        let pic = compose(size, &as_blink, anim_pad(size, anim));
+                        assert_eq!(
+                            blinked,
+                            Some(stage(&pic, &ink, theme.block_gaps).cells),
+                            "{size:?} {anim:?} at {ms}: the same frame, its eyes shut"
+                        );
+                    } else {
+                        assert_eq!(open, blinked, "{size:?} {anim:?} at {ms}: nothing to blink");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

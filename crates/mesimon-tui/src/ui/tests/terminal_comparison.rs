@@ -175,9 +175,14 @@ fn frames(flavor: Flavor, colored: bool, w: u16, h: u16) -> Vec<(String, u64, Bu
         let mut buf = Buffer::empty(area);
         buf.set_style(area, ratatui::style::Style::default().bg(app.theme.bg.unwrap()));
         for (size, x) in [(crate::creature::Size::Small, 3), (crate::creature::Size::Medium, 23)] {
-            let stage =
-                crate::creature::stage_for(size, crate::creature::Anim::Seat, ms, &app.theme)
-                    .unwrap();
+            let stage = crate::creature::stage_for(
+                size,
+                crate::creature::Anim::Seat,
+                ms,
+                false,
+                &app.theme,
+            )
+            .unwrap();
             stage.paint(&mut buf, x, 3, area);
         }
         out.push((format!("mascot faces {ms} ms"), 1200, buf));

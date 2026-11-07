@@ -931,6 +931,10 @@ fn history_field(text: &str) -> EditBuffer {
 /// long enough that sweeping across the board floats nothing.
 const HOVER_PEEK: Duration = Duration::from_millis(400);
 
+/// How long a click on the shin keeps its eyes shut (T-1177): two steps
+/// of the redraw clock, twice its own blink, so a busy frame still shows it.
+const SHIN_BLINK: Duration = Duration::from_millis(200);
+
 /// The owed row's words while the ticket's agent stands on its folder trust
 /// dialog (T-844): the dialog's own question, the accept key beside it.
 pub(crate) const TRUST_ROW: &str = "trust folder?";
@@ -2285,6 +2289,9 @@ pub struct App {
     /// and the animation) and since when. Draw-side, like `spin_epoch`, so
     /// the first frame of anything is frame 0 and the goldens stay stable.
     pub creature_clock: Cell<Option<(u64, Instant)>>,
+    /// When the person last clicked the shin (T-1177): its eyes shut for
+    /// `SHIN_BLINK` from then, over whatever frame its own clock is on.
+    pub(crate) shin_blink: Option<Instant>,
     /// What the ticket page has seen of each launch (T-1156): the steps
     /// from the press to the agent's box, and when each began and ended.
     pub(crate) launches: launch::Launches,
@@ -2709,6 +2716,7 @@ impl App {
             mascot: std::cell::RefCell::new(None),
             qr: std::cell::RefCell::new(None),
             creature_clock: Cell::new(None),
+            shin_blink: None,
             launches: launch::Launches::default(),
             spin_epoch: Cell::new(None),
             diff: None,
@@ -3507,6 +3515,11 @@ impl App {
             Screen::Diff => self.diff.as_ref().map(|d| &d.pager),
             Screen::Releases => self.releases.as_ref().map(|r| &r.pager),
         }
+    }
+
+    /// Whether a click's blink has the shin's eyes shut (T-1177).
+    pub(crate) fn shin_blinking(&self) -> bool {
+        self.shin_blink.is_some_and(|at| at.elapsed() < SHIN_BLINK)
     }
 
     /// How long the shin has been acting out `key` (T-451). The clock
@@ -5089,6 +5102,10 @@ impl App {
             Target::Title { x0, skip } => self.point_title(at.0, x0, skip),
             Target::Body { x0, y0, top } => self.point_body(at, (x0, y0), top),
             Target::Lane(_) => Ok(false),
+            Target::Shin => {
+                self.shin_blink = Some(Instant::now());
+                Ok(true)
+            }
         }
     }
 

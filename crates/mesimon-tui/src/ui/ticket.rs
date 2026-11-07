@@ -1042,7 +1042,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         }
         if let Some((stage, x, y)) = shin {
             stage.paint(f.buffer_mut(), x, y, rail);
-            *app.mascot.borrow_mut() = Some(stage.drawn(x, y));
+            let drawn = stage.drawn(x, y);
+            app.hits.borrow_mut().record(drawn.rect, crate::mouse::Target::Shin);
+            *app.mascot.borrow_mut() = Some(drawn);
         }
     } else {
         // No zone, nothing to page: the footer must not offer `{ }`.
@@ -2156,7 +2158,8 @@ fn creature_rows(
 ) -> Vec<Line<'static>> {
     let blank = vec![Line::default()];
     let ms = app.creature_ms(crate::text::hash64((subject, anim)));
-    let Some(stage) = creature::stage_for(Size::Medium, anim, ms, &app.theme) else {
+    let blink = app.shin_blinking();
+    let Some(stage) = creature::stage_for(Size::Medium, anim, ms, blink, &app.theme) else {
         let word = "mesimon";
         if !anim.unspoken()
             || (area.height as usize) < 2 + 1 + 1 + text_h
@@ -2179,7 +2182,9 @@ fn creature_rows(
     // the right.
     let body_w = stage.body as usize;
     let x = ((block_w.max(body_w) - body_w) / 2).saturating_sub(creature::LEFT as usize);
-    *app.mascot.borrow_mut() = Some(stage.drawn(area.x + x as u16, area.y + 1));
+    let drawn = stage.drawn(area.x + x as u16, area.y + 1);
+    app.hits.borrow_mut().record(drawn.rect, crate::mouse::Target::Shin);
+    *app.mascot.borrow_mut() = Some(drawn);
     let mut lines: Vec<Line<'static>> = (0..stage.rows).map(|r| stage.line(r, x)).collect();
     lines.push(Line::default());
     lines
@@ -2198,7 +2203,7 @@ fn rail_shin(
     key: u64,
 ) -> Option<(creature::Stage, u16, u16)> {
     let ms = app.creature_ms(crate::text::hash64((key, anim)));
-    let stage = creature::stage_for(Size::Small, anim, ms, &app.theme)?;
+    let stage = creature::stage_for(Size::Small, anim, ms, app.shin_blinking(), &app.theme)?;
     let y = floor.checked_sub(stage.rows)?;
     // A letter stage is wider by its margin and drawn that much left, so
     // the body stands where the shin's does.

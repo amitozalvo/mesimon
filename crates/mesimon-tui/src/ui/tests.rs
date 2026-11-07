@@ -16048,7 +16048,7 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
     use crate::creature::{stage_for, Anim, Size};
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let lines = |anim: Anim, ms: u64| {
-        let st = stage_for(Size::Small, anim, ms, &theme).expect("truecolor draws it");
+        let st = stage_for(Size::Small, anim, ms, false, &theme).expect("truecolor draws it");
         (0..st.rows).map(|r| format!("{}", st.line(r, 0))).collect::<Vec<_>>()
     };
     let letter = lines(Anim::Letter, 0);
@@ -16062,8 +16062,52 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
         lines(Anim::Idle, 0).len(),
         "on the shin's own stage"
     );
-    assert!(stage_for(Size::Small, Anim::Letter, 0, &Theme::new(Flavor::Graphite, Profile::Mono))
-        .is_none());
+    assert!(stage_for(
+        Size::Small,
+        Anim::Letter,
+        0,
+        false,
+        &Theme::new(Flavor::Graphite, Profile::Mono)
+    )
+    .is_none());
+}
+
+/// A click on the ticket page's shin blinks it (T-1177): its eyes shut and
+/// nothing else on the page changes, its own clock runs on untouched, and
+/// past the blink it draws as it did. A hover lights none of it.
+#[test]
+fn a_click_on_the_shin_blinks_it_and_its_clock_runs_on() {
+    use std::time::{Duration, Instant};
+    let (mut app, path) = app_live("tshin-blink", false);
+    // Each frame at the shin's first pose, wherever the test's clock is.
+    let frame = |app: &App| {
+        app.creature_clock.set(None);
+        let buf = cells(app, 120, 30);
+        let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin on the rail");
+        (buf, shin)
+    };
+    let (open, shin) = frame(&app);
+    let at = (shin.x + 2, shin.bottom() - 2);
+    mouse(&mut app, ratatui::crossterm::event::MouseEventKind::Moved, at);
+    let (hovered, _) = frame(&app);
+    assert_eq!(hovered, open, "a hover lights none of the shin");
+    let clock = app.creature_clock.get();
+    click(&mut app, at);
+    assert!(app.shin_blinking(), "the click blinks it");
+    assert_eq!(app.creature_clock.get(), clock, "and leaves the shin's own clock");
+    let (blinked, _) = frame(&app);
+    let changed: Vec<(u16, u16)> = (0..30)
+        .flat_map(|y| (0..120).map(move |x| (x, y)))
+        .filter(|&(x, y)| open[(x, y)] != blinked[(x, y)])
+        .collect();
+    assert!(!changed.is_empty(), "the eyes shut");
+    for &(x, y) in &changed {
+        assert!(shin.contains(ratatui::layout::Position { x, y }), "{x},{y} off the shin");
+    }
+    app.shin_blink = Some(Instant::now() - Duration::from_millis(250));
+    assert!(!app.shin_blinking());
+    assert_eq!(frame(&app).0, open, "and open again past the blink");
+    std::fs::remove_file(&path).ok();
 }
 
 /// The agent's box on the page (T-1156): closed, a picture of it — hyphen

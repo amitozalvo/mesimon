@@ -42781,3 +42781,21 @@ share, so a wake is nobody's words on either. No other reader changes: `user_tex
 with its `<summary>`; the page shows nothing of the harness's (T-626) and the user-record form
 already drew no row. Tests: `history::a_message_sent_mid_turn_is_the_persons_row` (the real
 record's shape), `adopt` `user_said` on a wake.
+
+## A click on the ticket page's shin blinks it (T-1177, 2026-11-08, "on the ticket page, when a user clicks on the mascot, make it blink (when possible)")
+
+Proposed first as a simulation the author tried, then "go". The shin (the rail's, and the zone's
+on a page too short for it) is a `mouse::Target::Shin` spot; a click stamps `App::shin_blink`, and
+for `SHIN_BLINK` (200 ms, two redraw steps, twice its own blink) `creature::stage_for` draws the
+frame its own clock is on with `Eyes::Blink` where the eyes are open, wide, heavy or rolled up
+(`Eyes::shut_by_a_click`). Nothing else of the frame changes and the clock is not touched, so the
+loop goes on where it was. "When possible": eyes already shut, the happy arcs, the X of a failure
+and the ש (no face) draw as they always do; mono draws no shin. The spot does not light on hover.
+
+**The first mouse-only target.** Every other click presses a key (T-716); the blink has no key,
+on the author's approval of the proposal, as it is play, not work. Refuted: restarting the
+animation on a click (the shin would jump), and routing the blink through `animating()` (the
+100 ms cadence the shin is timed on already reopens the eyes). Tests:
+`creature` `a_click_blinks_open_eyes_and_leaves_the_rest_of_the_frame` (every anim, size and
+100 ms step), `ui` `a_click_on_the_shin_blinks_it_and_its_clock_runs_on` (only shin cells change,
+hover lights nothing, open again past the blink). No golden moved.

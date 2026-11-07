@@ -61,15 +61,22 @@ pub(crate) enum Target {
     Title { x0: u16, skip: u16 },
     /// A note body: cell `(x0, y0)` is displayed row `top`'s first cell.
     Body { x0: u16, y0: u16, top: u16 },
+    /// The ticket page's shin: a click blinks it (T-1177). The one spot no
+    /// key presses, as the blink is the person playing, not working.
+    Shin,
 }
 
 impl Target {
-    /// Whether a hover lights it. A lane is only where the wheel turns, and
-    /// text being typed is not a button.
+    /// Whether a hover lights it. A lane is only where the wheel turns,
+    /// text being typed is not a button, and the shin keeps its own inks.
     fn lit(self) -> bool {
         !matches!(
             self,
-            Target::Lane(_) | Target::Field { .. } | Target::Title { .. } | Target::Body { .. }
+            Target::Lane(_)
+                | Target::Field { .. }
+                | Target::Title { .. }
+                | Target::Body { .. }
+                | Target::Shin
         )
     }
 }
