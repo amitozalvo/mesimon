@@ -26,5 +26,5 @@
                                                                                             ███▀▀████▀▀█ █▀████
  ⏺ Done.                                                                                    █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
                                                                                             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
- --  shift+enter  held ∙ words in its box ∙ enter finishes them in the pane -----
+ -- shift+enter  held ∙ words in its box ∙ enter finishes them in the pane ------
  jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys

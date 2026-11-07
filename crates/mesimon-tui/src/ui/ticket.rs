@@ -2043,9 +2043,10 @@ fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Lin
     Line::from(spans)
 }
 
-/// The closed rule's left end (T-1156): two dashes, the key that opens the
-/// box as a key cap and what it does — or, held, why it is not live — and
-/// the columns those take of `width`. Nothing where they do not fit.
+/// The closed rule's left end (T-1156): two dashes, then the key that
+/// opens the box as a key cap and what it does — or, held, why it is not
+/// live — and the columns those take of `width`. Nothing where they do
+/// not fit.
 fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     let theme = &app.theme;
     let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
@@ -2062,13 +2063,15 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     } else {
         return (Vec::new(), 0);
     };
-    let used = 3 + cap.width() + said.width();
+    // The cap's box right after the two dashes, its own padding the gap:
+    // its left edge is the transcript text's column (the author: "push
+    // shift+enter hint left one column, to align with transcript text").
+    let used = 2 + cap.width() + said.width();
     if used + 2 > width {
         return (Vec::new(), 0);
     }
     let spans = vec![
         Span::styled("--".to_string(), fade),
-        Span::raw(" "),
         Span::styled(cap, cap_style),
         Span::styled(said, said_style),
     ];

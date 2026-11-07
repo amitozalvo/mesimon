@@ -42441,7 +42441,9 @@ the mode and hints row loses its key hints wherever they stand (`cut_hints` with
 `⏵⏵ auto mode on (shift+tab to cycle)` reads `⏵⏵ auto mode on`; Codex's `← for agents · ? for
 shortcuts` row, hints alone, goes blank). No wording or statusLine setting is parsed to keep
 them. Closed: one hyphen rule gone toward the page ground in the box's place, carrying the
-key cap and the keymap's verb at its left and, at its right, the agent's state (`⠋ claude is
+key cap right after its two dashes (the cap's box at the transcript text's column; the
+author: "push shift+enter hint left one column, to align with transcript text") and the
+keymap's verb at its left and, at its right, the agent's state (`⠋ claude is
 working`, `claude is idle`) with as many of the page's own facts as fit (`∙ opus ∙ high ∙
 context 21% ∙ plan mode`, dropped from the right); no prompt row, no bottom rule, no words:
 the author, the same day, "if input not focused … just show the top dashed line with the

@@ -15912,10 +15912,13 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
         .position(|l| l.contains(" shift+enter ") && l.contains("claude is working"))
         .expect("the closed box");
     assert!(
-        closed[at].contains(" ⠋ claude is working ∙ opus ∙ high ---"),
+        closed[at].contains(" ⠋ claude is working ∙ opus ∙ high ∙ context 21% ---"),
         "the facts after the state: {closed:#?}"
     );
-    assert!(!closed[at].contains("context"), "two facts too many for 80 columns: {closed:#?}");
+    assert!(!closed[at].contains("plan mode"), "one fact too many for 80 columns: {closed:#?}");
+    // The cap's box starts at the transcript text's column, right after
+    // the rule's two dashes.
+    assert!(closed[at].starts_with(" -- shift+enter  ask agent --"), "{:?}", closed[at]);
     assert!(
         !closed.iter().any(|l| l.contains('❯') && !l.contains("Go on")),
         "no prompt mark: {closed:#?}"
