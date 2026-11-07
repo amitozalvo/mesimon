@@ -15953,3 +15953,50 @@ fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
     assert!(!app.ctx().ticket_box_held, "the agent's suggestion");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
+
+/// The empty seat's box (T-1156) opens in place: Shift+Enter turns the
+/// closed picture into the field on the same rows, the words typed where
+/// the title stood, the cursor on them, and nothing above moves.
+#[test]
+fn the_seats_box_opens_in_place() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
+    let closed = render(&app, 120, 30);
+    let at = closed
+        .iter()
+        .position(|l| l.trim_start().starts_with("Keymap validator") && l.starts_with("    "))
+        .expect("the title in the closed box");
+    assert!(closed[at - 1].contains(" shift+enter "), "the key on its rule: {closed:#?}");
+    assert!(closed[at - 1].contains("start + ask agent"), "and what it does: {closed:#?}");
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "measure it".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(2)),
+            walk: None,
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        buffer,
+    };
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let open = lines_of(terminal.backend().buffer());
+    assert!(terminal.backend().cursor_visible(), "the cursor is in the field");
+    let column = |l: &str, w: &str| l.find(w).map(|b| l[..b].chars().count());
+    assert_eq!(
+        column(&open[at], "measure it"),
+        column(&closed[at], "Keymap validator"),
+        "{open:#?}"
+    );
+    assert!(open[at + 1].contains("now  shift+tab"), "the delivery row under: {open:#?}");
+    for y in 0..at - 1 {
+        assert_eq!(open[y], closed[y], "row {y} moved");
+    }
+}
