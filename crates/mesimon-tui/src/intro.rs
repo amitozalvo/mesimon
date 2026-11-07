@@ -145,19 +145,22 @@ fn shin_frame(fr: &Frame) -> Glyph {
 const MPAD: i16 = 2;
 
 /// The ש at the small shin's size (T-1156): the rail's letter, which the
-/// ticket page wakes into the small shin as its agent starts. Ten pixels a
-/// side, two-pixel stems, as the large letter's stems are four.
+/// ticket page wakes into the small shin as its agent starts. Eleven
+/// pixels wide (the body is twelve, the letter a pixel in), ten tall:
+/// three-pixel stems, so each has a lit, a body and a shaded column as the
+/// large letter's four-pixel stems do (a first cut's two-pixel stems were
+/// lit and shade only; the author: "very thin, should be a little wider").
 const SMALL_SHIN: &[&str] = &[
-    "##..##..##",
-    "##..##..##",
-    "##..##..##",
-    "##..##..##",
-    "##..##..##",
-    "###.##.###",
-    "##########",
-    "##########",
-    ".########.",
-    "..######..",
+    "###.###.###",
+    "###.###.###",
+    "###.###.###",
+    "###.###.###",
+    "###.###.###",
+    "###.###.###",
+    "###########",
+    "###########",
+    ".#########.",
+    "..#######..",
 ];
 
 /// The letter and the shin as distance fields on one stage (positive

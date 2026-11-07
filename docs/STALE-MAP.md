@@ -42416,7 +42416,9 @@ in its box, unsent`, `shift+enter start + ask agent ∙ your words go as its fir
 the seat's clauses; a closed box at the zone's foot (`foot_box`) holds the title a start types,
 and the ask field opens on its words row (`Composer`, so nothing moves). The zone draws no
 creature: the author asked for the mascot "always on the right side". The rail's foot holds a
-small ש (`intro::SMALL_SHIN`, 10×10, a new drawing): `Anim::Letter` still on the seat (only
+small ש (`intro::SMALL_SHIN`, 11×10, a new drawing: three-pixel stems with one-pixel gaps, so
+each stem has a lit, a body and a shaded column — the first cut's 10×10 with two-pixel stems
+was lit and shade only, the author: "very thin, should be a little wider"): `Anim::Letter` still on the seat (only
 where the rail offers `+ agent session`; an archived ticket has none), `Anim::Stir` while a start
 is parked behind its worktree, `Anim::Waking` from the record's first frame (the intro's morph,
 `intro::morph` made size-generic, then asleep, lid, awake, a look round), `Anim::Ready` for
