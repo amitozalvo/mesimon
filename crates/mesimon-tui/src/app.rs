@@ -1327,14 +1327,19 @@ pub enum LinkTarget {
 pub(crate) type TranscriptLinks = Vec<(mesimon_core::links::Found, TicketLink)>;
 
 /// One link of the conversation the ticket page's zone shows (T-1143):
-/// the row it is on in the zone's document, the candidate as written and
+/// the row it is on in the zone's document, where it is (`LinkAt`) and
 /// where it leads.
 #[derive(Debug, Clone)]
 pub(crate) struct PageLink {
     pub row: usize,
-    pub source: mesimon_core::links::Found,
+    pub at: LinkAt,
     pub link: TicketLink,
 }
+
+/// A conversation link's place: its message's key and its place among
+/// that message's links. The same path cited in two messages is two
+/// links, and a page landing above keeps the name.
+pub(crate) type LinkAt = ((u64, usize), usize);
 
 /// The zone's conversation document as the last draw laid it out: the
 /// pager's key for it, and its links by row. What `tab` walks, against the
@@ -1358,7 +1363,7 @@ pub(crate) struct Composed {
     pub stamp: u64,
     pub width: usize,
     pub flavor: crate::theme::Flavor,
-    pub selected: Option<mesimon_core::links::Found>,
+    pub selected: Option<LinkAt>,
     pub rows: std::rc::Rc<Vec<ratatui::text::Line<'static>>>,
     pub doc: PageDoc,
 }
@@ -2118,8 +2123,8 @@ pub struct App {
     /// enough): the live window has nowhere to stand otherwise.
     pub page_zone: std::cell::Cell<bool>,
     /// The zone's selected link (`tab`): the session it belongs to and the
-    /// candidate, so a conversation that grows under it keeps it.
-    pub page_link: std::cell::RefCell<Option<(uuid::Uuid, mesimon_core::links::Found)>>,
+    /// link's place, so a conversation that grows under it keeps it.
+    pub page_link: std::cell::RefCell<Option<(uuid::Uuid, LinkAt)>>,
     /// Per ticket, what its agent last said against what the cursor has
     /// seen of it (`Spoke`): a card whose entry disagrees keeps its done
     /// mark in the calm register; one that agrees wears it grey. Kept by
@@ -2521,8 +2526,7 @@ impl App {
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
-        let (columns_sorted, columns_pinned) = column_index(&snap.board);
-        let columns_width = column_widths(&snap.board);
+        let (columns_sorted, columns_pinned, columns_width) = column_index(&snap.board);
         let mut app = Self {
             client,
             repo_root,
@@ -2931,14 +2935,22 @@ impl App {
     /// reach as the daemon reads it. Empty on a board that merges through
     /// pull requests, where the train merges nothing.
     pub(crate) fn train_candidates(&self) -> Vec<ulid::Ulid> {
+        use mesimon_core::board::TrainReach;
         use mesimon_core::train::{lane, seat, Lane, Reading, WtFlags};
-        if self.board.merge_into.pull_requests() {
+        // `lane` merges only a branch ahead and fast-forwardable in a column
+        // that merges: asked on every frame, a board with none such (most
+        // of the time) walks nothing, and a ticket without one reads nothing.
+        let mergeable = |w: &WorktreeItem| w.ahead > 0 && !w.needs_rebase;
+        if self.board.merge_into.pull_requests() || !self.worktrees.iter().any(mergeable) {
             return Vec::new();
         }
         let mut out = Vec::new();
         for col in self.board.sorted_columns() {
+            if col.settings.train != TrainReach::Merge {
+                continue;
+            }
             for t in self.board.column_tickets(&col.name) {
-                let Some(w) = self.wt_item(t.id) else { continue };
+                let Some(w) = self.wt_item(t.id).filter(|w| mergeable(w)) else { continue };
                 let flags = WtFlags {
                     attached: w.status == "attached",
                     ahead: w.ahead,
@@ -3077,16 +3089,7 @@ impl App {
                 return std::rc::Rc::clone(links);
             }
         }
-        let dir = self.link_dir(t.ticket);
-        let links: TranscriptLinks = t
-            .links()
-            .iter()
-            .filter_map(|link| {
-                self.resolve_link(t.ticket, &dir, link)
-                    .map(|resolved| (link.target.clone(), resolved))
-            })
-            .collect();
-        let links = std::rc::Rc::new(links);
+        let links = std::rc::Rc::new(self.resolve_links(t.ticket, &t.links()));
         *self.transcript_links_cache.borrow_mut() = Some((key, std::rc::Rc::clone(&links)));
         links
     }
@@ -3128,16 +3131,8 @@ impl App {
                 return std::rc::Rc::clone(links);
             }
         }
-        let dir = self.link_dir(*ticket);
-        let links: TranscriptLinks =
-            mesimon_core::links::extract(&crate::peek::sanitize(ed.body.as_str()))
-                .iter()
-                .filter_map(|link| {
-                    self.resolve_link(*ticket, &dir, link)
-                        .map(|resolved| (link.target.clone(), resolved))
-                })
-                .collect();
-        let links = std::rc::Rc::new(links);
+        let links =
+            std::rc::Rc::new(self.page_links(*ticket, &crate::peek::sanitize(ed.body.as_str())));
         *r.links.borrow_mut() = Some((key, std::rc::Rc::clone(&links)));
         links
     }
@@ -4364,8 +4359,7 @@ impl App {
     /// `board`. `absorb` calls it; so must anything else that rewrites
     /// `board.columns` or moves a ticket between columns.
     pub(crate) fn reindex_columns(&mut self) {
-        (self.columns_sorted, self.columns_pinned) = column_index(&self.board);
-        self.columns_width = column_widths(&self.board);
+        (self.columns_sorted, self.columns_pinned, self.columns_width) = column_index(&self.board);
     }
 
     /// This frame's `Ctx` (see the field): built once, on the first read.
@@ -5444,7 +5438,13 @@ impl App {
                 })
             }
             Screen::Ticket { .. } if self.scope() != Scope::Ticket => Ok(false),
-            Screen::Ticket { .. } if matches!(target, Some(Target::Rail(_))) => self.press(&[key]),
+            Screen::Ticket { .. } if matches!(target, Some(Target::Rail(_))) => {
+                // The wheel moves the cursor as a key does, so the rest that
+                // came before it is spent too: `hover_rail` would pull the
+                // cursor back to the row the pointer stands on.
+                self.hover.set(None);
+                self.press(&[key])
+            }
             Screen::Diff if self.on_commit_list() => self.press(&[key]),
             _ => self.person(|app| {
                 if let Some(p) = app.pager() {
@@ -5492,6 +5492,11 @@ impl App {
         } else if let Mode::Search(s) = &mut self.mode {
             ("a search query", s.query.paste(text), s.query.limit())
         } else if let Mode::Editor(ed) = &mut self.mode {
+            // The reader is no field: a paste there goes nowhere, as over
+            // the transcript dialog, never into the body it shows.
+            if ed.reading {
+                return Ok(false);
+            }
             ed.esc_armed = false;
             ed.delete_armed = false;
             match ed.focus {
@@ -6067,7 +6072,12 @@ impl App {
             let Some(t) = self.page_transcripts.get_mut(&id) else { continue };
             let moved = t.poll(path.as_deref().map(|p| (kind, p)));
             if moved | t.set_hand(hand) {
-                self.page_composed.borrow_mut().remove(&id);
+                // Laid out again on the next draw, the entry kept: it names
+                // the first message held then, so a reader paged back keeps
+                // their place when earlier pages land above it.
+                if let Some(c) = self.page_composed.borrow_mut().get_mut(&id) {
+                    c.stamp = 0;
+                }
                 changed |= selected.as_ref().is_some_and(|s| s.id == id);
             }
         }
@@ -6089,8 +6099,18 @@ impl App {
     /// A message's link candidates resolved against the live board, as
     /// the transcript dialog resolves its message's.
     pub(crate) fn page_links(&self, ticket: ulid::Ulid, text: &str) -> TranscriptLinks {
+        self.resolve_links(ticket, &mesimon_core::links::extract(text))
+    }
+
+    /// Link candidates resolved against the live board: the ones that lead
+    /// somewhere, each with the candidate it came from.
+    fn resolve_links(
+        &self,
+        ticket: ulid::Ulid,
+        links: &[mesimon_core::links::Link],
+    ) -> TranscriptLinks {
         let dir = self.link_dir(ticket);
-        mesimon_core::links::extract(text)
+        links
             .iter()
             .filter_map(|link| {
                 self.resolve_link(ticket, &dir, link)
@@ -6102,28 +6122,45 @@ impl App {
     /// The zone's links on the rows the last draw showed, in reading
     /// order, each with its index in the document's list.
     fn page_visible_links(&self) -> Vec<(usize, PageLink)> {
+        self.page_visible(|on| on.map(|(i, l)| (i, l.clone())).collect()).unwrap_or_default()
+    }
+
+    /// `read` over the zone's links on the rows the last draw showed,
+    /// borrowed: the per-frame asks (any link on screen, the selected one)
+    /// clone none they do not keep. `None` with no document drawn.
+    fn page_visible<R>(
+        &self,
+        read: impl FnOnce(&mut dyn Iterator<Item = (usize, &PageLink)>) -> R,
+    ) -> Option<R> {
         let v = self.preview.view.get();
         let doc = self.page_doc.borrow();
-        let Some(doc) = doc.as_ref().filter(|d| Some(d.key) == v.key) else { return Vec::new() };
+        let doc = doc.as_ref().filter(|d| Some(d.key) == v.key)?;
         let last = v.offset + v.page;
-        doc.links
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.row >= v.offset && l.row <= last)
-            .map(|(i, l)| (i, l.clone()))
-            .collect()
+        let mut on =
+            doc.links.iter().enumerate().filter(|(_, l)| l.row >= v.offset && l.row <= last);
+        Some(read(&mut on))
     }
 
     /// The zone's selected link, while the cursor is still on its session
     /// and the link is on a row the zone shows: paged away, or the zone
     /// gone with the terminal's width, Enter is the row's again and `tab`
-    /// starts from the first link on screen.
+    /// starts from the first link on screen. The cursor off its session (another
+    /// row, or the page left) lets it go for good, so coming back finds
+    /// the row's Enter, not a link chosen before; every frame's `ctx` asks.
     fn page_selected(&self) -> Option<(usize, PageLink)> {
-        let Some(RailRow::Session(s)) = self.rail_row() else { return None };
-        let id = s.id;
-        let held = self.page_link.borrow();
-        let (_, source) = held.as_ref().filter(|(of, _)| *of == id)?;
-        self.page_visible_links().into_iter().find(|(_, l)| l.source == *source)
+        let on = match self.rail_row() {
+            Some(RailRow::Session(s)) => Some(s.id),
+            _ => None,
+        };
+        let mut held = self.page_link.borrow_mut();
+        if held.as_ref().is_some_and(|(of, _)| Some(*of) != on) {
+            *held = None;
+        }
+        let (_, at) = held.as_ref()?;
+        self.page_visible(|mut on| {
+            Iterator::find(&mut on, |(_, l)| l.at == *at).map(|(i, l)| (i, l.clone()))
+        })
+        .flatten()
     }
 
     pub(crate) fn page_cursor_link(&self) -> Option<TicketLink> {
@@ -6139,10 +6176,10 @@ impl App {
         let visible = self.page_visible_links();
         let selected = self.page_selected().map(|(i, _)| i);
         let next = match selected {
-            Some(i) => visible.iter().find(|(j, _)| *j > i).map(|(_, l)| l.source.clone()),
-            None => visible.first().map(|(_, l)| l.source.clone()),
+            Some(i) => visible.iter().find(|(j, _)| *j > i).map(|(_, l)| l.at),
+            None => visible.first().map(|(_, l)| l.at),
         };
-        *self.page_link.borrow_mut() = next.map(|source| (id, source));
+        *self.page_link.borrow_mut() = next.map(|at| (id, at));
         self.ctx_dirty();
     }
 
@@ -7980,9 +8017,10 @@ impl App {
         }
     }
 
-    /// A text field owns the keyboard: the composer, a rename, or a tag name.
+    /// A text field owns the keyboard: the composer, the editor, a rename, or
+    /// a tag name. The note reader is the editor's mode but no field (T-1139).
     fn typing(&self) -> bool {
-        matches!(self.mode, Mode::Input { .. } | Mode::Editor(_))
+        matches!(self.mode, Mode::Input { .. } | Mode::Editor(Editor { reading: false, .. }))
             || self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some())
     }
 
@@ -8278,7 +8316,7 @@ impl App {
             new_replies: self.prefs.new_replies,
             card_prs_word: self.prefs.card_prs.key(),
             preview_scrolls: self.preview.view.get().max > 0,
-            ticket_links: !self.page_visible_links().is_empty(),
+            ticket_links: self.page_visible(|on| on.next().is_some()).unwrap_or(false),
             ticket_link_selected: self.page_cursor_link().is_some(),
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -13978,8 +14016,8 @@ impl App {
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
-    /// title, picks and description all riding along: a clean Esc's road,
-    /// and a refused mint's. A blank body is no description.
+    /// title, picks and description all riding along: a clean Esc's road.
+    /// A blank body is no description.
     fn fold_composer(&mut self, ed: Editor) {
         let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose else {
             self.mode = Mode::Normal;
@@ -16728,19 +16766,20 @@ fn snapshot_of(resp: Response) -> Result<Snapshot> {
     }
 }
 
+/// The column names in display order (see `App::columns`), which of them
+/// is pinned as a spine (`Board::column_pinned`), and each one's width, for
+/// the geometry the board and the composer both lay out.
+fn column_index(board: &Board) -> (Vec<String>, Vec<bool>, Vec<ColumnWidth>) {
+    let (mut names, mut pinned, mut widths) = (Vec::new(), Vec::new(), Vec::new());
+    for c in board.sorted_columns() {
+        names.push(c.name.clone());
+        pinned.push(board.column_pinned(c));
+        widths.push(c.settings.width);
+    }
+    (names, pinned, widths)
+}
+
 /// Test-only transport + constructor: canned snapshots, no daemon, no tmux.
-/// `board.columns` in display order, names only (see `App::columns`).
-/// The column names in display order, and which of them is pinned as a
-/// spine (`Board::column_pinned`), for the geometry the board and the
-/// composer both lay out.
-fn column_index(board: &Board) -> (Vec<String>, Vec<bool>) {
-    board.sorted_columns().iter().map(|c| (c.name.clone(), board.column_pinned(c))).unzip()
-}
-
-fn column_widths(board: &Board) -> Vec<ColumnWidth> {
-    board.sorted_columns().iter().map(|c| c.settings.width).collect()
-}
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -19784,6 +19823,85 @@ mod tests {
     /// room with the note drawn, the reader's keys — and Enter turns the
     /// room into the editor on the same note. Out of the editor, `esc` and
     /// `^s` land back on the reader; `esc` there closes.
+    /// The reader is no text field (T-1139): a paste there goes nowhere,
+    /// as over the transcript dialog, and the layout pause reads its keys.
+    #[test]
+    fn a_paste_in_the_reader_leaves_the_note_alone() {
+        let (mut app, _) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).reading);
+        assert!(!app.text_field(), "the reader takes no words");
+        assert!(!app.on_paste("pasted words").unwrap());
+        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause");
+        assert!(!editor(&app).dirty());
+        // Enter edits the note as it was, and there a paste is words.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.text_field());
+        assert!(app.on_paste("x").unwrap());
+        assert!(editor(&app).dirty());
+    }
+
+    /// The wheel over the rail moves its cursor, and a pointer that came to
+    /// rest on another row before the wheel does not pull it back.
+    #[test]
+    fn the_wheel_over_the_rail_is_not_undone_by_a_resting_pointer() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let t = ulid::Ulid(1);
+        app.terminals
+            .push(mesimon_core::command::TerminalItem { ticket: Some(t), foreground: None });
+        app.prefs.mouse = true;
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
+        let rail0 = (0..30u16)
+            .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                matches!(
+                    app.hits.borrow().at(x, y),
+                    crate::mouse::Hit::Spot(crate::mouse::Spot {
+                        target: crate::mouse::Target::Rail(0),
+                        ..
+                    })
+                )
+            })
+            .expect("the rail's first row is a spot");
+        // The pointer rested on row 0 long ago; the wheel steps to row 1.
+        app.hover.set(Some((
+            crate::mouse::Target::Rail(0),
+            Instant::now() - HOVER_PEEK - Duration::from_millis(100),
+        )));
+        app.wheel(rail0, 1).unwrap();
+        assert_eq!(app.screen, Screen::Ticket { ticket: t, rail_idx: 1 });
+        assert!(!app.hover_rail(), "the old rest moves nothing");
+        assert_eq!(app.screen, Screen::Ticket { ticket: t, rail_idx: 1 });
+    }
+
+    /// A link `tab` chose on the page is the session's while the cursor
+    /// stays on it (T-1143): off the row, it is let go, so the row's Enter
+    /// is its own again when the cursor comes back.
+    #[test]
+    fn the_page_lets_a_selected_link_go_when_the_cursor_leaves_its_session() {
+        let (mut app, _, sid) = app_with_claude(SessionState::Running, false);
+        let t = ulid::Ulid(1);
+        app.terminals
+            .push(mesimon_core::command::TerminalItem { ticket: Some(t), foreground: None });
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
+        assert!(matches!(app.rail_row(), Some(RailRow::Session(_))));
+        let held = || Some((sid, ((0, 0), 0)));
+        *app.page_link.borrow_mut() = held();
+        let _ = app.ctx();
+        assert_eq!(*app.page_link.borrow(), held(), "on its session, kept");
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 1 };
+        let _ = app.ctx();
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
+        assert!(app.page_link.borrow().is_none(), "off its row, let go");
+        *app.page_link.borrow_mut() = held();
+        app.screen = Screen::Board;
+        let _ = app.ctx();
+        assert!(app.page_link.borrow().is_none(), "off the page, let go");
+    }
+
     #[test]
     fn tab_on_a_card_reads_its_description_and_enter_edits_it() {
         let (mut app, sent) = app_with_note();

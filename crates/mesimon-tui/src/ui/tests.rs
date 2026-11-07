@@ -2201,7 +2201,7 @@ fn golden_board_cursor_grow_120() {
     let lines = render(&app, 120, 30);
     golden("board_cursor_grow_120x30", &lines);
     let heads = |lines: &[String]| {
-        ["TODO", "IN PROGRESS", "REVIEW", "DONE"].map(|h| lines[2].find(h).unwrap_or(usize::MAX))
+        ["TODO", "IN PROGRESS", "REVIEW", "DONE"].map(|h| lines[2].find(h).expect(h))
     };
     let before = heads(&lines);
     app.cursor_col = 2;
@@ -7068,15 +7068,15 @@ fn golden_transcript_dialog_hand_120() {
     press(&mut app, '}');
     let _ = render(&app, 120, 30);
     let lines = render(&app, 120, 30);
-    let head = lines.iter().position(|l| l.contains("! claude raised a hand")).expect("the head");
-    let words = lines.iter().position(|l| l.contains("Two ways to keep")).expect("the words");
     assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
+    // Inside the dialog: the open card above it shows the same words.
+    let top = lines.iter().position(|l| l.contains("TRANSCRIPT")).expect("the dialog");
+    let (hx, head) = spot_of(&lines[top..], "! claude raised a hand");
+    let (x, words) = spot_of(&lines[top..], "Two ways to keep");
+    let (head, words) = (head + top as u16, words + top as u16);
     let buf = cells(&app, 120, 30);
-    let x = lines[words].find("Two ways").expect("x") as u16;
-    let x = lines[words][..x as usize].chars().count() as u16;
-    assert_eq!(buf[(x, words as u16)].fg, app.theme.attn, "the words wear attn");
-    let hx = lines[head][..lines[head].find('!').expect("!")].chars().count() as u16;
-    assert_eq!(buf[(hx, head as u16)].fg, app.theme.attn, "the head wears attn");
+    assert_eq!(buf[(x, words)].fg, app.theme.attn, "the words wear attn");
+    assert_eq!(buf[(hx, head)].fg, app.theme.attn, "the head wears attn");
     golden("transcript_dialog_hand_120x30", &lines);
     std::sync::Arc::make_mut(&mut app.board).tickets.iter_mut().for_each(|t| t.raised = None);
     assert!(app.poll_transcript(), "the lowered hand moves the dialog");
@@ -7112,10 +7112,10 @@ fn golden_transcript_dialog_lowered_hand_120() {
     assert!(lines[words].contains("Two ways to keep"), "the words under it: {lines:#?}");
     assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
     let buf = cells(&app, 120, 30);
-    let col = |l: &str, needle: &str| l[..l.find(needle).expect("x")].chars().count() as u16;
+    let col = |y: usize, needle: &str| spot_of(&lines[y..], needle).0;
     let faded = app.theme.attn_faded().fg;
     assert_ne!(faded, Some(app.theme.attn), "faded is not the needs-you colour itself");
-    let x = col(&lines[words], "Two ways");
+    let x = col(words, "Two ways");
     assert_eq!(Some(buf[(x, words as u16)].fg), faded, "words faded");
     golden("transcript_dialog_lowered_hand_120x30", &lines);
     // The board's hand up with those words: the same message, up, once.
@@ -7126,7 +7126,7 @@ fn golden_transcript_dialog_lowered_hand_120() {
     assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "one hand: {lines:#?}");
     let buf = cells(&app, 120, 30);
     let words = head + 2;
-    let x = col(&lines[words], "Two ways");
+    let x = spot_of(&lines[words..], "Two ways").0;
     assert_eq!(buf[(x, words as u16)].fg, app.theme.attn, "words in attn");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -7908,11 +7908,19 @@ fn golden_editor_compose_120() {
 fn the_dialogs_draw_no_block_on_the_left() {
     let check = |app: &App, title: &str| {
         let lines = render(app, 120, 30);
-        let y = lines.iter().position(|l| l.contains(title)).expect("title");
-        let row: Vec<char> = lines[y].chars().collect();
-        let start = lines[y].find(title).expect("title");
-        let x = lines[y][..start].chars().count() as u16;
-        let edge = row[..x as usize].iter().rposition(|&c| c == '│').expect("frame") as u16;
+        // The dialog's frame first: the card beside it can hold the title too.
+        let (top, edge) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(y, l)| l.chars().position(|c| c == '╭').map(|x| (y, x)))
+            .expect("frame");
+        let (y, x) = (top..lines.len())
+            .find_map(|y| {
+                let inside: String = lines[y].chars().skip(edge).collect();
+                inside.find(title).map(|i| (y, edge + inside[..i].chars().count()))
+            })
+            .expect("title");
+        let (edge, x) = (edge as u16, x as u16);
         let buf = cells(app, 120, 30);
         let surface = buf[(x, y as u16)].bg;
         for r in y as u16..y as u16 + 6 {
@@ -8243,7 +8251,8 @@ fn golden_editor_describe_120() {
 
 /// T-440: on a ticket with three notes the dialog counts where it stands
 /// — `NOTE 2/3` in the frame's top edge. Since T-1139 the editor walks no
-/// notes (the reader does), so its bottom edge offers no `tab`.
+/// notes (the reader does), so its bottom edge offers no `tab`. Dirty, the
+/// context row says ` ∙ unsaved` in the dim register.
 #[test]
 fn golden_editor_note_ring_120() {
     let mut b = fixture_tagged();
@@ -8259,11 +8268,23 @@ fn golden_editor_note_ring_120() {
         "Fix OSC-11 detection",
         SECOND_NOTE,
     );
-    app.mode = Mode::Editor(ed);
+    app.mode = Mode::Editor(ed.clone());
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("NOTE 2/3")), "the frame counts: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("next note")), "the editor walks none: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("unsaved")), "clean says nothing: {lines:?}");
     golden("editor_note_ring_120x30", &lines);
+
+    let ink = match app.theme.selected_bg {
+        Some(_) => app.theme.sel,
+        None => app.theme.rest,
+    };
+    let mut dirty = ed;
+    dirty.body.insert('x');
+    app.mode = Mode::Editor(dirty);
+    let lines = render(&app, 120, 30);
+    let (x, y) = spot_of(&lines, "∙ unsaved");
+    assert_eq!(cells(&app, 120, 30)[(x + 2, y)].fg, ink.dim2, "the word is quiet");
 }
 
 /// The note reader (T-1139): `tab` on a card with a description draws the
@@ -8868,22 +8889,7 @@ fn ticket_prompting(rail_idx: usize, text: &str) -> App {
     let mut app = app_noted();
     app.rich_keys = true;
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx };
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in text.chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field(&mut app, text, false);
     app
 }
 
@@ -9012,16 +9018,17 @@ fn rail_cols(lines: &[String]) -> Vec<String> {
     lines.iter().map(|l| l.chars().skip(90).collect()).collect()
 }
 
-fn open_rail_prompt(app: &mut App) {
+/// The ask field for T-3 open with `text` typed.
+fn ask_field(app: &mut App, text: &str, queued: bool) {
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "rebase onto main".chars() {
+    for c in text.chars() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
-            queued: false,
+            queued,
             immediately: false,
             accept_plan: false,
             plan: false,
@@ -9100,7 +9107,7 @@ fn golden_ticket_rail_scrolls_as_a_list_100_prompting() {
     let (w, h) = (100, 24);
     let mut app = app_long_rail();
     let shot = |app: &mut App, name: &str| {
-        open_rail_prompt(app);
+        ask_field(app, "rebase onto main", false);
         let lines = render(app, w, h);
         app.mode = Mode::Normal;
         assert!(lines[h as usize - 3].contains("› rebase onto main"), "{}", lines.join("\n"));
@@ -13401,8 +13408,9 @@ fn the_summary_folds_key_alone_clicks() {
     assert!(fold.is_some_and(|r| r.ends_with("3 more ∙ ^j")), "the key after the count:\n{text}");
     // The card's key has no word of its own; the footer's quiet `^j
     // summary` (T-1132) is the board's, a row below.
-    let footer = rows.last().expect("footer");
+    let (footer, card) = rows.split_last().expect("footer");
     assert!(footer.contains("^j summary"), "the footer names it:\n{text}");
+    assert!(!card.join("\n").contains("^j summary"), "no word of its own:\n{text}");
     let at = spot_of(&rows, "more ∙ ^j");
     click(&mut app, (at.0 + 7, at.1));
     assert!(matches!(app.mode, Mode::Summary { .. }), "{:?}", app.mode);
@@ -14815,11 +14823,10 @@ fn golden_ticket_live_hand_120() {
     let reply = lines.iter().position(|l| l.contains("Research is mostly done")).expect("reply");
     assert!(reply < head, "the newest message: {lines:#?}");
     let buf = cells(&app, 120, 30);
-    let col =
-        |y: usize, needle: &str| lines[y][..lines[y].find(needle).expect("x")].chars().count();
+    let col = |y: usize, needle: &str| spot_of(&lines[y..], needle).0;
     let attn = app.theme.attn;
-    assert_eq!(buf[(col(words, "The proposal") as u16, words as u16)].fg, attn, "words in attn");
-    assert_eq!(buf[(col(head, "!") as u16, head as u16)].fg, attn, "head in attn");
+    assert_eq!(buf[(col(words, "The proposal"), words as u16)].fg, attn, "words in attn");
+    assert_eq!(buf[(col(head, "!"), head as u16)].fg, attn, "head in attn");
     golden("ticket_live_hand_120x30", &lines);
     std::sync::Arc::make_mut(&mut app.board).tickets.iter_mut().for_each(|t| t.raised = None);
     assert!(app.poll_page_transcript(), "the lowered hand moves the page");
@@ -14958,22 +14965,7 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let lines = render(&app, 120, 30);
     assert!(app.live_rect.get().is_none(), "a note row shows no pane: {lines:#?}");
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "rebase onto main".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field(&mut app, "rebase onto main", false);
     let lines = render(&app, 120, 30);
     let field = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
     let rect = app.live_rect.get().expect("the window is on screen");
@@ -15108,25 +15100,92 @@ fn a_parked_window_keeps_its_picture_and_size() {
 
 /// Earlier messages landing above the first one held move a paged-back
 /// window down by the rows they add, so the reader keeps their place; the
-/// pager's key is the session's, so the landing restarts nothing.
+/// pager's key is the session's, so the landing restarts nothing. Driven
+/// through the page's own poll, which lands the earlier page.
 #[test]
 fn earlier_messages_landing_keep_a_paged_back_place() {
-    let (app, path) = app_live("tlive-prepend", false);
+    let (mut app, path) = app_live("tlive-prepend", false);
+    // Only the second message on is held: the first message's rows are
+    // the page the earlier pages' reader has yet to send.
+    let t = app.page_transcripts.get_mut(&uuid_n(31)).expect("held");
+    let earlier = t.hold_back(1);
     let _ = render(&app, 120, 30);
     let key = app.page_doc.borrow().as_ref().map(|d| d.key).expect("the conversation");
-    let second = app.page_transcripts.get(&uuid_n(31)).map(|t| t.messages()[1].key).expect("held");
-    // As if the doc had been laid out when the second message was the
-    // first held, and the reader had paged to its row 1: the first
-    // message's head, prompt and blank row land above it.
-    if let Some(c) = app.page_composed.borrow_mut().get_mut(&uuid_n(31)) {
-        c.doc.first = second;
-        c.stamp = 0;
-    }
+    // The reader paged back to row 1; the first message's head, prompt and
+    // blank row land above it.
     app.preview.request.set(Some((key, 1)));
+    app.page_transcripts.get_mut(&uuid_n(31)).expect("held").land_earlier(earlier);
+    assert!(app.poll_page_transcript(), "the earlier page lands");
     let _ = render(&app, 120, 30);
     let (k, at) = app.preview.request.get().expect("still asked");
     assert_eq!(k, key, "the same document");
     assert_eq!(at, 1 + 3, "moved down by the first message's three rows");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The same link cited in two messages is two links on the page: `tab`
+/// walks past the second to the ones after it, never back to the first.
+#[test]
+fn a_link_cited_twice_is_walked_twice() {
+    let said = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "assistant", "message": { "role": "assistant",
+            "content": [{ "type": "text", "text": text }] } })
+        .to_string()
+    };
+    let user = |text: &str| {
+        serde_json::json!({ "uuid": text, "type": "user", "message": { "role": "user", "content": text } })
+            .to_string()
+    };
+    let jsonl: String = [
+        user("Write it up."),
+        said("See https://mesimon.dev/a and https://mesimon.dev/b first."),
+        user("And then?"),
+        said("Back to https://mesimon.dev/a, then https://mesimon.dev/c."),
+    ]
+    .iter()
+    .map(|l| format!("{l}\n"))
+    .collect();
+    let path = write_transcript("tlive-twice", &jsonl);
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), live_shot(false)));
+    assert!(app.poll_page_transcript(), "the page opens the conversation");
+    let _ = render(&app, 120, 30);
+    let mut walked = Vec::new();
+    for _ in 0..4 {
+        next_link(&mut app);
+        let _ = render(&app, 120, 30);
+        walked.push(app.page_cursor_link().map(|l| l.text).unwrap_or_default());
+    }
+    assert_eq!(
+        walked,
+        [
+            "https://mesimon.dev/a",
+            "https://mesimon.dev/b",
+            "https://mesimon.dev/a",
+            "https://mesimon.dev/c"
+        ],
+        "every link on screen, in reading order"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// Before the window's first capture, the page already asks the pane to be
+/// the size the live rows will have, so the window's reader fits the pane
+/// before it reads it.
+#[test]
+fn the_zone_asks_its_size_before_the_first_capture() {
+    let (app, path) = app_live("tlive-size", false);
+    let _ = render(&app, 120, 30);
+    let wished = app.live_size.get().expect("the live window asks a size");
+    let (mut cold, cold_path) = app_live("tlive-size-cold", false);
+    cold.live = None;
+    assert_eq!(cold.live_size.get(), None);
+    let _ = render(&cold, 120, 30);
+    assert_eq!(cold.live_size.get(), Some(wished), "the same size, before any capture");
+    let _ = std::fs::remove_dir_all(cold_path.parent().expect("dir"));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -15251,22 +15310,7 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     assert!(lines[at - 2].contains("Worked for 8s"), "{lines:#?}");
     assert!(lines[at - 4].contains("Hi! 👋"), "the pane's words over its composer: {lines:#?}");
     assert!(lines[at - 5].contains("187×52"), "the conversation rests on the pane: {lines:#?}");
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "summarise the ticket".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field(&mut app, "summarise the ticket", false);
     let col = lines[at].find("Ask Codex").expect("the agent's placeholder");
     let lines = render(&app, 120, 30);
     assert!(lines[at].contains("summarise the ticket"), "on the `›` row: {lines:#?}");
@@ -15289,20 +15333,7 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
 #[test]
 fn golden_ticket_live_ask_120() {
     let (mut app, path) = app_live("tlive-ask", false);
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "later then".chars() {
-        buffer.insert(c);
-    }
-    let purpose = |queued| InputPurpose::Prompt {
-        target: crate::app::AskTarget::Ticket(ulid_n(3)),
-        walk: None,
-        queued,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-    };
-    app.mode = Mode::Input { purpose: purpose(true), buffer };
+    ask_field(&mut app, "later then", true);
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     let buf = terminal.backend().buffer();
@@ -15322,10 +15353,7 @@ fn golden_ticket_live_ask_120() {
     golden("ticket_live_ask_120x30", &lines);
     // Over a dialog: the seam row, with a mark of the page's own.
     let (mut dialog, dialog_path) = app_live("tlive-ask-dialog", true);
-    dialog.mode = Mode::Input {
-        purpose: purpose(false),
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
+    ask_field(&mut dialog, "", false);
     let lines = render(&dialog, 120, 30);
     let seam = lines.iter().position(|l| l.starts_with(" ❯  ask agent")).expect("the seam row");
     let box_top = lines.iter().position(|l| l.contains("Do you want to run")).expect("the dialog");
@@ -15351,18 +15379,7 @@ fn the_cursor_blinks_only_once_the_field_is_open() {
         .position(|l| l.chars().take(90).collect::<String>().trim() == "❯")
         .expect("the bare composer");
     assert!(!terminal.backend().cursor_visible(), "a picture has no cursor: {lines:#?}");
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
+    ask_field(&mut app, "", false);
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     assert!(terminal.backend().cursor_visible(), "the field has the cursor");
     assert_eq!(

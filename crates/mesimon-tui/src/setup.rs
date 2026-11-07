@@ -1,9 +1,9 @@
 //! Setup (T-816): the first time a board opens, one question in a
 //! person's words, how they work, with the practice board under it showing
 //! what the answer does. Everything else takes its recommended setting
-//! (T-1123): mesimon merges for you, an agent brings a behind pull request
-//! up to date, the pull request board runs to merged, and every ticket gets
-//! its own worktree.
+//! (T-1123): on your own you merge with `m` (auto merge starts off,
+//! T-1126), an agent brings a behind pull request up to date, the pull
+//! request board runs to merged, and every ticket gets its own worktree.
 //!
 //! The practice board is the tour's (`tour::toy`): the real board drawn on
 //! a toy daemon that keeps its world in memory. Each page lays it out from
@@ -50,14 +50,14 @@ pub(crate) struct Opt {
 /// What the folder is, learned as Setup opens.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Facts {
-    /// The forge `origin` is on, and whether its CLI is signed in there;
-    /// `None` until the probe answers, or where there is no such remote.
-    pub forge: Option<(Forge, bool)>,
+    /// The forge `origin` is on; `None` until the probe answers, or where
+    /// there is no such remote.
+    pub forge: Option<Forge>,
 }
 
 impl Facts {
     fn forge(&self) -> Forge {
-        self.forge.map_or(Forge::GitHub, |(f, _)| f)
+        self.forge.unwrap_or(Forge::GitHub)
     }
 }
 
@@ -79,7 +79,7 @@ pub(crate) struct Setup {
     chosen: HashMap<Ask, &'static str>,
     skipped: HashSet<Ask>,
     pub facts: Facts,
-    probe: Option<mpsc::Receiver<Option<(Forge, bool)>>>,
+    probe: Option<mpsc::Receiver<Option<Forge>>>,
     pub sandbox: Box<App>,
     world: Shared,
     theme: Theme,
@@ -451,7 +451,7 @@ mod tests {
         for forge in [Forge::GitHub, Forge::GitLab] {
             for work in [0, 1, 2] {
                 let mut s = setup();
-                s.facts.forge = Some((forge, true));
+                s.facts.forge = Some(forge);
                 s.cursor = work;
                 s.next().expect("next");
                 for at in 0..=s.asks().len() {
@@ -488,7 +488,7 @@ mod tests {
             assert!(s.ready(), "answer {work}");
         }
         let mut s = setup();
-        s.facts.forge = Some((Forge::GitLab, true));
+        s.facts.forge = Some(Forge::GitLab);
         assert_eq!(s.options()[1].label, "With merge requests");
     }
 
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn the_answers_become_the_outcome() {
         let mut s = setup();
-        s.facts.forge = Some((Forge::GitLab, false));
+        s.facts.forge = Some(Forge::GitLab);
         s.cursor_step(true).expect("team");
         s.next().expect("work");
         assert!(s.ready());
@@ -554,7 +554,7 @@ mod tests {
         let cursor: usize = parts.get(1).and_then(|c| c.parse().ok()).unwrap_or(0);
         let team = parts.get(2) == Some(&"team");
         let mut s = setup();
-        s.facts.forge = Some((Forge::GitHub, true));
+        s.facts.forge = Some(Forge::GitHub);
         s.cursor = usize::from(team);
         s.next().expect("next");
         s.go(at).expect("go");

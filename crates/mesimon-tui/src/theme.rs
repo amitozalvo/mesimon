@@ -1334,7 +1334,7 @@ const LOWERED_KEEP: f32 = 0.5;
 
 /// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
 /// have a halfway; anything else is `a` from the half up and `b` below it.
-fn mix(a: Color, b: Color, k: f32) -> Color {
+pub(crate) fn mix(a: Color, b: Color, k: f32) -> Color {
     let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
         return if k >= 0.5 { a } else { b };
     };

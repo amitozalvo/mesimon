@@ -3,13 +3,13 @@
 
 GitHub holds a repository's traffic (views, unique visitors, clones, referrers, popular
 paths) for 14 days only, and mesimon.dev keeps no analytics and no logs. Run this by hand,
-weekly or more often; nothing is lost while runs are less than 14 days apart. It reads
+weekly or more often; nothing is lost while runs are less than 12 days apart. It reads
 through `gh api` (the author's own login, which needs push access for traffic) and appends
 JSON lines to a file outside the repository:
 
-  kind "day"       one per repository per finished UTC day: views, unique visitors,
-                   clones and unique cloners that day. Today is still counting, so it is
-                   shown but recorded only on a later run.
+  kind "day"       one per repository per settled UTC day: views, unique visitors,
+                   clones and unique cloners that day. GitHub's counts arrive hours late,
+                   so today and yesterday are shown but recorded only once two days old.
   kind "snapshot"  one per repository per run day: stars, forks, watchers, the 14-day
                    referrers and popular paths, and every release asset's download count.
 
@@ -91,14 +91,19 @@ def snapshot(repo, raw, today, taken):
     }
 
 
-def new_rows(existing, repo, raw, today, taken):
-    """The rows this run adds for one repository: finished days and today's snapshot not yet kept."""
+def settled(today):
+    """The first day still counting: yesterday, as GitHub's counts arrive hours late."""
+    return (datetime.fromisoformat(today) - timedelta(days=1)).date().isoformat()
+
+
+def new_rows(existing, repo, raw, today, live):
+    """The rows this run adds for one repository: settled days and today's snapshot not yet kept."""
     have = {(r["kind"], r["repo"], r["date"]) for r in existing}
     rows = [{"kind": "day", "repo": repo, "date": date, **counts}
             for date, counts in sorted(per_day(raw).items())
-            if date < today and ("day", repo, date) not in have]
+            if date < settled(today) and ("day", repo, date) not in have]
     if ("snapshot", repo, today) not in have:
-        rows.append(snapshot(repo, raw, today, taken))
+        rows.append(live)
     return rows
 
 
@@ -118,17 +123,17 @@ def delta(old, new):
 
 
 def report(repo, rows, raw, today, live):
-    """The last two weeks of recorded days, today so far, and the change since the previous run."""
+    """The last two weeks of recorded days, the days still counting, and the change since the previous run."""
     days = sorted((r for r in rows if r["kind"] == "day" and r["repo"] == repo), key=lambda r: r["date"])
     first = (datetime.fromisoformat(today) - timedelta(days=WINDOW)).date().isoformat()
     lines = [f"{repo}", f"  {'day (UTC)':<12}{'views':>7}{'uniq':>6}{'clones':>8}{'uniq':>6}"]
     for d in (d for d in days if d["date"] >= first):
         lines.append(f"  {d['date']:<12}{d['views']:>7}{d['view_uniques']:>6}{d['clones']:>8}{d['clone_uniques']:>6}")
-    now = per_day(raw).get(today)
-    if now:
-        lines.append(f"  {today + '*':<12}{now['views']:>7}{now['view_uniques']:>6}{now['clones']:>8}{now['clone_uniques']:>6}")
+    counting = [(date, d) for date, d in sorted(per_day(raw).items()) if date >= settled(today)]
+    for date, d in counting:
+        lines.append(f"  {date + '*':<12}{d['views']:>7}{d['view_uniques']:>6}{d['clones']:>8}{d['clone_uniques']:>6}")
     lines.append(f"  14 days: {raw['views'].get('count', 0)} views, {raw['views'].get('uniques', 0)} unique visitors,"
-                 f" {raw['clones'].get('count', 0)} clones" + ("  (* today, still counting)" if now else ""))
+                 f" {raw['clones'].get('count', 0)} clones" + ("  (* still counting)" if counting else ""))
     refs = ", ".join(f"{r['referrer']} {r['count']}/{r['uniques']}" for r in live["referrers"])
     lines.append(f"  referrers (views/uniques): {refs or 'none'}")
     earlier = [r for r in rows if r["kind"] == "snapshot" and r["repo"] == repo]
@@ -159,10 +164,10 @@ def main():
     added, sections = [], []
     for repo in REPOS:
         raw = fetch(repo)
-        rows = new_rows(existing, repo, raw, today, taken)
+        live = snapshot(repo, raw, today, taken)
+        rows = new_rows(existing, repo, raw, today, live)
         added += rows
-        sections.append(report(repo, existing + [r for r in rows if r["kind"] == "day"], raw, today,
-                               snapshot(repo, raw, today, taken)))
+        sections.append(report(repo, existing + [r for r in rows if r["kind"] == "day"], raw, today, live))
     if added:
         args.file.parent.mkdir(parents=True, exist_ok=True)
         with args.file.open("a") as out:

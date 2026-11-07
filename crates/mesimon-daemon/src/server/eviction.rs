@@ -21,19 +21,22 @@ const PROBE_GRACE: Duration = Duration::from_secs(10);
 const RETRY: Duration = Duration::from_secs(2);
 
 impl Daemon {
-    /// The arrival still wants its worktree freed: the ticket is on the
-    /// board, in the column it arrived in, a worktree ticket, and the column
-    /// still asks.
+    /// A ticket whose tree `column` frees: on the board, a worktree ticket,
+    /// bound, and the column asks. The arrival's and the seed's one rule.
+    fn frees_here(&self, t: &Ticket, column: &str) -> bool {
+        !t.is_archived()
+            && t.workspace_strategy() == WorkspaceStrategy::Worktree
+            && self.board.column(column).is_some_and(|c| c.settings.free_worktree)
+            && self.worktrees.contains_key(&t.id)
+    }
+
+    /// The arrival still wants its worktree freed: the ticket is still in
+    /// the column it arrived in, and that column frees it.
     fn eviction_eligible(&self, id: ulid::Ulid) -> bool {
         let Some(column) = self.column_evictions.get(&id).map(|e| e.column.as_str()) else {
             return false;
         };
-        self.board.ticket(id).is_some_and(|t| {
-            !t.is_archived()
-                && t.column == column
-                && t.workspace_strategy() == WorkspaceStrategy::Worktree
-                && self.board.column(column).is_some_and(|c| c.settings.free_worktree)
-        }) && self.worktrees.contains_key(&id)
+        self.board.ticket(id).is_some_and(|t| t.column == column && self.frees_here(t, column))
     }
 
     /// The session names whose pane would hold the worktree: the ticket's
@@ -134,10 +137,8 @@ impl Daemon {
             .tickets
             .iter()
             .filter(|t| {
-                !t.is_archived()
-                    && t.workspace_strategy() == WorkspaceStrategy::Worktree
-                    && !self.column_evictions.contains_key(&t.id)
-                    && self.board.column(&t.column).is_some_and(|c| c.settings.free_worktree)
+                !self.column_evictions.contains_key(&t.id)
+                    && self.frees_here(t, &t.column)
                     && self
                         .worktrees
                         .get(&t.id)

@@ -458,7 +458,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
             // does not spin its activity indicator (T-496).
             quiet::draw(terminal, |f| {
                 ui::draw(f, app);
-                if let Some(v) = veil {
+                if let Some(v) = veil.as_mut() {
                     if !v.apply(f.buffer_mut()) {
                         veil = None;
                     }

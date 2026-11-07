@@ -905,6 +905,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                                               // height and leaves the field's rows between the two.
         let hybrid = sel.is_some_and(|s| app.live_shot(s.id).is_some());
         let content_h = if hybrid { body_h } else { body_h - field_rows };
+        // Before the window's first capture the zone already asks the size
+        // the live rows will have (`draw_preview`'s live branch: the zone
+        // under its two heading rows), so the window's reader fits the pane
+        // before it reads it.
+        if !hybrid && sel.is_some_and(|s| s.kind.is_agent() && s.state.has_pane()) {
+            app.live_wish(left_w, body_h.saturating_sub(2));
+        }
         let rail = Rect {
             x: area.x + left_w + 3,
             y: rail_y,
@@ -957,7 +964,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             (Some(c), Some((buf, queued, immediately, accept_plan, plan, tier)))
                 if field.is_some() =>
             {
-                let delivery = app.ask_queueable(ticket_id) || plan || tier.is_some();
+                // The card's own rule (`render_ask_field`): a delivery row
+                // when the field it built has one.
+                let delivery = field.as_ref().is_some_and(|(rows, _)| rows.len() > 1);
                 // Over a dialog the rows go above the box, which stays
                 // whole with its question: the words, then the delivery
                 // row, over the pane's rows the seam left there.
@@ -1815,12 +1824,8 @@ fn conversation(
     // one for seconds after the page opens).
     let key = crate::text::hash64((8u8, rec.id));
     let before = app.page_composed.borrow().get(&rec.id).map(|c| c.doc.first);
-    let selected = app
-        .page_link
-        .borrow()
-        .as_ref()
-        .filter(|(of, _)| *of == rec.id)
-        .map(|(_, source)| source.clone());
+    let selected =
+        app.page_link.borrow().as_ref().filter(|(of, _)| *of == rec.id).map(|(_, at)| *at);
     // The draw cache's key: everything a row depends on, and the minute,
     // for the heads' clocks.
     let now = mesimon_core::clock::now_ms();
@@ -1846,14 +1851,33 @@ fn conversation(
         spans.extend(line.spans);
         Line::from(spans)
     };
+    // A message's body rows as the zone draws them: in the message's ink,
+    // behind the gutter, a person's on the raised surface.
+    let finish = |m: &crate::transcript::Message, body: &[Line<'static>]| -> Vec<Line<'static>> {
+        let prompt = m.kind == RowKind::Prompt;
+        body.iter()
+            .enumerate()
+            .map(|(r, line)| {
+                let mut line = line.clone();
+                ink_message(theme, m, &mut line);
+                if !prompt {
+                    return gutter(line);
+                }
+                let lead = if r == 0 { mark } else { GUTTER };
+                let mut spans = vec![Span::styled(lead, theme.dim2())];
+                spans.extend(line.spans);
+                let used = super::spans_width(&spans);
+                spans.push(Span::raw(" ".repeat((width + GUTTER.len()).saturating_sub(used))));
+                Line::from(spans).style(raised)
+            })
+            .collect()
+    };
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut moved = 0usize;
     let mut links: Vec<crate::app::PageLink> = Vec::new();
     let mut cache = app.page_messages.borrow_mut();
     for m in messages {
-        let prompt = m.kind == RowKind::Prompt;
-        let bar = 0;
-        let newline = if prompt { Newline::Break } else { Newline::Space };
+        let newline = if m.kind == RowKind::Prompt { Newline::Break } else { Newline::Space };
         let text = t.text(m);
         // A hand's words change in place when it is raised again.
         let size = match m.hand {
@@ -1863,58 +1887,49 @@ fn conversation(
         let stamp = (size, width, flavor);
         if !cache.get(&(rec.id, m.key)).is_some_and(|e| e.stamp == stamp) {
             let clean = crate::peek::sanitize(text);
-            let body = crate::rich::render_all(&clean, width - bar, theme, newline);
+            let body = crate::rich::render_all(&clean, width, theme, newline);
             let found = app.page_links(rec.ticket, &clean);
             let link_rows = found.iter().map(|(_, link)| row_of(&body, &link.text)).collect();
             cache.insert(
                 (rec.id, m.key),
                 crate::app::PageMessage {
                     stamp,
-                    rows: Rc::new(body),
+                    rows: Rc::new(finish(m, &body)),
                     links: Rc::new(found),
                     link_rows,
                 },
             );
         }
         let entry = &cache[&(rec.id, m.key)];
-        // The selected link's message is laid out again with the mark on
-        // it, as the dialog does; the mark never enters the cache.
-        let body = match selected.as_ref().filter(|s| entry.links.iter().any(|(f, _)| f == *s)) {
-            Some(source) => Rc::new(crate::rich::render_all_with_link(
-                &crate::peek::sanitize(text),
-                width - bar,
-                theme,
-                newline,
-                source,
-            )),
-            None => Rc::clone(&entry.rows),
-        };
         if before == Some(m.key) && m.key != first.key {
             moved = rows.len();
         }
         rows.push(gutter(message_head(theme, t.kind, m, width, now)));
         let body_at = rows.len();
-        for (j, (source, link)) in entry.links.iter().enumerate() {
+        for (j, (_, link)) in entry.links.iter().enumerate() {
             let row = entry.link_rows.get(j).copied().unwrap_or(0);
             links.push(crate::app::PageLink {
                 row: body_at + row,
-                source: source.clone(),
+                at: (m.key, j),
                 link: link.clone(),
             });
         }
-        for (r, line) in body.iter().enumerate() {
-            let mut line = line.clone();
-            ink_message(theme, m, &mut line);
-            if !prompt {
-                rows.push(gutter(line));
-                continue;
-            }
-            let lead = if r == 0 { mark } else { GUTTER };
-            let mut spans = vec![Span::styled(lead, theme.dim2())];
-            spans.extend(line.spans);
-            let used = super::spans_width(&spans);
-            spans.push(Span::raw(" ".repeat((width + GUTTER.len()).saturating_sub(used))));
-            rows.push(Line::from(spans).style(raised));
+        // The selected link's message is laid out again with the mark on
+        // it, as the dialog does; the mark never enters the cache.
+        let source =
+            selected.filter(|(key, _)| *key == m.key).and_then(|(_, j)| entry.links.get(j));
+        match source.map(|(found, _)| found) {
+            Some(source) => rows.extend(finish(
+                m,
+                &crate::rich::render_all_with_link(
+                    &crate::peek::sanitize(text),
+                    width,
+                    theme,
+                    newline,
+                    source,
+                ),
+            )),
+            None => rows.extend(entry.rows.iter().cloned()),
         }
         rows.push(Line::default());
     }
@@ -2002,32 +2017,20 @@ fn message_head(
 ) -> Line<'static> {
     use mesimon_core::mesophon::RowKind;
     let who = who_word(theme, m, kind);
-    let who_style = match m.kind {
-        _ if m.hand.is_some() => {
-            m.hand.map_or(Style::default(), |r| hand_ink(theme, r)).add_modifier(Modifier::BOLD)
-        }
-        RowKind::Reply | RowKind::Prompt => {
+    let who_style = match (m.hand, m.kind) {
+        (Some(raise), _) => hand_ink(theme, raise).add_modifier(Modifier::BOLD),
+        (None, RowKind::Reply | RowKind::Prompt) => {
             Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
         }
-        _ => theme.dim1(),
+        (None, _) => theme.dim1(),
     };
-    let time = match m.ms {
-        Some(ms) if now.saturating_sub(ms) < 20 * 3_600_000 => {
-            crate::localtime::clock_word(ms / 1000).unwrap_or_default()
-        }
-        Some(ms) => crate::text::age_slot(now, ms, false),
-        None => String::new(),
-    };
-    let steps = match m.steps {
-        0 => String::new(),
-        1 => format!("1 step ∙ {}", m.tools.join(", ")),
-        n => format!("{n} steps ∙ {}", m.tools.join(", ")),
-    };
+    let time = super::transcript::when(m.ms, now);
+    let steps = super::transcript::steps_word(m.steps, &m.tools);
     let mut head = Vec::new();
     if who.is_empty() {
-        head.push(Span::styled(time.clone(), theme.dim2()));
+        head.push(Span::styled(time, theme.dim2()));
     } else {
-        head.push(Span::styled(who.to_string(), who_style));
+        head.push(Span::styled(who, who_style));
         head.push(Span::styled(format!("  {time}"), theme.dim2()));
     }
     let left = super::spans_width(&head);

@@ -448,20 +448,44 @@ fn runs_on(line: &str) -> bool {
 }
 
 /// The terminator of a heredoc this line opens: `<<EOF`, `<<-EOF`,
-/// `<< 'EOF'`, `<<"EOF"`. A here-string (`<<<`) opens none.
+/// `<< 'EOF'`, `<<"EOF"`. A here-string (`<<<`) opens none, nor a `<<`
+/// inside quotes or arithmetic (`$((1 << 3))`), nor one whose word does not
+/// start as a name does (`<< 3`).
 fn heredoc(line: &str) -> Option<String> {
-    let at = line.find("<<")?;
-    let rest = &line[at + 2..];
-    if rest.starts_with('<') {
-        return None;
+    let mut quote = None;
+    let mut arith = 0usize;
+    let mut chars = line.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') if line[at + 1..].starts_with('(') => {
+                arith += 1;
+                chars.next();
+            }
+            (None, ')') if arith > 0 && line[at + 1..].starts_with(')') => {
+                arith -= 1;
+                chars.next();
+            }
+            (None, '<') if arith == 0 && line[at + 1..].starts_with('<') => {
+                let rest = &line[at + 2..];
+                if rest.starts_with('<') {
+                    return None;
+                }
+                let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+                let rest = rest.trim_start_matches(['\'', '"']);
+                if !rest.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+                    return None;
+                }
+                let word: String =
+                    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                return Some(word);
+            }
+            _ => {}
+        }
     }
-    let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
-    let word: String = rest
-        .chars()
-        .skip_while(|c| *c == '\'' || *c == '"')
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    (!word.is_empty()).then_some(word)
+    None
 }
 
 /// `[label](target)` with `chars[open] == '['`: the link, if the target
@@ -723,6 +747,15 @@ mod tests {
         assert_eq!(spans, vec![0..2, 2..4, 4..8, 8..9]);
         // A here-string is one line.
         assert_eq!(targets("```bash\ngrep x <<< \"$v\"\nls\n```").len(), 2);
+        // A shift in arithmetic or a `<<` in quotes opens no heredoc.
+        for line in ["echo $((1<<3))", "echo $((1 << 3))", "echo \"a << b\"", "let x=1<<3"] {
+            let fence = format!("```bash\n{line}\nmake\n```");
+            assert_eq!(targets(&fence), vec![command(line), command("make")], "{line}");
+        }
+        assert_eq!(
+            targets("```sh\ncat <<-\"END\"\nx\nEND\nls\n```"),
+            vec![command("cat <<-\"END\"\nx\nEND"), command("ls")]
+        );
     }
 
     #[test]

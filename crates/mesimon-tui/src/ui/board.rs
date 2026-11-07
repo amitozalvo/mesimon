@@ -904,16 +904,16 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     }
 }
 
+/// One phase of a linked card's flash, in spinner frames: the MOVE
+/// ghost's 400 ms (`Theme::move_blink`).
+const LINK_FLASH_FRAMES: usize = 4;
+
 /// The board behind a card's dialog (T-817): every cell of the columns but
 /// their header row and the card the dialog is about recedes toward the
 /// ground, so that card is the one the board still shows; behind the
 /// composer's dialog (T-1144) it is the card its ticket's note or prompt
 /// came from, or none. Drawn after the columns and the bolts, before the
 /// dialogs.
-/// One phase of a linked card's flash, in spinner frames: the MOVE
-/// ghost's 400 ms (`Theme::move_blink`).
-const LINK_FLASH_FRAMES: usize = 4;
-
 pub(super) fn recede(f: &mut Frame, app: &App, area: Rect) {
     // The composer's dialog recedes the board too (T-1144), with no card
     // of its own to keep: a new ticket's, or a column's prompt.

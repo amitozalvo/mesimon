@@ -6451,6 +6451,16 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         Response::AgentAsked { held_for_person, road, .. } => (held_for_person, road.unwrap()),
         other => panic!("ask_agent: {other:?}"),
     };
+    // On the mod road: `probe` went to the pane, by `kind` frames alone.
+    let went_by = |probe: &str, kind: &str| {
+        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
+        let lines: Vec<_> = frames.lines().filter(|l| l.contains(probe)).collect();
+        let kind_word = format!("\"{kind}\"");
+        assert!(
+            !lines.is_empty() && lines.iter().all(|l| l.contains(&kind_word)),
+            "{probe} went by a {kind} alone: {frames}"
+        );
+    };
 
     // ---- immediately, at a working worker: the send-now, mid-turn -----------
     start(&mut c, ws);
@@ -6496,12 +6506,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         wait_until(std::time::Duration::from_secs(5), "the submit's words", || {
             landed("mesimon-probe-73b now at the dialog")
         });
-        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
-        let lines: Vec<_> = frames.lines().filter(|l| l.contains("mesimon-probe-73b")).collect();
-        assert!(
-            !lines.is_empty() && lines.iter().all(|l| l.contains("\"submit\"")),
-            "a submit alone at a dialog: {frames}"
-        );
+        went_by("mesimon-probe-73b", "submit");
         hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
     }
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", permission);
@@ -6564,15 +6569,8 @@ fn the_crown_sends_immediately_into_a_working_turn() {
     });
     if test_road() == "mod" {
         feed_has("daemon", "prompt_sent_by_mod_fill", None);
-        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
-        let probes = |p: &str| frames.lines().filter(|l| l.contains(p)).collect::<Vec<_>>();
-        for p in ["mesimon-probe-81", "mesimon-probe-82"] {
-            let lines = probes(p);
-            assert!(
-                !lines.is_empty() && lines.iter().all(|l| l.contains("\"fill\"")),
-                "{p} went by a fill alone: {frames}"
-            );
-        }
+        went_by("mesimon-probe-81", "fill");
+        went_by("mesimon-probe-82", "fill");
     }
     // The Enter's ack names the words (Claude Code's `UserPromptSubmit`
     // carries the prompt): the crown's ask is handed.
@@ -6652,12 +6650,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         wait_until(std::time::Duration::from_secs(5), "the submit's words", || {
             landed("mesimon-probe-83 now under hands")
         });
-        let frames = std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap();
-        let lines: Vec<_> = frames.lines().filter(|l| l.contains("mesimon-probe-83")).collect();
-        assert!(
-            !lines.is_empty() && lines.iter().all(|l| l.contains("\"submit\"")),
-            "a submit alone under a person's hands: {frames}"
-        );
+        went_by("mesimon-probe-83", "submit");
         person_leaves(&tmux_sock, &sid, client);
     } else {
         // A person's own send straight to the pane is refused, not typed.

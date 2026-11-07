@@ -31,6 +31,7 @@ use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+use mesimon_daemon::agents::claude::composer::is_rule;
 use ratatui::style::{Color, Modifier, Style};
 
 /// How often the pane is captured while the window shows it.
@@ -57,8 +58,6 @@ const DIALOG_REACH: usize = 40;
 /// How far below a composer's prompt row its bottom rule is looked for:
 /// the typed words wrap inside the box.
 const BOX_REACH: usize = 12;
-/// The shortest run of `─` read as a composer rule (the daemon's own floor).
-const RULE_MIN: usize = 8;
 
 /// One row of the pane: its styled runs, and its words for the seam search.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -186,11 +185,6 @@ pub(crate) fn words_col(t: &str) -> usize {
     let rest = unframed(t);
     let mark = rest.chars().next().map_or(0, |c| c.len_utf8());
     lead + usize::from(mark > 0) + usize::from(rest[mark..].starts_with(' '))
-}
-
-fn is_rule(t: &str) -> bool {
-    let t = t.trim();
-    t.chars().count() >= RULE_MIN && t.chars().all(|c| c == '─')
 }
 
 /// The composer's row: Claude Code's `❯` (`!` in bash mode, T-876), Codex's `›`.
@@ -343,9 +337,6 @@ fn sgr(mut st: Style, params: &str) -> Style {
         .split(';')
         .map(|p| p.split(':').next().unwrap_or("0").parse().unwrap_or(0))
         .collect();
-    if nums.is_empty() {
-        return Style::default();
-    }
     let mut i = 0;
     while i < nums.len() {
         match nums[i] {
@@ -575,15 +566,38 @@ struct Fitting {
 
 impl Fitting {
     fn to(&mut self, sock: &Path, sid16: &str, cols: u16, rows: u16) {
+        self.fit_with(cols, rows, |c, r| fit(sock, sid16, c, r));
+    }
+
+    /// `to` with the fit itself handed in, so a test can refuse it.
+    fn fit_with(&mut self, cols: u16, rows: u16, fit: impl FnOnce(u16, u16) -> bool) {
         if self.want != Some((cols, rows)) {
             self.want = Some((cols, rows));
             self.since = Instant::now();
         }
         self.tried = Instant::now();
-        if fit(sock, sid16, cols, rows) {
+        if fit(cols, rows) {
             self.fitted = true;
             self.settle = Some(Instant::now() + SETTLE);
         }
+    }
+
+    /// One capture read: fit again if it says the fit was lost, then
+    /// whether it goes. A refit that lands holds the capture back by its
+    /// settle; one refused (a terminal attached) leaves the size wait
+    /// running, so the capture goes once that wait is out.
+    fn sends(
+        &mut self,
+        shot: &Shot,
+        hash: u64,
+        last: &mut u64,
+        fit: impl FnOnce(u16, u16) -> bool,
+    ) -> bool {
+        if let Some((cols, rows)) = self.lost(shot) {
+            self.fit_with(cols, rows, fit);
+            *last = 0;
+        }
+        hash != *last && self.settle.is_none() && self.takes(shot)
     }
 
     /// The size to fit again to, when `shot` is not at the size asked and
@@ -651,14 +665,7 @@ fn read_loop(
         if f.settle.is_none_or(|t| Instant::now() >= t) {
             f.settle = None;
             if let Some((hash, shot)) = capture(sock, sid16) {
-                if let Some((cols, rows)) = f.lost(&shot) {
-                    // Held back like any capture of another size until the
-                    // agent has redrawn for the fit.
-                    f.since = Instant::now();
-                    f.to(sock, sid16, cols, rows);
-                    last = 0;
-                }
-                if hash != last && f.settle.is_none() && f.takes(&shot) {
+                if f.sends(&shot, hash, &mut last, |c, r| fit(sock, sid16, c, r)) {
                     last = hash;
                     if tx.send(shot).is_err() {
                         return f.done(sock, sid16);
@@ -1018,6 +1025,36 @@ mod tests {
         assert_eq!(f.lost(&screen(107, 32)), None, "a pane at its size is left alone");
         f.want = None;
         assert_eq!(f.lost(&screen(80, 24)), None, "no size asked: nothing to fit");
+    }
+
+    /// A fit refused while a terminal is attached does not hold the pane
+    /// back for good: the refit is tried once a `SIZE_WAIT`, and the
+    /// capture at the attached size goes once the size wait is out.
+    #[test]
+    fn a_refused_refit_still_sends_the_capture() {
+        let screen =
+            |cols: u16, rows: usize| Shot { rows: vec![Row::default(); rows], cols, cursor: None };
+        let mut f = Fitting {
+            want: Some((107, 32)),
+            since: Instant::now() - SIZE_WAIT,
+            settle: None,
+            fitted: false,
+            tried: Instant::now() - SIZE_WAIT,
+        };
+        let mut last = 0;
+        let mut asked = false;
+        let went = f.sends(&screen(140, 41), 7, &mut last, |_, _| {
+            asked = true;
+            false
+        });
+        assert!(asked, "the lost fit is tried again");
+        assert!(went, "a refused refit still sends the attached size's capture");
+        let mut f =
+            Fitting { since: Instant::now() - SIZE_WAIT, tried: Instant::now() - SIZE_WAIT, ..f };
+        assert!(
+            !f.sends(&screen(80, 24), 8, &mut last, |_, _| true),
+            "a refit that lands settles first"
+        );
     }
 
     /// Against a real tmux (ignored in `cargo ut`; run with `--ignored`):

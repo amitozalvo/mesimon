@@ -39,7 +39,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::Terminal;
 
 use crate::glyphs::{self, Tier};
-use crate::theme::{Profile, Theme};
+use crate::theme::{mix, Profile, Theme};
 
 // -- what the client reports ------------------------------------------------------
 
@@ -238,7 +238,7 @@ impl Show {
     /// The word set into the top edge, and what follows it.
     fn title(&self) -> (&'static str, String) {
         match &self.mode {
-            Mode::Reload { from } if from != VERSION => ("UPDATE", format!("{from} → {VERSION}")),
+            Mode::Reload { from } if self.changed() => ("UPDATE", format!("{from} → {VERSION}")),
             Mode::Reload { .. } => ("UPDATE", VERSION.to_string()),
             Mode::Open => ("OPENING THE BOARD", String::new()),
         }
@@ -400,7 +400,7 @@ impl Inks {
     /// further toward the ground where the colours can be mixed.
     fn muted(&self) -> Color {
         match self.bg {
-            Some(bg) => mix(self.dim3, bg, 0.3),
+            Some(bg) => mix(bg, self.dim3, 0.3),
             None => self.dim3,
         }
     }
@@ -409,22 +409,9 @@ impl Inks {
     fn muted_bg(&self, bg: Color) -> Color {
         match (bg, self.bg) {
             (Color::Reset, _) => Color::Reset,
-            (bg, Some(ground)) => mix(bg, ground, 0.75),
+            (bg, Some(ground)) => mix(ground, bg, 0.75),
             (_, None) => Color::Reset,
         }
-    }
-}
-
-/// `a`, `t` of the way to `b`: mixed where both are RGB, else whichever is
-/// nearer.
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    match (a, b) {
-        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
-            let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-            Color::Rgb(m(r1, r2), m(g1, g2), m(b1, b2))
-        }
-        _ if t >= 0.5 => b,
-        _ => a,
     }
 }
 
@@ -448,8 +435,9 @@ pub(crate) fn veil(buf: &mut Buffer, inks: &Inks, toward: Toward, k: f32) {
             Toward::Muted => (inks.muted(), inks.muted_bg(cell.bg)),
             Toward::Ground => (ground, ground),
         };
-        cell.fg = mix(cell.fg, fg, k);
-        cell.bg = mix(cell.bg, bg, k);
+        // `k` of the way from the cell toward the veil's ink.
+        cell.fg = mix(fg, cell.fg, k);
+        cell.bg = mix(bg, cell.bg, k);
         if k >= 0.5 {
             // Bold, reverse and underlines would each stand out of the mute.
             cell.modifier = Modifier::empty();
@@ -462,7 +450,9 @@ pub(crate) fn veil(buf: &mut Buffer, inks: &Inks, toward: Toward, k: f32) {
 /// lifted in two steps, a tick apart.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Veil {
-    from: Instant,
+    /// The board's first veiled frame, not the wait's end: the board's
+    /// startup work between the two would otherwise eat the lift.
+    from: Option<Instant>,
     toward: Toward,
     inks: Inks,
 }
@@ -481,12 +471,13 @@ impl Veil {
         if inks.mono || (toward == Toward::Ground && inks.bg.is_none()) {
             return None;
         }
-        Some(Veil { from: Instant::now(), toward, inks })
+        Some(Veil { from: None, toward, inks })
     }
 
     /// Veil a board frame as it stands now; false once the veil is gone.
-    pub(crate) fn apply(&self, buf: &mut Buffer) -> bool {
-        let k = lift_at(self.from.elapsed().as_millis() as u64);
+    pub(crate) fn apply(&mut self, buf: &mut Buffer) -> bool {
+        let from = *self.from.get_or_insert_with(Instant::now);
+        let k = lift_at(from.elapsed().as_millis() as u64);
         veil(buf, &self.inks, self.toward, k);
         k > 0.0
     }
@@ -1111,5 +1102,19 @@ mod tests {
         let mut none = board.clone();
         veil(&mut none, &ink, Toward::Muted, 0.0);
         assert_eq!(none, board, "lifted, the board is itself");
+    }
+
+    #[test]
+    fn the_lift_starts_on_the_boards_first_frame_not_the_waits_end() {
+        let ink = inks(Profile::TrueColor);
+        let mut v = Veil::after(&reload("0.0.1"), ink).expect("a truecolour reload veils");
+        // The board's startup work after the wait (intro, setup, finders).
+        std::thread::sleep(Duration::from_millis(3 * LIFT_STEP_MS));
+        let board = a_board(40, 10);
+        let mut first = board.clone();
+        assert!(v.apply(&mut first), "the first frame is veiled");
+        let mut two_thirds = board.clone();
+        veil(&mut two_thirds, &ink, Toward::Muted, 2.0 / 3.0);
+        assert_eq!(first, two_thirds, "the first frame is two thirds of the way");
     }
 }

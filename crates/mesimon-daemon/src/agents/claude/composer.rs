@@ -49,7 +49,7 @@ const SHELL: char = '!';
 const RULE: char = '─';
 /// The shortest run of `─` read as a rule. Claude draws it across the pane,
 /// so anything this short is something else.
-const RULE_MIN: usize = 8;
+pub const RULE_MIN: usize = 8;
 
 /// Claude Code's spinner line while it compacts (2.1.308, T-894):
 /// `✻ Compacting conversation… (3s · ↓ 77 tokens)`, drawn above the
@@ -155,7 +155,9 @@ fn locate(lines: &[String]) -> Option<Located<'_>> {
     None
 }
 
-fn is_rule(line: &str) -> bool {
+/// A composer rule: a run of at least `RULE_MIN` `─`, spaces trimmed. The
+/// TUI's live window finds the composer by the same rule.
+pub fn is_rule(line: &str) -> bool {
     let line = line.trim();
     line.chars().count() >= RULE_MIN && line.chars().all(|c| c == RULE)
 }

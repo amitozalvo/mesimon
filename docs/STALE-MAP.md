@@ -42174,3 +42174,75 @@ colour still stands only on a hand that is up.
 This reverses the first block's refusal of a hand row parsed from the call. Its wire objection was
 about a new `RowKind`, which this avoids. A raise the daemon refused still writes its call, so it
 reads as a lowered hand. Golden `transcript_dialog_lowered_hand`.
+
+## The ninth simplify pass, and a bug hunt (T-1157, 2026-11-07)
+
+Five reviewers over the 68 commits since the eighth pass (`06c4a757..2d60ef73`, T-1120 to
+T-1155), one per area — the ticket page and its live window, the TUI's app state, the TUI's
+drawing, core with the daemon, the tests with `ci/` — each asked for bugs first, then reuse,
+simplification, efficiency and altitude, every finding checked against the live file. Appliers
+worked by file ownership (five forks); the lead took the one change across the daemon and the
+TUI. No golden moved. 24 files.
+
+**Bugs fixed** (each with a test that fails without the fix, unless named):
+- **The live window never captured a pane another terminal had attached** (T-1143). The lost-fit
+  branch reset the size wait's clock every `SIZE_WAIT`, so "a fit refused … sent all the same"
+  could never come true. `Fitting::sends`.
+- **A paged-back conversation lost its place when earlier pages landed**:
+  `poll_page_transcript` removed the composed entry the layout reads its anchor from; it now
+  resets its stamp. The old test set the stamp by hand and could not fail; it drives the poll.
+- **Tab stuck between two links to one target**: the page's selected link was its `Found`, equal
+  for the same path cited twice, so both were marked and tab walked a, b, a, b. It is named by
+  message key and place (`LinkAt`). The link also drops once the rail cursor leaves its session
+  or the page, as its doc said ("while the cursor is still on its session").
+- **The first window of a TUI run captured at the pane's own size**: `live_size` was written only
+  once a shot existed; the zone asks its size before the first capture.
+- **A paste landed in the read-only note reader** (T-1139): `typing()` counted any `Mode::Editor`,
+  so the hidden body took it and Enter opened the editor dirty; the Hebrew-layout pause was also
+  swallowed there. The reader is no text field now.
+- **The wheel could not move the ticket page's rail under a resting pointer**: the hover kept
+  pulling the cursor back. The wheel's rail arm clears the hover, as a key does.
+- **The fade after a `U` was mostly skipped** (T-1120): the veil's clock started when the wait
+  ended, before setup, opener and notifier probes ran; it starts on the board's first frame.
+- **A mod-road `now` could press Enter into a dialog** (T-1148): `fills_now` refused a session at
+  a dialog, but the `filled` report's Enter only re-read the clients. A permission prompt that came
+  up while the report was on its way would take the Enter as "Yes". The edge reads
+  `pane_waits_on_you` again; the refusal is the new feed outcome `at_a_dialog` (receipt: "…pressed
+  no Enter because its agent is at a dialog…"). The window narrows, it cannot close: a dialog
+  drawn after the report lands is unseen. No rig case: the race cannot be staged on a stub, and
+  the words are a refusal reason, not an instruction.
+- **`$((1 << 3))` read as a heredoc** (T-1141): the fence's later lines became one command to
+  copy. A terminator starts with a letter or `_`, and a `<<` in quotes or `((…))` is no heredoc.
+  Refuted cost: bash's numeric terminator (`cat << 3`) is no longer read as one.
+- **Tests that could not fail**: the hand-colour golden read the card's row above the dialog;
+  the summary test dropped its card-side check when the footer gained `^j summary`; nothing
+  tested ` ∙ unsaved` after T-1139; the cursor-grow test passed on two missing headers.
+- `ci/traffic.py` froze a day's counts on the first run after it ended, before GitHub's late
+  counts arrived; a day is kept once it is two days old (runs under 12 days apart).
+
+**Applied, structure.** `hint_spans`/`footer_spans` are one body (`spell`); `loader::mix` is
+`theme::mix`; `resolve_links` for the three extract→resolve blocks; `page_visible` borrows the
+visible links (three clones per frame were made); `train_candidates` returns early when nothing
+is ahead; `column_index` returns the widths (one sort, not two); the page's message cache holds
+inked, guttered rows; `live.rs` uses the daemon's `is_rule`; `message_head` reuses the dialog's
+`when`/`steps_word`; `on_mod_fill`'s two refused tails are one (`FillKey::{word, words,
+refused_word}`, every feed word byte-identical); `frees_here` for eviction's rule and its seed;
+`ColumnWidth::WORDS`; `history.rs` builds rows without a `Vec` per block; `setup_probe` returns
+`Option<Forge>` (the signed-in bool nothing read since T-1123); test helpers `ask_field`,
+`spot_of`, `went_by`; dead code (`let bar = 0`, an unreachable `nums.is_empty()`).
+
+**Checked and kept.** `shutdown_existing`'s 30 s hello: it runs only once the connection is gone,
+which is T-1149's still-starting daemon. The GitLab source filter on an open head: T-1130 says an
+empty target "judges by source alone". The live window's per-frame `Said`/`view` scan (~50 rows;
+caching it threads new fields through every `Shot`).
+
+**Found and left open:**
+- `Live`'s `Drop` joins its reader on the UI thread (one or two tmux forks of stall per rail
+  step); detaching risks a stale reader's `unfit` racing the next window's fit.
+- The crown is told a mod-road `now` waits "while a person has its pane open"; the rule is a
+  client typing or a draft in the box (`mcp.rs` CROWN_WAKES). Crown text: a rig run decides it.
+- `live::boxed_prompt` is the daemon composer's `locate` plus Codex's `›`; folding changes the
+  daemon's composer read.
+- Setup's probe forks `auth status` per CLI only to pick "pull" or "merge request"; setup keeps
+  multi-page scaffolding (`asks`, `rail`, a map keyed by its one `Ask`).
+- `App::live_rect` is set every frame for tests alone.

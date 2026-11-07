@@ -556,6 +556,29 @@ impl Transcript {
         true
     }
 
+    /// For a test: the rows before message `m` let go, as if only the rest
+    /// had been read so far; they come back through `land_earlier`.
+    #[cfg(test)]
+    pub(crate) fn hold_back(&mut self, m: usize) -> Vec<TranscriptRow> {
+        let rest = self.rows.split_off(self.messages[m].row);
+        let earlier = std::mem::replace(&mut self.rows, rest);
+        self.floor = self.rows.first().map(|r| r.at);
+        self.rebuild();
+        earlier
+    }
+
+    /// For a test: `rows` arrive as the earlier pages' reader sends a page,
+    /// landed by the next `poll`.
+    #[cfg(test)]
+    pub(crate) fn land_earlier(&mut self, rows: Vec<TranscriptRow>) {
+        let end = self.floor.expect("rows held back");
+        let from = rows.first().map_or(end, |r| r.at);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let conversation = self.conversation.clone();
+        let _ = tx.send(Page { conversation, rows, from, end, next_before: None });
+        self.earlier = Some(rx);
+    }
+
     /// What was written since the held part ends, from where its page
     /// begins.
     fn append(&mut self, page: Page) -> bool {

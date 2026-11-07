@@ -721,36 +721,15 @@ fn footer_spans(
     tier: crate::glyphs::Tier,
     budget: usize,
 ) -> Vec<Span<'static>> {
-    let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
-    let word = Style::default().fg(ink.dim2);
-    let sep = Style::default().fg(ink.dim3);
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    for b in items {
+    spell(items, ink, budget, true, |b| {
         let fact = b.prio == 0 && keymap::ticket_fact(b, ctx).is_some();
-        let hint = match (b.verb, fact) {
+        match (b.verb, fact) {
             (keymap::Verb::Links, true) => {
-                format!("{} {}", crate::glyphs::links_mark(tier), (b.hint)(ctx))
+                format!("{} {}", crate::glyphs::links_mark(tier), (b.hint)(ctx)).into()
             }
-            _ => (b.hint)(ctx).to_string(),
-        };
-        let w = b.show.width() + 1 + hint.width();
-        let add = if out.is_empty() { w } else { w + 3 };
-        if used + add > budget {
-            break;
+            _ => (b.hint)(ctx).into(),
         }
-        if !out.is_empty() {
-            out.push(Span::styled(" ∙ ".to_string(), sep));
-        }
-        out.push(Span::styled(b.show.to_string(), key));
-        out.push(Span::styled(format!(" {hint}"), word));
-        used += add;
-        // Spelled, so clickable wherever it lands whole (T-716).
-        if let Some(k) = keymap::click_key(b) {
-            crate::mouse::note_hint(b.show, &hint, k);
-        }
-    }
-    out
+    })
 }
 
 /// Bindings as hint spans — `key` in `ink.base` + bold (06 §5.1 clause 3:
@@ -765,16 +744,32 @@ pub(super) fn hint_spans(
     ink: &Ramp,
     budget: usize,
 ) -> Vec<Span<'static>> {
+    spell(items, ink, budget, false, |b| (b.hint)(ctx).into())
+}
+
+/// `hint_spans`' body, and the footer's: each binding's key and `word`, to
+/// `budget` cells. `top_only` stops at the first that does not fit rather
+/// than skipping it.
+fn spell(
+    items: &[&Binding],
+    ink: &Ramp,
+    budget: usize,
+    top_only: bool,
+    word_of: impl Fn(&Binding) -> std::borrow::Cow<'static, str>,
+) -> Vec<Span<'static>> {
     let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
     let word = Style::default().fg(ink.dim2);
     let sep = Style::default().fg(ink.dim3);
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     for b in items {
-        let hint = (b.hint)(ctx);
+        let hint = word_of(b);
         let w = b.show.width() + 1 + hint.width();
         let add = if out.is_empty() { w } else { w + 3 };
         if used + add > budget {
+            if top_only {
+                break;
+            }
             continue;
         }
         if !out.is_empty() {
@@ -785,7 +780,7 @@ pub(super) fn hint_spans(
         used += add;
         // Spelled, so clickable wherever it lands whole (T-716).
         if let Some(k) = keymap::click_key(b) {
-            crate::mouse::note_hint(b.show, hint, k);
+            crate::mouse::note_hint(b.show, &hint, k);
         }
     }
     out

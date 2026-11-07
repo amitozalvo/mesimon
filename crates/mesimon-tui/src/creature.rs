@@ -1567,7 +1567,7 @@ mod tests {
     /// installer writes no escapes. Every body pixel is ink and the face is
     /// the terminal's own ground showing through.
     fn installer_art() -> String {
-        let pic = compose(Size::Large, frame_at(Size::Medium, Anim::Seat, 0), 0);
+        let pic = compose(Size::Large, frame_at(Size::Large, Anim::Seat, 0), 0);
         let ink = |x: i16, y: i16| pic.at(x, y).is_some_and(|r| r != Role::Eye);
         let mut out = String::new();
         for r in 0..pic.h / 2 {

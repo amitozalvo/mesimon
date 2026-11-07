@@ -1706,12 +1706,12 @@ pub enum ColumnWidth {
     #[default]
     M,
     L,
-    #[serde(rename = "xl")]
     Xl,
 }
 
 impl ColumnWidth {
-    pub const ALL: [Self; 4] = [Self::S, Self::M, Self::L, Self::Xl];
+    /// Every size's `word`, in the order Enter cycles them.
+    pub const WORDS: [&'static str; 4] = ["S", "M", "L", "XL"];
 
     pub fn next(self) -> Self {
         match self {

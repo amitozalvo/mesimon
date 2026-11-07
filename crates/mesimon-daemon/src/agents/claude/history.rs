@@ -298,32 +298,30 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
             else {
                 return Vec::new();
             };
-            blocks
-                .iter()
-                .flat_map(|b| match b.get("type").and_then(Value::as_str) {
-                    Some("text") => b
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .and_then(|t| row(RowKind::Reply, t))
-                        .into_iter()
-                        .collect(),
+            let mut out = Vec::new();
+            for b in blocks {
+                match b.get("type").and_then(Value::as_str) {
+                    Some("text") => out.extend(
+                        b.get("text").and_then(Value::as_str).and_then(|t| row(RowKind::Reply, t)),
+                    ),
                     Some("thinking") => {
-                        narration(b).and_then(|t| row(RowKind::Reply, t)).into_iter().collect()
+                        out.extend(narration(b).and_then(|t| row(RowKind::Reply, t)))
                     }
                     Some("tool_use") => {
                         let name = b.get("name").and_then(Value::as_str).unwrap_or_default();
                         let reason =
                             b.get("input").and_then(|i| i.get("reason")).and_then(Value::as_str);
                         match reason.filter(|_| mesimon_core::mesophon::is_raise_hand(name)) {
-                            Some(reason) => TranscriptRow::hand(at, &tool_label(b), reason, ms),
-                            None => {
-                                TranscriptRow::tool(at, &tool_label(b), ms).into_iter().collect()
+                            Some(reason) => {
+                                out.extend(TranscriptRow::hand(at, &tool_label(b), reason, ms))
                             }
+                            None => out.extend(TranscriptRow::tool(at, &tool_label(b), ms)),
                         }
                     }
-                    _ => Vec::new(),
-                })
-                .collect()
+                    _ => {}
+                }
+            }
+            out
         }
         Some("system") if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
             row(RowKind::Notice, "conversation compacted").into_iter().collect()

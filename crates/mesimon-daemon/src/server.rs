@@ -222,6 +222,9 @@ const PERSON_READ_MS: u64 = 1000;
 /// open (T-943, T-958; `Daemon::person_at_pane`): the receipt's reason and
 /// the feed's outcome.
 const A_PERSON_ATTACHED: &str = "a_person_attached";
+/// A `filled` report's Enter not pressed because the agent came to a dialog
+/// while the report was on its way (T-1148): the Enter would answer it.
+const AT_A_DIALOG: &str = "at_a_dialog";
 /// The same refusal in words, where a receipt or an error says why.
 const PERSON_AT_PANE: &str = "a person has its pane open, so the board typed nothing into it";
 /// The refusal past an idle client (T-966): the box holds words nobody sent.
@@ -2621,6 +2624,33 @@ enum FillKey {
     /// its Enter are on the hook set. A plugin's `submit` waits for the
     /// turn's end.
     Enter,
+}
+
+impl FillKey {
+    /// The key, as `prompt_by_mod_fill`'s outcome.
+    fn word(self) -> &'static str {
+        match self {
+            FillKey::SendNow => "send_now",
+            FillKey::Enter => "enter",
+        }
+    }
+
+    /// The feed's words for the key after a `filled`: pressed, failed, and
+    /// its name in the journal and the crown's reason.
+    fn words(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            FillKey::SendNow => ("prompt_sent_immediately", "prompt_send_now_failed", "send-now"),
+            FillKey::Enter => ("prompt_sent_by_mod_fill", "prompt_enter_failed", "Enter"),
+        }
+    }
+
+    /// The feed's word for a fill the mod refused or threw.
+    fn refused_word(self) -> &'static str {
+        match self {
+            FillKey::SendNow => "prompt_send_now_refused",
+            FillKey::Enter => "prompt_fill_refused",
+        }
+    }
 }
 
 /// Claude Code's refusal of a plugin's input after a person's Esc (T-894,
@@ -6373,11 +6403,7 @@ impl Daemon {
         let mut owed = Owed::submitted(ticket, words, frame, ack, now_ms());
         owed.fill = Some(key);
         self.owed.insert(id, owed);
-        let word = match key {
-            FillKey::SendNow => "send_now",
-            FillKey::Enter => "enter",
-        };
-        self.feed.board_outcome("daemon", "prompt_by_mod_fill", Some(ticket), word);
+        self.feed.board_outcome("daemon", "prompt_by_mod_fill", Some(ticket), key.word());
         true
     }
 
@@ -6390,10 +6416,9 @@ impl Daemon {
     pub(super) fn on_mod_fill(&mut self, id: uuid::Uuid, frame: &HookFrame) {
         let Some(fid) = frame.reason.as_deref() else { return };
         let outcome = frame.payload["outcome"].as_str().unwrap_or("");
-        let key =
-            self.owed.get(&id).filter(|o| o.frame.as_deref() == Some(fid)).and_then(|o| o.fill);
-        let ours = key.is_some();
-        if !ours {
+        let Some(key) =
+            self.owed.get(&id).filter(|o| o.frame.as_deref() == Some(fid)).and_then(|o| o.fill)
+        else {
             self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}, nothing owed"));
             // A crown ask's fill report after its owed window (T-938): still
             // that ask's, by seat, frame and pane. Only the known `refused`
@@ -6413,7 +6438,7 @@ impl Daemon {
                 self.persist_and_notify();
             }
             return;
-        }
+        };
         let Some(rec) = self.board.session(id) else { return };
         let sid = rec.sid16();
         if outcome == "filled" {
@@ -6428,10 +6453,13 @@ impl Daemon {
             // mod filled the box; what the person did since is not the
             // board's to read. The send-now asks for no client at all; the
             // Enter (T-1148) goes by the rule that admitted it, no client
-            // typing (`Here`), read again at this edge.
-            let enter = key == Some(FillKey::Enter);
+            // typing (`Here`) and no dialog up, read again at this edge: a
+            // dialog that came up while the report was on its way would take
+            // the Enter as its answer.
+            let enter = key == FillKey::Enter;
+            let dialog = enter && self.pane_waits_on_you(id);
             let held = if enter {
-                self.clients_at_pane(&sid) == PaneClients::Here
+                dialog || self.clients_at_pane(&sid) == PaneClients::Here
             } else {
                 self.person_at_pane(&sid)
             };
@@ -6442,11 +6470,7 @@ impl Daemon {
             } else {
                 self.backend.send_now(&sid).map_err(Some)
             };
-            let (sent_word, failed_word, key_name) = if enter {
-                ("prompt_sent_by_mod_fill", "prompt_enter_failed", "Enter")
-            } else {
-                ("prompt_sent_immediately", "prompt_send_now_failed", "send-now")
-            };
+            let (sent_word, failed_word, key_name) = key.words();
             match sent {
                 Ok(()) => self.feed.board("daemon", sent_word, ticket),
                 Err(e) => {
@@ -6458,15 +6482,18 @@ impl Daemon {
                             ("keys", format!("the {key_name} failed after the words were filled into its box"))
                         }
                         None => {
-                            self.journal.line(&format!(
-                                "{key_name} for session {id}: a person has its pane open"
-                            ));
+                            let (word, because) = if dialog {
+                                (AT_A_DIALOG, "its agent is at a dialog")
+                            } else {
+                                (A_PERSON_ATTACHED, "a person has its pane open")
+                            };
+                            self.journal.line(&format!("{key_name} for session {id}: {because}"));
                             (
-                                A_PERSON_ATTACHED,
+                                word,
                                 format!(
                                     "its mod reported the words filled; the board pressed no \
-                                     {key_name} because a person has its pane open; what became \
-                                     of the words is unconfirmed"
+                                     {key_name} because {because}; what became of the words \
+                                     is unconfirmed"
                                 ),
                             )
                         }
@@ -6483,30 +6510,13 @@ impl Daemon {
         self.journal.line(&format!("mod fill {fid} for session {id}: {outcome}: {why}"));
         let Some(mut owed) = self.owed.remove(&id) else { return };
         let ticket = owed.ticket;
-        // `now` (T-1148): a refused fill falls to the plain `submit`, the
-        // crown's ask too, which is the mod road's `now` as it was before
-        // the fill: the words go, and the engine holds them to the running
-        // turn's end. The ask is that submit's from here.
-        if key == Some(FillKey::Enter) {
-            let Some(words) = owed.sent.take() else { return };
-            self.feed.board_outcome("daemon", "prompt_fill_refused", Some(ticket), why);
-            if !self.resubmit(id, words, &owed) {
-                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                    rec.pending_submit = false;
-                }
-                if owed.ask.is_some() {
-                    self.crown_ask_unread(id, fid, FILL_UNREAD);
-                }
-            }
-            self.persist_and_notify();
-            return;
-        }
         // The crown's ask is not slowed to the turn's end behind its back
-        // (T-938): the refusal stands, and `asked` says it. Whose fill it
-        // was is the delivery's crown tag, whatever the record could take.
-        // Only the known `refused` is a confirmed drop; an absent or unread
-        // outcome is unknown (round 3), and no keys follow either.
-        if owed.ask.is_some() {
+        // (T-938): the refusal of its send-now stands, and `asked` says it.
+        // Whose fill it was is the delivery's crown tag, whatever the record
+        // could take. Only the known `refused` is a confirmed drop; an
+        // absent or unread outcome is unknown (round 3), and no keys follow
+        // either.
+        if key == FillKey::SendNow && owed.ask.is_some() {
             if outcome == "refused" {
                 self.crown_ask_refused(id, fid, why);
             } else {
@@ -6515,15 +6525,22 @@ impl Daemon {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = false;
             }
-            self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
+            self.feed.board_outcome("daemon", key.refused_word(), Some(ticket), why);
             self.persist_and_notify();
             return;
         }
+        // Otherwise a refused fill falls to the plain `submit`, which is the
+        // mod road's `now` as it was before the fill (T-1148), the crown's
+        // ask too: the words go, and the engine holds them to the running
+        // turn's end. The ask is that submit's from here.
         let Some(words) = owed.sent.take() else { return };
-        self.feed.board_outcome("daemon", "prompt_send_now_refused", Some(ticket), why);
+        self.feed.board_outcome("daemon", key.refused_word(), Some(ticket), why);
         if !self.resubmit(id, words, &owed) {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = false;
+            }
+            if owed.ask.is_some() {
+                self.crown_ask_unread(id, fid, FILL_UNREAD);
             }
         }
         self.persist_and_notify();
@@ -22705,6 +22722,48 @@ mod reaper_without_server_tests {
         let sessions = vec![parked.clone(), shell, working];
         assert_eq!(unverified_parked(&sessions, false), vec![parked.sid16()]);
         assert!(unverified_parked(&sessions, true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod mod_fill_dialog_tests {
+    use super::*;
+
+    /// T-1148: a `now` fill's `filled` report that arrives once the agent
+    /// came to a dialog presses no Enter, which would answer the dialog; the
+    /// feed says why (`at_a_dialog`), not that a person has the pane open.
+    #[test]
+    fn a_filled_report_at_a_dialog_presses_no_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let id = d.board.sessions[0].id;
+        let ticket = d.board.sessions[0].ticket;
+        d.board.sessions[0].set_state(SessionState::RequiresAction {
+            reason: mesimon_core::board::Reason::Permission,
+        });
+        let words = Parked { text: "words".into(), brief: false, title: false };
+        let mut owed = Owed::submitted(ticket, words, "f1".into(), Ack::PROMPT, now_ms());
+        owed.fill = Some(FillKey::Enter);
+        d.owed.insert(id, owed);
+        d.on_mod_fill(
+            id,
+            &HookFrame {
+                session: id.to_string(),
+                event: "ModFill".into(),
+                reason: Some("f1".into()),
+                pane: None,
+                road: mesimon_core::road::Road::Mod,
+                payload: serde_json::json!({ "outcome": "filled" }),
+            },
+        );
+        d.feed.flush().unwrap();
+        let feed = std::fs::read_to_string(d.paths.activity_log()).unwrap_or_default();
+        let line = feed
+            .lines()
+            .find(|l| l.contains("\"cmd\":\"prompt_enter_failed\""))
+            .unwrap_or_else(|| panic!("no Enter refusal in the feed:\n{feed}"));
+        assert!(line.contains("\"outcome\":\"at_a_dialog\""), "{line}");
+        assert!(!feed.contains("prompt_sent_by_mod_fill"), "{feed}");
     }
 }
 

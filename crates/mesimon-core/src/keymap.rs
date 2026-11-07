@@ -7131,7 +7131,7 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::ColumnCollapse => {
             choice(&["off", "always", "when empty"], or(c.col_collapse_word, "off"))
         }
-        Verb::ColumnWidth => choice(&["S", "M", "L", "XL"], or(c.col_width_word, "M")),
+        Verb::ColumnWidth => choice(&crate::board::ColumnWidth::WORDS, or(c.col_width_word, "M")),
         Verb::SortColumn => Value::Word(or(c.col_sort_word, "newest first").into()),
         Verb::ColumnRefusesNew => Value::Switch(!c.col_refuses_new),
         // A column that says nothing works where the board does (T-816).
@@ -8910,17 +8910,19 @@ fn board_drops(b: &Binding, ctx: &Ctx) -> bool {
 /// `ticket_fact`s; the board's `board_drops` never do.
 pub fn footer_items(scope: Scope, ctx: &Ctx) -> Vec<&'static Binding> {
     let mut out: Vec<(u8, &'static Binding)> = Vec::new();
+    // Board is no scope's parent, so its own keys are the board's footer.
+    let board = scope == Scope::Board;
     for s in chain(scope) {
         for b in bindings(s) {
             let prio = match b.prio {
-                0 if s == Scope::Board => ticket_fact(b, ctx).unwrap_or(0),
+                0 if board => ticket_fact(b, ctx).unwrap_or(0),
                 p => p,
             };
             if prio > 0
                 && b.live(ctx)
                 && !(b.hint)(ctx).is_empty()
                 && (b.verb != Verb::AddColumn || ctx.col_header)
-                && !(scope == Scope::Board && board_drops(b, ctx))
+                && !(board && board_drops(b, ctx))
             {
                 out.push((prio, b));
             }

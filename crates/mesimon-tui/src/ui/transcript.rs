@@ -28,7 +28,7 @@ pub(super) const ROWS: u16 = 14;
 pub(super) const WIDTH: u16 = 68;
 
 /// When a message was written: the clock today, how long ago before that.
-fn when(ms: Option<u64>, now_ms: u64) -> String {
+pub(super) fn when(ms: Option<u64>, now_ms: u64) -> String {
     match ms {
         Some(ms) if now_ms.saturating_sub(ms) < 20 * 3_600_000 => {
             crate::localtime::clock_word(ms / 1000).unwrap_or_default()
@@ -39,7 +39,7 @@ fn when(ms: Option<u64>, now_ms: u64) -> String {
 }
 
 /// `9 steps ∙ Read, Edit, Bash`: what followed the message.
-fn steps_word(steps: usize, tools: &[String]) -> String {
+pub(super) fn steps_word(steps: usize, tools: &[String]) -> String {
     match steps {
         0 => String::new(),
         1 => format!("1 step ∙ {}", tools.join(", ")),
