@@ -349,10 +349,13 @@ def main(argv=None):
     mode.add_argument("--dry-run", action="store_true", help="offline synthetic fixtures; never updates last-read")
     mode.add_argument("--mark-read", action="store_true", help="print and checkpoint installed versions and API captures after reading")
     parser.add_argument("--claude-decls", action="store_true", help="separate offline installed-Claude declaration comparison (Python 3.14)")
+    parser.add_argument("--capture", action="store_true", help="capture the installed CLIs' screens and check the ticket page reads them (ci/pane-capture.py; two tiny Haiku turns)")
     args = parser.parse_args(argv)
     try:
         if args.claude_decls:
             return declarations_step(args)
+        if args.capture:
+            return subprocess.run([sys.executable, "-B", str(CI / "pane-capture.py")]).returncode
         if args.dry_run:
             fixture = json.loads((FIXTURES / "input.json").read_text())
             state, before = fixture["state"], fixture["before"]

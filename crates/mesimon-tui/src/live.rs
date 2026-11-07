@@ -1566,4 +1566,52 @@ mod tests {
         assert_eq!(page.rows[4].text, "-".repeat(40));
         assert_eq!(page.prompt_row(), Some(3), "the field still finds its row");
     }
+
+    /// The installed agents' own screens (T-1156), captured by
+    /// `ci/pane-capture.py` into `MESIMON_PANE_CAPTURES`: every box is found,
+    /// nothing of the agent's is left under it, no key hint the page knows
+    /// of survives in its status rows, an idle box holds nothing, and a
+    /// dialog is never read as a box. Nothing to read without the variable:
+    /// the captures stay on the machine that made them.
+    #[test]
+    fn every_capture_anchors_cuts_the_footer_and_strips_the_chrome() {
+        let Some(dir) = std::env::var_os("MESIMON_PANE_CAPTURES") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).expect("the captures") {
+            let path = entry.expect("an entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+                continue;
+            }
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+            let raw = std::fs::read_to_string(&path).expect("a capture");
+            let at = std::fs::read_to_string(path.with_extension("cursor")).expect("its cursor");
+            let n: Vec<u16> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+            let shot = Shot { rows: parse(&raw), cols: n[2], cursor: Some((n[0], n[1])) };
+            seen += 1;
+            if name.starts_with("permission") {
+                assert_eq!(shot.box_rows(), None, "{name}: a dialog is not a box");
+                continue;
+            }
+            let (top, _) = shot.box_rows().unwrap_or_else(|| panic!("{name}: no box found"));
+            let page = shot.for_page();
+            assert!(page.page_box().is_some(), "{name}: the page's box");
+            let (_, _, bottom) = page.page_box().expect("the box");
+            assert_eq!(page.rows.len(), bottom + 1, "{name}: rows under the box survive");
+            for row in &page.rows[..top] {
+                for hint in ["to interrupt", "to expand", "for shortcuts", "to cycle", "Tip:"] {
+                    let chrome = row.text.trim_start().starts_with(CHROME);
+                    assert!(
+                        !(chrome && row.text.contains(hint)),
+                        "{name}: a hint survives: {:?}",
+                        row.text
+                    );
+                }
+            }
+            if name.starts_with("idle") {
+                assert_eq!(shot.box_holds(), Some(false), "{name}: an idle box holds nothing");
+            }
+        }
+        assert!(seen > 0, "no captures in {}", dir.display());
+    }
 }

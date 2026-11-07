@@ -116,6 +116,7 @@ python3 -B ci/rig.py --only R3                        # Claude rig, in a ticket 
 python3 -B ci/rig.py --provider codex --live --only delegate --model <model> --effort <effort>
 ci/test-linux.sh                                      # the suite on Debian in Docker
 python3 -B ci/release-watch.py                        # on a claude/codex version change
+python3 -B ci/release-watch.py --capture              # and: does the ticket page still read their screens
 git diff --check
 ```
 
