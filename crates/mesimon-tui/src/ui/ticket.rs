@@ -1856,7 +1856,10 @@ fn conversation(
         let newline = if prompt { Newline::Break } else { Newline::Space };
         let text = t.text(m);
         // A hand's words change in place when it is raised again.
-        let size = if m.hand { crate::text::hash64(text) as usize } else { text.len() };
+        let size = match m.hand {
+            Some(raise) => crate::text::hash64((text, raise)) as usize,
+            None => text.len(),
+        };
         let stamp = (size, width, flavor);
         if !cache.get(&(rec.id, m.key)).is_some_and(|e| e.stamp == stamp) {
             let clean = crate::peek::sanitize(text);
@@ -1936,30 +1939,47 @@ fn conversation(
 }
 
 /// Who wrote a message, as its head says: a raised hand (T-1155) says
-/// what it is, a notice nobody.
-pub(super) fn who_word(m: &crate::transcript::Message, kind: SessionKind) -> &'static str {
+/// what it is behind the board's hand marks (`!` up, `¡` down), a notice
+/// nobody.
+pub(super) fn who_word(
+    theme: &crate::theme::Theme,
+    m: &crate::transcript::Message,
+    kind: SessionKind,
+) -> String {
     use mesimon_core::mesophon::RowKind;
-    match (m.hand, m.kind, kind) {
-        (true, _, SessionKind::Codex) => "! codex raised a hand",
-        (true, ..) => "! claude raised a hand",
-        (_, RowKind::Prompt, _) => "you",
-        (_, RowKind::Notice, _) => "",
-        (.., SessionKind::Codex) => "codex",
-        _ => "claude",
+    let agent = if kind == SessionKind::Codex { "codex" } else { "claude" };
+    match (m.hand, m.kind) {
+        (Some(raise), _) => {
+            let mark =
+                if raise.up() { '!' } else { crate::glyphs::lowered_mark(theme.glyph_tier()) };
+            format!("{mark} {agent} raised a hand")
+        }
+        (_, RowKind::Prompt) => "you".into(),
+        (_, RowKind::Notice) => String::new(),
+        _ => agent.into(),
+    }
+}
+
+/// A raised hand's ink (T-1155), as the board's hand row inks one: the
+/// needs-you colour while it is up, that colour faded once it is down.
+pub(super) fn hand_ink(theme: &crate::theme::Theme, raise: crate::transcript::Raise) -> Style {
+    if raise.up() {
+        theme.attn_text()
+    } else {
+        theme.attn_faded()
     }
 }
 
 /// A message's row in its own ink: a notice quiet, a raised hand's words
-/// in the needs-you colour (T-1155), the one thing in the conversation
-/// that waits on the person.
+/// in the hand's (T-1155).
 pub(super) fn ink_message(
     theme: &crate::theme::Theme,
     m: &crate::transcript::Message,
     line: &mut Line<'static>,
 ) {
     use mesimon_core::mesophon::RowKind;
-    let ink = if m.hand {
-        theme.attn_text()
+    let ink = if let Some(raise) = m.hand {
+        hand_ink(theme, raise)
     } else if m.kind == RowKind::Notice {
         Style::default().fg(theme.rest.dim2)
     } else {
@@ -1981,9 +2001,11 @@ fn message_head(
     now: u64,
 ) -> Line<'static> {
     use mesimon_core::mesophon::RowKind;
-    let who = who_word(m, kind);
+    let who = who_word(theme, m, kind);
     let who_style = match m.kind {
-        _ if m.hand => theme.attn_text().add_modifier(Modifier::BOLD),
+        _ if m.hand.is_some() => {
+            m.hand.map_or(Style::default(), |r| hand_ink(theme, r)).add_modifier(Modifier::BOLD)
+        }
         RowKind::Reply | RowKind::Prompt => {
             Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD)
         }

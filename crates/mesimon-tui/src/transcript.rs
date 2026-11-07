@@ -56,15 +56,32 @@ pub(crate) struct Message {
     /// once each.
     pub steps: usize,
     pub tools: Vec<String>,
-    /// The ticket's raised hand (T-1155), not a row of the file: its words
-    /// are `Transcript::hand`'s.
-    pub hand: bool,
+    /// A raised hand's reason (T-1155), and whether the hand is up.
+    pub hand: Option<Raise>,
 }
 
-/// The ticket's raised hand as its agent's conversation reads it
-/// (T-1155): the ask, in the conversation where it was made, while the
-/// hand is up. The board holds it, not the file, so it comes down with the
-/// hand; the `raise_hand` call stays one of the steps.
+/// A raised hand among the messages (T-1155).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Raise {
+    /// The call in the file, its hand down since (or raised again later).
+    Down,
+    /// The call in the file, the board's hand up with its words.
+    Up,
+    /// The board's hand alone, its call not among the held rows (a Codex
+    /// call made from a cell, an earlier page still landing): its words
+    /// are `Transcript::hand`'s.
+    Board,
+}
+
+impl Raise {
+    pub(crate) fn up(self) -> bool {
+        self != Raise::Down
+    }
+}
+
+/// The ticket's raised hand as the board holds it (T-1155): what says
+/// which of the conversation's hands is up, and the ask itself where the
+/// file does not hold its call.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Hand {
     /// When it went up, epoch ms: the board's stamp is whole seconds.
@@ -113,19 +130,18 @@ fn place_hand(out: &mut Vec<Message>, hand: &Hand) {
             ms: Some(hand.ms),
             steps: 0,
             tools: Vec::new(),
-            hand: true,
+            hand: Some(Raise::Board),
         },
     );
 }
 
-/// The tool a step's line names (`Read src/main.rs`, `Bash(cargo test)`).
-fn tool_name(text: &str) -> &str {
-    let end = text
-        .char_indices()
-        .find(|(_, c)| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
-        .map_or(text.len(), |(i, _)| i);
-    &text[..end]
+/// Words compared as a card reads them: the board's reason is scrubbed to
+/// one line, the file's row keeps its lines.
+fn same_words(a: &str, b: &str) -> bool {
+    a.split_whitespace().eq(b.split_whitespace())
 }
+
+use mesimon_core::mesophon::step_tool as tool_name;
 
 /// The rows as messages, oldest first. Steps before the first message
 /// (a page that begins mid-run) belong to a message not held, and are
@@ -147,6 +163,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
             }
             continue;
         }
+        let hand = mesimon_core::mesophon::is_hand_reason(rows, i).then_some(Raise::Down);
         out.push(Message {
             key: (row.at, nth),
             kind: row.kind,
@@ -154,7 +171,7 @@ pub(crate) fn messages(rows: &[TranscriptRow]) -> Vec<Message> {
             ms: row.ms,
             steps: 0,
             tools: Vec::new(),
-            hand: false,
+            hand,
         });
     }
     out
@@ -380,16 +397,20 @@ impl Transcript {
     /// A message's words, whole up to `ROW_MAX`.
     pub(crate) fn text(&self, m: &Message) -> &str {
         match (&self.hand, m.hand) {
-            (Some(h), true) => &h.reason,
+            (Some(h), Some(Raise::Board)) => &h.reason,
             _ => &self.rows[m.row].text,
         }
     }
 
-    /// The rows' messages, the hand among them.
+    /// The rows' messages, the board's hand among them: up on the newest
+    /// call that says its words, else placed by its time.
     fn composed(&self) -> Vec<Message> {
         let mut out = messages(&self.rows);
-        if let Some(h) = &self.hand {
-            place_hand(&mut out, h);
+        let Some(h) = &self.hand else { return out };
+        let newest = out.iter().rposition(|m| m.hand.is_some());
+        match newest.filter(|&i| same_words(&self.rows[out[i].row].text, &h.reason)) {
+            Some(i) => out[i].hand = Some(Raise::Up),
+            None => place_hand(&mut out, h),
         }
         out
     }
@@ -598,7 +619,7 @@ pub(crate) mod tests {
         let hand = Hand { ms: 5_000, reason: "Auth0 or cookie?".into() };
         let mut m = messages(&rows);
         place_hand(&mut m, &hand);
-        let hands: Vec<usize> = (0..m.len()).filter(|&i| m[i].hand).collect();
+        let hands: Vec<usize> = (0..m.len()).filter(|&i| m[i].hand.is_some()).collect();
         assert_eq!(hands, [3], "after its second's record, before what came after: {m:?}");
         assert!(m.windows(2).all(|w| w[0].key < w[1].key), "keys stay in order: {m:?}");
         assert_eq!(m[3].ms, Some(5_000));
@@ -606,12 +627,50 @@ pub(crate) mod tests {
         let bare = [row(10, RowKind::Prompt, "fix it"), row(20, RowKind::Reply, "asking")];
         let mut m = messages(&bare);
         place_hand(&mut m, &hand);
-        assert!(m.last().is_some_and(|m| m.hand), "{m:?}");
+        assert!(m.last().is_some_and(|m| m.hand == Some(Raise::Board)), "{m:?}");
         // Every message held came later: the ask is not in what is held.
         let later = [timed(10, RowKind::Prompt, "after a /clear", 60_000)];
         let mut m = messages(&later);
         place_hand(&mut m, &hand);
-        assert!(!m.iter().any(|m| m.hand), "{m:?}");
+        assert!(!m.iter().any(|m| m.hand.is_some()), "{m:?}");
+    }
+
+    /// A `raise_hand` call's reason row (T-1155) is a hand for good: down
+    /// with no hand on the board, up while the board's hand says its words.
+    #[test]
+    fn the_files_hands_stay_and_the_newest_with_the_boards_words_is_up() {
+        let rows = [
+            timed(10, RowKind::Prompt, "fix it", 1_000),
+            timed(20, RowKind::Tool, "mcp__mesimon__raise_hand", 2_000),
+            timed(20, RowKind::Reply, "first ask", 2_000),
+            timed(30, RowKind::Prompt, "answered", 3_000),
+            timed(40, RowKind::Tool, "Read raise_hand.rs", 4_000),
+            timed(40, RowKind::Reply, "a reply after a step, no hand", 4_000),
+            timed(50, RowKind::Tool, "mcp__mesimon__raise_hand", 5_000),
+            timed(50, RowKind::Reply, "second\nask", 5_000),
+        ];
+        let marks = |t: &[Message]| t.iter().map(|m| m.hand).collect::<Vec<_>>();
+        let down = Some(Raise::Down);
+        assert_eq!(marks(&messages(&rows)), [None, down, None, None, down]);
+        let dir = scratch("file-hands");
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, lines(&[("user", "x")])).unwrap();
+        let mut held = Transcript::open(&rec(&path), None).expect("a conversation");
+        held.rows = rows.to_vec();
+        held.rebuild();
+        // The board's hand up with the newest call's words: that one is up.
+        held.set_hand(Some(Hand { ms: 5_000, reason: "second ask".into() }));
+        let up = Some(Raise::Up);
+        assert_eq!(marks(held.messages()), [None, down, None, None, up]);
+        // Up with words the file does not hold yet: the board's, placed.
+        held.set_hand(Some(Hand { ms: 6_000, reason: "third ask".into() }));
+        let board = Some(Raise::Board);
+        assert_eq!(marks(held.messages()), [None, down, None, None, down, board]);
+        assert_eq!(held.text(&held.messages()[5]), "third ask");
+        // Down: every call stays, quiet.
+        held.set_hand(None);
+        assert_eq!(marks(held.messages()), [None, down, None, None, down]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The dialog's hand follows the board's: raised, a new message after
@@ -627,13 +686,14 @@ pub(crate) mod tests {
         assert!(!t.set_hand(Some(hand.clone())), "the same hand moves nothing");
         assert_eq!((t.idx, t.messages().len(), t.unseen()), (1, 3, 1));
         t.step(1);
-        assert_eq!(t.message().map(|m| (m.hand, t.text(m))), Some((true, "Auth0 or cookie?")));
+        let on = t.message().map(|m| (m.hand, t.text(m)));
+        assert_eq!(on, Some((Some(Raise::Board), "Auth0 or cookie?")));
         assert!(t.set_hand(None));
         assert_eq!(texts(&t), ["pick one", "asking"]);
         assert_eq!(t.idx, 1, "back on the message it followed");
         // Opened with the hand up, the dialog is on it.
         let t = Transcript::open(&rec(&path), Some(hand)).expect("a conversation");
-        assert!(t.message().is_some_and(|m| m.hand));
+        assert!(t.message().is_some_and(|m| m.hand.is_some()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

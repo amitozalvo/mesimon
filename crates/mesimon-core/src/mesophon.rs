@@ -763,6 +763,42 @@ impl TranscriptRow {
     pub fn tool(at: u64, label: &str, ms: Option<u64>) -> Option<Self> {
         Some(TranscriptRow { at, kind: RowKind::Tool, text: step_line(label)?, ms })
     }
+    /// A `raise_hand` call's rows (T-1155): the call's step, then its
+    /// reason whole as the agent's words, so a raised hand stays in the
+    /// conversation after it comes down. A reader knows the reason by the
+    /// call right before it, in the same record (`is_hand_reason`).
+    pub fn hand(at: u64, label: &str, reason: &str, ms: Option<u64>) -> Vec<Self> {
+        let step = Self::tool(at, label, ms);
+        let said = step.as_ref().and_then(|_| Self::new(at, RowKind::Reply, reason, ms));
+        step.into_iter().chain(said).collect()
+    }
+}
+
+/// The tool a step's line names (`Read src/main.rs`, `Bash(cargo test)`).
+pub fn step_tool(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find(|(_, c)| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        .map_or(text.len(), |(i, _)| i);
+    &text[..end]
+}
+
+/// Whether a tool's name is mesimon's `raise_hand` (T-1155), as Claude Code
+/// (`mcp__mesimon__raise_hand`) or Codex names it.
+pub fn is_raise_hand(name: &str) -> bool {
+    name == "raise_hand" || name.ends_with("__raise_hand") || name.ends_with(".raise_hand")
+}
+
+/// Whether `rows[i]` is a raised hand's reason (`TranscriptRow::hand`): the
+/// agent's words right after a `raise_hand` step of the same record.
+pub fn is_hand_reason(rows: &[TranscriptRow], i: usize) -> bool {
+    let (Some(row), Some(step)) = (rows.get(i), i.checked_sub(1).and_then(|j| rows.get(j))) else {
+        return false;
+    };
+    row.kind == RowKind::Reply
+        && step.kind == RowKind::Tool
+        && step.at == row.at
+        && is_raise_hand(step_tool(&step.text))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

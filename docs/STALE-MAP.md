@@ -42155,3 +42155,22 @@ Refuted: a `RowKind::Hand` row parsed from the `raise_hand` tool call. It would 
 hand, but it is a wire change (phones read `RowKind`), and a lowered hand in the needs-you colour
 breaks the one-colour law; drawn quiet, it is one more step. Goldens `transcript_dialog_hand`,
 `ticket_live_hand`.
+
+## T-1155: a raised hand stays in the transcript for good (2026-11-07)
+
+The author, after the first cut: "the raised hand should remain forever in transcript". Each
+`raise_hand` call now gives two rows of its record (`TranscriptRow::hand`): its step, unchanged,
+then its reason whole as a `Reply`, past a step's 200 bytes. No new `RowKind` and no new field, so
+phones and the shelf read the ask as the agent's words after the step, and an older page draws it.
+Claude reads `tool_use` `mcp__mesimon__raise_hand`, Codex a `function_call` of that name
+(`is_raise_hand`). The TUI knows a reason row by the call just before it in the same record
+(`is_hand_reason`). Every such row is a hand message, drawn `¡ claude raised a hand` in
+`attn_faded`, as the board's hand row draws a lowered one. While the board's hand is up, the newest
+call whose words match it (`same_words`, whitespace-blind) is `Up`: `!` and `attn_text`. A hand the
+file does not hold (a Codex MCP call made from a code cell, which writes no `function_call`, or an
+earlier page still landing) keeps the first cut's placed message, `Raise::Board`. So the needs-you
+colour still stands only on a hand that is up.
+
+This reverses the first block's refusal of a hand row parsed from the call. Its wire objection was
+about a new `RowKind`, which this avoids. A raise the daemon refused still writes its call, so it
+reads as a lowered hand. Golden `transcript_dialog_lowered_hand`.

@@ -7086,6 +7086,51 @@ fn golden_transcript_dialog_hand_120() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A hand stays in the conversation once it comes down (T-1155): the
+/// `raise_hand` call's reason is a message for good, behind `¡` and in the
+/// needs-you colour faded, as the board's hand row keeps a lowered one;
+/// while the board's hand is up with its words, the same message is up.
+#[test]
+fn golden_transcript_dialog_lowered_hand_120() {
+    let (mut app, dir) = app_transcript("dialog-lowered");
+    let reason = "Two ways to keep the session: an Auth0 tenant or a signed cookie. Which one?";
+    let call = serde_json::json!({ "uuid": "h1", "type": "assistant", "message": {
+        "role": "assistant", "content": [{ "type": "tool_use", "id": "h1",
+            "name": "mcp__mesimon__raise_hand", "input": { "reason": reason } }] } });
+    let path = dir.join("t.jsonl");
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).expect("transcript");
+    std::io::Write::write_all(&mut f, format!("{call}\n").as_bytes()).expect("append");
+    press(&mut app, '}');
+    let _ = render(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let lowered = crate::glyphs::lowered_mark(app.theme.glyph_tier());
+    let head = lines
+        .iter()
+        .position(|l| l.contains(&format!("{lowered} claude raised a hand")))
+        .unwrap_or_else(|| panic!("the lowered hand's head: {lines:#?}"));
+    let words = head + 2;
+    assert!(lines[words].contains("Two ways to keep"), "the words under it: {lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "{lines:#?}");
+    let buf = cells(&app, 120, 30);
+    let col = |l: &str, needle: &str| l[..l.find(needle).expect("x")].chars().count() as u16;
+    let faded = app.theme.attn_faded().fg;
+    assert_ne!(faded, Some(app.theme.attn), "faded is not the needs-you colour itself");
+    let x = col(&lines[words], "Two ways");
+    assert_eq!(Some(buf[(x, words as u16)].fg), faded, "words faded");
+    golden("transcript_dialog_lowered_hand_120x30", &lines);
+    // The board's hand up with those words: the same message, up, once.
+    raise_t3(&mut app, reason);
+    assert!(app.poll_transcript(), "the raised hand moves the dialog");
+    let lines = render(&app, 120, 30);
+    let head = lines.iter().position(|l| l.contains("! claude raised a hand")).expect("up");
+    assert!(lines.iter().any(|l| l.contains("TRANSCRIPT (5 of 5)")), "one hand: {lines:#?}");
+    let buf = cells(&app, 120, 30);
+    let words = head + 2;
+    let x = col(&lines[words], "Two ways");
+    assert_eq!(buf[(x, words as u16)].fg, app.theme.attn, "words in attn");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The card the dialog hangs from stays open under it, as under the note
 /// reader (T-1145): its rows above the dialog are the rows it had before.
 #[test]

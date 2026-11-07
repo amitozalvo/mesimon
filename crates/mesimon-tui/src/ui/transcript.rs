@@ -118,11 +118,13 @@ fn words(
     let width = body.width as usize;
 
     // Who, when, and the steps that followed, at the right.
-    let who = super::ticket::who_word(m, t.kind);
-    let who_style = match m.kind {
-        _ if m.hand => theme.attn_text().add_modifier(Modifier::BOLD),
-        RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
-        _ => theme.dim1(),
+    let who = super::ticket::who_word(theme, m, t.kind);
+    let who_style = match m.hand {
+        Some(raise) => super::ticket::hand_ink(theme, raise).add_modifier(Modifier::BOLD),
+        None => match m.kind {
+            RowKind::Reply => Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD),
+            _ => theme.dim1(),
+        },
     };
     let time = when(m.ms, mesimon_core::clock::now_ms());
     let left = if who.is_empty() { time.clone() } else { format!("{who}  {time}") };

@@ -300,11 +300,28 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
             };
             blocks
                 .iter()
-                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
-                    Some("text") => row(RowKind::Reply, b.get("text")?.as_str()?),
-                    Some("thinking") => row(RowKind::Reply, narration(b)?),
-                    Some("tool_use") => TranscriptRow::tool(at, &tool_label(b), ms),
-                    _ => None,
+                .flat_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text") => b
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .and_then(|t| row(RowKind::Reply, t))
+                        .into_iter()
+                        .collect(),
+                    Some("thinking") => {
+                        narration(b).and_then(|t| row(RowKind::Reply, t)).into_iter().collect()
+                    }
+                    Some("tool_use") => {
+                        let name = b.get("name").and_then(Value::as_str).unwrap_or_default();
+                        let reason =
+                            b.get("input").and_then(|i| i.get("reason")).and_then(Value::as_str);
+                        match reason.filter(|_| mesimon_core::mesophon::is_raise_hand(name)) {
+                            Some(reason) => TranscriptRow::hand(at, &tool_label(b), reason, ms),
+                            None => {
+                                TranscriptRow::tool(at, &tool_label(b), ms).into_iter().collect()
+                            }
+                        }
+                    }
+                    _ => Vec::new(),
                 })
                 .collect()
         }
@@ -790,6 +807,32 @@ mod tests {
         assert_eq!(after.activity, None);
         assert_ne!(after.reply_key, Some(note_key));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// A `raise_hand` call (T-1155) is its step and then its reason whole,
+    /// as the agent's words of the same record, so the ask outlives the hand.
+    #[test]
+    fn a_raised_hand_keeps_its_reason_in_the_conversation() {
+        let reason = format!("{} Which one?", "word ".repeat(60));
+        let call = serde_json::json!({ "uuid": "h1", "type": "assistant", "message": {
+            "content": [
+                { "type": "tool_use", "name": "mcp__mesimon__raise_hand", "input": { "reason": reason } },
+                { "type": "tool_use", "name": "Read", "input": { "file_path": "/r/a.rs", "reason": "no hand" } },
+            ] } });
+        let rows = rows(7, &call);
+        let got: Vec<(RowKind, &str)> = rows.iter().map(|r| (r.kind, r.text.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                (RowKind::Tool, "mcp__mesimon__raise_hand"),
+                (RowKind::Reply, reason.trim()),
+                (RowKind::Tool, "Read a.rs"),
+            ],
+            "the reason whole, past a step's {} bytes",
+            mesimon_core::mesophon::LINE_MAX_BYTES
+        );
+        assert!(mesimon_core::mesophon::is_hand_reason(&rows, 1));
+        assert!(!mesimon_core::mesophon::is_hand_reason(&rows, 2));
     }
 
     /// T-626: a phone's transcript reads a session as its conversation —

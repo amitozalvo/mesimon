@@ -207,6 +207,11 @@ pub fn rows(at: u64, v: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
                 .as_str()
                 .and_then(|a| serde_json::from_str(a).ok())
                 .unwrap_or_default();
+            if let Some(reason) =
+                args["reason"].as_str().filter(|_| mesimon_core::mesophon::is_raise_hand(name))
+            {
+                return TranscriptRow::hand(at, name, reason, ms);
+            }
             let what = match &args["command"] {
                 Value::Array(argv) => argv.last().and_then(Value::as_str).and_then(first_line),
                 Value::String(c) => first_line(c),
@@ -883,6 +888,25 @@ mod tests {
     /// T-626: a rollout reads as its conversation: the person's words and
     /// the agent's from the `response_item`s, one line per tool call, the
     /// interrupt and the compaction; Codex's injected context is not a row.
+    /// A Codex `raise_hand` call (T-1155) is its step and its reason, as
+    /// Claude's is.
+    #[test]
+    fn a_codex_raised_hand_keeps_its_reason() {
+        use mesimon_core::mesophon::RowKind;
+        let call = serde_json::json!({ "type": "response_item", "payload": {
+            "type": "function_call", "name": "mcp__mesimon__raise_hand",
+            "arguments": "{\"reason\":\"Auth0 or cookie?\\nThe tenant costs a plan.\"}" } });
+        let got: Vec<(RowKind, String)> =
+            rows(3, &call).into_iter().map(|r| (r.kind, r.text)).collect();
+        assert_eq!(
+            got,
+            [
+                (RowKind::Tool, "mcp__mesimon__raise_hand".to_string()),
+                (RowKind::Reply, "Auth0 or cookie?\nThe tenant costs a plan.".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn a_rollout_page_is_the_conversation() {
         let item = |payload: Value| {
