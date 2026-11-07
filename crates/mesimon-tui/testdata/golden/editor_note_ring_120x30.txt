@@ -2,14 +2,14 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
                                                             ╭─ NOTE 2/3 ───────────────────────────────────────────────╮
-    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y │   Fix OSC-11 detection                                   │
-                               ▉▉   ✻ claude ⠋  $ bash ◦    │   ⎇ shared ∙ edited by you >1y ago                       │
+    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y │  Fix OSC-11 detection                                    │
+                               ▉▉   ✻ claude ⠋  $ bash ◦    │  ⎇ shared ∙ edited by you >1y ago                        │
     Keymap validator      >1y  ▉▉    BUG   STAGING      T-3 │                                                          │
-                                                            │   Repro steps                                            │
+                                                            │  Repro steps                                             │
                                   ⠋ Adopt drawer import >1y │                                                          │
-                                                            │   1. open the board                                      │
-                                                            │   2. press `p`                                           │
-                                                            │   3. watch the peek                                      │
+                                                            │  1. open the board                                       │
+                                                            │  2. press `p`                                            │
+                                                            │  3. watch the peek                                       │
                                                             │                                                          │
                                                             │                                                          │
                                                             │                                                          │

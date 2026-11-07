@@ -2,15 +2,15 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
                               ╭─ NEW TICKET ──────────────────────────────────────────────╮
-    Decay treatments      >1y │   Ship the diff viewer                                    │   z Painted accent bar >1y
-                              │   TODO ∙ ⎇ worktree  shift+tab ∙  BUG                     │
+    Decay treatments      >1y │  Ship the diff viewer                                     │   z Painted accent bar >1y
+                              │  TODO ∙ ⎇ worktree  shift+tab ∙  BUG                      │
     Keymap validator      >1y │                                                           │
-                              │   ## Why                                                  │
+                              │  ## Why                                                   │
                               │                                                           │
-                              │   The diff viewer is read-only and the `v` key is free.   │
+                              │  The diff viewer is read-only and the `v` key is free.    │
                               │                                                           │
-                              │   - one pane under 107 cols                               │
-                              │   - `z` cycles the density                                │
+                              │  - one pane under 107 cols                                │
+                              │  - `z` cycles the density                                 │
                               │                                                           │
                               │                                                           │
                               │                                                           │

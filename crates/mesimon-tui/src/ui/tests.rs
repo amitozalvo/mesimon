@@ -7801,11 +7801,34 @@ fn golden_editor_compose_120() {
     golden("editor_compose_120x30", &render(&app, 120, 30));
 }
 
-/// T-1151 (author: "redundant, it is shown on the ticket itself"): the big
-/// composer's stripe is the plain bar; the picked tags are the context
-/// row's chips, never a block on the left edge.
+/// T-1151 (author: "the big block on the left side, remove it"): the big
+/// composer and the description dialog draw no stripe at all — between the
+/// frame's left edge and the words, only the dialog's own surface. The
+/// picked tags stay on the context row's chips.
 #[test]
-fn the_big_composers_stripe_wears_no_tags() {
+fn the_dialogs_draw_no_block_on_the_left() {
+    let check = |app: &App, title: &str| {
+        let lines = render(app, 120, 30);
+        let y = lines.iter().position(|l| l.contains(title)).expect("title");
+        let row: Vec<char> = lines[y].chars().collect();
+        let start = lines[y].find(title).expect("title");
+        let x = lines[y][..start].chars().count() as u16;
+        let edge = row[..x as usize].iter().rposition(|&c| c == '│').expect("frame") as u16;
+        let buf = cells(app, 120, 30);
+        let surface = buf[(x, y as u16)].bg;
+        for r in y as u16..y as u16 + 6 {
+            for c in edge + 1..x {
+                let cell = &buf[(c, r)];
+                assert!(
+                    cell.symbol() == " " && cell.bg == surface,
+                    "{title}: cell ({c},{r}) is {:?} on {:?}, not the surface",
+                    cell.symbol(),
+                    cell.bg
+                );
+            }
+        }
+        lines
+    };
     let mut app = app_graphite(fixture_tagged());
     let bug = mesimon_core::board::TagRef { name: "BUG".into(), group: 1 };
     app.mode = Mode::Editor(editor_on(
@@ -7818,17 +7841,17 @@ fn the_big_composers_stripe_wears_no_tags() {
         "Ship the diff viewer",
         COMPOSE_BODY,
     ));
-    let lines = render(&app, 120, 30);
-    let y = lines.iter().position(|l| l.contains("Ship the diff viewer")).expect("title");
-    assert!(lines[y + 1].contains(" BUG "), "the chips stay: {:?}", lines[y + 1]);
-    let x = lines[y].chars().position(|c| c == 'S').expect("title x") as u16 - 2;
-    let buf = cells(&app, 120, 30);
-    let tint = app.theme.pip(app.board.tag_def(1, "BUG").expect("registered").tint() as usize);
-    let worn: Vec<u16> =
-        (0..30u16).filter(|&r| buf[(x, r)].fg == tint || buf[(x, r)].bg == tint).collect();
-    assert!(worn.is_empty(), "the stripe at x={x} wears the tag on rows {worn:?}");
-    let (plain, _) = app.theme.bar(crate::theme::BarWeight::Cursor);
-    assert_eq!(buf[(x, y as u16)].symbol(), plain.to_string(), "not the bar's cell");
+    let lines = check(&app, "Ship the diff viewer");
+    assert!(lines.iter().any(|l| l.contains(" BUG ")), "the chips stay: {lines:?}");
+
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1; // T-3 wears BUG + STAGING
+    app.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: None },
+        "Fix OSC-11 detection",
+        COMPOSE_BODY,
+    ));
+    check(&app, "Fix OSC-11 detection");
 }
 
 #[test]

@@ -42125,7 +42125,12 @@ stay. First only composing changed. Test: `the_big_composers_stripe_wears_no_tag
 anything"): the note and ask dialogs' stripes are plain too — the card the dialog came from stays
 in view beside it wearing its tags (T-1144). `draw_dialog` passes no tags to `bar_spans` at all;
 goldens `editor_describe`, `editor_note_ring`, `editor_wrapped_description` reminted, stripe
-column only.
+column only. **Refuted again, 2026-11-07:** a colourless stripe is still the block (author: "the
+big block on the left side, remove it. you just left it colorless"). `draw_dialog` draws no
+stripe at all now: `[frame][pad 2][content][pad 2][frame]`, the reader dialog's measure, so the
+text sits where an untagged dialog's already did (the ask goldens did not move) and a tagged
+one's moves a cell left. Test: `the_dialogs_draw_no_block_on_the_left` (composer and
+description; fails on the coloured and the plain stripe alike).
 
 ## A parked conversation keeps a row over the hints (T-1153, 2026-11-06, the author: "hits the hints row")
 

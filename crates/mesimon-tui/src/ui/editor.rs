@@ -1,8 +1,8 @@
 //! The note editor (2026-09-02): a title row, one quiet line of context,
 //! then the body. Two purposes share the shape, on two surfaces — and the
 //! surface is the SCREEN's. Over the board it is a DIALOG: the cursor card,
-//! grown — a room on the card's own surface, the card's accent bar down its
-//! left edge, plain (T-1151: the card beside it wears the tags),
+//! grown — a room on the card's own surface, with no accent bar down its
+//! left edge (T-1151: the card beside it wears the tags),
 //! the header, the column headers and a margin of the board still in view
 //! around it — and it grows out of the card it stands
 //! for (`Editor::grow`, 2026-09-03: the author wanted the bigger room to
@@ -27,9 +27,8 @@ use ratatui::Frame;
 
 use crate::app::{App, AskTarget, Editor, EditorPurpose, Field};
 use crate::layout::{self, Slot};
-use crate::tags;
 use crate::text::{age_ago, area_window, created_at_epoch_ms, edit_window, truncate};
-use crate::theme::{BarWeight, Ramp, TagLevel, Theme};
+use crate::theme::{Ramp, Theme};
 
 use mesimon_core::keymap::{self, Scope};
 
@@ -138,26 +137,26 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
 }
 
 /// The composer, grown: a dialog over the board. It IS the cursor card,
-/// bigger — the same surface, the same accent bar down its left edge (plain:
-/// the picked tags are the context row's chips, T-1151), the
-/// same `sel` ink, the title on the first row and the meta row under it. At
+/// bigger — the same surface (no accent bar down its left edge since
+/// T-1151: the card beside it wears the tags), the same `sel` ink, the title on the first row and the meta row under it. At
 /// rest it is `dialog_rect`: centred in the columns zone (`cards`), with the
 /// column headers above it and a margin of board around it — and beside the
 /// card it came from, which stays lit while the rest recedes (T-1144). For the first
 /// `GROW` after Tab it is drawn between the phantom card's rectangle and
 /// that, so the dialog visibly comes out of the card — and since the
-/// anatomy is the card's, frame zero is the card, row for row and cell for
-/// cell. The board's own footer stays under it and already speaks for the
+/// anatomy is the card's, frame zero is the card, row for row (its bar
+/// aside). The board's own footer stays under it and already speaks for the
 /// editor's scope.
 pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     if ed.reading {
         return draw_reader_dialog(f, app, ed);
     }
     let theme = &app.theme;
-    // The dialog's frame is a card's: `[bar][pad 1][content][pad 1]`, the
-    // bar as wide as the board's (`App::bar_width`).
-    let bar = app.bar_width() as u16;
-    let (lead, chrome) = (bar + 1, bar + 2);
+    // Inside the frame: `[pad 2][content][pad 2]`, the reader dialog's
+    // measure. No stripe down the left edge (T-1151, author: "the big block
+    // on the left side, remove it"): the card the dialog came from stays in
+    // view wearing its own.
+    let (lead, chrome) = (2, 4);
     let rest = dialog_rect(app, cards);
     let area = match (ed.grow, ed.grow_progress()) {
         (Some((from, _)), Some(t)) => lerp_rect(from, rest, t),
@@ -172,8 +171,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     let framed = area.width >= 4 && area.height >= 3;
     // Framed (T-158): the frame stands one cell outside the column run on
     // every side — in the gutters and the breathing rows the inset kept
-    // clear — so the stripe still sits on the column's own bar cell and the
-    // cards beside it stay whole. Below three rows `dialog::frame` draws no
+    // clear — so the cards beside it stay whole. Below three rows `dialog::frame` draws no
     // frame and hands the area back, which is what keeps frame zero of the
     // grow the card itself.
     let outer = area;
@@ -196,20 +194,6 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         return;
     }
 
-    // ---- the stripe: the card's bar, plain on every dialog (T-1151,
-    // author: "redundant, it is shown on the ticket itself") — the card it
-    // stands for stays in view wearing its tags, and the composer's picks
-    // are the context row's chips -------------------------------------------
-    let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
-    let stripe_spans =
-        tags::bar_spans(theme, plain_ch, plain_style, &[], TagLevel::Selected, surface, bar.into());
-    let stripe: Vec<Line<'static>> =
-        (0..area.height).map(|_| Line::from(stripe_spans.clone())).collect();
-    f.render_widget(
-        Paragraph::new(stripe),
-        Rect { x: area.x, y: area.y, width: bar, height: area.height },
-    );
-
     // ---- the head: the title where the card's title row was, the context
     // under it where the card's meta row was ----------------------------------
     let inner =
@@ -222,9 +206,8 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         Rect { height: DIALOG_HEAD_ROWS.min(inner.height), ..inner },
     );
     // A refused `^s` shakes the title row, cursor and all, a cell either
-    // way: into the pad beside the bar and the pad at the right edge, both
-    // the dialog's own surface.
-    let tx = (i32::from(inner.x) + i32::from(ed.title_dx())).max(i32::from(area.x + bar)) as u16;
+    // way: into the pads at either edge, both the dialog's own surface.
+    let tx = (i32::from(inner.x) + i32::from(ed.title_dx())).max(i32::from(area.x)) as u16;
     let mut cursor = cx.map(|cx| ((tx + cx).min(area.x + area.width - 1), inner.y));
     f.render_widget(
         Paragraph::new(Line::from(spans)),
