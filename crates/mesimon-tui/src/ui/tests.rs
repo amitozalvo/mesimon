@@ -14971,6 +14971,51 @@ fn golden_ticket_live_trust_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// Codex 0.166's folder trust uses the same page key as the board (T-1169).
+#[test]
+fn golden_ticket_live_codex_trust_120() {
+    let (mut app, path) = app_live("tlive-codex-trust", false);
+    let mut rows: Vec<String> = [
+        "",
+        "  Folder access",
+        "  /repo/worktree",
+        "",
+        "  Trust this folder? Codex can read, edit, and run files here.",
+        "",
+        "› 1. Trust and continue",
+        "  2. Back to Agent Command Center",
+        "",
+        "  enter continue · esc back",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    rows.resize(24, String::new());
+    let shot = crate::live::Shot {
+        rows: crate::live::parse(&rows.join("\n")),
+        cols: 80,
+        cursor: Some((1, 23)),
+    };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
+    let rec = std::sync::Arc::make_mut(&mut app.board)
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == uuid_n(31))
+        .expect("the seat");
+    rec.kind = SessionKind::Codex;
+    rec.state = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust };
+    rec.detail = Some("Codex asks to trust this folder".into());
+    let lines = render(&app, 120, 30);
+    let all = lines.join("\n");
+    assert!(all.contains("Folder access") && all.contains("/repo/worktree"), "{all}");
+    assert!(all.contains("Back to Agent Command Center"), "{all}");
+    assert!(all.contains("1. Trust and continue") && !all.contains("› 1."), "{all}");
+    assert!(!all.contains("enter continue · esc back"), "{all}");
+    assert!(all.contains(" w  trust this folder ∙ enter answers it in its pane"), "{all}");
+    golden("ticket_live_codex_trust_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The ticket page's conversation reads a raised hand as its newest
 /// message (T-1155), in the needs-you colour; the page follows the hand
 /// down.

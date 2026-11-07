@@ -191,6 +191,15 @@ fn the_board_trusts_the_workspace_with_the_dialog_s_own_keys_and_the_brief_follo
 
 #[test]
 fn the_board_trusts_a_codex_seat_s_folder_and_the_prompt_follows() {
+    codex_trust("Quit");
+}
+
+#[test]
+fn the_board_trusts_codex_166_and_the_prompt_follows() {
+    codex_trust("Back to Agent Command Center");
+}
+
+fn codex_trust(back: &str) {
     const FAKE_RUNTIME: &str = include_str!("common/fake_codex_runtime.py");
     let Some(h) = Harness::boot_bare("trustcodex", None, &[]) else { return };
     init_repo(&h.repo, "a.txt", "hello\n");
@@ -203,8 +212,8 @@ fn the_board_trusts_a_codex_seat_s_folder_and_the_prompt_follows() {
     std::fs::write(
         h.dir.join("initial-screen.json"),
         serde_json::json!({
-            "screen": "  Trust this folder? Codex can read, edit, and run files here, subject to\r\n  \
-                       your permission settings.\r\n› 1. Trust and continue\r\n  2. Quit",
+            "screen": format!("  Folder access\r\n  {}\r\n\r\n  Trust this folder? Codex can read, edit, and run files here, subject to\r\n  \
+                       your permission settings.\r\n› 1. Trust and continue\r\n  2. {back}\r\n\r\n  enter continue · esc back", h.repo.display()),
             "cursor": null
         })
         .to_string(),

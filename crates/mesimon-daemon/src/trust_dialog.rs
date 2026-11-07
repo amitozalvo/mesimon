@@ -25,7 +25,8 @@
 //! `ci/claude-state-e2e.py`). The cancel row reads `No, continue without
 //! these permissions` where the folder pre-approves permissions. Codex's is
 //! `Trust this folder?` with `› 1. Trust and continue` and `2. Quit`
-//! (0.163, the fixtures in `agents::codex`).
+//! (0.163, the fixtures in `agents::codex`); 0.166 offers `Back to Agent
+//! Command Center` instead of `Quit` (T-1169, the live capture in `tui::live`).
 
 use mesimon_backend_tmux::InputScreen;
 
@@ -82,7 +83,7 @@ const CLAUDE_HEADINGS: &[&str] =
     &["Quick safety check", "Do you trust the files in this folder", "Accessing workspace:"];
 const CODEX_HEADING: &str = "Trust this folder?";
 const CODEX_YES: &str = "Trust and continue";
-const CODEX_NO: &str = "Quit";
+const CODEX_NO: &[&str] = &["Quit", "Back to Agent Command Center"];
 
 /// A row of a native menu: whether the marker is on it, and its label with
 /// the marker and any `N. ` number stripped.
@@ -143,7 +144,7 @@ pub fn codex(lines: &[&str]) -> Option<Dialog> {
     if !lines.iter().any(|l| l.trim_start().starts_with(CODEX_HEADING)) {
         return None;
     }
-    let (yes_first, selected) = rows(lines, CODEX_YES, &[CODEX_NO])?;
+    let (yes_first, selected) = rows(lines, CODEX_YES, CODEX_NO)?;
     Some(Dialog { selected, yes_first, folder: None })
 }
 
@@ -278,6 +279,24 @@ mod tests {
         // fixture; the real pane has them on their own lines.
         let unmarked = CODEX.replace("› 1.", "  1.");
         assert_eq!(codex(&lines(&unmarked)).and_then(|d| d.toward_yes()), None);
+    }
+
+    #[test]
+    fn codex_166_can_return_to_agent_command_center() {
+        let screen = "  Folder access\n  /repo/worktree\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Back to Agent Command Center\n\n  enter continue · esc back";
+        assert_eq!(read_text(screen).and_then(|d| d.toward_yes()), Some(Step::Enter));
+        let back = screen.replace("› 1.", "  1.").replace("  2.", "› 2.");
+        assert_eq!(read_text(&back).and_then(|d| d.toward_yes()), Some(Step::Up));
+        let unmarked = screen.replace("› 1.", "  1.");
+        assert_eq!(read_text(&unmarked).and_then(|d| d.toward_yes()), None);
+        for bad in [
+            screen.replace("  2.", "› 2."),
+            screen.replace("  2. Back to Agent Command Center", ""),
+            screen.replace("Back to Agent Command Center", "Back to Agent Command Center later"),
+            screen.replace("Trust this folder?", "Hooks need review"),
+        ] {
+            assert_eq!(read_text(&bad), None, "{bad}");
+        }
     }
 
     #[test]

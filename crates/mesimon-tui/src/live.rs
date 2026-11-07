@@ -1356,6 +1356,15 @@ mod tests {
         assert_eq!(s.anchor(), 1);
         assert_eq!(s.prompt_row(), None);
         assert_eq!(s.view().last(), Some(&9));
+        // The ticket page offers its own accept key, not the native Enter
+        // hint or a pointer suggesting that the page can move the selection.
+        let (page, keys) = s.for_trust();
+        assert_eq!(keys, Some(9));
+        assert!(is_page_rule(&page.rows[9]));
+        assert_eq!(page.rows[6].text, "  1. Trust and continue");
+        assert_eq!(page.rows[7].text, "  2. Back to Agent Command Center");
+        assert!(page.rows.iter().all(|r| !r.text.contains('›')));
+        assert_eq!(page.view().last(), Some(&9));
     }
 
     /// Codex's command approval (T-846's capture) under its transcript: from

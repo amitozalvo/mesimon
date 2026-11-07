@@ -42610,3 +42610,47 @@ actually interact with the prompt even though we have a way to approve from insi
 - Refuted: replacing the dialog with the page's own words (option B of the proposal) — it loses
   Claude Code's warning text; the author chose A.
 - Golden: `ticket_live_trust_120x30`.
+
+## Codex's folder-trust accept follows its current back option (T-1169, 2026-11-07)
+
+Codex 0.166.0's folder dialog says `2. Back to Agent Command Center`, where 0.163
+said `2. Quit`. The live-window capture already pinned that screen in `tui::live`,
+but `trust_dialog::codex` required `Quit`. The startup classifier recognized the
+heading and positive option, so the card read TRUST while the strict reader offered
+no request: the board's and ticket page's `w` answered “trust dialog not recognised”,
+and Remote Control had no accept card.
+
+The strict reader now accepts either exact back label. Its heading, complete option
+rows and selection checks, and its read before each key, are unchanged. The existing
+shared accept walk serves the board, ticket page and phone. The page's current Codex
+screen is covered by both the live-window test and `ticket_live_codex_trust_120x30`:
+its folder and options remain, its pointer goes, and the native Enter footer becomes
+`w trust this folder ∙ enter answers it in its pane`.
+
+**Refuted:** the ticket page needed another accept binding or the Codex dispatch split
+needed another fix. Both were already wired; the unsupported exact back label was the
+missing piece. Parser and dispatch tests cover both formats and both selected options;
+malformed, incomplete and unselected screens send no accept. `trust_accept_e2e` now
+runs the current and older back labels through startup, explicit acceptance and exactly
+one launch-prompt submission. No model-facing words, trust configuration, wire or schema
+changed.
+
+**Verified:** `cargo ut` (3,082 passed; 12 existing ignored tests), the 35 tests in
+`trust_accept_e2e` and `provider_e2e` under `ci/test-run.py` (36 owners cleaned),
+format/diff checks, and the new golden inspected. A disposable board running installed
+Codex 0.166.0 with an isolated Codex home was opened in a detached 140×42 client:
+the ticket page showed the folder, both options and its own `w` row; pressing `w`
+closed the folder dialog and exposed native hook review, which was left untouched.
+No model prompt was submitted, and both live-check owners were cleaned. Captures:
+`/private/tmp/t1169-live-evidence/` (local, disposable). Remote Control's shared
+shape/dispatch walk is unit-covered; no paired-browser acceptance was run.
+
+The first process-suite run was sandbox-blocked (`ps` denied, 32 provider failures
+before the trust binary ran); its owned fixtures were subsequently cleaned using the
+supervisor's ownership checks, and the suite reran with process access. The sandboxed
+unit command was stopped and replaced with the process-capable run. The first live
+attempt timed out waiting for cache pruning before starting; the detached driver then
+needed two setup-navigation corrections (both failed attempts cleaned their owners)
+before the successful page-key run. These were verification-environment/driver failures,
+not product repairs. No full workspace suite or model-behavior rig was required for
+this parser-only production change.

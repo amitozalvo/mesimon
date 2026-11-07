@@ -6509,33 +6509,42 @@ mod tests {
                 "{bad}"
             );
         }
-        let codex = "  Trust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Quit";
-        assert_eq!(dialog_step(&trust, &accept, codex, &Walk::default()), Ok(DialogStep::Submit));
-        let on_quit = codex.replace("› 1.", "  1.").replace("  2. Quit", "› 2. Quit");
-        assert_eq!(dialog_step(&trust, &accept, &on_quit, &Walk::default()), Ok(DialogStep::Up));
-        // A Codex seat's dialog takes that same walk through the harness
-        // split (T-871): Codex's own shapes know no trust dialog.
-        assert!(!codex_shapes(SessionKind::Codex, &trust));
-        assert_eq!(
-            dialog_step_for(
-                SessionKind::Codex,
-                Standing::Dialog(&trust, &accept),
-                codex,
-                &Walk::default()
-            ),
-            Ok(DialogStep::Submit)
-        );
-        assert_eq!(
-            dialog_step_for(
-                SessionKind::Codex,
-                Standing::Dialog(&trust, &accept),
-                &on_quit,
-                &Walk::default()
-            ),
-            Ok(DialogStep::Up)
-        );
-        assert!(dialog_shape_for(SessionKind::Codex, &trust, codex));
-        assert!(!dialog_shape_for(SessionKind::Codex, &trust, "› Ask Codex to do anything"));
+        let older = "  Trust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Quit";
+        let current = older.replace("Quit", "Back to Agent Command Center");
+        for codex in [older, current.as_str()] {
+            assert_eq!(
+                dialog_step(&trust, &accept, codex, &Walk::default()),
+                Ok(DialogStep::Submit)
+            );
+            let on_quit = codex.replace("› 1.", "  1.").replace("  2.", "› 2.");
+            assert_eq!(
+                dialog_step(&trust, &accept, &on_quit, &Walk::default()),
+                Ok(DialogStep::Up)
+            );
+            // A Codex seat's dialog takes that same walk through the harness
+            // split (T-871): Codex's own shapes know no trust dialog.
+            assert!(!codex_shapes(SessionKind::Codex, &trust));
+            assert_eq!(
+                dialog_step_for(
+                    SessionKind::Codex,
+                    Standing::Dialog(&trust, &accept),
+                    codex,
+                    &Walk::default()
+                ),
+                Ok(DialogStep::Submit)
+            );
+            assert_eq!(
+                dialog_step_for(
+                    SessionKind::Codex,
+                    Standing::Dialog(&trust, &accept),
+                    &on_quit,
+                    &Walk::default()
+                ),
+                Ok(DialogStep::Up)
+            );
+            assert!(dialog_shape_for(SessionKind::Codex, &trust, codex));
+            assert!(!dialog_shape_for(SessionKind::Codex, &trust, "› Ask Codex to do anything"));
+        }
         // The agent starting is the dialog's edge; no tool frame is about it.
         let frame = |event: &str, payload: serde_json::Value| HookFrame {
             session: "s".into(),
