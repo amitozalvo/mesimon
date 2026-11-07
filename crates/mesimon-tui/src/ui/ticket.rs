@@ -1368,8 +1368,9 @@ fn draw_preview(
                 raw.push(faded_line(theme, row, live::fade_keep(r, fade_n)));
             }
             // The box, closed (T-1156): one rule in the box's place, with
-            // the key that opens it and the agent's state — no field to be
-            // typed in — and the pane's rows over and under it as they
+            // the key that opens it — no field to be typed in, and no
+            // state or facts, which the agent's own footer under it shows
+            // (T-1175) — and the pane's rows over and under it as they
             // are. Open, the pane's own rules frame the field as before.
             // The rule at the rows' drawn width: a capture from before a
             // resize is wider or narrower than the zone until the next.
@@ -1378,7 +1379,7 @@ fn draw_preview(
                 let row = &shot.rows[i];
                 match boxed {
                     _ if trust_keys == Some(i) => Some(trust_rule(app, box_w)),
-                    Some((top, ..)) if closed && i == top => Some(closed_box_rule(app, rec, box_w)),
+                    Some((top, ..)) if closed && i == top => Some(closed_rule(app, 0, box_w)),
                     Some((top, _, bottom)) if closed && (top..=bottom).contains(&i) => None,
                     _ => Some(live_line(theme, row)),
                 }
@@ -2034,9 +2035,9 @@ fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'stati
     }
     let lead = " ".repeat(FOOT_WORDS as usize);
     let mut bottom = vec![Span::raw("  ")];
-    bottom.extend(tail_rule(theme, rule_w, None));
+    bottom.push(tail_rule(theme, rule_w));
     vec![
-        closed_rule(app, 2, rule_w, None),
+        closed_rule(app, 2, rule_w),
         Line::from(vec![
             Span::raw(lead.clone()),
             Span::styled(truncate(words, width.saturating_sub(lead.len() + 2)), theme.dim3()),
@@ -2046,29 +2047,22 @@ fn foot_box(app: &App, width: usize, words: &str, open: bool) -> Vec<Line<'stati
 }
 
 /// A closed box's rule gone out toward the page ground (T-1156), `width`
-/// wide, with `tail` near its right end where one is given and fits:
-/// ` words ` then three more dashes.
-fn tail_rule(theme: &crate::theme::Theme, width: usize, tail: Option<&str>) -> Vec<Span<'static>> {
+/// wide.
+fn tail_rule(theme: &crate::theme::Theme, width: usize) -> Span<'static> {
     let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
-    let tail = tail.map(|t| format!(" {t} ")).filter(|t| t.width() + 5 <= width);
-    let tail_w = tail.as_ref().map_or(0, |t| t.width() + 3);
-    let mut spans = vec![Span::styled("-".repeat(width - tail_w), fade)];
-    if let Some(t) = tail {
-        spans.push(Span::styled(t, theme.dim3()));
-        spans.push(Span::styled("---", fade));
-    }
-    spans
+    Span::styled("-".repeat(width), fade)
 }
 
 /// A closed box's top rule (T-1156): `lead` blank columns, then `width`
 /// of hyphens gone out toward the page ground, carrying near its left the
 /// key that opens the box as a key cap and what it does, in the keymap's
-/// own words — where the key is live — and `right` near its right end.
-fn closed_rule(app: &App, lead: usize, width: usize, right: Option<&str>) -> Line<'static> {
+/// own words — where the key is live. Nothing at its right end: the
+/// agent's state and what it runs on are its own footer's (T-1175).
+fn closed_rule(app: &App, lead: usize, width: usize) -> Line<'static> {
     let mut spans = vec![Span::raw(" ".repeat(lead))];
     let (cap, used) = closed_cap(app, width);
     spans.extend(cap);
-    spans.extend(tail_rule(&app.theme, width - used, right));
+    spans.push(tail_rule(&app.theme, width - used));
     Line::from(spans)
 }
 
@@ -2140,7 +2134,7 @@ fn trust_rule(app: &App, width: usize) -> Line<'static> {
             }
         }
     }
-    spans.extend(tail_rule(theme, width - used, None));
+    spans.push(tail_rule(theme, width - used));
     Line::from(spans)
 }
 
@@ -2531,79 +2525,6 @@ fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
         s.fg = Some(theme.rest.base);
     }
     s
-}
-
-/// The agent's box, closed (T-1156): one rule of hyphens gone out toward
-/// the page ground in the box's place, carrying the key that opens it
-/// (`closed_rule`) and, near its right end, the agent's state — working,
-/// with the spinner, or idle — and what the session runs on (`facts`),
-/// as many of those as fit. No field: a picture of the agent at its box,
-/// not a box.
-fn closed_box_rule(
-    app: &App,
-    rec: &mesimon_core::board::SessionRecord,
-    width: usize,
-) -> Line<'static> {
-    let theme = &app.theme;
-    let who = if rec.kind == SessionKind::Codex { "codex" } else { "claude" };
-    let state = if glyphs::is_working(rec) {
-        format!("{} {who} is working", glyphs::spinner(theme.glyph_tier(), app.spin_frame()))
-    } else {
-        format!("{who} is idle")
-    };
-    // The state with as many of the facts as the rule has room for.
-    let facts = facts(app, rec);
-    let right: Vec<String> = (0..=facts.len())
-        .rev()
-        .map(|n| {
-            std::iter::once(&state).chain(&facts[..n]).cloned().collect::<Vec<_>>().join(" ∙ ")
-        })
-        .collect();
-    let (_, used) = closed_cap(app, width);
-    let fits = right.iter().find(|t| t.width() + 2 + 5 <= width - used);
-    closed_rule(app, 0, width, fits.map(String::as_str))
-}
-
-/// What the session runs on, for the closed box's rule (T-1156): the
-/// page's own facts in place of the agent's footer — its model and effort
-/// from its launch, its context fill from the ticket's account, its mode
-/// from its newest frame — those known, in that order.
-fn facts(app: &App, rec: &mesimon_core::board::SessionRecord) -> Vec<String> {
-    let flag = |name: &str| {
-        rec.argv
-            .windows(2)
-            .find(|w| w[0] == name)
-            .map(|w| w[1].trim_end_matches("[1m]").to_string())
-    };
-    // Codex takes its tier as config (`-c model="…"`).
-    let config = |key: &str| {
-        rec.argv.windows(2).find_map(|w| {
-            let v = w[1].strip_prefix(key)?.strip_prefix('=')?;
-            (w[0] == "-c").then(|| v.trim_matches('"').to_string())
-        })
-    };
-    let context = app
-        .costs
-        .iter()
-        .find(|c| c.ticket == rec.ticket)
-        .and_then(|c| c.context_pct)
-        .map(|p| format!("context {p}%"));
-    let mode = rec.mode.as_deref().and_then(|m| match m {
-        "default" => None,
-        "acceptEdits" => Some("accept edits".to_string()),
-        "bypassPermissions" => Some("bypass permissions".to_string()),
-        "dontAsk" => Some("don't ask".to_string()),
-        other => Some(format!("{} mode", other.to_lowercase())),
-    });
-    [
-        flag("--model").or_else(|| config("model")),
-        flag("--effort").or_else(|| config("model_reasoning_effort")),
-        context,
-        mode,
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {

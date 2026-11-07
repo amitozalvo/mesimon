@@ -24,7 +24,7 @@
    tests · 7s                                                                                ▀█ ▄▀▀   █▀
    ⎿  $ ls crates/mesimon-daemon/src/agents/                                                ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
  · Vibing… (5m 55s · ↓ 22.2k tokens)                                                        ███▀▀████▀▀█ █▀████
- -------------------------------------------------------- ⠋ claude is working ---           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+ --------------------------------------------------------------------------------           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
    ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
    ⏵⏵ auto mode on
  jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys

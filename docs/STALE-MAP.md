@@ -42720,3 +42720,24 @@ no `selected_bg`, SGR 7 illegal) gets an underline. Hover is read from `App::poi
 the pill's rect, and only while the mouse pref is on.
 Tests: `the_jump_pill_lights_under_the_pointer_on_every_profile` (theme.rs, every flavour ×
 four profiles), plus the ground under and off the pointer in the pill's draw test.
+
+## The closed agent box's rule loses its state and facts (T-1175, 2026-11-07, the author: "agent statusline is already shown there and this info is usually there. too verbose right now. I would get rid of it altogether")
+
+T-1156's closed rule carried, at its right end, the agent's state with as many of the page's own
+facts as fit: `⠋ claude is working ∙ opus ∙ high ∙ context 18% ∙ auto mode`. The agent's own
+footer, kept under the closed box since T-1156, already says the model, the context and the mode,
+and the card and the sessions rail say working or idle. The whole right end is gone: the rule is
+the key cap and hyphens only.
+
+- **Removed, not trimmed.** `closed_box_rule` and `facts` (`ui/ticket.rs`) are deleted; the rule
+  is `closed_rule(app, 0, box_w)`. Every caller of `closed_rule` and `tail_rule` then passed no
+  tail, so both lost the parameter and `tail_rule` is one faded span. `SessionRecord::mode` stays
+  (persisted, written by the daemon); the TUI no longer reads it.
+- **Refuted: keep the state, drop the facts.** The title says facts; the author's quote is the
+  whole string and "altogether". The spinner is still on the rail's session row.
+
+Tests: `box_rule` (ui/tests.rs) finds the rule by its hyphen run;
+`the_box_opens_over_its_rule_and_the_status_line_stays` keeps its model, effort, mode and context
+fixture and asserts none reaches the rule. Three goldens moved, the rule row only:
+`ticket_live_120x30`, `ticket_live_hand_120x30`, `ticket_live_closed_120x30`. Not seen in the
+TUI by the author yet.

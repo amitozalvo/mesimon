@@ -193,6 +193,12 @@ fn golden(name: &str, lines: &[String]) {
     assert_eq!(rendered, want, "golden {name} drifted; review + MESIMON_UPDATE_GOLDEN=1");
 }
 
+/// The row of the agent's closed box (T-1156): its rule, a long run of
+/// hyphens and nothing at its right end (T-1175).
+fn box_rule(lines: &[String]) -> Option<usize> {
+    lines.iter().position(|l| l.contains(&"-".repeat(40)))
+}
+
 fn app_graphite(board: Board) -> App {
     App::for_test(board, Theme::new(Flavor::Graphite, Profile::TrueColor))
 }
@@ -14901,9 +14907,11 @@ fn golden_ticket_live_120() {
     // out (T-1156), and the box is closed.
     assert!(lines.iter().any(|l| l.contains("auto mode on")), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("shift+tab to cycle")), "{lines:#?}");
-    // The box is its rule alone, with the agent's state (the key is not
-    // live in this fixture, so no cap): no field to be typed in.
-    assert!(lines.iter().any(|l| l.contains("claude is working ---")), "{lines:#?}");
+    // The box is its rule alone (the key is not live in this fixture, so
+    // no cap): no field to be typed in, and no state, which the agent's
+    // own footer shows (T-1175).
+    let rule = box_rule(&lines).expect("the closed box's rule");
+    assert!(!lines[rule].contains("is working"), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains('❯') && !l.contains("Go on")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Vibing…")), "{lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Research is mostly done")), "{lines:#?}");
@@ -15392,7 +15400,7 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let closed = render(&app, 120, 30);
     assert!(closed.iter().any(|l| l.contains("auto mode on")), "{closed:#?}");
     assert!(!closed.iter().any(|l| l.contains("shift+tab to cycle")), "{closed:#?}");
-    let rule = closed.iter().position(|l| l.contains("claude is working ---")).expect("the rule");
+    let rule = box_rule(&closed).expect("the rule");
     ask_field(&mut app, "rebase onto main", false);
     let lines = render(&app, 120, 30);
     let field = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
@@ -15846,14 +15854,12 @@ fn on_a_codex_pane_the_field_is_typed_on_its_prompt_row() {
     };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
     let lines = render(&app, 120, 30);
-    // Closed, the box is one rule in its place, with the key and the
-    // state (T-1156). Its status row stays, its hints row goes.
+    // Closed, the box is one rule in its place (T-1156), without the
+    // state (T-1175). Its status row stays, its hints row goes.
     assert!(!lines.iter().any(|l| l.contains("for shortcuts")), "its hints row: {lines:#?}");
     assert!(lines.iter().any(|l| l.contains("Context 2% used")), "its status row: {lines:#?}");
-    let at = lines
-        .iter()
-        .position(|l| l.contains("is working ---"))
-        .unwrap_or_else(|| panic!("the closed box: {lines:#?}"));
+    let at = box_rule(&lines).unwrap_or_else(|| panic!("the closed box: {lines:#?}"));
+    assert!(!lines[at].contains("is working"), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains("Ask Codex")), "its placeholder: {lines:#?}");
     // The blank run between the pane's words and its box is one row.
     assert!(lines[at - 1].contains("Worked for 8s"), "{lines:#?}");
@@ -15925,10 +15931,7 @@ fn the_cursor_blinks_only_once_the_field_is_open() {
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     let lines = lines_of(terminal.backend().buffer());
-    let composer = lines
-        .iter()
-        .position(|l| l.contains("claude is working ---"))
-        .expect("the closed box's rule");
+    let composer = box_rule(&lines).expect("the closed box's rule");
     assert!(!terminal.backend().cursor_visible(), "a picture has no cursor: {lines:#?}");
     ask_field(&mut app, "", false);
     terminal.draw(|f| super::draw(f, &app)).unwrap();
@@ -16078,16 +16081,16 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
         ..Default::default()
     }];
     let closed = render(&app, 120, 30);
-    // One rule: the key, the state, and as many facts as fit its 80 columns.
+    // One rule: the key, and nothing at its right end (T-1175) — no state,
+    // no model, effort, context or mode, which the agent's own footer
+    // shows under it.
     let at = closed
         .iter()
-        .position(|l| l.contains(" shift+enter ") && l.contains("claude is working"))
+        .position(|l| l.contains(" shift+enter "))
         .expect("the closed box");
-    assert!(
-        closed[at].contains(" ⠋ claude is working ∙ opus ∙ high ∙ context 21% ---"),
-        "the facts after the state: {closed:#?}"
-    );
-    assert!(!closed[at].contains("plan mode"), "one fact too many for 80 columns: {closed:#?}");
+    for gone in ["is working", "opus", "high", "context 21%", "plan mode", "∙"] {
+        assert!(!closed[at].contains(gone), "{gone:?} on the rule: {closed:#?}");
+    }
     // The cap's box starts at the transcript text's column, right after
     // the rule's two dashes.
     assert!(closed[at].starts_with(" -- shift+enter  ask agent --"), "{:?}", closed[at]);
