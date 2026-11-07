@@ -378,13 +378,12 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         now_ms: now_ms(),
         spin: app.spin_frame(),
         names_key: false,
-        bar: app.bar_width(),
     };
     let sessions: Vec<&SessionRecord> =
         app.board.sessions.iter().filter(|r| r.ticket == ticket.id && r.state.is_live()).collect();
     let painted_tags = crate::tags::painted(&app.board, &ticket.tags);
     let (owed_row, ship_row) = app.card_owed(ticket.id);
-    let mut lines = card::render(
+    let (mut lines, end) = card::render(
         &ctx,
         ticket,
         &sessions,
@@ -431,18 +430,28 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         false,
         false,
     );
+    // A second tag ends the card's stripe and hangs under it (T-1159).
+    let mut hang = end.map(|end| {
+        if let Some(last) = lines.last_mut() {
+            end.foot(last);
+        }
+        let mut row = Line::default();
+        end.hang(&mut row);
+        row
+    });
     let w = inner.width as usize;
     let now = now_ms();
     // Where the card is and how long it has been there, in the ticket page's
     // own words (`age_in_column`) — the one fact the card itself does not
     // carry, and the one a search is usually asking after.
     if let Some(ms) = created_at_epoch_ms(ticket.column_since()) {
-        lines.push(Line::from(""));
+        lines.push(hang.take().unwrap_or_default());
         lines.push(Line::from(Span::styled(
             truncate(&format!(" {} {}", ticket.column.to_uppercase(), age_in_column(now, ms)), w),
             theme.dim2(),
         )));
     }
+    lines.extend(hang);
     // The note a hit was found in (T-882) is bold among the rows below.
     let found_in = hit.excerpt.as_ref().map(|e| e.note);
     if !ticket.notes.is_empty() && lines.len() + 3 <= inner.height as usize {

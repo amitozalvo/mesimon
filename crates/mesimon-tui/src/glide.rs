@@ -224,7 +224,7 @@ fn paint_trail(buf: &mut Buffer, area: Rect, theme: &Theme, dots: &[(i32, i32)])
 /// a cell it has not reached is not there yet and one it has comes in
 /// from the ground — except the tag bar, which is there from the start,
 /// a little muted, and comes up to its own colour as the front passes.
-/// `bar` is the tag bar's width on this board (`App::bar_width`).
+/// `bar` is the tag bar's width (`tags::BAR`).
 fn fade(buf: &mut Buffer, rect: Rect, bar: u16, theme: &Theme, p: f32, right: bool, out: bool) {
     let w = usize::from(rect.width);
     let bar = rect.x..rect.x + bar;
@@ -273,7 +273,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
     let spots = app.spots.borrow();
     let theme = &app.theme;
     let braille = theme.glyph_tier() == crate::glyphs::Tier::Unicode;
-    let bar = app.bar_width() as u16;
+    let bar = crate::tags::BAR as u16;
     let buf = f.buffer_mut();
     for g in app.glides.iter().filter(|g| !g.over(now)) {
         let from = spots.trail(g.ticket);
@@ -405,10 +405,10 @@ mod tests {
             buf[(x, 0)].set_bg(ground);
         }
         buf.set_string(3, 0, "Adopt drawer import", Style::default().bg(ground));
-        for x in 0..crate::tags::BAR_WIDE as u16 {
+        for x in 0..crate::tags::BAR as u16 {
             buf[(x, 0)].set_bg(tag);
         }
-        fade(&mut buf, rect, crate::tags::BAR_WIDE as u16, &theme, 0.0, true, false);
+        fade(&mut buf, rect, crate::tags::BAR as u16, &theme, 0.0, true, false);
         let bar = buf[(0, 0)].bg;
         assert!(bar != tag && bar != ground && bar != Color::Reset, "muted: {bar:?}");
         let Color::Rgb(r, g, b) = bar else { panic!("{bar:?}") };

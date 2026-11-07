@@ -487,7 +487,7 @@ fn appearance(app: &App, width: usize) -> Preview<'_> {
             // The bolt, from the crown's mark to the moved card's title,
             // arcing through the row above them.
             if let Some(t) = strike {
-                let bar = app.bar_width() as u16 + 1;
+                let bar = crate::tags::BAR as u16 + 1;
                 let stops = [(left.x + bar, row), (right.x + bar, row)];
                 let dots = crate::strike::bolt(0x5EED, &stops, at.y + 1);
                 let skip = |_x: u16, y: u16| y == row;
@@ -572,7 +572,6 @@ fn sample_card(
         now_ms: (app.now)(),
         spin: app.spin_frame(),
         names_key: false,
-        bar: app.bar_width(),
     };
     super::card::render(
         &ctx,
@@ -614,6 +613,7 @@ fn sample_card(
         false,
         false,
     )
+    .0
 }
 
 /// A banner as the rows would post it: who posts it, the words, and the

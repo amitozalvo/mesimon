@@ -1,11 +1,11 @@
  NOTE   mesimon › kanban-tui
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y  ▉▉ ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                               ▉▉   ✻ claude ⠋  $ bash ◦
-    Keymap validator      >1y  ▉▉    BUG   STAGING      T-3     x Flaky e2e on runner >1y
-
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y  ▁ ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   ✻ claude ⠋  $ bash ◦      ▀
+   Keymap validator       >1y  ▁    BUG   STAGING       T-3    x Flaky e2e on runner  >1y
+                               ▀
           ╭─ DESCRIPTION ∙ 1 of 2 ───────────┴─────────────────────────────────╮
           │  edited by you >1y ago                                             │
           │                                                                    │

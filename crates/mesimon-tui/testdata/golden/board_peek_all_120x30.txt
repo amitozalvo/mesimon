@@ -1,13 +1,13 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y  ▉▉ ✓ Grapheme truncation >1y     z Painted accent bar >1y
-     FTR                  T-1  ▉▉   Rebased onto main,       ▉▉    RE~   PRO~   auth  T-5        FTR               T-7
-                               ▉▉   tests green, ready to~
-    Keymap validator      >1y  ▉▉    BUG   STAGING      T-3     x Flaky e2e on runner >1y
-                          T-2                                                         T-6
-                                  ⠋ Adopt drawer import >1y
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+    FTR                   T-1      Rebased onto main, tests  ▁    REGR   PRO~   auth  T-5       FTR                T-7
+                                   green, ready to merge.    ▀
+   Keymap validator       >1y  ▁    BUG   STAGING       T-3    x Flaky e2e on runner  >1y
+                          T-2  ▀                                                      T-6
+                                 ⠋ Adopt drawer import  >1y
                                                         T-4
 
 

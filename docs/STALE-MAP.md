@@ -42283,3 +42283,32 @@ drawing); transcript needles moved to `✻ TRANSCRIPT ∙`. Goldens `transcript_
 `transcript_dialog_hand`, `transcript_dialog_lowered_hand`, `editor_reader`,
 `editor_reader_link`, `editor_reader_unwrapped`, `editor_note_ring`: title, header and footer
 rows only.
+
+## The bar is always one cell; a second tag hangs under the stripe (T-1159, 2026-11-07, the author: "keep it thin, the 2nd tag color should be a block below the first tag, only half and keep a small space between them")
+
+T-821's board-wide width is gone: a second tag on one ticket widened every bar, untagged and
+single-tag cards and column headers included. Now `tags::BAR` is 1 everywhere (`App::bar_width`,
+`tags::bar_width`, `BAR_WIDE`/`BAR_NARROW` and `CardCtx.bar` removed), and the bar wears the
+first tag down every row of the card. A second tag ends the stripe (`tags::StripeEnd`):
+
+- `foot`, the stripe's last row: `▁` in the row's bar surface on the first tag's background, so
+  the first tag covers seven eighths of the cell and the eighth below it is the space.
+- `hang`, the row under it: `▀` in the second tag, no background of its own. That row is the
+  blank between cards, the column's end, the field hung under the card (prompt rows, the
+  composer's workspace selector) or the blank before a `↓ N below` cue. `ui/board.rs` keeps the
+  flat indices of those rows (`hangs`) so the last card shown keeps its half block, and the popped
+  trailing blank is drawn only when it carries one; scroll still never counts it.
+- The search preview draws it under its card. A trail's ghost bar wears no tags and no end.
+
+**Refuted.** Both tags inside the card's own row (top half / bottom half): a cell holds two
+colours, and first tag, space and second tag are three, so the space the author asked for cannot
+fit in one row. The proposal (artifact, two options, ⅛ or ¼ space) was approved as "recommended",
+the ⅛ space.
+
+The theme picker's tint ring still draws `▉▉`, so the glyph law keeps `▉` beside `▁` and `▀`.
+Tests: `a_second_tag_hangs_under_the_stripe_with_a_space`, `the_hang_takes_one_cell_of_a_wider_span`,
+`bars_keep_one_cell_and_their_colors_across_selection`, `test_the_second_tag_hangs_under_the_stripe`
+(a real render, open and closed, both surfaces), `a_second_tag_on_any_ticket_moves_no_title`
+(replaces `a_second_tag_on_any_ticket_widens_every_bar`), the overflow-edge and waiting-card
+tests rewritten for one cell. 21 goldens reminted: every bar narrowed by a cell, the titles it
+freed gained one, two-tag cards end on `▁` with `▀` under them.

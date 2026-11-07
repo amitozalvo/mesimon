@@ -53,7 +53,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 app.spots.borrow_mut().columns.push((ci, rect.x, width));
                 app.spots.borrow_mut().heads.push((
                     name.clone(),
-                    rect.x + app.bar_width() as u16 + 1,
+                    rect.x + crate::tags::BAR as u16 + 1,
                     rect.y,
                 ));
                 draw_column(f, rect, app, ci, name);
@@ -107,7 +107,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         now_ms: now_ms(),
         spin: app.spin_frame(),
         names_key: true,
-        bar: app.bar_width(),
     };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
@@ -180,6 +179,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         /// (the second, or an open card's last, T-789), x offset and
         /// width, for its click.
         prs_at: Option<(usize, (u16, u16))>,
+        /// A second tag, hung in the blank row under the card (T-1159).
+        hang: Option<crate::tags::StripeEnd>,
     }
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
@@ -195,7 +196,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // than inside the card, which never sees it.
         let painted = crate::tags::painted(&app.board, &t.tags);
         if let Some(buf) = rename_of(t).filter(|_| !left) {
-            let (line, x_off) = card::render_edit(&ctx, buf, &painted);
+            let (mut line, x_off) = card::render_edit(&ctx, buf, &painted);
+            let hang = crate::tags::StripeEnd::new(ctx.theme, &painted, ctx.theme.selected_bg);
+            if let Some(end) = &hang {
+                end.foot(&mut line);
+            }
             groups.push(Group {
                 lines: vec![line],
                 cursor: true,
@@ -205,6 +210,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 id: Some(t.id),
                 trail: false,
                 prs_at: None,
+                hang,
             });
             return;
         }
@@ -337,7 +343,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 glide,
             )
         };
-        let mut lines = render(open, peek.as_deref());
+        let (mut lines, end) = render(open, peek.as_deref());
         // A card on the move gives up its rows where it was and takes them
         // back where it went (T-817): its ghost shrinks a row at a time from
         // the move's start, and the card where it goes is one row until it
@@ -353,7 +359,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if let Some(n) = rows {
             lines.truncate(n.max(1));
         }
-        let t_cells = usize::from(ctx.width).saturating_sub(ctx.bar + 2);
+        // The stripe ends on the card's last row drawn (T-1159).
+        if let (Some(end), Some(last)) = (&end, lines.last_mut()) {
+            end.foot(last);
+        }
+        let t_cells = usize::from(ctx.width).saturating_sub(crate::tags::BAR + 2);
         // Line 2, or an open card's pull-request row (T-789, T-829).
         let spans = card::brief_spans(ctx.theme, &brief, t_cells);
         // The words beside the marks (T-794) are the same click, where they
@@ -385,6 +395,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 (at, x_off)
             },
         );
+        // The second tag hangs in the row under the card: the field's first
+        // row when one hangs there, else the blank row between cards.
+        let hang = match (end, edit_cursor) {
+            (Some(end), Some((at, _))) => {
+                end.hang(&mut lines[at]);
+                None
+            }
+            (end, _) => end,
+        };
         groups.push(Group {
             lines,
             cursor: selected || held,
@@ -394,6 +413,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             id: Some(t.id),
             trail: left,
             prs_at: if left { None } else { prs_at },
+            hang,
         });
     };
     match ghost {
@@ -469,10 +489,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // they will stripe the real one — otherwise you are picking
             // blind until the ticket exists.
             let painted = crate::tags::painted(&app.board, tags);
-            let (line, x_off) = card::render_edit(&ctx, buf, &painted);
+            let (mut line, x_off) = card::render_edit(&ctx, buf, &painted);
             let tier_word = app.field_tier_word(None, tier.as_deref());
-            let selector =
+            let mut selector =
                 card::render_workspace_selector(&ctx, *workspace, *plan, tier_word.as_deref());
+            // Its second tag hangs under the stripe, in the selector's row.
+            if let Some(end) = crate::tags::StripeEnd::new(theme, &painted, theme.selected_bg) {
+                end.foot(&mut line);
+                end.hang(&mut selector);
+            }
             groups.push(Group {
                 lines: vec![line, selector],
                 cursor: true,
@@ -482,6 +507,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 id: None,
                 trail: false,
                 prs_at: None,
+                hang: None,
             });
         }
     }
@@ -500,6 +526,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
                                                   // The card mid-shake, if any: its flat line range and its offset.
     let mut shaken: Option<(usize, usize, i16)> = None;
+    // The blank rows a second tag hangs in (T-1159), by flat line.
+    let mut hangs: Vec<usize> = Vec::new();
     for g in groups {
         let start = lines.len();
         lines.extend(g.lines);
@@ -508,8 +536,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             shaken = Some((start, end, g.shake));
         }
         // One blank row between cards (06 §5.5 — reinstated after dogfood:
-        // contiguous one-line cards were hard to separate by eye).
-        lines.push(Line::default());
+        // contiguous one-line cards were hard to separate by eye). A second
+        // tag hangs in its first cell (T-1159).
+        let mut gap = Line::default();
+        if let Some(end) = &g.hang {
+            end.hang(&mut gap);
+            hangs.push(lines.len());
+        }
+        lines.push(gap);
         if g.cursor {
             cursor_range = Some((start, end));
         }
@@ -529,7 +563,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             }
         }
     }
-    lines.pop(); // no trailing blank after the last card
+    // No trailing blank after the last card, and nothing for scroll to
+    // count; a second tag it wears still hangs under it (T-1159).
+    let tail = lines.pop();
 
     // The column's ask field (T-378) hangs UNDER THE HEADER the way a
     // ticket's hangs under its card: the header is what names where the
@@ -631,7 +667,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         .count();
     let overflow_line = |count: usize, up: bool| {
         Line::from(vec![
-            Span::raw(" ".repeat(ctx.bar + 1)),
+            Span::raw(" ".repeat(crate::tags::BAR + 1)),
             Span::styled(crate::glyphs::overflow_cue(theme.glyph_tier(), count, up), theme.dim2()),
         ])
     };
@@ -656,17 +692,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut header_cursor_x: Option<u16> = None;
     if col_header || header_edit.is_some() {
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
-        head.push(Span::styled(bar_ch.to_string().repeat(ctx.bar), bar_style));
+        head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR), bar_style));
         head.push(Span::raw(" "));
     } else {
-        head.push(Span::raw(" ".repeat(ctx.bar + 1)));
+        head.push(Span::raw(" ".repeat(crate::tags::BAR + 1)));
     }
     if let Some(buf) = header_edit {
         // The name edited in place, with the hardware cursor (06 §5.7),
         // the badges standing down for the field.
-        let budget = (area.width as usize).saturating_sub(ctx.bar + 2);
+        let budget = (area.width as usize).saturating_sub(crate::tags::BAR + 2);
         let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-        header_cursor_x = Some(ctx.bar as u16 + 1 + cx);
+        header_cursor_x = Some(crate::tags::BAR as u16 + 1 + cx);
         head.push(Span::styled(
             shown,
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
@@ -776,6 +812,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             out.push(Line::default());
         }
         out.extend(lines[content_start..content_end].iter().cloned());
+        // The last card drawn keeps its second tag in the row under it, the
+        // blank before a cue or the column's end included.
+        if hangs.contains(&content_end) {
+            out.extend(lines.get(content_end).or(tail.as_ref()).cloned());
+        }
         // The shaken card's rows are left blank here and drawn after the
         // column, one cell off (T-423): a card that moves has to leave its
         // place, and the gutter either side of a column is the one cell it

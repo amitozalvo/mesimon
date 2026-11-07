@@ -1,12 +1,12 @@
  NOTE   mesimon › kanban-tui
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
                                                             ╭─ DESCRIPTION ────────────────────────────────────────────╮
-    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 dete~ ⎇· >1y │  Fix OSC-11 detection                                    │
-                               ▉▉   ✻ claude ⠋  $ bash ◦    │  ⎇ worktree ∙ edited by you >1y ago                      │
-    Keymap validator      >1y  ▉▉    BUG   STAGING      T-3 │                                                          │
-                                                            │  ## Why                                                  │
-                                  ⠋ Adopt drawer import >1y │                                                          │
+   Decay treatments       >1y    ⠋ Fix OSC-11 detec~ ⎇· >1y │  Fix OSC-11 detection                                    │
+                                   ✻ claude ⠋  $ bash ◦     │  ⎇ worktree ∙ edited by you >1y ago                      │
+   Keymap validator       >1y  ▁    BUG   STAGING       T-3 │                                                          │
+                               ▀                            │  ## Why                                                  │
+                                 ⠋ Adopt drawer import  >1y │                                                          │
                                                             │  The diff viewer is read-only and the `v` key is free.   │
                                                             │                                                          │
                                                             │  - one pane under 107 cols                               │

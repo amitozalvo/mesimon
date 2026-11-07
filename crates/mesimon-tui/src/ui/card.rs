@@ -1,8 +1,8 @@
 //! One card (07 §4 owns the anatomy; 06 supplies glyphs and tokens).
 //!
 //! Frame per line: `[bar B][pad 1][content T][pad 1]`, `T = width - B - 2`.
-//! The bar carries tags, one cell or two across the whole board
-//! (`tags::bar_width`); its shape stays the same when opened.
+//! The bar carries the first tag, one cell wide; a second tag ends it and
+//! hangs under it (`tags::StripeEnd`).
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
 //! aggregate glyph (quiet-idle only) starts its title at T[0]; spawning left
 //! that set when Shift+Enter made the launch window something a user watches. The meta strip (line 2) carries only the session
@@ -36,8 +36,6 @@ pub(super) struct CardCtx<'a> {
     /// (T-410)? True on the board, where nothing else names it; false where
     /// the frame around the card already does (the search preview).
     pub names_key: bool,
-    /// The tag bar's width on this board (`App::bar_width`, T-821).
-    pub bar: usize,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -48,24 +46,17 @@ pub(super) fn render_edit(
     tags: &[crate::tags::Painted],
 ) -> (Line<'static>, u16) {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(ctx.bar + 2);
+    let t_cells = (ctx.width as usize).saturating_sub(crate::tags::BAR + 2);
     let (bar_ch, bar_style) = theme.bar(BarWeight::Cursor);
     // The tags picked with `^t` colour the phantom card's bar exactly as they
     // will colour the real one.
     // The composer's phantom card is the cursor card by construction.
-    let mut spans = crate::tags::bar_spans(
-        theme,
-        bar_ch,
-        bar_style,
-        tags,
-        crate::theme::TagLevel::Selected,
-        theme.selected_bg,
-        ctx.bar,
-    );
+    let mut spans =
+        crate::tags::bar_spans(theme, bar_ch, bar_style, tags, crate::theme::TagLevel::Selected);
     // Scroll only as far as keeps the hardware cursor visible.
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let x_off = ctx.bar as u16 + 1 + cx;
+    let x_off = crate::tags::BAR as u16 + 1 + cx;
     spans.extend([
         Span::raw(" "),
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
@@ -101,11 +92,11 @@ pub(super) fn render_prompt(
     let theme = ctx.theme;
     // Bar-width indent, pad, caret, space. The caret is what an empty field has to
     // show; without it the state is an empty row.
-    let lead = ctx.bar as u16 + 3;
+    let lead = crate::tags::BAR as u16 + 3;
     let budget = (ctx.width as usize).saturating_sub(lead as usize + 2);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
     let mut spans = vec![
-        Span::raw(" ".repeat(ctx.bar + 1)),
+        Span::raw(" ".repeat(crate::tags::BAR + 1)),
         Span::styled("› ", Style::default().fg(theme.sel.dim2)),
     ];
     if buffer.as_str().is_empty() {
@@ -207,7 +198,7 @@ pub(super) fn render_workspace_selector(
     // No `(default)` tail when the pick is the column's own (T-766): the
     // word is the workspace the ticket gets, wherever it came from.
     let mut spans = vec![
-        Span::raw(" ".repeat(ctx.bar + 1)),
+        Span::raw(" ".repeat(crate::tags::BAR + 1)),
         Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),
     ];
     let hint = "  shift+tab";
@@ -242,7 +233,7 @@ pub(super) fn render_ask_mode(
 ) -> Line<'static> {
     let theme = ctx.theme;
     let mut spans = vec![
-        Span::raw(" ".repeat(ctx.bar + 1)),
+        Span::raw(" ".repeat(crate::tags::BAR + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
     ];
     // `^n` (T-443): the tier the words switch the agent to.
@@ -511,9 +502,9 @@ pub(super) fn render(
     links: bool,
     moved: bool,
     ghost: bool,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<crate::tags::StripeEnd>) {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(ctx.bar + 2);
+    let t_cells = (ctx.width as usize).saturating_sub(crate::tags::BAR + 2);
     let tier = theme.glyph_tier();
     // The `z` chord is armed on this card: it opens and names the preset on
     // a row of its own, the way a quick tag opens the card it tagged.
@@ -627,11 +618,13 @@ pub(super) fn render(
     // Keep the tag gutter on a contrast-checked surface even when the title
     // wears an attention/delete band; a yellow tag must not vanish into gold.
     let bar_surface = if cursorish { theme.selected_bg.or(theme.bg) } else { theme.bg };
+    // A second tag ends the stripe (T-1159); a trail's ghost bar wears none.
+    let end = (!trail).then(|| crate::tags::StripeEnd::new(theme, tags, bar_surface)).flatten();
     let bar_spans = || {
         if trail {
-            vec![Span::styled(ladder_ch.to_string().repeat(ctx.bar), state_style)]
+            vec![Span::styled(ladder_ch.to_string().repeat(crate::tags::BAR), state_style)]
         } else {
-            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level, bar_surface, ctx.bar)
+            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level)
         }
     };
 
@@ -897,7 +890,7 @@ pub(super) fn render(
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
     if let Some(count) = under {
-        let from = ctx.bar + 1;
+        let from = crate::tags::BAR + 1;
         let to = super::spans_width(&spans);
         spans = underline_row(theme, spans, from, to, cursorish, count, summary_pulse);
     }
@@ -1045,7 +1038,7 @@ pub(super) fn render(
     }
 
     if held {
-        return lines;
+        return (lines, end);
     }
 
     // ---- accordion (07 §4.3) ---------------------------------------------
@@ -1313,7 +1306,7 @@ pub(super) fn render(
             let brief = if brief_last { brief.clone() } else { Vec::new() };
             let mut row = Vec::new();
             words_row(&mut row, ship_words);
-            let used = ctx.bar + 1 + super::spans_width(&row);
+            let used = crate::tags::BAR + 1 + super::spans_width(&row);
             let bw = super::spans_width(&brief);
             row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + bw + 1))));
             row.extend(brief);
@@ -1380,7 +1373,7 @@ pub(super) fn render(
     // No meta strip at rest (author 2026-08-30): the session dots repeated
     // the aggregate glyph — a resting card is one line, plus its stripe.
     // Per-session detail lives in the accordion and the ticket rail.
-    lines
+    (lines, end)
 }
 
 /// How many rows the open card gives the summary's boxes, the fold row

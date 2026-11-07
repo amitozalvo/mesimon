@@ -3847,9 +3847,11 @@ fn test_the_bar_carries_the_tags_in_their_own_tints() {
     assert!(!plain.modifier.contains(Modifier::UNDERLINED));
 }
 
-/// Two full-height marks on the row's actual surface, including when open.
+/// The first tag runs the card's stripe, one cell wide, open or closed; its
+/// last row leaves a space on the row's own surface, and the second tag is a
+/// half block in the row under it (T-1159).
 #[test]
-fn test_two_tags_keep_their_columns_when_the_card_opens() {
+fn test_the_second_tag_hangs_under_the_stripe() {
     let path = write_transcript("tags-split", &reply_record("Rebased and green."));
     for flavor in crate::theme::Flavor::ALL {
         for selected in [false, true] {
@@ -3869,25 +3871,20 @@ fn test_two_tags_keep_their_columns_when_the_card_opens() {
                 let lines = render(&app, 120, 30);
                 let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
                 let buf = cells(&app, 120, 30);
-                let x = (30..60).find(|x| buf[(*x, top)].symbol() == "▉").expect("tag bar");
+                let x = (30..60).find(|x| buf[(*x, top)].bg == first).expect("tag bar");
+                assert_ne!(buf[(x + 1, top)].bg, first, "the bar is one cell");
                 let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
-                let mut rows = 0;
-                for y in top..30 {
-                    if buf[(x, y)].symbol() != "▉" {
-                        break;
-                    }
-                    assert_eq!(buf[(x + 1, y)].symbol(), "▉");
-                    assert_eq!(buf[(x, y)].fg, first);
-                    assert_eq!(buf[(x + 1, y)].fg, second);
-                    assert_eq!(buf[(x, y)].bg, surface, "gap at {x},{y}");
-                    assert_eq!(buf[(x + 1, y)].bg, surface);
-                    rows += 1;
+                let mut y = top;
+                while buf[(x, y)].symbol() == " " && buf[(x, y)].bg == first {
+                    y += 1;
                 }
-                if selected && peek {
-                    assert!(rows >= 3);
-                } else {
-                    assert!(rows >= 1);
-                }
+                let rows = y - top + 1;
+                assert_eq!(buf[(x, y)].symbol(), "▁", "the stripe's last row at {x},{y}");
+                assert_eq!(buf[(x, y)].bg, first);
+                assert_eq!(buf[(x, y)].fg, surface, "the space is the row's own surface");
+                assert_eq!(buf[(x, y + 1)].symbol(), "▀", "the second tag under it");
+                assert_eq!(buf[(x, y + 1)].fg, second);
+                assert!(rows >= if selected && peek { 3 } else { 1 }, "{rows} rows");
             }
         }
     }
@@ -3906,10 +3903,8 @@ fn test_tags_keep_full_strength_off_the_cursor() {
         let lines = lines_of(&buf);
         for (name, x) in [("Decay treatments", 1), ("Painted accent", 91)] {
             let y = lines.iter().position(|l| l.contains(name)).expect("card") as u16;
-            for dx in 0..2 {
-                assert_eq!(buf[(x + dx, y)].bg, tint);
-                assert_eq!(buf[(x + dx, y)].symbol(), " ");
-            }
+            assert_eq!(buf[(x, y)].bg, tint);
+            assert_eq!(buf[(x, y)].symbol(), " ");
         }
     }
 }
@@ -3969,14 +3964,17 @@ fn test_a_waiting_card_still_shouts() {
             let buf = cells(&app, 120, 30);
             let lines = lines_of(&buf);
             let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
-            let x = (30..60).find(|x| buf[(*x, y)].symbol() == "▉").expect("tags");
             let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
-            for (dx, group, name) in [(0, 1, "BUG"), (1, 2, "STAGING")] {
-                let tint = app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize);
-                assert_eq!(buf[(x + dx, y)].fg, tint);
-                assert_eq!(buf[(x + dx, y)].bg, surface, "keep tags off the attention ground");
-            }
-            assert_eq!(buf[(x + 2, y)].bg, app.theme.attn, "the title keeps its alarm band");
+            let tint = |group, name| {
+                app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize)
+            };
+            let x = (30..60).find(|x| buf[(*x, y)].bg == tint(1, "BUG")).expect("tags");
+            assert_eq!(buf[(x + 1, y)].bg, app.theme.attn, "the title keeps its alarm band");
+            // The stripe's last row: the space keeps the card's surface.
+            let y = (y..30).find(|y| buf[(x, *y)].symbol() == "▁").expect("the stripe's end");
+            assert_eq!(buf[(x, y)].bg, tint(1, "BUG"));
+            assert_eq!(buf[(x, y)].fg, surface, "keep the space off the attention ground");
+            assert_eq!(buf[(x, y + 1)].fg, tint(2, "STAGING"));
         }
     }
 }
@@ -4002,12 +4000,13 @@ fn test_tag_underlines_never_spend_the_accent() {
     }
 }
 
-/// All cards reserve the same two cells: adding a second tag only changes
-/// the bar and the named chips, never title position or available width.
+/// All cards reserve the same one cell: adding a second tag only changes
+/// the stripe's end and the named chips, never title position, available
+/// width or the board's height (T-1159).
 #[test]
 fn test_the_second_tag_costs_no_width() {
     let plain = |lines: Vec<String>| -> Vec<String> {
-        lines.iter().map(|l| l.replace('▉', " ")).collect()
+        lines.iter().map(|l| l.replace(['▁', '▀'], " ").trim_end().to_string()).collect()
     };
     for peek in [false, true] {
         let mut two = app_graphite(fixture_tagged());
@@ -4043,12 +4042,9 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
         [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
     {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
-        for (width, bar) in [12, 29, 48]
-            .into_iter()
-            .flat_map(|w| [crate::tags::BAR_NARROW, crate::tags::BAR_WIDE].map(|b| (w, b)))
-        {
-            let ctx =
-                card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true, bar };
+        for width in [12, 29, 48] {
+            let bar = crate::tags::BAR;
+            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> =
@@ -4277,11 +4273,11 @@ fn golden_board_tags_120() {
     golden("board_tags_120x30", &render(&app, 120, 30));
 }
 
-/// The bar is one cell until a ticket on the board wears two tags, then two
-/// on every card and column header at once (T-821), so a column's titles
-/// still start together.
+/// The bar is one cell whatever the board wears (T-1159): a second tag on
+/// one ticket moves no other card's title and no column's header, and its
+/// own title stays where one tag puts it.
 #[test]
-fn a_second_tag_on_any_ticket_widens_every_bar() {
+fn a_second_tag_on_any_ticket_moves_no_title() {
     use mesimon_core::board::TagRef;
     let starts = |app: &App, needle: &str| {
         let lines = render(app, 120, 30);
@@ -4290,13 +4286,12 @@ fn a_second_tag_on_any_ticket_widens_every_bar() {
     let mut board = fixture(false);
     board.tickets[0].tags = vec![TagRef { name: "BUG".into(), group: 1 }];
     let app = app_graphite(board.clone());
-    assert_eq!(app.bar_width(), crate::tags::BAR_NARROW, "one tag fits one cell");
-    let (title, head) = (starts(&app, "Keymap validator"), starts(&app, "TODO"));
+    let title = board.tickets[0].title.clone();
+    let at =
+        |app: &App| (starts(app, &title), starts(app, "Keymap validator"), starts(app, "TODO"));
+    let one = at(&app);
     board.tickets[0].tags.push(TagRef { name: "QUESTION".into(), group: 2 });
-    let app = app_graphite(board);
-    assert_eq!(app.bar_width(), crate::tags::BAR_WIDE);
-    assert_eq!(starts(&app, "Keymap validator"), title + 1, "an untagged card widens too");
-    assert_eq!(starts(&app, "TODO"), head + 1, "and the column's header");
+    assert_eq!(at(&app_graphite(board)), one);
 }
 
 /// The peeked card with its tags named: the row under the title, then the
@@ -8119,7 +8114,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
     assert!(after[2].contains("TODO") && after[2].contains("IN PROGRESS"), "{:?}", after[2]);
     let title_at =
         after[4].find("Ship the diff viewer").expect("the title on the dialog's first row");
-    let dialog_x = after[4][..title_at].chars().count() - app.bar_width() - 1;
+    let dialog_x = after[4][..title_at].chars().count() - crate::tags::BAR - 1;
     assert_eq!(dialog_x, 31, "the stripe, a pad, then the title: {:?}", after[4]);
     // The frame's top edge names the dialog on the breathing row over the
     // cards; the context row under the title starts at the column.
@@ -9996,11 +9991,15 @@ fn test_no_drawn_structure() {
                     if !(0x2500..=0x259F).contains(&cp) {
                         continue;
                     }
-                    // The tag bar admits `▉` for its narrow gaps. `▎` belongs
-                    // to description bars; frames, the mascot and the pairing
-                    // QR keep their own position-scoped exceptions.
+                    // The tag stripe ends on `▁` and hangs its second tag as
+                    // `▀` (T-1159); the theme picker's tint ring is `▉▉`. `▎`
+                    // belongs to description bars; frames,
+                    // the mascot and the pairing QR keep their own
+                    // position-scoped exceptions.
                     assert!(
-                        ch == '▉'
+                        ch == '▁'
+                            || ch == '▀'
+                            || ch == '▉'
                             || ch == '▎'
                             || on_perimeter(frames, x, y)
                             || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch))
@@ -11470,7 +11469,7 @@ fn test_archive_refused_shakes_the_card() {
     let bystander = at(&app, "Adopt drawer");
     // bar + pad + glyph + pad precede the title of a card with sessions.
     // The bar is a painted cell: its ground is what moves.
-    let bar_x = rest - (app.bar_width() as u16 + 3);
+    let bar_x = rest - (crate::tags::BAR as u16 + 3);
     let bar = cells(&app, 120, 30)[(bar_x, y)].bg;
     assert_ne!(bar, ratatui::style::Color::Reset, "the cursor card wears its bar");
     press(&mut app, 'a');
@@ -11698,7 +11697,7 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                                 "the edge must keep the whole card"
                             );
                         }
-                        assert_eq!(x, 4, "title inset at the edge");
+                        assert_eq!(x, 3, "title inset at the edge");
                         assert_eq!(
                             buf[(x, y)].fg,
                             if index == cursor { app.theme.sel.base } else { app.theme.rest.base }
@@ -11706,16 +11705,21 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                         let tint = |group, name| {
                             app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize)
                         };
+                        // One cell, the first tag; a second ends the stripe
+                        // and hangs under it, at the edge too (T-1159).
+                        assert_eq!(buf[(1, y)].bg, tint(1, "BUG"));
+                        assert_ne!(buf[(2, y)].bg, tint(1, "BUG"));
+                        let mut end = y;
+                        while buf[(1, end)].symbol() == " " && buf[(1, end)].bg == tint(1, "BUG") {
+                            end += 1;
+                        }
                         if index % 2 == 1 {
-                            for (dx, color) in [(0, tint(1, "BUG")), (1, tint(2, "UI"))] {
-                                assert_eq!(buf[(1 + dx, y)].symbol(), "▉");
-                                assert_eq!(buf[(1 + dx, y)].fg, color);
-                            }
+                            assert_eq!(buf[(1, end)].symbol(), "▁");
+                            assert_eq!(buf[(1, end + 1)].symbol(), "▀");
+                            assert_eq!(buf[(1, end + 1)].fg, tint(2, "UI"));
                         } else {
-                            for x in [1, 2] {
-                                assert_eq!(buf[(x, y)].symbol(), " ");
-                                assert_eq!(buf[(x, y)].bg, tint(1, "BUG"));
-                            }
+                            assert_ne!(buf[(1, end)].symbol(), "▁");
+                            assert_ne!(buf[(1, end)].symbol(), "▀");
                         }
                     }
                 }
@@ -12561,7 +12565,7 @@ fn a_move_leaves_a_trail_where_the_card_was() {
     let todo = app.spots.borrow().heads.iter().find(|h| h.0 == "todo").map(|h| h.1);
     let trail = *app.spots.borrow().trails.first().expect("the trail is drawn");
     assert_eq!(trail.id, t1);
-    assert_eq!(Some(trail.x + app.bar_width() as u16 + 1), todo, "in the column it left");
+    assert_eq!(Some(trail.x + crate::tags::BAR as u16 + 1), todo, "in the column it left");
     // The trail's own row, in the column it left.
     let row = unbolted(&lines[trail.y as usize], (trail.x + trail.width) as usize);
     assert!(row.contains("Decay treatments"), "the trail is the card: {row}");
@@ -15005,7 +15009,9 @@ fn the_live_window_is_the_one_place_the_panes_glyphs_reach() {
                         boxed += 1;
                     } else {
                         assert!(
-                            ch == '▉'
+                            ch == '▁'
+                                || ch == '▀'
+                                || ch == '▉'
                                 || ch == '▎'
                                 || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch)),
                             "{ch:?} at {x},{y} outside the window ({profile:?})"

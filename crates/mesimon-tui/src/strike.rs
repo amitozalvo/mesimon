@@ -508,7 +508,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, header: Rect, area: Rect) {
     let spots = app.spots.borrow();
     let theme = &app.theme;
     // A bolt lands on a title, one pad past the tag bar.
-    let lead = app.bar_width() as u16 + 1;
+    let lead = crate::tags::BAR as u16 + 1;
     let mut bolts: Vec<(Vec<Dot>, u64)> = Vec::new();
     // The title rows no bolt draws on — the struck card's and the one it
     // leaves from — as (y, x, width), and the crown marks that flare.

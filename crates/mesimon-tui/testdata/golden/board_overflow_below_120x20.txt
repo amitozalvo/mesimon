@@ -1,19 +1,19 @@
  BOARD   mesimon › kanban-tui   13 tickets
 
-    TODO                              12     DONE                               1
+   TODO                               12    DONE                                1
 
-    Load 00                          >1y     Elsewhere                        >1y
+   Load 00                           >1y    Elsewhere                         >1y
 
- ▉▉ Load 01                          >1y
+ ▁ Load 01                           >1y
+ ▀
+   Load 02                           >1y
 
-    Load 02                          >1y
-
- ▉▉ Load 03                          >1y
-
-    Load 04                          >1y
+ ▁ Load 03                           >1y
+ ▀
+   Load 04                           >1y
 
 
-    ↓ 7 below
+   ↓ 7 below
 
 
  T-99 Elsewhere ∙ created >1y ago

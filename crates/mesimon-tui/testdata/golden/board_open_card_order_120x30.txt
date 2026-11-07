@@ -1,19 +1,19 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
-    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-    Decay treatments      >1y  ▉▉ ⠋ Fix OSC-11 detecti~ >1y  ▉▉ ✓ Grapheme truncation >1y     z Painted accent bar >1y
-                               ▉▉   Fixed the OSC-11 race:
-    Keymap validator      >1y  ▉▉   the query now runs once     x Flaky e2e on runner >1y
-                               ▉▉ [ ] add the e2e for the ~
-                               ▉▉ [ ] write the STALE-MAP ~
-                               ▉▉ [-] 3 more ∙ ^j
-                               ▉▉   ● Run the golden tests
-                               ▉▉   ✻ claude ⠋  $ bash ◦
-                               ▉▉   rebase ask ∙ afte~  ◉!7
-                               ▉▉    BUG   STAGING      T-3
-
-                                  ⠋ Adopt drawer import >1y
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y  ▁ ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   Fixed the OSC-11 race:    ▀
+   Keymap validator       >1y      the query now runs once~    x Flaky e2e on runner  >1y
+                                 [ ] add the e2e for the a~
+                                 [ ] write the STALE-MAP b~
+                                 [-] 3 more ∙ ^j
+                                   ● Run the golden tests
+                                   ✻ claude ⠋  $ bash ◦
+                                   rebase ask ∙ after~  ◉!7
+                               ▁    BUG   STAGING       T-3
+                               ▀
+                                 ⠋ Adopt drawer import  >1y
 
 
 

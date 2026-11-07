@@ -1,14 +1,14 @@
-//! Fixed-width tag bars and the named chips shown in an open card.
+//! One-cell tag bars and the named chips shown in an open card.
 //!
-//! Every bar on the board is one width (`bar_width`): one cell while no
-//! ticket on it wears two tags, two cells once one does (T-821). A bar
-//! holding one tag is painted whole; two tags use `▉▉`, each glyph leaving a
-//! one-eighth-cell gap on the row's background. The shape and tag order
-//! stay the same when a card opens. Tag colors do not fade with selection;
-//! the neutral bar retains its selection ladder.
+//! Every bar on the board is one cell (`BAR`), however many tags a ticket
+//! wears (T-1159). The bar is the first tag's colour down every row of the
+//! card. A second tag ends it: the stripe's last row leaves its bottom
+//! eighth on the row's surface, and the row under the card carries the
+//! second tag as a half block in its first cell (`StripeEnd`). Tag colors do
+//! not fade with selection; the neutral bar retains its selection ladder.
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::board::{Board, TagRef};
@@ -29,68 +29,102 @@ pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
     tags.iter().map(|t| Painted { name: t.name.clone(), tint: board.tint_of(t) }).collect()
 }
 
-/// The bar a board with a two-tag ticket on it gives every card, so the
-/// cards' titles still start in one column.
-pub(crate) const BAR_WIDE: usize = 2;
-/// The bar while no ticket on the board wears a second tag: it was this one
-/// cell before two tags needed a glyph each, and a second cell beside one
-/// colour is only ink.
-pub(crate) const BAR_NARROW: usize = 1;
-pub(crate) const TAGS_ON_CARD: usize = 2;
+/// Every tag bar's width: one cell, so a second tag on one ticket moves no
+/// other card's title (T-1159; T-821 widened the whole board to two).
+pub(crate) const BAR: usize = 1;
 
-/// How wide every bar on this board is: `BAR_WIDE` when any ticket on it
-/// (archived ones are not on it) wears two tags or more, or the ticket being
-/// composed will (`composing`, its picked tags), else `BAR_NARROW`. One width
-/// for the whole board, in every color profile, so a column's titles line up.
-pub(crate) fn bar_width(board: &Board, composing: usize) -> usize {
-    let two = |n: usize| n >= TAGS_ON_CARD;
-    if two(composing) || board.tickets.iter().any(|t| !t.is_archived() && two(t.tags.len())) {
-        BAR_WIDE
-    } else {
-        BAR_NARROW
-    }
-}
-
-/// Paint the bar, `width` cells (`bar_width`), on this row's surface.
-/// Explicitly replace the neutral bar's background for two tags: leaving it
-/// behind the glyph would fill the gap.
-/// `▉` is an intentional exception to the block-glyph restriction. Like the
-/// former half-block it is width-ambiguous; ASCII profiles never use it.
+/// Paint the bar, one cell, on this row: the first tag whole, untagged the
+/// neutral ladder, below TrueColor the underline. A second tag is not drawn
+/// here; the card's last row and the row under it carry it (`StripeEnd`).
 pub(crate) fn bar_spans(
     theme: &Theme,
     ch: char,
     style: Style,
     tags: &[Painted],
     level: TagLevel,
-    surface: Option<Color>,
-    width: usize,
 ) -> Vec<Span<'static>> {
     let Some(first) = tags.first() else {
         let faded = style.bg.map(|c| theme.faded(c, level));
         let style = faded.map(|c| style.bg(c)).unwrap_or(style);
-        return vec![Span::styled(ch.to_string().repeat(width), style)];
+        return vec![Span::styled(ch.to_string().repeat(BAR), style)];
     };
     if !theme.paints_tags() {
         // Keep the existing underline fallback and its ASCII state ladder.
         return vec![Span::styled(
-            ch.to_string().repeat(width),
+            ch.to_string().repeat(BAR),
             style.add_modifier(Modifier::UNDERLINED),
         )];
     }
-    // One tag, or a bar too narrow for a second (`bar_width` widens the
-    // board before one is worn, so this is only a caller's slip): the first.
-    if tags.len() == 1 || width < TAGS_ON_CARD {
-        return vec![Span::styled(" ".repeat(width), style.bg(theme.pip(first.tint as usize)))];
-    }
-    tags.iter()
-        .take(TAGS_ON_CARD)
-        .map(|tag| {
-            Span::styled(
-                "▉",
-                style.bg(surface.unwrap_or(Color::Reset)).fg(theme.pip(tag.tint as usize)),
-            )
+    vec![Span::styled(" ".repeat(BAR), style.bg(theme.pip(first.tint as usize)))]
+}
+
+/// Where a two-tag stripe ends (T-1159, the author: "the 2nd tag color should
+/// be a block below the first tag, only half and keep a small space between
+/// them"). A cell holds two colours, and the first tag, the space and the
+/// second tag are three, so the second tag takes the row under the stripe.
+///
+/// - `foot`: the stripe's last row, the first tag over its top seven eighths
+///   and `▁` in the row's surface under it: the space.
+/// - `hang`: the row under that, the second tag as `▀` on whatever that row
+///   is, the blank row between cards or a field hung under the card.
+///
+/// `▁` and `▀` are deliberate block-glyph exceptions, one cell wide in every
+/// font; ASCII profiles never draw them.
+#[derive(Debug, Clone)]
+pub(crate) struct StripeEnd {
+    foot: Span<'static>,
+    hang: Span<'static>,
+}
+
+impl StripeEnd {
+    /// The end of this stripe, or `None` while it wears fewer than two tags
+    /// or the profile has no tints to tell them apart. `surface` is the
+    /// background the card's row gives its bar (`theme.bg` at rest).
+    pub(crate) fn new(theme: &Theme, tags: &[Painted], surface: Option<Color>) -> Option<Self> {
+        let [first, second, ..] = tags else { return None };
+        if !theme.paints_tags() {
+            return None;
+        }
+        let foot =
+            Style::default().bg(theme.pip(first.tint as usize)).fg(surface.unwrap_or(Color::Reset));
+        Some(StripeEnd {
+            foot: Span::styled("▁", foot),
+            hang: Span::styled("▀", Style::default().fg(theme.pip(second.tint as usize))),
         })
-        .collect()
+    }
+
+    /// Close the stripe on this row, the card's last.
+    pub(crate) fn foot(&self, line: &mut Line<'static>) {
+        first_cell(line, self.foot.clone());
+    }
+
+    /// Hang the second tag in this row's first cell, the row under the card.
+    pub(crate) fn hang(&self, line: &mut Line<'static>) {
+        first_cell(line, self.hang.clone());
+    }
+}
+
+/// Put `cell` in the line's first cell, splitting a wider first span; the
+/// rest of the row stays where it was. A row that opens on a wide glyph is
+/// left alone rather than widened or cut.
+fn first_cell(line: &mut Line<'static>, cell: Span<'static>) {
+    line.spans.retain(|s| !s.content.is_empty());
+    let Some(head) = line.spans.first_mut() else {
+        line.spans.push(cell);
+        return;
+    };
+    let mut chars = head.content.chars();
+    let Some(c) = chars.next() else { return };
+    if c.to_string().width() != 1 {
+        return;
+    }
+    let rest = chars.as_str().to_string();
+    if rest.is_empty() {
+        line.spans[0] = cell;
+    } else {
+        head.content = rest.into();
+        line.spans.insert(0, cell);
+    }
 }
 
 /// The tags spelled out as painted chips, for the one row the peek gives
@@ -170,91 +204,71 @@ mod tests {
         (0..n).map(|i| Painted { name: format!("T{i}"), tint: (i % PIPS) as u8 }).collect()
     }
 
+    /// One cell, whatever the ticket wears: the first tag whole, untagged
+    /// the faded neutral bar (T-1159).
     #[test]
-    fn bars_keep_their_width_and_colors_across_selection() {
+    fn bars_keep_one_cell_and_their_colors_across_selection() {
         for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
             let base = Style::default().bg(theme.rest.dim3);
             for n in 0..=5 {
                 let worn = tags(n);
-                for (level, width) in [TagLevel::Selected, TagLevel::Rest]
-                    .into_iter()
-                    .flat_map(|l| [BAR_NARROW, BAR_WIDE].map(|w| (l, w)))
-                {
-                    let spans = bar_spans(&theme, ' ', base, &worn, level, theme.bg, width);
-                    assert_eq!(spans.iter().map(Span::width).sum::<usize>(), width);
-                    match n {
-                        0 => {
-                            assert_eq!(spans[0].style.bg, Some(theme.faded(theme.rest.dim3, level)))
-                        }
-                        // One tag, or two on a bar with room for one: the
-                        // first, painted whole.
-                        _ if n == 1 || width == BAR_NARROW => {
-                            assert_eq!(spans.len(), 1);
-                            assert_eq!(spans[0].content, " ".repeat(width));
-                            assert_eq!(spans[0].style.bg, Some(theme.pip(0)));
-                        }
-                        _ => {
-                            assert_eq!(spans.len(), 2);
-                            for (i, span) in spans.iter().enumerate() {
-                                assert_eq!(span.content, "▉");
-                                assert_eq!(span.style.fg, Some(theme.pip(i)));
-                                assert_eq!(span.style.bg, theme.bg);
-                            }
-                        }
-                    }
+                for level in [TagLevel::Selected, TagLevel::Rest] {
+                    let spans = bar_spans(&theme, ' ', base, &worn, level);
+                    assert_eq!(spans.len(), 1);
+                    assert_eq!(spans[0].width(), BAR);
+                    let want =
+                        if n == 0 { theme.faded(theme.rest.dim3, level) } else { theme.pip(0) };
+                    assert_eq!(spans[0].style.bg, Some(want), "{flavor:?} with {n} tags");
                 }
             }
         }
     }
 
-    /// One cell until a ticket on the board wears a second tag (T-821), the
-    /// draft being composed included; an archived ticket is not on it.
+    /// The second tag ends the stripe: the last row keeps its bottom eighth
+    /// on the row's own surface, and the row under it carries the second
+    /// tag's top half. Two equal tints are still two blocks.
     #[test]
-    fn the_bar_widens_only_for_a_second_tag_on_the_board() {
-        let tag = |name: &str, group: u8| TagRef { group, name: name.into() };
-        let mut board = Board::default();
-        assert_eq!(bar_width(&board, 0), BAR_NARROW, "an empty board");
-        board.tickets.push(
-            serde_json::from_value(serde_json::json!({
-                "id": ulid::Ulid(1).to_string(), "short_key": "T-1", "title": "one tag",
-                "column": "TODO", "order": "a", "created_at": "@0",
-            }))
-            .expect("a ticket from its required fields"),
-        );
-        board.tickets[0].tags = vec![tag("BUG", 1)];
-        assert_eq!(bar_width(&board, 0), BAR_NARROW, "one tag fills one cell");
-        assert_eq!(bar_width(&board, 1), BAR_NARROW, "a draft with one tag");
-        assert_eq!(bar_width(&board, 2), BAR_WIDE, "a draft picking its second");
-        board.tickets[0].tags.push(tag("QUESTION", 2));
-        assert_eq!(bar_width(&board, 0), BAR_WIDE, "a second tag widens every bar");
-        board.tickets[0].archived = serde_json::from_value(serde_json::json!({ "at": "@1" })).ok();
-        assert!(board.tickets[0].is_archived());
-        assert_eq!(bar_width(&board, 0), BAR_NARROW, "an archived ticket is off the board");
-    }
-
-    #[test]
-    fn two_equal_tints_still_have_a_gap_on_each_surface() {
+    fn a_second_tag_hangs_under_the_stripe_with_a_space() {
         for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
-            let worn = vec![Painted { name: "BUG".into(), tint: 0 }; 2];
-            for surface in [theme.bg, theme.selected_bg, Some(theme.attn), theme.delete_row().bg] {
-                let spans = bar_spans(
-                    &theme,
-                    ' ',
-                    Style::default().bg(theme.rest.dim3),
-                    &worn,
-                    TagLevel::Selected,
-                    surface,
-                    BAR_WIDE,
-                );
-                for span in spans {
-                    assert_eq!(span.content, "▉");
-                    assert_eq!(span.style.bg, Some(surface.unwrap_or(Color::Reset)));
-                    assert_eq!(span.style.fg, Some(theme.pip(0)));
+            assert!(StripeEnd::new(&theme, &tags(1), theme.bg).is_none(), "one tag has no end");
+            for worn in [tags(2), tags(4), vec![Painted { name: "BUG".into(), tint: 0 }; 2]] {
+                for surface in [theme.bg, theme.selected_bg] {
+                    let end = StripeEnd::new(&theme, &worn, surface).expect("two tags end");
+                    let mut row = Line::from(vec![
+                        bar_spans(&theme, ' ', Style::default(), &worn, TagLevel::Rest).remove(0),
+                        Span::raw(" Fix the parser"),
+                    ]);
+                    end.foot(&mut row);
+                    assert_eq!(row.width(), 1 + " Fix the parser".width());
+                    assert_eq!(row.spans[0].content, "▁");
+                    assert_eq!(row.spans[0].style.bg, Some(theme.pip(worn[0].tint as usize)));
+                    assert_eq!(row.spans[0].style.fg, Some(surface.unwrap_or(Color::Reset)));
+                    let mut gap = Line::default();
+                    end.hang(&mut gap);
+                    assert_eq!(gap.width(), 1);
+                    assert_eq!(gap.spans[0].content, "▀");
+                    assert_eq!(gap.spans[0].style.fg, Some(theme.pip(worn[1].tint as usize)));
+                    assert_eq!(gap.spans[0].style.bg, None, "the row under keeps its own ground");
                 }
             }
         }
+    }
+
+    /// A field hung under the card opens on a run of spaces: the half block
+    /// takes the first and the row keeps its width.
+    #[test]
+    fn the_hang_takes_one_cell_of_a_wider_span() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let end = StripeEnd::new(&theme, &tags(2), theme.bg).expect("two tags");
+        let mut row = Line::from(vec![Span::raw(""), Span::raw("  "), Span::raw("ask")]);
+        end.hang(&mut row);
+        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "▀ ask");
+        let mut wide = Line::from("界 x");
+        end.hang(&mut wide);
+        assert_eq!(wide.spans.len(), 1, "a wide first glyph is left alone");
     }
 
     #[test]
@@ -262,29 +276,21 @@ mod tests {
         for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
             let theme = Theme::new(Flavor::Graphite, p);
             for n in 0..=3 {
-                for width in [BAR_NARROW, BAR_WIDE] {
-                    let worn = tags(n);
-                    let spans = bar_spans(
-                        &theme,
-                        '|',
-                        Style::default(),
-                        &worn,
-                        TagLevel::Selected,
-                        None,
-                        width,
-                    );
-                    assert_eq!(spans.len(), 1);
-                    assert_eq!(spans[0].content, "|".repeat(width));
-                    assert_eq!(spans[0].style.bg, None);
-                    assert_eq!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED), n > 0);
-                }
+                let worn = tags(n);
+                let spans = bar_spans(&theme, '|', Style::default(), &worn, TagLevel::Selected);
+                assert_eq!(spans.len(), 1);
+                assert_eq!(spans[0].content, "|");
+                assert_eq!(spans[0].style.bg, None);
+                assert_eq!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED), n > 0);
+                assert!(StripeEnd::new(&theme, &worn, None).is_none(), "no tints, no end");
             }
         }
     }
 
     #[test]
-    fn the_seven_eighths_block_is_one_cell() {
-        assert_eq!("▉".width(), 1);
+    fn the_stripe_ends_glyphs_are_one_cell() {
+        assert_eq!("▁".width(), 1);
+        assert_eq!("▀".width(), 1);
     }
 
     /// Every tag gets named, even when the row is tight: the names share the
