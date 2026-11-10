@@ -195,10 +195,19 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             let is_worn = worn.iter().any(|w| w.group == *g && w.name == def.name);
             // The swatch is the tag's own colour — the same paint the card
             // band will use, so the picker is a preview and not a legend.
-            let swatch = if theme.paints_tags() {
-                Style::default().bg(theme.pip(def.tint() as usize))
-            } else {
-                Style::default().fg(theme.rest.dim2).add_modifier(Modifier::REVERSED)
+            // A tag with no colour (T-1184) is a light shade on the panel,
+            // the sign for "empty" on every profile; `..` in ASCII.
+            let (fill, swatch) = match def.tint() {
+                None => (
+                    if theme.glyph_tier() == crate::glyphs::Tier::Ascii { ".." } else { "░░" },
+                    Style::default().fg(theme.colorless_tag()),
+                ),
+                Some(n) if theme.paints_tags() => {
+                    ("  ", Style::default().bg(theme.pip(n as usize)))
+                }
+                Some(_) => {
+                    ("  ", Style::default().fg(theme.rest.dim2).add_modifier(Modifier::REVERSED))
+                }
             };
             // A worn tag is MARKED, not just coloured: whether this ticket
             // has it is the one thing here that must not be colour-only.
@@ -215,7 +224,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             let (open, close) = if here { ('[', ']') } else { (' ', ' ') };
             let mut cell = Cell::default();
             cell.push(Span::styled(open.to_string(), theme.base()));
-            cell.push(Span::styled("  ".to_string(), swatch));
+            cell.push(Span::styled(fill.to_string(), swatch));
             // A rename edits the cell WHERE IT SITS: the row keeps its shape
             // and the rest of the vocabulary stays readable beside it. The
             // old form replaced the whole row with a field, which is the

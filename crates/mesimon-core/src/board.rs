@@ -2081,10 +2081,10 @@ pub struct NoteMeta {
 pub struct Tag {
     pub name: String,
     pub group: u8,
-    /// Index into the tag tint ramp, chosen by the user (Tab cycles it).
-    /// `None` means "never chosen" and falls back to a hash of the name, so a
-    /// tag has a stable colour from the moment it exists without anyone
-    /// having to pick one.
+    /// Index into the tag tint ramp, chosen by the user (Tab cycles it), or
+    /// [`NO_TINT`] for a tag with no colour (T-1184). `None` means "never
+    /// chosen" and falls back to a hash of the name, so a tag has a stable
+    /// colour from the moment it exists without anyone having to pick one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<u8>,
 }
@@ -2099,6 +2099,17 @@ pub struct Tag {
 /// picked — `default_tint` is a hash modulo this — which is the deliberate
 /// cost of the change, paid once.
 pub const TAG_TINTS: u8 = 10;
+
+/// The colour step after the last tint: no colour (T-1184). A colorless tag
+/// is worn and named like any other, but no tag block on a card is ever
+/// its: the bar and the half block under the card take the first and second
+/// tags that HAVE a colour. Stored and sent as this index, so the file and
+/// the wire keep their shape; an older build reads it modulo `TAG_TINTS`,
+/// the first tint, and loses nothing.
+pub const NO_TINT: u8 = TAG_TINTS;
+
+/// How many steps Tab cycles through: every tint, then no colour.
+pub const TAG_COLOR_STEPS: u8 = TAG_TINTS + 1;
 
 /// Most tags one axis may hold. A group is still meant to be a readable set
 /// rather than a list, but five was too tight for a real vocabulary (author
@@ -2119,9 +2130,14 @@ pub fn default_tint(name: &str) -> u8 {
 }
 
 impl Tag {
-    /// The tint to paint this tag with.
-    pub fn tint(&self) -> u8 {
-        self.color.unwrap_or_else(|| default_tint(&self.name)) % TAG_TINTS
+    /// Where this tag sits on Tab's cycle: a tint, or [`NO_TINT`].
+    pub fn step(&self) -> u8 {
+        self.color.unwrap_or_else(|| default_tint(&self.name)) % TAG_COLOR_STEPS
+    }
+
+    /// The tint to paint this tag with; `None` for a tag with no colour.
+    pub fn tint(&self) -> Option<u8> {
+        Some(self.step()).filter(|&s| s != NO_TINT)
     }
 }
 
@@ -3582,11 +3598,20 @@ impl Board {
         self.tags.iter().find(|t| t.group == group && t.name == name)
     }
 
-    /// The tint a ticket's tag should be painted with. Falls back to the
-    /// name's own hash for a reference whose registry entry has gone missing,
-    /// so a card can never render a colourless band.
-    pub fn tint_of(&self, t: &TagRef) -> u8 {
-        self.tag_def(t.group, &t.name).map(|d| d.tint()).unwrap_or_else(|| default_tint(&t.name))
+    /// The tint a ticket's tag should be painted with; `None` for a tag the
+    /// person gave no colour. Falls back to the name's own hash for a
+    /// reference whose registry entry has gone missing.
+    pub fn tint_of(&self, t: &TagRef) -> Option<u8> {
+        match self.tag_def(t.group, &t.name) {
+            Some(d) => d.tint(),
+            None => Some(default_tint(&t.name)),
+        }
+    }
+
+    /// Where a ticket's tag sits on Tab's cycle, [`NO_TINT`] for no colour:
+    /// the number the phone is sent.
+    pub fn step_of(&self, t: &TagRef) -> u8 {
+        self.tint_of(t).unwrap_or(NO_TINT)
     }
 
     /// Make the starter offer: on a board that has never had a tag, write
@@ -3745,12 +3770,12 @@ impl Board {
         Ok(touched)
     }
 
-    /// Set a tag's tint. `None` on the entry means "unchosen"; this always
-    /// writes an explicit choice.
+    /// Set a tag's tint, or [`NO_TINT`] for none. `None` on the entry means
+    /// "unchosen"; this always writes an explicit choice.
     pub fn set_tag_color(&mut self, group: u8, name: &str, color: u8) -> Result<(), String> {
         match self.tags.iter_mut().find(|t| t.group == group && t.name == name) {
             Some(t) => {
-                t.color = Some(color % TAG_TINTS);
+                t.color = Some(color % TAG_COLOR_STEPS);
                 Ok(())
             }
             None => Err(format!("no tag {name:?} in group {group}")),
@@ -5349,15 +5374,39 @@ mod tests {
         b.register_tag(1, "BUG").expect("registered");
         let def = b.tag_def(1, "BUG").expect("in registry");
         assert_eq!(def.color, None);
-        assert_eq!(def.tint(), default_tint("BUG"));
-        assert!(def.tint() < TAG_TINTS);
+        assert_eq!(def.tint(), Some(default_tint("BUG")));
+        assert!(def.step() < TAG_TINTS, "a tag starts with a colour, never without");
 
         b.set_tag_color(1, "BUG", 3).expect("recoloured");
-        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), 3);
+        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), Some(3));
         // Out of range wraps rather than being refused.
-        b.set_tag_color(1, "BUG", TAG_TINTS + 1).expect("wrapped");
-        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), 1);
+        b.set_tag_color(1, "BUG", TAG_COLOR_STEPS + 1).expect("wrapped");
+        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), Some(1));
         assert!(b.set_tag_color(1, "NOPE", 0).is_err());
+    }
+
+    /// The step after the last tint is no colour (T-1184): the tag is still
+    /// worn and named, it only has no tint, and the next step is the first.
+    #[test]
+    fn the_step_after_the_last_tint_is_no_colour() {
+        let mut b = Board::with_default_columns();
+        b.register_tag(2, "READY").expect("registered");
+        b.set_tag_color(2, "READY", NO_TINT).expect("no colour");
+        let def = b.tag_def(2, "READY").expect("still there");
+        assert_eq!((def.step(), def.tint()), (NO_TINT, None));
+        let worn = TagRef { group: 2, name: "READY".into() };
+        assert_eq!((b.tint_of(&worn), b.step_of(&worn)), (None, NO_TINT));
+        // A reference with no registry entry keeps its hash: it is not nothing.
+        let lost = TagRef { group: 2, name: "GONE".into() };
+        assert_eq!(b.tint_of(&lost), Some(default_tint("GONE")));
+        b.set_tag_color(2, "READY", NO_TINT + 1).expect("wrapped");
+        assert_eq!(b.tag_def(2, "READY").expect("still there").tint(), Some(0));
+        // It survives the file: the colour is stored as the step itself.
+        b.set_tag_color(2, "READY", NO_TINT).expect("no colour");
+        let back: Tag =
+            serde_json::from_value(serde_json::to_value(b.tag_def(2, "READY").unwrap()).unwrap())
+                .expect("parses");
+        assert_eq!(back.tint(), None);
     }
 
     /// A rename carries every wearer along, and reports which files changed.

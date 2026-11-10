@@ -1770,6 +1770,15 @@ impl Theme {
         self.tints().is_some()
     }
 
+    /// The grey a tag with no colour is drawn in (T-1184): its chip's
+    /// ground, under `tag_ink`, and its `░░` swatch in the picker. The ramp's
+    /// second ink, which stands off the page at least as far as a tint does
+    /// (the third falls under 4.5:1 on Amber) and has no hue to mistake for
+    /// one.
+    pub fn colorless_tag(&self) -> Color {
+        self.rest.dim1
+    }
+
     /// Ink for a name written on a tag-tinted ground: the page ground, which
     /// is the surface every tint was contrast-checked against.
     pub fn tag_ink(&self) -> Color {
@@ -3087,6 +3096,17 @@ mod tests {
                     assert!(d >= 12.0, "{flavor:?} tints {other}/{n} only dE {d:.1} apart");
                 }
             }
+        }
+    }
+
+    /// A colorless tag's chip (T-1184) is held to a tint's bar: its name in
+    /// `tag_ink` reads at 4.5:1 on its grey, on every theme.
+    #[test]
+    fn a_colorless_tag_chip_reads_like_a_tinted_one() {
+        for flavor in Flavor::ALL {
+            let theme = Theme::new(flavor, Profile::TrueColor);
+            let ratio = contrast(rgb(theme.tag_ink()), rgb(theme.colorless_tag()));
+            assert!(ratio >= 4.5, "{flavor:?}: only {ratio:.1}:1");
         }
     }
 

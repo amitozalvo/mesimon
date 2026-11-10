@@ -261,8 +261,9 @@ pub enum Command {
         to_group: u8,
         to_index: usize,
     },
-    /// Pick a tag's tint (Tab in the picker). `color` indexes the tag ramp
-    /// and is taken modulo its size, so an out-of-range value from a newer
+    /// Pick a tag's tint (Tab in the picker). `color` indexes the tag ramp,
+    /// `board::NO_TINT` (one past it) for no colour, and is taken modulo
+    /// `board::TAG_COLOR_STEPS`, so an out-of-range value from a newer
     /// client wraps rather than being refused.
     SetTagColor {
         group: u8,

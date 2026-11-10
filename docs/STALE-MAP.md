@@ -42944,3 +42944,33 @@ Full workspace suite once after the change: 3518 passed. Its first run stopped a
 `crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn`, which killed a crown-started
 worker and expected the next `start_agent` to seat a new session: the behaviour this decision
 changes, so the test now dismisses the killed record first, as T-1119's did for an ask.
+
+## A tag can have no colour, and the colour blocks skip it (T-1184, 2026-11-10, the author: "tab to cycle color on ^t will reach colorless option. colorless tags will not end up in tag blocks. only on the ticket itself like a normal tag … should be obvious it's colorless when picking")
+
+Tab's cycle in `^t` has eleven steps: the ten tints, then no colour (`board::NO_TINT` = 10,
+`TAG_COLOR_STEPS` = 11), then the first again; Shift+Tab from the first tint lands on no colour
+(`shift_tab_cycles_the_colour_back` changed by this decision). No tag starts colorless: the
+name's hash stays modulo `TAG_TINTS`.
+
+- **Storage and wire keep their shape.** `Tag.color` stores the step itself and `SetTagColor`
+  sends it, both wrapped modulo `TAG_COLOR_STEPS`. An older build reads 10 modulo `TAG_TINTS`, the
+  first tint, and loses nothing. `Tag::tint()` and `Board::tint_of` became `Option<u8>` (`None` =
+  no colour) so no caller can paint 10 as a wrapped tint; `Tag::step()`/`Board::step_of` give the
+  cycle position. A missing registry entry still falls back to the hash.
+- **The blocks count only tags with a colour** (`tags::blocks`): the bar is the first, the
+  `▁`/`▀` end (T-1159) the second. A ticket wearing only colorless tags has the untagged bar,
+  and below TrueColor no underline either.
+- **Its name is a grey chip** wherever tags are written out (open card meta row, ticket page
+  subtitle, composer stripe): `tags::chip_style`, ground `Theme::colorless_tag` under `tag_ink`.
+  That grey is `rest.dim1`. `dim2` was tried first and fails the tints' 4.5:1 on Amber.
+- **The picker swatch is `░░`** in the same grey, `..` in ASCII. The author picked the light
+  shade over a checkerboard `▚▚`, a flat `▁▁`, grey with `✗✗`/`✗`, dots and a plain grey
+  swatch (proposal artifact, three rounds). `░` joins the L1 sweep's allowed glyphs.
+- **Phone:** `TagOption.tint` carries 10, and the page has no `.tint-10` rule, so `--tint`
+  falls back to its grey (`--s3` chip, `--ink4` dot). The relay never reads `tint`: no
+  relay change.
+
+Tests: `the_step_after_the_last_tint_is_no_colour`, `a_colorless_tag_takes_no_block_and_keeps_its_chip`,
+`tab_reaches_no_colour_after_the_last_tint`, `a_colorless_tag_chip_reads_like_a_tinted_one`,
+`test_a_colorless_tag_takes_no_block_and_keeps_its_name` (a real render: stripe, chip, swatch).
+No golden changed: no fixture wears a colorless tag.

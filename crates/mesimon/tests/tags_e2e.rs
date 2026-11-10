@@ -145,7 +145,7 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
         Response::Ok
     ));
     let board = board_of(c.request(Command::Snapshot));
-    assert_eq!(board.tag_def(5, "SOLO").unwrap().tint(), 3);
+    assert_eq!(board.tag_def(5, "SOLO").unwrap().tint(), Some(3));
 
     // Renaming carries the wearers.
     assert!(matches!(
@@ -159,7 +159,7 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(board.group_tags(5), vec!["DUET"]);
     assert_eq!(board.ticket(id).unwrap().tag_in(5).unwrap().name, "DUET", "the wearer followed");
-    assert_eq!(board.tag_def(5, "DUET").unwrap().tint(), 3, "and kept its colour");
+    assert_eq!(board.tag_def(5, "DUET").unwrap().tint(), Some(3), "and kept its colour");
 
     // A group is a capped set, not a list — and the cap is read from the
     // constant, not counted out here: the number moved once already.

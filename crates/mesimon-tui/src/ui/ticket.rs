@@ -618,12 +618,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }
             budget -= text.width() + 1;
             chips.push(Span::raw(" "));
-            let tint = theme.pip(app.board.tint_of(t) as usize);
-            if theme.paints_tags() {
-                chips.push(Span::styled(text, Style::default().bg(tint).fg(theme.tag_ink())));
-            } else {
-                chips.push(Span::styled(text, d1));
-            }
+            let style = crate::tags::chip_style(theme, app.board.tint_of(t)).unwrap_or(d1);
+            chips.push(Span::styled(text, style));
         }
         if !chips.is_empty() {
             chips.push(Span::styled(" ∙", d2));

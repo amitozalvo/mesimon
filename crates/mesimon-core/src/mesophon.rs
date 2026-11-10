@@ -432,7 +432,9 @@ pub struct TierOption {
 pub struct TagOption {
     pub group: u8,
     pub name: String,
-    /// Index into the tag tint ramp (`board::TAG_TINTS`), the TUI's colour.
+    /// Index into the tag tint ramp (`board::TAG_TINTS`), the TUI's colour,
+    /// or `board::NO_TINT` for a tag with no colour: the page has no
+    /// `.tint-10` rule, so its chip falls back to the grey ground.
     pub tint: u8,
 }
 

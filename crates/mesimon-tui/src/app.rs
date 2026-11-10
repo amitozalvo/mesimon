@@ -9466,7 +9466,8 @@ impl App {
                     return Ok(());
                 }
                 let Some((group, name, tint)) = self.tag_cell() else { return Ok(()) };
-                let n = mesimon_core::board::TAG_TINTS;
+                // Every tint, then no colour (T-1184), then the first again.
+                let n = mesimon_core::board::TAG_COLOR_STEPS;
                 let step = if verb == Verb::TagColorBack { n - 1 } else { 1 };
                 let next = (tint + step) % n;
                 let command = Command::SetTagColor { group, name: name.clone(), color: next };
@@ -14547,13 +14548,14 @@ impl App {
         }
     }
 
-    /// The registry entry under the picker cursor: `(group, name, tint)`.
+    /// The registry entry under the picker cursor: `(group, name, step)`,
+    /// the step being its tint or `board::NO_TINT`.
     /// `None` means the cursor is on the `+ new` cell.
     pub(crate) fn tag_cell(&self) -> Option<(u8, String, u8)> {
         let arm = self.tag_armed.as_ref()?;
         let group = *crate::ui::tag_rows(self).get(arm.row)?;
         let def = self.board.group_entries(group).get(arm.col).copied()?;
-        Some((group, def.name.clone(), def.tint()))
+        Some((group, def.name.clone(), def.step()))
     }
 
     /// Keep the cursor on a cell that exists. Called after anything that can
@@ -26611,21 +26613,46 @@ mod tests {
     fn tab_cycles_the_colour() {
         let mut board = board_three_columns();
         board.register_tag(1, "BUG").expect("registered");
-        let was = board.tag_def(1, "BUG").expect("registered").tint();
+        let was = board.tag_def(1, "BUG").expect("registered").step();
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         ctrl(&mut app, 't');
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         let log = sent.borrow().join(" ");
         assert!(log.contains("SetTagColor"), "{log}");
-        let next = (was + 1) % mesimon_core::board::TAG_TINTS;
+        let next = (was + 1) % mesimon_core::board::TAG_COLOR_STEPS;
         assert!(log.contains(&format!("color: {next}")), "{log}");
     }
 
+    /// The step after the last tint is no colour, and the one after that the
+    /// first tint (T-1184); Shift+Tab reaches no colour from the first.
+    #[test]
+    fn tab_reaches_no_colour_after_the_last_tint() {
+        use mesimon_core::board::{NO_TINT, TAG_TINTS};
+        for (from, key, want) in [
+            (TAG_TINTS - 1, KeyCode::Tab, NO_TINT),
+            (NO_TINT, KeyCode::Tab, 0),
+            (0, KeyCode::BackTab, NO_TINT),
+            (NO_TINT, KeyCode::BackTab, TAG_TINTS - 1),
+        ] {
+            let mut board = board_three_columns();
+            board.register_tag(1, "BUG").expect("registered");
+            board.set_tag_color(1, "BUG", from).expect("coloured");
+            let (mut app, sent) = App::for_test_logged(board, theme(), false);
+            ctrl(&mut app, 't');
+            let mods =
+                if key == KeyCode::BackTab { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
+            app.handle_key(key, mods).unwrap();
+            let log = sent.borrow().join(" ");
+            assert!(log.contains(&format!("color: {want}")), "{from} {key:?}: {log}");
+        }
+    }
+
     /// And Shift+Tab walks the ramp back: from the tint Tab just left, one
-    /// press returns, and from the first tint it wraps to the last.
+    /// press returns, and from the first tint it wraps to no colour, the
+    /// last step (T-1184).
     #[test]
     fn shift_tab_cycles_the_colour_back() {
-        let n = mesimon_core::board::TAG_TINTS;
+        let n = mesimon_core::board::TAG_COLOR_STEPS;
         let mut board = board_three_columns();
         board.register_tag(1, "BUG").expect("registered");
         board.set_tag_color(1, "BUG", 0).expect("tinted");

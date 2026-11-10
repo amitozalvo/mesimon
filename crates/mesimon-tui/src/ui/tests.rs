@@ -3840,7 +3840,9 @@ fn test_the_bar_carries_the_tags_in_their_own_tints() {
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16;
     // "Decay treatments" is the first card of the cursor column, so it is the
     // cursor card and wears its tag at full strength.
-    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
+    let tint = app
+        .theme
+        .pip(app.board.tag_def(1, "FTR").expect("registered").tint().expect("a colour") as usize);
     let cell = &buf[(bar_x, y)];
     assert_eq!(cell.symbol(), " ", "the bar drew a glyph");
     assert_eq!(cell.bg, tint, "the bar is not painted in the tag's tint");
@@ -3870,8 +3872,13 @@ fn test_the_second_tag_hangs_under_the_stripe() {
                 app.cursor_row = Some(0);
                 app.peek = peek;
                 let at = |group, name| {
-                    app.theme
-                        .pip(app.board.tag_def(group, name).expect("registered").tint() as usize)
+                    app.theme.pip(
+                        app.board
+                            .tag_def(group, name)
+                            .expect("registered")
+                            .tint()
+                            .expect("a colour") as usize,
+                    )
                 };
                 let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
                 let lines = render(&app, 120, 30);
@@ -3897,12 +3904,68 @@ fn test_the_second_tag_hangs_under_the_stripe() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// A tag with no colour takes no block (T-1184): with BUG colorless, the
+/// stripe is STAGING's and nothing hangs under the card; the open card still
+/// names BUG, on the grey chip; the picker shows its swatch as `░░`.
+#[test]
+fn test_a_colorless_tag_takes_no_block_and_keeps_its_name() {
+    let path = write_transcript("tags-colorless", &reply_record("Rebased and green."));
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    b.set_tag_color(1, "BUG", mesimon_core::board::NO_TINT).expect("no colour");
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app.peek = true;
+    let staging = app
+        .theme
+        .pip(app.board.tag_def(2, "STAGING").expect("tag").tint().expect("a colour") as usize);
+    let grey = app.theme.colorless_tag();
+    let lines = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+    let x = (30..60).find(|x| buf[(*x, top)].bg == staging).expect("STAGING runs the stripe");
+    let mut y = top;
+    while buf[(x, y)].bg == staging {
+        assert_ne!(buf[(x, y)].symbol(), "▁", "one block has no end, at {x},{y}");
+        y += 1;
+    }
+    assert_ne!(buf[(x, y)].symbol(), "▀", "nothing hangs under the card");
+    let chip = (top..top + 8).find_map(|y| {
+        (0..118u16)
+            .find(|x| {
+                ["B", "U", "G"]
+                    .iter()
+                    .enumerate()
+                    .all(|(i, c)| buf[(x + i as u16, y)].symbol() == *c)
+            })
+            .map(|x| &buf[(x, y)])
+    });
+    assert_eq!(chip.expect("the open card names BUG").bg, grey, "on the grey chip");
+
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        row: 0,
+        col: 1,
+        naming: None,
+        forget_armed: false,
+    });
+    let lines = render(&app, 120, 30);
+    let buf = cells(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("░░BUG") || l.contains("░░•BUG"));
+    let y = y.expect("BUG's swatch is a light shade") as u16;
+    let x = (0..120u16).find(|x| buf[(*x, y)].symbol() == "░").expect("swatch");
+    assert_eq!(buf[(x, y)].fg, grey);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// Selection and sleep do not dim tag identity.
 #[test]
 fn test_tags_keep_full_strength_off_the_cursor() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("tag").tint() as usize);
+    let tint =
+        app.theme.pip(app.board.tag_def(1, "FTR").expect("tag").tint().expect("a colour") as usize);
     for row in [0, 1] {
         app.cursor_row = Some(row);
         let buf = cells(&app, 120, 30);
@@ -3972,7 +4035,8 @@ fn test_a_waiting_card_still_shouts() {
             let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
             let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
             let tint = |group, name| {
-                app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize)
+                app.theme
+                    .pip(app.board.tag_def(group, name).unwrap().tint().expect("a colour") as usize)
             };
             let x = (30..60).find(|x| buf[(*x, y)].bg == tint(1, "BUG")).expect("tags");
             assert_eq!(buf[(x + 1, y)].bg, app.theme.attn, "the title keeps its alarm band");
@@ -4053,8 +4117,9 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
             let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
             let mut previous = None;
             for n in 0..=2 {
-                let worn: Vec<_> =
-                    (0..n).map(|tint| crate::tags::Painted { name: "tag".into(), tint }).collect();
+                let worn: Vec<_> = (0..n)
+                    .map(|n| crate::tags::Painted { name: "tag".into(), tint: Some(n) })
+                    .collect();
                 let (line, cursor) = card::render_edit(&ctx, &buffer, &worn);
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 let title_x = text.replace('▉', " ").find("hello").expect("title");
@@ -4090,7 +4155,9 @@ fn test_the_peek_names_the_tags() {
     assert!(reply < at, "the tags sit under the reply");
     // Painted in their own tints, the same ones the mark under the card uses.
     let buf = cells(&app, 120, 30);
-    let tint = app.theme.pip(app.board.tag_def(1, "BUG").expect("registered").tint() as usize);
+    let tint = app
+        .theme
+        .pip(app.board.tag_def(1, "BUG").expect("registered").tint().expect("a colour") as usize);
     let y = at as u16;
     assert!((30..58u16).any(|x| buf[(x, y)].bg == tint), "the chips are not wearing the tag tint");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -4122,7 +4189,9 @@ fn test_a_quick_tag_names_the_tag_on_a_session_less_card() {
     let lines = render(&app, 120, 30);
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16 + 1;
     let buf = cells(&app, 120, 30);
-    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
+    let tint = app
+        .theme
+        .pip(app.board.tag_def(1, "FTR").expect("registered").tint().expect("a colour") as usize);
     assert!((1..40u16).any(|x| buf[(x, y)].bg == tint), "the chip is not wearing the tint");
 
     // A moment, not a mode — and it belongs to the card it tagged, so the
@@ -10018,7 +10087,8 @@ fn test_no_drawn_structure() {
                     }
                     // The tag stripe ends on `▁` and hangs its second tag as
                     // `▀` (T-1159); the theme picker's tint ring is `▉▉`. `▎`
-                    // belongs to description bars; frames,
+                    // belongs to description bars; `░` is the tag picker's
+                    // swatch for a tag with no colour (T-1184); frames,
                     // the mascot and the pairing QR keep their own
                     // position-scoped exceptions.
                     assert!(
@@ -10026,6 +10096,7 @@ fn test_no_drawn_structure() {
                             || ch == '▀'
                             || ch == '▉'
                             || ch == '▎'
+                            || ch == '░'
                             || on_perimeter(frames, x, y)
                             || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch))
                             || qr.is_some_and(|r| {
@@ -11728,7 +11799,10 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                             if index == cursor { app.theme.sel.base } else { app.theme.rest.base }
                         );
                         let tint = |group, name| {
-                            app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize)
+                            app.theme.pip(
+                                app.board.tag_def(group, name).unwrap().tint().expect("a colour")
+                                    as usize,
+                            )
                         };
                         // One cell, the first tag; a second ends the stripe
                         // and hangs under it, at the edge too (T-1159).

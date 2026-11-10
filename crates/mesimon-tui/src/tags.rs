@@ -6,6 +6,9 @@
 //! eighth on the row's surface, and the row under the card carries the
 //! second tag as a half block in its first cell (`StripeEnd`). Tag colors do
 //! not fade with selection; the neutral bar retains its selection ladder.
+//!
+//! "First" and "second" count only tags with a colour (T-1184): a tag the
+//! person gave no colour is named in the chips and never takes a block.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,11 +19,28 @@ use mesimon_core::board::{Board, TagRef};
 use crate::theme::{TagLevel, Theme};
 
 /// A tag resolved for rendering: its name and the tint index the registry
-/// says to paint it with.
+/// says to paint it with, `None` for a tag with no colour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Painted {
     pub name: String,
-    pub tint: u8,
+    pub tint: Option<u8>,
+}
+
+/// The tints a card's tag blocks draw, in order: the bar is the first, the
+/// half block under the card the second. A colorless tag is never one.
+fn blocks(tags: &[Painted]) -> impl Iterator<Item = u8> + '_ {
+    tags.iter().filter_map(|t| t.tint)
+}
+
+/// A named chip's paint: its tint, or the grey ground of a tag with no
+/// colour, under the page-ground ink. `None` below TrueColor, where the
+/// caller's plain text carries the name alone.
+pub(crate) fn chip_style(theme: &Theme, tint: Option<u8>) -> Option<Style> {
+    if !theme.paints_tags() {
+        return None;
+    }
+    let ground = tint.map_or(theme.colorless_tag(), |n| theme.pip(n as usize));
+    Some(Style::default().bg(ground).fg(theme.tag_ink()))
 }
 
 /// Resolve a ticket's tag references against the registry, in group order so
@@ -33,9 +53,10 @@ pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
 /// other card's title (T-1159; T-821 widened the whole board to two).
 pub(crate) const BAR: usize = 1;
 
-/// Paint the bar, one cell, on this row: the first tag whole, untagged the
-/// neutral ladder, below TrueColor the underline. A second tag is not drawn
-/// here; the card's last row and the row under it carry it (`StripeEnd`).
+/// Paint the bar, one cell, on this row: the first tag with a colour whole,
+/// none the neutral ladder, below TrueColor the underline. A second tag is
+/// not drawn here; the card's last row and the row under it carry it
+/// (`StripeEnd`).
 pub(crate) fn bar_spans(
     theme: &Theme,
     ch: char,
@@ -43,7 +64,7 @@ pub(crate) fn bar_spans(
     tags: &[Painted],
     level: TagLevel,
 ) -> Vec<Span<'static>> {
-    let Some(first) = tags.first() else {
+    let Some(first) = blocks(tags).next() else {
         let faded = style.bg.map(|c| theme.faded(c, level));
         let style = faded.map(|c| style.bg(c)).unwrap_or(style);
         return vec![Span::styled(ch.to_string().repeat(BAR), style)];
@@ -55,7 +76,7 @@ pub(crate) fn bar_spans(
             style.add_modifier(Modifier::UNDERLINED),
         )];
     }
-    vec![Span::styled(" ".repeat(BAR), style.bg(theme.pip(first.tint as usize)))]
+    vec![Span::styled(" ".repeat(BAR), style.bg(theme.pip(first as usize)))]
 }
 
 /// Where a two-tag stripe ends (T-1159, the author: "the 2nd tag color should
@@ -78,18 +99,20 @@ pub(crate) struct StripeEnd {
 
 impl StripeEnd {
     /// The end of this stripe, or `None` while it wears fewer than two tags
-    /// or the profile has no tints to tell them apart. `surface` is the
-    /// background the card's row gives its bar (`theme.bg` at rest).
+    /// with a colour or the profile has no tints to tell them apart.
+    /// `surface` is the background the card's row gives its bar (`theme.bg`
+    /// at rest).
     pub(crate) fn new(theme: &Theme, tags: &[Painted], surface: Option<Color>) -> Option<Self> {
-        let [first, second, ..] = tags else { return None };
+        let mut tints = blocks(tags);
+        let (Some(first), Some(second)) = (tints.next(), tints.next()) else { return None };
         if !theme.paints_tags() {
             return None;
         }
         let foot =
-            Style::default().bg(theme.pip(first.tint as usize)).fg(surface.unwrap_or(Color::Reset));
+            Style::default().bg(theme.pip(first as usize)).fg(surface.unwrap_or(Color::Reset));
         Some(StripeEnd {
             foot: Span::styled("▁", foot),
-            hang: Span::styled("▀", Style::default().fg(theme.pip(second.tint as usize))),
+            hang: Span::styled("▀", Style::default().fg(theme.pip(second as usize))),
         })
     }
 
@@ -151,12 +174,8 @@ pub(crate) fn chips(theme: &Theme, tags: &[Painted], budget: usize) -> Vec<Span<
     }
     for (t, w) in tags.iter().zip(widths) {
         let text = format!(" {} ", crate::text::truncate(&t.name, w));
-        let style = if theme.paints_tags() {
-            Style::default().bg(theme.pip(t.tint as usize)).fg(theme.tag_ink())
-        } else {
-            // No tint to tell them apart, so the name does it alone.
-            Style::default().fg(theme.rest.dim1)
-        };
+        // No tint to tell them apart, so the name does it alone.
+        let style = chip_style(theme, t.tint).unwrap_or(Style::default().fg(theme.rest.dim1));
         out.push(Span::styled(text, style));
         out.push(Span::raw(" "));
     }
@@ -201,7 +220,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     fn tags(n: usize) -> Vec<Painted> {
-        (0..n).map(|i| Painted { name: format!("T{i}"), tint: (i % PIPS) as u8 }).collect()
+        (0..n).map(|i| Painted { name: format!("T{i}"), tint: Some((i % PIPS) as u8) }).collect()
     }
 
     /// One cell, whatever the ticket wears: the first tag whole, untagged
@@ -233,7 +252,7 @@ mod tests {
         for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
             assert!(StripeEnd::new(&theme, &tags(1), theme.bg).is_none(), "one tag has no end");
-            for worn in [tags(2), tags(4), vec![Painted { name: "BUG".into(), tint: 0 }; 2]] {
+            for worn in [tags(2), tags(4), vec![Painted { name: "BUG".into(), tint: Some(0) }; 2]] {
                 for surface in [theme.bg, theme.selected_bg] {
                     let end = StripeEnd::new(&theme, &worn, surface).expect("two tags end");
                     let mut row = Line::from(vec![
@@ -243,13 +262,13 @@ mod tests {
                     end.foot(&mut row);
                     assert_eq!(row.width(), 1 + " Fix the parser".width());
                     assert_eq!(row.spans[0].content, "▁");
-                    assert_eq!(row.spans[0].style.bg, Some(theme.pip(worn[0].tint as usize)));
+                    assert_eq!(row.spans[0].style.bg, worn[0].tint.map(|n| theme.pip(n as usize)));
                     assert_eq!(row.spans[0].style.fg, Some(surface.unwrap_or(Color::Reset)));
                     let mut gap = Line::default();
                     end.hang(&mut gap);
                     assert_eq!(gap.width(), 1);
                     assert_eq!(gap.spans[0].content, "▀");
-                    assert_eq!(gap.spans[0].style.fg, Some(theme.pip(worn[1].tint as usize)));
+                    assert_eq!(gap.spans[0].style.fg, worn[1].tint.map(|n| theme.pip(n as usize)));
                     assert_eq!(gap.spans[0].style.bg, None, "the row under keeps its own ground");
                 }
             }
@@ -287,6 +306,46 @@ mod tests {
         }
     }
 
+    /// A tag with no colour takes no block (T-1184): the bar is the first
+    /// tag that has one, the half block the second, and a ticket wearing
+    /// only colorless tags has the untagged bar. Its chip is still drawn,
+    /// on the grey ground.
+    #[test]
+    fn a_colorless_tag_takes_no_block_and_keeps_its_chip() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let p = |name: &str, tint| Painted { name: name.into(), tint };
+        let base = Style::default().bg(theme.rest.dim3);
+        let worn = [p("FEATURE", Some(3)), p("READY", None), p("LATER", Some(8))];
+        let bar = bar_spans(&theme, ' ', base, &worn, TagLevel::Rest);
+        assert_eq!(bar[0].style.bg, Some(theme.pip(3)));
+        let end = StripeEnd::new(&theme, &worn, theme.bg).expect("two tags with a colour");
+        let mut gap = Line::default();
+        end.hang(&mut gap);
+        assert_eq!(gap.spans[0].style.fg, Some(theme.pip(8)), "LATER hangs, not READY");
+
+        let lead = [p("READY", None), p("BUG", Some(0))];
+        assert_eq!(
+            bar_spans(&theme, ' ', base, &lead, TagLevel::Rest)[0].style.bg,
+            Some(theme.pip(0))
+        );
+        assert!(StripeEnd::new(&theme, &lead, theme.bg).is_none(), "one block, no end");
+
+        let bare = [p("READY", None), p("LATER", None)];
+        let untagged = bar_spans(&theme, ' ', base, &[], TagLevel::Rest);
+        assert_eq!(bar_spans(&theme, ' ', base, &bare, TagLevel::Rest), untagged);
+        assert!(StripeEnd::new(&theme, &bare, theme.bg).is_none());
+
+        let chip = chips(&theme, &lead, 40);
+        assert_eq!(chip[0].content, " READY ");
+        assert_eq!(chip[0].style.bg, Some(theme.colorless_tag()));
+        assert_eq!(chip[0].style.fg, Some(theme.tag_ink()));
+        // Below TrueColor nothing is painted, so it reads as any other name.
+        let plain = Theme::new(Flavor::Graphite, Profile::Ansi256);
+        assert_eq!(chip_style(&plain, None), None);
+        let ascii = bar_spans(&plain, '|', Style::default(), &bare, TagLevel::Rest);
+        assert!(!ascii[0].style.add_modifier.contains(Modifier::UNDERLINED), "no block, no mark");
+    }
+
     #[test]
     fn the_stripe_ends_glyphs_are_one_cell() {
         assert_eq!("▁".width(), 1);
@@ -299,9 +358,9 @@ mod tests {
     fn chips_share_the_row_between_them() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
         let long = vec![
-            Painted { name: "PRODUCTION".into(), tint: 0 },
-            Painted { name: "REGRESSION".into(), tint: 1 },
-            Painted { name: "auth".into(), tint: 2 },
+            Painted { name: "PRODUCTION".into(), tint: Some(0) },
+            Painted { name: "REGRESSION".into(), tint: Some(1) },
+            Painted { name: "auth".into(), tint: Some(2) },
         ];
         for budget in [40usize, 24, 18] {
             let spans = chips(&theme, &long, budget);

@@ -451,15 +451,9 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 for t in tags {
                     ctx_spans.push(Span::raw(" "));
                     let text = format!(" {} ", t.name);
-                    let tint = theme.pip(app.board.tint_of(t) as usize);
-                    if theme.paints_tags() {
-                        ctx_spans.push(Span::styled(
-                            text,
-                            Style::default().bg(tint).fg(theme.tag_ink()),
-                        ));
-                    } else {
-                        ctx_spans.push(Span::styled(text, dim1));
-                    }
+                    let style =
+                        crate::tags::chip_style(theme, app.board.tint_of(t)).unwrap_or(dim1);
+                    ctx_spans.push(Span::styled(text, style));
                 }
             }
         }

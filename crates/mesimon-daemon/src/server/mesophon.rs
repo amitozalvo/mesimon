@@ -4009,7 +4009,7 @@ impl Daemon {
             .board
             .tags
             .iter()
-            .map(|t| api::TagOption { group: t.group, name: t.name.clone(), tint: t.tint() })
+            .map(|t| api::TagOption { group: t.group, name: t.name.clone(), tint: t.step() })
             .collect();
         allowed_tags.sort_by_key(|t| t.group);
         let book = self.tier_book();
@@ -5055,7 +5055,7 @@ fn projected_tiers(book: &mesimon_core::tier::Book) -> Vec<api::TierOption> {
 fn projected_tags(board: &Board, t: &Ticket) -> Vec<api::TagOption> {
     t.tags
         .iter()
-        .map(|g| api::TagOption { group: g.group, name: g.name.clone(), tint: board.tint_of(g) })
+        .map(|g| api::TagOption { group: g.group, name: g.name.clone(), tint: board.step_of(g) })
         .collect()
 }
 
