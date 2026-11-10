@@ -7229,6 +7229,18 @@ impl App {
         self.board.column_tickets(column).iter().any(|t| self.ask_queueable(t.id))
     }
 
+    /// Would the column ask start or wake a seat on the SHARED checkout?
+    /// A seat with no pane (empty, parked, or a corpse an ask resumes) is a
+    /// spawn, and a burst of them in one index is what the queue holds back
+    /// (T-294, T-405): the field opens at `queued` there whatever the
+    /// board's follow-up default says (T-1185).
+    pub(crate) fn column_spawns_shared(&self, column: &str) -> bool {
+        self.board
+            .column_tickets(column)
+            .iter()
+            .any(|t| self.shared_checkout(t.id) && self.board.pane_target(t.id).is_none())
+    }
+
     /// Is a claude mid-turn in this ticket's checkout? The TUI's own read of
     /// `quiet::is_working`, and a HINT only (T-294): it decides whether a
     /// press that would START or WAKE a session stops to ask `now / queued`
@@ -10315,8 +10327,8 @@ impl App {
                 }
             }
             // Opening a composer sends nothing. Existing panes use the
-            // board's Queue/Steer default; starts and wakes retain the
-            // shared-checkout timing choice.
+            // board's Queue/Steer default (Steer, `now`, since T-1185);
+            // starts and wakes retain the shared-checkout timing choice.
             Verb::Prompt => {
                 if scope == Scope::Ticket && (ctx.sel_shell || ctx.sel_terminal) {
                     return self.prepare_shell_output();
@@ -10331,6 +10343,7 @@ impl App {
                         // and the rest as the checkout goes quiet.
                         let accept_plan = self.column_plan_able(&name);
                         let queued = accept_plan
+                            || self.column_spawns_shared(&name)
                             || (self.column_ask_queueable(&name)
                                 && self.board.follow_up_mode
                                     == mesimon_core::board::FollowUpMode::Queue);
@@ -24733,18 +24746,18 @@ mod tests {
 
     /// Worktree follow-ups also offer Queue/Steer.
     #[test]
-    fn the_ask_toggle_can_steer_a_worktree_ticket() {
+    fn the_ask_toggle_can_queue_a_worktree_ticket() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         app.board_mut().tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queueable);
-        assert!(app.ctx().ask_queued);
+        assert!(!app.ctx().ask_queued, "opens at now (T-1185)");
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued, "the key selects steer");
+        assert!(app.ctx().ask_queued, "the key selects queue");
         assert!(matches!(
             app.mode,
-            Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
+            Mode::Input { purpose: InputPurpose::Prompt { queued: true, .. }, .. }
         ));
     }
 
@@ -25911,21 +25924,23 @@ mod tests {
         assert_eq!(app.status, "brief sent");
     }
 
-    /// T-390: live-pane follow-ups use the per-board Queue/Steer default.
+    /// T-390: live-pane follow-ups use the per-board Queue/Steer default,
+    /// and since T-1185 that default is Steer: `now`, as Claude Code's own
+    /// composer sends words typed mid-turn, even with the checkout busy.
     #[test]
     fn a_paned_ask_obeys_the_board_follow_up_default() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         assert!(app.ctx().checkout_busy, "its own agent holds the checkout");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(app.ctx().ask_queued, "Queue is the default");
+        assert!(!app.ctx().ask_queued, "now is the default");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.client
-            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Queue })
             .unwrap();
         app.refresh().unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued, "Steer is an explicit board preference");
+        assert!(app.ctx().ask_queued, "Queue is an explicit board preference");
     }
 
     /// T-294 / T-379. A worktree ticket's checkout is its own: nothing to

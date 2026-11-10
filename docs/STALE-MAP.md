@@ -42840,3 +42840,27 @@ the UX suite's `crownFlow` in Chromium and WebKit at every size (on, moved with 
 Undo, off, refused, an older host offers nothing). **Owed:** a CHANGELOG line at the next bump —
 **Added:** Remote Control puts the crown on a ticket, or takes it off, from the ticket's sheet —
 and the relay's `ship.sh` after it merges, since the hosted relay serves this page.
+
+## A follow-up opens at `now` by default (T-1185, 2026-11-10)
+
+`FollowUpMode` defaults to Steer: Shift+Enter on a ticket whose agent has a pane opens the field
+at `now`, as Claude Code's own composer sends words typed mid-turn into the turn. Shift+Tab
+still reaches `queued` for one ask. T-390's Queue default reversed on the author's word ("not
+the default expected behaviour from users of claude code").
+
+The `columns.toml` key moved from `follow_up_mode` to `follow_ups`, written only when a board
+chooses Queue. The old key was always written and has had no Settings row since T-717, so its
+`"queue"` was the old default on every board, never a choice. It is no longer read, and the next
+write drops it. No schema bump: an older build reads the new key as absent and opens at Queue,
+as it did before.
+
+Kept, refuted as part of the flip: a column ask that would start or wake a seat on the shared
+checkout (`App::column_spawns_shared`) still opens at `queued`. The daemon's `prompt_column`
+relies on that default, beside `spawn_gate`, to hold back a burst of claudes in one index
+(T-294, T-405). A single start or wake keeps its `checkout_busy` rule. Remote Control's
+Queue/Steer row keeps its own Queue default; unchanged.
+
+Tests: `store` `the_old_queue_default_reads_as_now_and_now_is_not_written` and the round trip
+(a chosen Queue is written under `follow_ups`); `app` `a_paned_ask_obeys_the_board_follow_up_default`
+and `the_ask_toggle_can_queue_a_worktree_ticket` flipped; the column-ask tests pass unchanged. One
+golden moved, `prompt_field_codex_empty_120x30` (`queued` → `now`, `enter queue` → `enter send`).

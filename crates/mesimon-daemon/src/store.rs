@@ -112,6 +112,10 @@ fn default_crown_budget() -> u8 {
     mesimon_core::board::DEFAULT_CROWN_BUDGET
 }
 
+fn steers(mode: &mesimon_core::board::FollowUpMode) -> bool {
+    *mode == mesimon_core::board::FollowUpMode::Steer
+}
+
 fn yes() -> bool {
     true
 }
@@ -239,7 +243,13 @@ struct ColumnsFile {
     /// it always did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<mesimon_core::board::WorkspaceStrategy>,
-    #[serde(default)]
+    /// The follow-up composer's default timing (`Board::follow_up_mode`).
+    /// Written only when a board chose Queue, so the file holds a choice and
+    /// never a default. The key was `follow_up_mode` until T-1185, always
+    /// written, so its `"queue"` was the old default on every board and is
+    /// not read: Steer became the default. No bump: an older build reads the
+    /// key absent and opens at Queue, as it always did.
+    #[serde(default, rename = "follow_ups", skip_serializing_if = "steers")]
     follow_up_mode: mesimon_core::board::FollowUpMode,
     /// The three agent-prompt templates (`Board::prompts`, T-353), one
     /// scalar each rather than one `[prompts]` table: a table here could be
@@ -2654,7 +2664,7 @@ order = "a0"
             default_column: Some("TODO".into()),
             setup_pending: true,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
-            follow_up_mode: mesimon_core::board::FollowUpMode::Steer,
+            follow_up_mode: mesimon_core::board::FollowUpMode::Queue,
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,
             prompt_note_updated: None,
@@ -2731,7 +2741,10 @@ order = "a0"
         assert!(back.claude_md_ignored);
         assert!(back.system_prompt);
         assert_eq!(back.default_column.as_deref(), Some("TODO"));
-        assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
+        // T-1185: a chosen Queue is written under its own key, before the
+        // tables.
+        assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Queue);
+        assert!(text.find("follow_ups = \"queue\"").unwrap() < text.find("[[columns]]").unwrap());
         assert_eq!(back.agent_provider, AgentProvider::Codex);
         // T-443: the default tier is a scalar before the tables, and the
         // tiers an array of tables after them — a scalar after `[[tiers]]`
@@ -2809,6 +2822,27 @@ on_done = "DONE"
         let text = toml::to_string_pretty(&cf).unwrap();
         assert!(!text.contains("auto_run"), "{text}");
         assert!(text.contains("on_done = \"DONE\""), "{text}");
+    }
+
+    /// T-1185: every board before it wrote `follow_up_mode = "queue"`, the
+    /// old default, with no row to choose it since T-717. That key is not
+    /// read, so such a board opens its follow-ups at `now`, and the next
+    /// write drops it; the default itself is never written.
+    #[test]
+    fn the_old_queue_default_reads_as_now_and_now_is_not_written() {
+        let legacy = r#"
+schema_version = 9
+next_key = 4
+follow_up_mode = "queue"
+
+[[columns]]
+name = "TODO"
+order = "a0"
+"#;
+        let cf: ColumnsFile = toml::from_str(legacy).unwrap();
+        assert_eq!(cf.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
+        let text = toml::to_string_pretty(&cf).unwrap();
+        assert!(!text.contains("follow_up"), "{text}");
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

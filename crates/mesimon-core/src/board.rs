@@ -2634,11 +2634,13 @@ impl<'de> Deserialize<'de> for MergeInto {
 }
 
 /// Default timing for a person's follow-up composer, stored per board.
+/// Steer (`now`) is the default since T-1185: Claude Code's own composer
+/// sends words typed mid-turn into the turn, and a person expects that.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FollowUpMode {
-    #[default]
     Queue,
+    #[default]
     Steer,
 }
 
