@@ -4881,7 +4881,7 @@ fn golden_ticket_queued_120() {
     let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
     assert_eq!(
         lines[state + 1].trim_end(),
-        " queued ∙ after T-3 ∙ ^y send now ∙ ^u take back",
+        " queued ∙ after T-3 ∙ ^y send now ∙ ^u drop",
         "{}",
         lines.join("\n")
     );
@@ -4912,11 +4912,7 @@ fn golden_held_open_120() {
         "the key beside the words, not only in the footer:\n{}",
         lines.join("\n")
     );
-    assert!(
-        lines.last().is_some_and(|l| l.contains("^y send ∙ ^u take back")),
-        "{:?}",
-        lines.last()
-    );
+    assert!(lines.last().is_some_and(|l| l.contains("^y send ∙ ^u drop")), "{:?}", lines.last());
     golden("board_held_open_120x30", &lines);
 }
 
@@ -4966,7 +4962,7 @@ fn golden_crown_answered_open_120() {
 /// owns `^u` — so the row stands down with the key (T-551).
 #[test]
 fn the_held_keys_row_is_gated_as_the_keys_are() {
-    let keys = "^y send ∙ ^u take back";
+    let keys = "^y send ∙ ^u drop";
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
     app.pending = vec![pending_ask(5, &["T-3"])];
@@ -4975,7 +4971,7 @@ fn the_held_keys_row_is_gated_as_the_keys_are() {
     let lines = render(&app, 120, 30);
     let at = lines.iter().position(|l| l.contains("queued ∙ after T-3")).expect("queued row");
     assert!(
-        !lines[at + 1].contains("take back"),
+        !lines[at + 1].contains("^u drop"),
         "the footer's, not the card's:\n{}",
         lines.join("\n")
     );
@@ -5028,7 +5024,7 @@ fn golden_ticket_held_120() {
     let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
     assert_eq!(
         lines[state + 1].trim_end(),
-        " T-544 asks ∙ you send ∙ ^y send ∙ ^u take back",
+        " T-544 asks ∙ you send ∙ ^y send ∙ ^u drop",
         "{}",
         lines.join("\n")
     );
@@ -16577,7 +16573,7 @@ fn golden_ticket_live_queued_120() {
         "the closed rule over them: {closed:#?}"
     );
     assert!(
-        closed[y + 1].starts_with(" -- queued ∙ after its turn ∙ ^y send now ∙ ^u take back --"),
+        closed[y + 1].starts_with(" -- queued ∙ after its turn ∙ ^y send now ∙ ^u drop --"),
         "when they go, and the keys: {closed:#?}"
     );
     assert!(closed[y + 2].contains("Fable 5.1"), "the agent's footer under the box: {closed:#?}");

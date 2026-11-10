@@ -7650,7 +7650,7 @@ impl App {
         // says who wrote it or why it stopped, then that the send is yours.
         // `queued by T-411's agent` named the author and never the wait, and
         // read as one more ask the queue would deliver. The keys ride the
-        // row under it (`^y send ∙ ^u take back`, the keymap's words) on the
+        // row under it (`^y send ∙ ^u drop`, the keymap's words) on the
         // cursor card, and the same row on the ticket page.
         if p.is_held() {
             // The crown's words (T-413) — the person reads them on the
@@ -9986,31 +9986,14 @@ impl App {
                 }
             }
             Verb::TakeBackAsk => {
+                // Drops the waiting words at once (T-1189, the author: "make
+                // ^u drop it immediately"); Shift+Enter is the road to edit
+                // them. It took them back into the editor before.
                 if let Some(ticket) = self.subject() {
-                    // The flag comes back with the words (T-420): a
-                    // take-back is an edit, not a change of mind about
-                    // the plan.
-                    let accept_plan = self.pending_of(ticket).is_some_and(|p| p.accept_plan);
-                    let plan = self.pending_of(ticket).is_some_and(|p| p.plan);
-                    // So does the crown's level (T-600, T-601).
-                    let deliver = self.pending_of(ticket).map(|p| p.deliver).unwrap_or_default();
-                    let (queued, immediately) = Self::field_level(deliver);
-                    match self.req(Command::TakeQueuedAsk { ticket }) {
+                    match self.req(Command::DropQueuedAsk { ticket }) {
                         Response::Err { message } => self.refuse(ticket, message),
-                        Response::PromptTakenBack { text } => {
-                            self.mode = Mode::Editor(self.ask_room(
-                                AskTarget::Ticket(ticket),
-                                queued,
-                                immediately,
-                                accept_plan,
-                                plan,
-                                None,
-                                &text,
-                            ));
-                            self.status = "taken back ∙ edit or close to discard".into();
-                        }
-                        _ => {}
-                    }
+                        _ => self.status = "queued ask dropped".into(),
+                    };
                     self.refresh_soon()?;
                 }
             }
@@ -25426,6 +25409,36 @@ mod tests {
     /// A ticket with an ask waiting reopens the field on those words, at
     /// `queued`; Esc leaves it waiting, a blank Enter drops it, and sending
     /// now over it says the waiting one went.
+    /// `^u` drops a queued ask at once (T-1189, the author: "make ^u drop it
+    /// immediately"): the drop goes to the daemon, no editor opens, and the
+    /// status says it went.
+    #[test]
+    fn ctrl_u_drops_a_queued_ask_at_once() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: ulid::Ulid(1),
+            action: mesimon_core::command::PendingAction::Ask,
+            waits_on: vec!["T-3".into()],
+            asking: Vec::new(),
+            text: Some("commit it".into()),
+            in_flight: false,
+            by: None,
+            sends: false,
+            accept_plan: false,
+            plan: false,
+            held: None,
+            deliver: mesimon_core::command::Deliver::Idle,
+            person: None,
+        }];
+        assert!(app.ctx().ticket_queued);
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        assert!(sent_contains(&sent, "DropQueuedAsk"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "TakeQueuedAsk"), "{:?}", sent.borrow());
+        assert!(!matches!(app.mode, Mode::Editor(_) | Mode::Input { .. }), "{:?}", app.mode);
+        assert_eq!(app.status, "queued ask dropped");
+    }
+
     #[test]
     fn a_queued_ask_reopens_prefilled_and_a_blank_enter_drops_it() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);

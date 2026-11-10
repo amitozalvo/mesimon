@@ -43229,3 +43229,12 @@ the last 20 tickets.
 **Left alone:** the "Run the full workspace suite once, at the end, when…" sentence; taking the
 full suite off tickets is T-1194's proposal, still with the author. This ticket checked its own
 diff and links and ran no cargo, by the rule it writes.
+
+## `^u` drops a queued ask at once (T-1189, 2026-11-11, the author: "make ^u drop it immediately")
+
+`^u` on a queued or held ask took its words back into the editor (`TakeQueuedAsk`, "taken
+back ∙ edit or close to discard"); it now sends `DropQueuedAsk`, as a blank Enter in the
+reopened field does, and says `queued ask dropped`. Shift+Enter stays the road to edit the
+words. The key's word is `drop` everywhere it is named (the card's held row, the page's box,
+the footers). `Command::TakeQueuedAsk` stays on the wire, unused by the TUI. Test
+`app` `ctrl_u_drops_a_queued_ask_at_once`; seven goldens moved by the word alone.

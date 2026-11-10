@@ -26,5 +26,5 @@
                                                                                             ██▀▄ ███ ▄▀██
    -- shift+enter  edit the queued ask -----------------------------------------------      ▀███▀███▀███▀
    › write the tests first                                                                   ▀▀▀▀▀▀▀▀▀▀▀
-   -- starts ∙ after T-3 ∙ ^y send now ∙ ^u take back --------------------------------
- ^y send now ∙ ^u take back ∙ enter start agent ∙ shift+enter edit the queued ask ∙ shift+tab own worktree       ? keys
+   -- starts ∙ after T-3 ∙ ^y send now ∙ ^u drop -------------------------------------
+ ^y send now ∙ ^u drop ∙ enter start agent ∙ shift+enter edit the queued ask ∙ shift+tab own worktree            ? keys

@@ -2,7 +2,7 @@
 
  Grapheme truncation
  REVIEW for >1y ∙ created >1y ago
- T-544 asks ∙ you send ∙ ^y send ∙ ^u take back
+ T-544 asks ∙ you send ∙ ^y send ∙ ^u drop
 
 
   PREVIEW                                                                                  SESSIONS                  1
@@ -27,4 +27,4 @@
                                                                                            ✦▀▀███▀▀███▀▀
                                                                                              ▀▀▀▀▀▀▀▀▀▀
 
- ^y send ∙ ^u take back ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                         ? keys
+ ^y send ∙ ^u drop ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys
