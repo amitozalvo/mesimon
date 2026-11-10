@@ -10493,6 +10493,59 @@ fn the_crown_merges_where_the_train_will_not() {
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 0, "{feed}");
     assert!(feed.contains("\"merge_notified\""), "{feed}");
+
+    // ---- 7. what the train waits for, and a branch rebased by hand (T-1183)
+    commit(&path, "three.txt");
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the third delivery's wake", || {
+        lines_with(&worker).len() == 5
+    });
+    h.one_turn(&mut c, sa);
+    wait_state(&mut c, "ahead");
+    // Its merges left the card in DONE, which the train stops short of;
+    // back in REVIEW the branch is one the train would take.
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
+        Response::Ok
+    ));
+    // The crown mid-turn in the shared checkout holds the train, and the
+    // branch it would take now says so by the holder's key.
+    start(&mut c, sa);
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    let (by, why, _) = who(&mut c, &kw);
+    assert_eq!(by, "train", "{why}");
+    assert_eq!(
+        why,
+        format!(
+            "the train is armed and reaches this column; it waits for {ka}: a turn in progress \
+             or a background command left running holds it"
+        )
+    );
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: false, merge_notice: false }),
+        Response::Ok
+    ));
+    stop(&mut c, sa);
+    assert!(!merged(), "the train took nothing under the crown's turn");
+    // The base moves; the flags read the branch behind. Rebased by hand with
+    // no turn, the crown's merge at once reads git again and lands it: the
+    // sample from before the rebase is not its answer.
+    std::fs::write(h.repo.join("base2.txt"), "base\n").unwrap();
+    git(&h.repo, &["add", "base2.txt"]);
+    git(&h.repo, &["commit", "-qm", "base2"]);
+    wait_state(&mut c, "needs_rebase");
+    let (_, _, seen) = who(&mut c, &kw);
+    git(&path, &["rebase", "-q", "main"]);
+    match merge(&mut c, &kw, seen) {
+        Response::AgentMerged { detail, .. } => {
+            assert!(detail.contains(&format!("{branch} merged into main")), "{detail}");
+        }
+        other => panic!("merge_ticket after a hand rebase: {other:?}"),
+    }
+    assert!(merged());
 }
 
 /// T-613: a person's `m` on a worker the crown started tells the worker by

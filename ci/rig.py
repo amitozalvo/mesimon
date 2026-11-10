@@ -3221,11 +3221,14 @@ Reply with the single word ready and end your turn."""
             # worker writes the same path: git will not overwrite it, and
             # the train's fast-forward is refused (`merge_train_refused`),
             # which is the train taking the ticket and landing nothing.
+            # `hold = true` (FA1, T-1183) arms the train and leaves the
+            # person's hold on the test ticket: a ticket the armed train
+            # does not take, whose merge is the crown's.
             on = what == "train_on"
             block = step.get("block")
             try:
                 self.wire.request({"cmd": "set_automation", "merge_train": on, "merge_notice": False})
-                self.wire.set_manual_merge(test["ticket"], not on)
+                self.wire.set_manual_merge(test["ticket"], not on or bool(step.get("hold")))
             except WireError as error:
                 record["failures"].append(f"{what}: {error}")
                 return False

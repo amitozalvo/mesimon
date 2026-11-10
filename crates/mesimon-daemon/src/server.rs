@@ -9210,6 +9210,11 @@ impl Daemon {
                 }
                 // Fed as the merge road's own refusal is (T-782): T-778 moved
                 // the forge's refusal here, and the feed lost the attempt.
+                // A branch the last sample read behind its base is read
+                // again before that is the answer (T-1183).
+                if self.merge_state_word(target).as_deref() == Some("needs_rebase") {
+                    self.refresh_ticket_flags(target);
+                }
                 if let Some(message) = self.crown_merge_refusal(target, &key) {
                     self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "refused");
                     return Response::Err { message };
@@ -11450,6 +11455,24 @@ impl Daemon {
         {
             if let Some(detail) = self.train.refusal(id, &a.tip, &a.base_tip) {
                 return view("train", detail);
+            }
+            // What the pass waits for (T-1183), on a branch it would take
+            // now, by `train_busy`, the gate it takes: a shared-checkout
+            // session mid-turn or parked on a background command, or a
+            // ticket in its rebase turn. A crown that left a watcher
+            // running held three merges and read only "reaches this
+            // column".
+            let holders: Vec<ulid::Ulid> =
+                self.train_busy().into_iter().filter(|h| *h != id).collect();
+            if !holders.is_empty() {
+                return AgentMergeView {
+                    by: "train".into(),
+                    why: format!(
+                        "the train is armed and reaches this column; it waits for {}: a turn \
+                         in progress or a background command left running holds it",
+                        self.keys_of(&holders).join(", ")
+                    ),
+                };
             }
         }
         view("train", "the train is armed and reaches this column")
@@ -15132,7 +15155,7 @@ impl Daemon {
             self.train.fused_tickets().copied().collect();
         let owed: std::collections::HashSet<ulid::Ulid> =
             self.owed.values().map(|o| o.ticket).collect();
-        mesimon_core::train::plan(&mesimon_core::train::Input {
+        let mut plan = mesimon_core::train::plan(&mesimon_core::train::Input {
             board: &self.board,
             flags: &flags,
             base_tip: &base_tip,
@@ -15140,7 +15163,14 @@ impl Daemon {
             conflict_asked: &conflict_asked,
             fused: &fused,
             owed: &owed,
-        })
+        });
+        // A branch that already rebased for the train goes first (T-1183).
+        // The memo outlives a merge (T-770), so a later commit on a branch
+        // merged before goes first on its old ask: rare, and one place up.
+        let asked_at: HashMap<ulid::Ulid, u64> =
+            self.train.asked().iter().map(|(t, r)| (*t, r.at_ms)).collect();
+        mesimon_core::train::paid_first(&mut plan.merge, &asked_at);
+        plan
     }
 
     /// One pass of the train (2026-09-04), after `refresh_worktree_flags`
@@ -19346,6 +19376,25 @@ impl Daemon {
         self.wt_seq = self.wt_seq.wrapping_add(1);
         // The callers of this road broadcast on their own terms.
         let _ = self.absorb_worktree_flags(samples, self.wt_seq, None);
+    }
+
+    /// One ticket's flags, NOW, on the writer thread (T-1183), for a road
+    /// about to refuse on them: the tick's sample is up to a bucket old, and
+    /// a crown that had just rebased a worker's branch was told it was
+    /// behind its base by a read from before the rebase, where a person's
+    /// `m` reads git at the press. Absorbed for that ticket alone, as its
+    /// own look is, under a number no older sample outranks.
+    fn refresh_ticket_flags(&mut self, ticket: ulid::Ulid) {
+        if self.tearing_down.contains(&ticket) || !self.base_known_for(ticket) {
+            return;
+        }
+        let queries = self.wt_queries(true, Some(ticket));
+        if queries.is_empty() {
+            return;
+        }
+        let samples = worktree::compute_repo_flags(&queries);
+        self.wt_seq = self.wt_seq.wrapping_add(1);
+        let _ = self.absorb_worktree_flags(samples, self.wt_seq, Some(ticket));
     }
 
     /// The tick's road: the same sample on a worker, landing as

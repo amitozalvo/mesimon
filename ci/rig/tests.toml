@@ -1795,6 +1795,36 @@ checks = ["road:mod", "started_by_crown", "crown:hold_ticket=1", "crown:return_t
   block = "HT1.txt"
 
 [[test]]
+id = "FA1"
+title = "FA1 · a commit made on the crown's ask, on a ticket the armed merge train does not take: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Write no file and run no command."
+expect = "the merge train is armed and the test ticket stays under the person's hold, so its merge is the crown's (out of the train by t). The worker's first turn writes nothing and the crown hears it finished. Asked to have the worker commit a file, naming no tool, the crown sends the words with ask_agent; the worker commits, and the board wakes the crown with the turn its ask rode: ended its turn after your ask went in, whose brackets carry the branch going ahead and, since T-1183, merge: crown. Asked for one word on who lands that commit as the board stands, the crown answers crown, from the line or from get_ticket's merge; before T-1183 the line named no owner under an armed train, which a crown on another board read as the train's (2026-11-10). Asked whether a background command left running in its session holds the merge train, it answers yes (the rules' sentence, T-1183). It merges nothing: the branch is not on the base."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "crown:merge_ticket=0", "woke:answered", "crown_line:FA1 next:crown", "crown_line:FA1 holds:yes", "unlanded"]
+
+  [[test.steps]]
+  rig = "train_on"
+  hold = true
+
+  [[test.steps]]
+  crown = "FA1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: FA1 started. When the board wakes you because {key}'s agent delivered or finished, end your turn with the single line: FA1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "FA1: the board's merge train is on. Have {key}'s agent write a file named FA1.txt holding the single line fa1 and commit it with git with the message FA1. Merge nothing yourself. End your turn with the single line: FA1 asked. When the board wakes you about {key}, end your turn with the single line: FA1 next, then one word for who lands that commit on the base as the board stands: train, crown or person."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "FA1: would a background command left running in this session hold the merge train? Change nothing. End your turn with the single line: FA1 holds, then yes or no."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "train_off"
+
+[[test]]
 id = "AH1"
 title = "AH1 · a review hook's findings turn comes before the board's delivery: do the steps below"
 workspace = "worktree"

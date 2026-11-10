@@ -207,7 +207,8 @@ pub const CROWN_WAKES: &str = concat!(
      watch command (gh pr checks --watch, glab ci status --live) or a loop that polls \
      included, holds the merge train and its own wake. A background task or monitor left \
      running does not hold the wake or a queued word: they reach this session as at any \
-     idle one. A worker the crown started \
+     idle one. A background command left running does hold the merge train, as a busy \
+     session does; a monitor's watch does not. A worker the crown started \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
      idle with N background tasks), and get_ticket on it carries background (tasks, \
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
@@ -222,7 +223,8 @@ pub const CROWN_WAKES: &str = concat!(
      engine's own id for it; one it cannot find goes. sample_agent reads a worker \
      the crown started as the board sees it. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
-     person or forge, and why), and the delivered line carries the word. The forge's — every \
+     person or forge, and why), and the delivered line carries the word, as does an ask's \
+     line whose turn left the branch ahead. The forge's — every \
      worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
      pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
      into main nothing is the forge's. The train's lands by itself, \
@@ -3206,6 +3208,10 @@ mod tests {
             "gh pr checks --watch",
             "A busy session, a watch command",
             "or a loop that polls included, holds the merge train and its own wake",
+            // T-1183: the next sentence said what a background task does
+            // not hold, and a crown read it as holding nothing.
+            "A background command left running does hold the merge train, as a busy session \
+             does; a monitor's watch does not",
         ] {
             assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
         }
@@ -4217,6 +4223,7 @@ mod tests {
         for words in [
             "says who merges its branch (merge: by train, crown, person or forge, and why)",
             "the delivered line carries the word",
+            "as does an ask's line whose turn left the branch ahead",
             "The forge's — every worktree ticket's on a board whose Merge into setting is pull \
              requests — lands through its pull request, merged on the forge, and merge_ticket \
              refuses it",

@@ -43012,3 +43012,84 @@ flavor); `ui` `the_crowned_ticket_s_shin_wears_the_crown`. No golden moved.
 **Refuted:** the pixel crown (A) needed a second row above the stage and moved the '?' and stars;
 the glyph (C) read as pasted on. **Owed:** a CHANGELOG line at the next bump — **Added:** the
 crowned ticket's mascot wears the crown's blue on its top.
+
+## Who merges after an ask, what holds the train, and three smaller reads (T-1183, 2026-11-10, a crown's report from another board)
+
+**Seen (2026-11-10, the simbly board's crown).** Four things in one day, all "who merges, and
+when". (1) A follow-up `ask_agent` to a merged ticket in DONE made one commit; the wake read
+`ended its turn after your ask went in (… merge_state merged → ahead, ahead infra 0 → 1, column
+DONE)`, the crown told the person "it merges on the train", and the train does not reach DONE
+there. `get_ticket` said `merge.by: crown` the whole time. (2) A `run_in_background` pipeline
+watcher in the crown held every worker's merge. (3) A ready ticket waited about 12 minutes and
+rebased three times while three newer deliveries merged. (4) `merge_ticket` refused "behind its
+base (master)" right after the crown rebased the branch by hand, and the crown fast-forwarded the
+base with git.
+
+**1. An ask's line says who merges.** `crown_wake_events` added `merge: <by>` to a `Delivered`
+line alone, and `Answered` outranks `Delivered`, so a commit made on the crown's ask was the one
+delivery whose line named no owner. Now an `Answered` line whose turn left a mergeable branch
+(`Told::mergeable`: ahead and not merged) carries the word too, after the `merge_state` clause as
+on a delivered line; an ask that left nothing to merge says nothing. `CROWN_WAKES`: "the delivered
+line carries the word, as does an ask's line whose turn left the branch ahead". **Not built:** the
+reason in the line (the report asked for "merge: crown — DONE is outside the train"); the line
+carries the owner and `get_ticket` the why, as a delivered line does. DONE's reach and its
+`on_working` are that board's column settings.
+
+**2. A background command holds the train, and the rules now say so.** Not a bug: `train_busy`
+holds for every `is_working` session in the shared checkout, `Idle{Background}` included, and
+T-599 kept that on purpose (the board cannot tell a watcher from a build writing the checkout,
+and no clock decides). The gap was the text: "A busy session … holds the merge train and its own
+wake. A background task or monitor left running does not hold the wake or a queued word" reads as
+"a background task is free". `CROWN_WAKES` gains "A background command left running does hold
+the merge train, as a busy session does; a monitor's watch does not" (`Idle{Monitoring}` is
+quiet for the checkout). Two things made the hold last: the ten-minute park demotion
+(`PARK_STALE_MS`) restarts on every turn, and each worker wake is a crown turn; and a delivery
+held for the train is silent, so the crown that held it heard nothing. So `merge_by` names the
+holders on a branch the train would take now: "the train is armed and reaches this column; it
+waits for T-1: a turn in progress or a background command left running holds it" (`train_busy`
+minus the ticket itself, only where the aggregate reads ahead, fast-forwardable and checked; a
+remembered refusal still comes first). A crown reading mid-turn reads its own key there, which
+is true: the train moves when that turn ends. **Refuted again:** letting the train pass under a
+background task (T-599's first build).
+
+**3. A branch that paid a rebase merges first.** The train takes one step per gap in the shared
+checkout's turns and merged in board order, and automove lands each finished turn at the top of
+REVIEW: the newest delivery merged first, the base moved, the older branch rebased (a turn with
+a test run) and found another newcomer above it. `train::paid_first` (core, pure) reorders the
+merge list: a ticket with an ask on the train's memo (the train's or a person's `m`) before one
+never asked, the longest since its last ask first, board order for the rest (a stable sort, so a
+board with no asks is unchanged). `Daemon::train_plan` applies it, so the pass and the cards'
+pending rows agree. The count of rebase turns is the same in any order; this spreads them. The
+author chose it over keeping board order (2026-11-10, "go with recommended"); the cost said
+then: a card dragged to the top of REVIEW can wait behind one that already rebased. **Refuted:
+spending the ask at the board's merge** (a `Train::landed` in `merge_ticket`'s `Merged` arm, built
+and taken out the same day): `merge_train_e2e::a_rebase_turn_open_across_a_restart_still_holds_the_next_ask`
+holds that a settled ask is remembered past its merge (T-770). So a later commit on a branch
+merged before goes first on its old ask; rare, and one place up. **Not built:** a "waiting
+since" per ticket in `train.json`; the last ask's `at_ms` was already kept.
+
+**4. The crown's merge reads a behind branch again before it refuses.** The report's cause was
+wrong: `merge_state` is not re-read only at a turn's end; every binding is sampled each slow
+bucket (ten seconds), parked or not. What refused is narrower: `crown_merge_refusal` answers
+`needs_rebase` from the cached aggregate without asking git, where a person's `m` goes straight
+to `merge_legs`, which reads git at the press. A crown that rebased and merged inside one bucket
+got the read from before its rebase. Now `AgentMergeTicket` calls `refresh_ticket_flags` (that
+ticket's repositories alone, synchronously, absorbed under a fresh `wt_seq` as its own look is)
+when the cached word is `needs_rebase`, then judges. Still behind: the same refusal in the same
+words. The legs "only behind with no commits" were never judged: `aggregate` reads touched legs.
+The ten-second cadence stays; this is a command's fork, not the tick's (T-857).
+
+**Tests.** `crownwake::tests::an_asks_line_says_who_merges_what_its_turn_left`,
+`train::tests::a_branch_that_paid_a_rebase_merges_first` (core), the two sentences in `mcp`'s
+`the_crown_is_told_the_board_reads_the_forge_and_polls_nothing` and the merge-word list, and
+step 7 of `crown_e2e::the_crown_merges_where_the_train_will_not`: the holder's key in
+`merge.why` under the crown's own turn, nothing merged meanwhile, then a branch rebased by hand
+with no turn merged at once by `merge_ticket`. Rig case **FA1** (blind; `train_on` gained
+`hold = true`, the train armed with the person's hold kept on the test ticket): one live run,
+2026-11-10, crown `claude-opus-5-5`, Claude Code 2.1.322, passed in 104 s (`FA1 next, crown`,
+`FA1 holds, yes`, `ask_agent`×1, `merge_ticket`×0, wakes finished then answered). One run is one
+sample, and the case does not tell the line from a `get_ticket` read: either answers it.
+**Flakes named:** a full pass of both e2e binaries beside another session's e2e run, on a
+machine short of memory, failed three `squash_merges_past_the_scan_budget_*`,
+`one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask` (fixture cleanup) and timed out
+two more; all six passed in the full run before it and in a rerun alone after the rebase.

@@ -255,6 +255,20 @@ pub fn plan(input: &Input) -> Plan {
     plan
 }
 
+/// The merge list with the branches that already paid a rebase first
+/// (T-1183): one the train, or a person's `m`, asked to rebase goes before
+/// one never asked, the longest since its ask first; board order decides
+/// the rest, as `plan` left it. Automove lands each finished turn at the
+/// top of its column, so in board order alone the newest delivery merged
+/// first, moved the base, and the branch that had waited rebased again:
+/// three times in twelve minutes on the board that reported it. The count
+/// of rebase turns is the same in any order; this spreads them, so no
+/// branch pays for every merge above it. `asked_at` is each ticket's last
+/// ask, in ms.
+pub fn paid_first(merge: &mut [ulid::Ulid], asked_at: &HashMap<ulid::Ulid, u64>) {
+    merge.sort_by_key(|t| asked_at.get(t).map_or((1, 0), |at| (0, *at)));
+}
+
 /// The train's reach in the column `t`'s turn in flight delivers in
 /// (`automove::delivers_in`, T-795), or `None` when no turn of its own
 /// agent is in flight or owed: then the seat is free, parked, or held by a
@@ -293,6 +307,23 @@ mod tests {
 
     const IN_PROGRESS: &str = "IN PROGRESS";
     const REVIEW: &str = "REVIEW";
+
+    /// T-1183: a branch that already rebased for the train merges before
+    /// one that never did, the longest since its ask first, and the rest
+    /// keep the board's order.
+    #[test]
+    fn a_branch_that_paid_a_rebase_merges_first() {
+        let id = ulid::Ulid;
+        // Board order: 1 (the newest delivery, never asked), 2, 3, 4.
+        let mut merge = vec![id(1), id(2), id(3), id(4)];
+        let asked_at = HashMap::from([(id(4), 100), (id(2), 300)]);
+        paid_first(&mut merge, &asked_at);
+        assert_eq!(merge, [id(4), id(2), id(1), id(3)]);
+        // Nothing asked: the board's order, untouched.
+        let mut merge = vec![id(3), id(1), id(2)];
+        paid_first(&mut merge, &HashMap::new());
+        assert_eq!(merge, [id(3), id(1), id(2)]);
+    }
 
     /// The template board, its columns carrying the template's reach: the
     /// train reads `TrainReach`, never a name, so the names here are only

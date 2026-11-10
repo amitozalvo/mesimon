@@ -3045,7 +3045,13 @@ impl Daemon {
             let mut changed = w.changed();
             let unmerged_branch =
                 w.to.as_ref().is_some_and(|to| to.merge.is_some_and(|m| m != "merged"));
-            if w.cause == WakeCause::Delivered && unmerged_branch {
+            // An ask's turn that left commits is a delivery by another name
+            // (T-1183): `Answered` outranks `Delivered`, so its line said the
+            // branch went ahead and never whose merge that is. A follow-up
+            // to a ticket in a column the train stops short of sat unmerged.
+            let asked_and_ahead = w.cause == WakeCause::Answered
+                && w.to.as_ref().is_some_and(|to| to.merge.is_some() && to.mergeable());
+            if (w.cause == WakeCause::Delivered && unmerged_branch) || asked_and_ahead {
                 let word = format!("merge: {}", self.merge_by(w.worker).by);
                 let at =
                     changed.iter().position(|c| c.starts_with("merge_state")).map_or(0, |i| i + 1);
@@ -4386,6 +4392,29 @@ pub(in crate::server) mod tests {
         assert!(!b.d.hear_stepped(), "the answered turn already heard this merge");
         assert!(b.d.crown_wakes.is_empty());
         assert!(!b.d.crown_watched.contains(&w), "observing the merge still ends its watch");
+    }
+
+    /// T-1183: a turn the crown's ask rode that left commits says who
+    /// merges them, as a delivered line does: `Answered` outranks
+    /// `Delivered`, and a follow-up to a merged ticket read only that the
+    /// branch went ahead. An ask that left nothing to merge says nothing.
+    #[test]
+    fn an_asks_line_says_who_merges_what_its_turn_left() {
+        let mut b = crate::server::crownask::ledger_tests::bed("answered-ahead");
+        let w = b.worker;
+        let (from, to) = (branch("aaa", "merged", 0, "DONE"), branch("bbb", "ahead", 1, "DONE"));
+        b.d.enter_wake(b.crown, w, WakeCause::Answered, Some(from), Some(to), Owed::default());
+        let news = b.d.crown_wake_news();
+        assert!(
+            news.contains("ended its turn after your ask went in (")
+                && news.contains("merge_state merged → ahead, merge: crown, ahead 0 → 1"),
+            "{news}"
+        );
+        b.d.crown_wakes.clear();
+        let (from, to) = (branch("aaa", "clean", 0, "REVIEW"), branch("aaa", "clean", 0, "REVIEW"));
+        b.d.enter_wake(b.crown, w, WakeCause::Answered, Some(from), Some(to), Owed::default());
+        let news = b.d.crown_wake_news();
+        assert!(!news.contains("merge: "), "{news}");
     }
 
     #[test]
