@@ -43093,3 +43093,59 @@ sample, and the case does not tell the line from a `get_ticket` read: either ans
 machine short of memory, failed three `squash_merges_past_the_scan_budget_*`,
 `one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask` (fixture cleanup) and timed out
 two more; all six passed in the full run before it and in a rerun alone after the rebase.
+
+## Ticket builds share the machine: six compilers at once across worktrees, incremental on in them, and a prune that drops stale test binaries (T-1193, 2026-11-10, the author: "tickets in mesimon takes ages to complete lately which is unacceptable … sub 10 minutes per ticket … running 4 tickets in parallel is heavy on my machine")
+
+A retro first (read-only, the proposal at https://claude.ai/artifact/QKwsnHdybnKGzRctouvAY1), then
+the author's "build all 3". The last 20 merged tickets with a Claude transcript, rebuilt from
+transcript timestamps: agent busy 17 min median (mean 36), 7 under 10; the 16 on a quiet machine
+12 min, the 4 that ran overloaded on 2026-11-10 81 min. Of 717 busy minutes: unit-test commands
+28%, reading and thinking 25%, e2e commands 24%, writing 8%, builds 7%, the full suite 4%, the
+rig 1%. The STALE-MAP block cost 5 minutes across all 20.
+
+- **The closing prune was the e2e loop's cost, not the rebuild.** `ci/prune-deps.py` ran `nm`
+  over every executable in `deps/` after every run that linked anything. A seeded worktree held
+  1,149 of them (18.7 GB; the checkout's 972, cloned), 91 current: 138 s, after a 19 s build and
+  a 2 s test. T-1190's "four runs of one test binary, each with a rebuild, ~12 min" was this. A
+  relink overwrites in place; the stale ones come from version bumps and toolchain updates, which
+  change every hash. Now the superseded executables are deleted first (two newest of a target
+  stay: the `mesimon` bin and its unit-test harness share a name), the rest are read four at a
+  time, and each one's object list is kept in `.msmn-prune-objects.json`. The same run through
+  `ci/test-run.py`: 8 s. First prune of that worktree: 13 s, and 967 executables gone.
+- **Each cargo capped its own jobs and nothing capped their sum.** `cargo ut` in mesimon
+  worktrees since 2026-11-03: 53 s alone (64 runs), 63 s beside one other heavy command (42),
+  597 s beside three or more (3, the Bash tool's timeout). 14:00 to 14:40 on 2026-11-10 had 4 to 7
+  builds and test runs in flight across this board and simbly's. The machine holds 25.7 GB on
+  18 GB at rest (Docker's VM 9.6); one build adds 4 GB. `ci/rustc-slot.py` is a
+  `build.rustc-wrapper` that takes one of six `flock` slots and execs rustc, so the lock dies
+  with the compiler.
+- **`incremental = false` (2026-09-10, for disk) had never been timed.** One-line edit, rebuild
+  of the unit tests: core 30.6 s off and 8.0 s on, daemon 23.2 and 4.4, TUI 11.3 and 3.3; peak
+  memory 4.0 GB and 2.0 GB; with it on, two jobs are as fast as eleven. It stays off in
+  `Cargo.toml`. The worktrees' shared config turns it on.
+- **Measured together, four trees building the unit tests at once after a core edit** (three
+  APFS clones of this worktree): as cargo ships, 98 to 107 s each, load 57, 15 compilers, swap
+  +1.8 GB. Incremental with `jobs = 4` and six slots: 18 to 21 s each, load 14, no swap. Four
+  slots: 23 to 30 s. No cap: 25 to 27 s with 14 compilers. A worse edit for incremental (every
+  line of a core file shifted): 32 to 38 s each.
+
+**Refuted or left alone.** One shared target directory (T-830: every worktree overwrites the same
+`target/debug/mesimon` under another's tests). A command-level lock (T-830 removed one because a
+`cargo ut` waited behind another ticket's whole suite; a slot per compiler is held for seconds).
+Putting the wrapper in the repository's `.cargo/config.toml` (every contributor's build would
+need python3). More test threads (T-1023, T-1101). A cheaper model, the STALE-MAP block and the
+rig run were all measured small. Cargo copies, not hardlinks, the bin to `target/debug/` on this
+machine, so a link count says nothing about which `deps/mesimon-*` is current.
+
+**Not done here, filed:** the full suite off tickets (T-1194, the author's decision), the
+contract's verification wording (T-1195), the e2e files' 697 fixed sleeps (T-1196), 85 e2e
+binaries linking separately (T-1197). Two are settings only the author can change: Docker
+Desktop's 9.2 GB memory cap, and the tmux binary on macOS's Developer Tools list (syspolicyd
+burned 1.8 cores through every build measured).
+
+Tests (`ci/test_run_test.py`): `test_superseded_executables_go_and_the_two_newest_links_of_a_target_stay`,
+`RustcSlotTests` (one slot serialises, two overlap, a killed compile gives its slot back, a probe
+takes none, a compile that waited its limit goes ahead, a slot directory open to others or a
+symlinked slot is not used: the slot files are in `/tmp`, a guessable name), `WorktreeInitTests` (the config and wrapper are written, a worktree outside mesimon's
+state directory gets nothing beside it, an idle landed worktree's cache is reclaimed and a fresh
+one kept). No Rust changed.

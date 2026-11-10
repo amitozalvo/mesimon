@@ -581,6 +581,180 @@ class PruneTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=30)
             self.assertFalse(orphan.exists())
 
+    def test_superseded_executables_go_and_the_two_newest_links_of_a_target_stay(self):
+        prune = HERE / "prune-deps.py"
+        with tempfile.TemporaryDirectory() as directory:
+            debug = Path(directory) / "debug"
+            deps = debug / "deps"
+            deps.mkdir(parents=True)
+            links = []
+            for age, digest in enumerate(("a" * 16, "b" * 16, "c" * 16, "d" * 16)):
+                exe = deps / f"crown_e2e-{digest}"
+                exe.write_bytes(b"")
+                exe.chmod(0o755)
+                os.utime(exe, (1_000_000 + age, 1_000_000 + age))
+                exe.with_name(exe.name + ".d").write_text("")
+                links.append(exe)
+            # Not test executables: a library, a proc-macro and an unhashed file stay whatever their age.
+            others = [deps / ("libserde-" + "e" * 16 + ".rlib"), deps / ("libmacro-" + "f" * 16 + ".dylib"), deps / "notes"]
+            for other in others:
+                other.write_bytes(b"")
+                other.chmod(0o755)
+            alone = deps / ("hook_e2e-" + "0" * 16)
+            alone.write_bytes(b"")
+            alone.chmod(0o755)
+            dry = subprocess.run([sys.executable, "-B", str(prune), "--target-dir", str(debug), "--dry-run"],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertIn("would prune 2 stale executables", dry.stdout)
+            self.assertTrue(all(exe.exists() for exe in links))
+            self.assertFalse((debug / ".msmn-prune-objects.json").exists())
+            out = subprocess.run([sys.executable, "-B", str(prune), "--target-dir", str(debug)],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertIn("pruned 2 stale executables", out.stdout, out.stderr)
+            self.assertEqual([exe.exists() for exe in links], [False, False, True, True])
+            self.assertEqual([exe.with_name(exe.name + ".d").exists() for exe in links], [False, False, True, True])
+            self.assertTrue(all(other.exists() for other in others) and alone.exists())
+            # Each executable left is read once: its object list is kept beside deps/.
+            kept = json.loads((debug / ".msmn-prune-objects.json").read_text())
+            self.assertIn(str(links[3].resolve()), kept)
+            self.assertNotIn(str(links[0].resolve()), kept)
+
+
+class RustcSlotTests(unittest.TestCase):
+    """ci/rustc-slot.py with a shell standing in for rustc: `sh -c <script> --crate-name x`."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.log = Path(self.directory.name) / "log"
+        self.env = {**os.environ, "MESIMON_RUSTC_SLOT_DIR": str(Path(self.directory.name) / "slots")}
+
+    def compile(self, slots, seconds, name="x", **popen):
+        # `exec`: the stand-in is the one process holding the slot, as rustc is.
+        script = (f"echo start {name} >> {self.log}; exec sleep {seconds}" if name == "held"
+                  else f"echo start {name} >> {self.log}; sleep {seconds}; echo end {name} >> {self.log}")
+        return subprocess.Popen([sys.executable, "-B", str(HERE / "rustc-slot.py"), "sh", "-c", script, "--crate-name", name],
+                                env={**self.env, "MESIMON_RUSTC_SLOTS": str(slots)}, **popen)
+
+    def hold(self):
+        held = self.compile(1, 3, "held")
+        self.addCleanup(held.wait, 30)
+        deadline = time.monotonic() + 10
+        while not self.log.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return held
+
+    def test_a_compile_that_waited_its_limit_goes_ahead_without_a_slot(self):
+        self.hold()
+        self.env["MESIMON_RUSTC_SLOT_WAIT"] = "0.3"
+        late = self.compile(1, 0, "late", stderr=subprocess.PIPE, text=True)
+        _, said = late.communicate(timeout=2.5)
+        self.assertEqual(late.returncode, 0)
+        self.assertIn("every slot still held after 0.3 s", said)
+
+    def test_a_slot_directory_open_to_others_or_a_symlinked_slot_is_not_used(self):
+        slots = Path(self.env["MESIMON_RUSTC_SLOT_DIR"])
+        slots.mkdir()
+        slots.chmod(0o777)
+        open_dir = self.compile(1, 0, "open", stderr=subprocess.PIPE, text=True)
+        _, said = open_dir.communicate(timeout=30)
+        self.assertEqual(open_dir.returncode, 0)
+        self.assertIn("is not a directory of this user's alone", said)
+        slots.chmod(0o700)
+        target = Path(self.directory.name) / "elsewhere"
+        (slots / "0").symlink_to(target)
+        linked = self.compile(1, 0, "linked", stderr=subprocess.PIPE, text=True)
+        _, said = linked.communicate(timeout=30)
+        self.assertEqual(linked.returncode, 0)
+        self.assertIn("compiling without one", said)
+        self.assertFalse(target.exists())
+
+    def test_one_slot_runs_compiles_one_after_another_and_two_slots_overlap_them(self):
+        first, second = self.compile(1, 0.6, "a"), self.compile(1, 0.6, "b")
+        self.assertEqual((first.wait(30), second.wait(30)), (0, 0))
+        words = [line.split()[0] for line in self.log.read_text().splitlines()]
+        self.assertEqual(words, ["start", "end", "start", "end"])
+        self.log.unlink()
+        first, second = self.compile(2, 0.6, "a"), self.compile(2, 0.6, "b")
+        self.assertEqual((first.wait(30), second.wait(30)), (0, 0))
+        self.assertEqual([line.split()[0] for line in self.log.read_text().splitlines()][:2], ["start", "start"])
+
+    def test_a_killed_compile_gives_its_slot_back(self):
+        held = self.compile(1, 60, "held")
+        deadline = time.monotonic() + 10
+        while not self.log.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        held.kill()
+        held.wait(10)
+        started = time.monotonic()
+        self.assertEqual(self.compile(1, 0, "next").wait(30), 0)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_probe_takes_no_slot_and_the_exit_code_is_the_compilers(self):
+        held = self.compile(1, 2, "held")
+        self.addCleanup(held.wait, 30)
+        deadline = time.monotonic() + 10
+        while not self.log.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        out = subprocess.run([sys.executable, "-B", str(HERE / "rustc-slot.py"), "sh", "-c", "echo probed; exit 3"],
+                             env={**self.env, "MESIMON_RUSTC_SLOTS": "1"}, capture_output=True, text=True, timeout=1.5)
+        self.assertEqual((out.returncode, out.stdout), (3, "probed\n"))
+
+
+class WorktreeInitTests(unittest.TestCase):
+    """.mesimon-worktree-init.sh over a throwaway checkout and state directory."""
+
+    def run_init(self, root, worktree):
+        checkout = root / "checkout"
+        if not checkout.exists():
+            (checkout / "ci").mkdir(parents=True)
+            shutil.copy(HERE / "rustc-slot.py", checkout / "ci/rustc-slot.py")
+            git = ["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run([*git, "init", "-q", "-b", "main"], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "first"], check=True)
+        worktree.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(["sh", str(HERE.parent / ".mesimon-worktree-init.sh")], cwd=worktree, timeout=60,
+                              env={**os.environ, "MESIMON_CHECKOUT": str(checkout), "MESIMON_WORKTREE": str(worktree)},
+                              capture_output=True, text=True)
+
+    def test_the_worktrees_shared_cargo_config_is_written_with_its_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shared = root / "state/mesimon/abc123/worktrees"
+            out = self.run_init(root, shared / "T-1-first")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            config = (shared / ".cargo/config.toml").read_text()
+            self.assertIn("incremental = true", config)
+            self.assertIn("jobs = 4", config)
+            self.assertIn(f"rustc-wrapper = '{shared}/.cargo/rustc-slot.py'", config)
+            self.assertTrue(os.access(shared / ".cargo/rustc-slot.py", os.X_OK))
+
+    def test_a_worktree_kept_elsewhere_gets_no_config_beside_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            out = self.run_init(root, root / "elsewhere/T-1-first")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertFalse((root / "elsewhere/.cargo").exists())
+
+    def test_an_idle_cache_of_a_landed_worktree_is_reclaimed_and_a_fresh_one_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shared = root / "state/mesimon/abc123/worktrees"
+            self.run_init(root, shared / "T-1-first")
+            checkout = root / "checkout"
+            caches = {}
+            for name, age in (("T-2-idle", 7200), ("T-3-building", 0)):
+                subprocess.run(["git", "-C", str(checkout), "worktree", "add", "-q", "-b", name, str(shared / name)], check=True)
+                caches[name] = shared / name / "target/debug/incremental"
+                (caches[name] / "core-1").mkdir(parents=True)
+                for path in (caches[name] / "core-1", caches[name]):
+                    os.utime(path, (time.time() - age, time.time() - age))
+            out = self.run_init(root, shared / "T-4-new")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertIn("reclaimed the idle incremental cache of T-2-idle", out.stdout)
+            self.assertFalse(caches["T-2-idle"].exists())
+            self.assertTrue(caches["T-3-building"].exists())
+
 
 if __name__ == "__main__":
     unittest.main()

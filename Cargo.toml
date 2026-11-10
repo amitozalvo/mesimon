@@ -67,5 +67,7 @@ unwrap_used = "warn"
 debug = "line-tables-only"
 # Independent ticket builds multiplied incremental caches until the disk filled.
 # Keep dependency artifacts, but rebuild changed workspace crates without this
-# additional cache. A developer can opt back in with CARGO_INCREMENTAL=1.
+# additional cache. A developer can opt back in with CARGO_INCREMENTAL=1, and
+# ticket worktrees do, through the config `.mesimon-worktree-init.sh` writes
+# beside them: an edit there rebuilds in 8 s where this takes 31 (T-1193).
 incremental = false

@@ -50,9 +50,11 @@ never main's. The install line is in five files and `ci/site.sh` fails when one 
 `release.sh` after `gh release create`. The template's header says how to check a change. The
 updater never replaces a binary brew installed (`release.rs::by_homebrew`).
 
-`ci/prune-deps.py` deletes split-debuginfo objects no current binary references (the runner
-calls it after every run, on the build dir that run used, and it skips a `deps/` unchanged since
-its last prune). It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
+`ci/prune-deps.py` deletes the test executables newer links have superseded and the
+split-debuginfo objects no remaining binary references (the runner calls it after every run, on
+the build dir that run used, and it skips a `deps/` unchanged since its last prune). A version
+bump gives every test binary a new hash and leaves the old one behind, so a release is when the
+stale executables are minted. It is what keeps the first-exec Gatekeeper hold down: syspolicyd's
 scan is slow in proportion to the *directory*, and one edit to a core crate mints ~6,500 `.o`
 files that cargo never collects. Past 50k entries it advises `cargo clean`.
 

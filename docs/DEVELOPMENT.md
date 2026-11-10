@@ -367,6 +367,25 @@ If a fixture is ever left behind, `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock k
 cleans it and its `owner.json` says what it owned. **Never sweep every mesimon socket or `pkill`
 by name** — a dogfooding session's own board is among them.
 
+**Ticket worktrees build under one shared cargo config** (T-1193): `.mesimon-worktree-init.sh`
+writes `<state>/worktrees/.cargo/config.toml` each time a worktree is cut, and cargo reads it for
+every worktree under that directory. It turns incremental compilation on (`Cargo.toml` keeps it
+off for the checkout), sets `jobs = 4`, and points `rustc-wrapper` at a copy of
+`ci/rustc-slot.py`, which lets six compilers run at once across all of them
+(`MESIMON_RUSTC_SLOTS`; a slot is a file lock the rustc process itself holds, so none can leak).
+Each `cargo` capping its own jobs is what took the machine down on 2026-11-10: `cargo ut` was
+53 s alone and 600 s beside three other builds. Four worktrees rebuilding the unit tests at once
+after a core edit: 98 s each as cargo ships, 18 to 21 s each under this config. The incremental
+cache is 4 to 6 GB a worktree; the init script deletes it from a worktree whose branch is in the
+checkout's history and that has not built for an hour. The checkout itself, and a worktree kept
+outside mesimon's state directory, build as cargo ships.
+
+**The runner's closing prune reads each executable once** (T-1193): `ci/prune-deps.py` first
+deletes the test executables newer links have superseded (two newest of a target stay), then
+lists the objects of what is left, four `nm` at a time, and keeps each list in
+`target/debug/.msmn-prune-objects.json`. Before, it ran `nm` over every executable ever linked
+after every run: 138 s in a freshly seeded worktree, behind a 2 s test.
+
 The test seams (every `MESIMON_*` a test may set) and the e2e pattern are `crates/mesimon/tests/CLAUDE.md`.
 
 ## Release notes
