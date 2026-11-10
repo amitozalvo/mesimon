@@ -43204,3 +43204,28 @@ author: those are fine as they are.
 Tests: `golden_ticket_live_queued_120` (the rows, said once, open over the same rows),
 `a_long_queued_ask_shows_three_rows_and_the_cut`, `a_held_ask_keeps_its_row_and_the_box_its_rule`,
 `golden_ticket_seat_queued_120`.
+
+## The contract's verification lines say what was measured (T-1195, 2026-11-11, from T-1193's retro; the rebase rule is the author's: "Skip the tests")
+
+`AGENTS.md` and the `ut` alias's comment in `.cargo/config.toml` said things the machine no
+longer did. **Changed:** `cargo ut` is annotated with its measured run, about 20 s after the
+build (mesimon-daemon's 814 tests 13 s, mesimon-tui's 1,417 tests 5 s), not "~1 s", and the
+inner loop is `cargo test -p <crate> --lib <filter>`. A docs-only change runs no cargo, rebase
+included (T-1160 changed `AGENTS.md` and a doc and spent 1.6 of its 4 busy minutes on two unit
+runs). A full suite run carries `--no-fail-fast` (T-1190's first run stopped at its first red
+after 200 s and ran again). Clippy on all targets is the release gate's, not a ticket's (T-1190
+ran it unasked). A command expected past 2 minutes starts in the background (25 commands hit
+the 10-minute tool timeout in the week of 2026-11-03, 16 on 2026-11-10, each followed by wait
+loops).
+
+**The rebase rule.** A rebase that applied without a conflict runs nothing; one that resolved a
+conflict in code runs `cargo ut`, `cargo build --workspace` and the e2e of the conflict's area.
+A conflict in docs alone (STALE-MAP's appended blocks: keep both, main's first) counts as none,
+since nearly every ticket appends a block and the checks would otherwise run on almost every
+rebase (the crown's review). It used to run `cargo ut` + the build every time. T-661 found none
+of 138 post-rebase runs caught anything, and the rebase turn cost a median 2 minutes on 12 of
+the last 20 tickets.
+
+**Left alone:** the "Run the full workspace suite once, at the end, when…" sentence; taking the
+full suite off tickets is T-1194's proposal, still with the author. This ticket checked its own
+diff and links and ran no cargo, by the rule it writes.

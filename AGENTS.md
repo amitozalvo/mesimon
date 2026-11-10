@@ -47,10 +47,12 @@ the person says go → [IMPROVEMENT], retitled, built and committed.
   and `MESIMON_WORKTREE_BRANCH` set. Work and commit on that branch; **commit when done**
   (uncommitted changes cannot merge and block cleanup). Never `git checkout main`, never merge
   or push to main yourself: the person merges through mesimon, fast-forward only, so a green
-  rebased branch is the deliverable. A rebase, when asked, is onto the default branch, then
-  `cargo ut` + `cargo build --workspace`, plus an area's e2e only when a resolved conflict was
-  in that area's code. The worktree is the ticket's workspace setting: never relocate the
-  session with an agent's native worktree command (Claude Code's `EnterWorktree`).
+  rebased branch is the deliverable. A rebase, when asked, is onto the default branch. A
+  conflict in docs alone (STALE-MAP's appended blocks: keep both, main's first) counts as
+  none: such a rebase runs nothing, and only a conflict resolved in code runs `cargo ut`,
+  `cargo build --workspace` and the e2e of the area it was in. The worktree is the ticket's
+  workspace setting: never relocate the session with an agent's native worktree command
+  (Claude Code's `EnterWorktree`).
 - **You may be inside mesimon** (a pane the daemon this repo builds spawned). `pkill -f
   "mesimon daemon"` does not kill you and loses no state. Never `cargo run` in your pane: it
   wedges a nested fullscreen client. Verify with tests and goldens; the person drives the TUI.
@@ -81,13 +83,17 @@ the person says go → [IMPROVEMENT], retitled, built and committed.
 
 Choose checks from the behaviour and dependencies changed, and say what each proves.
 
-- Iterate with the smallest relevant test. A Rust change finishes with `cargo ut` plus the
-  `<area>_e2e` binaries the diff can reach. Docs-only changes need link and diff review;
-  Python or web changes need their own checks, not a Rust workspace run.
+- Iterate with the smallest relevant test (`cargo test -p <crate> --lib <filter>`). A Rust
+  change finishes with `cargo ut` plus the `<area>_e2e` binaries the diff can reach. A
+  docs-only change runs no cargo, rebase included: link and diff review. Python or web changes
+  need their own checks, not a Rust workspace run.
 - Run the full workspace suite once, at the end, when the diff changes the daemon's shared
   lifecycle, the wire (`core/src/command.rs`, `core/src/mcp.rs`), a state file's schema,
   authorization, the tmux backend or the e2e harness. A TUI-, docs- or `ci/`-only diff never
   needs it. Release verification is the complete suite on both Claude transport roads.
+- A full suite run carries `--no-fail-fast`, so one red does not cost a second run. Clippy on
+  all targets is the release gate's; a ticket does not owe it. A command expected to take over
+  2 minutes starts in the background.
 - Once the necessary checks pass, finish. Repeat only for changed inputs, a failure or a stated
   hypothesis. A flaky failure is not proof of a defect and a green retry is not proof of its
   repair; name every rerun. Report unrelated failures separately.
@@ -106,11 +112,11 @@ and disk checks. Checks run once by default; `--both-roads` adds the mod pass to
 workspace suite and is required for a release stamp. `MESIMON_TEST_ROAD=mod` targets one road.
 
 ```sh
-cargo ut                                              # every unit test, ~1 s: the inner loop
-cargo test -p mesimon-core attention                  # one module
+cargo ut                                              # every unit test: ~20 s to run, after the build
+cargo test -p mesimon-core --lib attention            # the inner loop: one crate, one filter
 python3 -B ci/test-run.py -- cargo test -p mesimon --test hook_e2e   # one e2e; skips without tmux
-python3 -B ci/test-run.py -- cargo nextest run --workspace           # everything, e2es in parallel
-cargo clippy --workspace --all-targets -- -D warnings # the release gate's clippy
+python3 -B ci/test-run.py -- cargo nextest run --workspace --no-fail-fast # everything, e2es in parallel
+cargo clippy --workspace --all-targets -- -D warnings # the release gate's, not a ticket's
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change
 python3 -B ci/rig.py --only R3                        # Claude rig, in a ticket worktree
 python3 -B ci/rig.py --provider codex --live --only delegate --model <model> --effort <effort>
