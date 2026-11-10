@@ -970,7 +970,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         };
         let shin = shin_act
             .and_then(|(anim, key)| {
-                rail_shin(app, rail, (body_y + body_h).saturating_sub(1), anim, key)
+                let crown = app.shin_crown(ticket_id);
+                rail_shin(app, rail, (body_y + body_h).saturating_sub(1), anim, key, crown)
             })
             .filter(|(_, _, y)| rail.y + rail_used + 2 <= *y);
         let zone = Rect { x: area.x + 1, y: body_y, width: left_w, height: content_h };
@@ -1753,7 +1754,8 @@ fn quiet_session(
     // The rail's shin, where it stands (T-1143), is that creature: the zone
     // draws no second one.
     let mut lines = if rec.kind.is_agent() && !shin_on_rail {
-        creature_rows(app, area, block_w, text.len(), agent_anim(rec, peek), rec.id)
+        let crown = app.shin_crown(rec.ticket);
+        creature_rows(app, area, block_w, text.len(), agent_anim(rec, peek), rec.id, crown)
     } else {
         vec![Line::default()]
     };
@@ -2151,11 +2153,12 @@ fn creature_rows(
     text_h: usize,
     anim: Anim,
     subject: impl std::hash::Hash,
+    crown: creature::Crown,
 ) -> Vec<Line<'static>> {
     let blank = vec![Line::default()];
     let ms = app.creature_ms(crate::text::hash64((subject, anim)));
     let blink = app.shin_blinking();
-    let Some(stage) = creature::stage_for(Size::Medium, anim, ms, blink, &app.theme) else {
+    let Some(stage) = creature::stage_for(Size::Medium, anim, ms, blink, crown, &app.theme) else {
         let word = "mesimon";
         if !anim.unspoken()
             || (area.height as usize) < 2 + 1 + 1 + text_h
@@ -2191,15 +2194,17 @@ fn creature_rows(
 /// the cursor, the pane or the conversation does. `None` in mono, for a
 /// shell, and on a page too short to keep the rail's heading and a row
 /// over it. It replaced the companion in the zone's corner (T-451).
+/// `crown`: the crowned ticket's shin wears it on its stems (T-1186).
 fn rail_shin(
     app: &App,
     rail: Rect,
     floor: u16,
     anim: Anim,
     key: u64,
+    crown: creature::Crown,
 ) -> Option<(creature::Stage, u16, u16)> {
     let ms = app.creature_ms(crate::text::hash64((key, anim)));
-    let stage = creature::stage_for(Size::Small, anim, ms, app.shin_blinking(), &app.theme)?;
+    let stage = creature::stage_for(Size::Small, anim, ms, app.shin_blinking(), crown, &app.theme)?;
     let y = floor.checked_sub(stage.rows)?;
     // A letter stage is wider by its margin and drawn that much left, so
     // the body stands where the shin's does.

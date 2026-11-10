@@ -42974,3 +42974,41 @@ Tests: `the_step_after_the_last_tint_is_no_colour`, `a_colorless_tag_takes_no_bl
 `tab_reaches_no_colour_after_the_last_tint`, `a_colorless_tag_chip_reads_like_a_tinted_one`,
 `test_a_colorless_tag_takes_no_block_and_keeps_its_name` (a real render: stripe, chip, swatch).
 No golden changed: no fixture wears a colorless tag.
+
+## The crowned ticket's shin wears crown blue on its stems (T-1186, 2026-11-10, "mascot with crown on ticket page with a crown agent" ∙ "let's see what you come up with"; then "the first one, color the top of the mascot")
+
+**Proposal first.** A simulation (artifact `4TZ6zkKanmH1y3je9xUW8v`, the engine ported to the page)
+offered three crowns: a pixel crown on the middle stem, the stems' top in the crown's tint, and the
+`♛` glyph over the head; and whether it plays along. The person took the stems. The second question
+went unanswered and took the recommendation, as fits the stems: no slip while parked or failed,
+which only a hat could do.
+
+**Built.** `creature::Crown` (`Off`, `On`, `Coming(ms)`, `Going(ms)`, `Acting(ms)`) is one more
+argument to `stage_for`; `Crown::gild` turns it into rows tinted from the top
+(`Size::crown_rows`: small 2 of its 3 arm rows, medium 3 of 5), a flash and a cheer.
+`compose_crowned` recolours the lit body there (`Hi`→`CrownHi`, `Body`→`Crown`, `Shade`/`Deep`→
+`CrownDeep`) after `light` and before the props and the scene, so the monitoring light still lights
+over it and the laptop and cloud keep their inks. Coming fills a row per `CROWN_STEP_MS` (200, two
+redraw steps), then the shin cheers (happy eyes and a grin where its eyes are open, `✦` either
+side of the head in the crown's lit ink) until the crowning's own `CROWN_FLASH_MS` ends; Going
+drains back up within `CROWN_OFF_MS`; Acting flashes twice within `CROWN_ACT_MS`.
+`App::shin_crown(ticket)` picks it: the holder's `crowning_ms`, else the newest strike from the
+holder to another ticket (the bolt that leaves the shin, T-1162), else `On`; a ticket the crown
+just left drains (`uncrowned_at`, set in `absorb_crown_touches` beside `crowned_at`, and on the fast
+frames through `animating`). Both page shins pass it (the rail's and the zone's on a short page).
+
+**Inks.** `CreatureInk::crown: Option<CrownInk>` (`lit`, `tint`, `shade`, `flash`): the tint is
+`crown_text`'s ring 5, never gold (gold sits by needs-you's amber); `None` below the tinted
+profiles (`tints()`), where the stems stay as they were rather than turn a grey that reads as
+shadow. The flash is the far end of the ramp on a dark ground and the tinted ink on a light one,
+where the ground's own colour would erase the stems. Exited sinks the crown with the body.
+
+**Not crowned:** the ש letter on a ticket with no agent (it has no stems of its own to tint);
+Mesophon's shin; the notification icons. **Tests:** `creature`
+`the_crown_tints_the_stems_top_and_nothing_else` (every size, anim and frame),
+`the_crown_fills_down_drains_up_and_flashes`,
+`the_crown_is_the_crown_s_tint_and_only_where_tags_are_painted` (flash off the ground on every
+flavor); `ui` `the_crowned_ticket_s_shin_wears_the_crown`. No golden moved.
+**Refuted:** the pixel crown (A) needed a second row above the stage and moved the '?' and stars;
+the glyph (C) read as pasted on. **Owed:** a CHANGELOG line at the next bump — **Added:** the
+crowned ticket's mascot wears the crown's blue on its top.

@@ -1877,6 +1877,9 @@ pub struct App {
     /// The crown's last change of hands, for the crowning flash: which
     /// ticket, and when this board saw it.
     pub crowned_at: Option<(ulid::Ulid, u64)>,
+    /// The ticket the crown last came off, and when this board saw it: the
+    /// crown drains off its shin (T-1186).
+    pub uncrowned_at: Option<(ulid::Ulid, u64)>,
     /// The crown's touches as this board animates them (T-544): one per
     /// touch first seen fresh, timed from when it was seen, dropped once
     /// its card's beat is over. Kept whatever `crown_lightning` says, so a
@@ -2674,6 +2677,7 @@ impl App {
             now: mesimon_core::clock::now_ms,
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
+            uncrowned_at: None,
             strikes: Vec::new(),
             glides: Vec::new(),
             unseen_moves: std::collections::HashMap::new(),
@@ -3060,6 +3064,7 @@ impl App {
             || self.layout_flashing()
             || self.status_flashing()
             || self.board.crown.is_some_and(|id| self.crowning_ms(id).is_some())
+            || self.uncrowned_at.is_some_and(|(id, _)| self.uncrowning_ms(id).is_some())
             || self.striking()
             || self.link_striking()
             || self.gliding()
@@ -3449,6 +3454,35 @@ impl App {
         let (t, at) = self.crowned_at?;
         let elapsed = (self.now)().saturating_sub(at);
         (t == id && elapsed < crate::theme::CROWN_FLASH_MS).then_some(elapsed)
+    }
+
+    /// How long ago the crown came off `id`, while it still drains off the
+    /// shin (T-1186).
+    pub(crate) fn uncrowning_ms(&self, id: ulid::Ulid) -> Option<u64> {
+        let (t, at) = self.uncrowned_at?;
+        let elapsed = (self.now)().saturating_sub(at);
+        (t == id && elapsed < crate::creature::CROWN_OFF_MS).then_some(elapsed)
+    }
+
+    /// The crown on `ticket`'s shin (T-1186): worn by the holder's, filling
+    /// in through the crowning, flashing as the crown's lightning leaves it
+    /// for another ticket, and draining off the ticket it just left.
+    pub(crate) fn shin_crown(&self, ticket: ulid::Ulid) -> crate::creature::Crown {
+        use crate::creature::{Crown, CROWN_ACT_MS};
+        if !self.board.is_crowned(ticket) {
+            return self.uncrowning_ms(ticket).map_or(Crown::Off, Crown::Going);
+        }
+        if let Some(ms) = self.crowning_ms(ticket) {
+            return Crown::Coming(ms);
+        }
+        let now = mesimon_core::clock::now_ms();
+        self.strikes
+            .iter()
+            .filter(|s| s.from == Some(ticket) && s.target != ticket)
+            .map(|s| now.saturating_sub(s.seen))
+            .filter(|&ms| ms < CROWN_ACT_MS)
+            .min()
+            .map_or(Crown::On, Crown::Acting)
     }
 
     /// A chord refused to act on `ticket`: shake it (T-423). The status line
@@ -7851,7 +7885,9 @@ impl App {
         self.burnt.retain(|c| strikes.iter().any(|s| s.target == c.id));
         self.crown_touches = touches;
         if self.board.crown != crown_was {
-            self.crowned_at = self.board.crown.map(|id| (id, mesimon_core::clock::now_ms()));
+            let now = mesimon_core::clock::now_ms();
+            self.crowned_at = self.board.crown.map(|id| (id, now));
+            self.uncrowned_at = crown_was.map(|id| (id, now));
         }
     }
 

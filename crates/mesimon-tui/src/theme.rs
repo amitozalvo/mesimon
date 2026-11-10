@@ -1312,6 +1312,19 @@ pub(crate) struct CreatureInk {
     pub screen: Color,
     pub code: Color,
     pub add: Color,
+    /// The crown on the stems (T-1186), or `None` where the theme does not
+    /// paint tags and the stems stay as they are.
+    pub crown: Option<CrownInk>,
+}
+
+/// The crown's inks on the shin's stems (T-1186): its tint lit, plain and
+/// shaded as the body is, and the flash it gives as its lightning leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CrownInk {
+    pub lit: Color,
+    pub tint: Color,
+    pub shade: Color,
+    pub flash: Color,
 }
 
 /// How many tag tints exist. A tag's index is `stable_hash(name) % PIPS`, so
@@ -1840,6 +1853,21 @@ impl Theme {
             Profile::Ansi256 => (r.dim3, Color::Indexed(16), r.dim1),
             _ => (i8, i0, i7),
         };
+        // The crown's tint (`crown_text`'s), lit toward the ground's far end
+        // the way the body's top edge is, shaded toward its near end; its
+        // flash is the far end itself on a dark ground, and the ink, tinted,
+        // on a light one, where the ground would erase the stems.
+        let crown = self.tints().map(|_| {
+            let tint = self.pip(5);
+            let ground = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
+            if light {
+                let (lit, shade) = (mix(tint, ground, 0.62), mix(tint, r.base, 0.7));
+                CrownInk { lit, tint, shade, flash: mix(tint, r.base, 0.35) }
+            } else {
+                let (lit, shade) = (mix(tint, r.base, 0.7), mix(tint, ground, 0.7));
+                CrownInk { lit, tint, shade, flash: self.sel.base }
+            }
+        });
         let mut ink = CreatureInk {
             hi,
             body,
@@ -1857,6 +1885,7 @@ impl Theme {
             screen,
             code,
             add: self.calm,
+            crown,
         };
         if faded {
             let sink = |c: Color| match self.bg {
@@ -1869,6 +1898,12 @@ impl Theme {
             ink.deep = sink(ink.deep);
             ink.glint = sink(ink.glint);
             ink.blush = ink.body;
+            ink.crown = ink.crown.map(|c| CrownInk {
+                lit: sink(c.lit),
+                tint: sink(c.tint),
+                shade: sink(c.shade),
+                flash: sink(c.flash),
+            });
             if light {
                 ink.eye = sink(ink.eye);
             }

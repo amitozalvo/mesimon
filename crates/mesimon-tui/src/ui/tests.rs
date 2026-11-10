@@ -16119,10 +16119,11 @@ fn the_launch_list_follows_the_binding_and_the_record() {
 /// is made, and waking from the letter into the shin as the agent starts.
 #[test]
 fn the_letter_stirs_and_wakes_into_the_shin() {
-    use crate::creature::{stage_for, Anim, Size};
+    use crate::creature::{stage_for, Anim, Crown, Size};
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let lines = |anim: Anim, ms: u64| {
-        let st = stage_for(Size::Small, anim, ms, false, &theme).expect("truecolor draws it");
+        let st = stage_for(Size::Small, anim, ms, false, Crown::Off, &theme)
+            .expect("truecolor draws it");
         (0..st.rows).map(|r| format!("{}", st.line(r, 0))).collect::<Vec<_>>()
     };
     let letter = lines(Anim::Letter, 0);
@@ -16141,6 +16142,7 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
         Anim::Letter,
         0,
         false,
+        Crown::Off,
         &Theme::new(Flavor::Graphite, Profile::Mono)
     )
     .is_none());
@@ -16181,6 +16183,73 @@ fn a_click_on_the_shin_blinks_it_and_its_clock_runs_on() {
     app.shin_blink = Some(Instant::now() - Duration::from_millis(250));
     assert!(!app.shin_blinking());
     assert_eq!(frame(&app).0, open, "and open again past the blink");
+    std::fs::remove_file(&path).ok();
+}
+
+/// The crowned ticket's shin wears the crown (T-1186): on the holder's
+/// page its stems' top is in the crown's tint and the rest of the shin is
+/// as it was; it fills in through the crowning, flashes as the crown's
+/// lightning leaves for another ticket, and drains off the ticket it left.
+/// No other page's shin wears it.
+#[test]
+fn the_crowned_ticket_s_shin_wears_the_crown() {
+    use crate::creature::{Crown, CROWN_ACT_MS, CROWN_OFF_MS};
+    let (mut app, path) = app_live("tshin-crown", false);
+    let (t3, t1) = (ulid_n(3), ulid_n(1));
+    let shin = |app: &App| {
+        app.creature_clock.set(None);
+        let buf = cells(app, 120, 30);
+        let rect = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin on the rail");
+        let px: Vec<_> = (rect.y..rect.bottom())
+            .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
+            .map(|(x, y)| (buf[(x, y)].fg, buf[(x, y)].bg))
+            .collect();
+        (rect, px)
+    };
+    let (rect, bare) = shin(&app);
+    assert_eq!(app.shin_crown(t3), Crown::Off);
+    app.board_mut().crown = Some(t3);
+    assert_eq!(app.shin_crown(t3), Crown::On, "worn by the holder");
+    assert_eq!(app.shin_crown(t1), Crown::Off, "and by no other ticket's shin");
+    let (worn_rect, worn) = shin(&app);
+    assert_eq!(worn_rect, rect, "the shin stands where it stood");
+    let ink = app.theme.creature_ink(false).and_then(|i| i.crown).expect("tinted");
+    let (lit, tint, shade) = (ink.lit, ink.tint, ink.shade);
+    let tinted = |(fg, bg): (Color, Color)| [fg, bg].iter().any(|c| [lit, tint, shade].contains(c));
+    let changed: Vec<usize> = (0..bare.len()).filter(|&i| bare[i] != worn[i]).collect();
+    assert!(!changed.is_empty(), "the crown is drawn");
+    // Only the stems' top: the shin's rows over the body (its props row,
+    // then the two crowned pixel rows in one cell row).
+    for &i in &changed {
+        let row = i as u16 / rect.width;
+        assert!(row <= 1, "cell {i} on row {row} changed, below the stems' top");
+    }
+    assert!(changed.iter().any(|&i| tinted(worn[i])), "in the crown's inks");
+
+    let now = mesimon_core::clock::now_ms();
+    app.crowned_at = Some((t3, now));
+    assert!(matches!(app.shin_crown(t3), Crown::Coming(_)), "the crowning fills it");
+    app.crowned_at = Some((t3, now - 5_000));
+    assert_eq!(app.shin_crown(t3), Crown::On);
+    let touch = mesimon_core::command::CrownTouch {
+        ticket: t1,
+        action: "moved".into(),
+        at_ms: now,
+        from: Some(t3),
+    };
+    app.strikes.push(crate::strike::Strike::new(&touch, now, None));
+    assert!(matches!(app.shin_crown(t3), Crown::Acting(_)), "its lightning flashes it");
+    app.strikes[0].seen = now - CROWN_ACT_MS;
+    assert_eq!(app.shin_crown(t3), Crown::On, "then it is worn again");
+    app.strikes.clear(); // its bolt from the shin is the lightning's, not the crown's
+
+    app.board_mut().crown = None;
+    app.uncrowned_at = Some((t3, now));
+    assert!(matches!(app.shin_crown(t3), Crown::Going(_)), "it drains off the ticket it left");
+    assert!(app.animating(), "on the fast frames");
+    app.uncrowned_at = Some((t3, now - CROWN_OFF_MS));
+    assert_eq!(app.shin_crown(t3), Crown::Off);
+    assert_eq!(shin(&app).1, bare, "and the shin is as it was");
     std::fs::remove_file(&path).ok();
 }
 

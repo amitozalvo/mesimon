@@ -180,6 +180,7 @@ fn frames(flavor: Flavor, colored: bool, w: u16, h: u16) -> Vec<(String, u64, Bu
                 crate::creature::Anim::Seat,
                 ms,
                 false,
+                crate::creature::Crown::Off,
                 &app.theme,
             )
             .unwrap();

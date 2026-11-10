@@ -39,6 +39,75 @@ impl Size {
             Size::Large => 3,
         }
     }
+
+    /// How many of the stems' top rows the crown tints (T-1186): two of the
+    /// small one's three, three of the medium's five, as a crown sits on a
+    /// head and leaves the neck.
+    fn crown_rows(self) -> i16 {
+        match self {
+            Size::Small => 2,
+            Size::Medium => 3,
+            Size::Large => 4,
+        }
+    }
+}
+
+// -- the crown ------------------------------------------------------------------
+
+/// One row's step as the crown fills the stems or drains off them, and one
+/// beat of its flash (T-1186): two steps of the redraw clock.
+pub(crate) const CROWN_STEP_MS: u64 = 200;
+/// How long the crown takes to drain off every row it can tint: the
+/// longest `Crown::Going` a shin draws.
+pub(crate) const CROWN_OFF_MS: u64 = CROWN_STEP_MS * 4;
+/// How long the crown flashes when its agent acts on another ticket.
+pub(crate) const CROWN_ACT_MS: u64 = CROWN_STEP_MS * 3;
+
+/// The crown on the shin (T-1186): while its ticket wears the crown, the
+/// top of its stems is in the crown's tint. It fills in from the top as the
+/// crown comes on, with a smile and a sparkle; drains back up as it comes
+/// off; and flashes as the crown's lightning leaves the shin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Crown {
+    #[default]
+    Off,
+    On,
+    /// Crowned `ms` ago.
+    Coming(u64),
+    /// Uncrowned `ms` ago.
+    Going(u64),
+    /// The crown acted on another ticket `ms` ago.
+    Acting(u64),
+}
+
+/// What a crown does to one frame: rows tinted from the top, whether they
+/// flash, whether the shin cheers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Gild {
+    rows: i16,
+    flash: bool,
+    cheer: bool,
+}
+
+impl Crown {
+    fn gild(self, size: Size) -> Gild {
+        let full = size.crown_rows();
+        let step = |ms: u64| i16::try_from(ms / CROWN_STEP_MS).unwrap_or(i16::MAX);
+        match self {
+            Crown::Off => Gild::default(),
+            Crown::On => Gild { rows: full, ..Gild::default() },
+            Crown::Coming(ms) => {
+                let rows = (step(ms) + 1).min(full);
+                Gild { rows, cheer: step(ms) >= full, ..Gild::default() }
+            }
+            Crown::Going(ms) => Gild { rows: (full - 1 - step(ms)).max(0), ..Gild::default() },
+            Crown::Acting(ms) => Gild {
+                rows: full,
+                flash: ms < CROWN_ACT_MS && step(ms) % 2 == 0,
+                ..Gild::default()
+            },
+        }
+    }
 }
 
 // -- the body -----------------------------------------------------------------
@@ -746,9 +815,21 @@ pub(crate) enum Role {
     Screen,
     Code,
     Add,
+    /// The crown's tint on the stems (T-1186), lit as the body is: the
+    /// lit edge, the face, the shaded edge.
+    CrownHi,
+    Crown,
+    CrownDeep,
+    /// Every stem pixel in the crown, as its lightning leaves the shin.
+    CrownFlash,
 }
 
 impl Role {
+    /// The body's own four values, which `light` gives a solid pixel.
+    fn lit_body(self) -> bool {
+        matches!(self, Role::Hi | Role::Body | Role::Shade | Role::Deep)
+    }
+
     pub(crate) fn ink(self, ink: &CreatureInk) -> Color {
         match self {
             Role::Hi => ink.hi,
@@ -767,6 +848,10 @@ impl Role {
             Role::Screen => ink.screen,
             Role::Code => ink.code,
             Role::Add => ink.add,
+            Role::CrownHi => ink.crown.map_or(ink.hi, |c| c.lit),
+            Role::Crown => ink.crown.map_or(ink.body, |c| c.tint),
+            Role::CrownDeep => ink.crown.map_or(ink.shade, |c| c.shade),
+            Role::CrownFlash => ink.crown.map_or(ink.glint, |c| c.flash),
         }
     }
 }
@@ -866,6 +951,13 @@ fn shift(
 /// One frame, composed `pad` pixels wider than the body so a scene fits
 /// beside it (`anim_pad`: every frame of an animation gets its widest).
 pub(crate) fn compose(size: Size, fr: &Frame, pad: i16) -> Picture {
+    compose_crowned(size, fr, pad, Gild::default())
+}
+
+/// `compose` with the crown's tint over the stems' top `gild.rows` rows
+/// (T-1186), before the props and the scene: the status light still lights
+/// over it, and a cloud or a laptop beside the shin keeps its own inks.
+fn compose_crowned(size: Size, fr: &Frame, pad: i16, gild: Gild) -> Picture {
     let b = Body::get(size);
     let (bw, h) = (b.w, b.h);
     let w = bw + pad;
@@ -919,6 +1011,15 @@ pub(crate) fn compose(size: Size, fr: &Frame, pad: i16) -> Picture {
     }
 
     let mut px = light(&grid, w, h, b.top);
+    for cell in px.iter_mut().take((gild.rows.min(b.top) * w) as usize) {
+        *cell = match *cell {
+            Some(r) if gild.flash && r.lit_body() => Some(Role::CrownFlash),
+            Some(Role::Hi) => Some(Role::CrownHi),
+            Some(Role::Body) => Some(Role::Crown),
+            Some(Role::Shade | Role::Deep) => Some(Role::CrownDeep),
+            other => other,
+        };
+    }
 
     let mut marks = Vec::new();
     let mut mark = |(col, row): (i16, i16), ch: char, role: Role| {
@@ -952,6 +1053,11 @@ pub(crate) fn compose(size: Size, fr: &Frame, pad: i16) -> Picture {
                 }
             }
         }
+    }
+    // The crown landing: a sparkle either side of its head, in its tint.
+    if gild.cheer {
+        mark((-1, -1), '✦', Role::CrownHi);
+        mark((bw, -1), '✦', Role::CrownHi);
     }
     // The scene last, over everything: the hand rests in front of the body.
     let mut put = |x: i16, y: i16, role: Role| {
@@ -1181,12 +1287,15 @@ pub(crate) struct Stage {
 /// stage, so a reply beside it wraps once per state, not once per frame.
 /// `blink`: a click's blink (T-1177) shuts the frame's eyes where they are
 /// open, and nothing else of the frame or its clock changes; the letter has
-/// no face to blink.
+/// no face to blink. `crown`: the crown on the stems (T-1186), in the
+/// crown's tint where the theme paints tags and nowhere else; the letter
+/// wears none.
 pub(crate) fn stage_for(
     size: Size,
     anim: Anim,
     ms: u64,
     blink: bool,
+    crown: Crown,
     theme: &Theme,
 ) -> Option<Stage> {
     // The ש (T-1156): the intro's letter or its morph, on the body's own
@@ -1206,11 +1315,19 @@ pub(crate) fn stage_for(
     // The waking shin's poses start where its morph ends.
     let ms = if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
     let mut frame = *frame_at(size, anim, ms);
+    let ink = theme.creature_ink(frame.faded)?;
+    let gild = if ink.crown.is_some() { crown.gild(size) } else { Gild::default() };
+    // The crown landing: open eyes turn happy and the mouth grins; a shin
+    // asleep, shut or failed keeps its face.
+    if gild.cheer && frame.eyes.shut_by_a_click() {
+        frame.eyes = Eyes::Happy;
+        frame.mouth = Mouth::Grin;
+    }
     if blink && frame.eyes.shut_by_a_click() {
         frame.eyes = Eyes::Blink;
     }
-    let ink = theme.creature_ink(frame.faded)?;
-    let mut st = stage(&compose(size, &frame, anim_pad(size, anim)), &ink, theme.block_gaps);
+    let pic = compose_crowned(size, &frame, anim_pad(size, anim), gild);
+    let mut st = stage(&pic, &ink, theme.block_gaps);
     st.body = Body::get(size).w as u16;
     Some(st)
 }
@@ -1401,6 +1518,112 @@ mod tests {
         intro.iter().chain(cycle).collect()
     }
 
+    /// The crown (T-1186): worn, the stems' top rows take the crown's inks,
+    /// lit as the body is, and nothing else of any frame changes: the face,
+    /// the props, a scene beside the shin and every row under the crown.
+    #[test]
+    fn the_crown_tints_the_stems_top_and_nothing_else() {
+        for size in SIZES {
+            let (b, rows) = (Body::get(size), size.crown_rows());
+            for anim in Anim::ALL {
+                let pad = anim_pad(size, anim);
+                for fr in frames(size, anim) {
+                    let off = compose(size, fr, pad);
+                    let on = compose_crowned(size, fr, pad, Crown::On.gild(size));
+                    let mut tinted = 0;
+                    for (i, (was, is)) in off.px.iter().zip(&on.px).enumerate() {
+                        let (x, y) = (i as i16 % on.w, i as i16 / on.w);
+                        if was != is {
+                            assert!(y < rows, "{size:?} {anim:?}: ({x},{y}) under the crown");
+                            let want = match was {
+                                Some(Role::Hi) => Role::CrownHi,
+                                Some(Role::Body) => Role::Crown,
+                                _ => Role::CrownDeep,
+                            };
+                            assert_eq!(*is, Some(want), "{size:?} {anim:?}: ({x},{y})");
+                            tinted += 1;
+                        }
+                        // Every stem pixel up there wears it; a scene's own
+                        // pixels stand right of the arms' furthest lean.
+                        if y < rows && x < b.w + 2 {
+                            assert!(!is.is_some_and(Role::lit_body), "{size:?} {anim:?} ({x},{y})");
+                        }
+                    }
+                    assert!(tinted > 0, "{size:?} {anim:?}: no crown");
+                    let marks = |p: &Picture| {
+                        p.marks.iter().map(|m| (m.col, m.row, m.ch)).collect::<Vec<_>>()
+                    };
+                    assert_eq!(marks(&off), marks(&on), "{size:?} {anim:?}: the props moved");
+                }
+            }
+        }
+    }
+
+    /// The crown's beats (T-1186): it fills the stems from the top and the
+    /// shin cheers once it is whole; it drains back up off them before
+    /// `CROWN_OFF_MS`; it flashes on the redraw clock's steps and settles
+    /// worn by `CROWN_ACT_MS`.
+    #[test]
+    fn the_crown_fills_down_drains_up_and_flashes() {
+        for size in SIZES {
+            let full = size.crown_rows();
+            assert_eq!(Crown::Off.gild(size), Gild::default());
+            assert_eq!(Crown::On.gild(size), Gild { rows: full, ..Gild::default() });
+            let coming: Vec<Gild> =
+                (0..2_000).step_by(100).map(|ms| Crown::Coming(ms).gild(size)).collect();
+            assert_eq!(coming[0].rows, 1, "{size:?}: the top row first");
+            assert!(coming.windows(2).all(|w| w[0].rows <= w[1].rows), "{size:?}: it fills");
+            assert!(
+                coming.iter().all(|g| !g.cheer || g.rows == full),
+                "{size:?}: cheer when whole"
+            );
+            assert!(coming.iter().any(|g| g.cheer), "{size:?}: and it cheers");
+            let going: Vec<i16> =
+                (0..CROWN_OFF_MS).step_by(100).map(|ms| Crown::Going(ms).gild(size).rows).collect();
+            assert!(going[0] < full, "{size:?}: it leaves at once");
+            assert!(going.windows(2).all(|w| w[0] >= w[1]), "{size:?}: it drains");
+            assert_eq!(going.last(), Some(&0), "{size:?}: off before CROWN_OFF_MS");
+            let flash = |ms| Crown::Acting(ms).gild(size);
+            assert!(flash(0).flash && !flash(CROWN_STEP_MS).flash, "{size:?}: it flashes");
+            assert!(flash(2 * CROWN_STEP_MS).flash, "{size:?}: twice");
+            assert_eq!(flash(CROWN_ACT_MS), Crown::On.gild(size), "{size:?}: then is worn");
+        }
+    }
+
+    /// The crown in a theme (T-1186): the crown's own tint where the theme
+    /// paints tags, nothing where it does not, and none on the letter.
+    #[test]
+    fn the_crown_is_the_crown_s_tint_and_only_where_tags_are_painted() {
+        let cells = |theme: &Theme, anim, crown| {
+            stage_for(Size::Small, anim, 0, false, crown, theme).map(|s| s.cells)
+        };
+        let tc = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let ink = tc.creature_ink(false).and_then(|i| i.crown).expect("tinted");
+        let (lit, tint, shade) = (ink.lit, ink.tint, ink.shade);
+        assert_eq!(tc.crown_text().fg, Some(tint), "the crown's own tint");
+        let worn = cells(&tc, Anim::Idle, Crown::On).expect("truecolor draws it");
+        assert_ne!(Some(&worn), cells(&tc, Anim::Idle, Crown::Off).as_ref());
+        let crowned = |c: Option<Color>| c.is_some_and(|c| [lit, tint, shade].contains(&c));
+        assert!(
+            worn.iter().flatten().any(|(_, st)| crowned(st.fg) || crowned(st.bg)),
+            "the crown's inks on the stems"
+        );
+        let landing = stage_for(Size::Small, Anim::Idle, 1_000, false, Crown::Coming(1_000), &tc)
+            .expect("drawn");
+        assert!(landing.cells.iter().flatten().any(|(ch, _)| *ch == '✦'), "a sparkle as it lands");
+        // The flash stands off the ground on every flavor: a light ground's
+        // own colour would erase the stems instead of lighting them.
+        for flavor in Flavor::ALL {
+            let theme = Theme::new(flavor, Profile::TrueColor);
+            let Some(c) = theme.creature_ink(false).and_then(|i| i.crown) else { continue };
+            assert_ne!(theme.bg, Some(c.flash), "{flavor:?}: the flash is the ground");
+            assert_ne!(c.flash, c.lit, "{flavor:?}: the flash is the crown's lit edge");
+        }
+        let plain = Theme::new(Flavor::Graphite, Profile::Ansi256);
+        assert_eq!(cells(&plain, Anim::Idle, Crown::On), cells(&plain, Anim::Idle, Crown::Off));
+        assert_eq!(cells(&tc, Anim::Letter, Crown::On), cells(&tc, Anim::Letter, Crown::Off));
+    }
+
     /// A click's blink (T-1177): every frame whose eyes are open draws them
     /// shut and changes nothing else; a frame with its eyes already shut,
     /// happy or X'd, and the letter, draws as it always does.
@@ -1413,7 +1636,9 @@ mod tests {
                 let span: u64 = intro.iter().chain(cycle).map(|f| u64::from(f.ms)).sum::<u64>()
                     + if anim == Anim::Waking { beats_ms(MORPH) } else { 0 };
                 for ms in (0..span).step_by(100) {
-                    let cells = |blink| stage_for(size, anim, ms, blink, &theme).map(|s| s.cells);
+                    let cells = |blink| {
+                        stage_for(size, anim, ms, blink, Crown::Off, &theme).map(|s| s.cells)
+                    };
                     let (open, blinked) = (cells(false), cells(true));
                     let pose_ms =
                         if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
