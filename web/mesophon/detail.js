@@ -309,9 +309,10 @@ function TicketLine({ store, ticket }) {
   const add = tags && !ticket.tags?.length;
   const chooses = choosesWorkspace(store, ticket);
   const archives = store.canEdit("archive");
+  const crowns = store.canEdit("crown");
   const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
-  if (!moves && !tags && !chooses && !archives) return html`<div class="chips">${chips}</div>`;
-  const verbs = [moves && "move", tags && "tag", archives && "archive"].filter(Boolean);
+  if (!moves && !tags && !chooses && !archives && !crowns) return html`<div class="chips">${chips}</div>`;
+  const verbs = [moves && "move", tags && "tag", crowns && "crown", archives && "archive"].filter(Boolean);
   const said = verbs.length > 1 ? `${verbs.slice(0, -1).join(", ")} or ${verbs.at(-1)}` : verbs[0] || "";
   const edits = said && `${said[0].toUpperCase()}${said.slice(1)} this ticket`;
   const hint = !chooses ? edits : edits ? `${edits}, or choose its workspace` : "Choose this ticket’s workspace";

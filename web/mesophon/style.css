@@ -982,12 +982,15 @@ select {
 .settings-forget {
   margin: 0 -10px;
 }
-/* The card sheet's Archive (T-737): a quiet row at the sheet's foot. */
+/* The card sheet's Archive (T-737), Park (T-1090) and crown (T-1182):
+   quiet rows at the sheet's foot. */
+.card-crown,
 .card-archive {
   display: grid;
   gap: 4px;
   margin: 0 -10px;
 }
+.card-crown .field-note,
 .card-archive .field-note {
   padding: 0 10px;
 }

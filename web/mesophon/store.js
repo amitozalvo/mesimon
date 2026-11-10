@@ -754,11 +754,17 @@ export class Store {
         workspace: "Workspace not changed",
         archive: item.restore ? "Not restored" : "Not archived",
         park: "Not parked",
+        crown: item.on ? "Not crowned" : "Crown not taken off",
       }[item.op];
       this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
       this.say(this.editError);
     } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
     else if (reply.result === "edited" && item.op === "park") this.say(`Parked ${item.provider} on ${item.key}`, "two");
+    else if (reply.result === "edited" && item.op === "crown")
+      this.say(item.on ? `${item.key} wears the crown` : `Took the crown off ${item.key}`, "two", {
+        label: "Undo",
+        run: () => (item.was ? this.crownTicket(item.was, true) : this.crownTicket(item.ticket, !item.on)),
+      });
     else if (reply.result === "edited" && item.op === "archive")
       this.say(`${item.restore ? "Restored" : "Archived"} ${item.key}`, "two", item.restore ? undefined : {
         label: "Restore",
@@ -852,6 +858,19 @@ export class Store {
       return;
     this.emit();
   }
+  // The crown (T-1182), the board's `^o`: on this ticket, taking it from
+  // whichever wore it, or off it. The board wears it at once and the sheet
+  // closes, as an archive's does, so the toast's Undo is in reach: it gives
+  // the crown back to the ticket that wore it before, or takes it off. The
+  // host refuses a ticket whose agent the crown started, as the desk does.
+  crownTicket(id, on) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!ticket || !!ticket.crown === on || this.editWaiting(ticket, "crown")) return;
+    const was = on ? this.board.tickets.find((t) => t.crown)?.id : undefined;
+    if (!this.edit(ticket, "crown", { on }, {}, { on, was })) return;
+    if (this.cardSheet === id) this.cardSheet = undefined;
+    this.emit();
+  }
   // Back from the archive (T-737), the archive toast's Restore: the card
   // returns to the column it left when the host's board says so.
   restoreTicket(id, key) {
@@ -863,7 +882,7 @@ export class Store {
   openCardSheet(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
     const workspace = this.canEdit("workspace") && !!ticket?.workspace?.open;
-    const edits = this.canEdit("move") || this.canEdit("tag") || this.canEdit("archive") || this.canEdit("park");
+    const edits = ["move", "tag", "archive", "park", "crown"].some((op) => this.canEdit(op));
     if (!ticket || !(edits || workspace)) return;
     this.cardSheet = id;
     this.editError = "";

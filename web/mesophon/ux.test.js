@@ -299,6 +299,8 @@ function fixture() {
       if (request.op === "archive") this.inArchive.push({ at, ticket: this.tickets.splice(at, 1)[0] });
       if (request.op === "rename") ticket.title = request.title;
       if (request.op === "park") ticket.agent = { ...ticket.agent, state: "sleeping" };
+      if (request.op === "crown")
+        for (const t of this.tickets) t.crown = request.on ? t.id === request.ticket : !!t.crown && t.id !== request.ticket;
       if (request.op === "workspace")
         ticket.workspace = request.worktree
           ? { kind: "worktree", open: true, state: "planned" }
@@ -478,7 +480,7 @@ function fixture() {
               state.begin(request.ticket, id);
             }
           }
-          if (["rename", "move", "tag", "workspace", "archive", "park"].includes(request.op)) {
+          if (["rename", "move", "tag", "workspace", "archive", "park", "crown"].includes(request.op)) {
             state.edits.push(request);
             if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
             else if (state.editDisposition !== "hold") {
@@ -2355,6 +2357,125 @@ async function archiveFlow(browser, engineName, size, viewport) {
     console.log(`${engineName} ${size}: archive held by an awake agent, an idle one parked, archived, restored, refused, and an older host passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-archive-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
+// The crown from a ticket's card sheet (T-1182), the board's `^o`: put on,
+// moved to another ticket with the one it leaves named, given back by the
+// toast's Undo, taken off, refused in the host's words, and an older host
+// offers nothing.
+async function crownFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => window.fixture.features.push("move", "tag", "crown"));
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+    if (size === "desktop" && (await page.locator(".detail-scrim").count()))
+      await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
+  };
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
+  const wearers = () => page.evaluate(() => fixture.tickets.filter((t) => t.crown).map((t) => t.id));
+  const toast = (words) => until(page, (w) => document.querySelector("#toast")?.textContent.includes(w), words);
+  const sheet = page.locator("#card-sheet");
+  const press = page.locator("#card-crown");
+  const open = async (id) => {
+    await overview();
+    await page.locator(`.ticket.card[data-id="${id}"]`).click();
+    await page.locator("#card-line").waitFor();
+    await page.locator("#card-line").click();
+    await sheet.waitFor({ state: "visible" });
+  };
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.locator('button[data-mode="board"]').locator("visible=true").click();
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
+
+    // Nobody wears it: the press puts it on, the sheet closes, the page's
+    // title wears it at once.
+    await open("ticket-3");
+    assert.equal(await page.locator("#card-line-hint").textContent(), "Move, tag or crown this ticket");
+    assert.equal((await press.textContent()).trim(), "Wear the crown");
+    assert.equal(await page.locator(".card-crown .field-note").count(), 0, "nobody wears it to name");
+    if (size === "phone") {
+      const height = await press.evaluate((n) => n.getBoundingClientRect().height);
+      assert(height >= 44, `the crown press is ${height}px`);
+    }
+    await press.click();
+    assert.deepEqual(await lastEdit(), { op: "crown", ticket: "ticket-3", on: true });
+    await sheet.waitFor({ state: "hidden" });
+    await page.locator("#selection.crowned").waitFor();
+    await toast("T-3 wears the crown");
+    assert.deepEqual(await wearers(), ["ticket-3"]);
+
+    // Another ticket: the sheet names the one it leaves, and Undo gives it back.
+    await open("ticket-5");
+    assert.equal((await press.textContent()).trim(), "Wear the crown");
+    assert.equal(await page.locator(".card-crown .field-note").textContent(), "T-3 wears it now. This moves it here.");
+    await shot("crown-sheet");
+    await press.click();
+    assert.deepEqual(await lastEdit(), { op: "crown", ticket: "ticket-5", on: true });
+    await toast("T-5 wears the crown");
+    assert.deepEqual(await wearers(), ["ticket-5"]);
+    await shot("crown-toast");
+    await page.locator("#toast-action").click();
+    assert.deepEqual(await lastEdit(), { op: "crown", ticket: "ticket-3", on: true });
+    await toast("T-3 wears the crown");
+    assert.deepEqual(await wearers(), ["ticket-3"]);
+
+    // On the ticket that wears it, the press takes it off.
+    await open("ticket-3");
+    assert.equal((await press.textContent()).trim(), "Take the crown off");
+    assert.equal(await page.locator(".card-crown .field-note").count(), 0);
+    await press.click();
+    assert.deepEqual(await lastEdit(), { op: "crown", ticket: "ticket-3", on: false });
+    await toast("Took the crown off T-3");
+    assert.deepEqual(await wearers(), []);
+    await until(page, () => !document.querySelector("#selection.crowned"));
+
+    // Refused: the host's words, and the crown it never moved stays off.
+    await page.evaluate(() => {
+      fixture.editDisposition = "rejected";
+      fixture.editRefusal = "its agent was started by the crown — a crown-started ticket cannot be crowned";
+    });
+    await open("ticket-5");
+    await press.click();
+    await toast("Not crowned");
+    assert.equal(await page.locator("#toast").textContent(), "Not crowned: its agent was started by the crown — a crown-started ticket cannot be crowned");
+    await until(page, () => !document.querySelector("#selection.crowned"));
+    assert.deepEqual(await wearers(), []);
+    await page.evaluate(() => {
+      fixture.editDisposition = "edited";
+    });
+
+    // An older host takes no crown: the sheet offers none.
+    await page.evaluate(() => {
+      fixture.features = fixture.features.filter((f) => f !== "crown");
+      fixture.channel().close();
+    });
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await open("ticket-3");
+    assert.equal(await press.count(), 0);
+    assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket");
+    await page.locator("#card-done").click();
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: crown put on, moved, undone, taken off, refused, and an older host passed`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-crown-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4515,6 +4636,7 @@ try {
         await editFlow(browser, engineName, size, viewport);
         await workspaceFlow(browser, engineName, size, viewport);
         await archiveFlow(browser, engineName, size, viewport);
+        await crownFlow(browser, engineName, size, viewport);
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);

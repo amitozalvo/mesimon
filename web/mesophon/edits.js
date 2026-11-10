@@ -1,5 +1,5 @@
 // The card edits this tab sent (T-530): a rename, a move, a tag, a
-// workspace (T-642), an archive (T-737) or an agent's park (T-1090), by command id, until the host
+// workspace (T-642), an archive (T-737), an agent's park (T-1090) or the crown (T-1182), by command id, until the host
 // answers. While one waits the board wears it, so a snapshot the host took
 // before it had the edit cannot put the card back for a moment. The answer,
 // or a dropped connection, ends it, and the next snapshot is the truth.
@@ -42,6 +42,14 @@ export class Edits {
       // to wear until the host's board brings it back.
       if (item.op === "archive") {
         if (!item.restore) worn.splice(at, 1);
+        continue;
+      }
+      // One ticket wears the crown: on this one it leaves every other.
+      if (item.op === "crown") {
+        for (const [i, t] of worn.entries()) {
+          const crown = item.on ? t.id === item.ticket : !!t.crown && t.id !== item.ticket;
+          if (!!t.crown !== crown) worn[i] = { ...t, crown };
+        }
         continue;
       }
       const ticket = { ...worn[at], ...item.patch };

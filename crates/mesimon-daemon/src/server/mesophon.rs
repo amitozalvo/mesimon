@@ -945,6 +945,9 @@ impl Daemon {
                     "archive",
                     // An idle agent parked, the desk's `x` (T-1090).
                     "park",
+                    // The crown put on a ticket or taken off, the desk's
+                    // `^o` (T-1182).
+                    "crown",
                     // Notes read and written from the ticket page (T-532).
                     "notes",
                     // A batch or several-choice question answered whole,
@@ -1191,6 +1194,7 @@ impl Daemon {
                 self.control_archive(&by, &ticket, restore)
             }
             api::Request::Park { ticket, session } => self.control_park(&by, &ticket, &session),
+            api::Request::Crown { ticket, on } => self.control_crown(&by, &ticket, on),
             api::Request::Notes { ticket } => self.control_notes(&by, &ticket),
             api::Request::Note { ticket, note } => self.control_note(&by, &ticket, &note),
             api::Request::WriteNote { ticket, note, text, rev, uploads } => {
@@ -3441,6 +3445,32 @@ impl Daemon {
         self.feed.board(by.actor(), "mesophon_park_agent", ulid::Ulid::from_string(ticket).ok());
         self.persist_and_notify();
         Reply::Edited { ticket: ticket.into() }
+    }
+
+    /// The crown from the owner's phone (T-1182), the desk's `^o`:
+    /// `crown_ticket` as at the desk, so a ticket whose agent the crown
+    /// started, or a board whose columns are barred, refuses in the desk's
+    /// words. Taking it off a ticket that does not wear it writes nothing,
+    /// so a stale page never takes the crown from another ticket.
+    fn control_crown(&mut self, by: &Principal, ticket: &str, on: bool) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let id = match self.control_gate(by, ticket, &Action::CrownTicket) {
+            Ok(id) => id,
+            Err(message) => return reject(&message),
+        };
+        if (self.board.crown == Some(id)) == on {
+            return Reply::Edited { ticket: id.to_string() };
+        }
+        let (answer, rule) = if on {
+            (self.crown_ticket(id), "mesophon_crown_ticket")
+        } else {
+            (self.uncrown(), "mesophon_uncrown")
+        };
+        if let Response::Err { message } = answer {
+            return reject(&message);
+        }
+        self.feed.board(by.actor(), rule, Some(id));
+        Reply::Edited { ticket: id.to_string() }
     }
 
     /// A ticket's workspace as the phone's board reads it (T-642): the TUI
@@ -8894,5 +8924,60 @@ mod board_fit_tests {
         assert_eq!(keys, order, "the board order's head, the tail left out");
         assert_eq!(plan_of(&tickets[0]).map(|(r, _)| r), Some("plan-1"), "the plan rides");
         assert!(ANSWER_MAX_BYTES - bytes < 2 * 1024, "{bytes} bytes: more left out than needed");
+    }
+}
+
+/// T-1182: the phone's `crown` is the desk's `^o`, the owner's alone.
+#[cfg(test)]
+mod crown_tests {
+    use super::*;
+
+    #[test]
+    fn a_phone_crowns_a_ticket_as_the_desk_does() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1182-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let (a, b, c) = (ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3));
+        let worker = super::super::queued_person_push_tests::worker_ticket;
+        d.board.tickets =
+            vec![worker(a, "TODO", "a"), worker(b, "TODO", "b"), worker(c, "TODO", "c")];
+        let phone = Principal::Paired { device: "d".into(), grant: "g".into() };
+        let edited = |reply: Reply, id: ulid::Ulid| {
+            assert!(matches!(&reply, Reply::Edited { ticket } if *ticket == id.to_string()))
+        };
+
+        edited(d.control_crown(&phone, &a.to_string(), true), a);
+        assert_eq!(d.board.crown, Some(a));
+        // A stale page's off on a ticket that no longer wears it is nothing.
+        edited(d.control_crown(&phone, &b.to_string(), false), b);
+        assert_eq!(d.board.crown, Some(a));
+        // One crown per board: crowning b takes it from a.
+        edited(d.control_crown(&phone, &b.to_string(), true), b);
+        assert_eq!(d.board.crown, Some(b));
+
+        // Nobody but the owner crowns, though an agent may edit a ticket.
+        let agent = Principal::Agent { session: d.board.sessions[0].id };
+        let Reply::Rejected { message } = d.control_crown(&agent, &a.to_string(), true) else {
+            panic!("an agent crowned a ticket")
+        };
+        assert!(message.starts_with("denied: only the owner crowns"), "{message}");
+        assert_eq!(d.board.crown, Some(b));
+
+        // The desk's gate: an agent the crown started holds its ticket.
+        d.board.sessions[0].ticket = c;
+        d.board.sessions[0].started_by = Some(b);
+        let Reply::Rejected { message } = d.control_crown(&phone, &c.to_string(), true) else {
+            panic!("a crown-started ticket was crowned")
+        };
+        assert!(message.contains("started by the crown"), "{message}");
+        assert_eq!(d.board.crown, Some(b));
+
+        edited(d.control_crown(&phone, &b.to_string(), false), b);
+        assert_eq!(d.board.crown, None);
+        let Reply::Rejected { message } = d.control_crown(&phone, "nope", true) else {
+            panic!("no ticket was crowned")
+        };
+        assert_eq!(message, "ticket unavailable");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -42799,3 +42799,44 @@ animation on a click (the shin would jump), and routing the blink through `anima
 `creature` `a_click_blinks_open_eyes_and_leaves_the_rest_of_the_frame` (every anim, size and
 100 ms step), `ui` `a_click_on_the_shin_blinks_it_and_its_clock_runs_on` (only shin cells change,
 hover lights nothing, open again past the blink). No golden moved.
+
+## Remote Control puts the crown on a ticket or takes it off (T-1182, 2026-11-10, "crown through remote control")
+
+**Proposal first.** A research pass found the phone already shows who wears the crown and what it
+last did (T-623), and talks to the crowned agent as to any other; only putting the crown on or
+taking it off was missing, `^o` at the desk alone. The proposal page (artifact
+`EikZht48iB4LrBBEUcqd7o`) offered the press and two choices; the person said "go", taking both
+recommendations: **the crown's Mode and its other switches stay at the desk** (they widen what
+agents do unattended, and the phone has no Settings), and **one press with Undo, no confirm**
+(the desk's `^o` is one key, Archive's Restore is the precedent).
+
+**Built.** The card sheet's foot carries **Wear the crown** (Lucide crown) above Park, or **Take
+the crown off** on the holder; with another holder the note says "T-9 wears it now. This moves
+it here." The press closes the sheet, as Archive's does, because the sheet is a modal and the
+toast's Undo under it would be inert; the board wears the move at once (`Edits.wear` moves the
+crown off every other card). The toast says `T-3 wears the crown` or `Took the crown off T-3`,
+with **Undo**: back to the ticket that wore it, or off. A refusal says `Not crowned: <the desk's
+words>`. The card line's screen-reader hint gains "crown".
+
+The wire: op `crown { ticket, on }`, feature `crown`, answered `edited`. The host's
+`control_crown` passes `control_gate` with the new `Action::CrownTicket`, then runs the desk's own
+`crown_ticket` / `uncrown`, so the crown-started refusal and barred columns answer in the desk's
+words. **Off on a ticket that does not wear it writes nothing**, so a stale page never takes the
+crown from another ticket. Feed rules `mesophon_crown_ticket`, `mesophon_uncrown`.
+
+**Authorization.** `CrownTicket` allows `Local` and `Paired` on a ticket and denies everyone else
+on anything, unlike `ParkAgent` and the card edits, which fall back to `Mutate`: an agent's and a
+teammate's `Mutate` on a ticket is allowed, and the README's "Only you can crown a ticket" must
+not become theirs through it. The desk's `Command::CrownTicket` stays `Mutate` for `Local`, and
+the MCP never-tier still holds it from agents. Promise text unchanged: the paired phone is you.
+
+**Refuted.** Showing the crown-started reason on the sheet before a press: the phone does not
+carry `started_by` (T-623 left it unbuilt), so the host's refusal says it after the press.
+
+**Tests.** Core `only_the_owner_crowns_a_ticket` and the op's shape in
+`mesophon::tests`; daemon `crown_tests::a_phone_crowns_a_ticket_as_the_desk_does` (on, a stale
+off ignored, moved, an agent principal denied, the crown-started refusal, off, an unknown ticket);
+the UX suite's `crownFlow` in Chromium and WebKit at every size (on, moved with the holder named,
+Undo, off, refused, an older host offers nothing). **Owed:** a CHANGELOG line at the next bump —
+**Added:** Remote Control puts the crown on a ticket, or takes it off, from the ticket's sheet —
+and the relay's `ship.sh` after it merges, since the hosted relay serves this page.

@@ -236,6 +236,15 @@ pub enum Request {
         ticket: String,
         session: String,
     },
+    /// Put the crown on a ticket, or with `on` false take it off (T-1182):
+    /// the desk's `^o` from a phone. One ticket wears it, so crowning this
+    /// one takes it from whichever wore it; taking it off a ticket that does
+    /// not wear it writes nothing. The desk's gates apply: a ticket whose
+    /// agent the crown started refuses. Answered `edited`.
+    Crown {
+        ticket: String,
+        on: bool,
+    },
     /// A ticket's notes (T-532): every note's row, the description first,
     /// and the description's body, which the ticket page shows.
     Notes {
@@ -1468,7 +1477,15 @@ mod tests {
             panic!("park")
         };
         assert_eq!(session, "0b");
+        let Request::Crown { on, .. } =
+            serde_json::from_str(r#"{"op":"crown","ticket":"01J","on":true}"#).unwrap()
+        else {
+            panic!("crown")
+        };
+        assert!(on);
         for bad in [
+            r#"{"op":"crown","ticket":"01J"}"#,
+            r#"{"op":"crown","on":true}"#,
             r#"{"op":"park","ticket":"01J"}"#,
             r#"{"op":"rename","ticket":"01J"}"#,
             r#"{"op":"move","ticket":"01J"}"#,

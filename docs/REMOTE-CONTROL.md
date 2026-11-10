@@ -146,7 +146,7 @@ tag the board has since lost, it lands in the default column, without that tag. 
 terminal that has never been live with this version keeps no tickets for later, and
 the sheet says so.
 
-## Moving, renaming, tagging, parking and archiving a ticket
+## Moving, renaming, tagging, crowning, parking and archiving a ticket
 
 On a ticket's page, press its **title** to write over it: **Enter** or **Save** sends the
 new title, **Escape** or **Cancel** puts the old one back. Press the **line under the title**
@@ -156,7 +156,14 @@ tag in the same group; pressing a tag the ticket wears takes it off. Each press 
 board as you make it, and **Done** closes the sheet. On a desktop's Board you can also drag
 a card to another column, or to another place in its own.
 
-**Park**, at the foot of the same sheet, parks the ticket's agent as **x** does at your
+**Wear the crown**, at the foot of the same sheet, puts the crown on the ticket as **^o** does
+at your terminal. One ticket wears it, so when another does, the sheet names it and the press
+moves the crown here. On the ticket that wears it, the press reads **Take the crown off**. The
+message that says so has an **Undo** button for a few seconds, which gives the crown back to
+the ticket that wore it before. A ticket whose agent the crown started cannot wear it, and the
+message says so.
+
+**Park**, under it, parks the ticket's agent as **x** does at your
 terminal: its pane closes and its conversation is kept, and starting it again from the
 ticket's page wakes it. It is offered only while the agent is not working; a working agent
 finishes its turn first.

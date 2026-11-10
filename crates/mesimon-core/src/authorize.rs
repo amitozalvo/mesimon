@@ -63,6 +63,13 @@ pub enum Action {
     /// refuses a working agent. For every other principal it is the `Mutate`
     /// on the session it always was, so no agent reaches a session by it.
     ParkAgent,
+    /// Put the crown on one ticket or take it off (T-1182), the desk's
+    /// `^o` from the owner's paired phone. Only the owner crowns, at the
+    /// keyboard or on that phone: no agent, teammate or rule of the
+    /// daemon's gains it from any grant, as an agent that could crown would
+    /// be choosing its own tier. The keyboard's own `CrownTicket` command
+    /// stays the `Mutate` it always was.
+    CrownTicket,
     /// Write, add or delete one note on one ticket (T-532): the owner's
     /// paired phone edits notes without `Mutate` on the ticket, which would
     /// also move, rename and merge it. An agent's `write_note` stays a
@@ -142,6 +149,8 @@ impl Decision {
 /// `ChooseWorkspace` the fourth (T-642), `ArchiveTicket` the fifth (T-737);
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
 /// `ParkAgent` is its one lifecycle write, on a session (T-1090).
+/// `CrownTicket` puts the crown on a ticket or takes it off (T-1182), the
+/// owner's alone.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
     if let Action::SampleAgent { crown } = action {
@@ -187,6 +196,14 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             (Principal::Paired { .. }, Resource::Session { .. }) => Decision::Allow,
             (Principal::Paired { .. }, _) => deny("a paired device parks one agent session"),
             _ => authorize(principal, &Action::Mutate, resource),
+        };
+    }
+    if *action == Action::CrownTicket {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Paired { .. }, Resource::Ticket { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("only the owner crowns a ticket, at the keyboard or on their paired device"),
         };
     }
     if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
@@ -243,8 +260,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             Action::Read => Decision::Allow,
             _ => deny(
                 "paired devices only read, prompt, answer existing permissions, file tickets, \
-                 start and park agents, move, rename, tag and archive tickets, choose their \
-                 workspace and write notes",
+                 start and park agents, move, rename, tag, crown and archive tickets, choose \
+                 their workspace and write notes",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -524,6 +541,31 @@ mod tests {
                     "{by:?} {resource:?}"
                 );
             }
+        }
+    }
+
+    /// The crown is the owner's to give (T-1182): the keyboard and the
+    /// paired phone, on a ticket, and nobody else on anything, though an
+    /// agent's and a teammate's `Mutate` on a ticket is allowed.
+    #[test]
+    fn only_the_owner_crowns_a_ticket() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let ticket = Resource::Ticket { id: ulid::Ulid::nil() };
+        let elsewhere = [
+            Resource::Board,
+            Resource::Column { name: "TODO".into() },
+            Resource::Session { id: uuid::Uuid::nil() },
+        ];
+        for by in [Principal::Local, paired.clone()] {
+            assert_eq!(authorize(&by, &Action::CrownTicket, &ticket), Decision::Allow);
+            for resource in &elsewhere {
+                assert!(authorize(&by, &Action::CrownTicket, resource).denied(), "{resource:?}");
+            }
+        }
+        assert!(authorize(&paired, &Action::Mutate, &ticket).denied());
+        for by in [agent(), remote(), automation()] {
+            assert_eq!(authorize(&by, &Action::Mutate, &ticket), Decision::Allow, "{by:?}");
+            assert!(authorize(&by, &Action::CrownTicket, &ticket).denied(), "{by:?}");
         }
     }
 

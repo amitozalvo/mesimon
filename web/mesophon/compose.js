@@ -333,6 +333,18 @@ function WorkspaceChoice({ store, ticket }) {
 const PARKS = ["idle", "rate limited"];
 export const parksAgent = (store, ticket) => store.canEdit("park") && PARKS.includes(ticket?.agent?.state);
 
+// The crown (T-1182), the board's `^o`: on this ticket, or off it while it
+// wears it. One ticket wears it, so the note names the one it would leave.
+function CrownChoice({ store, ticket }) {
+  if (!store.canEdit("crown")) return null;
+  const holder = !ticket.crown && store.board.tickets.find((t) => t.crown);
+  return html`<div class="card-crown">
+    <button id="card-crown" type="button" class="btn btn-quiet" disabled=${store.editWaiting(ticket, "crown")}
+      onClick=${() => store.crownTicket(ticket.id, !ticket.crown)}><${Icon} name="crown" size=${16} width=${2.2} /><span>${ticket.crown ? "Take the crown off" : "Wear the crown"}</span></button>
+    ${holder && html`<p class="field-note">${holder.key} wears it now. This moves it here.</p>`}
+  </div>`;
+}
+
 // Park the agent (T-1090): its pane closes and its conversation is kept,
 // and the ticket page's start field wakes it. A working agent offers no
 // park; it waits for its turn to end, as at the desk.
@@ -378,7 +390,8 @@ function WorkspaceLine({ ticket }) {
 // A ticket's column and tags (T-530), opened from the ticket page's line:
 // each press goes to the board as it is made, as the board's own keys do,
 // and Done closes the sheet. Only the board's own tags are offered. Its
-// foot parks an idle agent (T-1090) and archives the ticket (T-737).
+// foot puts the crown on or off (T-1182), parks an idle agent (T-1090) and
+// archives the ticket (T-737).
 export function CardSheet({ store }) {
   const ref = useRef();
   const board = store.board;
@@ -419,6 +432,7 @@ export function CardSheet({ store }) {
         <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
           onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
         <${WorkspaceChoice} store=${store} ticket=${ticket} />
+        <${CrownChoice} store=${store} ticket=${ticket} />
         <${ParkChoice} store=${store} ticket=${ticket} />
         <${ArchiveChoice} store=${store} ticket=${ticket} />
       </div>
