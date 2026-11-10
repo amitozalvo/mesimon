@@ -157,9 +157,25 @@ fn locate(lines: &[String]) -> Option<Located<'_>> {
 
 /// A composer rule: a run of at least `RULE_MIN` `─`, spaces trimmed. The
 /// TUI's live window finds the composer by the same rule.
+///
+/// A named session's top rule carries its name at the right (T-1187,
+/// `claude -n 'hello world'` on 2.1.322): the run, a space, the name, a
+/// space, and `─` to the edge.
 pub fn is_rule(line: &str) -> bool {
     let line = line.trim();
-    line.chars().count() >= RULE_MIN && line.chars().all(|c| c == RULE)
+    let run = line.chars().take_while(|&c| c == RULE).count();
+    if run < RULE_MIN {
+        return false;
+    }
+    let rest = &line[run * RULE.len_utf8()..];
+    if rest.is_empty() {
+        return true;
+    }
+    let name = rest.trim_end_matches(RULE);
+    name.len() < rest.len()
+        && name.starts_with(' ')
+        && name.ends_with(' ')
+        && !name.trim().is_empty()
 }
 
 /// Read the composer off a captured screen: the bottom-most `❯` (or, in
@@ -363,6 +379,28 @@ mod tests {
         assert!(!holds_only(&screen(&composer("person", &[]), Some((8, 5))), "held seat"));
         assert!(!holds_only(&screen(&composer("", &[]), Some((2, 5))), "held seat"));
         assert!(!holds_only(&screen("no composer here", None), "no composer here"));
+    }
+
+    /// T-1187: a named session's top rule carries the name (2.1.322,
+    /// `claude -n 'hello world'`, captured at 100 columns); its box is read
+    /// as any other's. A rule with words that do not end in `─` is not one.
+    #[test]
+    fn a_named_sessions_box_is_read() {
+        let named = format!("{} hello world ─", "─".repeat(85));
+        assert!(is_rule(&named));
+        let box_of = |top: &str, input: &str| format!("{top}\n❯ {input}\n{RULE_ROW}");
+        assert_eq!(read(&screen(&box_of(&named, ""), None)), Composer::Empty);
+        let typed = screen(&box_of(&named, "held seat"), Some((11, 1)));
+        assert_eq!(read(&typed), Composer::Holding);
+        assert!(holds_only(&typed, "held seat"));
+        for not in [
+            format!("{} hello world", "─".repeat(85)),
+            format!("{}hello world ─", "─".repeat(85)),
+            format!("{}  ─", "─".repeat(85)),
+            "─── hello world ─".to_string(),
+        ] {
+            assert!(!is_rule(&not), "{not}");
+        }
     }
 
     #[test]

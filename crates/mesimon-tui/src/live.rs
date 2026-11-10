@@ -183,6 +183,11 @@ impl Shot {
         for row in rows.iter_mut().take(top) {
             *row = strip_hints(row);
         }
+        // A named session's top rule carries the name (T-1187); the page
+        // draws the box without it, open or closed.
+        if top != bottom {
+            rows[top] = nameless(&rows[top]);
+        }
         // Claude Code's session survey (`How is Claude doing this session?
         // (optional)` over `1: Bad  2: Fine  3: Good  0: Dismiss`) asks
         // for keys the page answers differently, wherever it stands: its
@@ -532,6 +537,25 @@ fn is_hint(seg: &str) -> bool {
 fn is_dialog_keys(t: &str) -> bool {
     let t = t.trim().to_lowercase();
     t.starts_with("enter") && t.contains("esc") && t.split_whitespace().count() <= 10
+}
+
+/// A composer rule without a session's name (T-1187): `─` across the
+/// name's cells too, in the rule's own ink. A rule with no name is itself.
+fn nameless(row: &Row) -> Row {
+    let text = row.text.trim_end();
+    let lead = text.len() - text.trim_start().len();
+    if text[lead..].chars().all(|c| c == '─') {
+        return row.clone();
+    }
+    let ink = row.runs.iter().find(|(s, _)| s.contains('─')).map_or_else(Style::default, |r| r.1);
+    let rule = "─".repeat(unicode_width::UnicodeWidthStr::width(&text[lead..]));
+    let text = format!("{}{rule}", &text[..lead]);
+    let mut runs = Vec::new();
+    if lead > 0 {
+        runs.push((text[..lead].to_string(), Style::default()));
+    }
+    runs.push((rule, ink));
+    Row { runs, text }
 }
 
 /// A rule the page drew into a screen (`Shot::for_page`): words, no runs.
@@ -1724,6 +1748,32 @@ mod tests {
         assert_eq!(page.page_box(), Some((5, 6, 7)));
         // The kept words keep their own inks.
         assert!(page.rows[2].runs.iter().any(|(t, _)| t.contains("Philosophizing")));
+    }
+
+    /// T-1187: a named session's top rule carries its name (Claude Code
+    /// 2.1.322, `claude -n 'hello world'`, its inks as captured). The box is
+    /// Claude's three rows, not Codex's lone prompt row the cursor found,
+    /// and the page draws its top rule without the name, in the rule's ink.
+    #[test]
+    fn a_named_sessions_box_is_found_and_drawn_without_the_name() {
+        let ink = "\x1b[38;5;244m";
+        let lines = [
+            "⏺ Done.".to_string(),
+            String::new(),
+            format!("{ink}{} hello world ─\x1b[39m", "─".repeat(46)),
+            "❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[0m".to_string(),
+            format!("{ink}{}\x1b[39m", "─".repeat(60)),
+            "  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle)\x1b[39m".to_string(),
+        ];
+        let shot = Shot { rows: parse(&lines.join("\n")), cols: 60, cursor: Some((2, 3)) };
+        assert_eq!(shot.box_rows(), Some((2, 4)), "the box, from its named rule");
+        assert_eq!(shot.box_holds(), Some(false), "the placeholder is no words");
+        let page = shot.for_page();
+        assert_eq!(page.page_box(), Some((2, 3, 4)));
+        assert_eq!(page.rows[2].text, "─".repeat(60), "the name is not drawn");
+        assert_eq!(page.rows[2].runs, page.rows[4].runs, "in the rule's own ink");
+        // A rule with no name is left as the pane drew it.
+        assert_eq!(nameless(&page.rows[4]), page.rows[4]);
     }
 
     #[test]

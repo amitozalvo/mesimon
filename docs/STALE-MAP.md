@@ -42864,3 +42864,26 @@ Tests: `store` `the_old_queue_default_reads_as_now_and_now_is_not_written` and t
 (a chosen Queue is written under `follow_ups`); `app` `a_paned_ask_obeys_the_board_follow_up_default`
 and `the_ask_toggle_can_queue_a_worktree_ticket` flipped; the column-ask tests pass unchanged. One
 golden moved, `prompt_field_codex_empty_120x30` (`queued` → `now`, `enter queue` → `enter send`).
+
+## A named session's box is found, its name not drawn (T-1187, 2026-11-10, the author: "my take is we should ignore the title")
+
+Claude Code draws a named session's top rule with the name at its right (`claude -n 'hello
+world'`, 2.1.322, captured: `───…─── hello world ─`, all in the rule's ink). `composer::is_rule`
+took only a line of `─`, so neither the page nor the daemon found the box. The page fell to
+Codex's road (`cursor_prompt`, the `❯` row alone), kept the named rule as a pane row, drew its
+closed rule on the `❯` row and a page rule under it: an open-looking box. The daemon read the
+box `Absent`, so a named session refused recovery clears (`composer could not be read`) and
+idle sends (`BOX_UNKNOWN`), held launch words waiting for an empty box, and never cleared a
+compaction.
+
+- **`is_rule` takes a name** (`composer.rs`): a run of at least `RULE_MIN` `─`, then a space,
+  words, a space and `─` to the edge. Words not closed by `─`, or a short run, are no rule. One
+  test for both readers, since the page imports the daemon's `is_rule`.
+- **The page draws the box without the name**, open or closed: `Shot::for_page` rewrites the
+  box's top row through `live::nameless`, `─` across the name's cells in the rule's ink. Closed,
+  `closed_rule` already covered the row; open, the pane's own rows show and the name would have.
+- **Refuted: showing the name** as the page's own. The ticket's title is the page's heading; the
+  session's name is the agent's chrome.
+
+Tests: `composer` `a_named_sessions_box_is_read`, `live`
+`a_named_sessions_box_is_found_and_drawn_without_the_name`. No golden moved.
