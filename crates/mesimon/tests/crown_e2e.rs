@@ -37,6 +37,31 @@ use serde_json::json;
 mod common;
 use common::*;
 
+// Every fixed sleep in this file, a poll's own interval aside, is one of the
+// three below, named for what it waits for (T-1196). None waits for a state
+// the board shows: that wait is `wait_until` or `await_state`, never a sleep.
+
+/// A window in which nothing may happen: the assertions after it prove an
+/// absence (no line, no key, no second wake), so no state can end it early.
+fn absence_window(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+/// Time a clock needs to run: a bound, a cadence, a stamp's second, or a
+/// timeline the test lays out. The time itself is what is waited for.
+fn clock_for(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+/// A settle kept as found, with no state on the board behind it: a spawn
+/// types its title and a crowning lands inside the call, a start's launch
+/// words wait for a `SessionStart` the stubs never send and their Enter
+/// leaves no mark on the board, and a stand-in runtime reads its control
+/// file and a person's keys on its own poll.
+fn settle_for(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
 /// The two lines a turn's end after a crown ask can wake the crown with
 /// (T-938), for `head` (the worker's key and title): a receipt of the
 /// agent's named the words (the mod's `entered`), or none did (a paste, a
@@ -839,7 +864,7 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert!(p[0].waits_on.is_empty(), "it waits on a person, not the checkout: {p:?}");
     assert_eq!(c.crown_touches().iter().find(|t| t.ticket == b).unwrap().action, "asked");
     // The drain runs on the tick and at every settle; a held ask is not its.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(!landed("mesimon-probe-62"), "held words must not reach the pane on their own");
     // A second ask replaces the first, and says so.
     match ask(&mut c, sa, &kb, "mesimon-probe-63 then push", Some(seen_after)) {
@@ -1156,7 +1181,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     // The probe of a turn's end runs off the writer; give it time to land
     // before asserting that nothing did.
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     // The words in the crown's pane are not the wake's receipt: on the mod
     // road the stand-in engine types them and only then relays its
     // `entered`, through a `mesimon hook` of its own, and the row is owed
@@ -1183,7 +1208,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
         other => panic!("start_agent {kw1}: {other:?}"),
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     let crown_wake_fed = |cause: &str| {
         std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
@@ -1327,7 +1352,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
     let tree2 = std::path::PathBuf::from(c.board().live_agent(w2).unwrap().cwd.clone());
     assert_ne!(tree2, h.repo, "W2 runs in its worktree");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let h2 = commit(&h.repo, "w1b.txt");
     h.one_turn(&mut c, ws1);
     wait_until(std::time::Duration::from_secs(5), "W1's delivery to be owed", || {
@@ -1684,7 +1709,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
         other => panic!("start_agent {kw1}: {other:?}"),
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // The spawn left the title in the crown's box, unsent: that is a draft
     // too, and it goes first, so the box is empty when the person comes.
@@ -1711,7 +1736,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
             p.held.as_deref() == Some(WHEN_YOU_LEAVE) && p.waits_on == [ka.clone()]
         })
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_with(&delivered), 0, "{}", std::fs::read_to_string(&got).unwrap_or_default());
     assert_eq!(held(&mut c, a).as_deref(), Some(WHEN_YOU_LEAVE), "still waiting");
 
@@ -1727,7 +1752,7 @@ fn the_crown_wake_waits_for_a_person_at_the_crown_s_box() {
     wait_until(std::time::Duration::from_secs(10), "the wake row to wait on the draft", || {
         held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_with(&delivered), 0, "{}", std::fs::read_to_string(&got).unwrap_or_default());
     assert_eq!(lines_with("half a thought"), 0, "the draft is theirs to send");
 
@@ -1872,7 +1897,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         other => panic!("start_agent {kw1}: {other:?}"),
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // The spawn's title, left in the crown's box, goes first.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     assert!(tmux(&tmux_sock)
@@ -1905,7 +1930,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE_5S)
     });
     // The second client's key renews the hold before the bound goes by.
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    clock_for(2500);
     let renewed = renew_activity(&tmux_sock, &crown, &two_name);
     assert!(renewed > first, "tmux recorded the key: {first} → {renewed}");
     assert_eq!(read_got().lines().filter(|l| l.contains("F12")).count(), 0, "no key in the box");
@@ -1955,7 +1980,7 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     wait_until(std::time::Duration::from_secs(10), "the draft holds the wake", || {
         held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_with(&delivered2), 0, "nothing pasted into their draft: {}", read_got());
     assert_eq!(lines_with("half a thought"), 0, "the draft is theirs to send");
     assert!(tmux(&tmux_sock)
@@ -2056,7 +2081,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     // A launch's words left in a box go first, out of the way of what is
     // read there below.
@@ -2087,7 +2112,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     enter(&sid);
     wait_until(std::time::Duration::from_secs(10), "W's launch words out of its box", || {
         lines_with("mesimon-probe-966 worker") > 0
@@ -2141,7 +2166,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(5), "the row names the bound", || {
         person(&mut c).as_deref() == Some(WHEN_YOU_LEAVE_5S)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(now_ms() + 500 < renewed_expiry, "the window is still open");
     assert_eq!(lines_with("mesimon-probe-966a"), 0, "held while active: {}", read_got());
     assert_eq!(asked(&mut c).status, "queued");
@@ -2158,7 +2183,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     assert!(at >= renewed_expiry, "stamped before the bound: {at} < {renewed_expiry}");
     assert_eq!(session_activity(&tmux_sock, &sid), renewed, "no input since the key");
     assert!(attach_listed(&tmux_sock, &sid), "the client still attached");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_are(first), 1, "once, on its own line: {}", read_got());
     assert_eq!(lines_with("mesimon-probe-966a"), 1, "nowhere else");
     assert_eq!(asked(&mut c).status, "sent");
@@ -2180,7 +2205,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     // No sample has read the box since the clients went idle, so the
     // enqueue's row has no word yet; a later snapshot has the draft's.
     pushed(&mut sub, &mut c, "after your draft");
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with("mesimon-probe-966b"), 0, "nothing pasted into their draft");
     assert_eq!(lines_with(draft), 0, "the draft is theirs to send");
     assert_eq!(asked(&mut c).status, "queued");
@@ -2191,7 +2216,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(10), "the ask after the draft", || {
         lines_are(second) == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_are(draft), 1, "the draft as they wrote it: {}", read_got());
     assert_eq!(lines_are(second), 1, "the ask on its own line, once");
     assert_eq!(lines_with(draft), 1, "never joined: {}", read_got());
@@ -2209,7 +2234,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     let kept_before = feed_count("queued_ask_kept");
     let _ = ask(&mut c, third);
     pushed(&mut sub, &mut c, "box unknown ∙ leave");
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with("mesimon-probe-966c"), 0, "nothing typed past an unread box");
     assert_eq!(asked(&mut c).status, "queued");
     let kept_now = feed_count("queued_ask_kept");
@@ -2220,7 +2245,7 @@ fn a_queued_ask_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(10), "the ask into the empty box", || {
         lines_are(third) == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_are(third), 1, "once, on its own line: {}", read_got());
     assert_eq!(lines_with("mesimon-probe-966c"), 1, "never joined");
     assert_eq!(asked(&mut c).status, "sent");
@@ -2260,7 +2285,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2268,7 +2293,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // A person in the crown's pane, half a prompt in its box.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
@@ -2278,7 +2303,7 @@ fn a_mod_road_crown_takes_its_wake_with_a_person_at_its_box() {
         .status()
         .unwrap()
         .success());
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
 
     // W1 delivers: the wake goes down the crown's mod at once, the person
     // still there and their draft still in the box.
@@ -2350,7 +2375,7 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2358,7 +2383,7 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // A person in the crown's pane, its box empty; the crown's mod refuses
     // a submit as Claude Code does after their Esc.
@@ -2399,7 +2424,7 @@ fn a_mod_road_crown_s_refused_wake_is_never_pasted_under_a_person() {
         .status()
         .unwrap()
         .success());
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
     let screen = String::from_utf8_lossy(&screen.stdout).to_string();
     assert!(screen.contains("half a thought") && !screen.contains("delivered"), "{screen}");
@@ -2447,7 +2472,7 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw1, "shared_checkout") {
         Response::AgentStarted { session_started: true, .. } => {}
@@ -2455,7 +2480,7 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // The spawn's title, left in the crown's box, goes first.
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
@@ -2489,7 +2514,7 @@ fn a_refused_mod_wake_goes_past_an_idle_client_only_into_an_empty_box() {
     wait_until(std::time::Duration::from_secs(15), "the draft holds it", || {
         held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(!read_file(&got).contains(&delivered), "nothing typed: {}", read_file(&got));
     assert!(!read_file(&got).contains("half a thought"), "no Enter sent their draft");
     // They send it: the box reads empty, and the wake is pasted once.
@@ -2561,7 +2586,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, sa);
     stop(&mut c, sa);
     match c.crown_start(sa, &kw1, "shared_checkout") {
@@ -2570,7 +2595,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     let raise = |c: &mut TestClient, why: &str| match c
         .send(Principal::Agent { session: ws1 }, Command::AgentRaiseHand { reason: why.into() })
@@ -2602,7 +2627,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
         wake_rows(&mut c, a).first().is_some_and(|p| p.held.as_deref() == Some(WHEN_YOU_LEAVE))
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!((submitted(), pasted()), (0, 0), "nothing went: {}", frames());
     assert!(hand_up(&mut c), "the worker's hand is still up");
     assert_eq!(wake_rows(&mut c, a).len(), 1, "the wake is still owed");
@@ -2634,7 +2659,7 @@ fn a_crown_a_person_stopped_holds_its_wake_and_its_hand() {
     wait_until(std::time::Duration::from_secs(10), "the refused wake owed again", || {
         wake_rows(&mut c, a).first().is_some_and(|p| p.held.is_some())
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let screen = tmux(&tmux_sock).args(["capture-pane", "-p", "-t", &crown]).output().unwrap();
     let screen = String::from_utf8_lossy(&screen.stdout).to_string();
     assert!(screen.contains("half a thought") && !screen.contains("raised its hand"), "{screen}");
@@ -2817,7 +2842,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         other => panic!("start_agent {kw}: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let finished = format!("{kw} \"mesimon-probe-918 worker\" finished its turn");
     let wakes = |p: &[String]| p.iter().filter(|t| t.contains(&finished)).count();
     // The crown takes its turn on the words: the Enter began one, which
@@ -2836,7 +2861,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(10), "the wake pasted", || wakes(&pastes()) == 1);
     let wake1 = pastes().into_iter().find(|t| t.contains(&finished)).unwrap();
     let before = enters();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "no Enter before the box shows the words");
     // A long box's `›` row scrolled off the screen, the prompt above it in
     // the history read in its place: nobody came, so it is ours all the same.
@@ -2861,7 +2886,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(wakes(&pastes()), 1, "nothing pasted while they are in");
     draw(sa, "half a thought", idle.clone());
     // The draft on screen before the person goes: a sample between the two
@@ -2882,7 +2907,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         || held(&mut c, a),
         |h| h.as_deref() == Some("after your draft"),
     );
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(wakes(&pastes()), 1, "nothing pasted into their draft");
     // They send it (the runtime's turn on it is not this test's), and the box
     // is empty: the wake goes in.
@@ -2896,7 +2921,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     let before = enters();
     let mut client = person_attaches(&tmux_sock, &sa.simple().to_string()[..16]);
     draw(sa, &wake2, idle.clone());
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(enters(), before, "no Enter while a person is in the pane");
     client.kill().unwrap();
     let _ = client.wait();
@@ -2932,7 +2957,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(20), "the parked crown woken", || {
         c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(wakes(&pastes()), 2, "nothing rode the launch");
     assert_eq!(sent(), told_before, "not told at the launch");
     assert!(
@@ -2974,11 +2999,11 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         wakes(&pastes()) == 4
     });
     let wake4 = pastes().into_iter().filter(|t| t.contains(&finished)).nth(3).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
     let (before, len, said) = (enters(), bytes().len(), told());
     let mut client = attach();
     draw(sa, &format!("{wake4} and my own words"), idle.clone());
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(enters(), before, "no Enter while they are in");
     client.kill().unwrap();
     let _ = client.wait();
@@ -2993,7 +3018,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
                 && held(&mut c, a).as_deref() == Some("after your draft")
         },
     );
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "their words are never sent by the wake");
     assert_eq!(bytes().len(), len, "nothing typed into the box they changed");
     assert_eq!(told(), said, "a wake never entered is not told");
@@ -3066,7 +3091,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     draw(sa, "", idle.clone());
     // The runtime takes the drawing first: a control it reads after the
     // Enter would put its state back to idle.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     person_sends("something else entirely");
     crown_turn_ends(&mut c);
     assert_eq!(told(), said, "their turn on their own words did not tell the wake");
@@ -3088,7 +3113,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     wait_until(std::time::Duration::from_secs(15), "the next daemon holds it too", || {
         held(&mut c, a).as_deref() == Some(WHEN_YOU_LEAVE)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "no Enter while they are in, across the restart");
     client.kill().unwrap();
     let _ = client.wait();
@@ -3133,7 +3158,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         |c: &mut TestClient| c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
     let (launched, said, pasted) = (launches(), told(), wakes(&pastes()));
     control(sa, json!({"stop_delay": 2}));
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    settle_for(250);
     assert!(matches!(
         c.request(Command::SetTicketTier { id: a, tier: Some("01REVIEW".into()) }),
         Response::Ok
@@ -3143,7 +3168,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
         rec.tier_wake && rec.state == SessionState::Sleeping
     });
     h.one_turn(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    absence_window(500);
     let rows = pending_of(&mut c, Some(a));
     assert!(
         rows.iter().any(|p| p.action == mesimon_core::command::PendingAction::CrownWake),
@@ -3186,7 +3211,7 @@ fn a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words() {
     });
     client.kill().unwrap();
     let _ = client.wait();
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    absence_window(2500);
     assert_eq!(enters(), before, "no Enter into a seat that is no crown's");
 }
 
@@ -3332,7 +3357,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
         other => panic!("start_agent {kw}: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let finished = format!("{kw} \"mesimon-probe-945 worker\" finished its turn");
     let wakes = || pastes().iter().filter(|t| t.contains(&finished)).count();
     let last_wake = || pastes().into_iter().rfind(|t| t.contains(&finished)).unwrap();
@@ -3370,7 +3395,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
         c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
             && held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "their words are never sent by the wake");
     assert_eq!(bytes().len(), len, "nothing typed into the box they changed");
     assert_eq!(told(), said, "a wake never entered is not told");
@@ -3389,7 +3414,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
         c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
             && held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "no Enter into a box nobody can show is the wake");
     assert_eq!(told(), said, "not told");
 
@@ -3418,7 +3443,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
         c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
             && held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "their words are never entered by the wake");
     assert_eq!(told(), said, "not told");
 
@@ -3436,7 +3461,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
         c.board().sessions.iter().any(|s| s.id == sa && !s.pending_submit)
             && held(&mut c, a).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(enters(), before, "never entered across the restart");
     assert_eq!(told(), said, "not told across the restart");
 
@@ -3460,7 +3485,7 @@ fn a_codex_crown_s_wake_goes_past_an_idle_client_and_enters_only_its_own_box() {
     let n = wakes();
     client.kill().unwrap();
     let _ = client.wait();
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    settle_for(2500);
     let (before, said) = (enters(), told());
     draw(sa, "", idle.clone());
     wait_until(std::time::Duration::from_secs(15), "the parked wake pasted", || wakes() == n + 1);
@@ -3509,7 +3534,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         c.request(Command::SetCrownMode { mode: CrownMode::Supervised }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
 
     // The crown starts the worker; its worktree is cut first.
@@ -3522,7 +3547,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-81 landing\"");
 
     // ---- 1. the delivery: work on the branch, and main moved past it -------
@@ -3594,7 +3619,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice to reach the worker", || {
         lines_with("has been merged").len() == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 2, "held while the notice is on its way");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
@@ -3609,7 +3634,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
         )
     );
     h.one_turn(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(
         lines_with(&worker).len(),
         3,
@@ -3674,7 +3699,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     start(&mut c, ws);
     git(&path, &["rebase", "-q", "main"]);
     stop(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(
         lines_with(&worker).len(),
         5,
@@ -3763,7 +3788,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-91 merged by hand\"");
     let wait_ahead = |c: &mut TestClient| {
         wait_until(
@@ -3805,7 +3830,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     });
     h.one_turn(&mut c, sa);
     // More refreshes at `merged`: silent.
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    absence_window(2500);
     assert_eq!(
         lines_with(&worker).len(),
         2,
@@ -3849,7 +3874,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
     wait_until(std::time::Duration::from_secs(10), "the one line to land", || {
         lines_with(&worker).len() == 4
     });
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     let lines = lines_with(&worker);
     assert_eq!(lines.len(), 4, "{lines:?}");
     assert!(lines[3].starts_with(&format!("{worker} delivered (merge_state merged")), "{lines:?}");
@@ -3890,7 +3915,7 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-92 merged while down\"");
 
     // ---- 1. the delivery, heard -------------------------------------------
@@ -3924,14 +3949,14 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
     h.one_turn(&mut c, sa);
     // More refreshes at `merged`, the flags' first reading among them:
     // silent.
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    absence_window(2500);
     assert_eq!(lines_with(&worker).len(), 2, "{}", std::fs::read_to_string(&got).unwrap());
     drop(c);
 
     // ---- 3. a restart with nothing new: silent ----------------------------
     h.restart();
     let mut c = h.client("crown_restart_3");
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    absence_window(4000);
     assert_eq!(
         lines_with(&worker).len(),
         2,
@@ -3970,7 +3995,7 @@ fn t1064_start(
         Response::Ok
     ));
     let (ws, path, branch) = crown_starts_on_worktree(c, sa, w, &kw);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"{title}\"");
     (w, kw, ws, path, branch, worker)
 }
@@ -4033,7 +4058,7 @@ fn old_squash_merges_found_again_after_a_restart_are_not_news() {
     }
     let quiet = |c: &mut TestClient, why: &str| {
         // Several flag passes at one a second, and every branch read merged.
-        std::thread::sleep(std::time::Duration::from_millis(4000));
+        absence_window(4000);
         for (_, kw, _, worker) in &workers {
             wait_until(std::time::Duration::from_secs(10), "the flags to read merged", || {
                 merge_state(c, kw).as_deref() == Some("merged")
@@ -4085,7 +4110,7 @@ fn old_squash_merges_found_again_after_a_restart_are_not_news() {
              notes"
         )
     );
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 2, "{}", read_got());
     for (_, _, _, old) in &workers {
         assert_eq!(lines_with(old).len(), 2, "{old} heard again:\n{}", read_got());
@@ -4182,7 +4207,7 @@ fn squash_merges_past_the_budget(name: &str, landing: Landing) {
         // The crown's turn on the last of them, so the next wake goes in.
         h.one_turn(c, sa);
         // More passes at `merged`, the rescan among them: silent.
-        std::thread::sleep(std::time::Duration::from_millis(4000));
+        absence_window(4000);
         for (kw, _, _, w) in workers {
             assert_eq!(merge_state(c, kw).as_deref(), Some("merged"));
             assert_eq!(said(w), 1, "{w}'s merge said once:\n{}", read_got());
@@ -4263,7 +4288,7 @@ fn owed_across_a_restart(name: &str, took: bool) {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -4297,13 +4322,13 @@ fn owed_across_a_restart(name: &str, took: bool) {
     let brief = || lines_with("mesimon-probe-722 owed across a restart");
     if took {
         // Past the late pane's composer: nothing goes, and the seat says so.
-        std::thread::sleep(std::time::Duration::from_millis(6000));
+        absence_window(6000);
         assert!(brief().is_empty(), "a prompted seat is not sent the brief again");
         assert!(c.board().live_agent(w).unwrap().unsent.is_some(), "brief not sent");
     } else {
         wait_until(std::time::Duration::from_secs(20), "the resent brief", || !brief().is_empty());
         // Time for a restored worker's look (`hear_restored`) and a wake.
-        std::thread::sleep(std::time::Duration::from_millis(2500));
+        absence_window(2500);
     }
     let worker = format!("{kw} \"{title}\"");
     assert!(
@@ -4355,7 +4380,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -4415,7 +4440,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     // ---- 1. Claude Code calls it busy: Unknown, and the crown hears nothing
     h.restart_after(quiet);
     let mut c = h.client("crown_think_2");
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    absence_window(4000);
     let state = c.board().live_agent(w).unwrap().state.clone();
     assert!(matches!(state, SessionState::Unknown { .. }), "{state:?}");
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
@@ -4428,7 +4453,7 @@ fn a_turn_thinking_across_a_restart_is_not_heard_as_finished() {
     wait_until(std::time::Duration::from_secs(10), "the tail's guess", || {
         matches!(c.board().live_agent(w).unwrap().state, SessionState::Idle { .. })
     });
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    absence_window(2500);
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
 
     // ---- 3. the turn goes on and ends: that is the finished turn ----------
@@ -4473,7 +4498,7 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -4521,7 +4546,7 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     wait_until(std::time::Duration::from_secs(10), "the tail's guess", || {
         matches!(c.board().live_agent(w).unwrap().state, SessionState::Idle { .. })
     });
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    absence_window(2500);
     assert!(lines_with(&worker).is_empty(), "{}", std::fs::read_to_string(&got).unwrap());
 
     // ---- 2. the turn goes on and ends: that is the delivery, once ---------
@@ -4532,7 +4557,7 @@ fn a_worker_mid_turn_across_a_restart_delivers_at_its_real_end() {
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let said = lines_with(&worker);
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].contains(&format!("{worker} delivered")), "{said:?}");
@@ -4581,7 +4606,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
@@ -4612,7 +4637,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    absence_window(3000);
     assert!(
         matches!(c.board().live_agent(w).unwrap().state, SessionState::Unknown { .. }),
         "{:?}",
@@ -4625,7 +4650,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
         lines_with(&worker).len() == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let said = lines_with(&worker);
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].contains(&format!("{worker} delivered")), "{said:?}");
@@ -4741,7 +4766,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"{title}\"");
     let notice = format!("Your branch {branch} has been merged into main");
     // The seat's transcript, for the case the tail reads after the restart.
@@ -4798,7 +4823,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     // ---- 2. the daemon restarts in that turn: Unknown, no word ------------
     h.restart_after(|| {});
     let mut c = h.client(&format!("{name}_2"));
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    absence_window(3000);
     let seat = c.board().live_agent(w).unwrap().clone();
     if after == After::GuessedIdle {
         // The tail seeds the tool in flight: running, at Low.
@@ -4817,7 +4842,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
 
     if after == After::GuessedIdle {
         // ---- 3. running when the window settles (8 s): still held ---------
-        std::thread::sleep(std::time::Duration::from_millis(7000));
+        absence_window(7000);
         assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running);
         assert_eq!(lines_with(&worker).len(), 1, "held while it reads running");
         // ---- 4. an abort record read as idle at Low: the merge alone -------
@@ -4841,7 +4866,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         wait_until(std::time::Duration::from_secs(10), "the turn's finish", || {
             lines_with(&worker).len() == 3
         });
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        absence_window(1500);
         let said = lines_with(&worker);
         assert_eq!(said.len(), 3, "{said:?}");
         assert!(said[2].starts_with(&format!("{worker} finished its turn")), "{said:?}");
@@ -4853,13 +4878,13 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         // ---- 3. the turn goes on and ends: that is the wake, once ---------
         hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
         c.await_state(ws, "running", |s| *s == SessionState::Running);
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        absence_window(2000);
         assert_eq!(lines_with(&worker).len(), 1, "held while the turn runs on");
         stop(&mut c, ws);
         wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
             lines_with(&worker).len() == 2
         });
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        absence_window(1500);
         let said = lines_with(&worker);
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[1].starts_with(&merged), "{said:?}");
@@ -4893,7 +4918,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         wait_until(std::time::Duration::from_secs(10), "the one line", || {
             lines_with(&worker).len() == 2
         });
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        absence_window(1500);
         let said = lines_with(&worker);
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(said[1].starts_with(&merged), "{said:?}");
@@ -4907,7 +4932,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     wait_until(std::time::Duration::from_secs(15), "the wake at the window's end", || {
         lines_with(&worker).len() == 2
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let said = lines_with(&worker);
     assert_eq!(said.len(), 2, "{said:?}");
     assert!(said[1].starts_with(&bare), "the merge, not the end: {said:?}");
@@ -4928,7 +4953,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     wait_until(std::time::Duration::from_secs(10), "the turn's finish", || {
         lines_with(&worker).len() == 3
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let said = lines_with(&worker);
     assert_eq!(said.len(), 3, "{said:?}");
     assert!(said[2].starts_with(&format!("{worker} finished its turn")), "{said:?}");
@@ -4961,7 +4986,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     let landed = |probe: &str| std::fs::read_to_string(&got).unwrap_or_default().contains(probe);
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     let touch_on = |c: &mut TestClient, t: ulid::Ulid| {
         c.crown_touches().into_iter().find(|x| x.ticket == t).map(|x| x.action)
     };
@@ -4996,7 +5021,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
     // The stub emits no `SessionStart`: a turn walked through each pane is
     // what makes it idle, and an idle checkout is what the queue waits for.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     for s in [sa, sp] {
         h.one_turn(&mut c, s);
     }
@@ -5004,7 +5029,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         |c: &mut TestClient, key: &str, workspace: &str| c.crown_start(sa, key, workspace);
     assert!(matches!(start_agent(&mut c, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     // W's first turn left nothing new: it finished (T-591). The crown takes
     // that turn, so its pane no longer holds the checkout W shares.
@@ -5164,7 +5189,7 @@ fn the_crown_sends_its_asks_to_the_agents_it_started() {
         c.board().live_agent(w2).is_some()
     });
     let ws2 = c.board().live_agent(w2).expect("W2 holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws2);
     wait_until(std::time::Duration::from_secs(10), "W2's finish on the crown", || {
         landed(&format!("{kw2} \"second worker\" finished its turn"))
@@ -5313,7 +5338,7 @@ fn the_crown_sends_now_into_a_working_turn() {
     let landed = |probe: &str| read_got().contains(probe);
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     // The feed is flushed on the writer's clock, so a line is waited for.
     let feed_has = |cmd: &str, outcome: Option<&str>| {
         wait_until(std::time::Duration::from_secs(5), &format!("the {cmd} feed line"), || {
@@ -5336,14 +5361,14 @@ fn the_crown_sends_now_into_a_working_turn() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-81 worker\" finished its turn"))
@@ -5574,14 +5599,14 @@ fn an_ask_whose_turn_fails_settles_and_the_next_ask_goes() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-9401 worker\" finished its turn"))
@@ -5663,7 +5688,7 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
     let copies = |probe: &str| read_got().matches(probe).count();
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     let mod_road = test_road() == "mod";
     let switch = |name: &str, on: bool| {
         let f = h.dir.join(name);
@@ -5683,14 +5708,14 @@ fn a_crown_ask_says_one_true_word_and_a_second_is_refused_while_it_is_out() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // Each wake that reaches the crown's own pane (T-937's file) is taken as
     // a crown takes one, a turn on it, once it is there (T-971). A wake left
     // untaken is owed for the daemon's 10 s ack window and holds this shared
@@ -6165,7 +6190,7 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     let sent_now = |probe: &str| read_got().contains(&format!("{probe}\u{18}\u{13}"));
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     let mod_road = test_road() == "mod";
 
     let a = c.create_ticket("coordinate");
@@ -6177,14 +6202,14 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-974 worker\" finished its turn"))
@@ -6456,14 +6481,14 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-71 worker\" finished its turn"))
@@ -6524,7 +6549,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         ),
         other => panic!("immediately at a dialog: {other:?}"),
     }
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(!landed("mesimon-probe-73"));
     // A person's `now` at the dialog goes by the mod's submit, which types
     // nothing (T-1148 review): the fill's Enter would answer the dialog.
@@ -6662,7 +6687,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         wait_until(std::time::Duration::from_secs(5), "the words filled", || {
             landed("mesimon-probe-76 under hands")
         });
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        absence_window(1000);
         let delta = read_got()[mark..].to_string();
         assert!(
             !delta.contains('\u{18}') && !delta.contains('\u{13}'),
@@ -6725,7 +6750,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         let by_column = read_got().matches("mesimon-probe-80").count();
         // W at its idle takes words, and the person is still there.
         stop(&mut c, ws);
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        absence_window(2000);
         assert!(!landed("mesimon-probe-76"), "nothing typed under their hands");
         assert!(!landed("mesimon-probe-77"));
         assert!(!landed("mesimon-probe-79"));
@@ -6736,7 +6761,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             landed("mesimon-probe-76 under hands")
         });
         assert_eq!(asked(&mut c).status, "sent");
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        absence_window(1500);
         assert_eq!(read_got().matches("mesimon-probe-76").count(), 1, "the queued ask once");
         assert!(!landed("mesimon-probe-79"), "the refused send never");
         assert_eq!(
@@ -6784,13 +6809,13 @@ fn the_crown_sends_immediately_into_a_working_turn() {
             let before = kept();
             let client = person_attaches(&tmux_sock, &sid);
             let _ = ask(&mut c, &probe, Deliver::Idle);
-            std::thread::sleep(std::time::Duration::from_millis(2000));
+            absence_window(2000);
             assert!(!landed(&probe), "nothing typed under their hands");
             assert_eq!(asked(&mut c).status, "queued");
             refused_at_dispatch = kept() > before;
             person_leaves(&tmux_sock, &sid, client);
             wait_until(std::time::Duration::from_secs(10), "the idle ask", || landed(&probe));
-            std::thread::sleep(std::time::Duration::from_millis(1500));
+            absence_window(1500);
             assert_eq!(read_got().matches(probe.as_str()).count(), 1, "once");
             // The turn those words start runs; the next try's stop ends it.
             start(&mut c, ws);
@@ -6845,7 +6870,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
@@ -6853,7 +6878,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     let sid = ws.simple().to_string()[..16].to_string();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
     let asked = |c: &mut TestClient| c.agent_read(sa, &kw).unwrap().asked.expect("the crown's ask");
 
@@ -6872,7 +6897,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
                 && l.contains("\"outcome\":\"a_person_attached\"")
         })
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(copies("mesimon-probe-9581"), 0, "nothing typed under their hands");
     let frames =
         std::fs::read_to_string(h.dir.join(format!("mod-{ws}.ndjson"))).unwrap_or_default();
@@ -6886,7 +6911,7 @@ fn a_submit_only_mod_s_immediately_ask_is_kept_under_a_person() {
     });
     let status = asked(&mut c).status;
     assert!(matches!(status.as_str(), "sent" | "handed"), "out with the agent: {status}");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(copies("mesimon-probe-9581 kept"), 1, "one delivery");
 }
 
@@ -6931,7 +6956,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // This connection arms the train and keeps it armed.
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
@@ -6954,7 +6979,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
         lines_with(&worker).len() == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     let lines = lines_with(&worker);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
@@ -7022,7 +7047,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         "{lines:?}"
     );
     assert!(!merged(), "refused");
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 3, "once");
 }
 
@@ -7067,7 +7092,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-96 notified\"");
     let merged = || {
         std::process::Command::new("git")
@@ -7091,10 +7116,10 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
             lines_with("has been merged").len() == notices
         });
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        absence_window(2000);
         assert_eq!(lines_with(&worker).len(), heard, "held while the notice is on its way");
         start(c, ws);
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        absence_window(2000);
         assert_eq!(lines_with(&worker).len(), heard, "held while the notice turn runs");
         stop(c, ws);
         wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
@@ -7183,7 +7208,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         other => panic!("DONE on the wake: {other:?}"),
     }
     stop(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(
         lines_with(&worker).len(),
         3,
@@ -7213,7 +7238,7 @@ fn the_crown_reads_a_worker_s_question_and_cannot_talk_over_it() {
     let sa = c.spawn_claude(a);
     let sw = c.spawn_claude(w);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sw.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sw, "running", |s| *s == SessionState::Running);
     let ask = |c: &mut TestClient, text: &str| c.crown_ask(sa, &kw, text, Deliver::Idle, None);
@@ -7353,7 +7378,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     let landed = |probe: &str| typed().contains(probe);
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     let asking = |s: &SessionState| {
         *s == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Question }
     };
@@ -7381,7 +7406,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
     let sa = c.spawn_claude(a);
     let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     for s in [sa, sp] {
         h.one_turn(&mut c, s);
     }
@@ -7392,7 +7417,7 @@ fn the_crown_answers_a_question_where_the_person_lets_it() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
     let answer_cmd = |c: &mut TestClient, key: &str, request: &str, index, text: Option<&str>| {
         let v = c.agent_read(sa, key).unwrap();
@@ -7640,10 +7665,10 @@ fn the_crown_answers_a_batch_one_answer_per_question() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     assert!(matches!(c.crown_start(sa, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
 
     // ---- the batch, drawn in W's pane and seen by the hook --------------------
@@ -7818,11 +7843,11 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     assert!(matches!(c.crown_start(sa, &kw, "shared_checkout"), Response::AgentStarted { .. }));
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
     let sid = ws.simple().to_string()[..16].to_string();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
 
     let input = json!({ "questions": [
@@ -7890,7 +7915,7 @@ fn the_crown_s_answer_types_nothing_under_a_person_s_hands() {
         }
         other => panic!("answer_agent: {other:?}"),
     }
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(typed(), before, "no key under their hands");
     assert!(!answered.exists(), "the dialog was not answered");
     assert!(pane(&mut c).contains("Type something."), "the field stands as it was");
@@ -7991,7 +8016,7 @@ fn the_crown_accepts_a_plan_by_default() {
     let sa = c.spawn_claude(a);
     let sp = c.spawn_claude(p);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     for s in [sa, sp] {
         h.one_turn(&mut c, s);
     }
@@ -8019,7 +8044,7 @@ fn the_crown_accepts_a_plan_by_default() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
     let accept_cmd = |c: &mut TestClient, key: &str, request: &str| {
         let v = c.agent_read(sa, key).unwrap();
@@ -8045,7 +8070,7 @@ fn the_crown_accepts_a_plan_by_default() {
     show_plan(&mut c, &kp, sp, "toolu_p1");
     let why = refused(&mut c, &kp, "toolu_p1");
     assert!(why.contains("a person started") && why.contains("accepts its plan"), "{why}");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(!landed(&format!("{kp} \"the person's own\" stops on a plan")), "nor a wake");
     std::fs::remove_file(h.dir.join(format!("dialog-{kp}.json"))).unwrap();
     hook_send(&hook_sock, &sp.to_string(), "PostToolUse", &frame("toolu_p1"));
@@ -8217,7 +8242,7 @@ fn the_crown_accepts_a_plan_by_default() {
     c.await_state(ws, "on its plan, not drawn yet", at_plan);
     let before = pressed();
     let receipt = call(&mut c, &kw, "toolu_w3");
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(!receipt.is_finished(), "no dialog on the screen: the press waits");
     hook_send(&hook_sock, &ws.to_string(), "PostToolUse", &frame("toolu_w3"));
     match receipt.join().unwrap() {
@@ -8267,7 +8292,7 @@ impl PlanBed {
         let (ka, kw) = (c.key_of(a), c.key_of(w));
         let sa = c.spawn_claude(a);
         assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        settle_for(500);
         let mut bed = PlanBed { h, c, w, ka, kw, sa, ws: uuid::Uuid::nil() };
         bed.start(sa);
         bed.stop(sa);
@@ -8290,7 +8315,7 @@ impl PlanBed {
             bed.c.board().live_agent(w).is_some()
         });
         bed.ws = bed.c.board().live_agent(w).expect("W holds a seat").id;
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        settle_for(500);
         bed.start(bed.ws);
         bed.start(sa);
         Some(bed)
@@ -8519,7 +8544,7 @@ fn the_crown_sends_a_plan_back_with_words() {
     assert!(walked.contains(&format!("\\x1b[200~{words}\\x1b[201~")), "the words: {walked}");
     assert_eq!(walked.matches("\\r").count(), 1, "one Enter: {walked}");
     assert_eq!(walked.matches("[B").count(), 2, "two arrows down: {walked}");
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert!(!receipt.is_finished(), "the receipt waits for the dialog to leave");
     // The replanning agent's next call is the refusal road's edge (T-447).
     b.hook("PreToolUse", "Edit", "toolu_edit");
@@ -8610,7 +8635,7 @@ fn the_crown_sends_a_plan_back_with_words() {
     let p = b.c.create_ticket("the person's own");
     let kp = b.c.key_of(p);
     let sp = b.c.spawn_claude(p);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let send = |event: &str, request: &str| {
         let frame = PlanBed::frame(request);
         hook_send(&hook_sock, &sp.to_string(), event, &frame);
@@ -8982,7 +9007,7 @@ fn a_plan_sent_back_stops_at_any_hand_but_the_crown_s() {
     wait_until(std::time::Duration::from_secs(10), "the words drawn late", || {
         b.pane().contains(words)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(enters(&b), e0, "no Enter under their hands");
     assert!(!b.changed().exists());
     client.kill().unwrap();
@@ -9261,7 +9286,7 @@ fn a_refusal_written_before_its_hooks_still_clears_the_plan() {
     for (request, esc) in [("toolu_e1", false), ("toolu_e2", true)] {
         // At rest: a tail read forgets the cursor.
         b.stop(ws);
-        std::thread::sleep(std::time::Duration::from_millis(2500));
+        clock_for(2500);
         // The plan drawn and its call written, no hook yet.
         let dialog = b.h.dir.join(format!("dialog-{kw}.json"));
         let input = json!({ "plan": BED_PLAN, "transcript": transcript, "tool_use_id": request });
@@ -9513,7 +9538,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
         transcript.display()
     );
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &session_start);
     c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
     start(&mut c, ws);
@@ -9624,7 +9649,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     drop(c);
     h.restart_after(|| append(&[result("toolu_r3")]));
     let mut c = h.client("crown_redialog_4");
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     let needs = c.agent_read(sa, &kw).unwrap().needs_you;
     assert!(
         needs.as_ref().is_none_or(|n| n.request.is_none() && n.plan.is_none()),
@@ -9966,7 +9991,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
@@ -9980,7 +10005,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // The worker reads who merges under a crown; nobody else reads it.
     match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
@@ -10050,7 +10075,7 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    std::thread::sleep(std::time::Duration::from_millis(7000));
+    absence_window(7000);
     assert_eq!(lines_with(&lingering).len(), 1, "no second wake without a foreground turn");
     let rec = c.board().live_agent(w).cloned().unwrap();
     assert_eq!(rec.state, backgrounded, "nothing parked, killed or moved by time");
@@ -10110,7 +10135,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     ));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
@@ -10124,7 +10149,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // The lingering wakes the feed holds for this worker, by their stamp.
     let linger_wakes = || -> Vec<u64> {
@@ -10203,7 +10228,7 @@ fn a_demoted_park_on_a_background_command_lingers_from_its_turn_end() {
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
 
     // ---- 3. once per stretch ---------------------------------------------------
-    std::thread::sleep(std::time::Duration::from_millis(LINGER + 1_000));
+    absence_window(LINGER + 1_000);
     assert_eq!(linger_wakes().len(), 1, "no second wake without a foreground turn");
     assert_eq!(lines_with(&lingering), 1);
     assert_eq!(c.board().live_agent(w).unwrap().state, monitoring, "nothing decided by time");
@@ -10277,7 +10302,7 @@ fn the_crown_merges_where_the_train_will_not() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-97 merged by the crown\"");
     let merged = || {
         std::process::Command::new("git")
@@ -10482,13 +10507,13 @@ fn the_crown_merges_where_the_train_will_not() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 4, "the merge was handled by its receipt");
     start(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 4, "the notice is not new merge news");
     stop(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(lines_with(&worker).len(), 4, "no second turn for a merge the crown handled");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 0, "{feed}");
@@ -10605,7 +10630,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     let ps = c.board().live_agent(p).unwrap().id;
     assert!(c.board().live_agent(w).unwrap().started_by.is_some());
     assert!(c.board().live_agent(p).unwrap().started_by.is_none());
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-98 told by the board\"");
     let merged = |branch: &str| {
         std::process::Command::new("git")
@@ -10645,10 +10670,10 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
         lines_with(&notice_w).len() == 1
     });
     // The crown's wake waits for the notice turn, then says so.
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 1, "held while the notice is on its way");
     start(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     assert_eq!(lines_with(&worker).len(), 1, "held while the notice turn runs");
     stop(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
@@ -10679,7 +10704,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     }
     assert!(merged(&wt_p.branch));
     let notice_p = format!("Your branch {} has been merged into main", wt_p.branch);
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert!(lines_with(&notice_p).is_empty(), "no notice until the second m");
     assert!(matches!(
         c.request(Command::MergeToAgent {
@@ -10730,7 +10755,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
     // The probe of a turn's end and the flags' sample run off the writer;
     // give both time to land before asserting that nothing did.
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(2500));
+    let settle = || absence_window(2500);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-93 watched");
@@ -10757,7 +10782,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     assert!(c.board().live_agent(w).unwrap().started_by.is_none(), "a person's agent");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-93 watched\"");
     let watch = |c: &mut TestClient, key: &str, unwatch: bool| {
         let v = c.agent_read(sa, key).unwrap();
@@ -11081,7 +11106,7 @@ fn a_crown_start_whose_worktree_cannot_be_cut_wakes_the_crown_with_why() {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -11134,7 +11159,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, sa);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -11149,7 +11174,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let projects = h.dir.join("claude-home").join("projects").join("msmn");
     std::fs::create_dir_all(&projects).unwrap();
     std::fs::write(projects.join(format!("{ws}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, ws);
 
     let words = "You've reached your Fable limit. Run /usage-credits to continue or switch \
@@ -11242,7 +11267,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     let before = lines();
     hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     c.await_state(ws, "idle after the wake", |s| matches!(s, SessionState::Idle { .. }));
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    absence_window(2000);
     let board = c.board();
     let rec = board.live_agent(w).expect("W's seat");
     assert!(matches!(rec.state, SessionState::Idle { .. }), "no turn began: {:?}", rec.state);
@@ -11259,7 +11284,7 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     start(&mut c, ws);
     hook_send(&hook_sock, &ws.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(ws, "W's carried-on turn ended", |s| matches!(s, SessionState::Idle { .. }));
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(count(), 1, "the words went once");
     let rec = c.board().live_agent(w).cloned().expect("W's seat");
     assert_eq!((rec.id, rec.cwd.as_str()), (ws, cwd.as_str()), "one conversation, one worktree");
@@ -11299,13 +11324,13 @@ fn a_usage_limit_needs_you_and_wakes_the_crown_that_started_the_worker() {
     hook_send(&hook_sock, &ws.to_string(), "SessionStart", r#"{"source":"resume"}"#);
     c.await_state(ws, "idle after the second wake", |s| matches!(s, SessionState::Idle { .. }));
     let held_count = || std::fs::read_to_string(&got).unwrap_or_default().matches(held).count();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(held_count(), 0, "held words wait for the person");
     assert!(matches!(c.request(Command::SendQueuedAsk { ticket: w }), Response::Ok));
     wait_until(std::time::Duration::from_secs(10), "the person's send to reach W", || {
         held_count() > 0
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(held_count(), 1, "once");
 }
 
@@ -11345,7 +11370,7 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-936 worker\" ");
     let lines = || -> Vec<String> {
         std::fs::read_to_string(&got)
@@ -11432,7 +11457,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     let sa = c.spawn_claude(a);
     let sb = c.spawn_claude(b);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     let start_agent =
         |c: &mut TestClient, key: &str, workspace: &str| match c.crown_start(sa, key, workspace) {
@@ -11450,7 +11475,7 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     });
     let seat = |c: &mut TestClient, w: ulid::Ulid| c.board().live_agent(w).unwrap().id;
     let (ws1, ws2, ws3) = (seat(&mut c, w1), seat(&mut c, w2), seat(&mut c, w3));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = |key: &str, title: &str| format!("{key} \"mesimon-probe-936 {title}\" ");
     let (n1, n2, n3) = (
         worker(&k1, "merged and parked"),
@@ -11522,9 +11547,9 @@ fn a_told_worker_parked_in_done_is_not_news_after_a_restart() {
     h.restart();
     let mut c = h.client("crown_parked_news_2");
     // A fence the restart's looks come before: the crown's own turn ends.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    clock_for(1500);
     h.one_turn(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    absence_window(3000);
     assert_eq!(
         (lines_with(&n1).len(), lines_with(&n2).len()),
         told,
@@ -11576,7 +11601,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
         hook_send(&hook_sock, &sid.to_string(), "SessionStart", r#"{"source":"resume"}"#);
         c.await_state(sid, "up after the wake", |s| matches!(s, SessionState::Idle { .. }));
     };
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("checkout worker");
@@ -11613,7 +11638,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
         other => panic!("start W: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W's seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     park(&mut c, &kw, ws);
     // The crown's turn runs on the checkout W shares, so the queue holds W's
@@ -11679,7 +11704,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
     wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
         wt_of(&mut c, w2).is_some_and(|wt| wt.merged)
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws2);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds the tree first (T-278).
@@ -11876,7 +11901,7 @@ fn the_crown_answers_a_codex_worker_s_question() {
         keys()[before..].iter().any(|k| matches!(k, b'\n' | b'\r'))
     });
     assert!(!keys()[before..].windows(3).any(|k| k == b"\x1b[B"), "Okta is the cursor's row");
-    std::thread::sleep(std::time::Duration::from_millis(1200));
+    absence_window(1200);
     assert!(!call.is_finished(), "the receipt waits for the request to resolve");
     control(
         ws,
@@ -11970,7 +11995,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     };
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -12013,7 +12038,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     c.await_state(ws, "B refined", |s| {
         *s == SessionState::Failed { reason: FailReason::InvalidRequest }
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(failed_wakes(), 2, "turn B read again is no new failure");
 
     // ---- 3. a new session's turn of the same id is a failure of its own ----
@@ -12066,7 +12091,7 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     wait_until(std::time::Duration::from_secs(10), "the new session's wake", || {
         failed_wakes() == 3
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(failed_wakes(), 3);
 }
 
@@ -12129,7 +12154,7 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
     };
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -12201,7 +12226,7 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
             as u64;
     h.restart();
     let _c = h.client("crown_codex_died_2");
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    absence_window(4000);
     assert_eq!(wakes_since(restarted), Vec::<String>::new(), "no line after the restart");
 }
 
@@ -12248,7 +12273,7 @@ fn kill_beside_a_running_agent(name: &str, corpse: bool) {
         c.board().live_agent(w).unwrap().id
     };
     let mut ws = start_agent(&mut c);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let other = if corpse {
         // The first agent dies, and a replacement takes the seat.
         let old = ws;
@@ -12259,7 +12284,7 @@ fn kill_beside_a_running_agent(name: &str, corpse: bool) {
         });
         ws = start_agent(&mut c);
         assert_ne!(ws, old);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        settle_for(500);
         old
     } else {
         match c.request(Command::SpawnSession {
@@ -12351,7 +12376,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
         read_file(&got).lines().any(|l| l.trim() == "coordinate")
     });
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, sa);
     stop(&mut c, sa);
     let v = c.agent_read(sa, &kw1).unwrap();
@@ -12371,7 +12396,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
     }
     let ws1 = c.board().live_agent(w1).expect("W1 holds a seat").id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let frames = || read_file(&h.dir.join(format!("mod-{sa}.ndjson")));
     let submitted = || {
         frames()
@@ -12455,7 +12480,7 @@ fn refused_crown_wake(name: &str, restart: bool) {
         !hand_up(&mut c) && at("crown_wake_sent").is_some()
     });
     start(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert!(at("crown_wake_delivered").is_none(), "no delivery read off a prompt");
     // A restart mid-turn: the crown reads `Unknown`, and the attempt is kept
     // for its frame, its seat's pane the same.
@@ -12534,7 +12559,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     let mut seats = Vec::new();
     for (w, k) in [(w1, &k1), (w2, &k2)] {
@@ -12560,7 +12585,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
         up(ws);
         seats.push(ws);
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let raise = |c: &mut TestClient, ws: uuid::Uuid, why: &str| match c
         .send(Principal::Agent { session: ws }, Command::AgentRaiseHand { reason: why.into() })
     {
@@ -12604,7 +12629,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
     // ---- 1. never taken: the crown's bridge stopped ----------------------
     signal("-STOP");
     raise(&mut c, seats[0], "which key?");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    clock_for(500);
     raise(&mut c, seats[1], "which branch?");
     // Handed to the stopped bridge's poll, its acknowledgement never came:
     // unconfirmed.
@@ -12670,7 +12695,7 @@ fn a_crown_wake_nobody_answers_is_retired_and_goes_again() {
         let nobody = format!("mod submit {id} for session {sa}: entered, no owner");
         assert!(!read_file(&journal).contains(&nobody), "{id}'s receipt had its owner");
     }
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    absence_window(2000);
     assert_eq!(submits().len(), frames0 + 2, "nothing resent after the receipts");
     assert_eq!(count("crown_wake_sent"), 3, "nothing told again");
 }
@@ -12722,7 +12747,7 @@ fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     if mod_road {
         std::fs::write(h.dir.join("mod-hold-entered"), "").unwrap();
     }
@@ -12735,9 +12760,9 @@ fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
     });
     // The crown's receipt is late: twelve seconds before its prompt is
     // heard, then a turn, then the mod's `entered`, then its end.
-    std::thread::sleep(std::time::Duration::from_secs(12));
+    clock_for(12000);
     start(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    clock_for(2000);
     if mod_road {
         // This frame's own receipt: taken and told before it, then its
         // `entered`, owned.
@@ -12756,10 +12781,10 @@ fn a_crown_wake_whose_receipt_is_late_is_sent_once() {
         let nobody = format!("mod submit {frame} for session {sa}: entered, no owner");
         assert!(!read_file(&journal).contains(&nobody), "its receipt had its owner");
     }
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    clock_for(1000);
     stop(&mut c, sa);
     // Room for a resend to land, were one owed.
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    absence_window(5000);
     let retired: Vec<String> = read_file(&journal)
         .lines()
         .filter(|l| l.contains("crown wake ") && l.ends_with("crown_wake_unconfirmed"))
@@ -12806,7 +12831,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let raised = format!("{kw} \"mesimon-probe-936 worker\" raised its hand");
     let typed = || read_file(&got).lines().filter(|l| l.contains(&raised)).count();
     let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
@@ -12836,7 +12861,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
     wait_until(std::time::Duration::from_secs(15), "the crown woken for it", || {
         c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert!(hand_up(&mut c), "not told at the launch");
     assert!(!read_file(&feed).contains("\"crown_wake_sent\""), "nothing told");
     assert!(owed(&mut c), "the wake shown owed");
@@ -12846,7 +12871,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
         drop(c);
         h.restart();
         c = h.client(&format!("crown_parked_wake_{n}"));
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        absence_window(1500);
         assert!(hand_up(&mut c), "the hand up after restart {n}");
         assert!(owed(&mut c), "the wake owed after restart {n}");
         assert!(no_copy(&mut c), "no copy of it kept unsent after restart {n}");
@@ -12862,7 +12887,7 @@ fn a_wake_parked_on_a_crown_s_launch_outlives_two_restarts() {
     wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
         !hand_up(&mut c) && !owed(&mut c)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(typed(), 1, "once");
 }
 
@@ -12896,7 +12921,7 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     let v = c.agent_read(sa, &kw1).unwrap();
     assert!(matches!(
@@ -12918,7 +12943,7 @@ fn a_duplicate_wake_receipt_leaves_unrelated_unsent_words() {
     });
     let ws1 = c.board().live_agent(w1).unwrap().id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let unsent = |c: &mut TestClient| {
         c.board().sessions.iter().find(|s| s.id == sa).and_then(|s| s.unsent.clone())
     };
@@ -13003,7 +13028,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     assert!(matches!(c.crown_start(sa, &kw1, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "W1's seat", || {
@@ -13011,7 +13036,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
     });
     let ws1 = c.board().live_agent(w1).unwrap().id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let bridge = std::fs::read_to_string(h.dir.join(format!("mod-bridge-{sa}.pid")))
         .unwrap()
         .trim()
@@ -13032,7 +13057,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
         Response::AgentRaised { .. } => {}
         other => panic!("raise_hand: {other:?}"),
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // An unrelated prompt takes the attempt's owed entry; its window holds.
     start(&mut c, sa);
     let retired = || -> Option<String> {
@@ -13045,7 +13070,7 @@ fn a_retired_wake_frame_leaves_the_outbox() {
     // The next attempt goes once the crown's turn ends; a bridge polling now
     // is handed it alone.
     stop(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    settle_for(1000);
     let frames = match c.send(
         Principal::Agent { session: sa },
         Command::ModNext { ack: None, pane: None, speaks: vec!["submit".into()] },
@@ -13097,7 +13122,7 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let raised = format!("{kw} \"mesimon-probe-936 worker\" raised its hand");
     let typed = || read_file(&got).lines().filter(|l| l.contains(&raised)).count();
     let hand_up = |c: &mut TestClient| c.board().ticket(w).unwrap().raised.is_some();
@@ -13119,11 +13144,11 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
     wait_until(std::time::Duration::from_secs(15), "the crown woken for it", || {
         c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // A person's prompt reaches the crown before the wake's paste (which
     // waits for the pane's `SessionStart`).
     start(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert!(hand_up(&mut c), "the person's prompt is no delivery");
     assert!(owed(&mut c), "the wake owed again");
     assert!(!read_file(&feed).contains("\"crown_wake_sent\""), "nothing told");
@@ -13136,7 +13161,7 @@ fn a_person_s_prompt_before_a_parked_wake_s_paste_leaves_it_owed() {
     wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
         !hand_up(&mut c) && !owed(&mut c)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(typed(), 1, "once");
 }
 
@@ -13169,7 +13194,7 @@ fn a_wake_taken_before_a_restart_is_told_once() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     let v = c.agent_read(sa, &kw1).unwrap();
     assert!(matches!(
@@ -13191,7 +13216,7 @@ fn a_wake_taken_before_a_restart_is_told_once() {
     });
     let ws1 = c.board().live_agent(w1).unwrap().id;
     up(ws1);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
 
     // The crown's mod takes the frame, puts the words in and holds its
     // report.
@@ -13227,7 +13252,7 @@ fn a_wake_taken_before_a_restart_is_told_once() {
     h.restart();
     let _c = h.client("crown_offered_restart_2");
     // Past a window the restart once gave it: nothing retires or resends.
-    std::thread::sleep(std::time::Duration::from_secs(12));
+    absence_window(12000);
     std::fs::write(h.dir.join("mod-release"), "").unwrap();
     // The restart's own look at the worker may owe it a wake of its own
     // (T-602): this frame's receipt is the one read.
@@ -13235,7 +13260,7 @@ fn a_wake_taken_before_a_restart_is_told_once() {
     wait_until(std::time::Duration::from_secs(15), "the frame's own receipt", || {
         read_file(&feed).contains(&receipt) && count("crown_wake_delivered") >= 1
     });
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    absence_window(2000);
     let log = read_file(&journal);
     assert!(!log.contains("crown_wake_unconfirmed"), "nothing retired");
     let nobody = format!("mod submit {frame} for session {sa}: entered, no owner");
@@ -13280,7 +13305,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
     let sa = c.spawn_claude(a);
     up(sa);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     wait_until(std::time::Duration::from_secs(15), "the worker's seat", || {
@@ -13288,7 +13313,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     up(ws);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let raise = |c: &mut TestClient, why: &str| match c
         .send(Principal::Agent { session: ws }, Command::AgentRaiseHand { reason: why.into() })
     {
@@ -13335,7 +13360,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
     wait_until(std::time::Duration::from_secs(15), "the refused wake typed", || {
         lines("raised its hand") == typed + 1
     });
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    absence_window(2000);
     assert_eq!(lines("raised its hand"), typed + 1, "typed once");
 
     // ---- the crown's pane goes: every other taken wake owed again ----------
@@ -13349,7 +13374,7 @@ fn nine_taken_wakes_each_keep_their_refusal_and_their_pane() {
     wait_until(std::time::Duration::from_secs(15), "every other taken wake owed again", || {
         owed() == frames.len() - 1
     });
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    absence_window(1000);
     assert_eq!(owed(), frames.len() - 1, "each once");
     assert!(
         pending_of(&mut c, Some(a))
@@ -13384,7 +13409,7 @@ fn crown_woken_with_its_wake_parked(
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(c, sa);
     stop(c, sa);
     assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
@@ -13392,7 +13417,7 @@ fn crown_woken_with_its_wake_parked(
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     assert!(matches!(c.request(Command::SleepSession { id: sa }), Response::Ok));
     c.await_state(sa, "the crown parked", |s| *s == SessionState::Sleeping);
     match c.send(
@@ -13405,7 +13430,7 @@ fn crown_woken_with_its_wake_parked(
     wait_until(std::time::Duration::from_secs(15), "the crown woken for it", || {
         c.board().sessions.iter().any(|s| s.id == sa && s.state != SessionState::Sleeping)
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let line = format!("{kw} \"mesimon-probe-936 {name}\" raised its hand");
     (a, sa, w, line)
 }
@@ -13455,7 +13480,7 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
     wait_until(std::time::Duration::from_secs(10), "the wake held for the person", || {
         held(&mut c).as_deref() == Some(WHEN_YOU_LEAVE)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(typed(), 0, "nothing typed under them");
     assert!(hand_up(&mut c), "the hand still up");
     client.kill().unwrap();
@@ -13466,7 +13491,7 @@ fn a_person_at_the_crown_before_its_launch_paste_gets_no_keys() {
     wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
         !hand_up(&mut c)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(typed(), 1, "once");
 }
 
@@ -13514,7 +13539,7 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
         .unwrap()
         .success());
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    absence_window(4000);
     assert!(!read_got().contains("half a thought"), "no Enter sent their draft: {}", read_got());
     // A hand raised meanwhile: news of its own.
     let ws = c.board().live_agent(w).unwrap().id;
@@ -13528,7 +13553,7 @@ fn no_retry_enter_follows_a_wake_s_own_paste() {
     wait_until(std::time::Duration::from_secs(15), "the paste's entry expired", || {
         std::fs::read_to_string(&feed).unwrap_or_default().contains("\"paste_unacked\"")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     let rec = c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
     assert!(rec.unsent.is_none(), "no unsent copy: {:?}", rec.unsent);
     assert!(!read_got().contains("half a thought"), "their draft never sent");
@@ -13565,7 +13590,7 @@ fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
     // The pane is up and its words wait for a composer that never draws;
     // then a dialog comes.
     hook_send(&hook_sock, &sa.to_string(), "SessionStart", r#"{"source":"resume"}"#);
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    settle_for(700);
     hook_send(
         &hook_sock,
         &sa.to_string(),
@@ -13576,7 +13601,7 @@ fn a_crown_launch_abandoned_on_a_dialog_keeps_no_unsent_copy() {
     wait_until(std::time::Duration::from_secs(10), "the launch's words abandoned", || {
         std::fs::read_to_string(&feed).unwrap_or_default().contains("\"prompt_submit_abandoned\"")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     let rec = c.board().sessions.iter().find(|s| s.id == sa).cloned().unwrap();
     assert!(rec.unsent.is_none(), "no unsent copy of the wake: {:?}", rec.unsent);
     assert!(c.board().ticket(w).unwrap().raised.is_some(), "the hand still up");
@@ -13625,7 +13650,7 @@ fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
     };
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
     // The box drawn empty, then a person's draft, typed while attached.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
     let mut client = person_attaches(&tmux_sock, &crown);
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
@@ -13639,7 +13664,7 @@ fn a_detached_draft_holds_a_crown_wake_the_launch_handed_back() {
     wait_until(std::time::Duration::from_secs(10), "the wake held on their draft", || {
         held(&mut c).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(typed(), 0, "nothing typed into their draft: {}", read_got());
     assert!(!read_got().contains("half a thought"), "no Enter sent their draft");
     assert!(hand_up(&mut c), "the hand still up");
@@ -13700,7 +13725,7 @@ fn an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back() {
             .and_then(|p| p.held)
     };
     let crown = c.board().sessions.iter().find(|s| s.id == sa).unwrap().sid16();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
     let (mut client, _) = attach_client(&tmux_sock, &crown);
     assert!(tmux(&tmux_sock)
         .args(["send-keys", "-t", &crown, "-l", "half a thought"])
@@ -13714,7 +13739,7 @@ fn an_idle_client_and_a_draft_hold_a_wake_the_launch_handed_back() {
     wait_until(std::time::Duration::from_secs(15), "held for the draft past the bound", || {
         held(&mut c).as_deref() == Some("after your draft")
     });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    absence_window(1500);
     assert_eq!(typed(), 0, "nothing typed into their draft: {}", read_got());
     assert!(!read_got().contains("half a thought"), "no Enter sent their draft");
     assert!(hand_up(&mut c), "the hand still up");
@@ -13797,7 +13822,7 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
     });
     // The box shows no composer, and the daemon restarts.
     std::fs::write(h.dir.join("blank"), "").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
     drop(c);
     h.restart();
     let mut c = h.client("crown_restart_box_2");
@@ -13806,7 +13831,7 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
     // The person leaves: nobody there, and no composer to read.
     client.kill().unwrap();
     let _ = client.wait();
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    absence_window(3000);
     assert_eq!(typed(), 0, "no keys into a box read as no composer");
     assert!(hand_up(&mut c), "the hand still up");
     assert!(
@@ -13824,7 +13849,7 @@ fn a_crown_wake_after_a_restart_waits_for_an_empty_box() {
     wait_until(std::time::Duration::from_secs(5), "the hand down once it went", || {
         !hand_up(&mut c)
     });
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    absence_window(1000);
     assert_eq!(typed(), 1, "once");
 }
 
@@ -13873,7 +13898,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     crown_turn(&mut c, sa);
 
     // ---- 1. the start's launch turn runs past its 3 s ----------------------
@@ -13897,7 +13922,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     let worker = format!("{kw} \"mesimon-probe-973 runs long\"");
@@ -13913,7 +13938,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
     crown_turn(&mut c, sa);
 
     // ---- 2. the same turn runs on: no second wake, nothing stopped ---------
-    std::thread::sleep(std::time::Duration::from_millis(4500));
+    absence_window(4500);
     assert_eq!(lines_with(&overrun).len(), 1, "one wake per expectation");
     assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running, "nothing stopped");
     let o = c.agent_read(sa, &kw).unwrap().overrun.expect("still past it");
@@ -13974,7 +13999,7 @@ fn a_turn_past_its_expect_secs_wakes_the_crown_once() {
         answered(&lines_with) == 2
     });
     crown_turn(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(4500));
+    absence_window(4500);
     assert_eq!(lines_with(&overrun).len(), 2, "a turn inside its expectation is no overrun");
     assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 }
@@ -14023,7 +14048,7 @@ fn the_crown_samples_an_agent_it_started() {
     ));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
@@ -14067,7 +14092,7 @@ fn the_crown_samples_an_agent_it_started() {
         transcript.display()
     );
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     let mut s = None;
@@ -14144,7 +14169,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
     ));
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
@@ -14158,7 +14183,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
         c.board().live_agent(w).is_some()
     });
     let ws = c.board().live_agent(w).unwrap().id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     send(ws, "UserPromptSubmit", r#"{"prompt":"the brief"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
     send(ws, "Stop", r#"{"stop_hook_active":false}"#);
@@ -14173,7 +14198,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
             sample(&mut c2, sa, &kw)
         })
     };
-    let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
+    let ms = |n| clock_for(n);
     let pane = |c: &mut TestClient| c.board().live_agent(w).and_then(|r| r.pane_key.clone());
 
     // ---- unchanged, it lands ------------------------------------------------
@@ -14209,7 +14234,7 @@ fn a_samples_landing_passes_the_gate_again_and_finds_the_same_pane() {
         Response::Spawned { .. } => {}
         other => panic!("the wake: {other:?}"),
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // Idle again, so a person's park takes it.
     send(ws, "UserPromptSubmit", r#"{"prompt":"again"}"#);
     c.await_state(ws, "running", |s| *s == SessionState::Running);
@@ -14382,7 +14407,7 @@ fn expectation_restart(name: &str, part: Part) {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     crown_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { .. } => {}
@@ -14449,7 +14474,7 @@ fn expectation_restart(name: &str, part: Part) {
     prompt(t0 - 60_000, "P0");
     close(t0 - 30_000);
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &start);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     // The brief's own ack follows its paste (T-987): a prompt before it is
     // a person's, and leaves the brief unsent.
     if !mod_road {
@@ -14491,7 +14516,7 @@ fn expectation_restart(name: &str, part: Part) {
         under(ws, "Stop", pid, json!({"stop_hook_active": false}));
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
         close(now_ms());
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        settle_for(2000);
         if matches!(
             c.board().live_agent(a).map(|r| r.state.clone()),
             Some(SessionState::Idle { .. })
@@ -14749,7 +14774,7 @@ fn expectation_restart(name: &str, part: Part) {
             lines_with(&overrun)
         );
         assert!(c.agent_read(sa, &kw).unwrap().overrun.is_some());
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        absence_window(2000);
         assert_eq!(lines_with(&overrun).len(), 1, "once");
         tidy(&mut c, "Z");
         base = lines_with(&overrun).len();
@@ -14779,7 +14804,7 @@ fn expectation_restart(name: &str, part: Part) {
         });
         c = h.client("crown_overrun_restart_2");
         after_restart(&mut c, "B");
-        std::thread::sleep(std::time::Duration::from_millis(6_000));
+        absence_window(6_000);
         assert_eq!(lines_with(&overrun).len(), base, "B's turn is not A's");
         assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         tidy(&mut c, "B");
@@ -14801,7 +14826,7 @@ fn expectation_restart(name: &str, part: Part) {
         let _ = c.board();
         prompt(now_ms(), "C");
         after_restart(&mut c, "C");
-        std::thread::sleep(std::time::Duration::from_millis(6_000));
+        absence_window(6_000);
         assert_eq!(lines_with(&overrun).len(), base, "a turn not found is not kept");
         assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         tidy(&mut c, "C");
@@ -14893,13 +14918,13 @@ fn expectation_restart(name: &str, part: Part) {
             assert!(matches!(c.request(Command::Uncrown), Response::Ok));
         }
         assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-        std::thread::sleep(std::time::Duration::from_millis(6000));
+        absence_window(6000);
         assert_eq!(lines_with(&overrun).len(), base, "the outgoing crown's expectation went");
         assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
         send(ws, "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
         close(now_ms());
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        settle_for(2000);
         if matches!(
             c.board().live_agent(a).map(|r| r.state.clone()),
             Some(SessionState::Idle { .. })
@@ -15032,12 +15057,12 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     });
     control(ws, json!({"state": running, "turn_id": "ask-turn"}));
     c.await_state(ws, "the ask's turn running", |s| *s == SessionState::Running);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     drop(c);
     h.restart_after(|| control(ws, json!({"state": running, "turn_id": "another-turn"})));
     let mut c = h.client("crown_codex_expect_3");
     stop(&mut c, sa);
-    std::thread::sleep(std::time::Duration::from_millis(10_000));
+    absence_window(10_000);
     assert_eq!(lines_with(&overrun).len(), 1, "another turn is not the ask's");
     assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
     control(ws, json!({"state": idle, "turn_id": "another-turn"}));
@@ -15059,16 +15084,16 @@ fn a_codex_expectation_outlives_a_restart_by_its_turn_id() {
     });
     control(ws, json!({"state": running, "turn_id": "turn-a"}));
     c.await_state(ws, "A running", |s| *s == SessionState::Running);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     drop(c);
     h.restart();
     let mut c = h.client("crown_codex_expect_4");
     stop(&mut c, sa);
     // The runtime names A again (verified), then B, with no idle between.
     control(ws, json!({"state": running, "turn_id": "turn-a", "again": true}));
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    settle_for(1500);
     control(ws, json!({"state": running, "turn_id": "turn-b"}));
-    std::thread::sleep(std::time::Duration::from_millis(10_000));
+    absence_window(10_000);
     assert_eq!(lines_with(&overrun).len(), 1, "B is not timed for A");
     assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
 }
@@ -15125,7 +15150,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
         wt_of(&mut c, w).is_some_and(|wt| wt.merged)
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds the tree first (T-278).
@@ -15156,7 +15181,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     let worker = format!("{kw} \"mesimon-probe-973 rebuilt\"");
     let overrun = format!("{worker} has run its turn ");
     // Several ticks (each look runs every second) with the rebuild held.
-    std::thread::sleep(std::time::Duration::from_millis(5000));
+    absence_window(5000);
     assert!(!c.board().live_agent(w).is_some_and(|s| s.state.has_pane()), "still rebuilding");
     assert_eq!(lines_with(&overrun), 0, "nothing begun, nothing past");
     assert!(c.agent_read(sa, &kw).unwrap().overrun.is_none());
@@ -15181,7 +15206,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     wait_until(std::time::Duration::from_secs(20), "the overrun of the words' own turn", || {
         lines_with(&overrun) == 1
     });
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    absence_window(4000);
     assert_eq!(lines_with(&overrun), 1, "exactly one");
     assert!(c.agent_read(sa, &kw).unwrap().overrun.is_some());
 }
@@ -15243,7 +15268,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     wait_until(std::time::Duration::from_secs(20), "the board to read the squash", || {
         wt_of(&mut c, w).is_some_and(|wt| wt.merged)
     });
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     // Parked and archived, the landed tree is reclaimed and the branch kept,
     // so the next wake rebuilds it (T-278); held there by the init script.
@@ -15292,7 +15317,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
     };
     let worker = format!("{kw} \"mesimon-probe-973 owned\"");
     let overrun = format!("{worker} has run its turn ");
-    let ms = |n| std::thread::sleep(std::time::Duration::from_millis(n));
+    let ms = |n| clock_for(n);
 
     // ---- a person's words replace the crown's on the resume ----------------
     reclaim(&mut c);
@@ -15374,7 +15399,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     };
     let start = |c: &mut TestClient, sid: uuid::Uuid| start_with(c, sid, "go");
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
 
     let a = c.create_ticket("coordinate");
     let w = c.create_ticket("mesimon-probe-984 worker");
@@ -15384,7 +15409,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
     let in_w = || read_file(&got_w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     start(&mut c, sa);
     stop(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
@@ -15392,7 +15417,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
         other => panic!("start_agent: {other:?}"),
     }
     let ws = c.board().live_agent(w).expect("W holds a seat").id;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let got_crown = h.dir.join(format!("got-{ka}.txt"));
     let crown_said = || read_file(&got_crown);
     let taken = std::cell::Cell::new(0);
@@ -15457,7 +15482,7 @@ fn a_person_s_prompt_before_a_parked_ask_s_paste_drops_it() {
         current.status == "sent"
     });
     woken(&mut c);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    absence_window(500);
     assert!(!in_w().contains("mesimon-probe-9841"), "parked until SessionStart");
     let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
     let before = in_w();
@@ -15588,7 +15613,7 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
     };
     let start = |c: &mut TestClient, sid: uuid::Uuid| h.prompt_turn(c, sid);
     let stop = |c: &mut TestClient, sid: uuid::Uuid| h.end_turn(c, sid);
-    let settle = || std::thread::sleep(std::time::Duration::from_millis(1500));
+    let settle = || absence_window(1500);
     let mod_road = test_road() == "mod";
     let switch = |name: &str, on: bool| {
         let f = h.dir.join(name);
@@ -15608,7 +15633,7 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
         c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
         Response::Ok
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sa);
     match c.crown_start(sa, &kw, "shared_checkout") {
         Response::AgentStarted { .. } => {}
@@ -15646,17 +15671,13 @@ fn a_person_s_esc_re_sends_the_crown_s_held_ask_once() {
     // The tail's cursor is minted at the first read of a running seat (a 2 s
     // cadence) and starts at the file's end: a record written before it
     // exists is never read. Three seconds into a turn, as the tail e2e waits.
-    let tail_minted = || std::thread::sleep(std::time::Duration::from_millis(3000));
+    let tail_minted = || clock_for(3000);
     // The attention machine pins inferred signals after more than four
     // committed changes in twenty seconds (`FLAP_MAX`): a second Esc read
     // off the tail inside that window of the first would be dropped as a
     // flap. The test's cadence is the flap; a person's is not.
-    let flap_clear = || {
-        std::thread::sleep(std::time::Duration::from_millis(
-            mesimon_core::attention::FLAP_WINDOW_MS + 500,
-        ))
-    };
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let flap_clear = || clock_for(mesimon_core::attention::FLAP_WINDOW_MS + 500);
+    settle_for(2500);
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "W's finish on the crown", || {
         landed(&format!("{kw} \"mesimon-probe-1025 worker\" finished its turn"))
@@ -15972,7 +15993,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     let kw = c.key_of(w);
     let sa = c.spawn_claude(a);
     assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
@@ -16060,7 +16081,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     // for the sort below.)
     let fresh = c.agent_read(sa, &kw).unwrap().seen;
     let seen = taken(ask(&mut c, fresh, "a fourth"));
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    clock_for(1100);
     assert!(matches!(
         c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
         Response::Ok
@@ -16164,7 +16185,7 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     });
     let ws = c.board().live_agent(w).unwrap().id;
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-1035 merged, then parked at once\"");
     let notice = format!("Your branch {branch} has been merged into main");
 
@@ -16260,7 +16281,7 @@ fn a_worker_read_during_the_crowns_turn_is_not_a_second_wake() {
     h.end_turn(&mut c, sa);
     let worker = format!("{kw} \"mesimon-probe-1036 observed worker\"");
     let got = h.dir.join("got.txt");
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    absence_window(2000);
     assert!(lines_in(&got, &worker).is_empty(), "the read consumed the old end");
 
     h.one_turn(&mut c, ws);
@@ -16371,7 +16392,7 @@ fn parallel_crown_lifecycle_writes_share_the_stamp_they_superseded() {
     let hook = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
     };
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "crown running", |s| *s == SessionState::Running);
 
@@ -16489,7 +16510,7 @@ fn receipt_boundary(case: &str) {
     let hook = |sid: uuid::Uuid, event: &str, body: &str| {
         hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
     };
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     // Keep the crown working: its wakes cannot introduce unrelated pastes.
@@ -16887,7 +16908,7 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
     // ---- 1. the first crown starts both workers ---------------------------
     let ws = crown_starts_on_worktree(&mut c, sa, w, &kw).0;
     let ks = crown_starts_on_worktree(&mut c, sa, k, &kk).0;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, ws);
     h.one_turn(&mut c, ks);
 
@@ -16913,7 +16934,7 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
     // ---- 3. a new crown; both workers end a turn --------------------------
     let sb = c.spawn_claude(b);
     assert!(matches!(c.request(Command::CrownTicket { id: b }), Response::Ok));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    settle_for(500);
     h.one_turn(&mut c, sb);
     match c.send(Principal::Agent { session: ws }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
@@ -16926,7 +16947,7 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
         woke(b, k)
     });
     h.one_turn(&mut c, ws);
-    std::thread::sleep(std::time::Duration::from_millis(3000));
+    absence_window(3000);
     assert!(!woke(b, w), "the person's agent woke the crown it was never given to");
     let got_crown =
         std::fs::read_to_string(h.dir.join(format!("got-{kb}.txt"))).unwrap_or_default();

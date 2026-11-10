@@ -43288,3 +43288,44 @@ would have gone to the release gate.
 
 **Not measured:** the flow itself. The first ticket that owes the run after this merge is its
 live test. Docs only; this ticket ran no cargo.
+
+## crown_e2e's fixed sleeps, sorted: none waits for a state the board shows (T-1196, 2026-11-10, from T-1193's retro)
+
+The ticket: turn each fixed sleep in `crates/mesimon/tests/crown_e2e.rs` that waits for a state
+into a wait on that state, and keep the ones that prove an absence. All 277 fixed sleeps were
+read in context; none is such a wait. Each now calls one of three helpers at the top of the
+file, named for what it waits for and the same sleep underneath: `absence_window` (134: the
+assertions after it prove nothing happened, such as a second line, a key under a person's hands
+or a wake while held), `clock_for` (12: a bound, a cadence, a stamp's second or a laid-out
+timeline) and `settle_for` (131: kept as found). The four poll intervals inside loops were left
+alone. Nothing else changed, and nothing in `tests/common/mod.rs`.
+
+- **The 500 ms after a spawn, a crowning, a start or a wake (94 of the settles) waits for nothing the
+  board shows.** `SpawnSession` types its title with tmux inside the call, and `CrownTicket` is
+  synchronous. A start's launch words are armed only by `SessionStart` (`arm_owed`), which the
+  stubs never send. Their Enter marks nothing on the session record: `ticket_read` is set only
+  when brief text goes, and these tickets have no description, so a wait on it timed out on
+  5 of 6 tests on both roads. That attempt was reverted. The rest of the settles are a stand-in
+  runtime reading its control file, a person's keys or a drawing on its own poll, and a restart
+  fence.
+- **Before and after, the binary alone** (`ci/test-run.py -- cargo nextest run -p mesimon
+  --test crown_e2e --no-fail-fast`, load 7 to 22 from other tickets). Default road before: 2,658
+  test-seconds summed, 288.3 s nextest wall (303.4 s real), one red. After, three runs: 2,704,
+  2,671 and 2,673 s summed; 289.8, 288.4 and 288.0 s wall; all green. Mod road before: 2,755 s,
+  292.5 s, green (one test carried a timing probe, which replaced two of its 500 ms sleeps).
+  After: 2,750 s, 294.1 s, green. No change, as expected from a rename.
+- **Where the time is instead.** 277 sleeps run once each add up to about 410 s of the 2,658.
+  The file walks a turn's end about 370 times (`one_turn` 190, `end_turn` 31, `stop` 100, raw
+  `Stop` 52), and each one waits for `Running → Idle` through the attention machine's 1500 ms
+  leave settle (`SETTLE_MS`, no test seam) and a tick. That came to 2.3 to 2.5 s per end in the
+  red's feed, roughly 900 s nominal. A seam on that settle would be the larger lever. Many tests
+  pin behaviour inside it, so it is a decision of its own.
+- **The baseline's red**, before any edit:
+  `the_board_wakes_the_crown_when_a_started_worker_delivers` timed out on "the wake to land on
+  the crown" (10 s). In its feed, the `/clear` `SessionStart` armed the still-parked launch
+  words, and the next `Stop` was read `idle → running`, so the delivered turn never ended into a
+  wake. It did not recur in the four later runs. It is not one of this file's sleeps: the
+  `SessionStart` arming the launch words a seat never took is the lead.
+
+**Refuted.** Waiting on `ticket_read` for a start's brief (above). Removing the start settles
+outright: no run shows they are idle time, and without a state there is no wait to put in.
