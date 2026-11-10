@@ -84,13 +84,19 @@ the person says go → [IMPROVEMENT], retitled, built and committed.
 Choose checks from the behaviour and dependencies changed, and say what each proves.
 
 - Iterate with the smallest relevant test (`cargo test -p <crate> --lib <filter>`). A Rust
-  change finishes with `cargo ut` plus the `<area>_e2e` binaries the diff can reach. A
-  docs-only change runs no cargo, rebase included: link and diff review. Python or web changes
-  need their own checks, not a Rust workspace run.
-- Run the full workspace suite once, at the end, when the diff changes the daemon's shared
-  lifecycle, the wire (`core/src/command.rs`, `core/src/mcp.rs`), a state file's schema,
-  authorization, the tmux backend or the e2e harness. A TUI-, docs- or `ci/`-only diff never
-  needs it. Release verification is the complete suite on both Claude transport roads.
+  change finishes with `cargo ut` plus the e2e binaries the diff can reach: those named for
+  the area or for a changed file, and every file under `crates/mesimon/tests/` that names a
+  changed command, tool or function. The merge waits for nothing more. A docs-only change runs
+  no cargo, rebase included: link and diff review. Python or web changes need their own
+  checks, not a Rust workspace run.
+- **The full workspace suite runs once, after the merge** (T-1194), when the diff changes
+  `core/src/command.rs`, `core/src/mcp.rs`, `core/src/authorize.rs`, a state file's schema,
+  `daemon/src/server.rs` outside its tests, the tmux backend or the e2e harness: on the merged
+  notice, in the ticket's own worktree at the merged commit. A test that fails again alone is
+  this ticket's: fix it forward on the same branch, deliver again and name the test. One that
+  passes alone is named as a rerun and left. No merged notice means no run; the release gate
+  is behind it. A TUI-, docs- or `ci/`-only diff never needs it. Release verification is the
+  complete suite on both Claude transport roads.
 - A full suite run carries `--no-fail-fast`, so one red does not cost a second run. Clippy on
   all targets is the release gate's; a ticket does not owe it. A command expected to take over
   2 minutes starts in the background.

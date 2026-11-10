@@ -43238,3 +43238,53 @@ reopened field does, and says `queued ask dropped`. Shift+Enter stays the road t
 words. The key's word is `drop` everywhere it is named (the card's held row, the page's box,
 the footers). `Command::TakeQueuedAsk` stays on the wire, unused by the TUI. Test
 `app` `ctrl_u_drops_a_queued_ask_at_once`; seven goldens moved by the word alone.
+
+## The full suite runs once after the merge, not before it (T-1194, 2026-11-11, the author, from a proposal of three options: "go 1")
+
+Change 5 of T-1193's retro, proposed first (https://claude.ai/artifact/B4YphuM3r16K68CVAfk6n7).
+`AGENTS.md` only: a ticket merges on `cargo ut` plus the e2e binaries its diff reaches, and a
+ticket whose diff changes `core/src/command.rs`, `core/src/mcp.rs`, `core/src/authorize.rs`, a
+state file's schema, `daemon/src/server.rs` outside its tests, the tmux backend or the e2e
+harness runs the full suite once on the merged notice, in its own worktree at the merged commit,
+and fixes forward. The trade the author took: main can hold a fault for about 15 minutes, no
+ticket waits 11 to 17 minutes before its merge, and the suite keeps its catches.
+
+**Measured** over every Claude transcript of this board's ticket worktrees, 2026-10-10 to
+2026-11-10 (a nextest summary of 1,500+ tests is a full run; T-1023 and T-1029, which looped the
+suite to study flakes, left out; each red sorted by what its agent wrote right after it, not
+rerun): 246 full runs on 155 tickets, 53 red. **7 were a fault in the ticket's own diff**, where
+T-661's month had 1 in 230: T-764 (`column_e2e`), T-816 (`setup_e2e`), T-973 (`crown_e2e`'s
+tool count), T-1037 (`crown_e2e`, `mcp_e2e`), T-987 (`spawn_ready_e2e`), T-961 (`compact_e2e`,
+`shell_line_e2e`), T-1089 (`attachments_e2e`). About 40 were load flakes that passed alone, and
+5 runs tripped on 3 faults already on main (T-1075's race, T-972's clock, a forge test). All 7
+diffs touched `daemon/src/server.rs`, which is why the trigger names it.
+
+**The reached set is a pick with a miss rate, not a map.** In the last three of the seven the
+agent had run the binaries it judged reached (`crown_e2e` alone twice, seven binaries once) and
+the failing one was not among them; the first four failed in a binary named for the area or for
+a changed file. T-227's catch was a miss too (a schema bump has no name link to `snooze_e2e`);
+the e2e files now read the schema constants, one literal left in `plan_mode_e2e`. So the pick
+catches about half, and one full run stays behind it.
+
+**Refuted.** *Release gate only* (option 2): about 3 faults a month would reach a gate that ran
+on 2026-11-02, 03, 05 and 07, each a bisect over about 15 tickets and another 1,411 s run. *A
+map from changed files to binaries*: all 85 e2e binaries are in `crates/mesimon/tests/` and link
+the whole product, and each starts an in-process daemon, so by crate or by coverage the shared
+files reach all 85. *"The daemon's shared lifecycle"* as a trigger: it cannot be read off a
+diff, and of the last 50 merged tickets (T-1125 to T-1189) 6 touched a file the old rule named,
+15 touched what it could be read to cover, and 2 ran the suite. *A nightly run on main*: the
+board has no scheduled start and a red there has no owner; it can be added later.
+
+**What the board does at that merge**, read from the daemon's code and not run: the train and a
+hand merge paste the merged notice into a live pane only (`merge_train_refused:no_pane`
+otherwise, nothing queued, so a parked or gone agent runs no suite and the release gate is the
+net); `train_busy` holds the train only for a session in the main checkout or a rebase turn, so
+the run blocks no merge; a freeing column waits while a session of the ticket holds a process;
+a fix on the merged branch is a new delivery. The crown's merged wake waits for the notice turn
+(T-596), so on such a ticket it arrives after the suite, or the crown is told of a background
+task. Expected cost if the trigger is followed as written: 15 of the last 50 tickets, about two
+10-minute runs a day beside other builds; without `server.rs` it is 8, and T-987's regression
+would have gone to the release gate.
+
+**Not measured:** the flow itself. The first ticket that owes the run after this merge is its
+live test. Docs only; this ticket ran no cargo.
