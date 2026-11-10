@@ -1763,7 +1763,8 @@ mod tests {
             format!("{ink}{} hello world ─\x1b[39m", "─".repeat(46)),
             "❯\u{a0}\x1b[2mTry \"fix lint errors\"\x1b[0m".to_string(),
             format!("{ink}{}\x1b[39m", "─".repeat(60)),
-            "  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle)\x1b[39m".to_string(),
+            "  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle)\x1b[39m"
+                .to_string(),
         ];
         let shot = Shot { rows: parse(&lines.join("\n")), cols: 60, cursor: Some((2, 3)) };
         assert_eq!(shot.box_rows(), Some((2, 4)), "the box, from its named rule");

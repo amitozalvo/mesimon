@@ -16550,3 +16550,124 @@ fn the_seats_box_opens_in_place() {
     );
     assert!(zone(&closed[field + 1]).trim().is_empty(), "and the delivery row's: {closed:#?}");
 }
+
+/// A person's queued ask on `ticket`, waiting on `waits_on`, with `words`.
+fn queued_words(ticket: u128, waits_on: &[&str], words: &str) -> mesimon_core::command::Pending {
+    mesimon_core::command::Pending { text: Some(words.into()), ..pending_ask(ticket, waits_on) }
+}
+
+/// A queued ask in the live window's closed box (T-1189, the author: "the
+/// queued message in mesimon should be visible and indicated on the input in
+/// ticket page"): the rule, the words in the quiet ink where the open field
+/// types them, and under them when they go with the keys that send or take
+/// them back — said there, so not on the page's branch row as well. Opened,
+/// the field stands on the same rows: nothing above the box moves.
+#[test]
+fn golden_ticket_live_queued_120() {
+    let (mut app, path) = app_live("tlive-queued", false);
+    app.rich_keys = true;
+    app.pending = vec![queued_words(3, &["T-3"], "commit it and push the branch")];
+    let closed = render(&app, 120, 30);
+    let y = closed
+        .iter()
+        .position(|l| l.starts_with(" ❯  commit it and push the branch"))
+        .unwrap_or_else(|| panic!("the words in the box: {closed:#?}"));
+    assert!(
+        closed[y - 1].starts_with(" -- shift+enter "),
+        "the closed rule over them: {closed:#?}"
+    );
+    assert!(
+        closed[y + 1].starts_with(" -- queued ∙ after its turn ∙ ^y send now ∙ ^u take back --"),
+        "when they go, and the keys: {closed:#?}"
+    );
+    assert!(closed[y + 2].contains("Fable 5.1"), "the agent's footer under the box: {closed:#?}");
+    assert_eq!(
+        closed.iter().filter(|l| l.contains("queued ∙")).count(),
+        1,
+        "said once, in the box: {closed:#?}"
+    );
+    golden("ticket_live_queued_120x30", &closed);
+    // Shift+Enter's field, on the words: the same rows.
+    ask_field_on(&mut app, ulid_n(3), "commit it and push the branch", true, false);
+    let open = render(&app, 120, 30);
+    assert!(open[y].starts_with(" ❯  commit it and push the branch"), "same row: {open:#?}");
+    let zone = |l: &String| l.chars().take(84).collect::<String>();
+    let above: Vec<String> = closed[..y - 1].iter().map(zone).collect();
+    let above_open: Vec<String> = open[..y - 1].iter().map(zone).collect();
+    assert_eq!(above, above_open, "nothing over the box moved");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A long queued ask (T-1189, the author's pick: "up to 3 lines"): three
+/// rows of words at the field's column, the cut marker past them, and the
+/// conversation over the box gives the rows up.
+#[test]
+fn a_long_queued_ask_shows_three_rows_and_the_cut() {
+    let (mut app, path) = app_live("tlive-queued-long", false);
+    let words = "commit it, then rebase onto main and run cargo ut and the hook e2e; \
+                 if any of them fails, say which and stop there, and do not push anything \
+                 until I have read the failure and said what to do next with the branch";
+    app.pending = vec![queued_words(3, &["T-3"], &format!("{words} {words}"))];
+    let one = {
+        let (mut a, short) = app_live("tlive-queued-short", false);
+        a.pending = vec![queued_words(3, &["T-3"], "commit it")];
+        let lines = render(&a, 120, 30);
+        let _ = std::fs::remove_dir_all(short.parent().expect("dir"));
+        lines
+    };
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.starts_with(" ❯  commit it, then")).expect("the words");
+    for r in 1..3 {
+        assert!(lines[y + r].starts_with("    ") && lines[y + r].len() > 40, "row {r}: {lines:#?}");
+    }
+    let zone: String = lines[y + 2].chars().take(84).collect();
+    assert!(zone.trim_end().ends_with('~'), "cut: {zone:?}");
+    assert!(lines[y + 3].starts_with(" -- queued ∙ after its turn"), "{lines:#?}");
+    let short_y = one.iter().position(|l| l.starts_with(" ❯  commit it")).expect("one row");
+    assert_eq!(short_y, y + 2, "two rows more than one row of words: {lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// What does not go in the box (T-1189): a held ask — the crown's words,
+/// sent only by a person — keeps the page's row, and the box its rule.
+#[test]
+fn a_held_ask_keeps_its_row_and_the_box_its_rule() {
+    let (mut app, path) = app_live("tlive-queued-held", false);
+    app.pending = vec![mesimon_core::command::Pending {
+        by: Some("T-9".into()),
+        ..queued_words(3, &["T-3"], "commit it and push the branch")
+    }];
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("T-9 asks ∙ you send")), "the row: {lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("commit it and push")), "not in the box: {lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The seat's closed box (T-1189): a queued start shows its words on the
+/// box's middle row, where the field types them, and when it goes on the
+/// row under, in the box's three rows.
+#[test]
+fn golden_ticket_seat_queued_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let plain = render(&app, 120, 30);
+    app.pending = vec![mesimon_core::command::Pending {
+        action: mesimon_core::command::PendingAction::Start,
+        ..queued_words(1, &["T-3"], "write the tests first")
+    }];
+    let lines = render(&app, 120, 30);
+    let rule = box_rule(&plain).expect("the seat's box");
+    assert!(lines[rule].contains("shift+enter"), "the rule stays: {lines:#?}");
+    assert!(lines[rule + 1].starts_with("   › write the tests first"), "{lines:#?}");
+    assert!(lines[rule + 2].starts_with("   -- starts ∙ after T-3"), "{lines:#?}");
+    assert_eq!(lines.iter().filter(|l| l.contains("starts ∙")).count(), 1, "{lines:#?}");
+    golden("ticket_seat_queued_120x30", &lines);
+    // Opened on the words: typed on the same row.
+    ask_field_on(&mut app, ulid_n(1), "write the tests first", true, false);
+    let open = render(&app, 120, 30);
+    let at = open.iter().position(|l| l.contains("write the tests first")).expect("typed");
+    assert_eq!(at, rule + 1, "{open:#?}");
+    let col = |l: &str| l.find("write").map(|b| l[..b].chars().count());
+    assert_eq!(col(&open[at]), col(&lines[rule + 1]), "same column: {open:#?}");
+}

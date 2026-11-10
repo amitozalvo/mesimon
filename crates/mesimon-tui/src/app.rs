@@ -7587,6 +7587,27 @@ impl App {
         self.owed_words(ticket, false)
     }
 
+    /// A person's queued ask as the ticket page's closed box shows it
+    /// (T-1189): its words, and `pending_row`'s, which the box carries in
+    /// place of the page's branch row. None for a held ask (the crown's
+    /// words, or one a question stopped: those wait on a send, and keep
+    /// their row), for an ask with no words (an accept), and while the row
+    /// leads with something else (the trust dialog, an unsent launch, a
+    /// tier switch).
+    pub(crate) fn boxed_ask(&self, ticket: ulid::Ulid) -> Option<(&str, String)> {
+        let p = self.pending_of(ticket)?;
+        let words = p.text.as_deref().filter(|t| !t.trim().is_empty())?;
+        if !p.is_queued_ask()
+            || p.is_held()
+            || self.ticket_trust_ready(ticket)
+            || self.unsent_of(ticket).is_some()
+            || self.tier_owed_row(ticket).is_some()
+        {
+            return None;
+        }
+        Some((words, self.pending_row(ticket)?))
+    }
+
     /// `pending_row`'s words; `split` puts a newline in place of ` ∙ `
     /// between a held ask's or held wake's subject and its reason, where
     /// `card_owed` lets the card break them.

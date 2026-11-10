@@ -584,8 +584,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     // What mesimon owes this ticket, in the card's own words (2026-09-04):
     // `queued ∙ after T-12`, `train ∙ merges when quiet`. The value step,
-    // never calm — calm is the `m` offer's register on this row.
-    if let Some(row) = app.pending_row(ticket.id) {
+    // never calm — calm is the `m` offer's register on this row. A queued
+    // ask the zone's closed box shows says it there, beside its words
+    // (T-1189), and not here as well.
+    let ask_boxed = ask_in_box(app, ticket.id, area.width >= TWO_ZONE_MIN_W, rail_idx);
+    if let Some(row) = app.pending_row(ticket.id).filter(|_| !ask_boxed) {
         let text = if wt_spans.is_empty() { format!(" {row}") } else { format!(" ∙ {row}") };
         wt_spans.push(Span::styled(text, d2));
         // The send and the take-back beside the words, in the keymap's own
@@ -988,6 +991,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             seat,
             launch.as_ref(),
             shin.is_some(),
+            ask_boxed,
         );
         // Under the content where it ends, at the zone's foot where it does
         // not: `used` is the whole zone exactly when the content overflowed.
@@ -1098,6 +1102,7 @@ fn draw_preview(
     seat: Option<ulid::Ulid>,
     launch: Option<&Launch>,
     shin_on_rail: bool,
+    ask_boxed: bool,
 ) -> (usize, Option<Composer>) {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -1284,10 +1289,32 @@ fn draw_preview(
         let closed = !asking_here(app, rec.ticket);
         let boxed = shot.page_box();
         let at = view.partition_point(|&r| r < anchor);
-        let collapse = if closed { boxed.map_or(0, |(top, _, bottom)| bottom - top) } else { 0 };
-        let live_n = (view.len() - at).min(zone_h + collapse);
+        // The rule at the rows' drawn width: a capture from before a
+        // resize is wider or narrower than the zone until the next.
+        let box_w = shot.cols.min(area.width) as usize;
+        // A queued ask (T-1189): the closed box is its rule, the ask's
+        // words and the row that says when they go, in the open field's
+        // rows, so one row of words opens without a row moving. Only while
+        // the box's top rule is among the rows drawn.
+        let fit = |box_rows: usize| {
+            let collapse = match boxed {
+                Some((top, _, bottom)) if closed => (bottom + 1 - top) as isize - box_rows as isize,
+                _ => 0,
+            };
+            let live_n = ((view.len() - at) as isize).min(zone_h as isize + collapse).max(0);
+            (collapse, live_n as usize)
+        };
+        let queued =
+            boxed.filter(|_| closed && ask_boxed && trust_keys.is_none()).and_then(|(top, ..)| {
+                // The pane's own prompt mark, which the open field keeps.
+                let mark = shot.prompt_row().and_then(|p| shot.rows[p].text.trim().chars().next());
+                let rows = queued_box(app, rec.ticket, 0, box_w, LIVE_WORDS, mark)?;
+                let (_, live_n) = fit(rows.len());
+                view[view.len() - live_n..].contains(&top).then_some(rows)
+            });
+        let (collapse, live_n) = fit(queued.as_ref().map_or(1, Vec::len));
         let live_from = view.len() - live_n;
-        let drawn_n = live_n - collapse;
+        let drawn_n = (live_n as isize - collapse).max(0) as usize;
         // The fade is the screen's last rows over the seam, past the blank
         // between them: Claude Code keeps its composer at the foot of an
         // empty screen, and four blank rows going out are a gap.
@@ -1379,16 +1406,15 @@ fn draw_preview(
             // state or facts, which the agent's own footer under it shows
             // (T-1175) — and the pane's rows over and under it as they
             // are. Open, the pane's own rules frame the field as before.
-            // The rule at the rows' drawn width: a capture from before a
-            // resize is wider or narrower than the zone until the next.
-            let box_w = shot.cols.min(area.width) as usize;
-            raw.extend(view[live_from..].iter().filter_map(|&i| {
+            raw.extend(view[live_from..].iter().flat_map(|&i| {
                 let row = &shot.rows[i];
                 match boxed {
-                    _ if trust_keys == Some(i) => Some(trust_rule(app, box_w)),
-                    Some((top, ..)) if closed && i == top => Some(closed_rule(app, 0, box_w)),
-                    Some((top, _, bottom)) if closed && (top..=bottom).contains(&i) => None,
-                    _ => Some(live_line(theme, row)),
+                    _ if trust_keys == Some(i) => vec![trust_rule(app, box_w)],
+                    Some((top, ..)) if closed && i == top => {
+                        queued.clone().unwrap_or_else(|| vec![closed_rule(app, 0, box_w)])
+                    }
+                    Some((top, _, bottom)) if closed && (top..=bottom).contains(&i) => Vec::new(),
+                    _ => vec![live_line(theme, row)],
                 }
             }));
             let rect = Rect {
@@ -1526,10 +1552,19 @@ fn draw_preview(
     // else the field hangs under them, as it did.
     let h = area.height as usize;
     if let Some(ticket) = foot.and_then(|id| app.board.ticket(id)) {
-        if lines.len() + FOOT_ROWS <= h && area.width >= 12 {
-            let open = asking_here(app, ticket.id);
-            lines.resize(h - FOOT_ROWS, Line::default());
-            lines.extend(foot_box(app, area.width as usize, open));
+        let open = asking_here(app, ticket.id);
+        // A queued ask (T-1189) fills the closed box: its words, then the
+        // row that says when they go, as the live window's does.
+        let rows = (ask_boxed && !open && area.width >= 12)
+            .then(|| {
+                let rule_w = (area.width as usize).saturating_sub(4);
+                queued_box(app, ticket.id, 2, rule_w, FOOT_WORDS as usize, None)
+            })
+            .flatten()
+            .unwrap_or_else(|| foot_box(app, area.width as usize, open));
+        if lines.len() + rows.len() <= h && area.width >= 12 {
+            lines.resize(h - rows.len(), Line::default());
+            lines.extend(rows);
             if let Some(w) = word {
                 lines[0] = heading(w);
             }
@@ -2023,8 +2058,7 @@ fn launch_rows(
 const LAUNCH_LABEL: usize = 30;
 const LAUNCH_SECS: usize = 5;
 
-/// The box's rows and where its words start (T-1156).
-const FOOT_ROWS: usize = 3;
+/// Where the box's words start (T-1156).
 const FOOT_WORDS: u16 = 4;
 
 /// Is the ask field open on this ticket's page?
@@ -2036,7 +2070,7 @@ fn asking_here(app: &App, ticket: ulid::Ulid) -> bool {
     )
 }
 
-/// The box at the zone's foot (T-1156), its `FOOT_ROWS`. Closed, its top
+/// The box at the zone's foot (T-1156), its three rows. Closed, its top
 /// rule alone over two blank rows, with the key that opens it as a key cap
 /// and what it does, in the keymap's own words — the live window's closed
 /// box (T-1176). Open, it is the ask field's frame: the rules in the
@@ -2112,6 +2146,99 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     ];
     (spans, used)
 }
+
+/// Will the zone's closed box show the ticket's queued ask (T-1189)? Where
+/// the zone draws a box: the seat's and a launch's at its foot, and a pane's
+/// composer in the live window, unless the pane is on its trust dialog or
+/// its box holds someone's words. Asked before the page's branch row is
+/// built, which leaves the ask's row to the box.
+fn ask_in_box(app: &App, ticket: ulid::Ulid, two_zone: bool, rail_idx: usize) -> bool {
+    if !two_zone || app.boxed_ask(ticket).is_none() {
+        return false;
+    }
+    match app.rail_rows(ticket).get(rail_idx).copied() {
+        Some(RailRow::NewAgent) => true,
+        Some(RailRow::Session(s)) if launch::booting(s) => true,
+        Some(RailRow::Session(s)) => {
+            !s.on_trust_dialog()
+                && !app.frame_ctx().ticket_box_held
+                && app.live_shot(s.id).is_some_and(|shot| shot.for_page().page_box().is_some())
+        }
+        _ => false,
+    }
+}
+
+/// The closed box with a queued ask in it (T-1189): the rule with the key
+/// that opens it, the prompt mark (`mark`, the pane's own in the live
+/// window, else the page's), the ask's words in the quiet ink from
+/// `words_col` (where the open field types them), up to `QUEUED_ROWS` rows with the cut marker
+/// past them, and a rule carrying when they go and the keys that send or
+/// take them back. `lead` blank columns before each; `width` is the rules'.
+fn queued_box(
+    app: &App,
+    ticket: ulid::Ulid,
+    lead: usize,
+    width: usize,
+    words_col: usize,
+    mark: Option<char>,
+) -> Option<Vec<Line<'static>>> {
+    let (words, row) = app.boxed_ask(ticket)?;
+    let theme = &app.theme;
+    let mark = mark.unwrap_or_else(|| glyphs::prompt_mark(theme.glyph_tier())).to_string();
+    let room = (lead + width).saturating_sub(words_col);
+    let rows = crate::peek::wrap(&crate::peek::sanitize(words), room, QUEUED_ROWS);
+    if rows.is_empty() || words_col < lead + mark.width() + 1 {
+        return None;
+    }
+    let mut out = vec![closed_rule(app, lead, width)];
+    for (i, words) in rows.into_iter().enumerate() {
+        let head = if i == 0 {
+            let gap = " ".repeat(words_col - lead - mark.width());
+            vec![
+                Span::raw(" ".repeat(lead)),
+                Span::styled(mark.clone(), theme.dim2()),
+                Span::raw(gap),
+            ]
+        } else {
+            vec![Span::raw(" ".repeat(words_col))]
+        };
+        let mut spans = head;
+        spans.push(Span::styled(words, theme.dim1()));
+        out.push(Line::from(spans));
+    }
+    let ctx = app.frame_ctx();
+    let keys: String = super::ask_keys(app, &ctx)
+        .iter()
+        .map(|b| format!(" ∙ {} {}", b.show, (b.hint)(&ctx)))
+        .collect();
+    out.push(said_rule(app, lead, width, &format!("{row}{keys}")));
+    Some(out)
+}
+
+/// A closed box's lower rule (T-1189): `lead` blank columns, two dashes,
+/// `said` in the quiet ink, and the rule on to `width`, gone out toward the
+/// page ground as the top rule is. Words that do not fit are cut.
+fn said_rule(app: &App, lead: usize, width: usize, said: &str) -> Line<'static> {
+    let theme = &app.theme;
+    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
+    let said = format!(" {} ", truncate(said, width.saturating_sub(6)));
+    let used = 2 + said.width();
+    if used + 2 > width {
+        return Line::from(vec![Span::raw(" ".repeat(lead)), tail_rule(theme, width)]);
+    }
+    Line::from(vec![
+        Span::raw(" ".repeat(lead)),
+        Span::styled("--".to_string(), fade),
+        Span::styled(said, theme.dim1()),
+        tail_rule(theme, width - used),
+    ])
+}
+
+/// The most rows of a queued ask's words the closed box shows (T-1189).
+const QUEUED_ROWS: usize = 3;
+/// Where a queued ask's words start in the live window's box: the column
+/// the open field types them in, a space past the pane's `❯ `.
+const LIVE_WORDS: usize = 3;
 
 /// The folder trust dialog's key row on the page (T-1167), in the place of
 /// the dialog's own `Enter to confirm · Esc to cancel`: the closed box's

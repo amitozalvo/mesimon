@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                              { } page preview    SESSIONS                  2
+
+   • step 10 of the plan                                                                  ⠋ ✻ claude               >1y
+   • step 11 of the plan                                                                  ◦ $ bash                 >1y
+   • step 12 of the plan                                                                   x sleep
+
+   you
+ ❯ Go on; measure the pane sizes too.
+
+   claude
+   Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
+   facts so far: every agent pane is on tmux's alternate screen, an unattached pane
+   sits at 80×24 while an attached one is 187×52.
+
+ ⏺ Checking Codex's composer detection, Mesophon's pane screen, and the L1 law
+   tests · 7s
+   ⎿  $ ls crates/mesimon-daemon/src/agents/
+ · Vibing… (5m 55s · ↓ 22.2k tokens)                                                         ▀█ ▄▀▀   █▀
+ -- shift+enter  edit the queued ask --------------------------------------------           ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+ ❯  commit it and push the branch                                                           ███▀▀████▀▀█ █▀████
+ -- queued ∙ after its turn ∙ ^y send now ∙ ^u take back ------------------------           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+   ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+   ⏵⏵ auto mode on
+ ^y send now ∙ ^u take back ∙ jk select session ∙ tab link ∙ enter focus ∙ shift+enter edit the queued ask       ? keys

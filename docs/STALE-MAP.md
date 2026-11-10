@@ -43176,3 +43176,31 @@ Tests: `app` `immediately_over_a_running_turn_says_it_interrupts` (the Enter and
 says `send`, one Enter sends); `ui` `golden_immediately_over_a_running_turn_flashes_120` (lit and
 dark cells on the card and on the ticket page, `now` and idle quiet), golden
 `board_prompt_interrupts_120x30`.
+
+## A queued ask shows in the ticket page's box (T-1189, 2026-11-10, the author: "the queued message in mesimon should be visible and indicated on the input in ticket page")
+
+An ask parked with Shift+Tab `queued` (the daemon's queue, `Pending.text`) showed only as
+`queued ∙ after T-3 ∙ ^y send now ∙ ^u take back` on the page's branch row, the words nowhere
+until Shift+Enter reopened the field on them. Proposed as frames, the author picked both
+choices: the state said **in the box only**, and **up to three rows** of words.
+
+**Built.** `App::boxed_ask` is the ask the box shows: a queued ask with words, not held (the
+crown's words and a question-stopped follow-up keep their `you send` row), while the row leads
+with nothing else (trust, unsent, tier). Where the zone draws a box (`ask_in_box`: the seat's
+and a launch's foot box, and a pane's composer in the live window unless on its trust dialog or
+holding someone's draft), the closed box is `queued_box`: the closed rule with its key, the
+words in the quiet ink from the open field's column (`peek::wrap`, at most `QUEUED_ROWS`, the
+`~` cut past them), and `said_rule` carrying `pending_row` and the ask keys. The branch row
+leaves the words out then, decided before the band is built so the page never draws them twice
+nor a frame late. One row of words is the open field's three rows, so Shift+Enter moves
+nothing; a longer ask takes up to two rows more from the conversation over it.
+
+**Not done.** A sleeping agent's page draws no box (its reply only), so its queued wake keeps
+the branch row. The first research pass misread the ask as Claude Code's own mid-turn queue
+(`queue-operation` records: `enqueue` with the words, `remove` when folded into a turn,
+`dequeue` before the next turn's `user` record, `popAll` on Up; measured on 2.1.322); the
+author: those are fine as they are.
+
+Tests: `golden_ticket_live_queued_120` (the rows, said once, open over the same rows),
+`a_long_queued_ask_shows_three_rows_and_the_cut`, `a_held_ask_keeps_its_row_and_the_box_its_rule`,
+`golden_ticket_seat_queued_120`.
