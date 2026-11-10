@@ -171,11 +171,13 @@ pub(super) fn render_ask_field(
     // — still gets the row while the flag is on.
     let tier_word = app.field_tier_word(Some(ticket), tier);
     if app.ask_queueable(ticket) || plan || tier_word.is_some() {
+        let target = crate::app::AskTarget::Ticket(ticket);
         rows.push(render_ask_mode(
             ctx,
             crate::app::App::ask_mode_word(accept_plan, queued, immediately, plan),
             app.ask_queueable(ticket) && !app.ticket_plan_ready(ticket),
             tier_word.as_deref(),
+            app.ask_interrupts(&target, (queued, immediately), accept_plan, plan),
         ));
     }
     (rows, x_off)
@@ -225,25 +227,49 @@ pub(super) fn render_workspace_selector(
 /// placeholder carries that word now (`render_prompt`).
 /// `cycles` is whether Shift+Tab is live on the row (T-420: not on a plan
 /// dialog, where the one stop is `accept plan`); the hint goes with it.
+/// `interrupts` (T-1188, `App::ask_interrupts`): the row adds
+/// `INTERRUPTS` and flashes as the armed delete does (`interrupt_lit`).
 pub(super) fn render_ask_mode(
     ctx: &CardCtx,
     word: &'static str,
     cycles: bool,
     tier_word: Option<&str>,
+    interrupts: bool,
 ) -> Line<'static> {
     let theme = ctx.theme;
-    let mut spans = vec![
-        Span::raw(" ".repeat(crate::tags::BAR + 1)),
-        Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
-    ];
+    let lit = interrupts && theme.delete_lit(ctx.spin);
+    let ink = if lit { interrupt_ink(theme) } else { Style::default().fg(theme.sel.dim1) };
+    let lead = crate::tags::BAR + 1;
+    let mut said = word.to_string();
+    if interrupts {
+        // A column's width: the short form where the whole one would be cut.
+        let fits = lead + word.width() + INTERRUPTS.width() < ctx.width as usize;
+        said.push_str(if fits { INTERRUPTS } else { INTERRUPTS_SHORT });
+    }
+    let mut spans = vec![Span::raw(" ".repeat(lead)), Span::styled(said, ink)];
     // `^n` (T-443): the tier the words switch the agent to.
     if let Some(tier) = tier_word {
         spans.push(Span::styled(format!(" ∙ {tier}"), Style::default().fg(theme.sel.dim1)));
     }
-    if cycles {
-        spans.push(Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)));
+    let hint = "  shift+tab";
+    // The warning keeps its words whole; the key goes where it would not fit.
+    if cycles && (!interrupts || super::spans_width(&spans) + hint.width() < ctx.width as usize) {
+        spans.push(Span::styled(hint.to_string(), Style::default().fg(theme.sel.dim2)));
     }
-    Line::from(spans).style(theme.selected_row())
+    Line::from(spans).style(if lit { theme.delete_row() } else { theme.selected_row() })
+}
+
+/// The timing row's words over a running turn (T-1188): `immediately`
+/// says what Enter does to the agent.
+pub(super) const INTERRUPTS: &str = " ∙ interrupts the agent";
+/// `INTERRUPTS` on a card too narrow for it.
+const INTERRUPTS_SHORT: &str = " ∙ interrupts";
+
+/// The lit phase's ink on an interrupting timing row (T-1188): the armed
+/// delete's title, `err` bold, on its `delete_row` ground. Colours the diff
+/// already spends, so the one-saturated-colour law is untouched.
+pub(super) fn interrupt_ink(theme: &Theme) -> Style {
+    theme.err_text().add_modifier(Modifier::BOLD)
 }
 
 pub(super) fn register_style(theme: &Theme, reg: Register) -> Style {

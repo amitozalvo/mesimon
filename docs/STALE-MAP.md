@@ -43149,3 +43149,30 @@ takes none, a compile that waited its limit goes ahead, a slot directory open to
 symlinked slot is not used: the slot files are in `/tmp`, a guessable name), `WorktreeInitTests` (the config and wrapper are written, a worktree outside mesimon's
 state directory gets nothing beside it, an idle landed worktree's cache is reclaimed and a fresh
 one kept). No Rust changed.
+
+## `immediately` over a running turn flashes red and says it interrupts (T-1188, 2026-11-10)
+
+The author: "warn user before using immediately for running agent", then, from a proposal
+Artifact with two options (ask twice / say it only): "say it only but show dangerous flashing
+color", "'interrupts the agent' maybe a better wording?".
+
+When the ask field sits at `immediately` and its ticket's Claude pane is mid-turn
+(`App::ask_interrupts`: the `send_now_seat` read through `quiet::is_working`, a hint as
+`checkout_busy` is), the timing row reads `immediately ∙ interrupts the agent` and flashes as the
+armed delete does: `Theme::delete_row` ground and `err` bold on `Theme::delete_lit`'s 400 ms
+phase, the row's own look in the dark phase. Enter's word (and the ask room's `^s`) becomes
+`keymap::INTERRUPT_HINT`, "sends into the turn: a running command goes to the background, or the
+turn stops", which is T-601's measure of Claude Code's send-now. One Enter still sends: no second
+press (the author chose B over A). Three surfaces draw it: the card's field
+(`card::render_ask_mode`), the ticket page's composer row (`ticket::delivery_row`), and the
+editor's context row.
+
+Refuted: a new saturated warning colour, which the one-colour law forbids. The delete's flash
+spends colours the diff view already has, so `attn_is_its_own_colour` holds. Kept quiet: `now`,
+`queued`, an agent between turns (where `immediately` is a plain send), plan mode (a park and a
+wake), Codex (no stop), a column ask. The crown's `immediately` and Remote Control are unchanged.
+
+Tests: `app` `immediately_over_a_running_turn_says_it_interrupts` (the Enter and `^s` words, idle
+says `send`, one Enter sends); `ui` `golden_immediately_over_a_running_turn_flashes_120` (lit and
+dark cells on the card and on the ticket page, `now` and idle quiet), golden
+`board_prompt_interrupts_120x30`.

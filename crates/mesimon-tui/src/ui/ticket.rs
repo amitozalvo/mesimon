@@ -1030,7 +1030,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                     let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
                     let tier_word = app.field_tier_word(Some(ticket_id), tier);
                     let cycles = app.ask_queueable(ticket_id) && !app.ticket_plan_ready(ticket_id);
-                    let line = delivery_row(theme, c, word, tier_word.as_deref(), cycles);
+                    let interrupts = app.ask_interrupts(
+                        &crate::app::AskTarget::Ticket(ticket_id),
+                        (queued, immediately),
+                        accept_plan,
+                        plan,
+                    );
+                    // T-1188: the armed delete's flash, on its phase.
+                    let lit = interrupts.then(|| theme.delete_lit(app.spin_frame()));
+                    let line = delivery_row(theme, c, word, tier_word.as_deref(), cycles, lit);
                     let rect = Rect { x: c.x, y: under, width: c.right - c.x, height: 1 };
                     f.render_widget(Paragraph::new(line), rect);
                 }
@@ -1618,6 +1626,7 @@ fn delivery_row(
     word: &str,
     tier_word: Option<&str>,
     cycles: bool,
+    interrupts: Option<bool>,
 ) -> Line<'static> {
     let width = (c.right - c.x) as usize;
     let lead = (c.words_x - c.x) as usize + 1;
@@ -1625,7 +1634,15 @@ fn delivery_row(
         Some(_) => (theme.dim1(), theme.dim2()),
         None => (Style::default().fg(theme.sel.dim1), Style::default().fg(theme.sel.dim2)),
     };
-    let mut words = vec![Span::styled(word.to_string(), word_ink)];
+    // `Some(lit)` over a running turn (T-1188): the words say what Enter
+    // does, and in the lit phase the row takes the armed delete's red.
+    let lit = interrupts == Some(true);
+    let mut said = word.to_string();
+    if interrupts.is_some() {
+        said.push_str(super::card::INTERRUPTS);
+    }
+    let said_ink = if lit { super::card::interrupt_ink(theme) } else { word_ink };
+    let mut words = vec![Span::styled(said, said_ink)];
     if let Some(t) = tier_word {
         words.push(Span::styled(format!(" ∙ {t}"), word_ink));
     }
@@ -1637,7 +1654,11 @@ fn delivery_row(
         let mut spans = vec![Span::raw(" ".repeat(lead))];
         spans.extend(words);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(lead + said))));
-        return Line::from(spans).style(theme.selected_row());
+        return Line::from(spans).style(if lit {
+            theme.delete_row()
+        } else {
+            theme.selected_row()
+        });
     };
     // The rule to the words' column less one, a space, the words, a space,
     // the rule to the edge.
@@ -1648,6 +1669,9 @@ fn delivery_row(
     spans.extend(words);
     spans.push(Span::raw(" "));
     spans.push(Span::styled(glyph.repeat(after), theme.dim2()));
+    if lit {
+        return Line::from(spans).style(theme.delete_row());
+    }
     Line::from(spans)
 }
 

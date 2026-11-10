@@ -9194,16 +9194,93 @@ fn rail_cols(lines: &[String]) -> Vec<String> {
 
 /// The ask field for T-3 open with `text` typed.
 fn ask_field(app: &mut App, text: &str, queued: bool) {
+    ask_field_at(app, text, queued, false);
+}
+
+/// `ask_field` with the ring's third stop (T-601) picked or not.
+fn ask_field_at(app: &mut App, text: &str, queued: bool, immediately: bool) {
+    ask_field_on(app, ulid_n(3), text, queued, immediately);
+}
+
+/// T-1188. On T-3, whose claude is mid-turn, the field at `immediately`
+/// says it interrupts the agent and flashes the armed delete's red: the
+/// lit phase on the delete's ground in `err` bold, the dark phase the row's
+/// own look, the footer's Enter saying what happens. `now`, and an agent
+/// between turns, draw the row as before. On the board's card and on the
+/// ticket page's composer.
+#[test]
+fn golden_immediately_over_a_running_turn_flashes_120() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let del_bg = theme.diff_del_bg().expect("graphite tints");
+    let find = |buf: &ratatui::buffer::Buffer, words: &str| {
+        (0..30u16).find_map(|y| {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+            row.find(words).map(|ix| (row[..ix].chars().count() as u16, y))
+        })
+    };
+    let at = |app: &App, ago_ms: u64| {
+        app.spin_epoch
+            .set(Some(std::time::Instant::now() - std::time::Duration::from_millis(ago_ms)));
+        cells(app, 120, 30)
+    };
+
+    // The board: the field under T-3's card.
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    ask_field_at(&mut app, "stop and rebase", false, true);
+    let lit = at(&app, 0);
+    // A card is narrow: the short form, whole, the key let go.
+    let card = "immediately ∙ interrupts";
+    let (x, y) = find(&lit, card)
+        .unwrap_or_else(|| panic!("the row says it interrupts: {:#?}", lines_of(&lit)));
+    assert_eq!((lit[(x, y)].fg, lit[(x, y)].bg), (theme.err, del_bg), "lit: the delete's red");
+    assert!(lit[(x, y)].modifier.contains(ratatui::style::Modifier::BOLD));
+    let lines = lines_of(&lit);
+    assert!(lines[y as usize].trim_end().ends_with(card), "cut nowhere: {lines:#?}");
+    let foot = lines.last().expect("footer");
+    assert!(foot.contains("enter sends into the turn"), "{foot:?}");
+    golden("board_prompt_interrupts_120x30", &lines);
+    let dark = at(&app, 410);
+    assert_ne!(dark[(x, y)].bg, del_bg, "dark: the row's own ground");
+    assert_eq!(dark[(x, y)].fg, theme.sel.dim1, "dark: the row's own ink");
+    // `now` never flashes.
+    ask_field_at(&mut app, "stop and rebase", false, false);
+    assert!(find(&at(&app, 0), card).is_none(), "now says nothing");
+    // Between turns `immediately` is a plain send.
+    app.board_mut().sessions[0].state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+    ask_field_at(&mut app, "stop and rebase", false, true);
+    let idle = render(&app, 120, 30);
+    assert!(!idle.iter().any(|l| l.contains("interrupts")), "{idle:#?}");
+    assert!(idle.last().is_some_and(|l| l.contains("enter send ")), "{:?}", idle.last());
+
+    // The ticket page: the delivery row is the composer's bottom rule.
+    let (mut page, path) = app_live("tlive-interrupts", false);
+    ask_field_at(&mut page, "stop and rebase", false, true);
+    let lit = at(&page, 0);
+    let (x, y) =
+        find(&lit, "immediately ∙ interrupts the agent").expect("the page has room for it whole");
+    assert_eq!((lit[(x, y)].fg, lit[(x, y)].bg), (theme.err, del_bg), "lit on the page");
+    assert_eq!(lit[(1, y)].bg, del_bg, "the whole row takes the ground");
+    let rows = lines_of(&lit);
+    assert!(rows[y as usize].starts_with(" ── immediately ∙ interrupts the agent"), "{rows:#?}");
+    let dark = at(&page, 410);
+    assert_ne!(dark[(x, y)].bg, del_bg, "dark on the page");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+fn ask_field_on(app: &mut App, on: ulid::Ulid, text: &str, queued: bool, immediately: bool) {
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in text.chars() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            target: crate::app::AskTarget::Ticket(on),
             walk: None,
             queued,
-            immediately: false,
+            immediately,
             accept_plan: false,
             plan: false,
             tier: None,

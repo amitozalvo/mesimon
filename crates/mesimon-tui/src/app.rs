@@ -7391,6 +7391,48 @@ impl App {
         }
     }
 
+    /// Would Enter at this field cut into a running turn (T-1188)? At
+    /// `immediately`, with the ticket's Claude pane mid-turn: Claude Code's
+    /// send-now moves a running command to the background, or stops the
+    /// turn where it cannot. The timing row then says `interrupts the
+    /// agent` and flashes the armed delete's red, and the footer's Enter
+    /// says what happens. A HINT, the board's read of the pane, as
+    /// `checkout_busy` is: the daemon sends as it always did. Between turns
+    /// `immediately` is a plain send; plan mode parks and wakes instead.
+    pub(crate) fn ask_interrupts(
+        &self,
+        target: &AskTarget,
+        (queued, immediately): (bool, bool),
+        accept_plan: bool,
+        plan: bool,
+    ) -> bool {
+        immediately
+            && !queued
+            && !accept_plan
+            && !plan
+            && match target {
+                AskTarget::Ticket(t) => {
+                    self.board.send_now_seat(*t).is_some_and(mesimon_core::quiet::is_working)
+                }
+                AskTarget::Column(_) => false,
+            }
+    }
+
+    /// The open field's `ask_interrupts`, for the footer's Enter word.
+    fn field_interrupts(&self) -> bool {
+        match &self.mode {
+            Mode::Input {
+                purpose: InputPurpose::Prompt { target, queued, immediately, accept_plan, plan, .. },
+                ..
+            }
+            | Mode::Editor(Editor {
+                purpose: EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, .. },
+                ..
+            }) => self.ask_interrupts(target, (*queued, *immediately), *accept_plan, *plan),
+            _ => false,
+        }
+    }
+
     /// The delivery ring without an `accept plan` stop: `now` → `queued` →
     /// `immediately` (where `immediate_able`, T-601) → `now`. The new stop
     /// comes after the two the key always toggled, so `now` → `queued` is
@@ -8560,6 +8602,7 @@ impl App {
                 }
                 _ => false,
             },
+            ask_interrupts: self.field_interrupts(),
             checkout_busy: subject.is_some_and(|t| self.checkout_busy(t)),
             ask_queued: matches!(
                 self.mode,
@@ -24288,6 +24331,47 @@ mod tests {
     /// so, and Enter at `immediately` sends now with Claude Code's
     /// send-now; a Codex pane has no such stop. A crown's ask held at
     /// `immediately` reopens there.
+    /// T-1188: `immediately` over a running turn says, in Enter's word,
+    /// what it does to the agent; `now`, `queued` and an agent between
+    /// turns keep `send` / `queue`. Enter still sends at once.
+    #[test]
+    fn immediately_over_a_running_turn_says_it_interrupts() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        let enter = |app: &App| {
+            mesimon_core::keymap::hint_for(Scope::Input, Verb::Save, &app.ctx()).map(|(_, w)| w)
+        };
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_interrupts, "now");
+        assert_eq!(enter(&app), Some("send"));
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_interrupts, "queued");
+        assert_eq!(enter(&app), Some("queue"));
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_interrupts, "immediately, mid-turn");
+        assert_eq!(enter(&app), Some(mesimon_core::keymap::INTERRUPT_HINT));
+        // The room says it on `^s`.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().ask_interrupts, "the room keeps it");
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Editor, Verb::EditorSave, &app.ctx())
+                .map(|(_, w)| w),
+            Some(mesimon_core::keymap::INTERRUPT_HINT)
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        // Between turns it is a plain send: no warning.
+        app.board_mut().sessions[0].state =
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        assert!(!app.ctx().ask_interrupts, "an idle agent has no turn to interrupt");
+        assert_eq!(enter(&app), Some("send"));
+        app.board_mut().sessions[0].state = SessionState::Running;
+        // One Enter sends, as before: the warning asks nothing.
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "immediately: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "asked immediately");
+    }
+
     #[test]
     fn the_ask_field_sends_immediately_on_a_claude_pane() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);

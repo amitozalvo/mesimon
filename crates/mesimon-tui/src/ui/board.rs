@@ -788,6 +788,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 crate::app::App::ask_mode_word(accept_plan, queued, false, false),
                 true,
                 None,
+                // A column's ask has no `immediately` stop (T-601).
+                false,
             ));
         }
     }

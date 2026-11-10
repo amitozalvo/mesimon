@@ -1638,6 +1638,9 @@ pub struct Ctx {
     /// The ask field's ring has an `immediately` stop (T-601): its ticket's
     /// agent is a Claude pane, where Claude Code's send-now can reach it.
     pub ask_immediate_able: bool,
+    /// The ask field sits at `immediately` and its agent is mid-turn
+    /// (T-1188): Enter interrupts it, and its word says how.
+    pub ask_interrupts: bool,
     /// The ask field's toggle sits at `queued` — Enter parks the words.
     pub ask_queued: bool,
     /// The ask field's toggle sits at `accept plan` (T-420): Enter accepts
@@ -7972,6 +7975,12 @@ static HEADER: &[Binding] = &[
     },
 ];
 
+/// The ask field's Enter (and the ask room's `^s`) at `immediately` over a
+/// running turn (T-1188): Claude Code's send-now moves the running command
+/// to the background, or stops the turn where it cannot (T-601's measure).
+pub const INTERRUPT_HINT: &str =
+    "sends into the turn: a running command goes to the background, or the turn stops";
+
 static INPUT: &[Binding] = &[
     Binding {
         keys: &[Key::Enter],
@@ -7986,6 +7995,9 @@ static INPUT: &[Binding] = &[
                     "accept plan"
                 } else if c.ask_queued {
                     "queue"
+                } else if c.ask_interrupts {
+                    // T-1188: what send-now does to a running turn.
+                    INTERRUPT_HINT
                 } else {
                     "send"
                 }
@@ -8493,6 +8505,8 @@ static EDITOR: &[Binding] = &[
                 "save"
             } else if c.ask_queued {
                 "queue"
+            } else if c.ask_interrupts {
+                INTERRUPT_HINT
             } else {
                 "send"
             }

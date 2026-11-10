@@ -527,10 +527,23 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                     ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 }
             }
-            ctx_spans.push(Span::styled(
-                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan),
-                dim1,
-            ));
+            // T-1188: over a running turn the timing says what Enter does to
+            // the agent, flashing the armed delete's red on its phase.
+            let interrupts =
+                app.ask_interrupts(target, (*queued, *immediately), *accept_plan, *plan);
+            let lit = interrupts && app.theme.delete_lit(app.spin_frame());
+            let mut said =
+                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan)
+                    .to_string();
+            if interrupts {
+                said.push_str(super::card::INTERRUPTS);
+            }
+            ctx_spans.push(if lit {
+                Span::styled(said, super::card::interrupt_ink(&app.theme))
+                    .patch_style(app.theme.delete_row())
+            } else {
+                Span::styled(said, dim1)
+            });
             // `^n` (T-443): the tier the words switch the agent to.
             let ticket = match target {
                 AskTarget::Ticket(t) => Some(*t),
