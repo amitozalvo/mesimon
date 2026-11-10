@@ -242,7 +242,11 @@ pub const CROWN_WAKES: &str = concat!(
      queued or held_for_person), and a woken agent with none stays idle, no turn and no wake, \
      until words reach it. ask_agent's \
      words to such a parked agent wake it as well, as they are sent (the receipt's wake: woken, \
-     or when_sent), so no start_agent follows them. A worker \
+     or when_sent), so no start_agent follows them. An agent that exited and was not dismissed \
+     (a crash, a kill, a logout, a restart of the machine: get_ticket's state reads exited, \
+     with how under exited) is woken the same two ways where the crown started it and its \
+     conversation was kept, and where a person started it start_agent is refused: a person \
+     resumes it, or dismisses it for a new agent. A worker \
      stopped on a question or a \
      plan reads needs-you, and \
      get_ticket on its ticket carries it (needs_you: the reason, the request, and the \
@@ -934,7 +938,7 @@ pub fn tools() -> Vec<Value> {
             // which `CROWN_WAKES`' workspace sentence and the refusal carry.
             "description": "Starts the board's agent on another mesimon ticket (crown only) in \
                             workspace: an unstarted ticket takes it, a worktree or parked agent \
-                            keeps its own. A parked agent the crown started is \
+                            keeps its own. A parked or exited agent the crown started is \
                             woken, a person's refused, as is a start with a tier where a person \
                             started one. The receipt names the tier it launched on. A turn's \
                             end wakes this session, so nothing is polled.",
@@ -3167,6 +3171,28 @@ mod tests {
         assert_eq!(lint_tool_text(CROWN_WAKES), Ok(()));
     }
 
+    /// T-1190: a crown whose workers a reboot had filed crashed read no
+    /// state on their tickets, took them for unstarted and started a second
+    /// agent on each. The paragraph says an exited agent is one, how its
+    /// ticket reads, that the crown's own is woken with its conversation,
+    /// and that a person's is the person's.
+    #[test]
+    fn the_crown_is_told_an_exited_agent_is_woken_not_replaced() {
+        for words in [
+            "An agent that exited and was not dismissed",
+            "get_ticket's state reads exited, with how under exited",
+            "is woken the same two ways where the crown started it and its conversation was kept",
+            "where a person started it start_agent is refused",
+        ] {
+            assert!(CROWN_WAKES.contains(words), "CROWN_WAKES names {words:?}");
+        }
+        let start = tools().into_iter().find(|t| t["name"] == "start_agent").unwrap();
+        assert!(start["description"]
+            .as_str()
+            .unwrap()
+            .contains("A parked or exited agent the crown started is woken"));
+    }
+
     /// T-895: the crown is told the board reads the forge and wakes it, and
     /// that a busy session, a watch command or a loop that polls included,
     /// holds the train and the wake; `get_ticket`'s `prs_about` says how
@@ -3815,7 +3841,7 @@ mod tests {
             "in workspace",
             "an unstarted ticket takes it",
             "a worktree or parked agent keeps its own",
-            "A parked agent the crown started is woken",
+            "A parked or exited agent the crown started is woken",
             "a person's refused",
         ] {
             assert!(description.contains(words), "start_agent says {words:?}");

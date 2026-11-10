@@ -658,7 +658,11 @@ the conversation is kept, `c` wakes it, and while it sleeps its seat is free for
 The crown chooses each ticket's workspace when it files or starts it, a worktree of its own or the
 shared checkout. It is refused the shared checkout while another ticket's agent is awake or still
 stopping there. A safely sleeping agent releases it without archiving its ticket. The crown
-wakes an agent it parked itself, in the workspace it was parked in. A wake sends
+wakes an agent it parked itself, in the workspace it was parked in. An agent the crown started
+that exited (a crash, a restart of the machine) is brought back the same way, in the
+conversation it had, and no second agent is started beside it; one you started yourself stays
+yours to resume with `enter` on its row, or to dismiss with `x` so the crown can start a new
+one. A wake sends
 the agent nothing: it comes back to its prompt box, as after `c`, and sits idle until words reach
 it. The crown is told so when it wakes one (to carry a worker on with another model after a
 usage limit, say), and sends its words to go on once, the same way it asks anything else.

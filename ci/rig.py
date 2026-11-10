@@ -3059,6 +3059,30 @@ Reply with the single word ready and end your turn."""
                 return False
             self.closed()
             return True
+        if what == "crash":
+            # WD1 (T-1190): the worker's Claude Code killed under it, as a
+            # reboot ends an idle agent: SIGKILL to its pane's process, so
+            # tmux's pane-died files the record exited (crashed), a corpse
+            # whose conversation is still in Claude's store. A crash ends no
+            # turn and wakes no crown, so the step ends at the record.
+            rec = self.agent_of(self.board(), test["ticket"])
+            if word_of(rec["state"]) != "idle":
+                record["failures"].append(f"the crash came to a worker not idle ({word_of(rec['state'])})")
+                return False
+            pid = self.tmux("list-panes", "-t", sid16(rec["id"]), "-F", "#{pane_pid}").stdout.strip()
+            if not pid.isdigit():
+                record["failures"].append(f"no pane process to crash for {test['key']}: {pid!r}")
+                return False
+            os.kill(int(pid), signal.SIGKILL)
+            record["crashed"] = rec["id"]
+            dead = self.wait_for("the crashed worker's record", lambda: next((
+                s for s in self.board()["sessions"] if s["id"] == rec["id"]
+                and s["state"].get("state") == "exited"), None), WAKE_GRACE, self.watch)
+            if not dead:
+                record["failures"].append("the worker's record never read exited after its process was killed")
+                return False
+            self.log(f"crashed {test['key']}'s agent (pid {pid}): exited, {dead['state'].get('reason')}")
+            return True
         if what in ("limit", "fail"):
             # L1 (T-802): the account's usage limit, as Claude Code reports
             # it — a `StopFailure` whose class is `rate_limit` — sent through
@@ -4128,6 +4152,17 @@ Reply with the single word ready and end your turn."""
                 check(c, rec.get("started_by") is None, f"started by {rec.get('started_by')}")
             elif name == "started_by_crown":
                 check(c, rec.get("started_by") == self.crown, f"started by {rec.get('started_by')}")
+            elif name == "resumed":
+                # WD1 (T-1190): the ticket's one agent record is the one the
+                # rig crashed, live again on `--resume`: its conversation,
+                # and no second agent beside it.
+                agents = [s for s in board["sessions"] if s["ticket"] == tid and s["kind"] == "claude"]
+                ok = (len(agents) == 1 and rec["id"] == record.get("crashed")
+                      and "--resume" in rec["argv"] and word_of(rec["state"]) != "exited")
+                check(c, ok, f"{len(agents)} agent record(s); the last is "
+                      f"{'the crashed one' if rec['id'] == record.get('crashed') else 'another'}, "
+                      f"{'--resume' if '--resume' in rec['argv'] else 'no --resume'} on argv, "
+                      f"{word_of(rec['state'])}")
             elif name == "cwd":
                 at_root = os.path.realpath(rec["cwd"]) == self.repo
                 ok = at_root if arg == "checkout" else (not at_root and "/worktrees/" in rec["cwd"])

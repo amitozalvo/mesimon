@@ -42887,3 +42887,60 @@ compaction.
 
 Tests: `composer` `a_named_sessions_box_is_read`, `live`
 `a_named_sessions_box_is_found_and_drawn_without_the_name`. No golden moved.
+
+## The crown's start resumes a crashed worker it started (T-1190, 2026-11-10, the author: "go, refuse")
+
+simbly's Mac went down with two crown-started workers idle (T-295, T-301): `SessionEnd` filed
+both `Exited{Crashed}`. Back up, the crown read `get_ticket` on each, found no `state` at all
+("Without any state fields, I'm treating T-295 and T-301 as having no agents"), tried
+`start_agent` "to see from the receipt which one applies", and each ticket got a SECOND claude
+on the brief beside the conversation it had. `sample_agent` had told it "has no agent;
+start_agent starts one".
+
+T-1119 gave an ask the corpse (`seat_of` → `Wake(corpse)`) and left `start_agent` out on
+purpose: "the person asked for one by name". That holds for a person's `+ agent session`. For
+the crown, `start_agent` is the one tool that brings a worker back, and nothing told it a
+conversation was there. **Reversed for the crown; the person's explicit start is unchanged.**
+
+- **`crown::judge` takes the corpse** (`Board::dead_agent`, passed by the daemon as
+  `resumable_corpse`: only while the provider's store still holds its conversation, the test
+  `park_on_exit` uses). The crown's own is `Start::Wake`, under the parked agent's workspace
+  rule (it resumes in the cwd it ran in); `resume_session_in` already took a corpse. **A
+  person's is refused**, the author's choice over letting the crown resume it: "a person resumes
+  it (enter on its row on the ticket's page), or dismisses it there (x) for start_agent to seat
+  a new one". A dismissed corpse, or one with no conversation (a launch that died before its
+  first prompt), is no seat: the start is the fresh one it was, since a resume there would seat
+  an agent at an empty box with no brief.
+- **The ticket says it.** `get_ticket`'s `state` reads `exited` with `exited: crashed | killed |
+  logged out | quit` (`AgentStateView::exited`, `board::agent_exit_word`), `list_board`'s row
+  reads `exited`, the `seen` stamp covers the corpse, and `sample_agent`'s refusal says the agent
+  exited and that a start resumes it. `start_agent`'s description and `CROWN_WAKES` say an
+  exited agent the crown started is woken, conversation kept.
+- **The crown's ask to its own crashed worker goes.** `crown_ask_hold` read `started_by` off
+  `live_agent`, so a corpse was "a person's" and the words waited for a person's send; it reads
+  `Board::agent_or_corpse`. **And a queued ask to any corpse was dropped the tick it was due**:
+  `seat_stands` judged `Wake(id)` against `live_agent`, which a corpse never is
+  (`queued_ask_dropped_target_gone`). T-1119's e2e sent with `queued: false` and never met it.
+  A person's queued ask to a crashed agent resumes it now too.
+
+Not built, banked: the board has no key that ends a live agent so that it leaves the seat (`x`
+and `/exit` park, a parked agent holds the seat, and Enter on an older corpse is then refused),
+so undoing a second agent takes a `kill -9` from a shell. And a launch that dies with its brief
+still owed keeps its ticket "working" in its checkout (`owed`), which holds a queued ask there;
+the e2e's first stub hit it, simbly's idle workers did not.
+
+Tests: `crown::tests::an_exited_agent_is_the_crowns_to_wake_only_if_the_crown_started_it`
+(`an_unstarted_ticket_takes_the_choice`'s dead record is now a dismissed one: an undismissed
+corpse is a seat by this decision), `board` `agent_or_corpse` in the corpse test,
+`mcp::tests::the_crown_is_told_an_exited_agent_is_woken_not_replaced`, and
+`ask_after_crash_e2e::the_crown_s_start_resumes_the_crashed_worker_it_started` (real tmux, a
+stub crashed after an idle turn: the same record on `--resume`, the ask sent and delivered, a
+person's refused, a no-conversation corpse started fresh). Rig: `WD1` (blind), with the rig
+step `crash` and the check `resumed`. One live run, crown on `claude-opus-5-5` at high effort,
+worker on Sonnet, Claude Code 2.1.322: passed in 76 s. Told only that the machine went down and
+to get the agent's own answer, the crown made one `ask_agent` and no start; the crashed record
+came back on `--resume` and answered `quince` from its conversation. One sample on one model.
+Full workspace suite once after the change: 3518 passed. Its first run stopped at
+`crown_e2e::a_codex_worker_s_failed_turns_are_told_by_turn`, which killed a crown-started
+worker and expected the next `start_agent` to seat a new session: the behaviour this decision
+changes, so the test now dismisses the killed record first, as T-1119's did for an ask.

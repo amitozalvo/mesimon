@@ -103,7 +103,16 @@ impl Daemon {
             return Err((Some(target), message));
         }
         let Some(rec) = self.board.live_agent(target) else {
-            return Err((Some(target), format!("{key} has no agent; start_agent starts one")));
+            // An exited agent has no pane to read, and is not "no agent"
+            // (T-1190): its conversation is what a start resumes.
+            let message = match self.board.dead_agent(target) {
+                Some(_) => format!(
+                    "{key}'s agent exited and has no pane to read; get_ticket's state says how \
+                     it ended, and start_agent resumes one the crown started"
+                ),
+                None => format!("{key} has no agent; start_agent starts one"),
+            };
+            return Err((Some(target), message));
         };
         let started = rec.started_by.is_some();
         if !started {

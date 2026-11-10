@@ -14,7 +14,9 @@
 //!    field may have moved under a parked record since.
 //! 2. **The crown wakes what it parked.** A start on a ticket whose only
 //!    agent sleeps and was started by the crown is that agent's wake; a
-//!    person's parked agent stays the person's.
+//!    person's parked agent stays the person's. An agent that exited with
+//!    its conversation kept (a crash, a kill, a logout) is the same seat by
+//!    the same rule (T-1190): the crown's is woken, a person's refused.
 //! 3. **No second agent on a held checkout.** A `shared_checkout` start is
 //!    refused while another ticket's agent is live there — working, idle, or
 //!    still stopping. A safely parked conversation releases the checkout;
@@ -118,7 +120,8 @@ pub enum Start {
     /// A fresh agent. `apply` says the ticket's workspace has to be set to
     /// the crown's choice first, as `set_workspace` would.
     Spawn { apply: bool },
-    /// The agent the crown started and parked, woken where it was parked.
+    /// The agent the crown started, parked or exited with its conversation
+    /// kept (T-1190), woken where it last ran.
     Wake(uuid::Uuid),
 }
 
@@ -127,7 +130,13 @@ pub enum Start {
 /// whether `target` has a worktree binding, `checkout` the shared checkout's
 /// path as a record's cwd spells it. The budget and the plan flag are the
 /// daemon's to judge after this; `reserved` supplies its teardown and queued
-/// launch reservations on this checkout. Nothing here mutates.
+/// launch reservations on this checkout. `corpse` is `Board::dead_agent` of
+/// `target` while its conversation is still there to resume (the daemon
+/// reads the provider's store): an exited agent is woken as a parked one is
+/// (T-1190), where a start beside it seated a second agent with the first
+/// one's conversation left on the rail. One with no conversation is no seat,
+/// and the start is a fresh one. Nothing here mutates.
+#[allow(clippy::too_many_arguments)]
 pub fn judge(
     board: &Board,
     own: ulid::Ulid,
@@ -136,10 +145,22 @@ pub fn judge(
     has_worktree: bool,
     checkout: &str,
     reserved: &[ulid::Ulid],
+    corpse: Option<&SessionRecord>,
 ) -> Result<Start, String> {
     let Some(t) = board.ticket(target) else { return Err("no such ticket".into()) };
     let key = t.short_key.as_str();
-    let start = match board.live_agent(target) {
+    let seat = board.live_agent(target);
+    // How the seat's agent left its pane, as the refusals say it.
+    let (was, is, wake) = match seat {
+        Some(_) => ("parked", "is parked", "a person wakes it (c on its card)"),
+        None => (
+            "exited",
+            "exited",
+            "a person resumes it (enter on its row on the ticket's page), or dismisses it there \
+             (x) for start_agent to seat a new one",
+        ),
+    };
+    let start = match seat.or(corpse) {
         Some(rec) if rec.state.has_pane() => {
             return Err(format!(
                 "{key} already has an agent ({}); one agent per ticket",
@@ -147,16 +168,13 @@ pub fn judge(
             ))
         }
         Some(rec) if rec.started_by.is_none() => {
-            return Err(format!(
-                "{key}'s agent was started by a person and is parked; a person wakes it \
-                 (c on its card)"
-            ))
+            return Err(format!("{key}'s agent was started by a person and {is}; {wake}"))
         }
         Some(rec) => {
             let has = runs_in(rec, checkout);
             if has != wanted {
                 return Err(format!(
-                    "{key}'s parked agent works {}, and a wake runs it there: workspace {}",
+                    "{key}'s {was} agent works {}, and a wake runs it there: workspace {}",
                     match has {
                         WorkspaceStrategy::SharedCheckout => "on the shared checkout",
                         _ => "in its worktree",
@@ -235,8 +253,14 @@ mod tests {
         b
     }
 
+    /// The daemon's call, with every corpse's conversation there to resume.
     fn judge_on(b: &Board, wanted: WorkspaceStrategy, has_worktree: bool) -> Result<Start, String> {
-        judge(b, Ulid(CROWN), Ulid(TARGET), wanted, has_worktree, CHECKOUT, &[])
+        let corpse = b.dead_agent(Ulid(TARGET));
+        judge(b, Ulid(CROWN), Ulid(TARGET), wanted, has_worktree, CHECKOUT, &[], corpse)
+    }
+
+    fn exited(reason: crate::board::ExitReason) -> SessionState {
+        SessionState::Exited { reason }
     }
 
     #[test]
@@ -271,16 +295,71 @@ mod tests {
             judge_on(&b, WorkspaceStrategy::Worktree, false),
             Ok(Start::Spawn { apply: false })
         );
-        // A dead record relocates nothing: the ticket is still unstarted.
-        b.sessions.push(agent(
-            TARGET,
-            CHECKOUT,
-            SessionState::Exited { reason: crate::board::ExitReason::UserQuit },
-            true,
-        ));
+        // A dismissed record relocates nothing: the ticket is still unstarted.
+        b.sessions.push(agent(TARGET, CHECKOUT, exited(crate::board::ExitReason::Dismissed), true));
         assert_eq!(
             judge_on(&b, WorkspaceStrategy::SharedCheckout, false),
             Ok(Start::Spawn { apply: true })
+        );
+    }
+
+    /// T-1190: an agent the crown started that exited with its conversation
+    /// kept is woken where it ran, as a parked one is; a person's is the
+    /// person's to resume or dismiss; and one with no conversation, or
+    /// dismissed, is no seat, so the start is a fresh one. simbly's crown
+    /// started T-295 and T-301 after a reboot filed both workers crashed, and
+    /// each got a second agent beside the conversation it had.
+    #[test]
+    fn an_exited_agent_is_the_crowns_to_wake_only_if_the_crown_started_it() {
+        use crate::board::ExitReason;
+        let target = uuid::Uuid::from_u128(TARGET);
+        for reason in
+            [ExitReason::Crashed, ExitReason::Killed, ExitReason::LoggedOut, ExitReason::UserQuit]
+        {
+            let mut b = board();
+            b.sessions.push(agent(TARGET, "/wt/T-2-x", exited(reason), true));
+            assert_eq!(
+                judge_on(&b, WorkspaceStrategy::Worktree, true),
+                Ok(Start::Wake(target)),
+                "{reason:?}"
+            );
+            assert_eq!(
+                judge_on(&b, WorkspaceStrategy::SharedCheckout, false),
+                Err("T-2's exited agent works in its worktree, and a wake runs it there: \
+                     workspace worktree"
+                    .into()),
+                "{reason:?}: it resumes in the cwd it ran in"
+            );
+            // The conversation gone: nothing to resume, so nothing to keep.
+            assert_eq!(
+                judge(
+                    &b,
+                    Ulid(CROWN),
+                    Ulid(TARGET),
+                    WorkspaceStrategy::Worktree,
+                    true,
+                    CHECKOUT,
+                    &[],
+                    None
+                ),
+                Ok(Start::Spawn { apply: false }),
+                "{reason:?}"
+            );
+        }
+        let mut b = board();
+        b.sessions.push(agent(TARGET, "/wt/T-2-x", exited(ExitReason::Crashed), false));
+        assert_eq!(
+            judge_on(&b, WorkspaceStrategy::Worktree, true),
+            Err("T-2's agent was started by a person and exited; a person resumes it (enter on \
+                 its row on the ticket's page), or dismisses it there (x) for start_agent to \
+                 seat a new one"
+                .into())
+        );
+        // An awake agent beside an older corpse is the seat: refused as ever.
+        b.sessions.push(agent(TARGET, "/wt/T-2-x", idle(), true));
+        assert_eq!(
+            judge_on(&b, WorkspaceStrategy::Worktree, true),
+            Err("T-2 already has an agent (idle); one agent per ticket".into())
         );
     }
 
@@ -461,7 +540,8 @@ mod tests {
             WorkspaceStrategy::SharedCheckout,
             false,
             CHECKOUT,
-            &reserved
+            &reserved,
+            None
         )
         .is_err());
         assert_eq!(

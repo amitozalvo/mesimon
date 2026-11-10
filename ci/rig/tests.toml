@@ -32,7 +32,9 @@
 #              session reports a usage limit through the real hook binary;
 #              the step ends with the crown's turn on the board's wake),
 #              `fail` (T-936: the same, a turn ending on an error, its
-#              `class` server_error unless said), `async_review` (T-1075:
+#              `class` server_error unless said), `crash` (T-1190: SIGKILL
+#              to the idle worker's Claude Code, so its record reads exited,
+#              crashed; the step ends at the record), `async_review` (T-1075:
 #              the daemon again with MESIMON_CLAUDE_BIN naming a wrapper that
 #              gives the test ticket's launch alone `--settings` with the
 #              rig's own asyncRewake Stop hook, under target/rig/ah1; its
@@ -56,6 +58,8 @@
 #              budget_reused (T-1048: zero receipt, park, next start, no hand),
 #              road:<mod|hooks>, plugin_dir, no_plugin_dir, started_by_crown,
 #              started_by_person (the rig step `person_start` started it, W1),
+#              resumed (T-1190, WD1: the ticket's one agent record is the one
+#              the rig step `crash` killed, live again with --resume on argv),
 #              cwd:<worktree|checkout>, first_prompt, words:<w1,w2,...> (the
 #              card words seen, in order), hooks:<E1,E2,...> (hook frames the
 #              daemon ingested), mod_alone, claude_road_mod, crown:<cmd>
@@ -1628,6 +1632,28 @@ checks = ["woke:limited", "crown:sleep_agent", "crown:start_agent=2", "crown:ask
 
   [[test.steps]]
   crown = "L2: {key}'s agent hit the account's usage limit before its task was finished. Carry it on with the rig-alt tier until it finishes, then end your turn with the single line: L2 moved."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
+id = "WD1"
+title = "WD1 · a worker whose session went down with the machine: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Remember the word quince. Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the crown starts the worker, which answers and ends its turn; then its Claude Code is killed under it, as a reboot ends an idle agent, and its record reads exited (crashed), which wakes nobody. Then the person asks the crown, naming no tool, to get that agent's answer to a question only its conversation holds. The ticket's get_ticket reads state exited with exited: crashed (T-1190), and the crown brings that agent back in the conversation it had: start_agent wakes it (the receipt says woken, prompt none) and ask_agent sends the question, or ask_agent's words alone wake it. No second agent is seated on the ticket; the worker answers quince from its own conversation, and the board wakes the crown when that turn ends."
+checks = ["started_by_crown", "resumed", "crown:ask_agent_sent=1", "cwd:worktree", "prompts:2", "reply:quince"]
+
+  [[test.steps]]
+  crown = "WD1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: WD1 started. When the board wakes you for {key}, end your turn with the single line: WD1 ready."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "crash"
+
+  [[test.steps]]
+  crown = "WD1: the machine went down a moment ago and {key}'s agent went down with it. I need that agent's own answer to one thing, as a single word: which word was it asked to remember? Then end your turn with the single line: WD1 asked. When the board wakes you because {key}'s agent answered, end your turn with the single line: WD1 seen."
   until = { stops = 1, state = "idle" }
   wake = true
 

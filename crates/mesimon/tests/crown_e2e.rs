@@ -11968,6 +11968,9 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
     wait_until(std::time::Duration::from_secs(10), "W's seat gone", || {
         c.board().live_agent(w).is_none()
     });
+    // The killed record is the crown's to wake (T-1190), so a NEW session
+    // is the person's dismissal of it first: `x` on the corpse's row.
+    assert!(matches!(c.request(Command::KillSession { id: ws }), Response::Ok));
     let ws2 = start(&mut c);
     assert_ne!(ws2, ws, "another session");
     // The killed pane's death frame after the restart (T-1026): a fast

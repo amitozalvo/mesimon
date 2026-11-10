@@ -2856,6 +2856,11 @@ pub struct AgentStateView {
     /// words, while the state is `failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
+    /// How an `exited` agent ended (T-1190), `board::agent_exit_word`'s
+    /// words: the ticket's agent left its pane, was not dismissed, and its
+    /// row on the ticket's page still resumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exited: Option<String>,
 }
 
 /// A session's context fill (T-969): `tokens` of its model's `window` the

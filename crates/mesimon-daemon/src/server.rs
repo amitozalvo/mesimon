@@ -8952,6 +8952,7 @@ impl Daemon {
                     has_worktree,
                     &checkout,
                     &self.crown_checkout_reservations(),
+                    self.resumable_corpse(target),
                 ) {
                     Ok(start) => start,
                     Err(message) => return Response::Err { message },
@@ -8973,7 +8974,8 @@ impl Daemon {
                 }
                 let (session_started, woken, kind, prompt) = match start {
                     // The crown's own parked agent (T-583): the person's `c`,
-                    // the conversation kept, in the cwd it was parked in.
+                    // the conversation kept, in the cwd it was parked in. Or
+                    // its exited one (T-1190): the rail's Enter on the corpse.
                     crown::Start::Wake(id) => {
                         let kind = self
                             .board
@@ -9496,7 +9498,10 @@ impl Daemon {
                     .into(),
             );
         }
-        if self.board.live_agent(target).is_none_or(|rec| rec.started_by.is_none())
+        // The corpse an ask resumes is its agent too (T-1190): read off the
+        // seat alone, a worker the crown started that crashed was "a
+        // person's", and its own crown's words waited for a person's send.
+        if self.board.agent_or_corpse(target).is_none_or(|rec| rec.started_by.is_none())
             && !self.crown_watched.contains(&target)
         {
             return Some(
@@ -9682,7 +9687,9 @@ impl Daemon {
             t.column.hash(&mut h);
             t.order.hash(&mut h);
             self.hash_words(id, &mut h);
-            if let Some(s) = self.board.live_agent(id) {
+            // The corpse too (T-1190): `get_ticket` shows it, so a stamp
+            // read before the agent exited is stale after.
+            if let Some(s) = self.board.agent_or_corpse(id) {
                 s.state_word().hash(&mut h);
                 s.state_changed_at.hash(&mut h);
             }
@@ -9764,7 +9771,22 @@ impl Daemon {
     /// long, and the raised hand's own sentence. Never the pane.
     fn agent_state_view(&self, id: ulid::Ulid) -> Option<AgentStateView> {
         let t = self.board.ticket(id)?;
-        let s = self.board.live_agent(id)?;
+        // No agent on the seat, but one that exited and was not dismissed
+        // (T-1190): `exited` and how, where an absent state read as a ticket
+        // nobody had started and the crown started a second agent on it.
+        let Some(s) = self.board.live_agent(id) else {
+            let corpse = self.board.dead_agent(id)?;
+            let SessionState::Exited { reason } = corpse.state else { return None };
+            return Some(AgentStateView {
+                state: mesimon_core::board::agent_state_word(&corpse.state).to_string(),
+                since_secs: corpse
+                    .state_changed_at
+                    .map(|at| mesimon_core::clock::now_ms().saturating_sub(at) / 1000),
+                raised: t.raised.as_ref().map(|r| r.reason.clone()),
+                failed: None,
+                exited: Some(mesimon_core::board::agent_exit_word(reason).to_string()),
+            });
+        };
         let now = mesimon_core::clock::now_ms();
         // The foreground lives in the daemon's map, never on the board's
         // record (T-366): a `!` command running under an idle seat reads
@@ -9784,6 +9806,7 @@ impl Daemon {
                 SessionState::Failed { reason } => Some(agent_fail_word(reason).to_string()),
                 _ => None,
             },
+            exited: None,
         })
     }
 
@@ -11904,7 +11927,9 @@ impl Daemon {
                     title: t.title.clone(),
                     column: t.column.clone(),
                     by: Self::filed_by(t),
-                    state: self.board.live_agent(t.id).map(|s| s.state_word().into()),
+                    // An exited agent not dismissed reads `exited` (T-1190),
+                    // as `get_ticket`'s state does.
+                    state: self.board.agent_or_corpse(t.id).map(|s| s.state_word().into()),
                 })
             })
             .collect();
@@ -16751,7 +16776,10 @@ impl Daemon {
     fn seat_stands(&self, ticket: ulid::Ulid, seat: &QueuedSeat) -> bool {
         match seat {
             QueuedSeat::Pane(id) => self.prompt_target(ticket) == Some(*id),
-            QueuedSeat::Wake(id) => self.board.live_agent(ticket).map(|s| s.id) == Some(*id),
+            // A wake's record is a parked agent or the corpse `seat_of` named
+            // (T-1119). Read off the live seat alone, a queued ask to a
+            // crashed agent was dropped as "gone" the tick it was due (T-1190).
+            QueuedSeat::Wake(id) => self.board.agent_or_corpse(ticket).map(|s| s.id) == Some(*id),
             QueuedSeat::Start(_) => self.board.live_agent(ticket).is_none(),
         }
     }
@@ -21474,6 +21502,21 @@ impl Daemon {
             );
         }
         true
+    }
+
+    /// The exited agent the crown's `start_agent` wakes (T-1190):
+    /// `Board::dead_agent` while the provider's store still holds its
+    /// conversation, `park_on_exit`'s own test. One that never wrote a
+    /// conversation (a launch that died before its first prompt) has nothing
+    /// to keep, and a resume would seat it at an empty prompt box with no
+    /// brief; the crown's start there is the fresh one it always was.
+    fn resumable_corpse(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.board.dead_agent(ticket).filter(|rec| {
+            !rec.argv.is_empty()
+                && crate::agents::adapter(rec.kind).is_some_and(|adapter| {
+                    !adapter.history_missing(rec) && adapter.conversation_key(rec).is_some()
+                })
+        })
     }
 
     /// `ticket`'s parked agent seat, if it has one.

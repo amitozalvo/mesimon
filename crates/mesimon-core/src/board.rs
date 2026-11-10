@@ -2892,6 +2892,20 @@ pub fn agent_state_word(state: &SessionState) -> &'static str {
     }
 }
 
+/// How an `exited` agent ended (T-1190), in plain words for an agent reading
+/// the ticket: `agent_state_word` says `exited`, and this says how.
+pub fn agent_exit_word(reason: ExitReason) -> &'static str {
+    match reason {
+        ExitReason::UserQuit => "quit",
+        ExitReason::Cleared => "cleared",
+        ExitReason::Resumed => "resumed",
+        ExitReason::LoggedOut => "logged out",
+        ExitReason::Crashed => "crashed",
+        ExitReason::Killed => "killed",
+        ExitReason::Dismissed => "dismissed",
+    }
+}
+
 /// What a `failed` agent's turn ended on (T-936), in plain words for an
 /// agent reading the ticket and for the crown's wake line:
 /// `agent_state_word` says `failed`, and this says why.
@@ -3941,6 +3955,14 @@ impl Board {
         self.rail_corpse(ticket)
     }
 
+    /// The ticket's agent as a word to it lands: the one holding the seat,
+    /// else the corpse an ask or the crown's start resumes (T-1190). Whose
+    /// agent it is (`started_by`) and what the crown reads of it are asked
+    /// of this, so a crashed worker stays the crown's and stays in sight.
+    pub fn agent_or_corpse(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.live_agent(ticket).or_else(|| self.rail_corpse(ticket))
+    }
+
     /// The seats the crown's agent started and still holds (T-412): the
     /// records that carry `started_by` and hold an agent seat AWAKE —
     /// whoever wears the crown now — on a ticket the board shows. The
@@ -4110,7 +4132,10 @@ mod tests {
         board.sessions.push(rec(5, SessionKind::Claude, SessionState::Sleeping, 50));
         assert_eq!(board.rail_corpse(ticket).map(|s| s.id), id(2), "the rail keeps the corpse");
         assert!(board.dead_agent(ticket).is_none());
+        assert_eq!(board.agent_or_corpse(ticket).map(|s| s.id), id(5), "the seat before a corpse");
         assert!(board.dead_agent(ulid::Ulid(2)).is_none(), "another ticket's records");
+        board.sessions.pop();
+        assert_eq!(board.agent_or_corpse(ticket).map(|s| s.id), id(2), "T-1190: else the corpse");
     }
 
     /// T-570: words a launch never delivered make the seat `unsent` to the
