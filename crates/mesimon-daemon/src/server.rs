@@ -22110,7 +22110,7 @@ impl Daemon {
             .unwrap_or(false);
         if !alive {
             let _ = self.backend.kill_session(&name);
-            let launch = self.launch(&[self.shell.clone()], &vars);
+            let launch = self.launch(std::slice::from_ref(&self.shell), &vars);
             if let Err(e) = self.backend.spawn(&name, &cwd, &launch) {
                 return Response::Err { message: format!("terminal spawn failed: {e}") };
             }

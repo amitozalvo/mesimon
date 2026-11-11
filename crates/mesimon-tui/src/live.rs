@@ -202,9 +202,9 @@ impl Shot {
                     }
                 }
                 let mut under_frame = false;
-                for i in m + 1..n {
+                for (i, row) in rows.iter_mut().enumerate().take(n).skip(m + 1) {
                     if under_frame || self.rows[i - 1].blank() {
-                        rows[i] = cut_hints(&self.rows[i], true);
+                        *row = cut_hints(&self.rows[i], true);
                     }
                     under_frame |= self.rows[i].text.trim_start().starts_with('╰');
                 }
