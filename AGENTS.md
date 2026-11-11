@@ -84,9 +84,10 @@ the person says go → [IMPROVEMENT], retitled, built and committed.
 Choose checks from the behaviour and dependencies changed, and say what each proves.
 
 - Iterate with the smallest relevant test (`cargo test -p <crate> --lib <filter>`). A Rust
-  change finishes with `cargo ut` plus the e2e binaries the diff can reach: those named for
+  change finishes with `cargo ut` plus the e2e files the diff can reach: those named for
   the area or for a changed file, and every file under `crates/mesimon/tests/` that names a
-  changed command, tool or function. The merge waits for nothing more. A docs-only change runs
+  changed command, tool or function. A file's directory there is its test binary (`--test
+  agents hook_e2e::`). The merge waits for nothing more. A docs-only change runs
   no cargo, rebase included: link and diff review. Python or web changes need their own
   checks, not a Rust workspace run.
 - **The full workspace suite runs once, after the merge** (T-1194), when the diff changes
@@ -120,7 +121,7 @@ workspace suite and is required for a release stamp. `MESIMON_TEST_ROAD=mod` tar
 ```sh
 cargo ut                                              # every unit test: ~20 s to run, after the build
 cargo test -p mesimon-core --lib attention            # the inner loop: one crate, one filter
-python3 -B ci/test-run.py -- cargo test -p mesimon --test hook_e2e   # one e2e; skips without tmux
+python3 -B ci/test-run.py -- cargo test -p mesimon --test agents hook_e2e:: # one e2e file; skips without tmux
 python3 -B ci/test-run.py -- cargo nextest run --workspace --no-fail-fast # everything, e2es in parallel
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's, not a ticket's
 MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui     # remint goldens after a deliberate visual change

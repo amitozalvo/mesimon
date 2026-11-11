@@ -386,7 +386,17 @@ lists the objects of what is left, four `nm` at a time, and keeps each list in
 `target/debug/.msmn-prune-objects.json`. Before, it ran `nm` over every executable ever linked
 after every run: 138 s in a freshly seeded worktree, behind a 2 s test.
 
-The test seams (every `MESIMON_*` a test may set) and the e2e pattern are `crates/mesimon/tests/CLAUDE.md`.
+**The e2e files build as six area binaries** (T-1197): each directory under
+`crates/mesimon/tests/` with a `main.rs` is one binary and each file beside it a module, so
+`--test agents hook_e2e::` runs one file. They were 84 binaries. Measured side by side on
+2026-11-11 after a one-line core edit: building all of them 52 s and 136 CPU-seconds as 84,
+16 s and 25 as six; nextest's listing of the fresh executables 105 s and 8 s (macOS scans each
+new executable at its first exec, about 2.5 s apiece that night); 2.6 GB and 0.5 GB of cache
+and executables. An edit to one test file builds as fast as before, because the compiler redoes
+the edited module only. A file its area's `main.rs` does not name is never compiled:
+`common/guard.rs` fails on one.
+
+The test seams (every `MESIMON_*` a test may set), the e2e pattern and the six areas are `crates/mesimon/tests/CLAUDE.md`.
 
 ## Release notes
 

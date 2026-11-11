@@ -50,6 +50,25 @@ T-1014; `ci/rig.py --record` sets it and cuts each case into a fixture under `tr
 The e2e pattern is an in-process daemon thread + real tmux + the real built binary via
 `env!("CARGO_BIN_EXE_mesimon")`, which is only available in `crates/mesimon/tests/`.
 
+## Six area binaries
+
+Each directory with a `main.rs` is one test binary, and each file beside it is a module of it
+(T-1197): `crown` (the `crown_*` files), `mods` (the `mod_*` files), `agents` (launching and
+driving a session), `git` (worktrees, the merge train, the forge, diffs, archive), `tools` (what
+an agent calls or reads) and `board` (everything else). `common/` is the shared harness and
+`traces/` its fixtures; neither is a binary.
+
+- **One file's tests:** `cargo test -p mesimon --test <its directory> <file>::`, as in
+  `--test agents hook_e2e::`. A test's name starts with its file: `hook_e2e::m2_attention_headless`,
+  which is also how `.config/nextest.toml` names one (`binary_id(mesimon::agents) &
+  test(=hook_e2e::…)`). The filter is a substring, so `hook_e2e::` also takes `async_hook_e2e::`.
+- **A new file** goes in an area directory, starts with `use crate::common::*;` and needs
+  `mod <file>;` in that area's `main.rs`. Without the line it is never compiled and its tests
+  vanish without a red; `guard::every_test_file_is_a_module` (`common/guard.rs`, in every area
+  binary) fails on one. A file reads the stand-ins with `include_str!("../common/…")`.
+- **A file dropped beside the directories** still builds, as a binary of its own with
+  `mod common;`. It costs a link and a first-exec scan each time, so move it into an area.
+
 ## Traps that were measured
 
 - **macOS 14 answers `lseek` on a tty with 0, so bash 3.2's `read` (its `/bin/sh`) loses

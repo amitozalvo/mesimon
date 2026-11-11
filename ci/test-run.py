@@ -12,7 +12,7 @@ timers and barely use the CPU, T-1023). Release verification requests both
 explicitly; a one-road stamp is not a release gate. --one-road remains an
 explicit spelling of the default for existing callers. The deadline is 1200 s
 for one pass and 2400 s for both unless --timeout says otherwise.
-Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test hook_e2e.
+Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test agents hook_e2e::.
 Runs in independent checkouts overlap (T-830): a run holds a lock on each
 Cargo build directory it writes (target dir and build-dir, however
 configured), so only runs sharing build output take turns, and the

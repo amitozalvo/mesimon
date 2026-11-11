@@ -43370,3 +43370,83 @@ with it: a pane and a `!` terminal are launched by argv, never through it.
 
 **Still true.** A board left open in a terminal from before the change keeps offering the
 reload, since its `$SHELL` is the old one: the fix is opening the board from a new terminal.
+
+## The 84 e2e files build as six area binaries (T-1197, 2026-11-11, from T-1193's retro; the author, on a measured proposal: "go")
+
+Change 9 of T-1193's retro, measured on a prototype first
+(https://claude.ai/artifact/TFe2BEMVJa9FAgkb42pmVj). Each file in `crates/mesimon/tests/` was
+its own crate and its own link. Now six directories each hold a `main.rs` and are one binary,
+and each file is a module of it: `crown` (5 files), `mods` (5), `agents` (26), `git` (11),
+`tools` (13), `board` (24). The files keep their names, so a test is
+`hook_e2e::m2_attention_headless` and one file runs as `--test agents hook_e2e::`. A moved file
+differs in one line (`mod common;` became `use crate::common;`), and 16 `include_str!` paths in
+five files gained `../`. `.config/nextest.toml`'s 13 filters name the area and the file's module.
+
+**Measured**, three layouts side by side in one tree, each scenario timed for the three back to
+back, three times, under the worktrees' config (incremental on, four jobs), load 15 to 25 from
+an Android emulator and syspolicyd, no other cargo build. Median seconds: today's 84 binaries,
+six areas, one binary for all.
+
+- One-line edit in a test file, that test runnable: `exec_e2e` 2.2, 2.4, 3.6; `hook_e2e` 2.4,
+  2.2, 3.1; `crown_hold_e2e` 2.3, 2.6, 3.6; `crown_e2e` 4.7, 3.9, 5.1.
+- One-line core edit, one file's tests runnable: `hook_e2e` 11.5, 11.4, 13.3; `crown_e2e` 10.8,
+  13.8, 11.1 (ranges overlap). Seven files' tests: 15.6, 14.4, 12.5.
+- One-line core edit, every e2e binary built: 51.7, 15.5, 14.0 s; 136, 25, 17 CPU-seconds;
+  4, 4, 1 linkers and 1.8, 2.0, 1.2 GB at the peak.
+- nextest's listing of the fresh executables, two runs: 105 and 109 s, 7.4 and 8.8, 2.8 and
+  4.6; again with nothing rebuilt 1.0, 0.3, 0.3. Each executable's first run one at a time:
+  210 s for 84, 15.2 for 6, 2.1 for 1.
+- On disk: the test crates' incremental cache 1,582, 350, 250 MB; executables 1,033, 116, 48 MB.
+
+**What the numbers said.** The link was the small part: macOS scans a new executable at its
+first exec (T-738), about 2.5 s each that night whatever its size, and a core edit relinks all
+of them. A merged crate does not slow the one-file loop, because with incremental on the
+compiler redoes the edited module only; the cost shows only with all 50,938 lines in one crate.
+The retro's "11 to 20 linkers, 1.2 to 2.6 GB" predates `jobs = 4`, which already caps both.
+
+**The move broke one test, and the full suite is what found it.** `restart_skew_e2e` runs its
+own executable with `--exact client_connect_fixture_helper --ignored` to drive the real
+`Client::connect`. As a module the helper is `restart_skew_e2e::client_connect_fixture_helper`,
+so the child ran no test: `newer_client_restarts_a_stale_daemon` went red on both roads, and
+`older_client_leaves_a_newer_daemon_alone` stayed green for nothing. The name is fixed. No other
+test names itself or its file.
+
+**The guard.** Cargo compiles only what a `main.rs` names, so a file dropped into an area
+without its `mod` line, or into a directory with no `main.rs`, would lose its tests without a
+red. `common/guard.rs` holds `every_test_file_is_a_module`, named by path from each `main.rs`
+and so run in all six binaries; shown to fail on both cases. It is not in `common/mod.rs`
+because the relay's tests compile that module from their own repository.
+
+**Checks.** The test list before and after (`cargo nextest list -p mesimon`): 424 tests in 84
+binaries on main, 430 in 6 here, every one of the 424 present as `<file>::<name>` and the six
+more the guard. Full workspace suite on both roads through `ci/test-run.py --both-roads`, twice,
+at load 20 to 47 (both passes run side by side). Run 1: 3 red on each road, `restart_skew_e2e`
+on both (above) and four that differed by road. Run 2, with the fix: default road 3,542 of
+3,542; mod road 428 of 429. **Reruns:** the four from run 1 passed in run 2 on the same road
+(`interrupt_e2e::interrupted_turn_demotes_to_idle_without_any_hook` and
+`forge_e2e::a_parked_workers_squash_merge_wakes_the_crown` on mod;
+`crown_e2e::the_board_wakes_the_crown_when_a_started_worker_delivers`, T-1196's baseline red,
+and `forge_e2e::a_watched_tickets_later_pr_merge_wakes_the_crown` on default). Run 2's one red,
+`workspace_e2e::a_workspace_of_repos_stands_on_the_wire` on mod, passed alone on mod. A lead
+for whoever takes the flakes: the forge red was `git add .` meeting
+`.mesimon/board/columns.tmp` as it vanished, and the workspace red counted 5 changed files
+where 4 were written. `cargo clippy -p mesimon --tests -- -D warnings` clean.
+
+**Refuted.** *One binary for all 84*: 1.5 s more on the every-binary build and 5 s on the
+listing, for 1 to 1.5 s on every test-file edit, and a forgotten filter starts 424 tests.
+*Merging a few areas only* (the ticket's prototype: crown, mod and five small files, 72
+binaries left): 100 to 105 CPU-seconds and a 37 s listing, a gain in proportion to the 12
+binaries removed. *Memory as the reason*: 1.8 GB against 2.0.
+
+**Not measured:** a quiet machine (the every-binary build was 22 to 27 s on the calmer first
+hour and 52 s two hours later, so the ratio is the finding, not the seconds); Linux, where the
+first-exec scan does not exist; why the listing of the same 84 files grew from 35 s to 105 s
+through the night. A file dropped beside the directories still builds as a binary of its own;
+nothing forbids it, `tests/CLAUDE.md` says to move it.
+
+**Also changed:** `ci/release.sh`'s real-Claude check (`--test mods mod_plugin::`), the examples
+in `AGENTS.md` (whose reached set is now "the e2e files"), `ci/test-run.py`, `ci/rig/README.md`
+and `ci.yml`, the e2e recipe in `docs/ARCHITECTURE.md` and the `adding-things` skill, eleven
+file paths in `docs/ARCHITECTURE.md`, the layout in `tests/CLAUDE.md` and
+`docs/DEVELOPMENT.md`. Older blocks here name the files by their old paths; the names still
+find them.

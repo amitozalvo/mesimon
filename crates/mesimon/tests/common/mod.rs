@@ -3,7 +3,8 @@
 //!
 //! Each e2e used to carry its own copy of the client (fifteen of them, byte
 //! identical structs, method sets that had drifted apart). A new e2e now
-//! starts at `mod common; use common::*;` instead of sixty pasted lines.
+//! starts at `use crate::common::*;` instead of sixty pasted lines. The files
+//! sit in six area directories, one binary each (`tests/CLAUDE.md`, T-1197).
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.

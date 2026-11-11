@@ -29,7 +29,7 @@ No-model checks:
 python3 -B -m unittest ci/rig_test.py
 cargo build -p mesimon
 python3 -B ci/test-run.py -- python3 -B ci/rig_peer_test.py
-python3 -B ci/test-run.py -- cargo test -p mesimon --test boardlink_e2e
+python3 -B ci/test-run.py -- cargo test -p mesimon --test tools boardlink_e2e::
 ```
 
 `rig_peer_test.py` exercises the rig's actual peer fixture against another

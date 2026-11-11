@@ -59,7 +59,7 @@ before that was set up may still need `source ~/.cargo/env`.
 cargo ut                             # the inner loop: every unit test (core, daemon, tui goldens, the binary's own); ~1 s of test time
 cargo nextest run --workspace        # everything, the e2e binaries in PARALLEL (~30 s). `cargo test --workspace` runs them one after another (~2.5 min)
 cargo test -p mesimon-core attention # one module's tests
-cargo test -p mesimon --test hook_e2e # one e2e (real hook binary + in-process daemon + real tmux; skips without tmux)
+cargo test -p mesimon --test agents hook_e2e:: # one e2e file: its directory is the binary (real hook binary + in-process daemon + real tmux; skips without tmux)
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy; tests are exempt from unwrap_used via clippy.toml
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
 ci/test-linux.sh                     # the whole suite on Linux (Docker, Debian 12, the BUNDLED aarch64 tmux; MESIMON_TEST_LINUX_TMUX=distro for Debian's 3.3a); ~90 s warm. Docker Desktop must be up — SAY SO before `open -a Docker`
@@ -245,7 +245,8 @@ the ground's. The picker, the prefs file and the goldens need nothing: rows come
 (`test_no_banned_sgr`, `test_no_drawn_structure`) and, for a colour, the law tests in
 `theme.rs` run in `cargo ut` and say what is wrong.
 
-**An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
+**An e2e test** (`crates/mesimon/tests/<area>/<name>_e2e.rs`, with `mod <name>_e2e;` in that
+area's `main.rs`, or the file is never compiled): `use crate::common::*;`, then
 `let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
 tmux, the seams and the teardown are the harness's; `h.client("name")` speaks the wire,
 `hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam rides
@@ -540,7 +541,7 @@ group kill at 30 s, `GIT_SSH_COMMAND` deliberately untouched). README promise 1 
 remote-tracking refs it writes. The menu row's detail spells the arrows in words
 (`App::git_fetch_note`). The same change made every snapshot field ride one `Snapshot` struct
 through `App::absorb` — `shell_env` had been dropped on the refresh road. E2e:
-`crates/mesimon/tests/gitstatus_e2e.rs`. (STALE-MAP "The board says where its checkout stands".)
+`crates/mesimon/tests/git/gitstatus_e2e.rs`. (STALE-MAP "The board says where its checkout stands".)
 
 **A pane gets the user's own shell environment, delivered by a launcher, never by argv.** A
 Claude pane is exec'd DIRECTLY by tmux (multi-element argv), so no shell runs and no rc file is
@@ -572,7 +573,7 @@ editor save must not fork the user's shell). **Which shell is the daemon's `shel
 another usable one; the capture, a `!` terminal and a pane's `$SHELL` all read it, and a board
 whose `$SHELL` differs raises the same chip (`ShellEnvStatus::shell_differs`). The capture's
 shell runs in a session of its own, so it has no terminal to take from a foreground daemon.
-E2e: `crates/mesimon/tests/shell_env_e2e.rs`
+E2e: `crates/mesimon/tests/board/shell_env_e2e.rs`
 (asserts the value is NOT on the pane's command line) and `exec_e2e.rs`; STALE-MAP "A pane
 gets the user's own shell environment" + "The environment travels inside the pane".
 
@@ -787,7 +788,7 @@ size rather than cut; `agent_allows` denies the command outright. The
 field hangs UNDER the card rather than taking the title line: the ticket is not what is being
 edited, it is who the text is going to, so the card renders whole and the prompted card stays the
 cursor card (the only text field that does). Status line says `asked`, never "sent" — whether the
-agent took it is the hooks' to say. E2e: `crates/mesimon/tests/prompt_e2e.rs` (a `read`-loop stub
+agent took it is the hooks' to say. E2e: `crates/mesimon/tests/agents/prompt_e2e.rs` (a `read`-loop stub
 writing to a file, so one line proves delivery AND submission). Board only, deliberately — the
 ticket page's rail has its own selected session and "which claude" answers differently there.
 (STALE-MAP "Shift+Enter asks the agent from the board".)
@@ -882,7 +883,7 @@ group is what lets a digit address an axis, and the alternative is dropping some
 off a card nobody is looking at. The other two refusals are `register_tag`'s — a full axis, a
 name that axis already holds. A tag arriving on an axis JOINS it at the end (`to_index` past the
 row is the row's end), and the composer mirrors the wearer check client-side because its picks
-are on no ticket for the daemon to see. E2e: `crates/mesimon/tests/tags_e2e.rs`. Naming edits the cell **in place**, in its own slot in the grid, with the real
+are on no ticket for the daemon to see. E2e: `crates/mesimon/tests/tools/tags_e2e.rs`. Naming edits the cell **in place**, in its own slot in the grid, with the real
 hardware cursor — there is no edit mode, and no block glyph standing in for a cursor. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that
 borrow leaked the composer's own hints ("shift+enter save + ask claude") under a tag-name field.
 An atom may not appear twice in a scope even with different `avail`, so `enter`/`esc` are one
@@ -1038,7 +1039,7 @@ ONLY while a ticket page has a live shell selected, keyed to that session so the
 shows another pane; a refusal still stamps the attempt. Pane bytes go through `peek::sanitize`
 before a cell, and both L1 law tests render a dirty tail to prove it. `mcp::agent_allows` denies
 `PaneTail`, and `authorize` gets a real `Resource::Session` on that path. E2e:
-`crates/mesimon/tests/pane_tail_e2e.rs`. (STALE-MAP "The ticket page reads a shell's pane".)
+`crates/mesimon/tests/board/pane_tail_e2e.rs`. (STALE-MAP "The ticket page reads a shell's pane".)
 
 **A shell never wears the working spinner.** The daemon pins a `Bash` session at `Running` for the
 whole life of its pane (D15 — pane death is the only shell event), so `Running` there is liveness,
@@ -1210,7 +1211,7 @@ session Ctrl+C-ed before its first prompt stays `Exited` because parking it woul
 `x` refuses forever. Re-minting the machine as `Sleeping` is load-bearing: the latch swallows the
 pane-died that follows the hook, so a park cannot be flipped back into a corpse by its own echo.
 The startup reconcile gets the same say, over records IT just moved and never over already-dead
-corpses. E2e: `crates/mesimon/tests/exit_parks_e2e.rs`. (STALE-MAP "Leaving a Claude session parks
+corpses. E2e: `crates/mesimon/tests/board/exit_parks_e2e.rs`. (STALE-MAP "Leaving a Claude session parks
 it".)
 
 Three neighbours went with it. **`/clear` is not an exit** — like `/resume` before it, it ends the
@@ -1260,7 +1261,7 @@ comes off on a KEYPRESS that leaves the cursor on it (`App::ack_woke` at the end
 `Command::SeenTicket`), never on the draw clock — a ticket wakes while the user is away and a
 parked cursor must not clear it. The preference (`prefs.json::snooze_needs_you`, default on) is
 the Settings submenu's `Snooze returns with needs-you / quietly` row; `App::save_prefs` is every
-preference's write. E2e: `crates/mesimon/tests/snooze_e2e.rs`. (STALE-MAP "A ticket can be
+preference's write. E2e: `crates/mesimon/tests/board/snooze_e2e.rs`. (STALE-MAP "A ticket can be
 snoozed".)
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
@@ -1686,7 +1687,7 @@ headless). The decision is local and static from argv, so a dead daemon cannot m
 open; the denial is reported to `hook.sock` afterwards for the feed. **Bash is NOT hooked** and
 the README says so: command-shape matching is an evasion hole and hooking every shell call taxes
 the thing agents do constantly. `mesimon doctor --mcp` prints the whole surface. E2e:
-`crates/mesimon/tests/mcp_e2e.rs`. **Trap for the next e2e: `automove` is edge-triggered AND the
+`crates/mesimon/tests/tools/mcp_e2e.rs`. **Trap for the next e2e: `automove` is edge-triggered AND the
 attention machine arms a flap pin after >4 committed changes in 20 s (`FLAP_MAX`) — since
 2026-09-04 the pin drops only INFERRED signals (probe, status file, transcript tail) and a stated
 High one (`Stop`, `UserPromptSubmit`, a hook) commits through it at High; before, a `Stop` was
@@ -1757,7 +1758,7 @@ archive reclaims a landed worktree"). Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓
 `MESIMON_WORKTREE_BRANCH` (every spawn carries `MESIMON_TICKET`, worktree or not — T-84), and
 spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fresh worktree
 paths lost it otherwise).
-E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
+E2e: `crates/mesimon/tests/git/worktree_e2e.rs` (the one e2e with a real git repo).
 
 **A branch merged UPSTREAM reads merged, squash and all (T-267, 2026-09-06).** M4's merged test
 was ancestry alone (`merge-base --is-ancestor`, and `compute_flags`'s "nothing ahead"), so a PR
@@ -1819,7 +1820,7 @@ both needed no target condition at all. The list runs `-uall`, not `-unormal`, b
 --raw HEAD` writes the destination blob as FORTY ZEROS, so `build_file_diff`'s `ModeOnly` clause
 can no longer be blob equality — it is "modes differ, both real file modes, no hunks, not
 binary", and the `000000` half is what keeps an empty add or delete from reading as a chmod.
-E2e: `crates/mesimon/tests/diff_e2e.rs`. (STALE-MAP "The board diffs its own checkout".)
+E2e: `crates/mesimon/tests/git/diff_e2e.rs`. (STALE-MAP "The board diffs its own checkout".)
 
 **`!` is the project's TERMINAL (T-273, 2026-09-06): a persistent shell on the private tmux
 server, in the checkout — `git fetch` / `pull` / `push` without leaving the board or opening a
@@ -1888,7 +1889,7 @@ the checked-out branch tracks, then `origin`, then the sole remote (simbly's are
 `gitlab`). The spike's learned-repos phase was decided against (author, 2026-09-22: every
 census repo gets a leg; inferring the touched ones from the hook stream cannot be trusted to be
 complete); `docs/spikes/T-225-multirepo-workspace.md` is the design. E2e:
-`crates/mesimon/tests/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories"
+`crates/mesimon/tests/git/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories"
 and "A worktree ticket on a workspace cuts one leg per repo".)
 
 **The merge train (opt-in 2026-09-04, on by default since T-610).** Settings rows `Merge train`

@@ -23,8 +23,8 @@ on:
     inputs:
       tests:
         # Arguments for `cargo nextest run` in place of the whole suite, e.g.
-        # `-p mesimon --test hook_e2e m2_attention` or
-        # `-E 'binary(crown_e2e) & test(/wake/)'`: a fix round's run answers
+        # `-p mesimon --test agents hook_e2e::m2_attention` or
+        # `-E 'binary(crown) & test(/wake/)'`: a fix round's run answers
         # in the build time plus its tests, and skips the other gates. Empty
         # runs everything (T-1019; nextest since T-1023).
         description: "cargo nextest run arguments to run in place of the whole suite"

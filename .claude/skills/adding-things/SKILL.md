@@ -99,9 +99,12 @@ inks from `Theme::creature_ink`. A new `SessionState` does not compile until `An
 an animation. The notification PNGs and the installer's welcome are the engine's goldens:
 `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`.
 
-**An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
+**An e2e test** (`crates/mesimon/tests/<area>/<name>_e2e.rs`, in one of the six area directories,
+plus `mod <name>_e2e;` in that area's `main.rs`: a file without the line is never compiled, and
+`guard::every_test_file_is_a_module` fails on it): `use crate::common::*;`, then
 `let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
 tmux, the seams and the teardown are the harness's; a shell stub paints Claude's composer
 first (`claude_stub`; `Harness::boot_bare` keeps it as written); `h.client("name")` speaks the
 wire, `hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam
-rides `Harness::boot_with_env`. `prompt_e2e.rs` is the exemplar.
+rides `Harness::boot_with_env`. `agents/prompt_e2e.rs` is the exemplar; run it with
+`cargo test -p mesimon --test agents prompt_e2e::`.

@@ -1,0 +1,838 @@
+//! The road is `auto`, always (T-588): every Claude launch asks for the mod
+//! where the Claude Code it would run is new enough and validates it, and
+//! the probe that decides is warmed when the shell environment lands, before
+//! any launch, so a fresh board's first agent already takes the mod.
+//!
+//! The seam names `auto` here only because `TestFixture` always sets one,
+//! so a stub is never probed unasked; the stub plays Claude Code's two probe
+//! commands (`--version`, `plugin validate`) and otherwise sleeps. It is
+//! booted bare: a composer painted first would come before its version line.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use crate::common;
+use common::*;
+
+use std::time::Duration;
+
+use mesimon_core::board::{SessionKind, SessionState};
+use mesimon_core::command::{Command, Response};
+use mesimon_core::road::Road;
+
+fn stub(version: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo '{version} (Claude Code)'; exit 0 ;;\n  \
+         plugin) echo '✔ Validation passed'; exit 0 ;;\n  \
+         auth) echo '{{\"subscriptionType\":\"max\"}}'; exit 0 ;;\nesac\nexec sleep 300\n"
+    )
+}
+
+fn boot(name: &str, version: &str) -> Option<Harness> {
+    Harness::boot_bare(name, Some(&stub(version)), &[("MESIMON_CLAUDE_ROAD", "auto")])
+}
+
+fn road_json(h: &Harness) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(h.paths.state_dir.join("mod/road.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn road_lines(h: &Harness) -> Vec<String> {
+    std::fs::read_to_string(h.paths.activity_log())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("\"cmd\":\"claude_road"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn launch(h: &Harness) -> mesimon_core::board::SessionRecord {
+    let mut c = h.client("auto");
+    assert!(c.board().sessions.is_empty(), "the probe ran before any launch");
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "an agent".into(),
+        workspace: None,
+        tier: None,
+    });
+    let ticket = c.board().tickets[0].id;
+    let id = c.spawn_claude(ticket);
+    c.board().sessions.into_iter().find(|s| s.id == id).expect("the record")
+}
+
+#[test]
+fn a_new_claude_code_is_probed_before_any_launch_and_launches_on_the_mod() {
+    let Some(h) = boot("mod-auto-new", "2.1.287") else { return };
+    // The verdict file is written at once; the feed line at the tick's end.
+    wait_until(Duration::from_secs(30), "the startup probe's verdict and feed line", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod") && !road_lines(&h).is_empty()
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["setting"], "auto");
+    assert_eq!(v["probe"], "claude 2.1.287, the mod validated");
+    let lines = road_lines(&h);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("claude_road:mod"), "{lines:?}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Mod);
+    assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+}
+
+/// T-1069, the negative: a Claude Code that passes `session.compact` over a
+/// seated security default, on an account and machine that seat none, hears
+/// every compaction, so neither the probe's verdict nor the launch's says
+/// otherwise.
+#[test]
+fn an_unmanaged_claude_code_past_the_compaction_floor_says_nothing_of_compaction() {
+    let Some(h) = boot("mod-auto-new-312", "2.1.312") else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["probe"], "claude 2.1.312, the mod validated");
+    assert!(v.get("native_compaction").is_none(), "{v}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Mod);
+    assert!(!rec.argv.iter().any(|a| a == "--settings"), "not native: {:?}", rec.argv);
+    let v = road_json(&h).unwrap();
+    assert!(v.get("native_compaction").is_none(), "after the launch: {v}");
+}
+
+#[test]
+fn a_claude_code_too_old_for_mods_launches_on_the_hook_set() {
+    let Some(h) = boot("mod-auto-old", "2.1.286") else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict and feed line", || {
+        road_json(&h).is_some_and(|v| v["probe"] == "claude 2.1.286 is older than 2.1.287")
+            && !road_lines(&h).is_empty()
+    });
+    assert_eq!(road_json(&h).unwrap()["road"], "hooks");
+    let lines = road_lines(&h);
+    assert!(lines.iter().all(|l| l.contains("claude_road:hooks")), "{lines:?}");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+}
+
+/// A stand-in for a Claude Code whose mods are off (T-598): it answers the
+/// probe as `stub` does (`plugin test` with `test`'s words, `auth status`
+/// with a Max account), and as a session paints its composer and keeps
+/// every line it reads. It loads no mod, so on the mod road it reports
+/// nothing, as 2.1.288 did with its remote flag off.
+fn silent_stub(test: &str) -> String {
+    silent_stub_on(test, "max")
+}
+
+/// `silent_stub` on an `account` (`subscriptionType`, T-650). The last
+/// pane's environment lands in `env.txt` beside `got.txt` (T-658).
+fn silent_stub_on(test: &str, account: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1 $2\" in\n  --version*) echo '2.1.288 (Claude Code)'; exit 0 ;;\n  \
+         'plugin validate') echo '✔ Validation passed'; exit 0 ;;\n  \
+         'plugin test') {test} ;;\n  \
+         'auth status') echo '{{\"loggedIn\":true,\"subscriptionType\":\"{account}\"}}'; exit 0 ;;\n\
+         esac\nenv > \"$(dirname \"$0\")/env.txt\"\n{COMPOSER}stty -icanon 2>/dev/null\n\
+         cat | while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n"
+    )
+}
+
+const TEST_PASSES: &str = "echo ' 1 pass'; exit 0";
+const TEST_MODS_OFF: &str = "echo 'claude plugin test: hooks modules are turned off in this \
+     process: the rollout switch was saved off by an earlier session and is not refreshed yet.' \
+     >&2; exit 1";
+
+fn feed_has(h: &Harness, cmd: &str) -> bool {
+    std::fs::read_to_string(h.paths.activity_log())
+        .unwrap_or_default()
+        .contains(&format!("\"cmd\":\"{cmd}\""))
+}
+
+fn probe_json(h: &Harness) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(h.paths.state_dir.join("mod/probe.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn ticket_with_brief(c: &mut TestClient, title: &str, brief: &str) -> ulid::Ulid {
+    let ticket = c.create_ticket(title);
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: None, text: brief.into(), rev: None }),
+        Response::NoteWritten { .. }
+    ));
+    ticket
+}
+
+fn composed(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
+    match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn: {other:?}"),
+    }
+}
+
+fn record(c: &mut TestClient, sid: uuid::Uuid) -> mesimon_core::board::SessionRecord {
+    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
+}
+
+/// The events of the hook file a record's `--settings` names.
+fn settings_events(rec: &mesimon_core::board::SessionRecord) -> Vec<String> {
+    let at = rec.argv.iter().position(|a| a == "--settings").expect("--settings");
+    let text = std::fs::read_to_string(&rec.argv[at + 1]).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v["hooks"].as_object().unwrap().keys().cloned().collect()
+}
+
+/// A native launch (T-658): the mod with `MESIMON_MOD_NATIVE=1` in its pane,
+/// the permission hooks alone beside it, and the tools the mod's.
+fn assert_native(h: &Harness, rec: &mesimon_core::board::SessionRecord) {
+    assert_eq!(rec.road, Road::Mod);
+    assert!(rec.native, "the record is stamped native");
+    assert!(rec.frames_by_mod(), "the mod's frames are the session's");
+    assert!(rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+    assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+    assert_eq!(settings_events(rec), ["PermissionRequest"]);
+    // A relaunch's first pane was this session's too, and not native: the
+    // file is the last pane's, so the wait ends on the native one or fails.
+    wait_until(Duration::from_secs(10), "the native pane's environment", || {
+        let env = std::fs::read_to_string(h.dir.join("env.txt")).unwrap_or_default();
+        env.lines().any(|l| l == format!("MESIMON_MOD_SESSION={}", rec.id))
+            && env.lines().any(|l| l == "MESIMON_MOD_NATIVE=1")
+    });
+}
+
+/// A hook-set frame of `event` the daemon took for `sid`, by the feed.
+fn fed(h: &Harness, sid: uuid::Uuid, event: &str) -> usize {
+    std::fs::read_to_string(h.paths.activity_log())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| {
+            l.contains(&sid.to_string())
+                && l.contains(&format!("\"event\":\"{event}\""))
+                && !l.contains("\"road\":\"mod\"")
+        })
+        .count()
+}
+
+/// T-598: Claude Code 2.1.288 turned mods off by a remote flag that
+/// `claude plugin validate` cannot see. A launch on the mod alone then
+/// reports nothing; under `auto` it is relaunched on the hook set, its words
+/// kept for the new pane, the probe learns that mods are off, and the next
+/// launch takes the hook set at once.
+#[test]
+fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
+    let env = [("MESIMON_CLAUDE_ROAD", "auto"), ("MESIMON_MOD_BRIDGE_WAIT_MS", "1500")];
+    let Some(h) = Harness::boot_bare("mod-auto-off", Some(&silent_stub(TEST_PASSES)), &env) else {
+        return;
+    };
+    // The probe passes: this Claude Code's flag is still cached on.
+    wait_until(Duration::from_secs(30), "the startup probe", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("auto-off");
+    let ticket =
+        ticket_with_brief(&mut c, "mods off", "## Brief\n\nmesimon-598-brief arrives once");
+    let sid = composed(&mut c, ticket);
+    let first = record(&mut c, sid);
+    assert_eq!(first.road, Road::Mod);
+    assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
+    assert!(!first.argv.iter().any(|a| a == "--settings"), "{:?}", first.argv);
+
+    // No SessionStart and no bridge: the pane shows its composer, so the
+    // relaunch comes a bridge wait after the launch, on the hook set.
+    wait_until(Duration::from_secs(10), "the relaunch on the hook set", || {
+        let rec = record(&mut c, sid);
+        rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
+    });
+    let rec = record(&mut c, sid);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+    assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+    assert_eq!(rec.state, SessionState::Spawning);
+    assert!(rec.pending_submit, "the words are still owed");
+    wait_until(Duration::from_secs(5), "the feed's two lines", || {
+        feed_has(&h, "claude_road_relaunch") && feed_has(&h, "claude_road_fallback")
+    });
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("relaunched on the hook set"), "{journal}");
+    let probe = probe_json(&h).expect("probe.json");
+    assert_eq!(probe["verdict"], "mods_off", "{probe}");
+    assert_eq!(probe["version"], "2.1.288", "{probe}");
+    let road = road_json(&h).unwrap();
+    assert_eq!(road["road"], "hooks");
+    assert_eq!(road["mods_off"], true, "{road}");
+    assert!(road["probe"].as_str().unwrap().contains("mods are off"), "{road}");
+
+    // The hook set's SessionStart arms the words, which go once.
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-598.jsonl","cwd":"/tmp"}"#,
+    );
+    let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the brief by paste", || {
+        got().contains("mesimon-598-brief")
+    });
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    assert_eq!(got().matches("mesimon-598-brief").count(), 1, "{}", got());
+
+    // The next launch takes the hook set at once.
+    let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-598-next");
+    let next = composed(&mut c, other);
+    let rec = record(&mut c, next);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(rec.argv.iter().any(|a| a == "--settings"), "{:?}", rec.argv);
+    let _ = c.request(Command::KillSession { id: sid });
+    let _ = c.request(Command::KillSession { id: next });
+}
+
+/// T-650: a Team or Enterprise account. Claude Code seats
+/// `cc-plugin-sec-default` outermost there, whose `classic.*` hook hands
+/// every classic event past a person's plugins: the mod loads, its bridge
+/// polls and its tools serve, and `SessionStart`, `UserPromptSubmit` and
+/// `Stop` never reach it. The probe passes (nothing in `claude plugin test`
+/// sees the seating), so under `auto` the launch is judged by its silence:
+/// a bridge that polled with no `SessionStart` a bridge wait later is
+/// relaunched native (T-658), the words kept for the new pane and sent down
+/// the mod once the mod's own `SessionStart` arms them, the probe learns that
+/// the hook events do not reach the mod, and the next launch is native at
+/// once.
+#[test]
+fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_native() {
+    let env = [
+        ("MESIMON_CLAUDE_ROAD", "auto"),
+        ("MESIMON_MOD_BRIDGE_WAIT_MS", "1500"),
+        // The stand-in engine beside the stub: it brings the bridge up and
+        // relays the mod's own reports, and no classic event (a test sends
+        // those itself, and this one does not until the relaunch).
+        (FAKE_MOD, "1"),
+    ];
+    let Some(h) = Harness::boot_bare("mod-auto-deaf", Some(&silent_stub(TEST_PASSES)), &env) else {
+        return;
+    };
+    wait_until(Duration::from_secs(30), "the startup probe", || {
+        road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("auto-deaf");
+    let ticket =
+        ticket_with_brief(&mut c, "deaf mod", "## Brief\n\nmesimon-650-brief arrives once");
+    let sid = composed(&mut c, ticket);
+    let first = record(&mut c, sid);
+    assert_eq!(first.road, Road::Mod);
+    assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
+    assert!(!first.argv.iter().any(|a| a == "--settings"), "{:?}", first.argv);
+
+    // The bridge polls (the mod is up) and no SessionStart follows: a bridge
+    // wait after that first poll the launch is relaunched native, and the
+    // journal's reason says the bridge had polled.
+    wait_until(Duration::from_secs(10), "the native relaunch", || {
+        record(&mut c, sid).argv.iter().any(|a| a == "--settings")
+    });
+    let rec = record(&mut c, sid);
+    assert_native(&h, &rec);
+    assert_eq!(rec.state, SessionState::Spawning);
+    assert!(rec.pending_submit, "the words are still owed");
+    wait_until(Duration::from_secs(5), "the feed's two lines", || {
+        feed_has(&h, "claude_road_relaunch") && feed_has(&h, "claude_road_fallback")
+    });
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("after its bridge first polled"), "{journal}");
+    assert!(
+        journal.contains("relaunched native, with one hook for permissions beside its mod"),
+        "{journal}"
+    );
+    let probe = probe_json(&h).expect("probe.json");
+    assert_eq!(probe["verdict"], "classic_off", "{probe}");
+    assert_eq!(probe["version"], "2.1.288", "{probe}");
+    let road = road_json(&h).unwrap();
+    assert_eq!(road["road"], "mod", "{road}");
+    assert_eq!(road["mods_off"], true, "{road}");
+    assert!(road["probe"].as_str().unwrap().contains("hook events do not reach the mod"), "{road}");
+    assert!(road.get("native_compaction").is_none(), "2.1.288 hears compaction: {road}");
+
+    // The new pane's mod comes up too; its own SessionStart arms the words,
+    // which go down the mod's `submit`, whole and once, and the mod's
+    // `entered` clears the mark before its ack.
+    wait_until(Duration::from_secs(10), "the new pane's bridge", || {
+        matches!(c.request(Command::ModPing { session: sid }), Response::ModPonged { .. })
+    });
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        None,
+        r#"{"session_id":"x","transcript_path":"/tmp/t-650.jsonl","cwd":"/tmp"}"#,
+        Some("mod"),
+    );
+    let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the brief down the mod", || {
+        got().contains("mesimon-650-brief")
+    });
+    let frames = std::fs::read_to_string(h.dir.join(format!("mod-{sid}.ndjson"))).unwrap();
+    assert!(frames.contains("\"kind\":\"submit\""), "{frames}");
+    wait_until(Duration::from_secs(5), "the mod's entered clears the mark", || {
+        record(&mut c, sid).unsent.is_none()
+    });
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "UserPromptSubmit",
+        None,
+        None,
+        r#"{"prompt":"go"}"#,
+        Some("mod"),
+    );
+    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    assert_eq!(got().matches("mesimon-650-brief").count(), 1, "{}", got());
+
+    // The next launch is native at once.
+    let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-650-next");
+    let next = composed(&mut c, other);
+    assert_native(&h, &record(&mut c, next));
+    let _ = c.request(Command::KillSession { id: sid });
+    let _ = c.request(Command::KillSession { id: next });
+}
+
+/// T-650: the probe's account step. `claude auth status --json` says the
+/// account is `enterprise`, so Claude Code seats its security default and
+/// the mod will hear no classic event: the verdict is classic-off before any
+/// launch, and the first launch is already native (T-658), with nothing
+/// relaunched. The mod's frames are the session's; of the hook set's, only
+/// a permission request is taken.
+#[test]
+fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
+    // A Claude Code that passes `session.compact` over the mod too (T-1069).
+    let stub = silent_stub_on(TEST_PASSES, "enterprise").replace("2.1.288", "2.1.312");
+    // The stand-in engine brings the bridge up, so the brief goes down the
+    // mod's `submit` once the mod's `SessionStart` arms it.
+    let env = [("MESIMON_CLAUDE_ROAD", "auto"), (FAKE_MOD, "1")];
+    let Some(h) = Harness::boot_bare("mod-auto-enterprise", Some(&stub), &env) else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["mods_off"] == true)
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["road"], "mod", "{v}");
+    let line = v["probe"].as_str().unwrap();
+    assert!(line.contains("hook events do not reach the mod"), "{line}");
+    assert!(line.contains("an enterprise account"), "{line}");
+    assert!(
+        line.ends_with("the plugin reports from its own events, with one hook for permissions"),
+        "{line}"
+    );
+    let probe = probe_json(&h).unwrap();
+    assert_eq!(probe["verdict"], "classic_off", "{probe}");
+    assert_eq!(probe["found"], "an enterprise account", "{probe}");
+    assert_eq!(v["native_compaction"], "passed_over", "{v}");
+
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("auto-enterprise");
+    let ticket = ticket_with_brief(&mut c, "native", "## Brief\n\nmesimon-658-brief arrives once");
+    let sid = composed(&mut c, ticket);
+    let rec = record(&mut c, sid);
+    assert_native(&h, &rec);
+    assert_eq!(rec.state, SessionState::Spawning);
+    // The native launch's own verdict keeps the limit (T-1069).
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["native_compaction"], "passed_over", "after the launch: {v}");
+
+    // The mod's SessionStart is the session's: it leaves `starting up`, and
+    // the brief goes down the mod's `submit`.
+    wait_until(Duration::from_secs(10), "the bridge", || {
+        matches!(c.request(Command::ModPing { session: sid }), Response::ModPonged { .. })
+    });
+    // The native start's shape (T-657): the id and the cwd, no path.
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        None,
+        &format!(r#"{{"session_id":"{sid}","cwd":"/tmp","source":"startup"}}"#),
+        Some("mod"),
+    );
+    wait_until(Duration::from_secs(5), "the mod's SessionStart", || {
+        record(&mut c, sid).state != SessionState::Spawning
+    });
+    let rec = record(&mut c, sid);
+    assert_eq!(rec.claude_session_id, None, "the launch's own id");
+    assert_eq!(rec.transcript_path, None, "nothing written before the first prompt");
+    let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    wait_until(Duration::from_secs(10), "the brief down the mod", || {
+        got().contains("mesimon-658-brief")
+    });
+
+    // The hook set's Stop is not the session's (the pane has no such hook),
+    // and its PermissionRequest is: the one hook a native pane carries.
+    hook_send_road(&hook_sock, &sid.to_string(), "Stop", None, None, "{}", None);
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "PermissionRequest",
+        None,
+        None,
+        r#"{"tool_name":"Bash","tool_input":{"command":"npm test"},"prompt_id":"p1"}"#,
+        None,
+    );
+    wait_until(Duration::from_secs(5), "the permission request reaches the card", || {
+        record(&mut c, sid).state
+            == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Permission }
+    });
+    // The feed is written at the tick's end; the Stop came first.
+    wait_until(Duration::from_secs(5), "the hook set's permission in the feed", || {
+        fed(&h, sid, "PermissionRequest") == 1
+    });
+    assert_eq!(fed(&h, sid, "Stop"), 0, "the hook set's Stop is dropped");
+
+    // The mod's UserPromptSubmit acks the brief, sent once.
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "UserPromptSubmit",
+        None,
+        None,
+        r#"{"prompt":"go"}"#,
+        Some("mod"),
+    );
+    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    assert_eq!(got().matches("mesimon-658-brief").count(), 1, "{}", got());
+    assert!(!feed_has(&h, "claude_road_relaunch"), "nothing to relaunch");
+
+    // T-669 (the work Mac: "no transcript on peak or ticket page"): no frame
+    // on this road names the transcript, so once Claude Code has written
+    // `<id>.jsonl` under its projects root the next frame finds it there,
+    // and the card, the preview and the costs read it.
+    let home = h.dir.join("claude-home").join("projects").join("-tmp");
+    std::fs::create_dir_all(&home).unwrap();
+    let transcript = home.join(format!("{sid}.jsonl"));
+    std::fs::write(
+        &transcript,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\
+         \"content\":[{\"type\":\"text\",\"text\":\"Hello.\"}]}}\n",
+    )
+    .unwrap();
+    hook_send_road(
+        &hook_sock,
+        &sid.to_string(),
+        "Stop",
+        None,
+        None,
+        r#"{"stop_hook_active":false,"background_tasks":[]}"#,
+        Some("mod"),
+    );
+    wait_until(Duration::from_secs(5), "the transcript found by id", || {
+        record(&mut c, sid).transcript_path.as_deref() == Some(transcript.to_str().unwrap())
+    });
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
+/// T-598: the probe's load step. A Claude Code that refuses `claude plugin
+/// test` in the flag's words has mods off, and every launch takes the hook
+/// set from the first.
+#[test]
+fn a_probe_that_finds_mods_off_launches_on_the_hook_set() {
+    let stub = silent_stub(TEST_MODS_OFF);
+    let env = [("MESIMON_CLAUDE_ROAD", "auto")];
+    let Some(h) = Harness::boot_bare("mod-auto-probe-off", Some(&stub), &env) else { return };
+    wait_until(Duration::from_secs(30), "the startup probe's verdict", || {
+        road_json(&h).is_some_and(|v| v["mods_off"] == true)
+    });
+    let v = road_json(&h).unwrap();
+    assert_eq!(v["road"], "hooks");
+    assert!(v["probe"].as_str().unwrap().starts_with("claude 2.1.288: mods are off"), "{v}");
+    assert_eq!(probe_json(&h).unwrap()["verdict"], "mods_off");
+    let rec = launch(&h);
+    assert_eq!(rec.road, Road::Hooks);
+    assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
+}
+
+/// `stub` whose session waits for `exit-now` beside it and then exits, so a
+/// record can be left without a pane and woken (T-962).
+fn exiting_stub(version: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo '{version} (Claude Code)'; exit 0 ;;\n  \
+         plugin) echo '✔ Validation passed'; exit 0 ;;\n  \
+         auth) echo '{{\"subscriptionType\":\"max\"}}'; exit 0 ;;\nesac\n\
+         while [ ! -e \"$(dirname \"$0\")/exit-now\" ]; do sleep 0.1; done\n"
+    )
+}
+
+/// The person's machine, as T-962 needs it: a login shell whose `PATH`
+/// holds the fixture's dir, and the Claude binary named bare, so it is
+/// found on the captured `PATH` alone, as `claude` is. The shell answers
+/// only while `env-barrier` beside it is absent. One restart lands a capture
+/// with that `PATH` in the runtime dir's file, the probe cached against it.
+/// Returns the barrier.
+fn boot_on_a_person_s_path(name: &str) -> Option<(Harness, std::path::PathBuf)> {
+    let h = Harness::boot_bare(
+        name,
+        Some(&exiting_stub("2.1.287")),
+        // No silent-mod relaunch inside the test: the stub plays no mod.
+        &[("MESIMON_CLAUDE_ROAD", "auto"), ("MESIMON_MOD_BRIDGE_WAIT_MS", "600000")],
+    )?;
+    let barrier = h.dir.join("env-barrier");
+    let shell = h.dir.join("slow-shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nwhile [ -e '{barrier}' ]; do sleep 0.05; done\n\
+             export PATH='{dir}':/usr/bin:/bin\nshift 3\neval \"$@\"\n",
+            barrier = barrier.display(),
+            dir = h.dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    h.set_env("SHELL", &shell);
+    h.set_env("MESIMON_CLAUDE_BIN", "claude-stub.sh");
+    h.restart();
+    // The slow shell's own `PATH`, read as the launcher reads the file: the
+    // first boot's capture already names the dir, under `HOME`.
+    let env_file = h.paths.shell_env_file();
+    let want = format!("{}:/usr/bin:/bin", h.dir.display());
+    wait_until(Duration::from_secs(30), "the slow shell's capture, and the mod verdict", || {
+        std::fs::read(&env_file).is_ok_and(|b| {
+            let entries = mesimon_core::shellenv::parse_env0(&b);
+            mesimon_core::shellenv::path_of(&entries).as_deref() == Some(want.as_str())
+        }) && road_json(&h).is_some_and(|v| v["road"] == "mod")
+    });
+    Some((h, barrier))
+}
+
+fn spawn(c: &mut TestClient, ticket: ulid::Ulid) -> Response {
+    c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    })
+}
+
+fn agents_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
+    c.board()
+        .sessions
+        .into_iter()
+        .filter(|s| s.ticket == ticket && s.kind == SessionKind::Claude)
+        .collect()
+}
+
+/// T-962: a launch after a restart, before the daemon has captured the
+/// shell environment, took the hook set for its whole life ("no claude on
+/// the captured PATH"). The runtime dir's file outlives the restart and is
+/// what the pane is launched with, so the daemon starts on it: a start and
+/// a wake, with the fresh capture held back, launch at once on the mod.
+#[test]
+fn a_launch_before_the_fresh_capture_takes_the_mod_on_the_last_one() {
+    let Some((h, barrier)) = boot_on_a_person_s_path("mod-auto-env-seed") else { return };
+    let mut c = h.client("env-seed");
+    let woken = c.create_ticket("woken");
+    assert!(matches!(spawn(&mut c, woken), Response::Spawned { .. }));
+    let sid = agents_of(&mut c, woken)[0].id;
+    std::fs::write(h.dir.join("exit-now"), "").unwrap();
+    wait_until(Duration::from_secs(10), "the first pane to end", || {
+        agents_of(&mut c, woken).iter().all(|s| !s.state.has_pane())
+    });
+    std::fs::remove_file(h.dir.join("exit-now")).unwrap();
+
+    std::fs::write(&barrier, "").unwrap();
+    h.restart();
+    let mut c = h.client("env-seed-2");
+    let started = c.create_ticket("started");
+    let resp = spawn(&mut c, started);
+    assert!(matches!(resp, Response::Spawned { .. }), "the start launches at once: {resp:?}");
+    let resp = c.request(Command::ResumeSession { id: sid, confirm: false });
+    assert!(matches!(resp, Response::Spawned { .. }), "the wake launches at once: {resp:?}");
+    for ticket in [started, woken] {
+        let recs = agents_of(&mut c, ticket);
+        assert_eq!(recs.len(), 1, "one launch each: {recs:?}");
+        assert_eq!(recs[0].road, Road::Mod, "{:?}", recs[0].argv);
+        assert!(recs[0].argv.iter().any(|a| a == "--plugin-dir"), "{:?}", recs[0].argv);
+    }
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains("seeded from the last capture"), "{journal}");
+    let fresh = journal.matches("shell environment captured in").count();
+    std::fs::remove_file(&barrier).unwrap();
+    wait_until(Duration::from_secs(10), "the fresh capture after the launches", || {
+        std::fs::read_to_string(h.paths.daemon_log())
+            .unwrap_or_default()
+            .matches("shell environment captured in")
+            .count()
+            > fresh
+    });
+}
+
+/// T-962's stated limit: with no last capture (a machine's first start, a
+/// reboot that cleared the runtime dir) a launch before the capture lands
+/// takes the hook set as before, and `road.json` says why.
+#[test]
+fn with_no_last_capture_a_launch_before_the_capture_takes_the_hook_set_and_says_why() {
+    let Some((h, barrier)) = boot_on_a_person_s_path("mod-auto-env-none") else { return };
+    std::fs::write(&barrier, "").unwrap();
+    let env_file = h.paths.shell_env_file();
+    h.restart_after(|| std::fs::remove_file(&env_file).unwrap());
+    let mut c = h.client("env-none");
+    let ticket = c.create_ticket("started");
+    assert!(matches!(spawn(&mut c, ticket), Response::Spawned { .. }));
+    let recs = agents_of(&mut c, ticket);
+    assert_eq!(recs.len(), 1, "{recs:?}");
+    assert_eq!(recs[0].road, Road::Hooks);
+    assert!(!recs[0].argv.iter().any(|a| a == "--plugin-dir"), "{:?}", recs[0].argv);
+    assert_eq!(road_json(&h).unwrap()["probe"], "no shell environment captured yet");
+    std::fs::remove_file(&barrier).unwrap();
+}
+
+/// What T-961's relaunch tests share: a board under `auto` on `BOX_STUB`,
+/// which answers the probe as a 2.1.288 whose mods load nothing, a plain
+/// start on the mod road, and the pane's keys and files.
+struct Relaunch {
+    h: Harness,
+    c: TestClient,
+    ticket: ulid::Ulid,
+    sid: uuid::Uuid,
+}
+
+impl Relaunch {
+    fn boot(name: &str, title: &str, bridge_wait: &str, nopaint: bool) -> Option<Self> {
+        let env = [
+            ("MESIMON_CLAUDE_ROAD", "auto"),
+            ("MESIMON_MOD_BRIDGE_WAIT_MS", bridge_wait),
+            ("MESIMON_COMPOSER_WAIT_MS", "6000"),
+        ];
+        let h = Harness::boot_bare(name, Some(BOX_STUB), &env)?;
+        wait_until(Duration::from_secs(30), "the startup probe", || {
+            road_json(&h).is_some_and(|v| v["road"] == "mod")
+        });
+        if nopaint {
+            std::fs::write(h.dir.join("nopaint"), "").unwrap();
+        }
+        let mut c = h.client(name);
+        let ticket = c.create_ticket(title);
+        let sid = c.spawn_claude(ticket);
+        assert_eq!(record(&mut c, sid).road, Road::Mod);
+        Some(Relaunch { h, c, ticket, sid })
+    }
+
+    fn keys(&self, args: &[&str]) {
+        let sid16: String = self.sid.simple().to_string().chars().take(16).collect();
+        tmux(&self.h.paths.tmux_sock())
+            .args(["send-keys", "-t", &sid16])
+            .args(args)
+            .output()
+            .unwrap();
+    }
+
+    fn file(&self, name: &str) -> String {
+        std::fs::read_to_string(self.h.dir.join(name)).unwrap_or_default()
+    }
+
+    /// The box's first frame (`BOX_STUB`'s `first.txt`), then gone for the next pane's.
+    fn first(&self, held: &str) {
+        let path = self.h.dir.join("first.txt");
+        wait_until(Duration::from_secs(15), "the box's first frame", || path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), held, "the first frame's box");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    fn paint(&self, on: bool) {
+        let path = self.h.dir.join("nopaint");
+        if on {
+            let _ = std::fs::remove_file(path);
+        } else {
+            std::fs::write(path, "").unwrap();
+        }
+    }
+
+    fn relaunched(&mut self) {
+        let sid = self.sid;
+        let c = &mut self.c;
+        wait_until(Duration::from_secs(15), "the relaunch on the hook set", || {
+            let rec = record(c, sid);
+            rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
+        });
+    }
+
+    fn start(&mut self) {
+        let hook_sock = self.h.paths.hook_sock();
+        hook_send_with(&hook_sock, &self.sid.to_string(), "SessionStart", Some("startup"), "{}");
+        self.c.await_state(self.sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
+
+    fn prompt(&mut self, text: &str) {
+        let resp = self.c.prompt(self.ticket, text);
+        assert!(matches!(resp, Response::Ok), "{resp:?}");
+        let h = &self.h;
+        wait_until(Duration::from_secs(5), "the words waiting for the box", || {
+            feed_has(h, "prompt_waits_for_composer")
+        });
+    }
+}
+
+/// T-961, round 2. A plain start on the mod road whose mod never comes up is
+/// relaunched on the hook set, and the fresh pane gets the title typed again
+/// (T-603); that title is recorded as this pane's own. A person's prompt sent
+/// before the new pane's box draws waits, and goes after the title once it
+/// does, never held as a draft or left unsent.
+#[test]
+fn a_silent_mod_relaunch_records_the_title_it_types() {
+    let Some(mut r) = Relaunch::boot("mod-relaunch-title", "silent seat", "1500", false) else {
+        return;
+    };
+    r.first("silent seat ");
+    r.paint(false);
+    r.relaunched();
+    let rec = record(&mut r.c, r.sid);
+    assert_eq!(rec.typed_title.as_deref(), Some("silent seat"), "the new pane's prefill");
+    r.start();
+    r.prompt("mesimon-probe-961r the words");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(r.file("got.txt").is_empty(), "nothing typed before the box: {:?}", r.file("got.txt"));
+    r.paint(true);
+    r.first("silent seat ");
+    wait_until(Duration::from_secs(10), "the words after the title", || {
+        r.file("got.txt").contains("mesimon-probe-961r")
+    });
+    assert_eq!(r.file("got.txt"), "silent seat mesimon-probe-961r the words\n", "once");
+    let _ = r.c.request(Command::KillSession { id: r.sid });
+}
+
+/// T-961, round 2. Words parked on a silent mod launch are carried into its
+/// relaunch, whose pane types nothing for them: the carried entry takes the
+/// new pane's prefill (none), not the old pane's title. So a person's draft
+/// in the new box that equals the title holds the words, which go alone once
+/// it is deleted.
+#[test]
+fn a_carried_relaunch_entry_takes_the_new_pane_s_prefill() {
+    let Some(mut r) = Relaunch::boot("mod-relaunch-carried", "carried seat", "4000", true) else {
+        return;
+    };
+    // The first pane: the title and a person's draft typed before its box,
+    // the words parked, then held for the draft once the box draws.
+    r.keys(&["-l", "draft-b"]);
+    r.prompt("mesimon-probe-961s the words");
+    r.paint(true);
+    r.first("carried seat draft-b");
+    r.paint(false);
+    r.relaunched();
+    let rec = record(&mut r.c, r.sid);
+    assert_eq!(rec.typed_title, None, "the relaunch typed nothing for carried words");
+    assert!(rec.pending_submit || r.file("got.txt").is_empty(), "the words are carried");
+    // The new pane: a draft equal to the title, typed before its box.
+    r.keys(&["-l", "carried seat"]);
+    r.start();
+    r.paint(true);
+    r.first("carried seat");
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(r.file("got.txt").is_empty(), "nothing under the draft: {:?}", r.file("got.txt"));
+    for _ in 0.."carried seat".len() {
+        r.keys(&["BSpace"]);
+    }
+    wait_until(Duration::from_secs(10), "the words alone", || {
+        r.file("got.txt").contains("mesimon-probe-961s")
+    });
+    assert_eq!(r.file("got.txt"), "mesimon-probe-961s the words\n", "alone, once");
+    let _ = r.c.request(Command::KillSession { id: r.sid });
+}
