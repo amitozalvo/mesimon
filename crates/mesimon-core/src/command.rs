@@ -590,7 +590,14 @@ pub enum Command {
     /// capture runs the user's rc files, and doing that unbidden every time an
     /// editor writes `~/.zshrc` would fork a shell on every keystroke-save.
     /// The daemon notices the change and OFFERS; the person decides.
-    ReloadShellEnv,
+    ///
+    /// `shell` is the board's own `$SHELL` (T-1201): the daemon's is the one
+    /// it was started with, so a login shell changed since then is read from
+    /// the terminal the person pressed this in. Absent keeps the daemon's.
+    ReloadShellEnv {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
+    },
     /// Restart the private tmux server (the Esc menu's row, T-690): every
     /// session parks the way `x` parks it, the `!` terminals close, the
     /// server is killed once the panes are reaped, and the next spawn or
@@ -1718,7 +1725,7 @@ impl Command {
             | RenameTag { .. }
             | SetTagColor { .. }
             | MoveTag { .. }
-            | ReloadShellEnv
+            | ReloadShellEnv { .. }
             | RestartServer
             | GitFetch
             | SetAutomation { .. }
@@ -1843,6 +1850,22 @@ mod meta_tests {
     }
 
     #[test]
+    fn a_boards_other_shell_is_a_difference_only_where_both_sides_say() {
+        let daemon = |shell: &str| ShellEnvStatus { shell: shell.into(), ..Default::default() };
+        assert!(daemon("/bin/bash").shell_differs(Some("/bin/zsh")));
+        assert!(!daemon("/bin/zsh").shell_differs(Some("/bin/zsh")));
+        assert!(!daemon("").shell_differs(Some("/bin/zsh")), "an older daemon does not say");
+        assert!(!daemon("/bin/zsh").shell_differs(None), "a board with no $SHELL");
+        assert!(!daemon("/bin/zsh").shell_differs(Some("")));
+        // The reload a board of this build sends is one an older daemon reads,
+        // and an older board's is one this daemon reads.
+        let old: Command = serde_json::from_str(r#"{"cmd":"reload_shell_env"}"#).unwrap();
+        assert!(matches!(old, Command::ReloadShellEnv { shell: None }));
+        let wire = serde_json::to_string(&Command::ReloadShellEnv { shell: None }).unwrap();
+        assert_eq!(wire, r#"{"cmd":"reload_shell_env"}"#);
+    }
+
+    #[test]
     fn the_feed_name_is_the_wire_name() {
         let c = Command::CreateTicket {
             column: "a".into(),
@@ -1851,7 +1874,7 @@ mod meta_tests {
             tier: None,
         };
         assert_eq!(c.wire_name(), "create_ticket");
-        assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
+        assert_eq!(Command::ReloadShellEnv { shell: None }.wire_name(), "reload_shell_env");
         assert_eq!(Command::RestartServer.wire_name(), "restart_server");
     }
 
@@ -3986,6 +4009,20 @@ pub struct ShellEnvStatus {
     /// it as the concrete thing the reload would change.
     #[serde(default)]
     pub vars: usize,
+    /// The shell the daemon runs for a capture and a `!` terminal. Empty
+    /// from a daemon that does not say.
+    #[serde(default)]
+    pub shell: String,
+}
+
+impl ShellEnvStatus {
+    /// Is the board's own `$SHELL` another shell than the daemon's (T-1201)?
+    /// The daemon keeps the one it was started with, so a board opened in a
+    /// terminal with a new login shell offers the reload that hands it over.
+    /// Never on a side that does not say.
+    pub fn shell_differs(&self, board: Option<&str>) -> bool {
+        board.is_some_and(|b| !b.is_empty() && !self.shell.is_empty() && b != self.shell)
+    }
 }
 
 /// Whether the repo's `CLAUDE.md` already tells a session to read its ticket

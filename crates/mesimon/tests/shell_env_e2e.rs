@@ -202,7 +202,7 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
         assert!(Instant::now() < deadline, "an edited rc file was never noticed");
         std::thread::sleep(Duration::from_millis(200));
     }
-    assert!(matches!(c.request(Command::ReloadShellEnv), Response::Ok));
+    assert!(matches!(c.request(Command::ReloadShellEnv { shell: None }), Response::Ok));
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let st = shell_env_of(c.request(Command::Snapshot));
@@ -210,6 +210,36 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
             break;
         }
         assert!(Instant::now() < deadline, "the offer never cleared: {st:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // A reload that names another shell runs that one (T-1201): the daemon's
+    // own `$SHELL` is its start's, so a login shell changed since is the
+    // board's to say. What the next pane is launched with is the file.
+    assert_eq!(shell_env_of(c.request(Command::Snapshot)).shell, fake_shell.display().to_string());
+    let second = dir.join("second-shell");
+    write_fake_shell(&second, "from-the-second-shell", &bin);
+    let second = second.display().to_string();
+    // One that is no program is left, and the reload it rode still runs.
+    assert!(matches!(
+        c.request(Command::ReloadShellEnv { shell: Some("not-a-path".into()) }),
+        Response::Ok
+    ));
+    assert_eq!(shell_env_of(c.request(Command::Snapshot)).shell, fake_shell.display().to_string());
+    assert!(matches!(
+        c.request(Command::ReloadShellEnv { shell: Some(second.clone()) }),
+        Response::Ok
+    ));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let st = shell_env_of(c.request(Command::Snapshot));
+        let file = std::fs::read(paths.shell_env_file()).unwrap_or_default();
+        let file = String::from_utf8_lossy(&file).to_string();
+        if st.shell == second && !st.reloading && file.contains("from-the-second-shell") {
+            assert!(file.contains(&format!("SHELL={second}")), "a pane's $SHELL is the old one");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the named shell was never run: {st:?}");
         std::thread::sleep(Duration::from_millis(200));
     }
 

@@ -8512,7 +8512,9 @@ impl App {
             running_unstable: Channel::running() == Channel::Unstable,
             // `reloading` takes the offer down the instant the press lands, so
             // a slow rc file does not leave the chip standing as if it missed.
-            shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
+            shell_env_stale: (self.shell_env.stale
+                || self.shell_env.shell_differs(std::env::var("SHELL").ok().as_deref()))
+                && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             // The notice IS the fact (T-690): the daemon raises it when a
             // spawn dies at launch and a process under the server cannot
@@ -10367,7 +10369,9 @@ impl App {
                     "restarting the private tmux server ∙ sessions park and wake back".into();
             }
             Verb::ReloadShellEnv => {
-                self.send(Command::ReloadShellEnv)?;
+                // This terminal's shell goes with the press (T-1201): the
+                // daemon's is the one it was started with.
+                self.send(Command::ReloadShellEnv { shell: std::env::var("SHELL").ok() })?;
                 // Names the boundary in the same breath as the confirmation: a
                 // running process's environment cannot be changed, so a live
                 // pane keeps what it was born with and sleep/wake is the way

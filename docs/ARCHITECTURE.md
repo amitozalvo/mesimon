@@ -567,7 +567,12 @@ and that is why `tmux_bin()` resolves a bare `tmux` to an absolute path. A live 
 env it was born with (nothing can change a running process's environment); sleep/wake is how a
 session picks up a new one, and the Esc-menu row says so. An rc file moving raises
 `Ctx::shell_env_stale` → `◦ shell env changed (esc)`; reloading is offered, never automatic (an
-editor save must not fork the user's shell). E2e: `crates/mesimon/tests/shell_env_e2e.rs`
+editor save must not fork the user's shell). **Which shell is the daemon's `shell` field**
+(T-1201): its own `$SHELL` at start, then the board's on a `ReloadShellEnv { shell }` that names
+another usable one; the capture, a `!` terminal and a pane's `$SHELL` all read it, and a board
+whose `$SHELL` differs raises the same chip (`ShellEnvStatus::shell_differs`). The capture's
+shell runs in a session of its own, so it has no terminal to take from a foreground daemon.
+E2e: `crates/mesimon/tests/shell_env_e2e.rs`
 (asserts the value is NOT on the pane's command line) and `exec_e2e.rs`; STALE-MAP "A pane
 gets the user's own shell environment" + "The environment travels inside the pane".
 

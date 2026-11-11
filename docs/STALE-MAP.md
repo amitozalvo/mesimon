@@ -43329,3 +43329,44 @@ alone. Nothing else changed, and nothing in `tests/common/mod.rs`.
 
 **Refuted.** Waiting on `ticket_read` for a start's brief (above). Removing the start settles
 outright: no run shows they are idle time, and without a state there is no wait to put in.
+
+## A changed login shell reaches sessions; `daemon --help` prints help; `^C` stops a foreground daemon (T-1201, 2026-11-11)
+
+Reported from a second machine: a new shell never reached Claude sessions, and
+`mesimon daemon --help` could not be quit with `^C` or `^Z`. Three defects.
+
+- **The daemon never re-read which shell is the person's.** Six sites read the daemon's own
+  `$SHELL` (`shellenv::capture` twice, `absorb_panes`, `spawn_session`, `open_terminal` twice),
+  which is the terminal's that first started it. `spawn_detached` hands the board's environment
+  on and `U` is an `exec`, so a restart from an open board kept it, and `Reload the shell
+  environment` ran the old shell again. With no rc file moved the row was not offered at all.
+  Now `Daemon::shell` holds it, `ShellEnvStatus.shell` says it on the snapshot, a board whose
+  own `$SHELL` is another raises `shell env changed` (`ShellEnvStatus::shell_differs`, false
+  where either side does not say), and the press sends `ReloadShellEnv { shell }`. The daemon
+  takes it when it is an absolute path to an executable file (`shellenv::usable`); anything
+  else is journalled and the reload runs on the shell that stands. The capture sets the child's
+  `SHELL` to the shell it runs, so a pane's `$SHELL` follows. A shell taken while a capture is
+  in flight has that capture's landing start another (`shell_env_again`): captures run one at
+  a time, and the first cut of this dropped the new shell's (the e2e's two reloads 1 ms apart).
+- **`mesimon daemon` read `--repo` and ignored every other word**, so `--help` ran a foreground
+  daemon for the current directory. `parse_daemon_args`: nothing or `--repo <path>` runs,
+  `--help`/`-h` prints the help, anything else is usage and exit 2.
+- **A foreground daemon lost its terminal to the capture.** Measured on a pty against the real
+  binary: 55 ms after start the terminal's foreground group was `/bin/zsh -l -i -c env -0 > …`'s,
+  not the daemon's, and stayed so after that shell exited; `^C`, `^Z` and `^\` were echoed and
+  reached nothing, SIGTERM stopped it cleanly. zsh, interactive, opens `/dev/tty`, makes its own
+  group the foreground one and gives it back only where it runs its own exit (`zsh -f -i -c`
+  never did; `-l -i` with the author's rc files did, with an empty home did not). The capture
+  now calls `setsid` in `pre_exec`, as the fetch worker does: a session leader has no
+  controlling terminal, which is what a detached daemon's capture always had. After: the
+  foreground group stays the daemon's and `^C` ends it.
+
+**Refuted.** The login shell from the password database (`getpwuid`): a machine that forbids
+`chsh` sets the shell in the terminal app, and the terminal's `$SHELL` is then the only place
+it is said. Carrying the shell on `Hello`: every client says hello, an agent's shim included,
+and a board reconnecting from an older terminal would turn it back without a press; the reload
+is already a person's gesture. The tmux server's `default-shell` is left as the server started
+with it: a pane and a `!` terminal are launched by argv, never through it.
+
+**Still true.** A board left open in a terminal from before the change keeps offering the
+reload, since its `$SHELL` is the old one: the fix is opening the board from a new terminal.

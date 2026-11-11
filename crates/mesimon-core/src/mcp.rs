@@ -2039,7 +2039,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // The environment every future pane gets, board-wide and shared by
         // every session. An agent asking to re-read the user's rc files would
         // be running the user's shell on its own say-so.
-        | Command::ReloadShellEnv
+        | Command::ReloadShellEnv { .. }
         // The private tmux server's restart parks every session on the
         // board, the agent's own included (T-690): a person's gesture,
         // never a tool's.

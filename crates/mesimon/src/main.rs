@@ -55,8 +55,18 @@ fn main() -> Result<()> {
             mesimon_daemon::agents::codex::runtime::run(std::path::Path::new(&path))
         }
         Some("daemon") => {
-            let repo =
-                arg_value(&args, "--repo").map(PathBuf::from).unwrap_or(std::env::current_dir()?);
+            let repo = match parse_daemon_args(&args[1..]) {
+                DaemonArgs::Run(Some(repo)) => repo,
+                DaemonArgs::Run(None) => std::env::current_dir()?,
+                DaemonArgs::Help => {
+                    print_help();
+                    return Ok(());
+                }
+                DaemonArgs::Unknown => {
+                    eprintln!("usage: mesimon daemon [--repo <path>]");
+                    std::process::exit(2);
+                }
+            };
             mesimon_daemon::install_sigterm_handler();
             mesimon_daemon::run_foreground(&repo)
         }
@@ -127,6 +137,27 @@ fn main() -> Result<()> {
     }
 }
 
+/// What `mesimon daemon`'s arguments ask for.
+#[derive(Debug, PartialEq, Eq)]
+enum DaemonArgs {
+    /// Run the daemon, for this repository or the current directory's.
+    Run(Option<PathBuf>),
+    Help,
+    Unknown,
+}
+
+/// `mesimon daemon`'s arguments: nothing, or `--repo <path>`. Anything else
+/// must not start a daemon (T-1201): `mesimon daemon --help` once ran one in
+/// the foreground for the current directory.
+fn parse_daemon_args(args: &[String]) -> DaemonArgs {
+    match args {
+        [] => DaemonArgs::Run(None),
+        [flag, repo] if flag == "--repo" => DaemonArgs::Run(Some(PathBuf::from(repo))),
+        [flag] if flag == "--help" || flag == "-h" => DaemonArgs::Help,
+        _ => DaemonArgs::Unknown,
+    }
+}
+
 /// `mesimon update`'s one flag: `Some(check_only)`, or `None` for anything
 /// else — an unknown flag must not be read as "go ahead and install".
 fn parse_update_args(args: &[String]) -> Option<bool> {
@@ -161,7 +192,7 @@ fn help_text() -> &'static str {
          usage:\n  mesimon              open the board for the current directory\n  \
          mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
-         mesimon daemon --repo <path>   run the daemon in the foreground\n  \
+         mesimon daemon [--repo <path>] run the daemon in the foreground; ^C stops it\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
          mesimon update [--check]       install the newest release; --check only asks\n  \
          mesimon channel [stable|unstable]  the release channel updates follow; a word sets it\n  \
@@ -181,7 +212,23 @@ fn help_text() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{help_text, parse_update_args};
+    use super::{help_text, parse_daemon_args, parse_update_args, DaemonArgs};
+
+    #[test]
+    fn daemon_runs_on_nothing_or_a_repo_and_on_no_other_word() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_daemon_args(&a(&[])), DaemonArgs::Run(None));
+        assert_eq!(
+            parse_daemon_args(&a(&["--repo", "/r"])),
+            DaemonArgs::Run(Some(std::path::PathBuf::from("/r")))
+        );
+        assert_eq!(parse_daemon_args(&a(&["--help"])), DaemonArgs::Help);
+        assert_eq!(parse_daemon_args(&a(&["-h"])), DaemonArgs::Help);
+        assert_eq!(parse_daemon_args(&a(&["--repo"])), DaemonArgs::Unknown, "a flag with no path");
+        assert_eq!(parse_daemon_args(&a(&["--rep", "/r"])), DaemonArgs::Unknown);
+        assert_eq!(parse_daemon_args(&a(&["--repo", "/r", "--help"])), DaemonArgs::Unknown);
+        assert_eq!(parse_daemon_args(&a(&["stop"])), DaemonArgs::Unknown);
+    }
 
     #[test]
     fn update_takes_one_flag_and_refuses_the_rest() {

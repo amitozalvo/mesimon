@@ -24,6 +24,14 @@
 //!
 //! The capture runs off the writer thread (it forks a shell that may take a
 //! second) and arrives back as `Msg::ShellEnvCaptured`.
+//!
+//! **The shell runs in a session of its own** (T-1201). An interactive shell
+//! takes the terminal it finds: zsh opens `/dev/tty`, makes its own process
+//! group the foreground one and, where `-c` ends in an `exec`, never gives it
+//! back. A daemon run in the foreground then sat in a background group of
+//! its own terminal, and `^C`, `^Z` and `^\` reached nothing. A session
+//! leader has no controlling terminal, which is what the detached daemon's
+//! capture always had.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -94,6 +102,23 @@ pub fn rc_stamp() -> u64 {
         .unwrap_or(0)
 }
 
+/// The daemon's own `$SHELL`: the shell of the terminal that started it, and
+/// the one it runs until a board's reload names another.
+pub fn inherited() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
+}
+
+/// Is `shell` a program the daemon can run in a login shell's place: an
+/// absolute path to an executable file? What a board's `$SHELL` must be
+/// before a reload takes it.
+pub fn usable(shell: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let path = Path::new(shell);
+    shell.len() <= 1024
+        && path.is_absolute()
+        && std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 /// Run the user's login shell and read back its environment.
 ///
 /// `dump` is where the shell writes it — the caller passes a path inside the
@@ -101,14 +126,13 @@ pub fn rc_stamp() -> u64 {
 /// removed before returning either way: the dump is a copy of the user's whole
 /// environment, and leaving it on disk would be a second, longer-lived place
 /// for whatever secrets live in it.
-pub fn capture(dump: &Path) -> Result<ShellEnv, String> {
+pub fn capture(shell: &str, dump: &Path) -> Result<ShellEnv, String> {
     // Read the stamp BEFORE running, never after: an rc file edited while the
     // capture is in flight must read as stale, not as already captured.
     let rc_stamp = rc_stamp();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let _ = std::fs::remove_file(dump);
 
-    let mut cmd = Command::new(&shell);
+    let mut cmd = Command::new(shell);
     // `-l -i -c`: what a terminal runs, and `-c` is what makes it terminate.
     cmd.args(["-l", "-i", "-c", &format!("env -0 > '{}'", dump.display())]);
     cmd.env_clear();
@@ -118,12 +142,23 @@ pub fn capture(dump: &Path) -> Result<ShellEnv, String> {
     // rather than from any rc file, so a clean base would drop it entirely and
     // hand every pane a C locale. These are the daemon's, which got them from
     // the user's terminal.
-    for k in ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
+    for k in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
         if let Ok(v) = std::env::var(k) {
             cmd.env(k, v);
         }
     }
+    // The shell that is run, which a reload may have changed since the
+    // daemon's own `$SHELL` was set; a pane's `$SHELL` is this one.
+    cmd.env("SHELL", shell);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and the closure allocates nothing.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
 
     let mut child = cmd.spawn().map_err(|e| format!("{shell}: {e}"))?;
     let deadline = Instant::now() + CAPTURE_TIMEOUT;
@@ -193,7 +228,7 @@ mod tests {
     #[test]
     fn a_real_login_shell_answers_with_a_usable_environment() {
         let dump = std::env::temp_dir().join(format!("msmn-shellenv-test-{}", std::process::id()));
-        let Ok(env) = capture(&dump) else {
+        let Ok(env) = capture(&inherited(), &dump) else {
             // A CI image without the user's $SHELL is not a failure of this
             // code; the daemon's own fallback covers exactly this case.
             return;
@@ -210,13 +245,64 @@ mod tests {
         // `export PATH=new:$PATH` rc would otherwise carry the stale tail
         // forward forever, which is the bug this whole module exists for.
         let dump = std::env::temp_dir().join(format!("msmn-shellenv-base-{}", std::process::id()));
-        let Ok(env) = capture(&dump) else { return };
+        let Ok(env) = capture(&inherited(), &dump) else { return };
         let Some(path) = env.path else { return };
         assert!(
             !path.contains("/MESIMON_SENTINEL_NOT_A_REAL_DIR"),
             "the capture inherited the daemon's PATH"
         );
         assert!(path.contains("/usr/bin"), "the base PATH should survive as a tail: {path}");
+    }
+
+    /// A stand-in shell that answers the capture and writes, beside the
+    /// dump, its own pid and the process group it found itself in.
+    fn fake_shell(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let shell = dir.join("fakesh");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\n# $1 -l, $2 -i, $3 -c, $4 the command\n\
+             echo \"$$ $(ps -o pgid= -p $$ | tr -d ' ')\" > \"$(dirname \"$0\")/who\"\n\
+             export A=1 B=2 C=3\neval \"$4\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shell
+    }
+
+    #[test]
+    fn the_shell_runs_in_a_session_of_its_own_and_is_the_one_named() {
+        let dir = std::env::temp_dir().join(format!("msmn-shellenv-sess-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = fake_shell(&dir);
+        let shell = shell.to_str().unwrap();
+        let env = capture(shell, &dir.join("dump")).expect("the stand-in answers");
+        // A session leader leads its process group: the shell's group is its
+        // own pid, never this process's, so no terminal of ours is its to take.
+        let who = std::fs::read_to_string(dir.join("who")).unwrap();
+        let mut who = who.split_whitespace();
+        let (pid, pgid) = (who.next().unwrap(), who.next().unwrap());
+        assert_eq!(pid, pgid, "the capture's shell shares its parent's process group");
+        // And a pane's `$SHELL` is the shell that was run, not the daemon's.
+        assert!(env.vars.iter().any(|(k, v)| k == "SHELL" && v == shell), "{:?}", env.vars);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_boards_shell_is_taken_only_as_an_absolute_path_to_a_program() {
+        let dir = std::env::temp_dir().join(format!("msmn-shellenv-use-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = fake_shell(&dir);
+        assert!(usable(shell.to_str().unwrap()));
+        assert!(usable("/bin/sh"));
+        assert!(!usable("sh"), "a bare name would be looked up on the daemon's PATH");
+        assert!(!usable(""), "an empty $SHELL names nothing");
+        assert!(!usable(dir.to_str().unwrap()), "a directory is not a program");
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "").unwrap();
+        assert!(!usable(plain.to_str().unwrap()), "a file that cannot be run");
+        assert!(!usable(dir.join("absent").to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

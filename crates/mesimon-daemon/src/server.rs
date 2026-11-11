@@ -1199,6 +1199,11 @@ pub struct Daemon {
     /// Why the last capture failed, if it did. The previous environment stays
     /// in force — a broken rc file must not empty a working pane env.
     shell_env_error: Option<String>,
+    /// The shell a capture and a `!` terminal run (T-1201): the daemon's own
+    /// `$SHELL` at its start, then the board's on a reload that names another.
+    shell: String,
+    /// The shell changed under a capture in flight: its landing runs another.
+    shell_env_again: bool,
     /// This binary, for the pane launcher (`mesimon exec`) and the hook.
     self_exe: std::path::PathBuf,
     /// Where the board's own checkout stands (T-124): the SAMPLED part only —
@@ -2168,6 +2173,8 @@ impl Daemon {
             shell_env_capturing: false,
             shell_env_asked_at: 0,
             shell_env_error: None,
+            shell: crate::shellenv::inherited(),
+            shell_env_again: false,
             self_exe,
             git_cache: mesimon_core::command::RepoGit::default(),
             claude_md: crate::claudemd::Sampler::default(),
@@ -2341,9 +2348,10 @@ impl Daemon {
         self.shell_env_capturing = true;
         self.shell_env_asked_at = now_ms();
         let dump = self.paths.shell_env_dump();
+        let shell = self.shell.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(Msg::ShellEnvCaptured(crate::shellenv::capture(&dump)));
+            let _ = tx.send(Msg::ShellEnvCaptured(crate::shellenv::capture(&shell, &dump)));
         });
     }
 
@@ -2395,7 +2403,29 @@ impl Daemon {
                 .with_detail(e.clone()),
             );
         }
+        if std::mem::take(&mut self.shell_env_again) {
+            self.queue_shell_env_capture();
+        }
         self.persist_and_notify();
+    }
+
+    /// The board's shell, taken on the reload that names it (T-1201). The
+    /// daemon's own is its start's, and a restart from an open board hands
+    /// the same one on, so a login shell changed since is heard only here.
+    /// One that is not a program this daemon can run is left and journalled:
+    /// the reload it rode still runs, on the shell that stands.
+    ///
+    /// A capture in flight is the old shell's, and captures run one at a
+    /// time: `shell_env_again` has its landing start the new shell's.
+    fn adopt_shell(&mut self, shell: Option<String>) {
+        let Some(shell) = shell.filter(|s| *s != self.shell) else { return };
+        if crate::shellenv::usable(&shell) {
+            self.journal.line(&format!("shell is now {shell}, was {}", self.shell));
+            self.shell = shell;
+            self.shell_env_again = self.shell_env_capturing;
+        } else {
+            self.journal.line(&format!("shell kept {}: the board's is not a program", self.shell));
+        }
     }
 
     /// Has an rc file moved since the capture the panes are being given?
@@ -3735,7 +3765,8 @@ impl Daemon {
                 }
                 Response::Archived { archived, skipped }
             }
-            Command::ReloadShellEnv => {
+            Command::ReloadShellEnv { shell } => {
+                self.adopt_shell(shell);
                 self.queue_shell_env_capture();
                 // Broadcast now, not on the capture's return: `reloading`
                 // becoming true is what takes the offer off the header, and a
@@ -4577,7 +4608,7 @@ impl Daemon {
                 }
             }
         }
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let shell = self.shell.clone();
         let terminals: std::collections::BTreeMap<_, _> = facts
             .iter()
             .filter(|f| !f.pane_dead)
@@ -12465,6 +12496,7 @@ impl Daemon {
                 reloading: self.shell_env_capturing,
                 failed: self.shell_env_error.is_some(),
                 vars: self.shell_env.vars.len(),
+                shell: self.shell.clone(),
             },
             git: mesimon_core::command::RepoGit {
                 fetching: self.git_fetching,
@@ -18779,7 +18811,7 @@ impl Daemon {
                 Err(message) => return Response::Err { message },
             }
         } else {
-            LaunchSpec::plain(vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())])
+            LaunchSpec::plain(vec![self.shell.clone()])
         };
         let argv = spec.argv;
         // Claude enters Spawning; the SessionStart hook flips it to Running.
@@ -22074,8 +22106,7 @@ impl Daemon {
             .unwrap_or(false);
         if !alive {
             let _ = self.backend.kill_session(&name);
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-            let launch = self.launch(&[shell], &vars);
+            let launch = self.launch(&[self.shell.clone()], &vars);
             if let Err(e) = self.backend.spawn(&name, &cwd, &launch) {
                 return Response::Err { message: format!("terminal spawn failed: {e}") };
             }
@@ -22141,7 +22172,7 @@ impl Daemon {
             Some(b) if b.status == BindingStatus::Attached => b.path.clone(),
             _ => self.paths.repo_root.clone(),
         };
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let shell = self.shell.clone();
         let id = uuid::Uuid::new_v4();
         let now = now_ms();
         let mut rec = SessionRecord::new(
