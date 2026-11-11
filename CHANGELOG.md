@@ -10,6 +10,44 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.17.unstable.2 — 2026-11-11
+
+An unstable build. Nothing changes a state file's format.
+
+### Added
+
+- **Remote Control can put the crown on a ticket or take it off.**
+- **`Enter` on a working card can open its ticket page.** Choose it in
+  Settings › Behaviour › Enter on a working card.
+- **A tag can have no colour.** `Tab` in the tag picker steps past the last
+  tint; a colourless tag shows as a grey chip and leaves the card's bar alone.
+- **The ticket page's conversation has a jump pill** above its foot, as
+  Claude Code's does, and the input box shows a queued ask's words. `^u` drops
+  a queued ask at once.
+- **The ask field flashes red** when sending immediately would interrupt a
+  working agent.
+
+### Changed
+
+- A follow-up opens at now by default, as Claude Code's composer sends.
+- A dialog on the ticket page drops the agent's key row and lights no tab.
+- A closed agent box is its top rule alone, with no state or facts on it.
+- The crowned ticket's mascot wears crown blue, and a click on the mascot on
+  the ticket page makes it blink.
+
+### Fixed
+
+- A shell reload uses the board's current shell, and is offered whenever it
+  differs from the daemon's.
+- `mesimon daemon --help` prints help, and `^C` stops a daemon run in the
+  foreground.
+- A Claude Code session started with a name is read correctly on the ticket
+  page.
+- A prompt sent to a freshly cleared agent opens its turn, so the card moves
+  as it should.
+- A background task finishing mid-turn no longer shows as a message from you.
+- The crown resumes an agent it started when that agent crashes.
+
 ## v0.1.0-beta.17.unstable.1 — 2026-11-07
 
 An unstable build. Nothing changes a state file's format.
