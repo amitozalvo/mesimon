@@ -43526,3 +43526,41 @@ Without the `judge_probe` change, step 8 fails at its wait.
 line is T-596's. A live crown `merge_ticket` in the Claude rig lands on the rig checkout's HEAD,
 which is the ticket branch running it. That is why every rig case forbids the crown's own merge
 (`unlanded`, the train's blocker file). A case for this needs a rig base the crown may merge into.
+
+## A prompt over a held Stop that lifted a resting seat opens its turn (T-1200, 2026-11-11)
+
+`crown_e2e::the_board_wakes_the_crown_when_a_started_worker_delivers` went red twice in about seven
+runs under load (T-1196's baseline, T-1197's first full run): the worker's commit, then its turn,
+and no `delivered` wake. The failing feed survived in T-1196's scratchpad (`before-default.log`).
+
+- **The lead was wrong: nothing armed launch words.** `arm_owed` runs only on a `Startup` or
+  `Resume` `SessionStart`; the test's is `clear`, and the feed shows no paste and no press.
+- **What happened: T-1044's async-Stop hold.** `hold_async_stop` holds any lead `Stop` at a seat
+  not at `Idle{EndTurn}` and returns `TurnStarted`, keeping "the existing turn" open. After the
+  `/clear` the seat is `Idle{Unknown}` with no turn open, so the test's bare `Stop` lifted it to
+  `Running` with `held_stop` set: no `turns_open`, no automove, no turn age. The sampler releases
+  a hold at the first sample 1.5 s (`SCAN_MS`) after the `Stop`; the test commits and prompts
+  about 1.6 s after it. Under load the release came late, the prompt cancelled the hold first,
+  and the machine, already `Running`, read the prompt `unchanged`. No edge, so no turn opened,
+  so the turn's end was not `fresh`, and a shared checkout's new HEAD is a delivery only on a
+  fresh turn (`verdict`, T-1146). The card also stayed in REVIEW through that turn.
+- **The fix.** The hold remembers the resting state it lifted (`lifted_from`, set when the seat
+  was not `is_working`). A prompt or the lead's own tool frame that cancels such a hold replays
+  the withheld `→ Running` edge through `apply_change` after the machine read the frame
+  (`begin_lifted_turn`), so the turn opens, is dated and automoves as any begin does. A hold over
+  a running turn replays nothing. The release order (the test's usual one) is unchanged: the
+  bare `Stop` still releases into no finish.
+- **Real agents.** Not shown. The path needs a lead `Stop` with no prompt or lead tool frame
+  before it, at a resting seat with no turn open; a real `/clear` is followed by a prompt, and a
+  `!` command's turn opens on its tool completion. A `Stop` whose prompt frame was lost would
+  reach it. The fix is in the daemon, not the test, because the hole is the daemon's in any
+  order.
+- **Test.** `asynchooks::tests::a_prompt_over_a_lifted_hold_opens_its_turn` orders the failing
+  run's events and fails without the replay ("the prompt opened its turn").
+
+**Checks.** `cargo ut`; `--test agents async_hook_e2e::` 3 of 3; the crown test alone on both
+roads; `crown_e2e::` whole on the default road. Load 11 to 14. Full workspace suite owed after
+the merge (`daemon/src/server.rs`).
+
+**Not changed:** a bare `Stop` at a resting seat still paints `working` for the hold (1.5 s, or
+an async hook's run); whether such a `Stop` should be held at all is T-1044's call.

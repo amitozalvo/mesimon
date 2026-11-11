@@ -6024,6 +6024,7 @@ impl Daemon {
                     }
                 }
             }
+            dirty |= self.begin_lifted_turn(id, &frame.event);
             if let Some(change) = change {
                 dirty |= self.apply_change(id, &change, observation.detail, Some(&frame.event));
                 // ...unless the user simply left. A clean exit is a park.

@@ -14,6 +14,9 @@ pub(super) struct Holds {
     pending: HashMap<uuid::Uuid, PendingStop>,
     // A hook from an earlier turn can survive a rewake and the next Stop.
     known: HashMap<uuid::Uuid, HashMap<i32, u64>>,
+    // T-1200: the frame being handled began a turn over a hold that lifted
+    // a resting seat, and that lift's withheld edge is this turn's begin.
+    begun: Option<(uuid::Uuid, SessionState)>,
 }
 
 struct PendingStop {
@@ -24,6 +27,10 @@ struct PendingStop {
     shells: Vec<String>,
     saw_child: bool,
     empty_since: Option<u64>,
+    /// The resting state this Stop lifted to `Running` with no turn open
+    /// (T-1200): a `/clear`'s `Idle{Unknown}`, say. `None` when a turn was
+    /// already running and the lift only kept it so.
+    lifted_from: Option<SessionState>,
 }
 
 fn cap_ms() -> u64 {
@@ -81,10 +88,17 @@ impl Daemon {
             // The lead's own tool, started or done, is a turn after the held
             // Stop: the one Claude Code runs on a `!` command's output opens
             // with no prompt (T-1140), and its first frame is a completion.
+            // A held Stop that lifted a resting seat opened no turn, and the
+            // machine already reads `Running`, so this frame moves nothing:
+            // the lift's withheld edge is the new turn's begin (T-1200), or
+            // its end, with a commit on a checkout, never wakes the crown.
             Signal::UserPromptSubmit
             | Signal::ToolStarted { nested: false }
             | Signal::ToolCompleted { nested: false } => {
-                self.async_hooks.pending.remove(&id);
+                if let Some(from) = self.async_hooks.pending.remove(&id).and_then(|p| p.lifted_from)
+                {
+                    self.async_hooks.begun = Some((id, from));
+                }
             }
             Signal::PaneDied { .. }
             | Signal::SessionEnd { .. }
@@ -135,6 +149,7 @@ impl Daemon {
                 shells,
                 saw_child: false,
                 empty_since: None,
+                lifted_from: (!mesimon_core::quiet::is_working(rec)).then(|| rec.state.clone()),
             },
         );
         self.pane_due.facts = true;
@@ -142,6 +157,24 @@ impl Daemon {
         // Keep the existing turn open. No delivered edge, automove, or
         // crown turn-end probe exists until the saved Stop is released.
         Signal::TurnStarted
+    }
+
+    /// The turn this frame began over a lifted hold (T-1200), as the edge
+    /// the lift withheld: automove, the open turn and its age then follow
+    /// as from any begin. Called after the machine read the frame, so the
+    /// prompt's own bookkeeping (T-186's hand rule) comes first.
+    pub(super) fn begin_lifted_turn(&mut self, id: uuid::Uuid, hook: &str) -> bool {
+        let Some((at, from)) = self.async_hooks.begun.take() else { return false };
+        if at != id || self.board.session(id).is_none_or(|r| r.state != SessionState::Running) {
+            return false;
+        }
+        let change = Change {
+            from,
+            to: SessionState::Running,
+            attention_added: false,
+            confidence: Confidence::High,
+        };
+        self.apply_change(id, &change, None, Some(hook))
     }
 
     pub(super) fn async_hook_view(&self, id: uuid::Uuid) -> Option<mesimon_core::board::HookWait> {
@@ -422,6 +455,63 @@ mod tests {
             Signal::ToolCompleted { nested: false }
         ));
         assert!(!d.async_stop_pending(id), "the lead's completion is a turn of its own");
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // T-1200, crown_e2e's lost wake in order: a `/clear` leaves the seat at
+    // `Idle{Unknown}` with no turn open, a bare `Stop` is held and lifts it
+    // to `Running`, and the next prompt lands before the sampler releases
+    // the hold. The prompt is the turn's begin all the same: its end is a
+    // fresh one, which a checkout's commit needs to be told delivered.
+    #[test]
+    fn a_prompt_over_a_lifted_hold_opens_its_turn() {
+        let dir = std::env::temp_dir()
+            .join(format!("msmn-hkl-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let (mut d, _sid, _rx) = crate::server::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let id = d.board.sessions[0].id;
+        let ticket = d.board.sessions[0].ticket;
+        let clear = SessionState::Idle { stop_reason: StopReason::Unknown };
+        let rec = &mut d.board.sessions[0];
+        rec.state = clear.clone();
+        rec.pane_key = Some("1:%0".into());
+        d.machines.insert(id, Machine::new(clear, 1_000));
+        let frame = |event: &str| HookFrame {
+            session: id.to_string(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        };
+        let state = |d: &Daemon| d.board.session(id).unwrap().state.clone();
+
+        d.on_hook(frame("Stop"));
+        assert!(d.async_stop_pending(id), "the bare Stop is held");
+        assert_eq!(state(&d), SessionState::Running, "and lifts the seat");
+        assert!(!d.turns_open.contains(&ticket), "a held Stop opens no turn");
+
+        d.on_hook(frame("UserPromptSubmit"));
+        assert!(!d.async_stop_pending(id), "the prompt is a turn after the hold");
+        assert_eq!(state(&d), SessionState::Running);
+        assert!(d.turns_open.contains(&ticket), "the prompt opened its turn");
+        assert!(d.turn_since.contains_key(&id), "and dated it");
+
+        // A prompt over a hold that kept a running turn open replays nothing.
+        d.on_hook(frame("Stop"));
+        assert!(d.async_stop_pending(id));
+        d.on_hook(frame("UserPromptSubmit"));
+        assert!(d.async_hooks.begun.is_none());
+        d.feed.flush().unwrap();
+        let feed = std::fs::read_to_string(d.paths.activity_log()).unwrap();
+        let begins = feed
+            .lines()
+            .filter(|l| {
+                l.contains("\"kind\":\"session_state\"") && l.contains("\"to\":\"running\"")
+            })
+            .count();
+        assert_eq!(begins, 2, "the lift, then the prompt's begin, once: {feed}");
         drop(d);
         std::fs::remove_dir_all(dir).unwrap();
     }
