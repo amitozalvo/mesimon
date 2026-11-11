@@ -10489,7 +10489,7 @@ fn the_crown_merges_where_the_train_will_not() {
     refused(merge(&mut c, &kw, seen), &[&kw, "already merged"]);
     h.one_turn(&mut c, sa);
 
-    // ---- 6. pref on: the worker gets its notice, the crown knows the merge -
+    // ---- 6. pref on: the notice goes, and its turn's end is heard (T-1203) -
     std::fs::remove_file(h.paths.prefs_file()).unwrap();
     commit(&path, "two.txt");
     h.one_turn(&mut c, ws);
@@ -10507,23 +10507,35 @@ fn the_crown_merges_where_the_train_will_not() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
+    // The receipt told the merge: nothing more while the notice is on its
+    // way or its turn runs. That turn's end is the close-out's cue (merged,
+    // told, its turn ended), and the crown's own merge owes it as the
+    // train's does.
     absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 4, "the merge was handled by its receipt");
+    assert_eq!(lines_with(&worker).len(), 4, "held while the notice is on its way");
     start(&mut c, ws);
     absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 4, "the notice is not new merge news");
+    assert_eq!(lines_with(&worker).len(), 4, "held while the notice turn runs");
     stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+        lines_with(&worker).len() == 5
+    });
+    let line = lines_with(&worker)[4].clone();
+    assert!(line.starts_with(&format!("{worker} merged and finished its turn")), "{line}");
+    assert!(!line.contains("merge_state"), "the receipt said the merge: {line}");
+    assert!(line.ends_with(&format!("get_ticket key={kw} for state and notes")), "{line}");
     absence_window(1500);
-    assert_eq!(lines_with(&worker).len(), 4, "no second turn for a merge the crown handled");
+    assert_eq!(lines_with(&worker).len(), 5, "said once");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
-    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 0, "{feed}");
+    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "{feed}");
     assert!(feed.contains("\"merge_notified\""), "{feed}");
+    h.one_turn(&mut c, sa);
 
     // ---- 7. what the train waits for, and a branch rebased by hand (T-1183)
     commit(&path, "three.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the third delivery's wake", || {
-        lines_with(&worker).len() == 5
+        lines_with(&worker).len() == 6
     });
     h.one_turn(&mut c, sa);
     wait_state(&mut c, "ahead");
@@ -10571,6 +10583,25 @@ fn the_crown_merges_where_the_train_will_not() {
         other => panic!("merge_ticket after a hand rebase: {other:?}"),
     }
     assert!(merged());
+
+    // ---- 8. a fix forward in the notice turn is a delivery (T-1203) --------
+    // The after-merge turn commits again (a red suite's fix): its end says
+    // the new work, once, and owes no second `finished its turn`.
+    wait_until(std::time::Duration::from_secs(10), "the last merged notice", || {
+        lines_with(&notice).len() == 2
+    });
+    let before = lines_with(&worker).len();
+    start(&mut c, ws);
+    commit(&path, "fix.txt");
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the fix forward's wake", || {
+        lines_with(&worker).len() == before + 1
+    });
+    let line = lines_with(&worker)[before].clone();
+    assert!(line.starts_with(&format!("{worker} delivered (")), "{line}");
+    assert!(line.contains("merge_state merged → ahead"), "{line}");
+    absence_window(1500);
+    assert_eq!(lines_with(&worker).len(), before + 1, "the delivery said the turn's end");
 }
 
 /// T-613: a person's `m` on a worker the crown started tells the worker by
@@ -16214,13 +16245,20 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
     };
     // The notice reaches the worker and its turn runs and ends: the seat
     // went working and idle, the board moved the card where its column's
-    // on_merged says. These move the stamp, but the merge receipt already
-    // told the crown the merge: it is not owed a second turn for it.
+    // on_merged says, and the turn's end reached the crown (T-1203: the
+    // receipt told the merge, not the end). Each moved the stamp.
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
     h.one_turn(&mut c, ws);
-    assert_eq!(lines_with(&worker).len(), 1, "the merge receipt consumed the merge news");
+    wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+        lines_with(&worker).len() == 2
+    });
+    assert!(
+        lines_with(&worker)[1].contains("merged and finished its turn"),
+        "{:?}",
+        lines_with(&worker)
+    );
     assert_ne!(
         c.agent_read(sa, &kw).unwrap().seen.as_deref(),
         Some(merged.as_str()),

@@ -1301,6 +1301,14 @@ pub(super) struct Heard {
     /// line as it will be said; `told` already moved to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     stepped: Option<CrownWake>,
+    /// The crown merged this worker itself and its notice went (T-1203):
+    /// the receipt told the merge, and the notice turn's end is still owed,
+    /// said by `hear_stepped` as `merged and finished its turn`. A keyed
+    /// read cannot observe an end still to come, so only that end clears
+    /// it: its line, a held landing that says it, or a delivery the turn
+    /// made.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    notice: bool,
     /// A turn's end's wake waiting for the forge read that turn owes
     /// (T-773), the line as it will be said; `told` already moved to it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1420,7 +1428,27 @@ impl Heard {
     /// turn left the card in (`None`: the ticket is gone, and takes what
     /// was held with it), which is also what the crown has now heard.
     fn step_over(&mut self, column: Option<String>) -> Option<CrownWake> {
+        self.notice = false;
         let mut wake = self.stepped.take()?;
+        self.land(&mut wake.to, column?);
+        Some(wake)
+    }
+
+    /// The notice turn after the crown's own merge is over (T-1203): the
+    /// held landing if one is (`step_over`), else the turn's end alone. The
+    /// crown heard the merge from its receipt, so that line runs from the
+    /// merged branch it was told of and says only the end and the column
+    /// the turn left. Nothing once the branch moved off that merge: the
+    /// turn's own delivery said its end.
+    fn notice_over(&mut self, worker: ulid::Ulid, column: Option<String>) -> Option<CrownWake> {
+        if self.stepped.is_some() || !self.notice {
+            return self.step_over(column);
+        }
+        self.notice = false;
+        let told = self.told.clone().filter(|t| t.merge == Some("merged"))?;
+        let owed = Owed { finished: true, late: self.restored, ..Owed::default() };
+        let mut wake =
+            CrownWake::new(worker, WakeCause::Merged, Some(told.clone()), Some(told), owed);
         self.land(&mut wake.to, column?);
         Some(wake)
     }
@@ -2055,7 +2083,19 @@ impl Daemon {
         };
         let before = heard.judged.replace(now.clone());
         let held = heard.deferred.as_ref().map(|h| h.cause);
-        let cause = verdict(before.as_ref(), &now, answered, merge_step, fresh).max(landed);
+        let mut cause = verdict(before.as_ref(), &now, answered, merge_step, fresh).max(landed);
+        // Work the merged notice's turn left on the branch (T-1203): a fix
+        // forward after the merge, which a rebase turn's new tip is not.
+        // The crown was told this branch merged, and it is ahead again.
+        let merged_tip = heard.told.as_ref().filter(|t| t.merge == Some("merged")).map(|t| &t.tip);
+        if merge_step
+            && cause.is_none()
+            && now.mergeable()
+            && merged_tip.is_some_and(|t| *t != now.tip)
+        {
+            cause = Some(WakeCause::Delivered);
+            heard.notice = false;
+        }
         // A checkout has no branch for the train: its delivery wakes.
         let cause = match due(cause, held, &self.pending_on(p.worker, branch.as_ref())) {
             Due::Wake(cause) => cause,
@@ -2329,7 +2369,8 @@ impl Daemon {
         woke
     }
 
-    /// Landings held for a merge step (T-596) whose step is over: the words
+    /// Landings held for a merge step (T-596), and the crown's own merges'
+    /// notice turns (T-1203), whose step is over: the words
     /// were taken and their turn ended, or they never reached the agent (a
     /// paste given up on, a pane that died), or its mark survives to the
     /// release, a seat the restart's look never saw end (T-1004), on the
@@ -2344,7 +2385,7 @@ impl Daemon {
         let over: Vec<ulid::Ulid> = self
             .crown_heard
             .iter()
-            .filter(|(_, h)| h.stepped.is_some() && h.looks == 0)
+            .filter(|(_, h)| (h.stepped.is_some() || h.notice) && h.looks == 0)
             .map(|(w, _)| *w)
             .filter(|w| !self.pending_on(*w, None).merge_step)
             .collect();
@@ -2363,13 +2404,28 @@ impl Daemon {
             }
             let column = self.board.ticket(worker).map(|t| t.column.clone());
             let Some(heard) = self.crown_heard.get_mut(&worker) else { continue };
-            let Some(mut wake) = heard.step_over(column) else { continue };
+            let Some(mut wake) = heard.notice_over(worker, column) else { continue };
             wake.finished &= !surviving;
             let held = Owed { linger: None, overrun: None, ..wake.owed() };
             self.owe_wake(crown, worker, wake.cause, wake.from, wake.to, held);
             woke = true;
         }
         woke
+    }
+
+    /// The crown merged `worker` itself (`merge_ticket`) and the notice
+    /// went (T-1203): its receipt told the merge (`crown_observed_merge`),
+    /// and the end of the turn the notice starts is still the crown's to
+    /// hear, as the delivery it closes out (merged, told, its turn ended).
+    /// A landing already held for the step says that end itself.
+    pub(super) fn await_notice_turn(&mut self, worker: ulid::Ulid) {
+        let Some(h) = self.crown_heard.get_mut(&worker) else { return };
+        if h.stepped.is_some() || !h.told.as_ref().is_some_and(|t| t.merge == Some("merged")) {
+            return;
+        }
+        h.notice = true;
+        self.feed.board("automation", "crown_wake_deferred:merge_step", Some(worker));
+        self.persist_crown();
     }
 
     /// Branches the worktree flags just read `merged` (`crown_landed`,
@@ -4281,6 +4337,41 @@ pub(in crate::server) mod tests {
         let mut w = wake.clone();
         w.fold(WakeCause::Raised, None, None);
         assert_eq!(w.clause(), "raised its hand");
+    }
+
+    /// T-1203: the crown merged the worker itself, so its receipt told the
+    /// merge (`told` reads merged), and the notice turn's end is still owed:
+    /// one line, `merged and finished its turn`, with only the column the
+    /// turn moved. Said once; a held landing says the end itself; and a
+    /// branch the turn moved off the merge owes nothing here (that turn's
+    /// delivery said it).
+    #[test]
+    fn the_crowns_own_merge_still_hears_its_notice_turn_end() {
+        let merged = branch("aaa", "merged", 0, "REVIEW");
+        let mut h = Heard { notice: true, ..heard(Some(merged.clone()), Some(merged.clone())) };
+        let wake = h.notice_over(ulid::Ulid::nil(), Some("DONE".into())).expect("the end");
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        assert_eq!(wake.changed(), ["column DONE"]);
+        assert!(!h.notice);
+        assert!(h.notice_over(ulid::Ulid::nil(), Some("DONE".into())).is_none(), "once");
+        assert!(delta(h.told.as_ref(), &branch("aaa", "merged", 0, "DONE")).is_empty());
+
+        // A landing held for the same step says the end, and the flag goes.
+        let mut h = Heard { notice: true, ..heard(None, None) };
+        assert!(h.hold_for_step(ulid::Ulid::nil(), WakeCause::Merged, merged.clone(), false));
+        let wake = h.notice_over(ulid::Ulid::nil(), Some("DONE".into())).expect("held");
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        assert!(!h.notice && h.stepped.is_none());
+
+        // The branch moved on (a fix forward was delivered): nothing here.
+        let ahead = branch("bbb", "ahead", 1, "REVIEW");
+        let mut h = Heard { notice: true, ..heard(Some(ahead.clone()), Some(ahead)) };
+        assert!(h.notice_over(ulid::Ulid::nil(), Some("DONE".into())).is_none());
+        assert!(!h.notice);
+        // The ticket is gone: what was owed goes with it.
+        let mut h = Heard { notice: true, ..heard(Some(merged.clone()), Some(merged)) };
+        assert!(h.notice_over(ulid::Ulid::nil(), None).is_none());
+        assert!(!h.notice);
     }
 
     /// A merge with no step in flight — no live agent, a merge the train

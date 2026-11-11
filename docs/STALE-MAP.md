@@ -43480,3 +43480,49 @@ question rows, the plan's file, the framed dialog); `golden_ticket_live_question
 by eye; `ticket_live_dialog_120x30` moved by its mode row alone. TUI-only: no e2e, no full suite.
 Not run against a live pane: the key rows are the ones pinned in the daemon's and the live
 window's fixtures.
+
+## The crown's own merge wakes it at the notice turn's end (T-1203, 2026-11-11, filed by the crown on T-1193; the author: "it merged, you didn't get a notice?")
+
+**Seen.** Four tickets the crown held and merged with `merge_ticket` (T-1194..T-1197): each
+receipt read `notice: sent`, each worker ran its notice turn and went idle, and nothing reached
+the crown. T-1196's worker sat 45 minutes unparked. The feed had no `crown_wake_deferred:merge_step`
+for any of them: the wake was never queued, so nothing was lost. A rule withheld it.
+
+**Cause.** T-1036 (2026-10-30) made the receipt count as hearing the merge
+(`crown_touched` → `crown_observed_merge` sets `told` to the merged tip and drops `crown_landed`),
+so `hear_merges` had nothing to say. Its e2e was changed to expect silence ("no second turn for a
+merge the crown handled"). That rule was right about the merge and wrong about the turn: under
+T-596's delivery rule (merged, told, its turn ended) the notice turn's end is the close-out's cue,
+and a receipt cannot observe an end that has not happened yet. The hold standing (`held: crown`)
+played no part. Second gap: `verdict` silences every merge-step turn, so a commit made in the
+notice turn (a fix forward after the post-merge suite, T-1194) reached no one. Its tip became the
+`judged` baseline, so not even a later turn would have said it.
+
+**Shipped.**
+- `Heard.notice` (persisted, false is omitted): set by `await_notice_turn` when `merge_ticket`'s
+  notice went and no landing is already held for the step. Feed: `crown_wake_deferred:merge_step`.
+  A keyed read leaves it alone.
+- `hear_stepped` releases it through `Heard::notice_over` once the step is over:
+  `T-12 "…" merged and finished its turn (column DONE)`. The line has no `merge_state`, because the
+  receipt said the merge. A landing held for the same step says the end itself.
+- `judge_probe`: a merge-step turn that leaves the branch ahead at a tip other than the merged one
+  the crown was told is `Delivered` (`delivered (merge_state merged → ahead, …)`), and that line
+  is the turn's end, so the notice hold is cleared. A rebase turn is untouched: its `told` is not
+  merged. This also covers the train's and a hand merge's notice turns.
+
+**Refuted.** Making every keyed read keep a stepped landing (that would revert T-1036 for the
+train's merges) was not done: there the crown's read did see the merge. Only the crown's own merge
+owes the end alone.
+
+**Tests.** `crownwake::the_crowns_own_merge_still_hears_its_notice_turn_end` (once; a held landing
+says it; a moved branch owes nothing; a gone ticket takes it).
+`crown_e2e::the_crown_merges_where_the_train_will_not` step 6 is T-596's assertions again: held
+2 s while the notice is on its way, 2 s while its turn runs, then one `merged and finished its
+turn` line and one `crown_wake_deferred:merge_step`. A new step 8 makes a fix-forward commit in
+the notice turn and gets one `delivered (… merge_state merged → ahead …)` line and nothing more.
+Without the `judge_probe` change, step 8 fails at its wait.
+`a_merge_s_receipt_stamp_outlives_the_notice_turn` waits for the end line again.
+**No rig case.** The crown's text is unchanged (`CROWN_WAKES` already says "is merged"), and the
+line is T-596's. A live crown `merge_ticket` in the Claude rig lands on the rig checkout's HEAD,
+which is the ticket branch running it. That is why every rig case forbids the crown's own merge
+(`unlanded`, the train's blocker file). A case for this needs a rig base the crown may merge into.

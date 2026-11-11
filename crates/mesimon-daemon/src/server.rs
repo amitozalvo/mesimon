@@ -9255,6 +9255,9 @@ impl Daemon {
                         self.feed.board_outcome(by.actor(), "merge_ticket", Some(target), "merged");
                         let notice = self.notice_after_merge(target, &by);
                         let seen = self.crown_touched(ticket, target, "merged", write);
+                        if notice == "sent" {
+                            self.await_notice_turn(target);
+                        }
                         if let Some(o) = self.owed.values().find(|o| {
                             notice == "sent"
                                 && o.ticket == target
