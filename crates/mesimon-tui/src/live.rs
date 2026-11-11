@@ -173,11 +173,27 @@ impl Shot {
     /// box — Claude Code's footer, the person's status line, Codex's hints
     /// row; the page draws its own facts row there — and the agent's key
     /// hints out of its status rows (`strip_hints`), whose keys the page
-    /// answers differently. A screen with no box keeps its rows: a dialog's
-    /// own keys are the dialog's.
+    /// answers differently. A dialog in the box's place (T-1198) loses its
+    /// key row (`Enter to select · Tab/Arrow keys to navigate · Esc to
+    /// cancel`): on the page Enter opens the pane, Tab walks the links,
+    /// the arrows pick a session and Esc leaves. That row stands under
+    /// the selected option past a blank row, which no option's description
+    /// does; a row that says more keeps it (a plan's `ctrl+g to edit in
+    /// Nvim · ~/.claude/plans/plan.md` keeps the file). The rows under a
+    /// framed dialog are chrome by position, as the rows under the box are.
     pub(crate) fn for_page(&self) -> Shot {
         let mut rows = self.rows.clone();
         let Some((top, bottom)) = self.box_rows() else {
+            let n = rows.len();
+            if let Some(m) = (0..n).rev().find(|&i| is_marker(&rows[i].text)) {
+                let mut under_frame = false;
+                for i in m + 1..n {
+                    if under_frame || self.rows[i - 1].blank() {
+                        rows[i] = cut_hints(&self.rows[i], true);
+                    }
+                    under_frame |= self.rows[i].text.trim_start().starts_with('╰');
+                }
+            }
             return Shot { rows, ..self.clone() };
         };
         for row in rows.iter_mut().take(top) {
@@ -406,6 +422,8 @@ fn cut_hints(row: &Row, bare: bool) -> Row {
                 let from = if sep > 0 && chars[sep - 1] == ' ' { sep - 1 } else { sep };
                 cut.push(from..b);
             } else if let Some(next) = segs.get(k + 1) {
+                // The row's indent stays with the words left on it.
+                let a = (a..b).find(|&j| chars[j] != ' ').unwrap_or(a);
                 let to = if chars.get(next.0) == Some(&' ') { next.0 + 1 } else { next.0 };
                 cut.push(a..to);
             } else {
@@ -495,18 +513,28 @@ fn is_survey_question(text: &str) -> bool {
 
 /// One `·` segment of a status row's parentheses that names a key and what
 /// it does: `esc to interrupt`, `ctrl+o to expand`, `shift+tab to cycle`,
-/// `? for shortcuts`, `Press Esc again to clear`.
+/// `? for shortcuts`, `Press Esc again to clear`; a dialog's `↑/↓ to
+/// navigate` and `Tab/Arrow keys to navigate` name two.
 fn is_hint(seg: &str) -> bool {
     let s = seg.trim().to_lowercase();
     let s = s.strip_prefix("press ").unwrap_or(&s);
     let Some((key, rest)) = s.split_once(' ') else { return false };
     let rest = rest.strip_prefix("again ").unwrap_or(rest);
+    let rest = rest.strip_prefix("keys ").unwrap_or(rest);
     let Some(what) = rest.strip_prefix("to ").or_else(|| rest.strip_prefix("for ")) else {
         return false;
     };
     if what.trim().is_empty() {
         return false;
     }
+    if key.chars().count() > 1 && key.contains('/') {
+        return key.split('/').all(is_key);
+    }
+    is_key(key)
+}
+
+/// One key as an agent spells it: `esc`, `ctrl+o`, `shift+tab`, `↑`, `?`.
+fn is_key(key: &str) -> bool {
     let mut parts: Vec<&str> = key.split('+').collect();
     let last = parts.pop().unwrap_or_default();
     let mods = ["ctrl", "shift", "alt", "cmd", "opt", "option", "meta"];
@@ -526,6 +554,7 @@ fn is_hint(seg: &str) -> bool {
         "↓",
         "←",
         "→",
+        "arrow",
         "?",
     ];
     parts.iter().all(|m| mods.contains(m)) && (named.contains(&last) || last.chars().count() == 1)
@@ -1317,6 +1346,79 @@ mod tests {
         s.cursor = Some((0, 11));
         assert_eq!(s.prompt_row(), None);
         assert_eq!(s.anchor(), 1);
+    }
+
+    /// A dialog's key row is not drawn on the page (T-1198), whose Enter,
+    /// Tab, arrows and Esc are its own: the row under the options past a
+    /// blank goes, the dialog ending at its last option. An option's
+    /// description stays whatever it says, and a row that says more than
+    /// keys keeps the rest.
+    #[test]
+    fn a_dialogs_key_row_is_not_drawn_on_the_page() {
+        let question = |keys: &str| {
+            screen(
+                &[
+                    "⏺ Asking now.",
+                    CLAUDE_RULE,
+                    "← ☐ Full suite  ☐ Clean rebase  ✔ Submit  →",
+                    "",
+                    "Where should that suite run instead?",
+                    "",
+                    "❯ 1. After the merge (Recommended)",
+                    "     Tab to the next ticket once it merges.",
+                    "  2. Release gate only",
+                    "  3. Type something.",
+                    CLAUDE_RULE,
+                    "  4. Chat about this",
+                    "",
+                    keys,
+                ],
+                24,
+            )
+        };
+        for keys in [
+            "Enter to select · ↑/↓ to navigate · Esc to cancel",
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+            "Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel",
+            // Claude Code's permission prompt, Codex's approval and question.
+            "Esc to cancel · Tab to amend · ctrl+e to explain",
+            "  Press enter to confirm or esc to cancel",
+            "  tab to add notes | enter to submit answer | esc to interrupt",
+        ] {
+            let s = question(keys);
+            let page = s.for_page();
+            assert!(page.rows[13].blank(), "{keys}: {:?}", page.rows[13].text);
+            assert_eq!(page.view().last(), Some(&11), "{keys}: the dialog ends at its options");
+            assert_eq!(page.rows[..13], s.rows[..13], "{keys}: nothing else moves");
+            assert_eq!(page.anchor(), s.anchor(), "{keys}");
+        }
+        // A plan's row names its file beside a key: the file stays, where
+        // it stood.
+        let plan = screen(
+            &[
+                CLAUDE_RULE,
+                "   Would you like to proceed?",
+                "",
+                "   ❯ 1. Yes, and use auto mode",
+                "     2. Tell Claude what to change",
+                "",
+                "   ctrl+g to edit in Nvim · ~/.claude/plans/plan.md",
+            ],
+            24,
+        );
+        assert_eq!(plan.for_page().rows[6].text, "   ~/.claude/plans/plan.md");
+        // Under a framed dialog the rows are chrome, as under the box.
+        let framed = shot(&[
+            "╭──────────────╮",
+            "│ Proceed?     │",
+            "│ ❯ 1. Yes     │",
+            "╰──────────────╯",
+            "  ~/x | ⎇ main",
+            "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        ]);
+        let page = framed.for_page();
+        assert_eq!(page.rows[4], framed.rows[4], "the person's status line");
+        assert_eq!(page.rows[5].text, "  ⏵⏵ auto mode on");
     }
 
     /// A plan approval is the whole screen: its top rule and the plan's box,

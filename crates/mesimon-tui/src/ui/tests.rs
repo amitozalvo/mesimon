@@ -15436,6 +15436,54 @@ fn golden_ticket_live_dialog_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// A question where the composer was (T-1198): the dialog as the pane has
+/// it, its pointer on the option the pane's Enter picks, without its key
+/// row — `Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
+/// names four keys the page answers differently, and the footer under it
+/// says what Enter does here.
+#[test]
+fn golden_ticket_live_question_120() {
+    let (mut app, path) = app_live("tlive-question", true);
+    let rule = format!("\x1b[38;5;244m{}\x1b[39m", "─".repeat(78));
+    let mut rows: Vec<String> = vec![
+        "\x1b[38;5;231m⏺\x1b[39m The suite's timings are in; one decision is the person's.".into(),
+        String::new(),
+        rule.clone(),
+        "← \x1b[7m ☐ Full suite \x1b[27m  ☐ Clean rebase  \x1b[38;5;246m✔ Submit\x1b[39m  →".into(),
+        String::new(),
+        "\x1b[1mThe full suite takes 11 minutes. Where should it run instead?\x1b[22m".into(),
+        String::new(),
+        "\x1b[38;5;110m❯ 1. After the merge (Recommended)\x1b[39m".into(),
+        "\x1b[38;5;246m     The ticket merges on its own tests; the suite runs once after.\x1b[39m"
+            .into(),
+        "  2. Release gate only".into(),
+        "\x1b[38;5;246m     The complete suite runs only at a release.\x1b[39m".into(),
+        "  3. Type something.".into(),
+        rule,
+        "  4. Chat about this".into(),
+        String::new(),
+        "\x1b[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel\x1b[39m".into(),
+    ];
+    while rows.len() < 24 {
+        rows.insert(0, String::new());
+    }
+    let cursor = rows.iter().position(|r| r.contains("❯ 1.")).map(|y| (0, y as u16));
+    let shot = crate::live::Shot { rows: crate::live::parse(&rows.join("\n")), cols: 80, cursor };
+    app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
+    let lines = render(&app, 120, 30);
+    let text = lines.join("\n");
+    assert!(text.contains("❯ 1. After the merge"), "the pointer stays:\n{text}");
+    assert!(text.contains("4. Chat about this"), "{text}");
+    for keys in ["Enter to select", "to navigate", "Esc to cancel"] {
+        assert!(!text.contains(keys), "the agent's keys are not the page's: {keys}\n{text}");
+    }
+    assert!(lines.last().is_some_and(|l| l.contains("enter focus")), "{lines:#?}");
+    let chat = lines.iter().position(|l| l.contains("4. Chat about this")).expect("the row");
+    assert_eq!(chat, lines.len() - 2, "the dialog ends over the footer:\n{text}");
+    golden("ticket_live_question_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// The zone reads the whole conversation, newest at its foot, and `tab`
 /// walks the links on the rows it shows — only those: the first reply's
 /// link is above the window and is not a stop until `{` brings it in.

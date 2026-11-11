@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                              { } page preview    SESSIONS                  2
+
+   you                                                                                    ⠋ ✻ claude               >1y
+ ❯ Go on; measure the pane sizes too.                                                     ◦ $ bash                 >1y
+                                                                                           x sleep
+   claude
+   Research is mostly done, the write-up is at https://mesimon.dev/proposal. Measured
+   facts so far: every agent pane is on tmux's alternate screen, an unattached pane
+   sits at 80×24 while an attached one is 187×52.
+
+ ⏺ The suite's timings are in; one decision is the person's.
+ ──────────────────────────────────────────────────────────────────────────────
+ ←  ☐ Full suite   ☐ Clean rebase  ✔ Submit  →
+
+ The full suite takes 11 minutes. Where should it run instead?
+
+ ❯ 1. After the merge (Recommended)
+      The ticket merges on its own tests; the suite runs once after.                         ▀█ ▄▀▀   █▀
+   2. Release gate only                                                                     ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+      The complete suite runs only at a release.                                            ███▀▀████▀▀█ █▀████
+   3. Type something.                                                                       █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+ ──────────────────────────────────────────────────────────────────────────────             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+   4. Chat about this
+ jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys

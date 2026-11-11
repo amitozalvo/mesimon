@@ -43450,3 +43450,33 @@ and `ci.yml`, the e2e recipe in `docs/ARCHITECTURE.md` and the `adding-things` s
 file paths in `docs/ARCHITECTURE.md`, the layout in `tests/CLAUDE.md` and
 `docs/DEVELOPMENT.md`. Older blocks here name the files by their old paths; the names still
 find them.
+
+## A dialog on the ticket page drops the agent's key row (T-1198, 2026-11-11, the author: "mesimon is wrongly advertises shortcuts from claude code that won't work on ticket page")
+
+**Seen.** A question in the live window ended with Claude Code's `Enter to select · Tab/Arrow
+keys to navigate · Esc to cancel`. On the page Enter opens the pane, Tab walks the links, the
+arrows pick a session and Esc leaves the page. T-1156 had kept a dialog's rows whole ("a
+dialog's own keys are the dialog's"); T-1167 took the trust dialog's row for the page's.
+
+**What changed.** `Shot::for_page`, on a screen with a dialog and no box: a row under the
+selected option that follows a blank row has its key hints cut (`cut_hints`, bare), so a row of
+keys alone goes and the dialog ends at its last option. An option's description stands directly
+under its option and is never read. A row that says more keeps the rest: a plan's `ctrl+g to
+edit in Nvim · ~/.claude/plans/plan.md` keeps the file, at its indent (`cut_hints` now leaves a
+row's indent with the words left on it). The rows under a framed dialog are chrome by position,
+as under the box: `(shift+tab to cycle)` goes from the mode row. `is_hint` reads two keys named
+together (`↑/↓ to navigate`, `Tab/Arrow keys to navigate`). The pointer stays: it is the option
+the pane's Enter picks. The trust dialog's `for_trust` is untouched.
+
+**Refuted.** The author was shown three roads and chose the second. *The page's own row in its
+place* (`-- enter answers it in its pane`, the trust row's grammar): the footer's `enter focus`
+already says it. *Answering from the page*: a feature, not this fault. *Reading every row under
+the option*: a description such as `Tab to the next ticket` is a hint by its grammar; the blank
+row before the key row is what tells them apart, and the test holds that description.
+
+**Verified.** `cargo ut` (TUI 1,430 passed). `live::tests::a_dialogs_key_row_is_not_drawn_on_the_page`
+(Claude Code's question in three spellings and its permission row, Codex's approval and
+question rows, the plan's file, the framed dialog); `golden_ticket_live_question_120` new, read
+by eye; `ticket_live_dialog_120x30` moved by its mode row alone. TUI-only: no e2e, no full suite.
+Not run against a live pane: the key rows are the ones pinned in the daemon's and the live
+window's fixtures.
