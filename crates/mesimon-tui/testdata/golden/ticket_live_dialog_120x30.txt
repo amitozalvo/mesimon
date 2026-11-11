@@ -21,7 +21,7 @@
  │ Do you want to run this command?                                             │
  │   Run the ticket page tests                                                  │
  │                                                                              │
- │ ❯ 1. Yes                                                                   │              ▀█ ▄▀▀   █▀
+ │   1. Yes                                                                   │              ▀█ ▄▀▀   █▀
  │   2. Yes, and don't ask again for cargo test in this session                 │           ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
  │   3. No, and tell Claude what to do differently (esc)                        │           ███▀▀████▀▀█ █▀████
  ╰──────────────────────────────────────────────────────────────────────────────╯           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█

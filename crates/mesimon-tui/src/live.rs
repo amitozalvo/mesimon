@@ -181,11 +181,26 @@ impl Shot {
     /// does; a row that says more keeps it (a plan's `ctrl+g to edit in
     /// Nvim · ~/.claude/plans/plan.md` keeps the file). The rows under a
     /// framed dialog are chrome by position, as the rows under the box are.
+    /// Its pointer and its tab row's arrows and lit tab go too, so the
+    /// seam of such a screen is read off the pane's own (`anchor`).
     pub(crate) fn for_page(&self) -> Shot {
         let mut rows = self.rows.clone();
         let Some((top, bottom)) = self.box_rows() else {
             let n = rows.len();
             if let Some(m) = (0..n).rev().find(|&i| is_marker(&rows[i].text)) {
+                // The page cannot move a dialog's pointer or change its
+                // tab (T-1198, the author: "still gives the impression
+                // you can navigate"): the pointer goes from a numbered
+                // option, its words in the plain ink, and the tab row over
+                // it loses its arrows and its selected tab's ground.
+                if is_option(&rows[m].text) {
+                    rows[m] = unpointed(&rows[m]);
+                    for row in &mut rows[self.dialog_top(m)..m] {
+                        if is_tabs(&row.text) {
+                            *row = plain_tabs(row);
+                        }
+                    }
+                }
                 let mut under_frame = false;
                 for i in m + 1..n {
                     if under_frame || self.rows[i - 1].blank() {
@@ -261,16 +276,7 @@ impl Shot {
             return (self.for_page(), None);
         };
         let mut rows = self.rows.clone();
-        let text = &rows[m].text;
-        let lead = text.chars().take_while(|c| matches!(c, ' ' | '│')).count();
-        let plain: String = text
-            .chars()
-            .enumerate()
-            .map(|(i, c)| if i == lead { ' ' } else { c })
-            .collect::<String>()
-            .trim_end()
-            .to_string();
-        rows[m] = Row { runs: vec![(plain.clone(), Style::default())], text: plain };
+        rows[m] = unpointed(&rows[m]);
         let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
         let last = rows.iter().rposition(|r| !r.blank()).unwrap_or(m);
         let keys = if last > m && is_dialog_keys(&rows[last].text) {
@@ -362,6 +368,79 @@ impl Shot {
         }
         out
     }
+}
+
+/// A dialog's selected option without its pointer: a space where the mark
+/// stood, the words in the plain ink the other options have.
+fn unpointed(row: &Row) -> Row {
+    let lead = row.text.chars().take_while(|c| matches!(c, ' ' | '│')).count();
+    let plain: String = row
+        .text
+        .chars()
+        .enumerate()
+        .map(|(i, c)| if i == lead { ' ' } else { c })
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    Row { runs: vec![(plain.clone(), Style::default())], text: plain }
+}
+
+/// A question's tab row: `☐ Accent` alone, or `←  ☐ Color  ☒ Toppings
+/// ✔ Submit  →` (Claude Code 2.1.287).
+fn is_tabs(t: &str) -> bool {
+    let t = t.trim();
+    let t = t.strip_prefix('←').unwrap_or(t).trim_start();
+    t.starts_with(['☐', '☒']) || t.starts_with("✔ Submit")
+}
+
+/// A tab row as the page draws it (T-1198): the arrows at its ends are
+/// spaces, and the selected tab's ground and reverse video are gone, its
+/// name in the plain ink.
+fn plain_tabs(row: &Row) -> Row {
+    let mut out = Row::default();
+    for (text, style) in &row.runs {
+        let text = text.replace(['←', '→'], " ");
+        let lit = style.bg.is_some() || style.add_modifier.contains(Modifier::REVERSED);
+        let style = if lit { Style::default() } else { *style };
+        out.text.push_str(&text);
+        match out.runs.last_mut() {
+            Some((t, s)) if *s == style => t.push_str(&text),
+            _ => out.runs.push((text, style)),
+        }
+    }
+    out
+}
+
+/// A pane ink's fixed colour, for the page to weigh against its ground:
+/// an RGB ink, or one of xterm's 240 fixed indices. The first sixteen and
+/// the named colours are the terminal's palette, which the page cannot
+/// read.
+pub(crate) fn fixed_rgb(c: Color) -> Option<(u8, u8, u8)> {
+    match c {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(n) if n >= 16 => match indexed_rgb(n) {
+            Color::Rgb(r, g, b) => Some((r, g, b)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// WCAG's contrast ratio of two colours, 1 (the same) to 21.
+pub(crate) fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    let lum = |(r, g, b): (u8, u8, u8)| {
+        let lin = |v: u8| {
+            let c = f32::from(v) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    };
+    let (la, lb) = (lum(a), lum(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 /// A row's words past a dialog frame's left edge and the pad after it.
@@ -1352,7 +1431,8 @@ mod tests {
     /// Tab, arrows and Esc are its own: the row under the options past a
     /// blank goes, the dialog ending at its last option. An option's
     /// description stays whatever it says, and a row that says more than
-    /// keys keeps the rest.
+    /// keys keeps the rest. Nor is what the page cannot move: the pointer,
+    /// the tab row's arrows and its lit tab.
     #[test]
     fn a_dialogs_key_row_is_not_drawn_on_the_page() {
         let question = |keys: &str| {
@@ -1389,9 +1469,26 @@ mod tests {
             let page = s.for_page();
             assert!(page.rows[13].blank(), "{keys}: {:?}", page.rows[13].text);
             assert_eq!(page.view().last(), Some(&11), "{keys}: the dialog ends at its options");
-            assert_eq!(page.rows[..13], s.rows[..13], "{keys}: nothing else moves");
-            assert_eq!(page.anchor(), s.anchor(), "{keys}");
+            assert_eq!(page.rows[6].text, "  1. After the merge (Recommended)", "{keys}");
+            assert_eq!(page.rows[2].text, "  ☐ Full suite  ☐ Clean rebase  ✔ Submit   ", "{keys}");
+            for i in (0..13).filter(|i| ![2, 6].contains(i)) {
+                assert_eq!(page.rows[i], s.rows[i], "{keys}: row {i} is the pane's");
+            }
         }
+        // The lit tab is one more tab: its ground and its ink go, the
+        // answered tab's dim stays.
+        let mut lit = question("Enter to select · Esc to cancel");
+        lit.rows[2] = parse_row(
+            "← \x1b[48;2;87;105;247m\x1b[38;2;255;255;255m ☐ Full suite \x1b[0m  \x1b[2m☒ Clean rebase\x1b[0m  ✔ Submit  →",
+        );
+        let tabs = &lit.for_page().rows[2];
+        assert_eq!(tabs.text, "   ☐ Full suite   ☒ Clean rebase  ✔ Submit   ");
+        assert!(tabs.runs.iter().all(|(_, s)| s.bg.is_none() && s.fg.is_none()), "{tabs:?}");
+        assert!(tabs.runs.iter().any(|(_, s)| s.add_modifier.contains(Modifier::DIM)), "{tabs:?}");
+        // A mark with no number is not a dialog's option the page knows:
+        // Codex's composer read without its cursor keeps its `›`.
+        let codex = shot(&["• done", "", "› Ask Codex to do anything", "", "  ? for shortcuts"]);
+        assert_eq!(codex.for_page().rows[2], codex.rows[2]);
         // A plan's row names its file beside a key: the file stays, where
         // it stood.
         let plan = screen(
@@ -1417,8 +1514,22 @@ mod tests {
             "  ⏵⏵ auto mode on (shift+tab to cycle)",
         ]);
         let page = framed.for_page();
+        assert_eq!(page.rows[2].text, "│   1. Yes     │");
         assert_eq!(page.rows[4], framed.rows[4], "the person's status line");
         assert_eq!(page.rows[5].text, "  ⏵⏵ auto mode on");
+    }
+
+    /// Black on a navy ground is under the floor the page keeps, white on
+    /// paper too; an agent's faintest ink on its own ground is over it.
+    #[test]
+    fn contrast_is_wcags_ratio() {
+        assert!(contrast((0, 0, 0), (0, 0, 139)) < 1.5);
+        assert!(contrast((255, 255, 255), (245, 245, 240)) < 1.5);
+        assert!(contrast((80, 80, 80), (0, 0, 0)) > 2.0);
+        assert!((contrast((255, 255, 255), (0, 0, 0)) - 21.0).abs() < 0.01);
+        assert_eq!(fixed_rgb(Color::Indexed(16)), Some((0, 0, 0)));
+        assert_eq!(fixed_rgb(Color::Indexed(0)), None, "the terminal's own black");
+        assert_eq!(fixed_rgb(Color::Black), None);
     }
 
     /// A plan approval is the whole screen: its top rule and the plan's box,

@@ -1267,7 +1267,9 @@ fn draw_preview(
         // the pane's own screen: `for_trust` only adds rows at the end.
         let (page, trust_keys) =
             if rec.on_trust_dialog() { shot.for_trust() } else { (shot.for_page(), None) };
-        let trust_anchor = trust_keys.map(|_| shot.anchor());
+        // So is any dialog's (T-1198): the page draws it without its pointer.
+        let trust_anchor =
+            (trust_keys.is_some() || shot.box_rows().is_none()).then(|| shot.anchor());
         let shot = &page;
         let zone_h = (area.height as usize).saturating_sub(lines.len());
         // The pane is asked to be the zone's size, so the agent lays its
@@ -2659,18 +2661,36 @@ fn row_of(rows: &[Line<'static>], text: &str) -> usize {
 }
 
 /// A pane row as it is: its own inks, the page's base ink where it named
-/// none, and no colour at all on a mono profile.
+/// none, and no colour at all on a mono profile. An ink the page's ground
+/// swallows (T-1198, the author: "the text sometimes isn't readable") is
+/// the base ink too: the agent chose it for the ground it believes it is
+/// on — Claude Code's light theme writes its words in black — and the
+/// page draws on its own. Only a fixed ink on the page's ground is
+/// weighed: a run with a ground of its own carries its contrast with it.
 fn live_style(theme: &crate::theme::Theme, s: Style) -> Style {
     let mut s = s;
     if !theme.has_colour() {
         s.fg = None;
         s.bg = None;
     }
+    let lit = s.bg.is_some() || s.add_modifier.contains(Modifier::REVERSED);
+    let ground = theme.bg.and_then(live::fixed_rgb);
+    if let (false, Some(ink), Some(ground)) = (lit, s.fg.and_then(live::fixed_rgb), ground) {
+        if live::contrast(ink, ground) < LIVE_CONTRAST {
+            s.fg = None;
+        }
+    }
     if s.fg.is_none() {
         s.fg = Some(theme.rest.base);
     }
     s
 }
+
+/// The least contrast a pane ink keeps against the page's ground (T-1198).
+/// Black on a navy ground is 1.4 and white on a paper ground 1.1; Claude
+/// Code's faintest ink on the ground it was made for (`Thought for 2s`,
+/// 80 grey on black) is 2.2, and stays faint.
+const LIVE_CONTRAST: f32 = 1.5;
 
 fn live_line(theme: &crate::theme::Theme, row: &live::Row) -> Line<'static> {
     // A rule the page drew (Codex's frame, T-1156) has no runs of its own.

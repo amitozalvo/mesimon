@@ -16,11 +16,11 @@
 
  ⏺ The suite's timings are in; one decision is the person's.
  ──────────────────────────────────────────────────────────────────────────────
- ←  ☐ Full suite   ☐ Clean rebase  ✔ Submit  →
+    ☐ Full suite   ☐ Clean rebase  ✔ Submit
 
  The full suite takes 11 minutes. Where should it run instead?
 
- ❯ 1. After the merge (Recommended)
+   1. After the merge (Recommended)
       The ticket merges on its own tests; the suite runs once after.                         ▀█ ▄▀▀   █▀
    2. Release gate only                                                                     ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
       The complete suite runs only at a release.                                            ███▀▀████▀▀█ █▀████

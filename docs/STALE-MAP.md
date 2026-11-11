@@ -43564,3 +43564,43 @@ the merge (`daemon/src/server.rs`).
 
 **Not changed:** a bare `Stop` at a resting seat still paints `working` for the hold (1.5 s, or
 an async hook's run); whether such a `Stop` should be held at all is T-1044's call.
+
+## A dialog on the ticket page has no pointer and no lit tab, and an ink the page's ground swallows is the page's (T-1198, 2026-11-11, the author after the key row went: "it looks better but still gives the impression you can navigate"; "the text sometimes isn't readable")
+
+**Seen, on the page after T-1198's first delivery.** A question still showed `❯` on its first
+option and a lit tab (`☐ Key row` on a ground of its own). On a second question the same
+session's words were black on the board's navy ground, the tab purple with white ink, the
+selected option a deep blue: Claude Code's light-theme inks, where the first question had worn
+its dark ones.
+
+**What changed.**
+- `Shot::for_page`, on a dialog whose selected option is numbered: the pointer goes
+  (`unpointed`, shared with `for_trust`: a space where the mark stood, the words in the plain
+  ink), and the tab row over it (`is_tabs`: `☐ Accent`, or `←  ☐ Color  ☒ Toppings  ✔ Submit
+  →`) loses its arrows and its lit tab's ground and reverse video (`plain_tabs`). The numbers
+  stay: they are what the pane shows after Enter. The author chose this from three frames
+  (pointer and highlight; those and the numbers; those and a page row).
+- The page shot of a dialog has no marker, so its seam is read off the pane's own screen, as
+  the trust dialog's already was (`ui/ticket.rs`).
+- `live_style`: a pane ink with a fixed colour (RGB, or xterm's indices from 16) whose WCAG
+  contrast against the theme's painted ground is under `LIVE_CONTRAST` (1.5) is drawn in the
+  page's base ink. Black on navy is 1.4, white on paper 1.1; Claude Code's faintest ink on the
+  ground it was made for (80 grey on black) is 2.2 and stays faint. A run with a ground of its
+  own, or in reverse video, carries its contrast with it and is not weighed. The first sixteen
+  indices and the named colours are the terminal's palette, which the page cannot read: left.
+  A theme that rides the terminal's ground (`Theme::bg` none) has nothing to weigh against.
+
+**Not proven.** Why the same session drew dark inks on one question and light ones on the next.
+The page paints its own ground and the agent picks inks for the ground its pane reports, so the
+two can disagree whatever the cause; the floor answers on the page's side. Whether mesimon's
+tmux server gives a detached pane a different background than an attached one was not measured.
+
+**Refuted.** *A mark with no number loses its pointer too*: Codex's composer read on a frame
+without its cursor is a marker row, and would lose its `›` for that frame.
+
+**Verified.** `cargo ut` (TUI 1,431). `live::tests::a_dialogs_key_row_is_not_drawn_on_the_page`
+(pointer, tabs with a lit tab, the framed dialog, Codex's unnumbered mark kept),
+`contrast_is_wcags_ratio`; `golden_ticket_live_question_120` holds the black question in the
+base ink and no reverse cell on the tab row; `golden_ticket_live_dialog_120` now pins the
+unmarked option. Two goldens moved by the pointer and the arrows alone. TUI-only: no e2e, no
+full suite. The rebase onto main was conflict-free and ran nothing.

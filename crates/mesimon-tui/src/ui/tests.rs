@@ -15422,7 +15422,8 @@ fn golden_ticket_live_dialog_120() {
     let (app, path) = app_live("tlive-dialog", true);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("Do you want to run this command?")), "{lines:#?}");
-    assert!(lines.iter().any(|l| l.contains("❯ 1. Yes")), "{lines:#?}");
+    // The page cannot move the pointer (T-1198): the option, unmarked.
+    assert!(lines.iter().any(|l| l.contains("│   1. Yes")), "{lines:#?}");
     let rect = app.live_rect.get().expect("the window is on screen");
     let shin = app.mascot.borrow().as_ref().map(|d| d.rect).expect("the shin");
     let (calm, calm_path) = app_live("tlive-dialog-calm", false);
@@ -15436,11 +15437,13 @@ fn golden_ticket_live_dialog_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// A question where the composer was (T-1198): the dialog as the pane has
-/// it, its pointer on the option the pane's Enter picks, without its key
-/// row — `Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
-/// names four keys the page answers differently, and the footer under it
-/// says what Enter does here.
+/// A question where the composer was (T-1198): the dialog without what the
+/// page cannot do — its key row (`Enter to select · Tab/Arrow keys to
+/// navigate · Esc to cancel` names four keys the page answers differently),
+/// its pointer, its tab row's arrows and lit tab — and the footer under it
+/// says what Enter does here. Its words in an ink the page's ground
+/// swallows (Claude Code's light theme writes them in black) are drawn in
+/// the page's own.
 #[test]
 fn golden_ticket_live_question_120() {
     let (mut app, path) = app_live("tlive-question", true);
@@ -15451,7 +15454,8 @@ fn golden_ticket_live_question_120() {
         rule.clone(),
         "← \x1b[7m ☐ Full suite \x1b[27m  ☐ Clean rebase  \x1b[38;5;246m✔ Submit\x1b[39m  →".into(),
         String::new(),
-        "\x1b[1mThe full suite takes 11 minutes. Where should it run instead?\x1b[22m".into(),
+        "\x1b[38;2;0;0;0m\x1b[1mThe full suite takes 11 minutes. Where should it run instead?\x1b[0m"
+            .into(),
         String::new(),
         "\x1b[38;5;110m❯ 1. After the merge (Recommended)\x1b[39m".into(),
         "\x1b[38;5;246m     The ticket merges on its own tests; the suite runs once after.\x1b[39m"
@@ -15472,7 +15476,9 @@ fn golden_ticket_live_question_120() {
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
     let lines = render(&app, 120, 30);
     let text = lines.join("\n");
-    assert!(text.contains("❯ 1. After the merge"), "the pointer stays:\n{text}");
+    assert!(text.contains("   1. After the merge"), "{text}");
+    assert!(!text.contains("❯ 1."), "the pointer is not the page's to move:\n{text}");
+    assert!(text.contains("   ☐ Full suite   ☐ Clean rebase"), "no arrows:\n{text}");
     assert!(text.contains("4. Chat about this"), "{text}");
     for keys in ["Enter to select", "to navigate", "Esc to cancel"] {
         assert!(!text.contains(keys), "the agent's keys are not the page's: {keys}\n{text}");
@@ -15480,6 +15486,16 @@ fn golden_ticket_live_question_120() {
     assert!(lines.last().is_some_and(|l| l.contains("enter focus")), "{lines:#?}");
     let chat = lines.iter().position(|l| l.contains("4. Chat about this")).expect("the row");
     assert_eq!(chat, lines.len() - 2, "the dialog ends over the footer:\n{text}");
+    // The question's black is under the page's floor against its ground.
+    let buf = cells(&app, 120, 30);
+    let row = lines.iter().position(|l| l.contains("The full suite takes")).expect("the row");
+    let col = lines[row].find("The full").expect("the words") as u16;
+    assert!(matches!(app.theme.bg, Some(ratatui::style::Color::Rgb(..))), "a painted ground");
+    assert_eq!(buf[(col, row as u16)].fg, app.theme.rest.base, "readable on the page's ground");
+    for x in 0..40u16 {
+        let cell = &buf[(x, row as u16 - 2)];
+        assert!(!cell.modifier.contains(Modifier::REVERSED), "no lit tab: column {x}");
+    }
     golden("ticket_live_question_120x30", &lines);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
