@@ -44636,10 +44636,25 @@ suite's 44 px law holds unchanged and the box is about 90 px tall where it was 1
 a native select keeps the control's name and its disabled Steer readable to a screen reader.
 T-701's "one line until there are words" is gone on the author's approved picture.
 
-**Still different from the prototype, listed to the author, not built here:** flat Inbox rows,
-the compact New ticket sheet, the ticket header's one meta line, the permission docked over the
-box, Settings as a page of rows, the Notes list with its Summary card; and never built: the
-Details tab, the `•••` press, Find, folded tool calls, "Deny and say why", "Start an agent now".
+**Then, the same day, the other old shapes the prototype had replaced** (the author: "Find out
+what other things missing.."), all in `style.css`'s last blocks, no markup moved:
+- The Inbox is rows (`#shell[data-mode="agents"] #tickets`): no box around a ticket, a hairline
+  between two, the tag's bar on the row's edge, a question's choices outlined and wrapping. The
+  open row is lit only from 701 px, where the list stays beside the ticket.
+- An answer's presses (`.need-actions`, `.attention-actions`) draw 34 px, sized to their words,
+  Deny an outline at the row's start and the answer at its end. `::before` is the face; the
+  44 px box is the press.
+- A sheet's choices (`dialog.compose .choice`, `.tag-chip`) are outlined 32 px chips, the group's
+  name a small mono word. New ticket hides its two field labels (their placeholders say it), its
+  live line is one quiet line, its Send is 44 px.
+
+**Still different from the prototype, listed to the author, not built:** Settings as a page of
+rows with Theme on its own page (it is a sheet that opens on the theme grid); the Notes list with
+its Summary card (notes are still panes walked one at a time); the ticket header's one meta line
+and the permission docked over the box; and never built: the Details tab, the `•••` press, Find
+(the page has Sent and a search field), folded tool calls, "Deny and say why", "Start an agent
+now", the attach menu, the digest line, haptics, a `ctrl` key. Which of these to build is the
+author's.
 
 **Verified.** `node --test state.test.js assets.test.js` (61 passed) and the UX suite on
 Chromium at phone size (`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone`), green; the
