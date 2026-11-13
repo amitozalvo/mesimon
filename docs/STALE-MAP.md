@@ -44037,18 +44037,18 @@ Rebased onto T-1218 (`c2cf8901`): its decision that missing or unanswerable card
 keys available, its separate `stopped` projection and its input/escape guards remain.
 
 **What changed.**
-- A question answer that times out without a confirming edge, on either the mod or key road,
-  settles `unknown` (`answer_unconfirmed`). A failed capture, empty screen or unfamiliar shape
-  cannot delete its projection. Its closing evidence still does. Plan/trust screen checks and
-  the existing meaning of confirmed answers are unchanged.
-- Transcript recovery's `GIVEN` fence skips only a projection that still exists. A recovered
-  projection also records `GIVEN`, so it can be recovered again without transcript growth if
-  lost. The existing per-session closing-edge map fences the request: a completion, dismissal
-  or closure heard before its transcript result cannot immediately resurrect it. `Closed`
-  records a failure/turn/session end without claiming that an answer was accepted.
-- Under the 48 KiB reply cap, waiting cards precede working, stopped and other non-waiting
-  tickets. Only as many dialogs as necessary are omitted, from the end. Each retained ticket
-  whose dialog did not fit carries `dialog_omitted: true` and `card_answers: false`; the page
+- A question answer whose input went in but has no confirming edge keeps `input_sent`, on
+  either the mod or key road. A failed capture, empty screen or unfamiliar shape cannot delete
+  its projection. Its closing evidence still does. `unknown` remains the failure to choose or
+  send the answer; it is not substituted for a delivered Enter/Esc merely because no hook came.
+- Transcript recovery keeps the original `GIVEN` fence for the whole spell, even after the
+  projection leaves. The existing per-session closing-edge map additionally fences the request:
+  a completion, dismissal or closure heard before its transcript result cannot immediately
+  resurrect it. `Closed` records a failure/turn/session end for recovery, not a change to a
+  delivery receipt: input already sent still settles `input_sent`, a plan sent back included.
+- Under the 48 KiB reply cap, the order remains agentless cards with no queued words, then
+  dialogs, then any card. Only as many dialogs as necessary are omitted, from the end. Each
+  retained ticket whose dialog did not fit carries `dialog_omitted: true` and `card_answers: false`; the page
   says it is too large here and points to the ticket's Terminal tab. Inbox offers Open ticket.
   `control_answers_here` checks the fitted reply, so a dialog or whole ticket left out cannot
   refuse keys by advertising an invisible answer card. Budgeting never changes the host's
@@ -44056,18 +44056,25 @@ keys available, its separate `stopped` projection and its input/escape guards re
 - `SessionStart` with source `compact`, in either the frame's reason or payload, preserves the
   question. A mismatching old-pane `SessionEnd`/`PaneDied` is rejected before permission or
   dialog projections are touched.
-- A nested `AskUserQuestion`/`ExitPlanMode` completion with an `agent_id` takes the existing
-  nested tool-completion road, not the lead's interaction-completion signal.
+- A nested `AskUserQuestion`/`ExitPlanMode` start (`PreToolUse` or `PermissionRequest`) and
+  completion with a real `agent_id` take the existing nested tool-start/completion roads,
+  never the lead's interaction signals. A child's interaction neither puts the lead on
+  needs-you nor clears a question the lead already holds.
 
 **Compatibility.** `dialog_omitted` defaults to false and is absent from serialized replies
 when false. Old hosts remain readable; old pages ignore the additional reply field. This is
 inside the existing sealed board answer, with the same answer cap and no new request or relay
 wire variant. The relay routing contract was checked by code read; no relay half is needed.
 
-**Refuted.** An answer's timeout or a failed shape read proves neither that the question ended
-nor that the input was consumed. `GIVEN` alone is not a permanent reason to skip recovery after
-the projection disappears. Keeping only live-agent rows is not sufficient budget priority:
-working agents can consume the space that a waiting question needs.
+**Refuted by review of `00ee3aee`.** An answer's timeout or failed shape read does not prove
+that the question ended, but input already sent must still be reported as `input_sent`.
+Calling it `unknown` incorrectly restores the crown's mark and invites a second answer. Gating
+only a child's completion leaves its start free to put the lead on needs-you, with no matching
+completion to move it off again. The crown withdrew two parts of its go: dropping non-waiting
+cards before dialogs can discard working, stopped, queued and unprojectable needs-you cards;
+relaxing `GIVEN` unnecessarily reopens plans removed after delivery before their results reach
+the transcript. Both changes were reverted. Keeping questions through uncertain reads is the
+fix; recovery need not reopen a spell whose projection was already given.
 
 **Known and open, outside this delivery.** Sibling `PreToolUse` dismissal; two calls in one
 message beyond T-988; the 15-minute re-affirmation gap; restart recovery holes; a cached page
@@ -44076,7 +44083,15 @@ observation or its own design. A simultaneous phone/terminal capture at disappea
 the session and time, would let the daemon's hook/answer history distinguish them; include
 whether an answer, reconnect, compaction or daemon handover immediately preceded it.
 
-**Verified.** Eight new `t1217_` daemon tests failed on the pre-fix assertions, then passed:
+**Mod-road limit.** `classic.PreToolUse` itself has no `agentId` (daemon `CLAUDE.md`). The mod
+already supplements it from `tool.call`, by call id (`mod/hooks/register.ts`, `agents` and
+`preToolUseBody`); its existing test "a subagent's PreToolUse names its agent" covers that
+enrichment. These were read, not changed or live-traced here. A start arriving without that
+enrichment still cannot be distinguished from the lead's: if its completion carries an
+`agent_id`, the remaining asymmetric case is open. This delivery adds no mod mechanism.
+
+**Initial delivery checks (`00ee3aee`, before the review corrections below).** Eight new
+`t1217_` daemon tests failed on the pre-fix assertions, then passed:
 both delivery roads' unconfirmed answers; unseen/unrecognised screens; recovery and closing
 fences; compact continuation; old-pane death; nested interaction completion; waiting-card
 budget priority; explicit omission with keys available. The recovery case additionally lost
@@ -44093,7 +44108,7 @@ an answerable question to an omitted dialog, checks its explanation in Chat and 
 and checks that the Terminal input becomes enabled. Rust formatting for the touched files
 and `git diff --check` pass. Fixture audits were clean.
 
-**Reruns.** The new tests initially did not compile because `Dialog` has no `PartialEq`;
+**Initial delivery reruns.** The new tests initially did not compile because `Dialog` has no `PartialEq`;
 assertions were corrected to compare request/content before the red baseline. Targeted runs
 were repeated after the implementation and after strengthening recovery; one verification
 was repeated because its tool output was unavailable. The first `cargo ut` failed the existing
@@ -44105,3 +44120,25 @@ tests because Playwright was missing in this worktree; linked the existing insta
 reran successfully, and removed the temporary link. No end-to-end check needed a rerun.
 No full workspace suite, clippy or live-model run was performed. A full workspace suite is
 owed after the merge because production `server.rs` changed.
+
+**Review regression evidence.** Before changing production code, the targeted `t1217_` run
+failed three assertions: nested interaction start made the lead `RequiresAction`; a timeout
+after input was sent returned `unknown`; and a closing frame after input was sent returned
+`unknown`. After correction, all 11 targeted tests passed. Coverage includes both start hooks
+and both interaction tools, both delivery roads, closing receipts for choices, Reject and a
+plan sent back, and the existing protections for a question the lead already holds. The
+timeout test was then extended to Reject as well, covered by `cargo ut`. The withdrawn budget
+test now requires all 60 working/stopped/unprojected cards to remain when omitting one dialog
+is enough. Recover-again expectations were removed; a test now pins the restored `GIVEN`
+fence for a plan removed after delivery while its transcript has no result.
+
+**Review verification and reruns.** `cargo ut`: 3,158 passed, 12 existing ignored.
+Supervised files: `--test crown crown_e2e::` (117 passed, run in the background, including
+plan-revise cases), `--test mods mod_turns_e2e::` (10), and `--test agents plan_accept_e2e::`
+(26). Fixture audits were clean. Removing the unused `answer_unconfirmed` page wording also
+passed `node --test state.test.js assets.test.js` (60). Touched-file Rust formatting and
+`git diff --check` passed. The targeted `t1217_` filter was rerun once, from the three expected
+pre-fix failures to 11 green tests; unit, e2e and page checks needed no rerun this review.
+The mod e2e uses its stand-in engine and verifies the bridge, not live classic-event ordering.
+No full workspace suite, clippy, browser UX rerun or live-model run; the post-merge workspace
+suite remains owed for the branch's production `server.rs` change.

@@ -29,7 +29,6 @@ const reasonWords = {
   label_not_found: "the option is not on the screen",
   label_wrapped: "the option does not read as one row on the screen",
   shape_unrecognised: "the screen does not show this question",
-  answer_unconfirmed: "the agent did not confirm the answer",
   deadline: "it took too long",
   state_changed: "the agent moved on",
   pane_unreachable: "the agent's terminal did not take it",

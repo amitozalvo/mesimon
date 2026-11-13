@@ -247,16 +247,17 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         // sharper reason PreToolUse just set (dogfood 2026-08-30: plan
         // dialogs read as `permission`, never `plan`).
         "PermissionRequest" => match interaction_tool(frame) {
-            Some(tool) => Some(Signal::PreToolUse { tool }),
+            Some(tool) if !has_agent_id(frame) => Some(Signal::PreToolUse { tool }),
+            Some(_) => Some(Signal::ToolStarted { nested: true }),
             None => Some(Signal::PermissionRequest),
         },
         "PermissionDenied" => Some(Signal::PermissionDenied),
         "PreToolUse" => match interaction_tool(frame) {
-            Some(tool) => Some(Signal::PreToolUse { tool }),
+            Some(tool) if !has_agent_id(frame) => Some(Signal::PreToolUse { tool }),
             // Any other call is the session working — and, while a plan or
             // question is held, the only frame a human's refusal leaves
             // (T-447: "No, keep planning" fires no hook of its own).
-            None => Some(Signal::ToolStarted { nested: has_agent_id(frame) }),
+            _ => Some(Signal::ToolStarted { nested: has_agent_id(frame) }),
         },
         // Broad since dogfood 2026-08-30 (an ACCEPTED permission stayed
         // needs-you until end of turn): the interaction pair keeps its sharp

@@ -382,8 +382,7 @@ pub(super) struct Control {
     /// The `RequiresAction` spell each seat's dialog was last looked for in
     /// (T-933), by its `state_changed_at`: once per spell, or for a record
     /// that names its call, again as its transcript grows (T-957 round 9).
-    /// `GIVEN` for the length: the spell has its projection. If lost,
-    /// it can be read again without waiting for transcript growth.
+    /// `GIVEN` for the length: the hook stream gave the spell its dialog.
     dialogs_read: HashMap<uuid::Uuid, (u64, u64)>,
     incarnation: ObjectId,
     origin: String,
@@ -1546,9 +1545,10 @@ impl Daemon {
     /// crown read `needs_you` with no request and its `accept_plan` was
     /// refused. The transcript still holds the call with its `tool_use` id,
     /// the request the hook stream names, and no result after it: that is
-    /// the dialog, rebuilt within the same bounds. An existing projection
-    /// needs no read; a lost one can be rebuilt in the same spell. Closing
-    /// edges fence their request even before its result reaches the file.
+    /// the dialog, rebuilt within the same bounds. One read per spell, and
+    /// none for a spell the hook stream already gave a dialog, so a plan
+    /// removed after delivery is never resurrected. Closing edges also
+    /// fence their request before its result reaches the file.
     fn control_recover_dialogs(&mut self) {
         const GIVEN: u64 = u64::MAX;
         use mesimon_core::board::Reason;
@@ -1568,21 +1568,18 @@ impl Daemon {
                 };
                 let spell = s.state_changed_at.unwrap_or_default();
                 let read = self.control.dialogs_read.get(&s.id);
-                if read == Some(&(spell, GIVEN)) && self.control.dialogs.contains_key(&s.id) {
+                if read == Some(&(spell, GIVEN)) {
                     return None;
                 }
                 // A record that names its call (T-957 round 9) is read again
                 // as its transcript grows, until that call's line is there:
                 // a restart can come before the line does.
-                let grown = if self.control.dialogs.contains_key(&s.id) {
-                    GIVEN
-                } else {
-                    s.dialog_call
-                        .as_ref()
-                        .and(s.transcript_path.as_deref())
-                        .and_then(|p| std::fs::metadata(p).ok())
-                        .map_or(0, |m| m.len())
-                };
+                let grown = s
+                    .dialog_call
+                    .as_ref()
+                    .and(s.transcript_path.as_deref())
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map_or(0, |m| m.len());
                 let key = (spell, grown);
                 (read != Some(&key))
                     .then(|| (s.id, reason, key, s.transcript_path.clone(), s.dialog_call.clone()))
@@ -1624,7 +1621,6 @@ impl Daemon {
                 }
             }
             self.control.dialogs.insert(id, api::Dialog { request: open.id, content });
-            self.control.dialogs_read.insert(id, (key.0, GIVEN));
             self.control_changed();
         }
     }
@@ -1786,10 +1782,6 @@ impl Daemon {
         }
         let edge = self.control_dialog_edge(id, &pending.request);
         let reject = matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Reject));
-        let question = self.control.dialogs.get(&id).is_some_and(|d| {
-            d.request == pending.request
-                && matches!(d.content, api::DialogContent::Questions { .. })
-        });
         // An answer the mod carries (T-576) is confirmed by the mod's
         // own report alone: the engine's `PostToolUse`, or a refusal,
         // is the person's answer winning the race in the pane.
@@ -1802,23 +1794,12 @@ impl Daemon {
                     let reason = Some("a_person_answered".into());
                     self.control_settle_dialog(id, pending, "unknown", reason, "")
                 }
-                None if question && Instant::now() >= until => self.control_settle_seen(
-                    id,
-                    pending,
-                    "unknown",
-                    Some("answer_unconfirmed".into()),
-                    None,
-                ),
                 None if Instant::now() >= until => {
                     self.control_settle_dialog(id, pending, "input_sent", None, "")
                 }
-                Some(DialogEdge::Closed) => self.control_settle_dialog(
-                    id,
-                    pending,
-                    "unknown",
-                    Some("state_changed".into()),
-                    "",
-                ),
+                Some(DialogEdge::Closed) => {
+                    self.control_settle_dialog(id, pending, "input_sent", None, "")
+                }
                 None => {
                     pending.next = Instant::now() + Duration::from_millis(100);
                     self.control.dialog_deliveries.insert(id, pending);
@@ -1842,21 +1823,11 @@ impl Daemon {
                 self.control_settle_dialog(id, pending, "input_sent", None, "")
             }
             None if Instant::now() >= until => {
-                if question {
-                    self.control_settle_seen(
-                        id,
-                        pending,
-                        "unknown",
-                        Some("answer_unconfirmed".into()),
-                        None,
-                    );
-                } else {
-                    let screen = self.dialog_screen(id);
-                    self.control_settle_dialog(id, pending, "input_sent", None, &screen);
-                }
+                let screen = self.dialog_screen(id);
+                self.control_settle_dialog(id, pending, "input_sent", None, &screen);
             }
             Some(DialogEdge::Closed) => {
-                self.control_settle_dialog(id, pending, "unknown", Some("state_changed".into()), "")
+                self.control_settle_dialog(id, pending, "input_sent", None, "")
             }
             None => {
                 pending.next = Instant::now() + Duration::from_millis(250);
@@ -4353,10 +4324,9 @@ impl Daemon {
     ///    dialog's request stays, so the plan is still answered;
     /// 2. the cards with no agent and no queued words, from the end of the
     ///    board order (the last column's bottom first);
-    /// 3. non-waiting cards, including working and stopped agents;
-    /// 4. dialogs from the end, only as many as needed, with an explicit
+    /// 3. dialogs from the end, only as many as needed, with an explicit
     ///    omission and no card answer advertised (Terminal keys still work);
-    /// 5. any card, from the end of the board order.
+    /// 4. any card, from the end of the board order.
     ///
     /// The cards left out are counted in `omitted`, which the page says.
     fn fit_board(&self, reply: &mut Reply) -> Option<usize> {
@@ -4377,11 +4347,6 @@ impl Daemon {
         let Reply::Board { tickets, omitted, .. } = reply else { return bytes };
         *omitted += drop_cards(tickets, &mut bytes, |t| {
             t.agent.is_none() && t.stopped.is_none() && t.queued.is_none()
-        });
-        *omitted += drop_cards(tickets, &mut bytes, |t| {
-            !t.agent
-                .as_ref()
-                .is_some_and(|a| a.dialog.is_some() || a.permission.is_some() || a.trust.is_some())
         });
         for agent in tickets.iter_mut().rev().filter_map(|t| t.agent.as_mut()) {
             if !past_cap(bytes) {
@@ -6374,8 +6339,7 @@ fn revise_settled(
         Some(DialogEdge::Answered | DialogEdge::ModAnswered) => {
             Some(("unknown", Some("plan_accepted")))
         }
-        Some(DialogEdge::Dismissed) => Some(("input_sent", None)),
-        Some(DialogEdge::Closed) => Some(("unknown", Some("state_changed"))),
+        Some(DialogEdge::Dismissed | DialogEdge::Closed) => Some(("input_sent", None)),
         None if !standing => Some(("input_sent", None)),
         None if !due => None,
         None => match capture() {
@@ -6846,33 +6810,73 @@ mod tests {
     }
 
     #[test]
-    fn t1217_an_unconfirmed_answer_keeps_the_question_and_says_unknown() {
+    fn t1217_sent_input_keeps_the_question_without_claiming_an_answer() {
         for by_mod in [None, Some("unconsumed-frame".into())] {
-            let dir = tempfile::tempdir().unwrap();
-            let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
-            let (id, ticket, q) = held_question(&mut d);
-            let grant = BoardId::random();
-            let by = Deliverer::Phone {
-                grant,
-                device: mesimon_team::crypto::DeviceKeys::generate().id(),
-                command: 1,
-            };
-            let mut p = DialogDelivery::new(
-                by,
-                ticket,
-                q.request.clone(),
+            for answer in [api::DialogAnswer::Choice { index: 0 }, api::DialogAnswer::Reject] {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
+                let (id, ticket, q) = held_question(&mut d);
+                let grant = BoardId::random();
+                let by = Deliverer::Phone {
+                    grant,
+                    device: mesimon_team::crypto::DeviceKeys::generate().id(),
+                    command: 1,
+                };
+                let mut p = DialogDelivery::new(
+                    by,
+                    ticket,
+                    q.request.clone(),
+                    DeliveryAnswer::Dialog(answer),
+                    walk_budget(&q),
+                );
+                p.by_mod = by_mod.clone();
+                d.control_confirm_delivery(id, p, Instant::now());
+                d.control_recover_dialogs();
+                assert_eq!(
+                    d.control.dialogs.get(&id).map(|d| (&d.request, &d.content)),
+                    Some((&q.request, &q.content))
+                );
+                assert!(matches!(&d.control.receipts[&grant][&1],
+            Reply::Delivery { status, reason: None, .. } if status == "input_sent"));
+            }
+        }
+    }
+
+    #[test]
+    fn t1217_sent_input_closed_before_confirmation_keeps_its_receipt() {
+        for by_mod in [None, Some("unconsumed-frame".into())] {
+            for answer in [
                 DeliveryAnswer::Dialog(api::DialogAnswer::Choice { index: 0 }),
-                walk_budget(&q),
-            );
-            p.by_mod = by_mod;
-            d.control_confirm_delivery(id, p, Instant::now());
-            d.control_recover_dialogs();
-            assert_eq!(
-                d.control.dialogs.get(&id).map(|d| (&d.request, &d.content)),
-                Some((&q.request, &q.content))
-            );
-            assert!(matches!(&d.control.receipts[&grant][&1],
-            Reply::Delivery { status, .. } if status == "unknown"));
+                DeliveryAnswer::Dialog(api::DialogAnswer::Reject),
+                DeliveryAnswer::Revise { text: "Use one step".into(), pane: None },
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
+                let (id, ticket, mut q) = held_question(&mut d);
+                if matches!(answer, DeliveryAnswer::Revise { .. }) {
+                    q.content = api::DialogContent::Plan { markdown: "Two steps".into() };
+                    d.board.sessions[0].state =
+                        SessionState::RequiresAction { reason: Reason::Plan };
+                    d.control.dialogs.insert(id, q.clone());
+                }
+                let grant = BoardId::random();
+                let by = Deliverer::Phone {
+                    grant,
+                    device: mesimon_team::crypto::DeviceKeys::generate().id(),
+                    command: 1,
+                };
+                let mut p =
+                    DialogDelivery::new(by, ticket, q.request.clone(), answer, walk_budget(&q));
+                p.by_mod = by_mod.clone();
+                // The Enter/Esc already went. The agent answers in text
+                // and stops instead of giving a confirming tool edge.
+                d.control_observe_dialog(id, &question_frame(id, "Stop", serde_json::json!({})));
+                assert_eq!(d.control_dialog_edge(id, &q.request), Some(DialogEdge::Closed));
+                d.control_confirm_delivery(id, p, Instant::now());
+                assert!(matches!(&d.control.receipts[&grant][&1],
+                    Reply::Delivery { status, reason: None, .. } if status == "input_sent"));
+                assert!(!d.control.dialogs.contains_key(&id));
+            }
         }
     }
 
@@ -6899,7 +6903,7 @@ mod tests {
     }
 
     #[test]
-    fn t1217_a_removed_projection_can_recover_but_a_closed_call_cannot() {
+    fn t1217_a_closed_call_cannot_recover_before_its_transcript_result() {
         let dir = tempfile::tempdir().unwrap();
         let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
         let (id, _, q) = held_question(&mut d);
@@ -6918,20 +6922,12 @@ mod tests {
         )
         .unwrap();
         d.board.sessions[0].transcript_path = Some(path.display().to_string());
-        d.control.dialogs.remove(&id);
-        d.control_recover_dialogs();
-        assert_eq!(
-            d.control.dialogs.get(&id).map(|d| (&d.request, &d.content)),
-            Some((&q.request, &q.content))
-        );
-        d.control_recover_dialogs();
         // The hook can beat the result's append: the old transcript must
         // not resurrect a call whose own closing frame was just heard.
         for event in ["PostToolUse", "PostToolUseFailure", "PermissionDenied"] {
             d.control.dialog_edges.remove(&id);
             d.control.dialogs_read.remove(&id);
             d.control.dialogs.insert(id, q.clone());
-            d.control_recover_dialogs();
             d.control_observe_dialog(
                 id,
                 &question_frame(
@@ -6945,15 +6941,45 @@ mod tests {
             d.control_recover_dialogs();
             assert!(!d.control.dialogs.contains_key(&id), "{event}");
         }
-        d.control.dialog_edges.remove(&id);
-        d.control.dialogs_read.remove(&id);
-        for _ in 0..2 {
-            d.control_recover_dialogs();
-            assert!(
-                d.control.dialogs.remove(&id).is_some(),
-                "recover again without transcript growth"
-            );
-        }
+    }
+
+    #[test]
+    fn t1217_a_given_plan_removed_after_delivery_is_not_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
+        let (id, ticket, mut plan) = held_question(&mut d);
+        plan.content = api::DialogContent::Plan { markdown: "Two steps".into() };
+        d.board.sessions[0].state = SessionState::RequiresAction { reason: Reason::Plan };
+        d.control.dialogs.insert(id, plan.clone());
+        let path = dir.path().join("transcript.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "uuid":"p", "type":"assistant", "message":{"content":[{
+                        "type":"tool_use", "id":plan.request, "name":"ExitPlanMode",
+                        "input":{"plan":"Two steps"}
+                    }]}
+                })
+            ),
+        )
+        .unwrap();
+        d.board.sessions[0].transcript_path = Some(path.display().to_string());
+        let p = DialogDelivery::new(
+            Deliverer::Board,
+            ticket,
+            plan.request.clone(),
+            DeliveryAnswer::Dialog(api::DialogAnswer::Accept),
+            walk_budget(&plan),
+        );
+        d.control_settle_seen(id, p, "input_sent", None, Some(""));
+        assert!(!d.control.dialogs.contains_key(&id));
+        assert!(d.control_dialog_edge(id, &plan.request).is_none());
+        // The transcript has no result yet, but GIVEN still fences this
+        // spell even though delivery removed the plan with no hook edge.
+        d.control_recover_dialogs();
+        assert!(!d.control.dialogs.contains_key(&id));
     }
 
     #[test]
@@ -7013,6 +7039,32 @@ mod tests {
                 Some((&q.request, &q.content))
             );
             assert!(d.machines[&id].view().pending.is_none(), "{tool}");
+        }
+    }
+
+    #[test]
+    fn t1217_a_nested_interaction_start_and_end_leave_the_lead_working() {
+        for start in ["PreToolUse", "PermissionRequest"] {
+            for tool in ["AskUserQuestion", "ExitPlanMode"] {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
+                d.queued.clear();
+                let id = d.board.sessions[0].id;
+                d.board.sessions[0].state = SessionState::Running;
+                d.machines.insert(id, Machine::new(SessionState::Running, now_ms()));
+                for event in [start, "PostToolUse"] {
+                    d.on_hook(question_frame(
+                        id,
+                        event,
+                        serde_json::json!({
+                            "agent_id":"child", "tool_name":tool, "tool_use_id":"child-call"
+                        }),
+                    ));
+                    assert_eq!(d.board.sessions[0].state, SessionState::Running, "{event} {tool}");
+                    assert!(d.machines[&id].view().pending.is_none());
+                    assert!(!d.control.dialogs.contains_key(&id));
+                }
+            }
         }
     }
 
@@ -9490,25 +9542,36 @@ mod board_fit_tests {
     }
 
     #[test]
-    fn t1217_waiting_cards_fit_before_working_and_stopped_agents() {
+    fn t1217_omitting_a_dialog_keeps_working_stopped_and_unprojected_cards() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut d, _rx) = crowded(dir.path(), 200);
-        for n in 2..=200 {
+        let (mut d, _rx) = crowded(dir.path(), 60);
+        let first = &mut d.board.sessions[0];
+        first.state = SessionState::RequiresAction { reason: Reason::Question };
+        let content = dialog_content(
+            "AskUserQuestion",
+            &serde_json::json!({
+                "questions":[{"question":"x".repeat(16000), "header":"Q",
+                    "options":[{"label":"A","description":""}], "multiSelect":false}]
+            }),
+        )
+        .unwrap();
+        d.control.dialogs.insert(first.id, api::Dialog { request: "q".into(), content });
+        for n in 2..=60 {
             let mut rec = d.board.sessions[0].clone();
             rec.id = uuid::Uuid::from_u128(n);
             rec.ticket = ulid::Ulid(n);
-            rec.state = if n % 2 == 0 {
-                SessionState::Running
-            } else {
-                SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
+            rec.state = match n % 3 {
+                0 => SessionState::Running,
+                1 => SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed },
+                _ => SessionState::RequiresAction { reason: Reason::Question },
             };
             d.board.sessions.push(rec);
         }
         let (reply, bytes) = d.control_board();
         assert!(bytes.unwrap() <= ANSWER_MAX_BYTES);
         let (tickets, omitted) = board_of(&reply);
-        assert!(omitted > 0);
-        assert!(plan_of(&tickets[0]).is_some(), "a waiting plan precedes non-waiting cards");
+        assert_eq!((tickets.len(), omitted), (60, 0), "omit the dialog, not the other agents");
+        assert!(tickets[0].agent.as_ref().unwrap().dialog_omitted);
     }
 
     #[test]
