@@ -516,7 +516,9 @@ The queue holds one prompt per ticket in memory; daemon restarts discard it.
 Words that begin with `!` are a shell command for Claude Code's prompt box, as when you type
 `!` in its pane: from the ask field or from Remote Control they are typed into the box, which
 runs them in its bash mode and shows the agent the output — the road for a step auto mode
-refuses the agent, such as a deploy. The box takes a `!` line only while it is empty, so one is
+refuses the agent, such as a deploy. The ask field draws them as a shell prompt: the `!` in red
+where its caret was, `shell command` under the words, and `SHELL` and `enter run` in the
+footer. Codex runs them in its own shell mode too. The box takes a `!` line only while it is empty, so one is
 refused while a draft sits in the agent's own prompt box, and the card spins on the command
 while it runs. Only you send one: a `!` line in the crown's `ask_agent`, or in a linked board's
 ask, is refused, as is a ticket title an agent sets that begins with `!`, since a start types the

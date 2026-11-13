@@ -43770,3 +43770,31 @@ Tests: `shift_enter_on_the_boards_ask_field_opens_the_composer` (new);
 `escape_return_opens_the_ask_…` (board: the composer, `^s` sends) and
 `tab_grows_the_ask_field_into_the_room_…` (board recall is one line, the page's keeps lines)
 follow the change.
+
+## A `!` line in the ask field draws a shell prompt (T-1211, 2026-11-13, "treat leading ! in input specially … should show a special shell prompt both in ticket page input and board ticket input"; on the proposal: "give the exclamation mark a color, maybe red and bold")
+
+**What changed.** The ask field's words that begin with `!` (T-876's shell line) draw as the
+agent's box draws its shell mode: the `!` takes the caret's place (`› ` on the board's card and
+the column header, the pane's `❯`/`›` mark on the ticket page) in `err` red, bold
+(`card::shell_ink`, the interrupting send's ink, so the one-saturated-colour law holds), the
+words after it; a lone `!` reads `! shell command`. The delivery row adds ` ∙ shell command`
+(` ∙ shell` where a card cuts it; the card lets `shift+tab` go before cutting the words), the
+footer says `SHELL` and Enter `run` (`Ctx::ask_shell`; `queue` and the interrupt words win over
+it), and the grown editor's heading is `SHELL COMMAND`. Rendering only: what is sent is unchanged.
+`EditBuffer::past_bang` gives the renderers the words after the `!`; a cursor before the `!`
+stands on it. `App::shell_line` reads the text `trim_start`ed, as the daemon's
+`sanitize_prompt` does, so the words row and footer say shell for `  !ls` too; only a `!` in the
+first cell becomes the caret.
+
+**Measured.** Codex 0.167.2 runs a pasted `!echo …` in its own "Shell mode" (`! echo …` in the
+box, `• You ran echo …` after Enter), so Codex seats get the same look. T-707's "Codex has no
+bash mode" is stale for this version.
+
+**Tests.** `ui::tests::golden_shell_line_in_the_ask_field_120` (goldens `board_ask_shell`,
+`ticket_live_ask_shell`; ink, cursor on the placeholder and on the `!`, plain words unchanged,
+the editor), `keymap::the_ask_field_queues_only_on_a_shared_checkout` (`enter run`, queued
+`queue`).
+
+**Owed:** a CHANGELOG line at the next bump. **Changed:** A message that begins with `!` in the
+ask field now shows as a shell command, with a red `!` in place of the prompt arrow, before you
+send it.

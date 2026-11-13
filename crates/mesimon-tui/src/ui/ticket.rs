@@ -1059,8 +1059,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 let placeholder = super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
                 let (rows, cx, cy) = composer_row(theme, c, buf, placeholder);
                 // The pane's own mark stays as the pane drew it: the row
-                // begins at its words' column; over a dialog, at the mark's.
-                let x = if c.bare { c.x } else { c.words_x };
+                // begins at its words' column; over a dialog, or with a
+                // shell line's `!` over the mark (T-1211), at the mark's.
+                let x = if c.bare || buf.as_str().starts_with('!') { c.x } else { c.words_x };
                 let n = rows.len() as u16;
                 let rect = Rect { x, y: field_y, width: c.right - x, height: n };
                 f.render_widget(Paragraph::new(rows), rect);
@@ -1083,7 +1084,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                     );
                     // T-1188: the armed delete's flash, on its phase.
                     let lit = interrupts.then(|| theme.delete_lit(app.spin_frame()));
-                    let line = delivery_row(theme, c, word, tier_word.as_deref(), cycles, lit);
+                    let shell = App::shell_line(buf.as_str());
+                    let line =
+                        delivery_row(theme, c, word, tier_word.as_deref(), cycles, lit, shell);
                     let rect = Rect { x: c.x, y: under, width: c.right - c.x, height: 1 };
                     f.render_widget(Paragraph::new(line), rect);
                 }
@@ -1668,23 +1671,32 @@ fn composer_row(
     buffer: &crate::text::EditBuffer,
     placeholder: &str,
 ) -> (Vec<Line<'static>>, u16, u16) {
-    let lead = if c.bare { (c.words_x - c.x) as usize } else { 0 } + 1;
+    // A shell line (T-1211): its `!` over the mark, red, the words after it,
+    // as the agent's own box draws its shell mode.
+    let bang = buffer.past_bang();
+    let view = bang.as_ref().map_or(buffer, |(rest, _)| rest);
+    let placeholder = if bang.is_some() { super::card::SHELL_PLACEHOLDER } else { placeholder };
+    let marked = c.bare || bang.is_some();
+    let lead = if marked { (c.words_x - c.x) as usize } else { 0 } + 1;
     let width = (c.right - c.words_x) as usize + lead - 1;
     // One cell past the words for the cursor to rest on.
     let budget = width.saturating_sub(lead + 1);
     // A row per line of the ask (T-1191), at the first one's column.
-    let (shown, cx, cy) = crate::text::edit_rows(buffer, budget, super::card::ASK_LINES);
+    let (shown, cx, cy) = crate::text::edit_rows(view, budget, super::card::ASK_LINES);
     let rows = shown
         .into_iter()
         .enumerate()
         .map(|(i, shown)| {
             let mut spans = Vec::new();
-            if c.bare && i == 0 {
+            if bang.is_some() && i == 0 {
+                spans.push(Span::styled("!", super::card::shell_ink(theme)));
+                spans.push(Span::raw(" ".repeat(lead - 1)));
+            } else if marked && i == 0 {
                 spans.push(Span::styled(format!("{:<lead$}", "❯"), theme.dim2()));
             } else {
                 spans.push(Span::raw(" ".repeat(lead)));
             }
-            let words = if buffer.as_str().is_empty() {
+            let words = if view.as_str().is_empty() {
                 Span::styled(truncate(placeholder, budget), theme.dim3())
             } else {
                 Span::styled(shown, Style::default().fg(theme.rest.base))
@@ -1695,7 +1707,9 @@ fn composer_row(
             Line::from(spans)
         })
         .collect();
-    (rows, (lead as u16) + cx, cy as u16)
+    // A cursor before the `!` stands on it.
+    let x = if bang.is_some_and(|(_, at_bang)| at_bang) { 0 } else { (lead as u16) + cx };
+    (rows, x, cy as u16)
 }
 
 /// The delivery row under the composer row (T-1143): the card's mode row
@@ -1713,6 +1727,7 @@ fn delivery_row(
     tier_word: Option<&str>,
     cycles: bool,
     interrupts: Option<bool>,
+    shell: bool,
 ) -> Line<'static> {
     let width = (c.right - c.x) as usize;
     let lead = (c.words_x - c.x) as usize + 1;
@@ -1724,6 +1739,9 @@ fn delivery_row(
     // does, and in the lit phase the row takes the armed delete's red.
     let lit = interrupts == Some(true);
     let mut said = word.to_string();
+    if shell {
+        said.push_str(super::card::SHELL);
+    }
     if interrupts.is_some() {
         said.push_str(super::card::INTERRUPTS);
     }

@@ -791,6 +791,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 None,
                 // A column's ask has no `immediately` stop (T-601).
                 false,
+                crate::app::App::shell_line(buf.as_str()),
             ));
         }
     }

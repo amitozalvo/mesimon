@@ -7584,6 +7584,25 @@ impl App {
         self.board.column_tickets(column).iter().any(|t| self.ticket_plan_able(t.id))
     }
 
+    /// Whether an ask field's words are a shell line (T-1211): the agent's
+    /// box runs them in its shell mode. The daemon reads them trimmed
+    /// (`sanitize_prompt`), so a blank before the `!` does not hide one.
+    pub(crate) fn shell_line(text: &str) -> bool {
+        mesimon_core::road::is_shell(text.trim_start())
+    }
+
+    /// The open ask field's words, one-line or grown into the editor, are a
+    /// shell line (T-1211): its footer and heading say `SHELL`, Enter `run`.
+    pub(crate) fn field_shell(&self) -> bool {
+        match &self.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { .. }, buffer } => {
+                Self::shell_line(buffer.as_str())
+            }
+            Mode::Editor(e) if e.asking() => Self::shell_line(e.body.as_str()),
+            _ => false,
+        }
+    }
+
     /// The word on the ask field's delivery row (T-420 added the first).
     pub(crate) fn ask_mode_word(
         accept_plan: bool,
@@ -8868,6 +8887,7 @@ impl App {
                 _ => false,
             },
             ask_interrupts: self.field_interrupts(),
+            ask_shell: self.field_shell(),
             checkout_busy: subject.is_some_and(|t| self.checkout_busy(t)),
             ask_queued: matches!(
                 self.mode,

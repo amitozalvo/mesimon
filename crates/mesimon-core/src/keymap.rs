@@ -1654,6 +1654,9 @@ pub struct Ctx {
     /// The ask field sits at `immediately` and its agent is mid-turn
     /// (T-1188): Enter interrupts it, and its word says how.
     pub ask_interrupts: bool,
+    /// The ask field's words are a shell line (T-1211): Enter runs them in
+    /// the agent's box.
+    pub ask_shell: bool,
     /// The ask field's toggle sits at `queued` — Enter parks the words.
     pub ask_queued: bool,
     /// The ask field's toggle sits at `accept plan` (T-420): Enter accepts
@@ -8034,6 +8037,9 @@ static INPUT: &[Binding] = &[
                 } else if c.ask_interrupts {
                     // T-1188: what send-now does to a running turn.
                     INTERRUPT_HINT
+                } else if c.ask_shell {
+                    // T-1211: a shell line runs.
+                    "run"
                 } else {
                     "send"
                 }
@@ -8537,6 +8543,8 @@ static EDITOR: &[Binding] = &[
                 "queue"
             } else if c.ask_interrupts {
                 INTERRUPT_HINT
+            } else if c.ask_shell {
+                "run"
             } else {
                 "send"
             }
@@ -9690,6 +9698,11 @@ mod tests {
         assert_eq!(hint_for(Scope::Input, Verb::Save, &shared), Some(("enter", "send")));
         let queued = Ctx { ask_queued: true, ..shared.clone() };
         assert_eq!(hint_for(Scope::Input, Verb::Save, &queued), Some(("enter", "queue")));
+        // T-1211: a shell line runs, and waits as any ask does.
+        let shell = Ctx { ask_shell: true, ..shared.clone() };
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &shell), Some(("enter", "run")));
+        let shell_queued = Ctx { ask_shell: true, ..queued.clone() };
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &shell_queued), Some(("enter", "queue")));
         let onboard = Ctx {
             has_ticket: true,
             ticket_has_agent: true,

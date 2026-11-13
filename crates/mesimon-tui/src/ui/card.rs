@@ -111,18 +111,23 @@ pub(super) fn render_prompt_rows(
     // show; without it the state is an empty row.
     let lead = crate::tags::BAR as u16 + 3;
     let budget = (ctx.width as usize).saturating_sub(lead as usize + 2);
-    let (shown, cx, cy) = edit_rows(buffer, budget, max);
+    // A shell line (T-1211): its `!` is the caret, red, the words after it.
+    let bang = buffer.past_bang();
+    let view = bang.as_ref().map_or(buffer, |(rest, _)| rest);
+    let placeholder = if bang.is_some() { SHELL_PLACEHOLDER } else { placeholder };
+    let (shown, cx, cy) = edit_rows(view, budget, max);
     let words = Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD);
     let rows = shown
         .into_iter()
         .enumerate()
         .map(|(i, shown)| {
-            let caret = if i == 0 { "› " } else { "  " };
-            let mut spans = vec![
-                Span::raw(" ".repeat(crate::tags::BAR + 1)),
-                Span::styled(caret, Style::default().fg(theme.sel.dim2)),
-            ];
-            if buffer.as_str().is_empty() {
+            let caret = match (i, &bang) {
+                (0, Some(_)) => Span::styled("! ", shell_ink(theme)),
+                (0, None) => Span::styled("› ", Style::default().fg(theme.sel.dim2)),
+                _ => Span::raw("  "),
+            };
+            let mut spans = vec![Span::raw(" ".repeat(crate::tags::BAR + 1)), caret];
+            if view.as_str().is_empty() {
                 // An empty field says what it is for, in the same words the
                 // key was hinted with. The hardware cursor sits on the first
                 // letter of it, which is how every placeholder has ever worked.
@@ -136,8 +141,26 @@ pub(super) fn render_prompt_rows(
             Line::from(spans).style(theme.selected_row())
         })
         .collect();
-    (rows, lead + cx, cy as u16)
+    // A cursor before the `!` stands on it.
+    let x = if bang.is_some_and(|(_, at_bang)| at_bang) { lead - 2 } else { lead + cx };
+    (rows, x, cy as u16)
 }
+
+/// A shell line's caret (T-1211): the `!` that leads it, in the `err` red,
+/// bold, the ink of an interrupting send (`interrupt_ink`). Every agent's
+/// box marks its shell mode in a colour of its own; the board spends one it
+/// already spends, so the one-saturated-colour law is untouched.
+pub(super) fn shell_ink(theme: &Theme) -> Style {
+    theme.err_text().add_modifier(Modifier::BOLD)
+}
+
+/// An ask field holding a lone `!` (T-1211): what goes after it.
+pub(super) const SHELL_PLACEHOLDER: &str = "shell command";
+
+/// The delivery row's words for a shell line (T-1211): Enter runs it.
+pub(super) const SHELL: &str = " ∙ shell command";
+/// `SHELL` on a card too narrow for it.
+const SHELL_SHORT: &str = " ∙ shell";
 
 /// What a blank Enter would do in the seat's own words (see
 /// `render_ask_field`), for the empty field's placeholder: the board card's
@@ -202,6 +225,7 @@ pub(super) fn render_ask_field(
             app.ask_queueable(ticket) && !app.ticket_plan_ready(ticket),
             tier_word.as_deref(),
             app.ask_interrupts(&target, (queued, immediately), accept_plan, plan),
+            crate::app::App::shell_line(buffer.as_str()),
         ));
     }
     (rows, x_off, y_off)
@@ -253,21 +277,28 @@ pub(super) fn render_workspace_selector(
 /// dialog, where the one stop is `accept plan`); the hint goes with it.
 /// `interrupts` (T-1188, `App::ask_interrupts`): the row adds
 /// `INTERRUPTS` and flashes as the armed delete does (`interrupt_lit`).
+/// `shell` (T-1211): the words are a shell line, and the row says so.
 pub(super) fn render_ask_mode(
     ctx: &CardCtx,
     word: &'static str,
     cycles: bool,
     tier_word: Option<&str>,
     interrupts: bool,
+    shell: bool,
 ) -> Line<'static> {
     let theme = ctx.theme;
     let lit = interrupts && theme.delete_lit(ctx.spin);
     let ink = if lit { interrupt_ink(theme) } else { Style::default().fg(theme.sel.dim1) };
     let lead = crate::tags::BAR + 1;
     let mut said = word.to_string();
+    if shell {
+        // T-1211: Enter runs the words; the short form where it would cut.
+        let fits = lead + word.width() + SHELL.width() < ctx.width as usize;
+        said.push_str(if fits { SHELL } else { SHELL_SHORT });
+    }
     if interrupts {
         // A column's width: the short form where the whole one would be cut.
-        let fits = lead + word.width() + INTERRUPTS.width() < ctx.width as usize;
+        let fits = lead + said.width() + INTERRUPTS.width() < ctx.width as usize;
         said.push_str(if fits { INTERRUPTS } else { INTERRUPTS_SHORT });
     }
     let mut spans = vec![Span::raw(" ".repeat(lead)), Span::styled(said, ink)];
@@ -276,8 +307,10 @@ pub(super) fn render_ask_mode(
         spans.push(Span::styled(format!(" ∙ {tier}"), Style::default().fg(theme.sel.dim1)));
     }
     let hint = "  shift+tab";
-    // The warning keeps its words whole; the key goes where it would not fit.
-    if cycles && (!interrupts || super::spans_width(&spans) + hint.width() < ctx.width as usize) {
+    // The warning and a shell line's words (T-1211) keep their words whole;
+    // the key goes where it would not fit.
+    let whole = !(interrupts || shell);
+    if cycles && (whole || super::spans_width(&spans) + hint.width() < ctx.width as usize) {
         spans.push(Span::styled(hint.to_string(), Style::default().fg(theme.sel.dim2)));
     }
     Line::from(spans).style(if lit { theme.delete_row() } else { theme.selected_row() })

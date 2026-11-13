@@ -443,6 +443,16 @@ impl EditBuffer {
     pub(crate) fn place(&mut self, cells: usize) {
         self.cursor = boundary_at(&self.text, self.line_start(), self.line_end(), cells);
     }
+
+    /// The ask field's words past a leading `!` (T-1211), for the field
+    /// that draws the `!` where its caret was, as an agent's box in shell
+    /// mode does: the rest of the text, the cursor one byte left, and
+    /// whether the cursor stood before the `!` itself. `None` without one.
+    pub(crate) fn past_bang(&self) -> Option<(EditBuffer, bool)> {
+        let rest = self.text.strip_prefix('!')?;
+        let cursor = self.cursor.saturating_sub(1);
+        Some((EditBuffer { text: rest.to_string(), cursor, limit: self.limit }, self.cursor == 0))
+    }
 }
 
 /// The grapheme boundary in `text[start..end]` nearest `cells` display cells

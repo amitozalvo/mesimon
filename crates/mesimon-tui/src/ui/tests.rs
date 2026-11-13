@@ -8544,6 +8544,100 @@ never one per frame. The run: https://ci.test/run/42\n\n- `detect.rs` asks the t
 `--color=never` path is untested.\n\n1. one\n2. two\n3. three\n4. four\n5. five\n6. six\n\
 7. seven\n8. eight\n9. nine";
 
+/// T-1211. Words that begin with `!` are a shell line the agent's box runs,
+/// and the ask field draws them as its shell prompt: the `!` takes the
+/// caret's place in the `err` red, bold, the words after it, the delivery
+/// row says `shell command`, the footer `SHELL` and `enter run`. On the
+/// board's card, on the ticket page over the pane's own mark, and in the
+/// grown editor; words without one draw as before.
+#[test]
+fn golden_shell_line_in_the_ask_field_120() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let find = |buf: &ratatui::buffer::Buffer, words: &str| {
+        (0..30u16).find_map(|y| {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+            row.find(words).map(|ix| (row[..ix].chars().count() as u16, y))
+        })
+    };
+    let bold = |c: &ratatui::buffer::Cell| c.modifier.contains(ratatui::style::Modifier::BOLD);
+
+    // The board: the field under T-3's card.
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    ask_field(&mut app, "!git status", false);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let (x, y) = find(&buf, "! git status").unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(buf[(x, y)].fg, theme.err, "the `!` in red");
+    assert!(bold(&buf[(x, y)]), "and bold");
+    assert_ne!(buf[(x + 2, y)].fg, theme.err, "the words in their own ink");
+    assert!(!lines[y as usize].contains('›'), "no caret beside it: {:?}", lines[y as usize]);
+    // A card is narrow: the words whole, the key let go.
+    assert_eq!(lines[y as usize + 1].trim(), "now ∙ shell command", "{lines:#?}");
+    let foot = lines.last().expect("footer");
+    assert!(foot.contains("SHELL") && foot.contains("enter run"), "{foot:?}");
+    golden("board_ask_shell_120x30", &lines);
+    // A lone `!`: what goes after it, the cursor past the `!`.
+    ask_field(&mut app, "!", false);
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let (x, y) = find(terminal.backend().buffer(), "! shell command").expect("the placeholder");
+    assert_eq!(terminal.backend().cursor_position(), (x + 2, y).into(), "on the placeholder");
+    // The cursor before the `!` stands on it.
+    if let Mode::Input { buffer, .. } = &mut app.mode {
+        buffer.home();
+    }
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    assert_eq!(terminal.backend().cursor_position(), (x, y).into(), "on the `!`");
+    // Words without one: the caret, `ASK`, `enter send`.
+    ask_field(&mut app, "git status!", false);
+    let plain = render(&app, 120, 30);
+    assert!(plain.iter().any(|l| l.contains("› git status!")), "{plain:#?}");
+    assert!(!plain.iter().any(|l| l.contains("shell")), "{plain:#?}");
+    let foot = plain.last().expect("footer");
+    assert!(foot.contains("ASK") && foot.contains("enter send"), "{foot:?}");
+
+    // The ticket page: the `!` over the pane's own mark.
+    let (mut page, path) = app_live("tlive-shell", false);
+    ask_field(&mut page, "!git status", false);
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &page)).unwrap();
+    let buf = terminal.backend().buffer();
+    let rows = lines_of(buf);
+    let y = rows.iter().position(|l| l.starts_with(" !  git status")).expect("over the mark");
+    let y16 = y as u16;
+    assert_eq!(buf[(1, y16)].fg, theme.err, "the `!` in red");
+    assert!(bold(&buf[(1, y16)]), "and bold");
+    assert_eq!(terminal.backend().cursor_position(), (14u16, y16).into(), "after the words");
+    assert!(rows[y + 1].starts_with(" ── now ∙ shell command  shift+tab ───"), "{rows:#?}");
+    let foot = rows.last().expect("footer");
+    assert!(foot.contains("SHELL") && foot.contains("enter run"), "{foot:?}");
+    golden("ticket_live_ask_shell_120x30", &rows);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+
+    // The grown editor (Tab): its heading and footer say so.
+    let ed = editor_on(
+        crate::app::EditorPurpose::Ask {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+        },
+        "Fix OSC-11 detection",
+        "!git status",
+    );
+    app.mode = Mode::Editor(ed);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("SHELL COMMAND")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("T-3 ∙ now ∙ shell command")), "{lines:#?}");
+    let foot = lines.last().expect("footer");
+    assert!(foot.contains("SHELL") && foot.contains("^s run"), "{foot:?}");
+}
+
 /// The ask room (T-380): the one-line field's prompt in the composer's
 /// dialog. The frame names who the words reach, the title row is the
 /// ticket (read-only), the context row is the field's delivery row, and the

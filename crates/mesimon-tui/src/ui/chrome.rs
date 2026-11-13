@@ -848,11 +848,14 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // Not "PROMPT": the mode word is what the text will DO, and every
         // other field here saves something to the board. This one leaves
         // mesimon entirely.
+        // A shell line (T-1211) runs in the agent's box: not an ask.
+        Mode::Input { purpose: InputPurpose::Prompt { .. }, .. } if app.field_shell() => "SHELL",
         Mode::Input { purpose: InputPurpose::Prompt { .. }, .. } => "ASK",
         // The editor is the composer in a bigger room, or a note — and the
         // note's editor is a screen of its own, named by the header.
         Mode::Editor(e) if e.composing() => "NEW",
         // The ask field in its bigger room is still the ask field (T-380).
+        Mode::Editor(e) if e.asking() && app.field_shell() => "SHELL",
         Mode::Editor(e) if e.asking() => "ASK",
         Mode::Editor(_) => return None,
         // The header names it (`screen_word`).

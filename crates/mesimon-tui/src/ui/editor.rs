@@ -535,6 +535,9 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             let mut said =
                 crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan)
                     .to_string();
+            if crate::app::App::shell_line(ed.body.as_str()) {
+                said.push_str(super::card::SHELL);
+            }
             if interrupts {
                 said.push_str(super::card::INTERRUPTS);
             }
@@ -601,6 +604,13 @@ fn heading_word(app: &App, ed: &Editor) -> &'static str {
     match &ed.purpose {
         EditorPurpose::Compose { .. } => "NEW TICKET",
         // Who the words reach — the one-line field's own hint, in capitals.
+        // A shell line (T-1211) is a command the agents' boxes run.
+        EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } if App::shell_line(ed.body.as_str()) => {
+            "SHELL COMMAND"
+        }
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } if App::shell_line(ed.body.as_str()) => {
+            "SHELL COMMAND FOR EVERY AGENT"
+        }
         EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => "ASK AGENT",
         EditorPurpose::Ask { target: AskTarget::Column(_), .. } => "ASK EVERY AGENT",
         EditorPurpose::Note { ticket, note } => {
