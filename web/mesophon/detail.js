@@ -215,7 +215,11 @@ function Composer({ store, ticket, entry, live }) {
   const stopping = agent?.state === "stopping";
   const mode = steerOff ? "queue" : entry?.mode || "queue";
   const sending = !!entry?.sending;
-  const sendOff = sending || !!letter || (starts
+  // A picture still being read is not in the words yet (T-1219): Send waits
+  // for it, as the New ticket sheet and a note's Save do, or the words would
+  // go without it.
+  const reading = entry?.reading > 0;
+  const sendOff = sending || reading || !!letter || (starts
     ? startOff || !entry?.draft.trim()
     : mails
       ? !entry?.draft.trim()

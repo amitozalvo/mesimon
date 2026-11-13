@@ -212,7 +212,9 @@ board's name does. An agent that crashed or was logged out in the last day, on
 a ticket outside the board's last column, is listed under Stopped
 (`exit.reason`, on a host that says why), with Resume, the `resume` op (feature
 `resume`): the same session's conversation taken up again, with the words
-typed, their pictures and a picked tier when there are any; Start fresh is the
+typed, their pictures and a picked tier when there are any (the field's Send,
+as every send of words with a picture, waits while a picture is still being
+read, so none goes without it); Start fresh is the
 `start` op on the free seat, and its sheet says the old conversation is left
 behind. The stopped agent rides the board reply's `stopped` (T-1218), where no
 agent holds the seat, and the page reads it as the ticket's agent: `agent`

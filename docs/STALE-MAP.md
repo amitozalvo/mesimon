@@ -44070,6 +44070,18 @@ onto T-1217 (`b5cd9fc0`): one import line in `lists.js` joined (its `DIALOG_OMIT
 `node --test` (61), the Chromium phone UX run, `cargo ut` (3158 passed) and `npm test` (84) again,
 all green on the first run.
 
+**The rerun looked at: a page race, fixed.** `terminalFlow`'s resume once went with no `uploads`.
+The composer sends only the pictures its words name (`unlinked(draft)`), and a picture's token
+joins the words only once `readPictures` has read it (`createImageBitmap`, async). The New
+ticket sheet and a note's Save wait on `draft.reading`; the prompt field did not, so a Send or
+Ctrl+Enter during the read (the test clicks Send a few ms after `setInputFiles`) sent the words
+without the picture, and the picture then landed alone in the cleared field: lost silently, for
+a person as for the test. Now Send is off while `entry.reading > 0` and `submitPrompt` returns
+then. `terminalFlow` holds the read (a wrapped `createImageBitmap`), asserts Send off and that
+Ctrl+Enter sends nothing, then releases it; the check fails with the fix reverted ("Send waits
+for the picture being read") and passes with it. Run: `node --test` (61), the phone UX run on
+Chromium (with the fix, then without, to see the test fail) and on WebKit.
+
 ## A question's phone card survives an unconfirmed answer and unrelated lifecycle frames (T-1217, 2026-11-13)
 
 **Scope.** The investigation is in this ticket's note. The crown's go named four proved

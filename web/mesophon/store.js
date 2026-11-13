@@ -2477,7 +2477,8 @@ export class Store {
   submitPrompt() {
     const entry = this.entry;
     const agent = this.board?.current?.agent;
-    if (!entry?.draft.trim() || entry.sending) return;
+    // A picture still being read would be left out of the words (T-1219).
+    if (!entry?.draft.trim() || entry.sending || entry.reading > 0) return;
     if (this.mailsPrompt(this.board?.current)) return this.mailPrompt(entry);
     const starts = this.composerStarts(this.board?.current);
     if (!starts && (!this.live || !agent?.promptable ||

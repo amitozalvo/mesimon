@@ -3211,7 +3211,26 @@ async function terminalFlow(browser, engineName, size, viewport) {
     // T-1218: a picture and a picked tier ride the resume, and the host
     // parses it: before, `uploads` dropped the page's connection.
     await page.locator("#prompt").fill("Pick it up from the failing test");
+    // T-1219: a picture still being read is not in the words yet, so nothing
+    // sends until it is: the resume once went without it (a rerun named in
+    // round 2). The read is held here, and released.
+    await page.evaluate(() => {
+      const real = window.createImageBitmap;
+      window.createImageBitmap = (...args) => new Promise((done) => {
+        window.releasePicture = () => {
+          window.createImageBitmap = real;
+          done(real(...args));
+        };
+      });
+    });
     await page.locator("#prompt-picture").setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: noisePng(60, 40) });
+    await until(page, () => typeof window.releasePicture === "function");
+    assert(await page.locator("#send").isDisabled(), "Send waits for the picture being read");
+    await page.locator("#prompt").press("Control+Enter");
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => fixture.resumes.length), 2, "nothing goes without the picture");
+    await page.evaluate(() => window.releasePicture());
+    await until(page, () => !document.querySelector("#send").disabled);
     await page.locator("#prompt-tier").selectOption("01K");
     await page.locator("#send").click();
     await until(page, () => fixture.resumes.length === 3);
