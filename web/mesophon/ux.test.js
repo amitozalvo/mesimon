@@ -86,6 +86,9 @@ function fixture() {
     keys: [],
     keysRefusal: "",
     resumes: [],
+    // Requests the host could not parse: the socket closed under them.
+    dropped: [],
+    resumeRefusal: "",
     // The card edits (T-530): applied and answered `edited`, `rejected`
     // with `editRefusal`, or held unanswered.
     edits: [],
@@ -489,12 +492,30 @@ function fixture() {
             answer(state.keysRefusal ? { result: "rejected", message: state.keysRefusal } : { result: "edited", ticket: request.ticket });
           }
           if (request.op === "resume") {
+            // As strict as the host (T-1218): its `Request` denies unknown
+            // fields, and a command it cannot parse drops the browser.
+            const known = ["op", "ticket", "session", "prompt", "tier", "uploads"];
+            const text = (k) => !(k in request) || typeof request[k] === "string";
+            const parses = Object.keys(request).every((k) => known.includes(k)) &&
+              typeof request.ticket === "string" && typeof request.session === "string" && text("prompt") && text("tier") &&
+              (!("uploads" in request) || (Array.isArray(request.uploads) && request.uploads.every((u) => typeof u === "string")));
+            if (!parses) {
+              state.dropped.push(request);
+              this.close();
+              return;
+            }
             state.resumes.push(request);
+            if (state.resumeRefusal) {
+              answer({ result: "rejected", message: state.resumeRefusal });
+              return;
+            }
             answer({ result: "delivery", status: "starting" });
             // Its session takes the turn at once: the next `status` says so.
             state.answers[id] = { result: "delivery", status: "started" };
             const ticket = state.tickets.find((t) => t.id === request.ticket);
-            ticket.agent = { session: ticket.agent.session, provider: ticket.agent.provider, state: "starting", promptable: true };
+            const stopped = ticket.stopped || ticket.agent;
+            ticket.stopped = undefined;
+            ticket.agent = { session: stopped.session, provider: stopped.provider, state: "starting", promptable: true };
             state.update();
           }
           if (["rename", "move", "tag", "workspace", "archive", "park", "crown"].includes(request.op)) {
@@ -3084,15 +3105,20 @@ async function terminalFlow(browser, engineName, size, viewport) {
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     const f = window.fixture;
-    f.features.push("transcript", "keys", "resume", "start");
+    f.features.push("transcript", "keys", "resume", "start", "tiers", "ask_pictures");
+    f.tiers = [
+      { id: "claude", name: "claude", provider: "claude", summary: "Claude Code ∙ its own model" },
+      { id: "01K", name: "coder", provider: "claude", summary: "Claude Code ∙ opus ∙ high" },
+    ];
     const at = Date.now() - 600000;
-    f.tickets.push({ id: "crashed", key: "T-77", title: "An agent that crashed", column: "IN PROGRESS", tags: [],
-      agent: { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: at, exit: { reason: "crashed", at } } });
-    f.tickets.push({ id: "quit", key: "T-78", title: "An agent its person quit", column: "IN PROGRESS", tags: [],
-      agent: { session: "s-quit", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "user_quit", at: Date.now() } } });
+    // A stopped agent rides `stopped` (T-1218): `agent` is the held seat.
+    f.tickets.push({ id: "crashed", key: "T-77", title: "An agent that crashed", column: "IN PROGRESS", tags: [], tier: "claude", agent: null,
+      stopped: { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: at, exit: { reason: "crashed", at } } });
+    f.tickets.push({ id: "quit", key: "T-78", title: "An agent its person quit", column: "IN PROGRESS", tags: [], agent: null,
+      stopped: { session: "s-quit", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "user_quit", at: Date.now() } } });
     f.theme = "nord";
     const snapshot = f.snapshot.bind(f);
-    f.snapshot = () => ({ ...snapshot(), ...(f.theme ? { theme: f.theme } : {}) });
+    f.snapshot = () => ({ ...snapshot(), tiers: f.tiers, ...(f.theme ? { theme: f.theme } : {}) });
   });
   await context.route("**/pkg/mesimon_web.js", (route) =>
     route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
@@ -3147,7 +3173,8 @@ async function terminalFlow(browser, engineName, size, viewport) {
     // with the words typed.
     await page.evaluate(() => {
       const t = fixture.tickets.find((x) => x.id === "crashed");
-      t.agent = { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "killed", at: Date.now() } };
+      t.agent = null;
+      t.stopped = { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "killed", at: Date.now() } };
       fixture.update();
     });
     await page.locator('.ticket[data-id="crashed"]').first().click();
@@ -3156,11 +3183,27 @@ async function terminalFlow(browser, engineName, size, viewport) {
     // The first resume has run: the field is free for the next.
     await until(page, () => !document.querySelector("#prompt").disabled);
     assert(await page.locator("#tab-terminal").isDisabled(), "a stopped agent has no screen");
-    await page.locator("#prompt").fill("Pick it up from the failing test");
+    // T-1218: a refusal is said as a start's is, and nothing drops.
+    await page.evaluate(() => (fixture.resumeRefusal = "a prompt is queued for this ticket at your terminal"));
+    await page.locator("#prompt").fill("Not yet");
     await page.locator("#send").click();
     await until(page, () => fixture.resumes.length === 2);
-    assert.deepEqual(await page.evaluate(() => fixture.resumes[1]),
-      { op: "resume", ticket: "crashed", session: "s-crashed", prompt: "Pick it up from the failing test" });
+    await until(page, () => /Not started: a prompt is queued for this ticket at your terminal/.test(document.querySelector("#toast")?.textContent || ""));
+    await page.evaluate(() => (fixture.resumeRefusal = ""));
+    await until(page, () => !document.querySelector("#prompt").disabled);
+    // T-1218: a picture and a picked tier ride the resume, and the host
+    // parses it: before, `uploads` dropped the page's connection.
+    await page.locator("#prompt").fill("Pick it up from the failing test");
+    await page.locator("#prompt-picture").setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: noisePng(60, 40) });
+    await page.locator("#prompt-tier").selectOption("01K");
+    await page.locator("#send").click();
+    await until(page, () => fixture.resumes.length === 3);
+    const resumed = await page.evaluate(() => fixture.resumes[2]);
+    assert.deepEqual(Object.keys(resumed).sort(), ["op", "prompt", "session", "ticket", "tier", "uploads"]);
+    assert.equal(resumed.tier, "01K");
+    assert.equal(resumed.uploads.length, 1);
+    assert.match(resumed.prompt, /^Pick it up from the failing test/);
+    assert.deepEqual(await page.evaluate(() => fixture.dropped), []);
     await overview();
 
     // The Terminal tab: the screen, a key bar and a typed line, all into
@@ -3186,6 +3229,24 @@ async function terminalFlow(browser, engineName, size, viewport) {
       { ...pane, key: "enter" },
     ]);
     assert.equal(await page.locator("#keys-text").inputValue(), "");
+    // T-1218: a refused line sends no Enter, which would submit whatever
+    // the agent's box held, and the line stays to fix.
+    await page.evaluate(() => (fixture.keysRefusal = "the agent is still starting"));
+    await page.locator("#keys-text").fill("not this time");
+    await page.locator("#keys-send").click();
+    await until(page, () => /the agent is still starting/.test(document.querySelector("#toast")?.textContent || ""));
+    await page.waitForTimeout(400);
+    assert.equal(await page.evaluate(() => fixture.keys.length), 6, "the line alone, no Enter behind it");
+    assert.equal(await page.locator("#keys-text").inputValue(), "not this time");
+    await page.evaluate(() => (fixture.keysRefusal = ""));
+    // Past the host's 512 bytes the line never leaves.
+    await page.locator("#keys-text").fill("é".repeat(300));
+    await page.locator("#keys-send").click();
+    await until(page, () => /a line fits 512 bytes/.test(document.querySelector("#toast")?.textContent || ""));
+    assert.equal(await page.evaluate(() => fixture.keys.length), 6);
+    assert.equal(await page.locator("#keys-text").getAttribute("maxlength"), "512");
+    await page.locator("#keys-text").fill("");
+    await page.evaluate(() => fixture.keys.splice(5));
     if (size === "phone") {
       const short = await page.locator("#detail").evaluate((node) =>
         [...node.querySelectorAll("button, input")]
@@ -3202,18 +3263,35 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => /that session is a shell/.test(document.querySelector("#toast")?.textContent || ""));
     assert.equal(await page.evaluate(() => fixture.keys.length), 6);
     await page.evaluate(() => (fixture.keysRefusal = ""));
-    // A dialog up is answered on its card: the bar rests until it is gone.
+    // A dialog the page answers on a card is answered there: the bar
+    // rests until it is gone (T-1208).
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "needs attention";
+      fixture.tickets[0].agent.permission = { request: "r-keys", tool: "Bash", input: { command: "ls", cwd: "/repo" }, expires_at: Date.now() + 60000 };
       fixture.update();
     });
     await until(page, () => document.querySelector('.key[data-key="escape"]')?.disabled);
     assert(await page.locator("#keys-text").isDisabled());
+    assert.equal(await page.locator("#keys-asks").count(), 0);
+    // T-1218, the person's decision: with no card to answer it on (expired,
+    // or never given) the keys answer the agent's own dialog, and say so.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.permission.expires_at = Date.now() - 1000;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector('.key[data-key="escape"]').disabled);
+    assert.match(await page.locator("#keys-asks").textContent(), /These keys answer what the agent’s terminal is asking/);
+    await page.evaluate(() => {
+      delete fixture.tickets[0].agent.permission;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector("#keys-text").disabled && !!document.querySelector("#keys-asks"));
+    assert(await page.locator("#tab-terminal").isEnabled(), "the Terminal tab stays reachable");
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "working";
       fixture.update();
     });
-    await until(page, () => !document.querySelector('.key[data-key="escape"]').disabled);
+    await until(page, () => !document.querySelector("#keys-asks"));
 
     // Stop: an empty field over a working turn is the desk's Escape.
     await page.locator("#tab-chat").click();

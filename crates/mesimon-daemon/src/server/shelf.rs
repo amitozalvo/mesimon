@@ -423,7 +423,8 @@ impl Daemon {
     fn shelf_board(&self) -> Shelved {
         let (mut board, _) = self.control_board();
         if let Reply::Board { tickets, .. } = &mut board {
-            for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
+            let agents = tickets.iter_mut().flat_map(|t| t.agent.iter_mut().chain(&mut t.stopped));
+            for agent in agents {
                 agent.dialog = None;
                 agent.permission = None;
                 agent.promptable = false;

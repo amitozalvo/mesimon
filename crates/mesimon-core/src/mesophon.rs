@@ -320,6 +320,10 @@ pub enum Request {
         prompt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tier: Option<String>,
+        /// Pictures this browser uploaded for the first words, as `Start`'s
+        /// (T-1218). Every host that says `resume` reads them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        uploads: Vec<String>,
     },
 }
 
@@ -537,7 +541,14 @@ pub struct Ticket {
     pub key: String,
     pub title: String,
     pub column: String,
+    /// The agent holding the ticket's seat, awake or parked.
     pub agent: Option<Agent>,
+    /// The ticket's stopped agent (T-1218): the corpse the rail keeps, where
+    /// no agent holds the seat, so a phone can resume it. Its own field: a
+    /// page from before T-1208 reads any `agent` as a held seat and would
+    /// offer no start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Agent>,
     /// The tags the ticket wears, each with the TUI's tint (T-497).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<TagOption>,
@@ -1345,7 +1356,16 @@ mod tests {
             {"op":"resume","ticket":"t","session":"s"}
         ))
         .unwrap();
-        assert!(matches!(bare, Request::Resume { prompt: None, tier: None, .. }));
+        assert!(
+            matches!(bare, Request::Resume { prompt: None, tier: None, ref uploads, .. } if uploads.is_empty())
+        );
+        // T-1218: pictures ride a resume as a start's do; before, the field
+        // was unknown and the host dropped the browser.
+        let pictured: Request = serde_json::from_value(serde_json::json!(
+            {"op":"resume","ticket":"t","session":"s","prompt":"see","uploads":["u1"]}
+        ))
+        .unwrap();
+        assert!(matches!(pictured, Request::Resume { uploads, .. } if uploads == ["u1"]));
         let worded: Request = serde_json::from_value(serde_json::json!(
             {"op":"resume","ticket":"t","session":"s","prompt":"go on","tier":"opus"}
         ))
@@ -1414,6 +1434,7 @@ mod tests {
             key: "T-1".into(),
             title: "t".into(),
             column: "TODO".into(),
+            stopped: None,
             agent: Some(Agent {
                 permission: None,
                 dialog: None,
@@ -1722,6 +1743,7 @@ mod tests {
             title: "t".into(),
             column: "TODO".into(),
             agent: None,
+            stopped: None,
             tags: vec![],
             picked: None,
             notes: 0,

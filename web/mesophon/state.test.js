@@ -6,7 +6,7 @@ import { BoardState, RECENT_MS, omittedWords, refusedBoardWords, stoppedUnasked 
 import { THEMES, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
-import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
+import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestDetail } from "./dialogs.js";
 import { foldWords, groupRows, mergePage, stepParts, tailAsk } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
@@ -390,6 +390,60 @@ test("an agent whose process ended unasked is Stopped until resumed; one its per
   assert.equal(stoppedUnasked(rows[0].agent), true);
   assert.equal(stoppedUnasked(rows[3].agent), false);
   assert.equal(stoppedUnasked(undefined), false);
+});
+
+test("a stopped agent rides its own field, and this page reads it as the ticket's agent (T-1218)", () => {
+  const crashed = { session: "s1", state: "exited", provider: "claude", exit: { reason: "crashed" } };
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["TODO"], tickets: [
+    { ...ticket("gone"), agent: null, stopped: crashed },
+    { ...ticket("held", "s2"), stopped: crashed },
+    ticket("empty"),
+  ] });
+  const [gone, held, empty] = board.tickets;
+  assert.equal(gone.agent, crashed);
+  assert.deepEqual(board.sections().stopped.map((t) => t.id), ["gone"]);
+  assert.equal(held.agent.session, "s2", "a held seat stays the agent");
+  assert.equal(empty.agent, null);
+  // Remembered, it is still the ticket's stopped agent.
+  const remembered = new BoardState();
+  remembered.update(board.snapshot(), { cached: true });
+  assert.equal(remembered.tickets[0].agent.state, "exited");
+});
+
+test("a permission card shows the command, then every other field by its name (T-1218)", () => {
+  assert.equal(
+    requestDetail({ input: { command: "rm -rf build", cwd: "/repo", reason: "clean the build" } }),
+    "rm -rf build\n\ncwd: /repo\n\nreason: clean the build",
+  );
+  assert.equal(requestDetail({ input: { command: "ls", description: "List" } }), "ls\n\ndescription: List");
+  assert.equal(
+    requestDetail({ input: { command: "deploy", target: "prod", flags: ["--force"] } }),
+    'deploy\n\ntarget: prod\n\nflags: [\n  "--force"\n]',
+  );
+  assert.equal(requestDetail({ input: { file_path: "/a", content: "x" } }), "file_path: /a\n\ncontent: x");
+  assert.equal(requestDetail({ input: { command: 7 } }), "command: 7", "a command that is no string is a field");
+  assert.equal(requestDetail({}), "{}");
+});
+
+test("the keys rest only while the page answers the dialog on a card (T-1218)", () => {
+  const store = { answersWhole: true };
+  const now = 1000;
+  const permission = (expires_at) => ({ request: "r", tool: "Bash", input: {}, expires_at });
+  const question = (n, multiSelect = false) => ({
+    kind: "questions",
+    request: "q",
+    questions: Array.from({ length: n }, (_, i) => ({ question: `q${i}`, multiSelect, options: [{ label: "a" }] })),
+  });
+  assert.equal(cardAnswers(store, undefined, now), false);
+  assert.equal(cardAnswers(store, { state: "needs attention" }, now), false, "a dialog with no card");
+  assert.equal(cardAnswers(store, { permission: permission(2000) }, now), true);
+  assert.equal(cardAnswers(store, { permission: permission(1000) }, now), false, "an expired card's buttons are off");
+  assert.equal(cardAnswers(store, { trust: { request: "t" } }, now), true);
+  assert.equal(cardAnswers(store, { dialog: { kind: "plan", request: "p", markdown: "" } }, now), true);
+  assert.equal(cardAnswers(store, { dialog: question(1) }, now), true);
+  assert.equal(cardAnswers(store, { dialog: question(2) }, now), true, "the whole form answers it");
+  assert.equal(cardAnswers({ answersWhole: false }, { dialog: question(2) }, now), false, "the pane's alone");
 });
 
 test("the page wears the terminal's theme while it follows it, else the pick (T-1208)", () => {

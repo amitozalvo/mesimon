@@ -5,7 +5,7 @@
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
-import { Attention } from "./dialogs.js";
+import { Attention, cardAnswers } from "./dialogs.js";
 import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, exitWords, stateAge } from "./lists.js";
 import { NotePane, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
@@ -13,6 +13,7 @@ import { startWaiting } from "./starts.js";
 import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
 import { letterWords } from "./letters.js";
+import { KEYS_TEXT_MAX_BYTES } from "./store.js";
 import { swipePanes } from "./swipe.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
@@ -41,7 +42,7 @@ const screenRows = (text) => {
 function TicketTabs({ store, ticket, panes, at }) {
   const chat = store.chatShown;
   const notes = panes.length - 1;
-  const screen = !!ticket.agent && store.live && !["sleeping", "exited"].includes(ticket.agent.state);
+  const screen = !!ticket.agent && store.live && !["sleeping", "exited", "stopping"].includes(ticket.agent.state);
   const show = (view) => {
     store.showPane(ticket.id, 0);
     store.setOutputView(view);
@@ -68,12 +69,15 @@ const DIGITS = ["1", "2", "3", "4"];
 // into the pane, Enter after it, or each key as it is typed.
 function KeyBar({ store, ticket }) {
   const line = useRef();
-  // A dialog up is answered on its card (T-1208): the terminal refuses keys
-  // there, so the bar rests until it is gone.
-  const asks = ticket.agent?.state === "needs attention";
-  const live = store.keysReach(ticket) && !asks;
+  // A dialog the page answers on a card is answered there (T-1208): the
+  // terminal refuses keys at it, so the bar rests until it is gone. At any
+  // other stop the keys go in and answer the agent's own dialog (T-1218).
+  const card = cardAnswers(store, ticket.agent);
+  const asks = !card && ticket.agent?.state === "needs attention";
+  const live = store.keysReach(ticket) && !card;
   const send = (press) => store.sendKeys(press);
   return html`<footer class="keys-area" aria-label="Keys">
+    ${asks && live && html`<p id="keys-asks" class="stopped-why">These keys answer what the agent’s terminal is asking.</p>`}
     <div class="key-bar" role="group" aria-label="Keys for the agent's terminal">
       ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live}
         aria-label=${key.replace("_", " ")} onClick=${() => send({ key })}>${label}</button>`)}
@@ -83,15 +87,15 @@ function KeyBar({ store, ticket }) {
     <form id="keys-form" class="keys-line" onSubmit=${(e) => {
       e.preventDefault();
       const node = line.current;
-      const text = node.value;
-      if (text && !send({ text })) return;
-      send({ key: "enter" });
-      node.value = "";
+      // A line goes, then its Enter once the host has it; alone, Enter.
+      // A refused line keeps the field and sends no Enter (T-1218).
+      if (node.value) store.typeLine(node.value, () => (node.value = ""));
+      else send({ key: "enter" });
     }}>
       <span class="keys-prompt" aria-hidden="true">›</span>
       <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
-        enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal"
-        placeholder=${live ? "Type a line, Enter sends it" : asks ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
+        enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal" maxlength=${KEYS_TEXT_MAX_BYTES}
+        placeholder=${live ? "Type a line, Enter sends it" : card ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
       <button id="keys-send" type="submit" class="send" disabled=${!live} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
     </form>
   </footer>`;
@@ -108,7 +112,7 @@ function StoppedLine({ store, ticket }) {
     <p class="stopped-why">${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.</p>
     <div class="stopped-actions">
       <button id="resume-agent" type="button" class="btn btn-pri" disabled=${!store.canResume || waiting}
-        onClick=${() => store.resumeAgent(ticket.id, store.entry?.draft || "") && store.setDraft("")}><${Icon} name="play" size=${15} /><span>Resume</span></button>
+        onClick=${() => store.resumeAgent(ticket.id, store.entry?.draft || "", store.entry?.tier || "") && store.setDraft("")}><${Icon} name="play" size=${15} /><span>Resume</span></button>
       <button id="fresh-agent" type="button" class="btn" disabled=${!store.canStart || waiting}
         onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
     </div>

@@ -371,6 +371,9 @@ pub(super) struct Control {
     suppress_awareness: bool,
     dialogs: HashMap<uuid::Uuid, api::Dialog>,
     dialog_deliveries: HashMap<uuid::Uuid, DialogDelivery>,
+    /// When a phone's Escape last went into each pane (T-1218): the next
+    /// key waits out `ESCAPE_QUIET` behind it.
+    escaped: HashMap<uuid::Uuid, Instant>,
     /// The last dialog a hook edge ended on each session, and how (T-567).
     dialog_edges: HashMap<uuid::Uuid, (String, DialogEdge)>,
     /// The `RequiresAction` spell each seat's dialog was last looked for in
@@ -398,6 +401,19 @@ pub(super) struct Control {
 /// The most transcript pages read at once (T-626): a phone asks one at a
 /// time, so this is several phones, and a further ask is refused.
 const READING_MAX: usize = 4;
+/// How long a pane takes no other phone key after a phone's Escape
+/// (T-1218). An Escape followed closely by more bytes is one key to the
+/// agent's input decoder: Escape then `[Z` is Shift+Tab, which cycles
+/// Claude Code's permission mode, and Escape then a letter is Alt+letter.
+/// Measured on Claude Code 2.1.323 in a scratch tmux server: `[Z` typed
+/// 40 ms after the Escape still cycled the mode, 45 ms and later typed
+/// `[Z` (its escape timeout is about 50 ms). Codex's decoder (crossterm)
+/// joins only bytes it reads together, so its window is shorter. Ten
+/// times the measured edge. It does not guarantee anything about bytes
+/// another writer puts into the pane (the person's own terminal, the
+/// daemon's other roads, which `control_keys_owed` keeps apart), nor an
+/// agent whose decoder waits longer than this.
+const ESCAPE_QUIET: Duration = Duration::from_millis(500);
 /// An agent's step and latest reply line, read from its transcript, and the
 /// file's length and mtime when read: a browser asks for the board every two
 /// seconds, and a transcript is re-read only when it changed.
@@ -433,6 +449,7 @@ impl Control {
             suppress_awareness: false,
             dialogs: HashMap::new(),
             dialog_deliveries: HashMap::new(),
+            escaped: HashMap::new(),
             dialog_edges: HashMap::new(),
             dialogs_read: HashMap::new(),
             incarnation: ObjectId::random(),
@@ -1219,14 +1236,15 @@ impl Daemon {
             api::Request::Keys { ticket, session, key, text } => {
                 self.control_keys(&by, &ticket, &session, key, text)
             }
-            api::Request::Resume { ticket, session, prompt, tier } => self.control_resume(
-                &by,
-                (grant, device, command.id),
-                &ticket,
-                &session,
-                prompt,
-                tier,
-            ),
+            api::Request::Resume { ticket, session, prompt, tier, uploads } => {
+                let resume = |d: &mut Self, text: String| {
+                    let prompt = Some(text).filter(|t| !t.is_empty());
+                    let to = (grant, device, command.id);
+                    d.control_resume(&by, to, &ticket, &session, prompt, tier)
+                };
+                let text = prompt.unwrap_or_default();
+                self.control_pictured(grant, &ticket, text, &uploads, resume)
+            }
         };
         self.control.remember(grant, command.id, reply.clone());
         let bytes = measured.unwrap_or_else(|| measure(&reply));
@@ -3487,23 +3505,38 @@ impl Daemon {
         if let Some(message) = self.team_viewer_refusal() {
             return reject(&message);
         }
-        if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
-            return reject("input is already pending");
+        // Words the daemon itself is still putting into this pane, on any
+        // road (T-1218): a key between them and their Enter edits or sends
+        // them half-typed.
+        if let Some(message) = self.control_keys_owed(id) {
+            return reject(message);
         }
-        // A dialog up is answered on its own road (T-1208): the permission
-        // card's allow-once or deny, the question's checked choice. A key
-        // there would pick an option the card never offers, "don't ask
-        // again" among them.
-        if self.pane_waits_on_you(id) {
-            return reject(if self.control_answers_here(id) {
-                "the agent waits on you: answer it on its card"
-            } else {
-                "the agent waits on you: answer it at your terminal"
-            });
+        // A dialog the phone answers on a card right now is answered there
+        // (T-1208): a key would pick an option the card never offers, "don't
+        // ask again" among them. Every other dialog takes the keys (T-1218,
+        // the person's decision): one with no card, a card expired or lost,
+        // a session the daemon reads as `Unknown`. Away from the Mac the
+        // keys are how a stuck agent gets going again, and they answer the
+        // agent's own dialog, every option it offers included.
+        if self.control_answers_here(id) {
+            return reject("the agent waits on you: answer it on its card");
+        }
+        // After an Escape, nothing else for a while (T-1218, `ESCAPE_QUIET`):
+        // the bytes that follow would read as one key with it.
+        if self.control.escaped.get(&id).is_some_and(|at| at.elapsed() < ESCAPE_QUIET) {
+            return reject("an Escape just went in: send the next key in a moment");
         }
         let sid = id.simple().to_string()[..16].to_string();
         let sent = match (key, text) {
-            (Some(key), None) => self.backend.press_key(&sid, key.tmux()),
+            (Some(key), None) => {
+                // Marked before tmux is asked: a press that failed may still
+                // have reached the pane.
+                if key == api::PaneKey::Escape {
+                    self.control.escaped.retain(|_, at| at.elapsed() < ESCAPE_QUIET);
+                    self.control.escaped.insert(id, Instant::now());
+                }
+                self.backend.press_key(&sid, key.tmux())
+            }
             (None, Some(text)) => {
                 let text = mesimon_core::text::scrub_text(&text);
                 if text.is_empty() {
@@ -3560,6 +3593,11 @@ impl Daemon {
         if let Some(message) = self.team_viewer_refusal() {
             return reject(&message);
         }
+        // A killed Codex seat whose stop is not yet confirmed still holds
+        // the ticket (T-1218): nothing resumes or starts until it is gone.
+        if self.board.live_agent(id).is_some_and(|s| s.codex_stopping) {
+            return reject("this ticket's agent is still stopping: try again in a moment");
+        }
         let Some(corpse) = self.board.dead_agent(id).map(|s| s.id) else {
             return reject("this ticket has no stopped agent to resume");
         };
@@ -3571,6 +3609,11 @@ impl Daemon {
             || self.pending_resumes.iter().any(|r| r.ticket == id)
         {
             return reject("an agent is already starting on this ticket");
+        }
+        // As `Start`: words queued at the terminal are this ticket's next
+        // start already; a resume beside them would lose them (T-1218).
+        if self.queued.iter().any(|q| q.ticket == id) {
+            return reject("a prompt is queued for this ticket at your terminal");
         }
         if let Some(pick) = tier {
             if let Err(message) = self.apply_ticket_tier(id, Some(pick)) {
@@ -4192,10 +4235,15 @@ impl Daemon {
                     let q = self.queued.iter().find(|q| q.ticket == t.id);
                     row.queued = q.map(|q| q.text.clone());
                     row.queue = q.map(|q| self.control_queue(q, &order));
+                    row.agent = self.board.live_agent(t.id).map(|s| {
+                        let (doing, said) = self.control_words(s);
+                        self.control_agent(t, s, doing, said)
+                    });
                     // A stopped agent stays in sight (T-1208): the corpse
                     // the rail keeps, where no live agent holds the seat,
-                    // so a phone can resume it.
-                    row.agent = self.board.agent_or_corpse(t.id).map(|s| {
+                    // so a phone can resume it. In a field of its own
+                    // (T-1218): an older page keeps its Start there.
+                    row.stopped = self.board.dead_agent(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
                     });
@@ -4222,8 +4270,10 @@ impl Daemon {
         let over = |bytes: Option<usize>| bytes.is_some_and(|n| n > BOARD_WORDS_BUDGET);
         if over(bytes) {
             if let Reply::Board { tickets, .. } = &mut reply {
-                for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
-                    (agent.doing, agent.said) = (None, None);
+                for t in tickets.iter_mut() {
+                    for agent in t.agent.iter_mut().chain(t.stopped.iter_mut()) {
+                        (agent.doing, agent.said) = (None, None);
+                    }
                 }
             }
             bytes = measure(&reply);
@@ -4267,7 +4317,9 @@ impl Daemon {
         }
         let mut bytes = measure(reply);
         let Reply::Board { tickets, omitted, .. } = reply else { return bytes };
-        *omitted += drop_cards(tickets, &mut bytes, |t| t.agent.is_none() && t.queued.is_none());
+        *omitted += drop_cards(tickets, &mut bytes, |t| {
+            t.agent.is_none() && t.stopped.is_none() && t.queued.is_none()
+        });
         if past_cap(bytes) {
             for agent in tickets.iter_mut().filter_map(|t| t.agent.as_mut()) {
                 agent.dialog = None;
@@ -4303,6 +4355,7 @@ impl Daemon {
             ),
             workspace: self.control_workspace_of(t),
             agent: None,
+            stopped: None,
             shell: None,
         }
     }
@@ -4323,10 +4376,13 @@ impl Daemon {
             said,
             dialog: self.control_dialog_of(s).map(phone_dialog),
             trust: self.control_trust_of(s),
-            permission: self.control_permission_of(s.id).cloned(),
+            permission: self.control_permission_of(s.id).map(phone_permission),
             session: s.id.to_string(),
             provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }.into(),
+            // A killed Codex seat not yet confirmed gone holds the ticket
+            // (T-1218): neither a resume nor a start is offered on it.
             state: match s.state {
+                _ if s.codex_stopping => "stopping",
                 SessionState::Spawning => "starting",
                 SessionState::Running => "working",
                 SessionState::RequiresAction { .. } => "needs attention",
@@ -4339,7 +4395,7 @@ impl Daemon {
             }
             .into(),
             promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
-            exit: agent_exit(s),
+            exit: agent_exit(s).filter(|_| !s.codex_stopping),
         }
     }
 
@@ -4479,6 +4535,34 @@ impl Daemon {
     fn control_input_in_flight(&self, id: uuid::Uuid) -> bool {
         self.control.pending.contains_key(&id)
             && !self.queued.iter().any(|q| matches!(q.seat, QueuedSeat::Pane(s) if s == id))
+    }
+
+    /// Why a phone's key may not go into `id`'s pane yet (T-1218): input
+    /// the daemon owes it on any road, whoever started it. A dialog's
+    /// answer being walked, the phone's own words, anything `owed` holds
+    /// (words parked for their paste, a mod fill not yet reported, an Enter
+    /// still to press, a Codex steer, a paste waiting for its ack), a
+    /// Codex submit not yet seen taken, and a start or resume whose first
+    /// words are still on their way.
+    fn control_keys_owed(&self, id: uuid::Uuid) -> Option<&'static str> {
+        if self.control.dialog_deliveries.contains_key(&id) {
+            return Some("an answer is still going in to the agent's dialog");
+        }
+        if self.control_input_in_flight(id) {
+            return Some("your words are still going in to the agent");
+        }
+        let rec = self.board.sessions.iter().find(|s| s.id == id)?;
+        if self.owed.contains_key(&id) || rec.pending_submit {
+            return Some("words are still going in to the agent: send keys once they are in");
+        }
+        let ticket = rec.ticket;
+        if self.control.starts.contains_key(&ticket)
+            || self.pending_spawns.iter().any(|s| s.ticket == ticket && s.kind.is_agent())
+            || self.pending_resumes.iter().any(|r| r.ticket == ticket)
+        {
+            return Some("the agent is still starting: send keys once it has its first words");
+        }
+        None
     }
 
     /// A queued ask as a phone reads it (T-568): the board's own row
@@ -5058,6 +5142,33 @@ fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
     };
     let reason = reason.ok()?.as_str()?.to_string();
     Some(api::AgentExit { reason, at: s.state_changed_at })
+}
+
+/// A permission as a phone draws it (T-1218): every string in the tool's
+/// name and input, keys included, through the scrub text leaving the
+/// process takes, so a bidi or invisible character cannot reorder what
+/// the person approves. A value keeps its line breaks (`scrub_lines`): a
+/// multi-line command is approved as the lines it runs. The request id is
+/// the daemon's own and is left alone, so the answer still names the
+/// request the agent is waiting on.
+fn phone_permission(p: &api::Permission) -> api::Permission {
+    fn scrub(v: &serde_json::Value) -> serde_json::Value {
+        use mesimon_core::text::{scrub_lines, scrub_text};
+        match v {
+            serde_json::Value::String(s) => serde_json::Value::String(scrub_lines(s)),
+            serde_json::Value::Array(a) => a.iter().map(scrub).collect(),
+            serde_json::Value::Object(o) => {
+                o.iter().map(|(k, v)| (scrub_text(k), scrub(v))).collect()
+            }
+            other => other.clone(),
+        }
+    }
+    api::Permission {
+        request: p.request.clone(),
+        tool: mesimon_core::text::scrub_text(&p.tool),
+        input: scrub(&p.input),
+        expires_at: p.expires_at,
+    }
 }
 
 fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
@@ -6625,6 +6736,7 @@ mod tests {
                 key: format!("T-{n}"),
                 title: "a long plan".into(),
                 column: "IN PROGRESS".into(),
+                stopped: None,
                 agent: Some(api::Agent {
                     permission: None,
                     dialog: Some(phone.clone()),
@@ -9180,7 +9292,7 @@ mod keys_resume_tests {
         d.queued.clear();
         let (ticket, id) = (d.board.sessions[0].ticket.to_string(), d.board.sessions[0].id);
         let session = id.to_string();
-        let key = Some(api::PaneKey::Escape);
+        let key = Some(api::PaneKey::Tab);
         let gone = "the agent's pane is not open; open the ticket again";
 
         assert_eq!(
@@ -9221,25 +9333,154 @@ mod keys_resume_tests {
         let stranger = uuid::Uuid::new_v4().to_string();
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &stranger, key, None)), gone);
 
-        // A dialog up takes no key: its answer has its own road.
-        let state = d.board.sessions[0].state.clone();
-        d.board.sessions[0].set_state(SessionState::RequiresAction {
-            reason: mesimon_core::board::Reason::Permission,
-        });
-        for press in [key, Some(api::PaneKey::Enter)] {
-            let held = refusal(d.control_keys(&phone(), &ticket, &session, press, None));
-            assert!(held.starts_with("the agent waits on you"), "{held}");
-        }
-        let digit = Some("2".to_string());
-        let held = refusal(d.control_keys(&phone(), &ticket, &session, None, digit));
-        assert!(held.starts_with("the agent waits on you"), "{held}");
-        d.board.sessions[0].set_state(state);
-
         d.board.sessions[0].kind = SessionKind::Bash;
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, key, None)), gone);
         d.board.sessions[0].kind = SessionKind::Claude;
         d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Crashed });
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, key, None)), gone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A permission card for `id`, live or past its deadline.
+    fn permission_card(d: &mut Daemon, id: uuid::Uuid, live: bool) {
+        let now = Instant::now();
+        let deadline = if live {
+            now + Duration::from_secs(60)
+        } else {
+            now.checked_sub(Duration::from_secs(1)).unwrap_or(now)
+        };
+        d.control.permissions.insert(
+            id,
+            PermissionWait {
+                projection: api::Permission {
+                    request: "r1".into(),
+                    tool: "Bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                    expires_at: 0,
+                },
+                road: PermissionRoad::Codex,
+                offered: now,
+                deadline,
+                grants: Vec::new(),
+            },
+        );
+    }
+
+    /// T-1218, the person's decision on item 1: the keys are refused at a
+    /// dialog only while the phone answers it on a card right now; a dialog
+    /// with no card, a card expired, and a session read as `Unknown` take
+    /// them, so a stuck agent can be got going from the phone.
+    #[test]
+    fn a_phone_s_keys_wait_only_for_a_card_it_can_answer() {
+        use mesimon_core::board::{Reason, UnknownReason};
+        let dir = std::env::temp_dir().join(format!("msmn-t1218c-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let (ticket, id) = (d.board.sessions[0].ticket.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let tab = Some(api::PaneKey::Tab);
+        let digit = || Some("2".to_string());
+        let card = "the agent waits on you: answer it on its card";
+        let went = "the pane did not take it";
+
+        d.board.sessions[0].set_state(SessionState::RequiresAction { reason: Reason::Permission });
+        permission_card(&mut d, id, true);
+        for press in [tab, Some(api::PaneKey::Enter)] {
+            assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, press, None)), card);
+        }
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, digit())), card);
+        // The card's remote request expired: its buttons are off, and the
+        // keys are the phone's one way left.
+        permission_card(&mut d, id, false);
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        // A permission the phone never got a card for.
+        d.control.permissions.clear();
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, digit())), went);
+        // A dialog the phone has no card for: a resume-from-summary dialog.
+        d.board.sessions[0]
+            .set_state(SessionState::RequiresAction { reason: Reason::ResumeDialog });
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        // A plan card answers here; the same state with no card does not.
+        d.board.sessions[0].set_state(SessionState::RequiresAction { reason: Reason::Plan });
+        let plan = api::DialogContent::Plan { markdown: "p".into() };
+        d.control.dialogs.insert(id, api::Dialog { request: "p1".into(), content: plan });
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), card);
+        d.control.dialogs.clear();
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        // A session the daemon cannot read.
+        d.board.sessions[0]
+            .set_state(SessionState::Unknown { reason: UnknownReason::ObservationLost });
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218: after an Escape, no other key or line goes into that pane
+    /// until `ESCAPE_QUIET` has passed, so Escape and `[Z` never arrive as
+    /// Shift+Tab; another pane is not held, and the Escape itself (Stop on
+    /// a working turn) goes as before.
+    #[test]
+    fn an_escape_holds_the_pane_s_next_key_for_a_moment() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1218e-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let (ticket, id) = (d.board.sessions[0].ticket.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let esc = Some(api::PaneKey::Escape);
+        let went = "the pane did not take it";
+        let quiet = "an Escape just went in: send the next key in a moment";
+
+        d.board.sessions[0].set_state(SessionState::Running);
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, esc, None)), went);
+        let combo = Some("[Z".to_string());
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, combo)), quiet);
+        let tab = Some(api::PaneKey::Tab);
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), quiet);
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, esc, None)), quiet);
+        // Another pane's Escape is its own.
+        d.control.escaped.clear();
+        d.control.escaped.insert(uuid::Uuid::new_v4(), Instant::now());
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        // Once the window has passed, the next key goes.
+        let past = Instant::now().checked_sub(ESCAPE_QUIET).unwrap();
+        d.control.escaped.insert(id, past);
+        let line = Some("[Z".to_string());
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, line)), went);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218: no key goes in beside input the daemon owes the pane on any
+    /// road: an `owed` entry (parked words, a fill, an Enter to press, a
+    /// steer, a paste awaiting its ack), a Codex submit not yet seen taken,
+    /// or a start still on its way.
+    #[test]
+    fn a_phone_s_keys_wait_for_input_the_daemon_owes_the_pane() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1218o-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let t = d.board.sessions[0].ticket;
+        let (ticket, id) = (t.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let tab = Some(api::PaneKey::Tab);
+        let went = "the pane did not take it";
+        let owed = "words are still going in to the agent: send keys once they are in";
+
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
+        d.owed.insert(id, super::super::Owed::pasted(t, super::super::Ack::PROMPT, now_ms()));
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), owed);
+        let line = Some("y".to_string());
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, line)), owed);
+        d.owed.clear();
+        d.board.sessions[0].pending_submit = true;
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), owed);
+        d.board.sessions[0].pending_submit = false;
+        let to = (BoardId::random(), mesimon_team::crypto::DeviceKeys::generate().id(), 1);
+        d.control
+            .starts
+            .insert(t, StartWait { grant: to.0, device: to.1, command: to.2, session: Some(id) });
+        let starting = refusal(d.control_keys(&phone(), &ticket, &session, tab, None));
+        assert!(starting.starts_with("the agent is still starting"), "{starting}");
+        d.control.starts.clear();
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, tab, None)), went);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -9264,7 +9505,10 @@ mod keys_resume_tests {
         d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Crashed });
         let at = d.board.sessions[0].state_changed_at;
         let (Reply::Board { tickets, .. }, _) = d.control_board() else { panic!("board") };
-        let agent = tickets[0].agent.as_ref().expect("the corpse stays in sight");
+        // T-1218: in a field of its own; `agent` stays the held seat, empty
+        // here, so a page from before T-1208 still offers its Start.
+        assert!(tickets[0].agent.is_none(), "an older page reads any agent as a held seat");
+        let agent = tickets[0].stopped.as_ref().expect("the corpse stays in sight");
         assert_eq!(agent.state, "exited");
         assert_eq!(agent.exit, Some(api::AgentExit { reason: "crashed".into(), at }));
         assert!(!agent.promptable);
@@ -9280,10 +9524,92 @@ mod keys_resume_tests {
             refusal(d.control_resume(&phone(), to, "nope", &s, None, None)),
             "ticket unavailable"
         );
+        // T-1218: words queued at the terminal are the ticket's next start;
+        // a resume beside them would lose them, as a start would.
+        d.queued.push(QueuedAsk {
+            ticket,
+            seat: QueuedSeat::Pane(id),
+            cwd: String::new(),
+            text: "queued words".into(),
+            queued_at: now_ms(),
+            by: None,
+            sends: false,
+            accept_plan: false,
+            send_on_accept: false,
+            held: None,
+            plan: false,
+            deliver: super::super::Deliver::Idle,
+            from_board: None,
+        });
+        assert_eq!(
+            refusal(d.control_resume(&phone(), to, &t, &s, None, None)),
+            "a prompt is queued for this ticket at your terminal"
+        );
+        d.queued.clear();
         // Dismissed is the one exit the rail hides, and so does the phone.
         d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Dismissed });
         assert_eq!(refusal(d.control_resume(&phone(), to, &t, &s, None, None)), none);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218: a killed Codex seat whose stop is unconfirmed still holds the
+    /// ticket. The phone reads it `stopping`, with no exit, so it offers
+    /// neither Resume nor Start fresh, and a resume says it is stopping.
+    #[test]
+    fn a_codex_agent_still_stopping_is_not_offered_a_resume() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1218s-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let ticket = d.board.sessions[0].ticket;
+        let worker = super::super::queued_person_push_tests::worker_ticket;
+        d.board.tickets = vec![worker(ticket, "TODO", "a")];
+        let (t, s) = (ticket.to_string(), d.board.sessions[0].id.to_string());
+        let to = (BoardId::random(), mesimon_team::crypto::DeviceKeys::generate().id(), 1);
+        d.board.sessions[0].kind = SessionKind::Codex;
+        d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Killed });
+        d.board.sessions[0].codex_stopping = true;
+
+        let (Reply::Board { tickets, .. }, _) = d.control_board() else { panic!("board") };
+        let agent = tickets[0].agent.as_ref().expect("it still holds the seat");
+        assert_eq!(agent.state, "stopping");
+        assert_eq!(agent.exit, None);
+        assert!(tickets[0].stopped.is_none());
+        assert_eq!(
+            refusal(d.control_resume(&phone(), to, &t, &s, None, None)),
+            "this ticket's agent is still stopping: try again in a moment"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218: a permission reaches the phone with every string scrubbed,
+    /// names included, and its lines kept; the request it answers is the
+    /// one the daemon holds, unchanged.
+    #[test]
+    fn a_phone_s_permission_card_is_scrubbed_and_answers_the_same_request() {
+        let raw = api::Permission {
+            request: "req-1".into(),
+            tool: "Ba\u{202e}sh".into(),
+            input: serde_json::json!({
+                "command": "echo \u{202e}cba\nrm -rf x\u{200b}",
+                "c\u{2066}wd": "/tmp",
+                "args": ["a\u{7}", {"deep": "b\u{202c}"}],
+                "n": 3,
+            }),
+            expires_at: 9,
+        };
+        let phone = phone_permission(&raw);
+        assert_eq!(phone.request, "req-1");
+        assert_eq!(phone.tool, "Bash");
+        assert_eq!(phone.expires_at, 9);
+        assert_eq!(
+            phone.input,
+            serde_json::json!({
+                "command": "echo cba\nrm -rf x",
+                "cwd": "/tmp",
+                "args": ["a", {"deep": "b"}],
+                "n": 3,
+            })
+        );
     }
 
     /// T-1208: the terminal's theme reaches the phone's board as the TUI

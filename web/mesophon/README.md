@@ -207,12 +207,23 @@ wears its first tag's tint, as the TUI's tag bar does. An agent whose process
 ended unasked (`exit.reason` crashed, killed or logged out, on a host that
 says why) is listed under Stopped until it runs again, with Resume, the `resume`
 op (feature `resume`): the same session's conversation taken up again, with the
-words typed when there are any; Start fresh is the `start` op on the free seat.
+words typed, their pictures and a picked tier when there are any; Start fresh
+is the `start` op on the free seat. The stopped agent rides the board reply's
+`stopped` (T-1218), where no agent holds the seat, and the page reads it as the
+ticket's agent: `agent` stays the held seat, so a page from before still offers
+its Start. A Codex agent still stopping reads `stopping`, with neither offered.
 A quit or cleared agent is only idle. The ticket page has three tabs: Chat (the
 conversation), Terminal (the agent's pane, `preview`) and Notes. On a host that
 says `keys`, the Terminal tab's foot is a key bar and a typed line, each press
 one `keys` op ({ key } or { text }) into the ticket's agent session alone, and
-an empty composer over a working turn is Stop, an Escape the same way. A
+an empty composer over a working turn is Stop, an Escape the same way. A typed
+line (at most 512 bytes) goes first, and its Enter only once the host answered
+it `edited`, 150 ms behind; a refused line sends no Enter and stays in the
+field. The bar rests only while the page answers the agent's dialog on a card
+(a permission not expired, a plan, a question it answers, the folder trust);
+at any other stop the keys go in and answer the agent's own dialog, and the
+bar says so (T-1218). The host holds a pane's next key for 500 ms after an
+Escape, and takes none while it is still typing input of its own there. A
 ticket's shells are the terminal's: the page draws no shell mark and opens none.
 Settings picks the page's theme: by default it follows the terminal's (the
 board reply's `theme`, which the TUI tells its daemon), or one of the fifteen,

@@ -59,7 +59,9 @@ export class BoardState {
   update(reply, { cached = false, at = Date.now(), shelved = false } = {}) {
     Object.assign(this, {
       title: reply.title,
-      tickets: reply.tickets,
+      // A stopped agent rides `stopped` (T-1218), where no agent holds the
+      // seat; this page reads it as the ticket's agent, an exited one.
+      tickets: (reply.tickets || []).map((t) => (!t.agent && t.stopped ? { ...t, agent: t.stopped } : t)),
       columns: reply.columns,
       defaultColumn: reply.default_column || "",
       columnDescriptions: reply.column_descriptions || {},

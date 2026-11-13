@@ -13,7 +13,10 @@ asks `MoveTicket` of every mover), `Annotate` on a ticket's notes (T-532), `Park
 session its card shows (T-1090, the desk's `x` behind the daemon's sleep gate), `CrownTicket` on a
 ticket (T-1182, the desk's `^o`; the owner's alone, denied to every other principal), `PressKeys` on the
 agent session a card names (T-1208, the Terminal tab's keys and Stop; the daemon's `control_target` refuses a
-shell, a terminal or a dead pane) and a stopped agent's `resume` under `StartAgent` (T-1208): never widen `Paired` to `Mutate`, which also
+shell, a terminal or a dead pane; T-1218, the person's decision: at a dialog the phone answers on a card the
+keys are refused, and at every other stop, `Unknown` and an expired card included, they go in and answer the
+agent's own dialog, any option it offers; never beside input the daemon owes the pane, nor within 500 ms of
+an Escape) and a stopped agent's `resume` under `StartAgent` (T-1208): never widen `Paired` to `Mutate`, which also
 reaches `PromptColumn`, merges and deletes, and a filed ticket starts nothing by itself. Every
 side of the control socket drops a peer on a frame it cannot parse, so mail frames go only where
 they were asked for: a host sends `Collect` after `ControlMail` answered, and the relay sends

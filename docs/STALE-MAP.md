@@ -43861,3 +43861,68 @@ and without words, the terminal's theme followed, a pick winning). Rust: `cargo 
 `legacy_enter_and_detach_reach_fresh_and_surviving_clients` (code not touched); it passed alone
 and in the next full `cargo ut`: a rerun, not a repair. The full workspace suite is owed after
 the merge (`command.rs`, `authorize.rs`, `server.rs`).
+
+## The phone's keys wait for a card, an Escape and the daemon's own input; a resume keeps its pictures and tier (T-1218, 2026-11-13, two reviews of T-1208; item 1 decided by the person)
+
+**The authorization decision (item 1).** The review asked the keys to fail closed: refused unless
+the daemon positively read the session as dialog-free. The person decided otherwise, told it would
+leave an agent stuck while they are away: "away from computer should allow user to get agent
+unstuck so we need to allow that". So `control_keys` refuses a key at a dialog only while the phone
+answers that dialog on a card right now (`control_answers_here`: a permission whose remote request
+has not expired, a plan, a question the card answers, the folder trust), "the agent waits on you:
+answer it on its card". Everywhere else the keys go in and answer Claude Code's or Codex's own
+dialog, every option it offers included: a dialog with no card (resume-from-summary, a startup
+modal, a quota or login stop, a secret), an expired or lost card, `Unknown`. This lifts T-1208's
+"the phone's keys never answer a dialog"; Shift+Tab stays off the list. The page's key bar rests
+only while it draws an answerable card (`dialogs.js` `cardAnswers`, mirroring the host's test),
+and at a cardless stop says "These keys answer what the agent's terminal is asking"; the Terminal
+tab stays reachable then.
+
+**What changed.**
+- Escape (item 2): after a phone's Escape to a pane, any other key or line to it is refused for
+  `ESCAPE_QUIET` (500 ms), "an Escape just went in". Marked before tmux is asked. Measured on
+  Claude Code 2.1.323 on a scratch tmux server: Escape then `send-keys -l '[Z'` cycled the
+  permission mode with 0, 5, 20, 25, 30, 35 and 40 ms between them, and typed `[Z` from 45 ms
+  (50, 100, 200, 500 ms too): its escape timeout is about 50 ms; 500 ms is ten times it. Stop
+  (one Escape) is unchanged. It says nothing of bytes another writer puts in the pane.
+- The daemon's own input (item 3): `control_keys_owed` refuses while a dialog answer is walked,
+  the phone's words are in flight, `owed` holds anything for the session (parked words, a fill
+  unreported, an Enter to press, a steer, a paste awaiting its ack), `pending_submit` is set, or a
+  start or resume of the ticket is on its way.
+- A typed line (item 4): `store.typeLine` sends `{text}`, and only on its `edited` reply, 150 ms
+  later, `{key:"enter"}`; a refusal or a lost answer sends no Enter and the field keeps the line;
+  the page caps the line at 512 UTF-8 bytes. Measured on the same pane: `send-keys -l <text> \;
+  send-keys Enter` in one tmux call left 200- and 500-byte lines in the box unsent (an 8-byte one
+  submitted); two separate tmux calls, 5-9 ms apart, submitted 8, 200 and 500 bytes. The
+  `edited` reply already comes after tmux returned, so 150 ms is margin, not the mechanism.
+- `Request::Resume` takes `uploads` (item 5), through `control_pictured` as `Start`; the page
+  sends the picked tier. A refusal is a start's: said, the pictures let go at the host (a start's
+  refusal does not put the words back in the box either: unchanged here). The ux fixture's
+  `resume` drops the socket on any field the host's `Request` would not parse.
+- `control_resume` refuses beside words queued at the terminal (item 6) and on a Codex seat still
+  stopping (item 7), "this ticket's agent is still stopping: try again in a moment"; the board
+  sends such a seat as state `stopping` with no `exit`, so the page offers neither Resume nor
+  Start fresh.
+- The board reply's `agent` is the held seat again (item 8, `live_agent`); the corpse rides a new
+  `stopped` field, which this page folds into `agent` in `BoardState.update`. A page from before
+  T-1208 never reads `stopped` and keeps its Start. The shelf and the board's words trim cover it.
+- The phone's permission (item 9): `phone_permission` scrubs every string of the input and the
+  tool's name for the phone's copy (`scrub_lines` for values, keeping a multi-line command's
+  lines; `scrub_text` for names); the stored request is untouched, so the answer and the Codex
+  screen match read the original. The card shows the command, then every other field by name.
+
+**Refuted.** "Use `scrub_text` on the input": it deletes `\n`, so `echo a` and `rm x` on two
+lines would read as one line; `scrub_lines` is the same scrub keeping line breaks.
+
+**Verified.** A test per item, each failing on the code before it: `keys_resume_tests`
+(`a_phone_s_keys_wait_only_for_a_card_it_can_answer`, `an_escape_holds_the_pane_s_next_key_for_a_moment`,
+`a_phone_s_keys_wait_for_input_the_daemon_owes_the_pane`, `a_codex_agent_still_stopping_is_not_offered_a_resume`,
+`a_phone_s_permission_card_is_scrubbed_and_answers_the_same_request`, the resume test's queued and
+`stopped` cases), core's `Resume` parse with `uploads`, three `state.test.js` cases, and
+`terminalFlow` (a refused resume, a resume with a picture and a tier through the strict fixture, a
+refused line with no Enter behind it, the byte cap, the bar at a live card, an expired one and none).
+`cargo ut` (3,145 passed), `cargo build --workspace`, `--test board m1_e2e::`, `--test agents
+approve_bridge`, `node --test state.test.js assets.test.js`, and the UX suite on Chromium at phone
+size. One rerun: the first `cargo ut` stopped compiling on a core test's `Ticket` literal missing
+`stopped`, fixed and run again. No file under `server.rs`, `command.rs`, `mcp.rs`, `authorize.rs`,
+a state file or the tmux backend changed, so no post-merge workspace suite is owed.

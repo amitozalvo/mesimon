@@ -53,6 +53,14 @@ const startContext = (ticket) => `start:${ticket}`;
 const tierPick = (store, ticket, tier) =>
   tier && tier !== ticket?.tier && store.tierChoices(ticket).some((t) => t.id === tier) ? tier : undefined;
 const noteContext = (item) => `notew:${item.id}`;
+// The longest line the host types into an agent's pane (T-1218), in UTF-8
+// bytes: its `KEYS_TEXT_MAX_BYTES`.
+export const KEYS_TEXT_MAX_BYTES = 512;
+// How long a typed line's Enter waits behind the host's `edited` (T-1218):
+// an Enter in the same burst as the text is swallowed as pasted content
+// (measured on Claude Code 2.1.323: in one tmux call, behind 200 bytes),
+// while one a separate call later (~5 ms) submits.
+export const ENTER_AFTER_TEXT_MS = 150;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
 // Opened from the home screen, not a browser tab.
@@ -716,7 +724,7 @@ export class Store {
   }
   keysReach(ticket) {
     const state = ticket?.agent?.state;
-    return this.takesKeys && !!state && !["sleeping", "exited", "unknown"].includes(state);
+    return this.takesKeys && !!state && !["sleeping", "exited", "stopping"].includes(state);
   }
   // `press` is { key } (a named key) or { text } (typed words).
   sendKeys(press) {
@@ -741,6 +749,39 @@ export class Store {
       this.emit();
     }
   }
+  // A line typed into the pane, then Enter (T-1218): the Enter goes only
+  // once the host answered the line `edited`, and a beat behind it, so it
+  // submits rather than landing in the line's burst. A refusal sends no
+  // Enter, which would submit whatever the agent's box already held.
+  // `done` runs once the line went in, for the field to clear.
+  typeLine(text, done = () => {}) {
+    const ticket = this.board?.current;
+    if (!text || !this.keysReach(ticket)) return false;
+    if (new TextEncoder().encode(text).length > KEYS_TEXT_MAX_BYTES) {
+      this.say(`Not sent: a line fits ${KEYS_TEXT_MAX_BYTES} bytes.`);
+      this.emit();
+      return false;
+    }
+    const pane = { op: "keys", ticket: ticket.id, session: ticket.agent.session };
+    const id = this.connection.request({ ...pane, text }, (reply) => {
+      if (reply.result !== "edited") {
+        this.onKeysReply(reply.result === "rejected" ? reply : { result: "rejected", message: "" });
+        return;
+      }
+      done();
+      setTimeout(() => {
+        const now = this.board?.current;
+        if (now?.id !== pane.ticket || now.agent?.session !== pane.session) return;
+        this.sendKeys({ key: "enter" });
+      }, ENTER_AFTER_TEXT_MS);
+    });
+    if (id === undefined) {
+      this.say("Not sent: the connection dropped.");
+      this.emit();
+      return false;
+    }
+    return true;
+  }
   // Stop the turn (T-1208): the desk's Escape in the agent's pane.
   stopTurn() {
     if (this.sendKeys({ key: "escape" })) {
@@ -756,15 +797,16 @@ export class Store {
   get canResume() {
     return this.live && !!this.connection?.features?.includes("resume");
   }
-  resumeAgent(id, text = "", uploads = []) {
+  resumeAgent(id, text = "", tier = "", uploads = []) {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!board || !this.stopped(ticket) || !this.canResume || startWaiting(this.startOf(ticket))) return false;
     const prompt = text.trim();
+    const pick = tierPick(this, ticket, tier);
     const c = this.connection;
     const command = c.request(
       { op: "resume", ticket: id, session: ticket.agent.session, ...(prompt ? { prompt } : {}),
-        ...(uploads.length ? { uploads } : {}) },
+        ...(pick ? { tier: pick } : {}), ...(uploads.length ? { uploads } : {}) },
       startContext(id),
     );
     if (command === undefined) {
@@ -2418,7 +2460,7 @@ export class Store {
     }
     if (starts) {
       const resumes = this.resumes && this.stopped(this.board?.tickets.find((t) => t.id === entry.ticket));
-      if (resumes ? this.resumeAgent(entry.ticket, text, uploads) : this.startAgent(entry.ticket, text, entry.tier, uploads)) {
+      if (resumes ? this.resumeAgent(entry.ticket, text, entry.tier, uploads) : this.startAgent(entry.ticket, text, entry.tier, uploads)) {
         entry.draft = "";
         entry.tier = undefined;
         entry.delivery = "";

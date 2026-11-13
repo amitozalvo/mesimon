@@ -54,12 +54,30 @@ export function requestSummary(permission) {
 }
 
 // The whole request, for the ticket page (T-1208): a command as it would
-// run, with what the agent said it is for; anything else as its fields.
+// run, then every other field by its name (T-1218), so nothing the
+// approval covers is left off the card: a Codex command's `cwd` and
+// `reason`, an MCP tool's arguments beside its `command`.
 export function requestDetail(permission) {
   const input = permission?.input;
-  if (input && typeof input.command === "string")
-    return typeof input.description === "string" && input.description ? `${input.command}\n\n# ${input.description}` : input.command;
-  return JSON.stringify(input ?? {}, null, 2);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return JSON.stringify(input ?? {}, null, 2);
+  const command = typeof input.command === "string" ? input.command : undefined;
+  const fields = Object.entries(input)
+    .filter(([name]) => command === undefined || name !== "command")
+    .map(([name, value]) => `${name}: ${typeof value === "string" ? value : JSON.stringify(value, null, 2)}`);
+  return [...(command === undefined ? [] : [command]), ...fields].join("\n\n");
+}
+
+// Whether the ticket's agent stands on a dialog this page answers on a card
+// right now (T-1218): the folder trust, a permission whose remote request
+// has not expired, a plan, a question the card answers. Only there does the
+// host refuse the Terminal tab's keys; at any other stop they go in.
+export function cardAnswers(store, agent, now = Date.now()) {
+  if (!agent) return false;
+  if (agent.trust) return true;
+  if (agent.permission && now < agent.permission.expires_at) return true;
+  const dialog = agent.dialog;
+  if (dialog?.kind === "plan") return true;
+  return answerable(dialog) || (measured(dialog) && store.answersWhole);
 }
 
 export function Attention({ store, ticket, entry, live }) {
