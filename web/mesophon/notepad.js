@@ -136,8 +136,8 @@ export function PictureList({ draft, onRemove }) {
 
 // The file input that picks pictures into a draft, dressed as a button:
 // the icon and whatever `children` says beside it. The composer (T-853)
-// shows the icon alone.
-export function PicturePick({ id, draft, caret, onAdd, label, children }) {
+// shows the icon alone, a plus.
+export function PicturePick({ id, draft, caret, onAdd, label, icon = "image", children }) {
   const busy = !!draft.sending;
   return html`<label class=${`btn btn-quiet note-pic-add${children ? "" : " note-pic-icon"}`} data-busy=${String(busy || draft.reading > 0)}
     aria-label=${label}>
@@ -148,7 +148,7 @@ export function PicturePick({ id, draft, caret, onAdd, label, children }) {
         const at = await onAdd(files, caret.current);
         if (at !== undefined) caret.current = at;
       }} />
-    <${Icon} name="image" size=${17} />${children}</label>`;
+    <${Icon} name=${icon} size=${17} />${children}</label>`;
 }
 
 // A pasted image goes in as a picked one; anything else pastes as text.

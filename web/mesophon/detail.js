@@ -258,8 +258,9 @@ function Composer({ store, ticket, entry, live }) {
   // In the conversation a sent prompt is its ghost, then its own row
   // (T-626): no line says it was submitted.
   const ghost = store.chatShown && !!sentPrompt(entry) && entry.latest === entry.receipt;
-  // One line until there are words (T-701): the field alone with its arrow,
-  // and the delivery row beneath once something is typed.
+  // The field over its bar (T-1208): the picture, the delivery and the tier
+  // as small pills, the arrow at the bar's end. Why Steer is off is said
+  // once there are words.
   const open = !!entry?.draft;
   // The field grows to its words (`field-sizing: content`); an engine
   // without it is measured by hand.
@@ -307,7 +308,7 @@ function Composer({ store, ticket, entry, live }) {
         : starts
           ? `${asleep ? `Wake ${ticket.agent.provider}` : "Start an agent"} on ${ticket.key} with the first prompt`
           : "No agent selected"}</p>
-      <div class="composer" data-open=${String(open)} data-starts=${String(starts)}>
+      <div class="composer" data-starts=${String(starts)}>
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
           placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : stopping ? `${agent.provider} is stopping · words wait here…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
           required disabled=${fieldOff}
@@ -325,9 +326,9 @@ function Composer({ store, ticket, entry, live }) {
             }
           }}></textarea>
         ${entry?.pictures.length > 0 && html`<div class="composer-pics"><${PictureList} draft=${entry} onRemove=${(n) => store.removePromptPicture(n)} /></div>`}
-        ${pictures && html`<${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Picture"
-          onAdd=${(files, at) => store.addPromptPictures(files, at)} />`}
-        <div class="composer-row" hidden=${!open}>
+        <div class="composer-bar">
+          ${pictures && html`<${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Picture" icon="plus"
+            onAdd=${(files, at) => store.addPromptPictures(files, at)} />`}
           ${mails
             ? html`<p id="away-what" class="start-what"><${Icon} name="moon" size=${13} /><span>${letter
                 ? "One message waits for this ticket · take it back to change it."
@@ -338,25 +339,23 @@ function Composer({ store, ticket, entry, live }) {
                 : stopped && store.resumes
                   ? `Resumes ${ticket.agent.provider}’s conversation, then says this.`
                   : "Starts an agent on these words."}</span></p>`
-            : html`<fieldset id="prompt-mode" class="segmented" disabled=${!agent}>
-            <legend class="sr-only">Delivery</legend>
-            <label class=${mode === "queue" ? "on" : ""}><input type="radio" name="prompt-mode" value="queue"
-              checked=${mode === "queue"} onChange=${() => store.setDelivery("queue")} /><${Icon} name="hourglass" size=${14} /><span>Queue</span></label>
-            <label class=${`${mode === "steer" ? "on" : ""}${steerOff ? " off" : ""}`}><input type="radio" name="prompt-mode" value="steer"
-              checked=${mode === "steer"} disabled=${steerOff} onChange=${() => store.setDelivery("steer")} /><${Icon} name="zap" size=${14} /><span>Steer</span></label>
-          </fieldset>`}
-          ${tiers.length > 0 && !mails && html`<label class="tier-pick"><span class="sr-only">Agent tier</span>
+            : html`<label class="chip-pick mode-pick"><span class="sr-only">Delivery</span>
+              <select id="prompt-mode" value=${mode} disabled=${!agent} onChange=${(e) => store.setDelivery(e.currentTarget.value)}>
+                <option value="queue">Queue</option>
+                <option value="steer" disabled=${steerOff}>Steer</option>
+              </select></label>`}
+          ${tiers.length > 0 && !mails && html`<label class="chip-pick tier-pick"><span class="sr-only">Agent tier</span>
             <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
               ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
             </select></label>`}
           ${!starts && !mails && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
+          <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
+            onClick=${() => store.stopTurn()}><${Icon} name="stop" size=${16} /></button>
+          <button id="send" type="submit" class="send" hidden=${stops} disabled=${sendOff}
+            aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
+            ? html`<${Icon} name="play" size=${16} />`
+            : html`<${Icon} name="up" size=${18} width=${2.2} />`}</button>
         </div>
-        <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
-          onClick=${() => store.stopTurn()}><${Icon} name="stop" size=${16} /></button>
-        <button id="send" type="submit" class="send" hidden=${stops} disabled=${sendOff}
-          aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
-            ? html`<${Icon} name="play" size=${18} />`
-            : html`<${Icon} name="up" size=${20} width=${2.2} />`}</button>
         <p id="steer-why" class="steer-why" hidden=${!(steerOff || stopping) || !open || mails}>${stopping
           ? `${agent.provider} is stopping: these words wait here until it has stopped.`
           : switching

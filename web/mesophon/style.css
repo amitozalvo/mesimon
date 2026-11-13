@@ -3255,43 +3255,55 @@ select {
   color: var(--ink2);
   font-size: 0.8125rem;
 }
-/* One line until there are words (T-701): the field and the arrow; with
-   words, the field grows to them and the delivery row comes in under it,
-   the arrow at its end. The arrow is always at the composer's bottom right. */
+/* The field over its bar (T-1208): the words, the pictures picked under
+   them, then one row of small pills (the picture, the delivery, the tier)
+   with the arrow at its end. Each control is still 44px tall, the page's
+   law: it draws a 32px pill (the arrow 36px) inside its own box, and the
+   box overlaps its neighbours by a negative margin, so the row is as
+   short as it looks. */
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  grid-template-areas: "text pic send" "why why why";
-  align-items: end;
-  gap: 0 8px;
-  padding: 4px 4px 4px 14px;
-  border-radius: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
   background: var(--s1);
 }
-.composer[data-open="true"] {
-  grid-template-areas: "text text text" "pics pics pics" "row pic send" "why why why";
-  gap: 6px 8px;
+.composer-bar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-/* The picture button beside the arrow (T-853), the icon alone; the
-   pictures picked, under the words. */
 .composer .note-pic-icon {
-  grid-area: pic;
-  width: 44px;
-  min-height: 44px;
+  position: relative;
+  flex: none;
+  width: var(--pill);
+  height: 44px;
+  min-height: 0;
+  margin: calc((var(--pill) - 44px) / 2) 0;
   padding: 0;
   justify-content: center;
+  background: transparent;
+}
+.composer .note-pic-icon::before {
+  content: "";
+  position: absolute;
+  inset: calc((44px - var(--pill)) / 2) 0;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
 }
 .composer-pics {
-  grid-area: pics;
   padding: 0 0 2px;
 }
 #prompt {
-  grid-area: text;
   width: 100%;
   min-height: 44px;
   max-height: 25vh;
+  margin: -8px 0;
   resize: none;
-  padding: 12px 0;
+  padding: 11px 0;
   border: 0;
   background: transparent;
   font-size: 0.9375rem;
@@ -3299,13 +3311,13 @@ select {
   field-sizing: content;
 }
 .composer .send {
-  grid-area: send;
-}
-.composer-row {
-  grid-area: row;
-}
-.composer .steer-why {
-  grid-area: why;
+  width: 44px;
+  height: 44px;
+  margin: calc((var(--send) - 44px) / 2);
+  margin-left: auto;
+  padding: calc((44px - var(--send)) / 2);
+  border-radius: 50%;
+  background-clip: content-box;
 }
 #prompt:focus {
   outline: none;
@@ -3314,13 +3326,46 @@ select {
   opacity: 0.6;
 }
 .composer:focus-within {
-  box-shadow: inset 0 0 0 1px var(--line2);
+  border-color: var(--line2);
 }
-.composer-row {
+.chip-pick {
   min-width: 0;
+  height: var(--pill);
   display: flex;
   align-items: center;
-  gap: 8px;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  color: var(--ink2);
+}
+.chip-pick select {
+  min-width: 0;
+  max-width: 132px;
+  height: 44px;
+  margin: calc((var(--pill) - 44px) / 2 - 1px) 0;
+  padding: 0 26px 0 11px !important;
+  border: 0;
+  border-radius: 999px;
+  background-color: transparent;
+  background-position:
+    calc(100% - 15px) center,
+    calc(100% - 10px) center;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.chip-pick select:focus-visible {
+  outline: none;
+}
+.chip-pick:has(select:focus-visible) {
+  outline: 2px solid var(--ink2);
+  outline-offset: 1px;
+}
+.chip-pick:has(select:disabled) {
+  opacity: 0.5;
+}
+.tier-pick select {
+  font-family: var(--mono);
+  font-size: 0.71875rem;
 }
 .segmented {
   min-width: 0;
@@ -3331,65 +3376,10 @@ select {
   border-radius: 14px;
   background: var(--s2);
 }
-.segmented label {
-  position: relative;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  border-radius: 12px;
-  color: var(--ink3);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-}
-.segmented label.on {
-  background: var(--s3);
-  color: var(--ink);
-}
-.segmented input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.segmented label:has(input:focus-visible) {
-  outline: 2px solid var(--ink2);
-  outline-offset: 1px;
-}
-.segmented:disabled {
-  opacity: 0.5;
-}
-.segmented label.off {
-  opacity: 0.5;
-}
-.segmented label.off,
-.segmented input:disabled {
-  cursor: not-allowed;
-}
 .steer-why {
-  margin: 6px 2px 0;
+  margin: 0 2px 2px;
   color: var(--ink3);
   font-size: 0.75rem;
-}
-.tier-pick {
-  min-width: 0;
-  display: flex;
-}
-.tier-pick select {
-  max-width: 124px;
-  padding-left: 12px;
-  border: 0;
-  border-radius: 12px;
-  background-color: var(--s2);
-  color: var(--ink2);
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  font-weight: 500;
 }
 .mode-help {
   flex: 1;
@@ -4349,9 +4339,6 @@ button.sent-bubble:hover {
   #prompt {
     font-size: 1rem;
   }
-  .segmented label {
-    min-height: 44px;
-  }
   .mode-help {
     display: none;
   }
@@ -4471,11 +4458,15 @@ button.sent-bubble:hover {
   --row-gap: 8px;
   --card-pad: 10px 12px 10px 15px;
   --title-size: 0.90625rem;
+  --pill: 32px;
+  --send: 36px;
 }
 :root[data-density="comfortable"] {
   --row-gap: 12px;
   --card-pad: 13px 14px 13px 17px;
   --title-size: 0.9375rem;
+  --pill: 38px;
+  --send: 42px;
 }
 
 /* ---- the header's strip: a dot per agent, then the link's word ------------------ */
@@ -4752,7 +4743,6 @@ button.sent-bubble:hover {
 }
 /* The stop of a working turn sits where the arrow does. */
 .composer .send-stop {
-  grid-area: send;
   background: var(--s3);
   color: var(--ink);
 }

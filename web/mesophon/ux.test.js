@@ -1836,9 +1836,9 @@ async function tierFlow(browser, engineName, size, viewport) {
     await mode("agents");
     await page.locator('.ticket[data-id="ticket-0"]').click();
     const pick = page.locator("#prompt-tier");
-    // The delivery row, the tier in it, shows with words (T-701).
+    // The box's bar, the tier in it, is there before any words (T-1208).
     assert.equal(await page.locator("#prompt-tier").count(), 1);
-    assert(await pick.isHidden(), "no words, no row");
+    assert(await pick.isVisible(), "the tier pill is in the bar");
     await page.locator("#prompt").fill("same tier");
     await pick.waitFor();
     assert.deepEqual(await pick.locator("option").allTextContents(), ["claude", "coder"]);
@@ -1852,7 +1852,7 @@ async function tierFlow(browser, engineName, size, viewport) {
     await pick.selectOption("01K");
     await until(page, () => !document.querySelector("#steer-why").hidden);
     assert.match(await page.locator("#steer-why").textContent(), /Restarts on coder when the turn ends/);
-    assert(await page.locator('#prompt-mode input[value="steer"]').isDisabled());
+    assert(await page.locator('#prompt-mode option[value="steer"]').evaluate((n) => n.disabled));
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await shot("tier-composer");
     await page.locator("#prompt").fill("now on coder");
@@ -2656,7 +2656,7 @@ async function chatFlow(browser, engineName, size, viewport) {
     // A prompt sent from here is a ghost under the last row, with no
     // "submitted" line, until the conversation holds it.
     await page.locator("#prompt").fill("ghost-canary");
-    await page.locator('input[name="prompt-mode"][value="steer"]').check();
+    await page.locator("#prompt-mode").selectOption("steer");
     await page.locator("#send").click();
     await until(page, () => document.querySelector("#chat .chat-ghost")?.textContent.includes("ghost-canary"));
     assert(await page.locator("#delivery").isHidden());
@@ -4075,11 +4075,8 @@ try {
         };
         const mode = (name) =>
           page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
-        // The delivery row shows once there are words (T-701).
-        const delivery = async (value) => {
-          if (!(await page.locator("#prompt").inputValue())) await page.locator("#prompt").fill("…");
-          await page.locator(`input[name="prompt-mode"][value="${value}"]`).check();
-        };
+        // The delivery pill sits in the box's bar (T-1208).
+        const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
         const attention = (name) =>
           page.locator("#attention").getByRole("button", { name, exact: true });
         try {
@@ -4469,11 +4466,7 @@ try {
           );
           // Main's queued follow-ups keep their session binding in the split UI.
           await select(1);
-          assert(
-            await page
-              .locator('input[name="prompt-mode"][value="queue"]')
-              .isChecked(),
-          );
+          assert.equal(await page.locator("#prompt-mode").inputValue(), "queue");
           await page.locator("#prompt").fill("queued follow-up");
           await page.evaluate(() => {
             fixture.disposition = "queued";
@@ -4538,7 +4531,7 @@ try {
           );
           // T-568: at a stop a steer would be the dialog's answer: Steer is
           // off and says why, until the agent works again.
-          assert(await page.locator('input[name="prompt-mode"][value="steer"]').isDisabled());
+          assert(await page.locator('#prompt-mode option[value="steer"]').evaluate((n) => n.disabled));
           assert(await page.locator("#steer-why").isVisible());
           await page.evaluate(() => {
             fixture.tickets[1].agent.state = "working";

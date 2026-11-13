@@ -44614,3 +44614,34 @@ its tier, so it now names agy on the board first). One live run on real agy with
 hook` (above). No rig run: nothing a Claude or Codex agent or the crown is told changed, and agy
 is told nothing yet (T-1232 owns that run). The full workspace suite is owed once after the merge
 (`server.rs` and a session field changed).
+
+## The phone's message box is the prototype's: the field over a bar of small pills (T-1208, 2026-11-14, the author on the released page: "The input doesnt look like the one you showed me in the artifact! Why?")
+
+**Why it differed.** T-1208 restyled the old page and never rebuilt the composer: it kept T-701's
+one line that grows a delivery row, the Queue / Steer segmented control, a 44 px native tier
+select, the picture icon and a 44 px arrow. Its block above says why in one clause ("every
+control stays 44 px tall … compactness is type and spacing") and did not say the approved
+prototype drew 30 to 36 px controls, so the difference reached the author unannounced. No review
+of T-1208 compared the page with the prototype; they read behaviour and security.
+
+**What changed.** `Composer` (`detail.js`) is the field over `.composer-bar`, always shown: the
+picture press (a plus, `PicturePick`'s new `icon`), the delivery as a `select#prompt-mode`
+(Queue, Steer; Steer's option is disabled where the radio was), the tier `select#prompt-tier`,
+the arrow or Stop at the bar's end. Each draws a 32 px pill (the arrow 36 px, `--pill` and
+`--send`, larger under comfortable density) and keeps a 44 px box by a negative margin, so the
+suite's 44 px law holds unchanged and the box is about 90 px tall where it was 106 px with words.
+`#steer-why` still waits for words.
+
+**Refuted.** A one-press toggle chip as the prototype's mock behaved: its chevron says menu, and
+a native select keeps the control's name and its disabled Steer readable to a screen reader.
+T-701's "one line until there are words" is gone on the author's approved picture.
+
+**Still different from the prototype, listed to the author, not built here:** flat Inbox rows,
+the compact New ticket sheet, the ticket header's one meta line, the permission docked over the
+box, Settings as a page of rows, the Notes list with its Summary card; and never built: the
+Details tab, the `•••` press, Find, folded tool calls, "Deny and say why", "Start an agent now".
+
+**Verified.** `node --test state.test.js assets.test.js` (61 passed) and the UX suite on
+Chromium at phone size (`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone`), green; the
+picture compared with the prototype's by screenshot at 390 px. Not run here: WebKit and the
+desktop and tablet sizes.
