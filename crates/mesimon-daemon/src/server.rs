@@ -264,6 +264,13 @@ const NOT_SENT: &str = " ∙ the words were not sent";
 const PROMPT_WAITING: &str = "a prompt is already waiting for this session";
 /// Why a command is refused on a young seat whose box is not drawn (T-961).
 const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
+/// Why an agy start or wake is refused where its switch is off (T-1225).
+const AGY_SWITCHED_OFF: &str =
+    "agy sessions are switched off in this build ∙ MESIMON_AGY=1 in the daemon's environment turns them on";
+/// Why words for an agy seat are refused (T-1225): the board has no road into
+/// agy's prompt box yet, on a start, a wake or a live pane.
+const AGY_TAKES_NO_WORDS: &str =
+    "an agy session takes no words from the board yet ∙ start or wake it without them and type in its pane";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -6338,6 +6345,9 @@ impl Daemon {
         parked: Parked,
         word: &'static str,
     ) -> Response {
+        if self.session_kind(id) == SessionKind::Agy {
+            return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
+        }
         let now = now_ms();
         // A session whose mod is up takes the words by its `submit` (T-575):
         // nothing is typed, so there is no stray text to clear first, and
@@ -14787,6 +14797,9 @@ impl Daemon {
         if rec.kind == SessionKind::Codex {
             return self.codex_park(id, ticket, text, ack, false);
         }
+        if rec.kind == SessionKind::Agy {
+            return Err(AGY_TAKES_NO_WORDS.into());
+        }
         // One owed entry per seat (T-961): words still parked for this pane,
         // a launch's or an early prompt's, are never replaced, by a paste, a
         // fill or a submit. Refused before any key, as for a person at the
@@ -17489,6 +17502,9 @@ impl Daemon {
                 message: "no live agent session on this ticket — start or wake one first".into(),
             };
         };
+        if self.session_kind(id) == SessionKind::Agy {
+            return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
+        }
         let resp = self.resume_session_in(id, false, plan);
         match &resp {
             Response::Spawned { .. } => self.park(id, ticket, words, ack),
@@ -18813,6 +18829,18 @@ impl Daemon {
                     .into(),
             };
         }
+        // An agy start carries no words yet (T-1225): the board has no road
+        // into its prompt box, and a prompt on argv would be stored with the
+        // record, shown to every `ps`, and run by agy before its own folder
+        // trust dialog is answered (1.5.8).
+        if kind == SessionKind::Agy {
+            if !crate::agents::agy::enabled() {
+                return Response::Err { message: AGY_SWITCHED_OFF.into() };
+            }
+            if submit_prompt {
+                return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
+            }
+        }
         // One claude per ticket (2026-09-02). Everything that has to pick
         // "the" agent of a ticket — the board's prompt, the merge notice,
         // Enter's focus, automove, the card glyph — assumed one, and with two
@@ -18888,7 +18916,7 @@ impl Daemon {
         // Claude enters Spawning; the SessionStart hook flips it to Running.
         // Bash has no hook surface — a live pane is all "running" means (D15).
         let state = match kind {
-            SessionKind::Claude | SessionKind::Codex => SessionState::Spawning,
+            SessionKind::Claude | SessionKind::Codex | SessionKind::Agy => SessionState::Spawning,
             SessionKind::Bash => SessionState::Running,
         };
         let mut rec =
@@ -18938,7 +18966,9 @@ impl Daemon {
         // own words, so neither Claude's raw mode nor its paste detection
         // nor its `<pasted_content>` wrapping (T-588) is in the way.
         let by_mod = submit_prompt && kind == SessionKind::Claude && road == Road::Mod;
-        if kind.is_agent() {
+        // An agy pane gets no typed title (T-1225): keys sent before its box
+        // draws would land on its trust dialog or a startup notice.
+        if kind.is_agent() && kind != SessionKind::Agy {
             if let Some(title) = self
                 .board
                 .ticket(ticket)
@@ -20852,6 +20882,7 @@ impl Daemon {
         match provider {
             AgentProvider::ClaudeCode => rec.claude_session_id = identity.parse().ok(),
             AgentProvider::Codex => rec.codex_thread_id = Some(identity),
+            AgentProvider::Agy => rec.agy_conversation_id = Some(identity),
         }
         rec.transcript_path = Some(item.transcript_path.clone());
         rec.confidence = Confidence::Low;
@@ -21071,6 +21102,9 @@ impl Daemon {
         };
         if !rec.kind.is_agent() {
             return Response::Err { message: "only agent sessions resume".into() };
+        }
+        if rec.kind == SessionKind::Agy && !crate::agents::agy::enabled() {
+            return Response::Err { message: AGY_SWITCHED_OFF.into() };
         }
         let mut startup_retry = false;
         let cleanup_generation = if rec.codex_stopping {
@@ -21321,7 +21355,10 @@ impl Daemon {
                 // now. The stale path would otherwise send the NEXT resume
                 // back to the id that had no transcript — the dead end, one
                 // wake later.
-                rec.claude_session_id = Some(new_id);
+                if rec.kind == SessionKind::Claude {
+                    rec.claude_session_id = Some(new_id);
+                }
+                rec.agy_conversation_id = None;
                 rec.transcript_path = None;
             }
         }
@@ -21713,7 +21750,9 @@ impl Daemon {
             return Response::Err { message: TICKET_ARCHIVED.into() };
         }
         match rec.kind {
-            SessionKind::Claude | SessionKind::Codex => self.resume_session_in(id, false, false),
+            SessionKind::Claude | SessionKind::Codex | SessionKind::Agy => {
+                self.resume_session_in(id, false, false)
+            }
             SessionKind::Bash => {
                 let (sid, argv, cwd, ticket) = (
                     rec.sid16(),

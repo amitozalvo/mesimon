@@ -2605,7 +2605,11 @@ pub(super) fn who_word(
     kind: SessionKind,
 ) -> String {
     use mesimon_core::mesophon::RowKind;
-    let agent = if kind == SessionKind::Codex { "codex" } else { "claude" };
+    let agent = match kind {
+        SessionKind::Codex => "codex",
+        SessionKind::Agy => "agy",
+        SessionKind::Claude | SessionKind::Bash => "claude",
+    };
     if let Some(c) = &m.crown {
         let tier = theme.glyph_tier();
         let mark = if c.road { crate::glyphs::bolt(tier) } else { crate::glyphs::crown(tier) };

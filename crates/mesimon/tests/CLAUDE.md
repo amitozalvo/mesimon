@@ -12,7 +12,7 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
 `MESIMON_DAEMON_EXE` (the file the daemon stamps at start and re-reads for `list_board`'s
 `daemon`, T-941, so an e2e moves a stand-in and never the shared binary),
-`MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_COMPOSER_WAIT_MS`
+`MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_AGY` (`1` lets a board start agy sessions, T-1225), `MESIMON_AGY_BIN` (the stand-in agy, `tests/common/fake_agy.py`: it runs the hooks and title command a launch registered, on cue files beside itself), `MESIMON_AGY_HOME` (agy's own data folder, read for its trusted folders and conversations), `MESIMON_COMPOSER_WAIT_MS`
 (how long launch words wait for Claude's composer), `MESIMON_SLEEP_MIN_AGE_MS`,
 `MESIMON_LINGER_MS` (how long a crown-started worker sits idle with background tasks before the
 crown is told, T-599), `MESIMON_ASYNC_HOOK_CAP_MS` (the ten-minute cap on a held Stop's

@@ -168,9 +168,18 @@ pub fn is_mid_turn(s: &SessionRecord) -> bool {
 /// the conversation is kept for a wake on this tier or another.
 pub fn sleep_eligible(kind: SessionKind, state: &SessionState) -> Result<(), &'static str> {
     match (kind, state) {
-        (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. }) => Ok(()),
-        (SessionKind::Claude | SessionKind::Codex, s) if s.stopped_on_limit() => Ok(()),
-        (SessionKind::Claude | SessionKind::Codex, _) => Err("only idle sessions sleep"),
+        (
+            SessionKind::Claude | SessionKind::Codex | SessionKind::Agy,
+            SessionState::Idle { .. },
+        ) => Ok(()),
+        (SessionKind::Claude | SessionKind::Codex | SessionKind::Agy, s)
+            if s.stopped_on_limit() =>
+        {
+            Ok(())
+        }
+        (SessionKind::Claude | SessionKind::Codex | SessionKind::Agy, _) => {
+            Err("only idle sessions sleep")
+        }
         // Bash has no hook surface: Running IS its only live state, so the
         // manual path accepts it — the daemon then checks for live children.
         (SessionKind::Bash, SessionState::Running) => Ok(()),

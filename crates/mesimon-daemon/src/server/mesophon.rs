@@ -4442,7 +4442,12 @@ impl Daemon {
             trust: self.control_trust_of(s),
             permission: self.control_permission_of(s.id).map(phone_permission),
             session: s.id.to_string(),
-            provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }.into(),
+            provider: match s.kind {
+                SessionKind::Codex => "codex",
+                SessionKind::Agy => "agy",
+                SessionKind::Claude | SessionKind::Bash => "claude",
+            }
+            .into(),
             // A killed Codex seat not yet confirmed gone holds the ticket
             // (T-1218): neither a resume nor a start is offered on it.
             state: match s.state {

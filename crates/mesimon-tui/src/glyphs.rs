@@ -768,7 +768,8 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
 }
 
 /// The session-kind mark: `✻` is the mark Claude Code itself uses (U+273B,
-/// Emoji=No, Neutral width — one cell), `>` for Codex, `$` for a shell.
+/// Emoji=No, Neutral width — one cell), `>` for Codex, `$` for a shell, `^`
+/// for agy (T-1225: a stand-in until its mark is chosen).
 /// Ascii tier spells Claude's mark `*`; all marks remain one cell.
 pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> char {
     use mesimon_core::board::SessionKind;
@@ -777,6 +778,7 @@ pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> c
         (SessionKind::Claude, Tier::Ascii) => '*',
         (SessionKind::Bash, _) => '$',
         (SessionKind::Codex, _) => '>',
+        (SessionKind::Agy, _) => '^',
     }
 }
 

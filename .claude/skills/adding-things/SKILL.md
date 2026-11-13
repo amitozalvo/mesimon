@@ -52,6 +52,24 @@ here.**
 its `resume` owned-pair list (a wake replays the stored argv), and `agents/codex/mod.rs::prepare`.
 A tier is `core/src/tier.rs`; which one a ticket launches on is `tier::Book`, never a field read.
 
+**An agent provider** (T-1225 added agy this way; Codex and Claude are the other two):
+1. `core/src/board.rs`: the `AgentProvider` and `SessionKind` variants (their serde words are on
+   disk), every method on both, and a `SessionRecord` field for the provider's own conversation
+   id, `#[serde(default)]`. `core/src/tier.rs`: a built-in id, `Effort::ring`, `Book::get`.
+2. `daemon/src/agents/<name>.rs` implementing `AgentAdapter`, and its arm in `agents::adapter`.
+   Launch files go under the state dir and ride argv (promise 1); a provider with hooks runs
+   `mesimon hook --event <Its own names>` and maps frames to the neutral signals (`Ready`,
+   `TurnStarted`, `TurnEnded`, `Attention`) in `parse_hook`, never to Claude's.
+3. The compiler finds the exhaustive matches. It does not find the comparisons: grep
+   `== SessionKind::` and `!= SessionKind::` in `daemon/src/server.rs`, `server/mesophon.rs`,
+   `server/crownwake.rs` and `core/src/quiet.rs`, and every `if … { "codex" } else { "claude" }`
+   (daemon, TUI, `web/mesophon/*.js`), where a new kind silently takes the other arm.
+4. Words into its pane: `spawn_session`'s prefill, `paste_at`, `wake_with` and
+   `send_launch_words` each branch on the kind; a provider with no road yet refuses there.
+5. A stand-in binary under `tests/common/`, its seams in `DAEMON_SEAMS` and `tests/CLAUDE.md`,
+   and an e2e in `tests/agents/`. The stand-in proves the wire; what the real CLI does is
+   measured on it and written in STALE-MAP.
+
 **A theme:** a `static` `Palette` in `tui/src/theme.rs` (every profile, hand-authored — never
 nearest-matched), a `Flavor` variant and its arms in `palette`/`name`/`blurb` (the compiler
 finds them), a `Kind` for the law or a fourth clause argued in `test_chroma_law`. `cargo ut`

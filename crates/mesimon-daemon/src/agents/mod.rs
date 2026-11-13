@@ -1,6 +1,7 @@
 //! Provider-owned invocation, observation, history and recovery. Board policy
 //! supplies capabilities; adapters return normalized evidence to its writer.
 
+pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod transcript;
@@ -98,6 +99,7 @@ pub fn adapter(kind: SessionKind) -> Option<&'static dyn AgentAdapter> {
     match kind {
         SessionKind::Claude => Some(&claude::Claude),
         SessionKind::Codex => Some(&codex::Codex),
+        SessionKind::Agy => Some(&agy::Agy),
         SessionKind::Bash => None,
     }
 }

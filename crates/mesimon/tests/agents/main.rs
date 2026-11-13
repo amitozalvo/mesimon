@@ -10,6 +10,7 @@ mod common;
 #[path = "../common/guard.rs"]
 mod guard;
 
+mod agy_e2e;
 mod approve_bridge;
 mod ask_after_crash_e2e;
 mod ask_after_park_e2e;

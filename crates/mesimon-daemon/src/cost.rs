@@ -897,7 +897,8 @@ pub fn transcript_of(record: &mesimon_core::board::SessionRecord) -> Option<(Pat
     match record.kind {
         SessionKind::Claude => Some((path, false)),
         SessionKind::Codex => Some((path, true)),
-        SessionKind::Bash => None,
+        // No agy reader yet (T-1225): its transcript is counted by nothing.
+        SessionKind::Bash | SessionKind::Agy => None,
     }
 }
 

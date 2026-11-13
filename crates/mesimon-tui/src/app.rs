@@ -23415,7 +23415,7 @@ mod tests {
                 app.board_mut().agent_provider = match kind {
                     SessionKind::Claude => AgentProvider::Codex,
                     SessionKind::Codex => AgentProvider::ClaudeCode,
-                    SessionKind::Bash => unreachable!(),
+                    SessionKind::Bash | SessionKind::Agy => unreachable!(),
                 };
                 let ctx = app.ctx();
                 assert!(ctx.ticket_has_agent);

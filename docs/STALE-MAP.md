@@ -44519,3 +44519,98 @@ then `^p` lands on the first `a`; it fails on the old order. The transcript test
 the second link with two `^n` reach it with one (`…repeated_labels_and_prose`, the commands and
 bang-line tests after a copy), and those that needed the first link first walk with `^p`.
 Verified: `cargo ut` (TUI 1,443). TUI-only: no e2e, no full suite, no goldens moved.
+
+## agy is a third agent: provider, launch files and turn signals, behind `MESIMON_AGY=1` (T-1225, 2026-11-14, the author: "investigate first … propose a plan to add it as a supported agent"; proposal approved with "Go")
+
+Google's Antigravity CLI (`agy`, 1.5.8) is built like Claude Code: lifecycle hooks, MCP servers,
+session-only settings, resume by id. It takes the hook road, not the relay Codex needed. This is
+ticket 1 of 8; T-1232 to T-1238 carry the rest. Proposal: https://claude.ai/artifact/MQTDNHuyCQ5BNA7sQiqUku
+
+**What changed.**
+- `AgentProvider::Agy` and `SessionKind::Agy` (both `agy` on disk), `SessionRecord::agy_conversation_id`,
+  a built-in tier id `agy` that resolves by id and by a board whose provider is agy, and is
+  listed by no page yet. `AgentProvider::next(agy: bool)`: the provider ring holds agy only where
+  the caller read `MESIMON_AGY=1` (`board::AGY_SWITCH`).
+- `daemon/src/agents/agy.rs`. A launch writes `<state>/agy/<session>/.agents/hooks.json` and
+  `<state>/agy/<session>.json` and passes `--add-dir <folder> --settings <file>`, with `--mode
+  plan`, `--model`, `--effort` and, on a wake, `--conversation <id>`. Nothing is written to the
+  checkout or to `~/.gemini`.
+- Three hooks (`SessionStart`, `PreInvocation`, `Stop`) and the settings' `title` command run
+  `mesimon hook` under frame names of their own (`AgySessionStart`, `AgyPreInvocation`, `AgyStop`,
+  `AgyTitle`), so nothing that reads a Claude hook by name reads one. `parse_hook` maps them to the
+  neutral signals Codex's relay uses: the title feed's `idle` on a seat coming up is `Ready`,
+  `PreInvocation` with `invocationNum: 0` is `UserPromptSubmit` (a later one `TurnStarted`),
+  `tool_confirmation_pending` is `Attention{Permission}` and its answer `TurnStarted`, `Stop` is
+  `TurnEnded` by its `terminationReason`. A `Stop` with `fullyIdle: false` ends nothing.
+- The conversation id is learned from any frame (hooks say `conversationId`, the title feed
+  `conversation_id`), kept only if it could ride argv, and is what a wake names. No id is no
+  conversation: the wake starts fresh.
+- Folder trust (decision 3): the session's `trustedWorkspaces` is the person's own list, the
+  session folder, and the ticket's worktree only where the person's list names its main checkout
+  by exact path. Anything else gets agy's own dialog in the pane.
+- Refused until their own tickets, in words (`AGY_TAKES_NO_WORDS`): a start that carries words,
+  an ask into a live agy pane, a wake with words, a resend. A start types no title. Switched off
+  (`AGY_SWITCHED_OFF`): every agy start and wake.
+- The phone is told `provider: "agy"`; a transcript row's author reads `agy`; the kind mark is
+  `^`, a stand-in (the mark is the person's to choose, T-1234).
+
+**Measured on agy 1.5.8, on this machine.**
+- Hooks load from `.agents/hooks.json` in a folder added with `--add-dir`, and
+  `.agents/mcp_config.json` beside it starts its server; both with the agent's working directory
+  left alone. `--settings` is session-only: trust, the title command, permission rules.
+- A hook's environment is the pane's (`MESIMON_TICKET` arrived), plus `ANTIGRAVITY_CONVERSATION_ID`.
+  Its working directory is the folder holding `hooks.json`.
+- `SessionStart` fires at the first prompt, not at launch, and the title feed's id is empty until
+  then. A resumed session reports its id from the feed at once.
+- The title command runs in the TUI only (not under `-p`), on every state change and more than
+  once per change: `authenticating`, `initializing`, `idle`, `working`, `tool_use`, `reviewing`.
+- Real agy against the real `mesimon hook`: "loaded 1 named hooks", the turn's tool call ran, and
+  the four frames arrived with the keys read here.
+- Resume: `agy --conversation <id>`.
+
+**Traps.**
+- **A `PreToolUse` hook that prints `{}` or `{"decision":""}` denies the tool call** ("tool call
+  denied by pre-tool hook:"); printing nothing leaves it alone. `mesimon hook` prints nothing,
+  and ticket 1 registers no tool hook at all.
+- **A prompt on argv runs before folder trust.** `--prompt-interactive=<text>` ran the whole turn
+  while "Do you trust the contents of this project?" was still on screen.
+- **Trust is by exact path.** A session that trusted a parent still got the dialog in its
+  subfolder.
+- The title feed's `transcript_path` names `~/.gemini/antigravity/…`, which does not exist for the
+  CLI; the hooks' `transcriptPath` is right. Neither is kept yet.
+- MCP tools are reached through `call_mcp_tool` after the model reads a schema file; Gemini 3.8
+  Flash (Low) once answered that the tool did not exist. agy sends `server/discover` before
+  `initialize` and takes an error for an answer.
+- agy's default mode is `auto`: a sandboxed command that failed was retried with
+  `BypassSandbox: true` and no prompt.
+- agy starts a background update at every launch. Third-party models leave the author's plan on
+  2026-11-18.
+
+**Refuted.**
+- "Launch words by `--prompt-interactive`": it would be stored with the record's argv, shown to
+  every `ps`, and run ahead of the trust dialog. Words wait for the paste road (T-1233).
+- "Hooks in the worktree's `.agents/`": dirties the tree and collides with a repository's own
+  `.agents/hooks.json`. "A global `~/.gemini/config/hooks.json`" or a plugin: promise 1.
+- "Trust the worktree when a parent of the checkout is trusted": agy itself does not.
+- "Map agy onto Claude's signals (`Stop`, `PermissionRequest`)": `Signal::Stop` moves Claude's
+  quota and enters the async-stop and background-task rules, none of which is agy's.
+- "Register `PreToolUse`/`PostToolUse` now for activity": a process per tool call, and the one
+  hook where a wrong byte on stdout denies the call. They come with the gate and the approvals.
+- "The hook environment is sanitized" (a third-party reference, on 1.1.x): not on 1.5.8.
+
+**Known gaps, each with its ticket.** An idle agy seat reads unknown after a daemon restart until
+its next report (no passive recovery). A turn agy starts with no prompt (a background task's
+wake) counts as a prompt taken. `external_owner` is unread. Not verified: hooks under
+`--dangerously-skip-permissions` (the test was refused by this session's permission rules),
+`USER_CANCELED` on Esc, sub-agents, compaction, Linux.
+
+**Checks.** `cargo ut` (72 + 17 + 763 + 855 + 24 + 1,443 passed, 0 failed), `cargo build -p
+mesimon`, and the whole `agents` e2e area under `ci/test-run.py` (123 passed, 0 failed, 132 s),
+which holds the two new `agy_e2e::` cases: a start, a turn with a confirmation, a park and a wake
+against the stand-in `tests/common/fake_agy.py`, and no start without the switch. Two fixes on
+the way, no reruns of a red: a unit test that read the real agy settings got a trust list handed
+in, and the switch-off e2e first asked for kind `agy` on a Claude board (a start's kind follows
+its tier, so it now names agy on the board first). One live run on real agy with the real `mesimon
+hook` (above). No rig run: nothing a Claude or Codex agent or the crown is told changed, and agy
+is told nothing yet (T-1232 owns that run). The full workspace suite is owed once after the merge
+(`server.rs` and a session field changed).

@@ -763,6 +763,7 @@ impl App {
             let takes = match t.provider {
                 AgentProvider::ClaudeCode => "claude --model",
                 AgentProvider::Codex => "codex -c model=…",
+                AgentProvider::Agy => "agy --model",
             };
             return (String::new(), format!("any model {takes} takes ∙ kept as saved"));
         }
@@ -850,7 +851,9 @@ impl App {
         let Some((mut t, _)) = self.edited_tier() else { return Ok(()) };
         match self.tier_fields().get(idx) {
             Some(TierField::Provider) => {
-                t.provider = t.provider.next();
+                // agy rides the ring only behind its switch (T-1225).
+                let agy = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1");
+                t.provider = t.provider.next(agy);
                 t.model.clear();
                 self.tier_kept_model.clear();
                 if !Effort::ring(t.provider).contains(&t.effort) {

@@ -53,6 +53,9 @@ fn mesimon_binary() -> &'static str {
 /// `std::env::set_var` (the recipe until 2026-09-05) would otherwise run its
 /// daemon on default timings and pass, or fail, for the wrong reason.
 pub const DAEMON_SEAMS: &[&str] = &[
+    "MESIMON_AGY",
+    "MESIMON_AGY_BIN",
+    "MESIMON_AGY_HOME",
     "MESIMON_ARCHIVE_SUGGEST_MS",
     "MESIMON_ASYNC_HOOK_CAP_MS",
     "MESIMON_CLAUDE_BIN",

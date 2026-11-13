@@ -26,6 +26,9 @@ use crate::board::{AgentProvider, Board, SessionKind};
 /// The built-in tiers' ids — and their names, which are the same word.
 pub const CLAUDE: &str = "claude";
 pub const CODEX: &str = "codex";
+/// agy's built-in (T-1225): resolved by id, and by a board whose provider is
+/// agy; listed among a ticket's choices by no page yet.
+pub const AGY: &str = "agy";
 
 /// A tier name is a word on a card: short, one token, no spaces.
 pub const NAME_MAX: usize = 16;
@@ -68,6 +71,8 @@ impl Effort {
         match provider {
             AgentProvider::ClaudeCode => &[Default, Low, Medium, High, Xhigh, Max],
             AgentProvider::Codex => &[Default, Minimal, Low, Medium, High, Xhigh, Max, Ultra],
+            // `agy --effort` (1.5.8): low through max.
+            AgentProvider::Agy => &[Default, Low, Medium, High, Xhigh, Max],
         }
     }
 
@@ -177,11 +182,12 @@ pub fn builtin_id(provider: AgentProvider) -> &'static str {
     match provider {
         AgentProvider::ClaudeCode => CLAUDE,
         AgentProvider::Codex => CODEX,
+        AgentProvider::Agy => AGY,
     }
 }
 
 pub fn is_builtin_id(id: &str) -> bool {
-    id == CLAUDE || id == CODEX
+    id == CLAUDE || id == CODEX || id == AGY
 }
 
 /// The machine layer: `tiers.toml` in the state root, every board's.
@@ -274,6 +280,9 @@ impl<'a> Book<'a> {
         if id == CODEX {
             return Some(Tier::builtin(AgentProvider::Codex));
         }
+        if id == AGY {
+            return Some(Tier::builtin(AgentProvider::Agy));
+        }
         self.custom().into_iter().map(|(t, _)| t).find(|t| t.id == id)
     }
 
@@ -299,10 +308,10 @@ impl<'a> Book<'a> {
     pub fn board_default(&self) -> Option<Tier> {
         match self.board.default_tier.as_deref() {
             Some(id) => self.get(id),
-            None if self.board.agent_provider == AgentProvider::Codex => {
-                Some(Tier::builtin(AgentProvider::Codex))
-            }
-            None => None,
+            None => match self.board.agent_provider {
+                AgentProvider::ClaudeCode => None,
+                provider => Some(Tier::builtin(provider)),
+            },
         }
     }
 
@@ -572,6 +581,8 @@ impl ModelLists {
         match provider {
             AgentProvider::ClaudeCode => self.claude.as_deref(),
             AgentProvider::Codex => self.codex.as_deref(),
+            // No list is read for agy yet: its models come from `agy models`.
+            AgentProvider::Agy => None,
         }
     }
 }

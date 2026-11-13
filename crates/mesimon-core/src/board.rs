@@ -8,13 +8,22 @@ pub enum AgentProvider {
     #[default]
     ClaudeCode,
     Codex,
+    /// Google's Antigravity CLI, `agy` (T-1225). Reached only where
+    /// [`AGY_SWITCH`] is set, until its input, dialog and cost roads land.
+    Agy,
 }
+
+/// The environment switch that lets a board pick [`AgentProvider::Agy`]
+/// (T-1225): `MESIMON_AGY=1`. Read by the TUI's provider toggle and by the
+/// daemon's `SetAgentProvider`, never here (this crate does no I/O).
+pub const AGY_SWITCH: &str = "MESIMON_AGY";
 
 impl AgentProvider {
     pub fn session_kind(self) -> SessionKind {
         match self {
             Self::ClaudeCode => SessionKind::Claude,
             Self::Codex => SessionKind::Codex,
+            Self::Agy => SessionKind::Agy,
         }
     }
 
@@ -22,13 +31,18 @@ impl AgentProvider {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::Agy => "Antigravity",
         }
     }
 
-    pub fn next(self) -> Self {
+    /// The provider toggle's next value. `agy` is [`AGY_SWITCH`] as the
+    /// caller read it: without it the ring is Claude Code and Codex, and a
+    /// board already on agy steps back onto it.
+    pub fn next(self, agy: bool) -> Self {
         match self {
             Self::ClaudeCode => Self::Codex,
-            Self::Codex => Self::ClaudeCode,
+            Self::Codex if agy => Self::Agy,
+            Self::Codex | Self::Agy => Self::ClaudeCode,
         }
     }
 
@@ -39,7 +53,7 @@ impl AgentProvider {
     pub fn has_send_now(self) -> bool {
         match self {
             Self::ClaudeCode => true,
-            Self::Codex => false,
+            Self::Codex | Self::Agy => false,
         }
     }
 }
@@ -51,6 +65,8 @@ pub enum SessionKind {
     Claude,
     Codex,
     Bash,
+    /// An `agy` pane (T-1225). Last, so the kinds before it keep their order.
+    Agy,
 }
 
 impl SessionKind {
@@ -62,6 +78,7 @@ impl SessionKind {
         match self {
             Self::Claude => Some(AgentProvider::ClaudeCode),
             Self::Codex => Some(AgentProvider::Codex),
+            Self::Agy => Some(AgentProvider::Agy),
             Self::Bash => None,
         }
     }
@@ -73,6 +90,7 @@ impl SessionKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Bash => "bash",
+            Self::Agy => "agy",
         }
     }
 }
@@ -408,6 +426,11 @@ pub struct SessionRecord {
     /// board identity. Never replace this with a thread-tree session ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_thread_id: Option<String>,
+    /// agy's conversation id (T-1225), learned from its hooks and its title
+    /// feed: agy mints it at the first prompt and takes none at launch, so a
+    /// record without one hosts no conversation to resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agy_conversation_id: Option<String>,
     /// Identity of the owned Codex runtime process. A launch chooses a fresh
     /// generation, so an old supervisor cannot overwrite its replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -725,6 +748,7 @@ impl SessionRecord {
             road: crate::road::Road::Hooks,
             native: false,
             codex_thread_id: None,
+            agy_conversation_id: None,
             codex_generation: None,
             codex_observed_seq: 0,
             codex_pending_seq: None,
@@ -4578,11 +4602,32 @@ mod tests {
         assert!(!claude.pane_died() && !claude.codex_stopping);
     }
 
+    /// T-1225: agy joins the provider ring only behind its switch, a board
+    /// already on it steps back onto the ring either way, and its words are
+    /// its own on disk.
+    #[test]
+    fn agy_is_on_the_provider_ring_only_behind_its_switch() {
+        use AgentProvider::*;
+        assert_eq!(
+            [ClaudeCode.next(false), Codex.next(false), Agy.next(false)],
+            [Codex, ClaudeCode, ClaudeCode]
+        );
+        assert_eq!(
+            [ClaudeCode.next(true), Codex.next(true), Agy.next(true)],
+            [Codex, Agy, ClaudeCode]
+        );
+        assert_eq!(serde_json::to_string(&Agy).unwrap(), "\"agy\"");
+        assert_eq!(serde_json::to_string(&SessionKind::Agy).unwrap(), "\"agy\"");
+        assert_eq!(Agy.session_kind(), SessionKind::Agy);
+        assert_eq!(SessionKind::Agy.provider(), Some(Agy));
+        assert!(SessionKind::Agy.is_agent() && !Agy.has_send_now());
+    }
+
     #[test]
     fn sleeping_agents_reserve_the_same_seat_across_provider_switches() {
         let ticket = ulid::Ulid::new();
-        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
-            let mut board = Board { agent_provider: provider.next(), ..Board::default() };
+        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex, AgentProvider::Agy] {
+            let mut board = Board { agent_provider: provider.next(true), ..Board::default() };
             board.sessions.push(SessionRecord::new(
                 uuid::Uuid::new_v4(),
                 SessionKind::Bash,
