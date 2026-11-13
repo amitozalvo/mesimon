@@ -5205,14 +5205,6 @@ fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
 /// alone, so the answer still names the request the agent is waiting on.
 fn phone_permission(p: &api::Permission) -> api::Permission {
     use mesimon_core::text::{scrub_lines, scrub_text};
-    const SCRUBBED: &str = "[hidden characters removed]";
-    fn marked(raw: &str, clean: String) -> String {
-        if clean == raw {
-            clean
-        } else {
-            format!("{clean} {SCRUBBED}")
-        }
-    }
     fn scrub(v: &serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::String(s) => serde_json::Value::String(marked(s, scrub_lines(s))),
@@ -5225,11 +5217,7 @@ fn phone_permission(p: &api::Permission) -> api::Permission {
                     out.insert(k.clone(), scrub(v));
                 }
                 for (k, v) in changed {
-                    let base = marked(k, scrub_text(k));
-                    let name = std::iter::once(base.clone())
-                        .chain((2..).map(|n| format!("{base} {n}")))
-                        .find(|name| !out.contains_key(name))
-                        .unwrap_or(base);
+                    let name = unclaimed(marked(k, scrub_text(k)), |n| out.contains_key(n));
                     out.insert(name, scrub(v));
                 }
                 serde_json::Value::Object(out)
@@ -5243,6 +5231,87 @@ fn phone_permission(p: &api::Permission) -> api::Permission {
         input: scrub(&p.input),
         expires_at: p.expires_at,
     }
+}
+
+/// What a phone's copy says where the scrub took something out (T-1218).
+const SCRUBBED: &str = "[hidden characters removed]";
+
+/// `clean`, the scrub of `raw`, marked `SCRUBBED` where the scrub changed it.
+fn marked(raw: &str, clean: String) -> String {
+    if clean == raw {
+        clean
+    } else {
+        format!("{clean} {SCRUBBED}")
+    }
+}
+
+/// `base`, or `base 2`, `base 3`… : the first that `taken` does not hold, so
+/// two strings a scrub made alike are still drawn as two.
+fn unclaimed(base: String, taken: impl Fn(&str) -> bool) -> String {
+    std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base} {n}")))
+        .find(|name| !taken(name))
+        .unwrap_or(base)
+}
+
+/// A dialog as a phone draws it (T-1227), as `phone_permission` draws a
+/// permission: a question's words, header, options and descriptions, a
+/// plan's markdown and a trust dialog's folder through the same scrub, so a
+/// bidi or invisible character cannot make an option or a plan read as
+/// something it is not; marked `SCRUBBED` where the scrub changed them.
+/// The options of a question stay as many as they were, in their order: one
+/// whose label the scrub changed is drawn marked, numbered where another
+/// option already reads the same, so two can never pass for one. The stored
+/// dialog is untouched: the native match reads the agent's own strings, and
+/// the answer names the request and the option's index, as before.
+fn phone_dialog_scrubbed(dialog: &api::Dialog) -> api::Dialog {
+    use mesimon_core::text::{scrub_lines, scrub_text};
+    let lines = |s: &str| marked(s, scrub_lines(s));
+    let content = match &dialog.content {
+        api::DialogContent::Questions { questions } => api::DialogContent::Questions {
+            questions: questions
+                .iter()
+                .map(|q| {
+                    let clean: Vec<&str> = q
+                        .options
+                        .iter()
+                        .map(|o| o.label.as_str())
+                        .filter(|l| scrub_text(l) == *l)
+                        .collect();
+                    let mut drawn: Vec<String> = Vec::with_capacity(q.options.len());
+                    let options = q
+                        .options
+                        .iter()
+                        .map(|o| {
+                            let label = marked(&o.label, scrub_text(&o.label));
+                            let label = if label == o.label {
+                                label
+                            } else {
+                                unclaimed(label, |n| {
+                                    clean.contains(&n) || drawn.iter().any(|d| d == n)
+                                })
+                            };
+                            drawn.push(label.clone());
+                            api::QuestionOption { label, description: lines(&o.description) }
+                        })
+                        .collect();
+                    api::Question {
+                        question: lines(&q.question),
+                        header: marked(&q.header, scrub_text(&q.header)),
+                        options,
+                        multi_select: q.multi_select,
+                    }
+                })
+                .collect(),
+        },
+        api::DialogContent::Plan { markdown } => {
+            api::DialogContent::Plan { markdown: scrub_lines(markdown) }
+        }
+        api::DialogContent::Trust { folder } => api::DialogContent::Trust {
+            folder: folder.as_deref().map(|f| marked(f, scrub_text(f))),
+        },
+    };
+    api::Dialog { request: dialog.request.clone(), content }
 }
 
 fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
@@ -6220,12 +6289,15 @@ fn codex_dialog_step(
 /// cancel`. An allow walks to the first `Yes` row, a deny to the `No` row,
 /// and Enter confirms. The heading is not read: a command's, an edit's and
 /// a permission's dialogs share the rows. The key is bound to the request
-/// the phone answered, not its rows alone: the screen must show the
-/// request's reason (`Reason: …`), or, without one, the end of its command
-/// (the item spells `/bin/zsh -lc '…'`, the dialog the words inside), so a
-/// dialog that replaced it between the tap and the key gets nothing; a
-/// request with neither is no shape the board presses. The request's
-/// standing is re-read each key from the projection the snapshot keeps.
+/// the phone answered, not its rows alone (T-1227): the dialog must draw the
+/// request's whole command (`codex_draws_command`), and its reason where it
+/// has one, so a dialog that replaced it between the tap and the key gets
+/// nothing, even under the same reason; a request with no command the
+/// dialog draws (an edit, a permission, a tool's) is no shape the board
+/// presses. The folder is not drawn, so a request swapped for one with the
+/// same command, reason and another folder is the window left. The
+/// request's standing is re-read each key from the projection the snapshot
+/// keeps.
 fn codex_approval_step(
     screen: &str,
     allow: bool,
@@ -6236,17 +6308,9 @@ fn codex_approval_step(
         return Err(Miss::ShapeUnrecognised);
     }
     let reason = projection.input["reason"].as_str().map(squeeze).filter(|r| !r.is_empty());
-    let command = projection.input["command"].as_str().map(|c| {
-        let c = squeeze(c);
-        let c = c.trim_end_matches(['\'', '"']);
-        let start = c.char_indices().rev().nth(47).map_or(0, |(i, _)| i);
-        c[start..].to_string()
-    });
-    let bound = match (reason, command) {
-        (Some(reason), _) => squeezed.contains(&reason),
-        (None, Some(tail)) if !tail.is_empty() => squeezed.contains(&tail),
-        _ => false,
-    };
+    let command = projection.input["command"].as_str().and_then(codex_drawn_command);
+    let bound = command.is_some_and(|c| codex_draws_command(screen, &c))
+        && reason.is_none_or(|r| squeezed.contains(&r));
     if !bound {
         return Err(Miss::LabelNotFound);
     }
@@ -6259,6 +6323,110 @@ fn codex_approval_step(
         return Err(Miss::ShapeUnrecognised);
     }
     Ok(toward(current, if allow { yes } else { no }, DialogStep::Submit))
+}
+
+/// The words Codex's approval dialog draws for a command item's `command`
+/// (T-1227): the script inside a `<shell> -lc '…'` or `-c` wrapper, as the
+/// dialog strips it, else the command as the item spells it. `None` where
+/// the command is cut (the snapshot bounds a field and marks the cut `…`),
+/// or its quoting does not parse: no whole command to bind to.
+fn codex_drawn_command(command: &str) -> Option<String> {
+    if command.ends_with('…') {
+        return None;
+    }
+    let words = shell_words(command)?;
+    let shell = |w: &str| matches!(w.rsplit('/').next(), Some("bash" | "zsh" | "sh"));
+    match words.as_slice() {
+        [sh, flag, script] if shell(sh) && matches!(flag.as_str(), "-lc" | "-c") => {
+            Some(script.clone())
+        }
+        _ => Some(command.to_string()),
+    }
+}
+
+/// A POSIX shell's words of `line`: blanks split, `'…'` is literal, `"…"`
+/// takes a backslash before `"`, `\\`, `$` or a backtick, and a backslash
+/// outside quotes takes the next character. `None` on an open quote.
+fn shell_words(line: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => words.extend(word.take()),
+            '\'' => {
+                let w = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => w.push(c),
+                    }
+                }
+            }
+            '"' => {
+                let w = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\' | '$' | '`') => w.push(c),
+                            '\n' => {}
+                            c => {
+                                w.push('\\');
+                                w.push(c);
+                            }
+                        },
+                        c => w.push(c),
+                    }
+                }
+            }
+            '\\' => word.get_or_insert_with(String::new).push(chars.next()?),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    Some(words)
+}
+
+/// Whether Codex's approval dialog on `screen` draws `command` whole
+/// (T-1227): the lines from the first that starts `$ ` down to the rows
+/// (the last `1.` above the footer, as `dialog_rows_to` reads them), blank
+/// lines aside, spell it from its first word to its last. A run of
+/// blanks reads as one; where the pane wrapped a line, the join is a blank
+/// or none, since a wrap may break a word. A command the dialog clips,
+/// another command, or the same command inside a longer one is no match.
+fn codex_draws_command(screen: &str, command: &str) -> bool {
+    let one_blank = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lines: Vec<&str> = screen.lines().collect();
+    let footer = lines.iter().rposition(|l| l.contains("Press enter to confirm"));
+    let Some(rows) = lines[..footer.unwrap_or(lines.len())]
+        .iter()
+        .rposition(|l| numbered(l.trim()).is_some_and(|(_, n, _)| n == 1))
+    else {
+        return false;
+    };
+    let Some(start) = lines[..rows].iter().position(|l| l.trim_start().starts_with("$ ")) else {
+        return false;
+    };
+    let drawn: Vec<String> = lines[start..rows]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| one_blank(if i == 0 { &l.trim_start()[2..] } else { l }))
+        .filter(|l| !l.is_empty())
+        .collect();
+    fn spells(rest: &str, drawn: &[String]) -> bool {
+        let Some((line, more)) = drawn.split_first() else { return rest.is_empty() };
+        [rest.strip_prefix(' '), Some(rest)]
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.strip_prefix(line.as_str()))
+            .any(|r| spells(r, more))
+    }
+    let command = one_blank(command);
+    !command.is_empty()
+        && drawn.split_first().is_some_and(|(first, more)| {
+            command.strip_prefix(first.as_str()).is_some_and(|r| spells(r, more))
+        })
 }
 
 /// Recognize only measured native menus, reading the whole dialog (T-567).
@@ -6652,18 +6820,24 @@ fn drop_cards(
     dropped
 }
 
-/// A dialog as a phone's board carries it: a plan's head, as long as the
-/// dialog's JSON stays within `PHONE_DIALOG_MAX_BYTES`, marked cut, and its
-/// request the one an answer binds to.
+/// A dialog as a phone's board carries it: scrubbed (`phone_dialog_scrubbed`),
+/// a plan's head, as long as the dialog's JSON stays within
+/// `PHONE_DIALOG_MAX_BYTES`, marked cut, and its request the one an answer
+/// binds to.
 fn phone_dialog(dialog: &api::Dialog) -> api::Dialog {
     phone_dialog_within(dialog, PHONE_DIALOG_MAX_BYTES)
 }
 
-/// `phone_dialog` within `max` bytes of JSON.
+/// `phone_dialog` within `max` bytes of JSON. A plan the scrub changed ends
+/// in `SCRUBBED` on a line of its own, under the cut, so a head says it too.
 fn phone_dialog_within(dialog: &api::Dialog, max: usize) -> api::Dialog {
-    let api::DialogContent::Plan { markdown } = &dialog.content else { return dialog.clone() };
+    let scrubbed = phone_dialog_scrubbed(dialog);
+    let api::DialogContent::Plan { markdown: raw } = &dialog.content else { return scrubbed };
+    let api::DialogContent::Plan { markdown } = &scrubbed.content else { return scrubbed };
+    let mark = if markdown == raw { String::new() } else { format!("\n\n{SCRUBBED}") };
     let sized = |head: usize| {
-        let content = api::DialogContent::Plan { markdown: plan_head(markdown, head) };
+        let content =
+            api::DialogContent::Plan { markdown: format!("{}{mark}", plan_head(markdown, head)) };
         let cut = api::Dialog { request: dialog.request.clone(), content };
         let bytes = serde_json::to_vec(&cut).map_or(usize::MAX, |b| b.len());
         (cut, bytes)
@@ -7100,8 +7274,14 @@ mod tests {
             assert!(bytes <= PHONE_DIALOG_MAX_BYTES, "{bytes} bytes");
             let api::DialogContent::Plan { markdown: head } = &phone.content else { panic!() };
             let (cut, mark) = head.split_once("\n\n… the plan is cut here: ").expect("marked");
-            assert!(plan.starts_with(cut) && !cut.is_empty(), "its head");
-            assert!(mark.ends_with(&format!("of {} KiB", plan.len().div_ceil(1024))), "{mark}");
+            // T-1227: the head is the scrubbed plan's, the scrub said under it.
+            let clean = mesimon_core::text::scrub_lines(plan);
+            assert!(clean.starts_with(cut) && !cut.is_empty(), "its head");
+            let mark = match clean == *plan {
+                true => mark,
+                false => mark.strip_suffix(&format!("\n\n{SCRUBBED}")).expect("the scrub said"),
+            };
+            assert!(mark.ends_with(&format!("of {} KiB", clean.len().div_ceil(1024))), "{mark}");
             // The board answer it rides, two agents on such plans at once.
             let ticket = |n: u32| api::Ticket {
                 queued: None,
@@ -9090,6 +9270,81 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(codex_approval_step(CODEX_APPROVAL, true, &bare), Err(Miss::LabelNotFound));
     }
 
+    /// T-1227: a Codex approval is walked only onto a dialog that draws its
+    /// whole command. The cold read's sequence (approval A dismissed at the
+    /// terminal, B raised under the same reason before the snapshot moves)
+    /// gets no key, nor does a command that ends as A's does, holds it, is
+    /// clipped, or was cut by the snapshot, nor a request with no command;
+    /// a wrap that breaks a word or falls on a blank still reads as it.
+    #[test]
+    fn a_codex_approval_is_walked_only_onto_its_own_whole_command() {
+        let screen = |reason: &str, command: &str| {
+            format!(
+                "  Would you like to run the following command?\n\n  Environment: local\n\n  \
+                 {reason}\n\n{command}\n\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what \
+                 to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n"
+            )
+        };
+        let why = "Reason: Inspect the workspace";
+        let a = codex_approval(Some("Inspect the workspace"), Some("/bin/zsh -lc ls"));
+        assert_eq!(codex_approval_step(&screen(why, "  $ ls"), true, &a), Ok(DialogStep::Submit));
+        let b = screen(why, "  $ rm -rf important");
+        assert_eq!(
+            codex_approval_step(&b, true, &a),
+            Err(Miss::LabelNotFound),
+            "B under A's reason"
+        );
+        assert_eq!(codex_approval_step(&b, false, &a), Err(Miss::LabelNotFound));
+        let holds = screen(why, "  $ ls; rm -rf ~");
+        assert_eq!(codex_approval_step(&holds, true, &a), Err(Miss::LabelNotFound));
+        // No reason: once the command's last 48 characters bound it.
+        let path = "build/cache/of/a/very/long/path/that/goes/on/and/on";
+        let tail = codex_approval(None, Some(&format!("/bin/zsh -lc 'rm -rf {path}'")));
+        let ends_alike = screen("", &format!("  $ cp -r ~ /tmp/x && rm -rf {path}"));
+        assert_eq!(codex_approval_step(&ends_alike, true, &tail), Err(Miss::LabelNotFound));
+        let whole = screen("", &format!("  $ rm -rf {path}"));
+        assert_eq!(codex_approval_step(&whole, true, &tail), Ok(DialogStep::Submit));
+        let mid_word =
+            screen("", "  $ rm -rf build/cache/of/a/very/long/pa\n  th/that/goes/on/and/on");
+        assert_eq!(codex_approval_step(&mid_word, true, &tail), Ok(DialogStep::Submit));
+        let on_blank =
+            screen("", "  $ rm -rf\n  build/cache/of/a/very/long/path/that/goes/on/and/on");
+        assert_eq!(codex_approval_step(&on_blank, true, &tail), Ok(DialogStep::Submit));
+        let clipped = screen("", "  $ rm -rf build/cache/of/a/very/long/path/that/go…");
+        assert_eq!(codex_approval_step(&clipped, true, &tail), Err(Miss::LabelNotFound));
+        let moved_blank =
+            screen("", "  $ rm -rf build/cache/of/a/very/long/path/that/goes/on/and /on");
+        assert_eq!(codex_approval_step(&moved_blank, true, &tail), Err(Miss::LabelNotFound));
+        // The snapshot cut the command: there is no whole one to bind to.
+        let cut = codex_approval(None, Some("ls -la…"));
+        assert_eq!(
+            codex_approval_step(&screen("", "  $ ls -la…"), true, &cut),
+            Err(Miss::LabelNotFound)
+        );
+        // An edit's approval draws no command: the terminal's.
+        let edit = codex_approval(Some("Inspect the workspace"), None);
+        assert_eq!(
+            codex_approval_step(&screen(why, "  $ ls"), true, &edit),
+            Err(Miss::LabelNotFound)
+        );
+        // A command whose own lines start `1.` cannot cut the drawn block short.
+        let listed = screen(why, "  $ ls\n  1. rm -rf ~");
+        assert_eq!(codex_approval_step(&listed, true, &a), Err(Miss::LabelNotFound));
+        // The wrapper's quoting is read as a shell reads it; argv unwrapped
+        // is drawn as the item spells it.
+        let quoted = codex_approval(None, Some("/bin/bash -lc 'echo '\\''hi'\\'''"));
+        let said = screen("", "  $ echo 'hi'");
+        assert_eq!(codex_approval_step(&said, true, &quoted), Ok(DialogStep::Submit));
+        let plain = codex_approval(None, Some("git status"));
+        let status = screen("", "  $ git status");
+        assert_eq!(codex_approval_step(&status, true, &plain), Ok(DialogStep::Submit));
+        assert_eq!(
+            shell_words("a 'b c' \"d\\\"e\" f\\ g"),
+            Some(vec!["a".into(), "b c".into(), "d\"e".into(), "f g".into()])
+        );
+        assert_eq!(shell_words("'open"), None);
+    }
+
     /// T-846: a Codex plan's accept is the T-420 press, at the `Yes` row
     /// alone; sending it back is unmeasured and stays the pane's.
     #[test]
@@ -10163,6 +10418,70 @@ mod keys_resume_tests {
         assert_eq!(input["command [hidden characters removed]"], "x");
         assert_eq!(input["command [hidden characters removed] 2"], "ls");
         assert_eq!(input.as_object().unwrap().len(), 3);
+    }
+
+    /// T-1227: a phone's question and plan are drawn scrubbed, marked where
+    /// the scrub took something out, as a permission is (T-1218); options
+    /// that scrub alike stay as many, in their order, told apart; the
+    /// request the answer names is the daemon's own.
+    #[test]
+    fn a_phone_s_question_and_plan_are_scrubbed_and_answer_the_same_request() {
+        let option = |label: &str, description: &str| api::QuestionOption {
+            label: label.into(),
+            description: description.into(),
+        };
+        let raw = api::Dialog {
+            request: "toolu_q".into(),
+            content: api::DialogContent::Questions {
+                questions: vec![api::Question {
+                    question: "Deploy \u{202e}where?\nPick one.".into(),
+                    header: "Tar\u{200b}get".into(),
+                    options: vec![
+                        option("Staging", "safe"),
+                        option("Stag\u{200b}ing", "really \u{202e}prod"),
+                        option("\u{2066}Staging", "also prod"),
+                        option("Staging [hidden characters removed]", "literal"),
+                    ],
+                    multi_select: false,
+                }],
+            },
+        };
+        let phone = phone_dialog(&raw);
+        assert_eq!(phone.request, "toolu_q", "an answer binds to the same request");
+        let api::DialogContent::Questions { questions } = &phone.content else { panic!() };
+        let q = &questions[0];
+        assert_eq!(q.question, "Deploy where?\nPick one. [hidden characters removed]");
+        assert_eq!(q.header, "Target [hidden characters removed]");
+        let labels: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Staging",
+                "Staging [hidden characters removed] 2",
+                "Staging [hidden characters removed] 3",
+                "Staging [hidden characters removed]",
+            ],
+            "four options, in order, none passing for another"
+        );
+        let descriptions: Vec<&str> = q.options.iter().map(|o| o.description.as_str()).collect();
+        assert_eq!(
+            descriptions,
+            ["safe", "really prod [hidden characters removed]", "also prod", "literal"]
+        );
+        // A plan: scrubbed, the mark on a line of its own; a clean one bare.
+        let plan = |markdown: &str| api::Dialog {
+            request: "toolu_p".into(),
+            content: api::DialogContent::Plan { markdown: markdown.into() },
+        };
+        let markdown = |d: api::Dialog| match d.content {
+            api::DialogContent::Plan { markdown } => (d.request, markdown),
+            _ => panic!("a plan stays one"),
+        };
+        assert_eq!(
+            markdown(phone_dialog(&plan("1. Keep\n2. \u{202e}rm -rf\u{200b} /"))),
+            ("toolu_p".into(), "1. Keep\n2. rm -rf /\n\n[hidden characters removed]".into())
+        );
+        assert_eq!(markdown(phone_dialog(&plan("1. Keep\n"))).1, "1. Keep\n");
     }
 
     /// T-1208: the terminal's theme reaches the phone's board as the TUI

@@ -44329,3 +44329,74 @@ not readable from this session, so the cost is given as the rig's token counts.
 transcript path, a Codex seat: each silent) failed on `277acfd4` and pass. `cargo ut` (3,163
 passed), `--test crown crown_e2e::` (117 passed). No reruns. No second live rig run: the wake's
 words did not change.
+
+## A Codex approval lands only on the request drawn; questions and plans reach the phone scrubbed (T-1227, 2026-11-13, a cold security read of `a688541f`)
+
+**What was wrong.** (1) `codex_approval_step` bound a phone's Codex allow or deny to the screen
+by the request's reason alone, anywhere on the screen, or with no reason by the last 48
+whitespace-stripped characters of the command. Approval A (`ls`, "Inspect the workspace")
+dismissed at the terminal and B (`rm -rf important`, same reason) raised before the runtime's
+snapshot replaced the projection: the phone's allow of A pressed Yes on B. (2) A question's
+words, header, options and descriptions and a plan's markdown went to the phone as the agent
+wrote them; T-1218 had scrubbed only the permission's copy.
+
+**What shipped.**
+- `codex_approval_step` walks only where the dialog draws the request's whole command
+  (`codex_draws_command`) and, where it has one, its reason too. The drawn command is read from
+  the first line that starts `$ ` down to the rows (the last `1.` above the footer), blank
+  lines aside; inside a line a run of blanks is one, and where the pane wrapped, the join is a
+  blank or none (Codex's wrap breaks words at `/` too, as the T-846 capture's row 2 shows). The
+  item's command is unwrapped as the dialog unwraps it (`codex_drawn_command`: the script of a
+  `bash|zsh|sh -lc|-c '…'`, read by `shell_words`, a POSIX word reader, else the command as the
+  item spells it). A command the snapshot cut (`…`), quoting that does not parse, a screen that
+  clips it, holds it inside a longer one or ends like it, and a failed capture (an empty
+  screen, no footer) get no key: `label_not_found` / `shape_unrecognised` on the receipt, as
+  an unrecognised screen did before. A request with no command the dialog draws (an edit's, a
+  permission's, a tool's approval) is now the terminal's: before, its reason alone let it walk.
+- `phone_dialog_scrubbed`, inside `phone_dialog_within`, so the board answer and the crowded
+  plan's head both carry it: a question's words and descriptions through `scrub_lines`, its
+  header and option labels through `scrub_text`, a plan's markdown through `scrub_lines`, a
+  trust dialog's folder through `scrub_text`; T-1218's mark `[hidden characters removed]` where
+  the scrub changed something (a plan's on a line of its own under the cut, so a head says it
+  too). Options stay as many and in their order: a label the scrub changed is drawn marked, and
+  numbered (`… 2`, `… 3`) where another option already reads the same, clean labels first, as
+  `phone_permission` numbers a field name (`marked` and `unclaimed` are now shared by both). The
+  stored dialog is untouched: the native walk reads the agent's strings, the answer names the
+  request and the option's index.
+
+**Request-id binding: not offered.** The Codex runtime (`agents/codex/runtime.rs`) relays the
+TUI's WebSocket and only observes it; its contract is that observation never acknowledges an
+approval. Answering the request by id from the relay is possible on the wire but would be the
+daemon replying on the TUI's behalf, an authorization change and unmeasured on the TUI's
+drawing, so it is not done here. **The window left:** the dialog does not draw the folder
+(measured on 0.163.0: `Environment: local`, `Reason:`, `$ command`, no cwd), so a request
+swapped between the tap and the key for one with the same command and reason and another folder
+is walked as the same approval; and a command differing only by a blank exactly where the pane
+wrapped reads the same. Same command and folder is the same approval, as the ticket allows.
+
+**The crown's `get_ticket` does not get the phone's copy.** `agent_needs_you` reads
+`control_questions` and `control_plan` and has scrubbed them since T-566/T-582 (`scrub_text` on
+the question and labels, `scrub_lines` on the plan), without the mark or the numbering. Those
+are for a person choosing by sight; the crown answers by request and index, and changing what
+the crown is told needs a rig case and a live run (AGENTS.md), which this ticket's scope (the
+phone's copy) did not call for. Two labels that scrub alike reach the crown as two equal strings
+at two indices.
+
+**Refuted.** "Require the cwd on screen": the dialog never draws it, so every approval would be
+refused. "Contains the command anywhere on the screen": `ls` is in `ls; rm -rf ~`, and row 2's
+`don't ask again for commands that start with …` repeats a prefix. "Compare with every blank
+squeezed out": `rm -rf /tmp/x` and `rm -rf / tmp/x` squeeze alike.
+
+**Verified.** `a_codex_approval_is_walked_only_onto_its_own_whole_command` and
+`a_phone_s_question_and_plan_are_scrubbed_and_answer_the_same_request` each failed on
+`a688541f` (the first at the cold read's sequence: `Ok(Submit)` on B) and pass;
+`a_codex_approval_walks_to_yes_or_no_and_confirms` passes unchanged;
+`a_long_plan_is_kept_whole_and_cut_where_it_is_shown` now compares its head with the scrubbed
+plan (its escape-heavy plan holds `\u{1}` and tabs, which the scrub removes and marks).
+`cargo ut` (762 + 847 + 24 + 1,443 passed), `cargo build --workspace`, `--test agents
+approve_bridge`, `plan_accept_e2e::` and
+`provider_e2e::a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved`
+(the e2e naming Codex and approval: no e2e walks a Codex approval's keys; T-846's walk is
+proven on captured screens): 31 passed. No reruns; the mesophon unit tests ran once more after
+a tidy of the option labels' loop (72 passed). No rig run: nothing an agent or the crown is told
+changed.
