@@ -192,7 +192,7 @@ pub const CROWN_WAKES: &str = concat!(
      commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
      the ticket's brief is the person's, and start_agent once it is made tries again. So \
-     does an agent the crown started whose pane dies before its first turn: could not \
+     does an agent the crown started that dies before its first turn: could not \
      start, with how it exited (its status, and a Codex runtime's own reason); get_ticket \
      on it reads state exited, crashed. A worker that hit a usage limit (get_ticket on it \
      carries needs_you: quota) stopped mid-task on the account's limit, and its turn has \

@@ -36,12 +36,15 @@
 //! receipt said `session_started: false` while the tree was being cut, so
 //! without this line the crown waited on a worker that would never come.
 //! The line carries the card's own words, which end on the fix. The same
-//! line says a start whose agent's pane died before its first turn (T-1220):
-//! `Spawning` to `exited: crashed`, with the exit status and, on a Codex
-//! seat, the runtime's own last word (`its agent exited: crashed, status 1:
-//! start Codex app-server: No such file or directory (os error 2)`). No turn
-//! began, so no turn's end or `expect_secs` would ever say it, and the
-//! start's expectation goes with it. A watched ticket's death is heard too.
+//! line says a start whose agent died before its first turn (T-1220): into
+//! `exited: crashed` with its launch's words (the brief) never taken, owed
+//! or kept unsent, whatever state the seat showed, with the exit status
+//! and, on a Codex seat, the runtime's own word for that launch (`its agent
+//! exited: crashed, status 1: start Codex app-server: No such file or
+//! directory (os error 2)`). No turn began, so no turn's end or
+//! `expect_secs` would ever say it, and the start's expectation goes with
+//! it. A seat a daemon restart finds dead so is told the same way, `found
+//! at a restart`. A watched or held ticket's death is heard too.
 //!
 //! And one that is no event at all (T-599): **lingering** — a worker it
 //! started has sat idle at its composer with background tasks running for
@@ -358,7 +361,7 @@ pub(super) enum WakeCause {
     Planned,
     Asked,
     /// A start the crown asked for whose worktree could not be cut (T-777),
-    /// or whose agent's pane died before its first turn (T-1220). The
+    /// or whose agent died before its first turn (T-1220). The
     /// strongest: no agent exists, so nothing else about the worker
     /// is news, and the crown is the one who must act.
     Unstarted,
@@ -949,6 +952,20 @@ impl CrownWake {
         }
         out
     }
+}
+
+/// A record the restart's reconcile just moved from live into `exited:
+/// crashed` whose launch words the last daemon handed over unsent (T-722):
+/// a seat that died mid-launch while no daemon ran, or before the restart's
+/// hook frame came (T-1220). `was_live`: the record was persisted live, so
+/// this reconcile is what found it dead; a corpse persisted dead was told,
+/// or not, by the daemon that saw it die.
+pub(super) fn found_dead_at_launch(was_live: bool, rec: &SessionRecord) -> bool {
+    let crashed = SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed };
+    was_live
+        && rec.kind.is_agent()
+        && rec.state == crashed
+        && rec.unsent.as_ref().is_some_and(|u| u.brief)
 }
 
 /// What a turn's end says about the worker, and why. `before` is the
@@ -2674,42 +2691,84 @@ impl Daemon {
         self.owe_said(crown, worker, WakeCause::Unstarted, |w| w.unstarted = Some(why));
     }
 
-    /// The crown that would hear `seat` die at its launch (T-1220): an
-    /// agent's seat still `Spawning`, on a ticket the crown claims, with
-    /// the crown it claims for. Read before the death moves the record: an
-    /// exited Claude seat holds no agent seat, and with it goes the claim.
+    /// The crown that would hear `seat` die at its launch (T-1220): a seat
+    /// whose launch never began a turn, by the evidence the daemon holds
+    /// (`launch_unbegun`), not by the state it shows, with the crown that
+    /// claims it (`launch_claim`). Read before a death drops the words.
     pub(super) fn launch_heard(&self, seat: uuid::Uuid) -> Option<(ulid::Ulid, ulid::Ulid)> {
         let rec = self.board.session(seat)?;
-        if !rec.kind.is_agent() || rec.state != SessionState::Spawning {
-            return None;
-        }
-        let crown = self.board.crown_holder()?.id;
-        self.crown_claims(rec.ticket, crown, WakeCause::Unstarted).then_some((crown, rec.ticket))
+        self.launch_unbegun(rec).then(|| self.launch_claim(rec)).flatten()
     }
 
-    /// A worker's pane died before its first turn (T-1220): `Spawning` to
-    /// `exited: crashed`. No turn began, so no turn's end and no
-    /// `expect_secs` would ever tell the crown: its start failed, and it
-    /// hears `could not start` with the board's words for the death, the
-    /// pane's exit status and, on a Codex seat, the runtime's own last word
-    /// (`codex::runtime_failure`). Once: the record is exited after it.
+    /// The launch's own words, the ticket's brief, never taken by the seat:
+    /// still owed to it (`Owed`, unacked: an ack, whoever typed the prompt,
+    /// takes the entry), or kept as `unsent` when its delivery gave up
+    /// (T-570) or a daemon handed them over (T-722), which any prompt the
+    /// seat takes clears. A brief is a launch's, as the start's receipt
+    /// reads it (`Prompt::Launch`); a crown ask's words are no launch.
+    fn launch_unbegun(&self, rec: &SessionRecord) -> bool {
+        let owed = self.owed.get(&rec.id).filter(|o| o.ask.is_none());
+        owed.and_then(|o| o.parked.as_ref().or(o.sent.as_ref())).is_some_and(|w| w.brief)
+            || rec.unsent.as_ref().is_some_and(|u| u.brief)
+    }
+
+    /// The crown a seat's launch is told to (T-1220): the crown worn now,
+    /// where a crown started this seat (`started_by`, T-927) or it watches
+    /// or holds the ticket (`crown_claims`). Read off the record, so a seat
+    /// already exited, which holds no agent seat, keeps its claim. Never the
+    /// crown's own ticket, nor one off the board.
+    fn launch_claim(&self, rec: &SessionRecord) -> Option<(ulid::Ulid, ulid::Ulid)> {
+        let crown = self.board.crown_holder()?.id;
+        let on_board = self.board.ticket(rec.ticket).is_some_and(|t| !t.is_archived());
+        let claimed =
+            rec.started_by.is_some() || self.crown_claims(rec.ticket, crown, WakeCause::Unstarted);
+        (rec.kind.is_agent() && rec.ticket != crown && on_board && claimed)
+            .then_some((crown, rec.ticket))
+    }
+
+    /// A worker's pane died before its first turn (T-1220): into `exited:
+    /// crashed` with its launch's words never taken. No turn began, so no
+    /// turn's end and no `expect_secs` would ever tell the crown: its start
+    /// failed, and it hears `could not start` with the board's words for the
+    /// death, the pane's exit status where the board has it and, on a Codex
+    /// seat, the runtime's own word for this launch
+    /// (`codex::runtime_failure`, by the record's generation). Once: the
+    /// record is exited after it. `found` says the restart's reconcile found
+    /// it dead (`hear_found_dead`).
     pub(super) fn hear_launch_death(
         &mut self,
         (crown, worker): (ulid::Ulid, ulid::Ulid),
         seat: uuid::Uuid,
         status: Option<i32>,
+        found: bool,
     ) {
         let mut why = "its agent exited: crashed".to_string();
         if let Some(status) = status {
             why.push_str(&format!(", status {status}"));
         }
-        let codex = self.board.session(seat).is_some_and(|s| s.kind == SessionKind::Codex);
+        if found {
+            why.push_str(", found at a restart");
+        }
+        let generation = self
+            .board
+            .session(seat)
+            .filter(|s| s.kind == SessionKind::Codex)
+            .and_then(|s| s.codex_generation);
         if let Some(word) =
-            codex.then(|| crate::agents::codex::runtime_failure(&self.paths, seat)).flatten()
+            generation.and_then(|g| crate::agents::codex::runtime_failure(&self.paths, seat, g))
         {
             why.push_str(&format!(": {word}"));
         }
         self.hear_unstarted(crown, worker, why);
+    }
+
+    /// A seat the restart's reconcile found dead (T-1220), as
+    /// `found_dead_at_launch` picked it: told as a launch death, once, as
+    /// the death frame would have told it.
+    pub(super) fn hear_found_dead(&mut self, seat: uuid::Uuid, status: Option<i32>) {
+        if let Some(heard) = self.board.session(seat).and_then(|r| self.launch_claim(r)) {
+            self.hear_launch_death(heard, seat, status, true);
+        }
     }
 
     /// `owe_wake` for news with nothing before it, whose words `say` sets
@@ -5450,37 +5509,152 @@ pub(in crate::server) mod tests {
         });
     }
 
+    /// The bed's seat at `state`, on the record and in its machine.
+    fn at(
+        b: &mut crate::server::crownask::ledger_tests::Bed,
+        seat: uuid::Uuid,
+        state: SessionState,
+    ) {
+        b.d.board.sessions[0].state = state.clone();
+        b.d.machines.insert(seat, Machine::new(state, 1_000));
+    }
+
+    fn crashed() -> SessionState {
+        SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
+    }
+
     /// T-1220, T-1217's first loss: a Codex worker the crown started died
     /// 124 ms into its launch, status 1, and the crown was never told; the
-    /// start's `expect_secs` waited on a turn that never came. The death is
-    /// the start's failure: `could not start`, with the board's words for
-    /// it and the status, once, and the start's expectation goes with it.
+    /// start's `expect_secs` waited on a turn that never came. A death with
+    /// the launch's own words still owed is the start's failure, whatever
+    /// state the seat showed (round 2: Claude leaves `Spawning` at its
+    /// `SessionStart` with the brief still waiting for the composer):
+    /// `could not start`, with the board's words for it and the status,
+    /// once, and the start's expectation goes with it.
     #[test]
     fn a_worker_that_dies_at_launch_wakes_the_crown_once() {
-        let mut b = crate::server::crownask::ledger_tests::bed("launch-death");
+        for (name, state) in [
+            ("launch-death", SessionState::Spawning),
+            ("started-death", SessionState::Idle { stop_reason: StopReason::Unknown }),
+        ] {
+            let mut b = crate::server::crownask::ledger_tests::bed(name);
+            let seat = launching(&mut b);
+            at(&mut b, seat, state);
+            b.d.arm_expect(b.worker, None, 1_800);
+            pane_died(&mut b, seat);
+            assert_eq!(b.d.board.session(seat).unwrap().state, crashed(), "{name}");
+            let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
+            assert_eq!(wake.cause, WakeCause::Unstarted, "{name}");
+            assert_eq!(wake.changed(), ["its agent exited: crashed, status 1"], "{name}");
+            assert!(!b.d.crown_expects.contains_key(&b.worker), "{name}: nothing left to time");
+            b.d.crown_wakes.clear();
+            pane_died(&mut b, seat);
+            assert!(owed_for(&b.d, b.worker).is_none(), "{name}: a second death is no news");
+        }
+
+        // Claude may say the crash first, in its `SessionEnd`, and the pane's
+        // death follows with its status: the first frame tells it, once.
+        let mut b = crate::server::crownask::ledger_tests::bed("ended-death");
         let seat = launching(&mut b);
-        b.d.arm_expect(b.worker, None, 1_800);
-        pane_died(&mut b, seat);
-        let state = &b.d.board.session(seat).unwrap().state;
-        assert_eq!(
-            *state,
-            SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
-        );
+        at(&mut b, seat, SessionState::Idle { stop_reason: StopReason::Unknown });
+        b.d.on_hook(HookFrame {
+            session: seat.to_string(),
+            event: "SessionEnd".into(),
+            reason: Some("other".into()),
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        });
+        assert_eq!(b.d.board.session(seat).unwrap().state, crashed());
         let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
-        assert_eq!(wake.cause, WakeCause::Unstarted);
-        assert_eq!(wake.changed(), ["its agent exited: crashed, status 1"]);
-        assert!(!b.d.crown_expects.contains_key(&b.worker), "nothing left to time");
+        assert_eq!(wake.changed(), ["its agent exited: crashed"]);
         b.d.crown_wakes.clear();
         pane_died(&mut b, seat);
-        assert!(owed_for(&b.d, b.worker).is_none(), "a second death frame is no news");
+        assert!(owed_for(&b.d, b.worker).is_none(), "the pane's death after it is no news");
 
-        // A seat that came up and died later is no failed start.
-        let mut b = crate::server::crownask::ledger_tests::bed("later-death");
-        let seat = b.d.board.sessions[0].id;
-        b.d.board.sessions[0].started_by = Some(b.crown);
-        b.d.machines.insert(seat, Machine::new(SessionState::Running, 1_000));
+        // A seat whose launch words were taken (their ack) began a turn: a
+        // crash after it is no failed start, whatever it shows.
+        for state in [SessionState::Running, SessionState::Spawning] {
+            let mut b = crate::server::crownask::ledger_tests::bed("later-death");
+            let seat = launching(&mut b);
+            b.d.owed.remove(&seat);
+            at(&mut b, seat, state);
+            pane_died(&mut b, seat);
+            assert_eq!(b.d.board.session(seat).unwrap().state, crashed());
+            assert!(owed_for(&b.d, b.worker).is_none_or(|w| w.cause != WakeCause::Unstarted));
+        }
+    }
+
+    /// T-1220 round 2: on T-1217's own failure the Codex runtime publishes
+    /// `Unknown{ObservationLost}` before it exits, so the seat may read no
+    /// longer `Spawning` when its pane dies; its launch words still owed
+    /// say the start never began. The reason is the runtime's own word for
+    /// THIS launch (its generation), never an earlier launch's line in the
+    /// same log, which a resume of the session appends to.
+    #[test]
+    fn a_codex_seat_lost_then_dead_at_launch_says_its_own_launch_s_reason() {
+        let mut b = crate::server::crownask::ledger_tests::bed("codex-lost");
+        let seat = launching(&mut b);
+        b.d.board.sessions[0].kind = SessionKind::Codex;
+        b.d.board.sessions[0].codex_generation = Some(7);
+        let lost =
+            SessionState::Unknown { reason: mesimon_core::board::UnknownReason::ObservationLost };
+        at(&mut b, seat, lost);
+        let log =
+            crate::agents::codex::snapshot_path(&b.d.paths, seat).with_extension("app-server.log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let old = crate::agents::codex::failure_line(6, "an older launch's reason");
+        std::fs::write(&log, format!("{old}\n")).unwrap();
         pane_died(&mut b, seat);
-        assert!(owed_for(&b.d, b.worker).is_none_or(|w| w.cause != WakeCause::Unstarted));
+        let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
+        assert_eq!(wake.cause, WakeCause::Unstarted);
+        assert_eq!(
+            wake.changed(),
+            ["its agent exited: crashed, status 1"],
+            "another launch's line is not this one's reason"
+        );
+
+        let mut b = crate::server::crownask::ledger_tests::bed("codex-own");
+        let seat = launching(&mut b);
+        b.d.board.sessions[0].kind = SessionKind::Codex;
+        b.d.board.sessions[0].codex_generation = Some(7);
+        at(&mut b, seat, SessionState::Spawning);
+        let log =
+            crate::agents::codex::snapshot_path(&b.d.paths, seat).with_extension("app-server.log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let own = crate::agents::codex::failure_line(
+            7,
+            "start Codex app-server: No such file or directory (os error 2)",
+        );
+        std::fs::write(&log, format!("{old}\n{own}\n")).unwrap();
+        pane_died(&mut b, seat);
+        let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
+        assert_eq!(
+            wake.changed(),
+            ["its agent exited: crashed, status 1: start Codex app-server: No such file or \
+                 directory (os error 2)"]
+        );
+    }
+
+    /// T-1220 round 2: a seat persisted mid-launch whose pane a daemon
+    /// restart finds dead is set exited by the reconcile, where no death
+    /// frame runs. Its launch words handed over as `unsent` (T-722) are the
+    /// same evidence: the start never began, and the crown hears it once.
+    #[test]
+    fn a_launch_found_dead_at_a_restart_wakes_the_crown() {
+        let mut b = crate::server::crownask::ledger_tests::bed("found-dead");
+        let seat = b.d.board.sessions[0].id;
+        let rec = &mut b.d.board.sessions[0];
+        rec.started_by = Some(b.crown);
+        rec.state = crashed();
+        assert!(!found_dead_at_launch(true, rec), "no launch words kept: nothing to say");
+        rec.unsent = Some(mesimon_core::board::Unsent { text: String::new(), brief: true });
+        assert!(found_dead_at_launch(true, rec));
+        assert!(!found_dead_at_launch(false, rec), "a corpse persisted dead is old news");
+        b.d.hear_found_dead(seat, Some(1));
+        let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
+        assert_eq!(wake.cause, WakeCause::Unstarted);
+        assert_eq!(wake.changed(), ["its agent exited: crashed, status 1, found at a restart"]);
     }
 
     /// T-1220, T-1217's second loss: the launch's words stayed owed to the

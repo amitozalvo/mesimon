@@ -38,17 +38,26 @@ pub fn snapshot_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
     paths.rt_dir.join(format!("cdx-{}.json", &id.simple().to_string()[..16]))
 }
 
-/// How the runtime's own last word opens (`runtime::run`): the line it
-/// appends to its app-server log when it stops on an error, before its pane
-/// dies.
-pub const RUNTIME_FAILED: &str = "Mesimon Codex runtime failed: ";
+/// The runtime's own last word on a launch that stopped on an error
+/// (`runtime::run`), appended to its app-server log before its pane dies.
+/// The log is the session's, appended to across its resumes, so the line
+/// names the launch's generation (T-1220): a reader takes its own launch's
+/// line, never an earlier one's.
+pub fn failure_line(generation: u64, diagnostic: &str) -> String {
+    format!("Mesimon Codex runtime failed (generation {generation}): {diagnostic}")
+}
 
-/// The runtime's last word on why it stopped (T-1220), off the tail of its
-/// app-server log: what a launch death says beyond its status ("start Codex
-/// app-server: No such file or directory (os error 2)" when the executable
-/// was gone). A bounded read of a local file, no fork; `None` when the log
-/// or the line is absent.
-pub fn runtime_failure(paths: &crate::paths::Paths, id: uuid::Uuid) -> Option<String> {
+/// The runtime's last word on why launch `generation` of session `id`
+/// stopped (T-1220), off the tail of its app-server log: what a launch
+/// death says beyond its status ("start Codex app-server: No such file or
+/// directory (os error 2)" when the executable was gone). A bounded read of
+/// a local file, no fork; `None` when the log, or this launch's line, is
+/// absent.
+pub fn runtime_failure(
+    paths: &crate::paths::Paths,
+    id: uuid::Uuid,
+    generation: u64,
+) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 8 * 1024;
     let mut log =
@@ -58,7 +67,8 @@ pub fn runtime_failure(paths: &crate::paths::Paths, id: uuid::Uuid) -> Option<St
     let mut tail = Vec::new();
     log.take(TAIL).read_to_end(&mut tail).ok()?;
     let tail = String::from_utf8_lossy(&tail);
-    let line = tail.lines().rev().find_map(|l| l.strip_prefix(RUNTIME_FAILED))?.trim();
+    let own = failure_line(generation, "");
+    let line = tail.lines().rev().find_map(|l| l.strip_prefix(own.as_str()))?.trim();
     (!line.is_empty()).then(|| line.to_string())
 }
 
@@ -1121,8 +1131,9 @@ mod tests {
     use super::*;
 
     /// T-1220: the runtime's last word on a failed start is read off its
-    /// log's tail, under whatever the app-server printed before it; a log
-    /// with no such line, or none at all, says nothing.
+    /// log's tail, under whatever the app-server printed before it, and only
+    /// its own launch's (generation); a log with no such line, or none at
+    /// all, says nothing.
     #[test]
     fn a_launch_death_reads_the_runtime_s_last_word() {
         let root = std::env::temp_dir().join(format!("msmn-cdx-word-{}", std::process::id()));
@@ -1135,23 +1146,25 @@ mod tests {
         };
         std::fs::create_dir_all(&root).unwrap();
         let id = uuid::Uuid::new_v4();
-        assert_eq!(runtime_failure(&paths, id), None, "no log");
+        assert_eq!(runtime_failure(&paths, id, 7), None, "no log");
         let log = snapshot_path(&paths, id).with_extension("app-server.log");
         let noise = "x".repeat(20_000);
         std::fs::write(&log, format!("{noise}\nlistening\n")).unwrap();
-        assert_eq!(runtime_failure(&paths, id), None, "no runtime word");
+        assert_eq!(runtime_failure(&paths, id, 7), None, "no runtime word");
+        let gone = "start Codex app-server: No such file or directory (os error 2)";
         std::fs::write(
             &log,
             format!(
-                "{noise}\n{RUNTIME_FAILED}first\n{RUNTIME_FAILED}start Codex app-server: \
-                 No such file or directory (os error 2)\n"
+                "{noise}\n{}\n{}\n{}\n",
+                failure_line(7, "first"),
+                failure_line(7, gone),
+                failure_line(6, "an older launch's")
             ),
         )
         .unwrap();
-        assert_eq!(
-            runtime_failure(&paths, id).as_deref(),
-            Some("start Codex app-server: No such file or directory (os error 2)")
-        );
+        assert_eq!(runtime_failure(&paths, id, 7).as_deref(), Some(gone), "its own launch's");
+        assert_eq!(runtime_failure(&paths, id, 8), None, "a launch that wrote none");
+        assert_eq!(runtime_failure(&paths, id, 70), None, "no prefix of another generation");
         std::fs::remove_dir_all(root).unwrap();
     }
 

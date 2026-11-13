@@ -44159,53 +44159,86 @@ run of this rebase. Both omission screenshots were inspected; the text and butto
 compact card and the ticket's Terminal controls remain available. Main's STALE-MAP prefix
 and `sessions.js` were checked byte-for-byte. No additional e2e file or full suite was run.
 
-## A worker that dies at launch wakes the crown, and leaves nothing that mutes its ticket (T-1220, 2026-11-13, the crown's brief from T-1217's two losses)
+## A worker that dies at launch wakes the crown, and leaves nothing that mutes its ticket (T-1220, 2026-11-13, the crown's brief from T-1217's two losses; round 2 from the cold read of `6711c98a`)
 
 **What changed.**
-- A seat the crown claims (started, watched or held) whose pane dies while still `Spawning`, into
-  `exited: crashed`, wakes the crown once with the existing `could not start` line, now also said
-  of a start whose agent died before its first turn: `T-2 "…" could not start (its agent exited:
-  crashed, status 1: start Codex app-server: No such file or directory (os error 2))`. The status
-  is the pane-died frame's; the reason after it is a Codex runtime's own last word, read off the
-  tail of its `.app-server.log` (`codex::runtime_failure`, the line `runtime::run` already wrote,
-  its prefix now one constant `RUNTIME_FAILED`). The claim is judged before the death moves the
-  record (`launch_heard`): an exited Claude seat holds no agent seat, and `started_by_crown` reads
-  false after it. `Unstarted` joins the causes a watched or held ticket is heard for. The start's
-  `expect_secs` goes with the wake (`hear_unstarted`'s `expect_unstarted`): an unbegun start's
-  expectation has no session, `expect_alive` kept it forever, and it would have timed the next
-  seat's first turn.
+- A seat whose launch never began a turn and that goes into `exited: crashed` wakes the crown once,
+  with the existing `could not start` line, now also said of such a start: `T-2 "…" could not
+  start (its agent exited: crashed, status 1: start Codex app-server: No such file or directory
+  (os error 2))`. "Never began a turn" is the evidence the daemon holds, not the state shown
+  (round 2): the launch's brief still owed to the seat and unacked (an ack, whoever typed the
+  prompt, takes the entry), or kept as `unsent` (T-570's give-up, T-722's handover), which any
+  prompt clears; a crown ask's words are no launch's (`launch_unbegun`, the start receipt's own
+  `Prompt::Launch` reading). The first cut asked for `Spawning`, and missed a Claude seat past its
+  `SessionStart` with the brief still waiting, and T-1217's own failure whenever the Codex
+  runtime's `Unknown{ObservationLost}` landed before `PaneDied`.
+- Either death frame tells it (`PaneDied`, or Claude's `SessionEnd` saying a crash first), judged
+  before the change drops the words; the status is the pane's when its frame is the one.
+- The claim is read off the record (`launch_claim`: a crown started this seat, `started_by`, or
+  watches or holds the ticket): an exited Claude seat holds no agent seat, so
+  `started_by_crown` reads false after the death. `Unstarted` joins the causes a watched or held
+  ticket is heard for. The start's `expect_secs` goes with the wake (`expect_unstarted`): an
+  unbegun start's expectation has no session, `expect_alive` kept it, and it would have timed the
+  next seat's first turn.
+- A Codex reason is this launch's or none (round 2): the runtime's failure line names its
+  generation (`codex::failure_line`), and `runtime_failure` takes only the line of the record's
+  `codex_generation`; the log is appended to across a session's resumes, and the first cut took
+  its last line whoever wrote it.
+- A seat a daemon restart finds dead (round 2): the reconcile, which sets it exited with no death
+  frame, picks a record it just moved from live to `exited: crashed` that carries its brief as
+  `unsent` (`found_dead_at_launch`), and once the crown's ledger is restored `hear_found_dead`
+  tells it the same way, `…, found at a restart`, with the dead pane's status where tmux held it.
 - Words owed to a seat that exits are dropped at its death (`apply_change`, any edge into
   `Exited`; the journal says `session … exited: the words owed to it are dropped`). `pending_on`
   counts `owed` by ticket, so the dead seat's launch entry read as words on their way and `due`
   silenced the next seat's finished turn until a daemon restart (T-1217 at 19:58). `unsent` is
-  untouched: it is kept only on a seat with a pane (`mark_unsent`), so the resend a restart makes
-  for a live seat (T-570, T-722) is as it was. A crown ask whose entry goes this way settles
-  `unknown` by `settle_crown_asks`, as for a killed seat.
-- The crownwake header and `CROWN_WAKES` say the new wake; rig case LD1 (`restart_dead_launch`:
-  a Claude Code wrapper that answers the probes and dies, status 1, on every session) checks the
-  wake, its words, and that the second start's finished turn is told.
+  kept only on a seat with a pane (`mark_unsent`), so the restart's resend for a live seat
+  (T-570, T-722) is as it was. A crown ask whose entry goes this way settles `unknown` by
+  `settle_crown_asks`, as for a killed seat.
+- The crownwake header and `CROWN_WAKES` say the wake. Rig case LD1 (`restart_dead_launch`): a
+  Claude Code wrapper whose first session dies, status 1, and whose later ones run, so the second
+  start is in the same daemon life (round 2: the first LD1 restarted between the two, which
+  empties `owed`, and passed with the drop removed); it checks one `could not start`
+  (`woke_once`, new: `woke` is membership), the status in the crown's line, and the second
+  start's finished turn told.
 
-**Looked at beside it, no leak.** `turn_asks` is set only by an ack, so a seat that never took
-words leaves none, and `turn_ended` on the death takes any earlier one; `queued` is swept at a dead
-seat (`seat_stands`); `control.starts` already reads a death as the start's refusal;
-`pending_submit` is the dead record's flag, cleared with the drop, and nothing reads it by ticket.
+**Looked at beside it, no leak.** `turn_asks` is set only by an ack, and `turn_ended` on the death
+takes any earlier one; `queued` is swept at a dead seat (`seat_stands`); `control.starts` already
+reads a death as the start's refusal; `pending_submit` is the dead record's flag, cleared with the
+drop, and nothing reads it by ticket.
 
-**Left, not proven to matter.** Session-keyed maps the death leaves (`codex_input_due`,
-`codex_ready`, `codex_plan_typed`, `codex_modes`, `lingered`, `tasks_since`, `failing`): none is
-read by ticket by `pending_on`, the queue or the train. Not woken: a seat that came up (Claude's
-`SessionStart`, a Codex seat past `Spawning`) and died before taking its words, and a crash
-mid-turn: neither is `Spawning`, and the brief asked for a launch's death; its owed words are
-dropped all the same.
+**Open.**
+- A daemon killed between a launch's session write and its hand-over (no `unsent` on the record:
+  a crash or SIGKILL, not a clean stop, which runs `hand_over_owed`): the restart has no evidence
+  that the launch never began, and says nothing. Telling it would need the launch's words
+  persisted at the spawn, a new mechanism.
+- A start with no words (a wake at the prompt box, `start_agent` on another tier) has no launch
+  words to judge by, and its death is not told as a failed start.
+- A crash mid-turn still wakes nothing: outside this brief; its owed words are dropped all the same.
+- Session-keyed maps the death leaves (`codex_input_due`, `codex_ready`, `codex_plan_typed`,
+  `codex_modes`, `lingered`, `tasks_since`, `failing`): none is read by ticket by `pending_on`,
+  the queue or the train.
 
-**Refuted.** "Count only a live seat's words in `pending_on`": the same effect, but the entry would
-stay in memory for every other reader of `owed` to step around (the receipts, the crown's asks);
-dropping it at the death is one place.
+**Refuted.** "Count only a live seat's words in `pending_on`": the same effect, but the entry
+would stay in memory for every other reader of `owed` to step around (the receipts, the crown's
+asks); dropping it at the death is one place. "`Spawning` is before the first turn": refuted
+above, by event order on both engines.
 
-**Verified.** Three tests, the first two failing on the code before them:
-`a_worker_that_dies_at_launch_wakes_the_crown_once` (the wake, its words, the expectation gone, a
-second death frame silent, a later death no `could not start`),
-`words_owed_to_a_dead_seat_do_not_mute_its_ticket` (the restarted seat's finished turn comes due),
-and `a_launch_death_reads_the_runtime_s_last_word`. `cargo ut` (3,150 passed), `cargo build
---workspace`, `--test crown crown_e2e::` (117 passed), `ci/rig_test.py`. No reruns. No live rig run
-of LD1 was made: the crown decides on it. `server.rs` outside its tests and `core/src/mcp.rs`
-changed, so the full workspace suite is owed after the merge.
+**Verified.** Tests, each failing on the code before it (round 2's on the first cut's `Spawning`
+condition, run with it put back): `a_worker_that_dies_at_launch_wakes_the_crown_once` (`Spawning`
+and post-`SessionStart` deaths each once, the expectation gone, `SessionEnd` first then the pane,
+an acked seat's crash no `could not start`), `a_codex_seat_lost_then_dead_at_launch_says_its_own_launch_s_reason`,
+`a_launch_found_dead_at_a_restart_wakes_the_crown`, `words_owed_to_a_dead_seat_do_not_mute_its_ticket`,
+`a_launch_death_reads_the_runtime_s_last_word`. `cargo ut` (3,152 passed), `cargo build
+--workspace`, `--test crown crown_e2e::` (117 passed), `ci/rig_test.py`. One rerun:
+`crown_e2e` was refused by `ci/test-run.py` before any test ran (4.9 GiB free, 5 GiB required:
+other worktrees' builds), and ran whole the second time with nothing changed.
+
+**Live rig run.** `python3 -B ci/rig.py --only LD1`, run 20261113-212704, crown
+`claude-opus-5-5` at high effort, workers on the rig's Sonnet, Claude Code 2.1.323: PASS in
+54 s. The first seat exited (crashed) 1.5 s after `start_agent`, `PaneDied (1)`, and the board
+woke the crown `unstarted` at once; the crown's line read `its agent exited: crashed, status 1`.
+The second start, same daemon, took the brief whole (115 chars), ended its turn, and the board
+woke the crown `finished`: wakes `['unstarted', 'finished']`. Crown: 4 turns, 5 tool calls,
+tokens in 28 + cache read 622,888 + cache write 5,944, out 599. The pane's weekly quota figure is
+not readable from this session, so the cost is given as the rig's token counts.

@@ -28,8 +28,9 @@
 #              same with a wrapper that starts every session without its
 #              `--plugin-dir`: a Claude Code whose mods are off, T-598),
 #              `restart_dead_launch` (T-1220, LD1: the same with a wrapper that
-#              answers the probes and dies, status 1, on every session it is
-#              asked to start: a launch that dies before its first turn),
+#              answers the probes and dies, status 1, on the first session it
+#              is asked to start, and runs every later one: a launch that dies
+#              before its first turn, then a start in the same daemon life),
 #              `restart_plain` (back to the Claude Code on PATH), `doctor`
 #              (read its claude road line), `limit` (T-802: the worker's
 #              session reports a usage limit through the real hook binary;
@@ -460,8 +461,8 @@ title = "LD1 · a worker whose launch dies, then its second start: do the steps 
 blind = true
 workspace = "worktree"
 brief = "Reply with the single word done and end your turn. Read no file and run no command."
-expect = "the rig's daemon restarted on a Claude Code that dies, status 1, on every session it starts: the crown's start_agent gets a seat that goes spawning to exited (crashed) before its first turn, and the board wakes the crown, could not start (its agent exited: crashed, status 1), once (T-1220). The daemon back on the real Claude Code, the crown's second start_agent on the same ticket runs the brief, and that worker's finished turn wakes the crown: the first seat's launch words, never taken, no longer read as words on their way to the ticket."
-checks = ["woke:unstarted", "woke:finished", "crown_line:LD1 told:crashed"]
+expect = "the rig's daemon restarted on a Claude Code whose first session dies, status 1, at launch: the crown's start_agent gets a seat that exits (crashed) before its first turn, and the board wakes the crown once, could not start (its agent exited: crashed, status 1) (T-1220). In the same daemon life the crown's second start_agent on the ticket runs the brief, and that worker's finished turn wakes the crown: the dead seat's launch words, never taken, no longer read as words on their way to the ticket."
+checks = ["woke_once:unstarted", "woke:finished", "crown_line:LD1 told:status 1", "first_prompt"]
 
   [[test.steps]]
   rig = "restart_dead_launch"
@@ -472,12 +473,12 @@ checks = ["woke:unstarted", "woke:finished", "crown_line:LD1 told:crashed"]
   wake = true
 
   [[test.steps]]
-  rig = "restart_plain"
-
-  [[test.steps]]
   crown = "LD1: call start_agent for {key} again, with workspace worktree, no tier and no plan, then end your turn with the single line: LD1 again. When the board wakes you for {key}, end your turn with the single line: LD1 seen."
   until = { stops = 1, state = "idle" }
   wake = true
+
+  [[test.steps]]
+  rig = "restart_plain"
 
 [[test]]
 id = "R9"

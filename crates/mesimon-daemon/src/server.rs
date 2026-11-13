@@ -1357,6 +1357,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let mut just_exited = Vec::new();
     let mut owed_abandoned = Vec::new();
     let mut owed_handed = Vec::new();
+    let mut found_dead = Vec::new();
     for (id, link) in &rec.links {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
@@ -1368,6 +1369,15 @@ pub fn run(paths: Paths) -> Result<()> {
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
             r.set_state(state_for(link, &r.state, r.kind.is_agent()));
+            // A launch that died with no daemon to see it (T-1220): told to
+            // its crown once the ledger is back, below.
+            if crownwake::found_dead_at_launch(was_live, r) {
+                let status = match link {
+                    mesimon_core::reconcile::Link::DeadPane { status, .. } => Some(*status),
+                    _ => None,
+                };
+                found_dead.push((*id, status));
+            }
             if r.kind == SessionKind::Codex && (had_pane || r.state.has_pane()) {
                 // The owed ledger is memory (the same policy as Claude's). A
                 // new daemon must not reconstruct and submit a partial prompt
@@ -1633,6 +1643,9 @@ pub fn run(paths: Paths) -> Result<()> {
     // The crown's ledger (T-602): what it was told, and what it is owed.
     d.restore_crown(crown_ledger);
     d.resume_crown_entering();
+    for (id, status) in found_dead {
+        d.hear_found_dead(id, status);
+    }
     // The train's open rebase asks (T-635): the hold through a restart.
     d.restore_train(train_file);
     // The board's pull requests as the last pass read them (T-752): on the
@@ -5999,17 +6012,21 @@ impl Daemon {
                         && matches!(s.state, SessionState::Spawning)
                         && now.saturating_sub(s.state_changed_at.unwrap_or(0)) <= LAUNCH_DEATH_MS
                 });
-            // The crown that hears this seat's start, judged on the same
-            // side of the move: a death before the first turn is its news
-            // (T-1220).
-            let launch =
-                matches!(sig, Signal::PaneDied { .. }).then(|| self.launch_heard(id)).flatten();
+            // A death before the seat's first turn is its crown's news
+            // (T-1220): the launch's words are judged before the change
+            // below drops them. Either frame may be the one that ends it: a
+            // pane's death, or Claude's `SessionEnd` saying a crash first.
+            let launch = matches!(sig, Signal::PaneDied { .. } | Signal::SessionEnd { .. })
+                .then(|| self.launch_heard(id))
+                .flatten();
             let machine = self
                 .machines
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
             let (change, decision) = machine.apply_explained(&sig, now);
             self.feed.state_decision(id, &frame.event, &decision);
+            let crashed = SessionState::Exited { reason: ExitReason::Crashed };
+            let crashed_now = change.as_ref().is_some_and(|c| c.to == crashed && c.from != c.to);
             // A compaction window's edge moves no state (T-894), and the
             // record carries the window: the card paints it, and the queue
             // holds words against it (`quiet::holds_against_words`).
@@ -6052,11 +6069,12 @@ impl Daemon {
             if died_at_launch {
                 dirty |= self.probe_server_access();
             }
-            let crashed = SessionState::Exited { reason: ExitReason::Crashed };
-            if let (Some(heard), Signal::PaneDied { status }) = (launch, &sig) {
-                if self.board.session(id).is_some_and(|s| s.state == crashed) {
-                    self.hear_launch_death(heard, id, *status);
-                }
+            if let Some(heard) = launch.filter(|_| crashed_now) {
+                let status = match &sig {
+                    Signal::PaneDied { status } => *status,
+                    _ => None,
+                };
+                self.hear_launch_death(heard, id, status, false);
             }
             // The composer's Shift+Enter, second half: the pane is provably
             // alive and reading, so press the Enter its prefilled title has

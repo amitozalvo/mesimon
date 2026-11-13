@@ -3294,14 +3294,22 @@ Reply with the single word ready and end your turn."""
             return self.restart_on(wrapper, "the mod validated", record,
                                    "the daemon never came up on the mods-off Claude Code")
         if what == "restart_dead_launch":
-            # LD1 (T-1220): a Claude Code whose every session dies at launch,
-            # status 1, as a Codex seat died while npm reinstalled it (T-1217):
-            # the probes are the real one's, so the daemon comes up.
+            # LD1 (T-1220): a Claude Code whose first session dies at launch,
+            # status 1, as a Codex seat died while npm reinstalled it
+            # (T-1217); every later one, and every probe, is the real one's.
+            # The marker is the one death: the next start runs in the same
+            # daemon life, whose owed words the death must not leave behind.
+            marker = os.path.join(self.out, "ld1-died")
+            if os.path.exists(marker):
+                os.remove(marker)
             wrapper = self.claude_wrapper(
-                "claude-dead-launch", "The rig's LD1 (T-1220): every session dies at launch.",
-                'case "$1" in --version|plugin|auth) exec "' + self.claude + '" "$@" ;; esac\n'
-                'echo "rig LD1: this Claude Code is gone" >&2\n'
-                "exit 1\n")
+                "claude-dead-launch", "The rig's LD1 (T-1220): the first session dies at launch.",
+                'case "$1" in --version|plugin|auth|-p) exec "' + self.claude + '" "$@" ;; esac\n'
+                f'if [ ! -e "{marker}" ]; then\n'
+                f'  : > "{marker}"\n'
+                '  echo "rig LD1: this Claude Code is gone" >&2\n'
+                "  exit 1\n"
+                "fi\n")
             return self.restart_on(wrapper, None, record,
                                    "the daemon never came up on the dying Claude Code")
         if what == "async_review":
@@ -4149,7 +4157,7 @@ Reply with the single word ready and end your turn."""
             name, _, arg = c.partition(":")
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
-            if rec is None and name not in ("woke", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
+            if rec is None and name not in ("woke", "woke_once", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing", "title_words", "title_never",
                                             "title_is", "title_match", "described", "create_start"):
@@ -4901,6 +4909,12 @@ Reply with the single word ready and end your turn."""
                 # calls and results, so a re-read before the ask fails too.
                 ok, seen = receipt_ask_outcome(crown_all, key)
                 check(c, ok and arg == "accepted", seen)
+            elif name == "woke_once":
+                # `woke_once:<cause>` (LD1, T-1220): that wake for the ticket
+                # exactly once, where `woke` is membership.
+                causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
+                          and l.get("worker") == tid]
+                check(c, causes.count(arg) == 1, f"wakes {causes}" if causes else "no wake")
             elif name == "woke":
                 causes = [l.get("cause") for l in lines if l.get("kind") == "crown_wake"
                           and l.get("worker") == tid]
