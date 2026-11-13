@@ -10,6 +10,107 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.18 — 2026-11-13
+
+Everything from the two unstable builds since beta.17, a redesigned Remote
+Control, and an ask field that holds lines and pictures. Nothing changes a
+state file's format.
+
+### Added
+
+- **Remote Control is redesigned.** Five tabs (Inbox, Board, New ticket, Sent
+  and Settings) with compact one-line rows, and a ticket page with Chat,
+  Terminal and Notes. Terminal has the agent's keys and a line you type
+  straight into its pane; Stop ends a working turn. All fifteen themes are
+  there, following your terminal's by default.
+- **Resume a crashed agent from your phone.** A crashed, killed or logged-out
+  agent is listed under Stopped, with Resume for the same conversation and
+  Start fresh.
+- **Remote Control can put the crown on a ticket or take it off.**
+- **The ticket page shows the agent's own screen.** The bottom of the page is
+  the agent's live terminal, fading up into the whole conversation above it;
+  `{ }` page through the conversation and `^n ^p` walk its links.
+  `Shift+Enter` opens the ask box on the agent's own input row.
+- **The ticket page before its agent says what each key does.** `enter` starts
+  the agent with the title waiting in its box; `shift+enter` starts it and sends
+  your words as the first prompt. While it starts, the page lists each step:
+  the worktree, the init script, the agent.
+- **`Tab` on a card reads its description as formatted markdown**, and `Enter`
+  edits it. In the reader, `{ }` walk the notes and `^n ^p` walk the links.
+- **Commands in a note or transcript are links.** `^n ^p` reach them, `c`
+  copies one, and `Enter` puts it in the ask field as a `!` command, sent only
+  when you press `Enter` again.
+- **Double-click selects a word and copies it.** Hold the second click and drag
+  to select by whole words.
+- **A `!` line in the ask field shows as a shell command**, its `!` in red, as
+  the agent's own box draws it.
+- **`Enter` on a working card can open its ticket page.** Choose it in
+  Settings › Behaviour › Enter on a working card.
+- **A tag can have no colour.** `Tab` in the tag picker steps past the last
+  tint; a colourless tag shows as a grey chip and leaves the card's bar alone.
+- **The ticket page's conversation has a jump pill** above its foot, as
+  Claude Code's does, and the input box shows a queued ask's words. `^u` drops
+  a queued ask at once.
+- **The ask field flashes red** when sending immediately would interrupt a
+  working agent.
+- **A raised hand shows in the agent's conversation**, in the needs-you colour,
+  and stays there after the hand comes down.
+
+### Changed
+
+- **The ask field on the ticket page holds lines and pictures.** `Shift+Enter`
+  breaks a line, as in Claude Code and Codex, and `Enter` sends them all; a
+  picture pasted with `^v` stays in the field and goes with the words. On a
+  card the field stays one line, and `Shift+Enter` on typed words opens the
+  full composer.
+- **The tier key moved from `^n` to `^r`**, on the board, the ticket page and
+  in the editors.
+- **Links are walked with `^n ^p`** on the ticket page, in the transcript and
+  in the reader; `Tab` no longer walks them. The picked link shimmers while the
+  rest of the screen recedes, and `Esc` lets it go without leaving the page.
+- **A `now` message reaches a working Claude agent at its next step**, instead
+  of waiting for its turn to end.
+- **The editor stands beside the card it came from**, and the rest of the board
+  dims behind it, as under the transcript.
+- **Dialogs are plainer.** Their left edge is a plain bar, and a card's second
+  tag hangs as a short block under the first.
+- **A folded column opens only from its title**, not from anywhere on its strip.
+- A follow-up opens at now by default, as Claude Code's composer sends.
+- A dialog on the ticket page drops the agent's key row and lights no tab.
+- A closed agent box is its top rule alone, with no state or facts on it.
+- The crowned ticket's mascot wears crown blue, and a click on the mascot on
+  the ticket page makes it blink.
+
+### Fixed
+
+- **A card no longer shows the agent's reply twice** after the daemon restarts.
+- **A board opened while the daemon is still starting waits for it** instead of
+  failing.
+- **Moving a ticket into a column that frees its workspace frees it**, also for
+  worktrees held from before a restart.
+- **A question answered from your phone stays on its card until the answer
+  lands.** When a board is too large to send every dialog, the ticket says so
+  and points to its Terminal tab.
+- **Remote Control answers a Codex approval only when the request on its card
+  is the one on the agent's screen.** Any other is answered from the Terminal
+  tab.
+- **Codex starts past its current folder trust dialog.**
+- A restart no longer repeats notices already sent about a checkout's new
+  commits.
+- A shell reload uses the board's current shell, and is offered whenever it
+  differs from the daemon's.
+- `mesimon daemon --help` prints help, and `^C` stops a daemon run in the
+  foreground.
+- A Claude Code session started with a name is read correctly on the ticket
+  page.
+- A prompt sent to a freshly cleared agent opens its turn, so the card moves
+  as it should.
+- A background task finishing mid-turn no longer shows as a message from you.
+- The crown resumes an agent it started when that agent crashes, and hears,
+  with the reason, when one fails to launch.
+- In Remote Control, a prompt waits for a picture still being read, and a line
+  typed on one ticket's Terminal tab stays with that ticket.
+
 ## v0.1.0-beta.17.unstable.2 — 2026-11-11
 
 An unstable build. Nothing changes a state file's format.
