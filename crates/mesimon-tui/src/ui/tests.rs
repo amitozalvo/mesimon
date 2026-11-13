@@ -4561,6 +4561,7 @@ fn golden_prompt_field_120() {
     }
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
@@ -4602,6 +4603,7 @@ fn golden_prompt_field_queued_120() {
     }
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
@@ -4636,6 +4638,7 @@ fn golden_column_prompt_field_120() {
     }
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: true,
@@ -4674,6 +4677,7 @@ fn golden_column_prompt_field_now_120() {
     app.cursor_row = None;
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
             queued: false,
@@ -4713,6 +4717,7 @@ fn golden_column_prompt_field_start_120() {
     );
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Column("todo".into()),
             walk: None,
             queued: true,
@@ -4741,6 +4746,7 @@ fn golden_prompt_field_start_120() {
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: true,
@@ -4782,6 +4788,7 @@ fn the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt() {
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: false,
@@ -5004,6 +5011,7 @@ fn the_held_keys_row_is_gated_as_the_keys_are() {
     app.cursor_col = 2;
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(5)),
             walk: None,
             queued: true,
@@ -5913,6 +5921,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
     }];
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: true,
@@ -5950,6 +5959,7 @@ fn test_the_prompt_field_moves_no_text() {
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
@@ -9292,6 +9302,7 @@ fn ask_field_on(app: &mut App, on: ulid::Ulid, text: &str, queued: bool, immedia
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(on),
             walk: None,
             queued,
@@ -9760,6 +9771,7 @@ fn test_no_banned_sgr() {
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt {
+                        images: Vec::new(),
                         target: crate::app::AskTarget::Ticket(ulid_n(3)),
                         walk: None,
                         queued: false,
@@ -10089,6 +10101,7 @@ fn test_no_drawn_structure() {
             }
             p.mode = Mode::Input {
                 purpose: crate::app::InputPurpose::Prompt {
+                    images: Vec::new(),
                     target: crate::app::AskTarget::Ticket(ulid_n(3)),
                     walk: None,
                     queued: false,
@@ -11999,6 +12012,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
     app.peek = true;
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(7)),
             walk: None,
             queued: false,
@@ -16636,6 +16650,7 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             walk: None,
             queued: false,
@@ -16751,6 +16766,7 @@ fn the_seats_box_opens_in_place() {
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(2)),
             walk: None,
             queued: false,
@@ -16788,6 +16804,7 @@ fn the_seats_box_opens_in_place() {
     buffer.insert('x');
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
             queued: false,

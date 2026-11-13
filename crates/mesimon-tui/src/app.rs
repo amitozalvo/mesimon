@@ -1648,6 +1648,9 @@ pub enum InputPurpose {
         /// leaves the ticket's tier as it is; a pick is sent with the words
         /// and applied first, so they ride the switch.
         tier: Option<String>,
+        /// The pictures `^v` put in the field as `[Image #N]` (T-1210),
+        /// held here until the send puts up the ones the words still name.
+        images: Vec<crate::image_paste::DraftImage>,
     },
 }
 
@@ -10676,6 +10679,7 @@ impl App {
                                     == mesimon_core::board::FollowUpMode::Queue);
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                images: Vec::new(),
                                 target: AskTarget::Column(name),
                                 walk: None,
                                 queued,
@@ -10724,6 +10728,7 @@ impl App {
                         } else {
                             self.mode = Mode::Input {
                                 purpose: InputPurpose::Prompt {
+                                    images: Vec::new(),
                                     target,
                                     walk: None,
                                     queued,
@@ -10753,6 +10758,7 @@ impl App {
                             };
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                images: Vec::new(),
                                 target: AskTarget::Ticket(id),
                                 walk: None,
                                 queued,
@@ -10774,6 +10780,7 @@ impl App {
                         // checkout. Nothing spawns until Enter.
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                images: Vec::new(),
                                 target: AskTarget::Ticket(id),
                                 walk: None,
                                 queued: ctx.checkout_busy,
@@ -13489,6 +13496,14 @@ impl App {
                 }
                 return Ok(());
             }
+            // A picture still being read keeps the field open (T-1210), as
+            // it keeps the room open: sent now, the words would go without it.
+            Some(Verb::Save) | Some(Verb::SaveStart)
+                if matches!(purpose, InputPurpose::Prompt { .. })
+                    && self.pending_paste.as_ref().is_some_and(|p| p.holds_field()) =>
+            {
+                self.status = "clipboard read pending".into();
+            }
             Some(Verb::Save) => {
                 self.mode = Mode::Normal;
                 self.commit_input(purpose, buffer.into_text(), false)?;
@@ -13504,8 +13519,12 @@ impl App {
             // grows the same way (T-380): the prompt becomes the body with
             // the cursor at its end, the destination is the title row, and
             // the delivery toggle rides along.
-            // A picture into the ask field (T-853): the same growth, then
-            // the clipboard read the room's own `^v` starts.
+            // A picture into the ask field stays in the field (T-1210): the
+            // room's clipboard read, landing where the words are typed.
+            Some(Verb::EditorPaste) if matches!(purpose, InputPurpose::Prompt { .. }) => {
+                self.read_clipboard_into_field(&buffer);
+            }
+            // The composer's `^v` grows into the room and reads there.
             Some(Verb::Describe) | Some(Verb::EditorPaste) => {
                 let paste = verb == Some(Verb::EditorPaste);
                 let mut ed = match purpose {
@@ -13531,16 +13550,22 @@ impl App {
                         accept_plan,
                         plan,
                         tier,
+                        images,
                         ..
-                    } => self.ask_room(
-                        target,
-                        queued,
-                        immediately,
-                        accept_plan,
-                        plan,
-                        tier,
-                        buffer.as_str(),
-                    ),
+                    } => {
+                        let mut room = self.ask_room(
+                            target,
+                            queued,
+                            immediately,
+                            accept_plan,
+                            plan,
+                            tier,
+                            buffer.as_str(),
+                        );
+                        // The field's pictures ride into the room (T-1210).
+                        room.images.extend(images);
+                        room
+                    }
                     other => {
                         self.mode = Mode::Input { purpose: other, buffer };
                         return Ok(());
@@ -14338,11 +14363,11 @@ impl App {
                 accept_plan,
                 plan,
                 tier,
+                images: ed.images,
             },
-            // A picture the words still name rides as its link (T-853): the
-            // one-line field holds words alone, and the link is the
-            // picture's name there.
-            buffer: history_field(&crate::image_paste::pack(ed.body.as_str(), &ed.images)),
+            // The field holds pictures as the room does (T-1210): the words
+            // keep `[Image #N]`, and the pictures ride beside them.
+            buffer: history_field(ed.body.as_str()),
         };
     }
 
@@ -14353,7 +14378,10 @@ impl App {
         if self.pending_paste.is_some() {
             self.status = "clipboard read already pending".into();
         } else if ed.focus == Field::Body {
-            match crate::image_paste::start(ed.draft_id, ed.body.clone()) {
+            match crate::image_paste::start(crate::image_paste::Landing::Editor {
+                draft: ed.draft_id,
+                body: ed.body.clone(),
+            }) {
                 Ok(pending) => {
                     self.pending_paste = Some(pending);
                     self.status = "reading clipboard".into();
@@ -14393,7 +14421,7 @@ impl App {
             self.mode = Mode::Editor(ed);
             return Ok(());
         }
-        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+        if self.pending_paste.as_ref().is_some_and(|p| p.holds(ed.draft_id)) {
             self.status = "clipboard read pending".into();
             self.mode = Mode::Editor(ed);
             return Ok(());
@@ -14430,6 +14458,7 @@ impl App {
         self.mode = Mode::Normal;
         let sent = self.commit_prompt(
             InputPurpose::Prompt {
+                images: Vec::new(),
                 target,
                 walk: None,
                 queued,
@@ -14510,7 +14539,7 @@ impl App {
     /// the title, "like new"; a Sleeping claude holds the seat and has no
     /// pane to type at, so the keymap leaves the key inert there.
     fn editor_save_start(&mut self, mut ed: Editor) -> Result<()> {
-        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+        if self.pending_paste.as_ref().is_some_and(|p| p.holds(ed.draft_id)) {
             self.status = "clipboard read pending".into();
             self.mode = Mode::Editor(ed);
             return Ok(());
@@ -14637,7 +14666,7 @@ impl App {
     /// press. A note is written and the editor closes; a clean one just
     /// closes. Telling the ticket's claude is `^S`'s.
     fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
-        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+        if self.pending_paste.as_ref().is_some_and(|p| p.holds(ed.draft_id)) {
             self.status = "clipboard read pending".into();
             self.mode = Mode::Editor(ed);
             return Ok(());
@@ -16064,7 +16093,7 @@ impl App {
             // sending IS the whole act here, so both Enters do it — see the
             // input scope's ShiftEnter binding for why the harder one stays
             // bound rather than dying under the finger that opened the field.
-            InputPurpose::Prompt { .. } => return self.commit_prompt(purpose, title, Vec::new()),
+            InputPurpose::Prompt { .. } => return self.send_field(purpose, title),
         }
         Ok(())
     }
@@ -22077,6 +22106,7 @@ mod tests {
         let mut app = app_three_columns();
         app.mode = Mode::Input {
             purpose: InputPurpose::Prompt {
+                images: Vec::new(),
                 target: AskTarget::Ticket(ulid::Ulid(1)),
                 walk: None,
                 queued: false,
@@ -24858,14 +24888,13 @@ mod tests {
         assert!(!sent_contains(&sent, "Prompt"), "{:?}", sent.borrow());
     }
 
-    /// A picture into the words for a ticket's agent (T-853): `^v` in the
-    /// one-line field grows the room and reads the clipboard there, the
-    /// picture is `[Image #1]` in the words, and `^s` uploads it and sends
-    /// the words linked to it on one `PromptSession` naming the upload,
-    /// which is let go after. A taken-back ask that names a picture shows
-    /// the marker and folds back with its link whole.
+    /// A picture into the words for a ticket's agent (T-853), in the field
+    /// itself (T-1210): `^v` reads the clipboard without growing the room,
+    /// the picture is `[Image #1]` in the words, and Enter uploads it and
+    /// sends the words linked to it on one `PromptSession` naming the
+    /// upload, which is let go after. A read still pending holds the send.
     #[test]
-    fn a_picture_pasted_into_an_ask_rides_the_prompt_as_an_upload() {
+    fn a_picture_pasted_into_the_ask_field_stays_there_and_rides_the_prompt() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         app.client
@@ -24882,38 +24911,69 @@ mod tests {
             Some(Verb::EditorPaste)
         );
         // A read already pending keeps the key off the desktop clipboard
-        // (the test has none); the room still grows.
+        // (the test has none), and the field stays a field.
         let (_keep, dead) = std::sync::mpsc::channel();
         app.pending_paste = Some(crate::image_paste::Pending {
             started: Instant::now(),
             timed_out: false,
-            editor: ulid::Ulid(7),
-            body: TextArea::new(8),
+            landing: crate::image_paste::Landing::Field(EditBuffer::new(8)),
             result: dead,
         });
-        // Exercise the Windows/Claude Code chord through the same editor
-        // dispatch as ^v, without starting a real clipboard backend.
+        // Exercise the Windows/Claude Code chord through the same dispatch
+        // as ^v, without starting a real clipboard backend.
         app.handle_key(KeyCode::Char('v'), KeyModifiers::ALT).unwrap();
-        assert!(editor(&app).asking(), "the field grew into the room");
-        assert_eq!(editor(&app).body.as_str(), "look");
-        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2, 3])));
+        assert_eq!(app.status, "clipboard read already pending");
+        assert!(matches!(app.mode, Mode::Input { .. }), "no room: {:?}", app.mode);
+        // Enter while the field's read is out sends nothing.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "clipboard read pending");
+        assert!(matches!(app.mode, Mode::Input { .. }));
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        queued_field_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2, 3])));
         assert!(app.poll_image_paste());
-        assert_eq!(editor(&app).body.as_str(), "look[Image #1]");
-        assert_eq!(app.status, "[Image #1] pasted ∙ send keeps the picture");
-        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
-        assert_eq!(app.mode, Mode::Normal);
-        {
-            let sent = sent.borrow();
-            let upload = sent.iter().position(|c| c.contains("UploadAttachment")).unwrap();
-            let prompt = sent.iter().position(|c| c.contains("PromptSession")).unwrap();
-            let drop = sent.iter().position(|c| c.contains("DiscardAttachmentUploads")).unwrap();
-            assert!(upload < prompt && prompt < drop, "{sent:?}");
-            let words = &sent[prompt];
-            assert!(words.contains("look[Image #1](mesimon-attachment:"), "{words}");
-            assert!(!words.contains("uploads: []"), "the upload rides the prompt: {words}");
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { images, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "look[Image #1]");
+                assert_eq!(images.len(), 1);
+            }
+            other => panic!("not the field: {other:?}"),
         }
-        // Taken back, the link is a marker in the room and a link again
-        // once folded into the field.
+        assert_eq!(app.status, "[Image #1] pasted ∙ send keeps the picture");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        let sent = sent.borrow();
+        let upload = sent.iter().position(|c| c.contains("UploadAttachment")).unwrap();
+        let prompt = sent.iter().position(|c| c.contains("PromptSession")).unwrap();
+        let drop = sent.iter().position(|c| c.contains("DiscardAttachmentUploads")).unwrap();
+        assert!(upload < prompt && prompt < drop, "{sent:?}");
+        let words = &sent[prompt];
+        assert!(words.contains("look[Image #1](mesimon-attachment:"), "{words}");
+        assert!(!words.contains("uploads: []"), "the upload rides the prompt: {words}");
+    }
+
+    /// The field's pictures ride into the room on Tab and back on a clean
+    /// Esc (T-1210), and a taken-back ask's link folds into the field as
+    /// its marker, sent again as the same link with nothing to upload.
+    #[test]
+    fn the_ask_fields_pictures_ride_into_the_room_and_back() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        press(&mut app, 'a');
+        queued_field_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1])));
+        assert!(app.poll_image_paste());
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(editor(&app).body.as_str(), "a[Image #1]");
+        assert_eq!(editor(&app).images.len(), 1);
+        assert!(!editor(&app).dirty());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { images, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "a[Image #1]");
+                assert!(images[0].png.is_some(), "the picture came back with the words");
+            }
+            other => panic!("not folded back: {other:?}"),
+        }
         let id = ulid::Ulid::new();
         let text = format!("see [Image #2]({})", mesimon_core::attachment::target(id));
         app.mode = Mode::Editor(app.ask_room(
@@ -24930,9 +24990,17 @@ mod tests {
         assert!(!editor(&app).dirty());
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         match &app.mode {
-            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), text),
+            Mode::Input { purpose: InputPurpose::Prompt { images, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "see [Image #2]");
+                assert_eq!(images[0].id, id);
+            }
             other => panic!("not folded back: {other:?}"),
         }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let sent = sent.borrow();
+        let words = sent.iter().find(|c| c.contains("PromptSession")).expect("sent");
+        assert!(words.contains(&text), "{words}");
+        assert!(!sent.iter().any(|c| c.contains("UploadAttachment")), "{sent:?}");
     }
 
     /// A column's field grows the same way (T-378 + T-380): the header's
@@ -31164,6 +31232,22 @@ mod tests {
         assert_eq!(app.mode, Mode::Sections);
         assert!(!app.settings_board_scope);
     }
+    /// A clipboard answer waiting for the ask field as it stands.
+    fn queued_field_picture(
+        app: &mut App,
+        result: std::result::Result<crate::image_paste::Pasted, String>,
+    ) {
+        let Mode::Input { buffer, .. } = &app.mode else { panic!("no field: {:?}", app.mode) };
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pending_paste = Some(crate::image_paste::Pending {
+            started: Instant::now(),
+            timed_out: false,
+            landing: crate::image_paste::Landing::Field(buffer.clone()),
+            result: rx,
+        });
+        tx.send(result).unwrap();
+    }
+
     fn queued_picture(
         app: &mut App,
         result: std::result::Result<crate::image_paste::Pasted, String>,
@@ -31173,8 +31257,10 @@ mod tests {
         app.pending_paste = Some(crate::image_paste::Pending {
             started: Instant::now(),
             timed_out: false,
-            editor: ed.draft_id,
-            body: ed.body.clone(),
+            landing: crate::image_paste::Landing::Editor {
+                draft: ed.draft_id,
+                body: ed.body.clone(),
+            },
             result: rx,
         });
         tx.send(result).unwrap();
@@ -31312,8 +31398,10 @@ mod tests {
         let ed = editor(&app).clone();
         let (tx, result) = std::sync::mpsc::channel();
         app.pending_paste = Some(crate::image_paste::Pending {
-            editor: ed.draft_id,
-            body: ed.body.clone(),
+            landing: crate::image_paste::Landing::Editor {
+                draft: ed.draft_id,
+                body: ed.body.clone(),
+            },
             result,
             started: Instant::now() - Duration::from_secs(4),
             timed_out: false,

@@ -53,12 +53,34 @@ pub enum Pasted {
 pub struct Pending {
     pub started: std::time::Instant,
     pub timed_out: bool,
-    pub editor: Ulid,
-    pub body: crate::text::TextArea,
+    pub landing: Landing,
     pub result: mpsc::Receiver<Result<Pasted, String>>,
 }
 
-pub fn start(editor: Ulid, body: crate::text::TextArea) -> Result<Pending> {
+/// Where a clipboard read's answer goes, with the text as it stood when the
+/// read began: an answer lands only into the same text, unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Landing {
+    /// The body of the editor with this draft id.
+    Editor { draft: Ulid, body: crate::text::TextArea },
+    /// The ask field itself (T-1210): a picture stays in the field rather
+    /// than growing it into the ask room.
+    Field(crate::text::EditBuffer),
+}
+
+impl Pending {
+    /// A read still awaited for the editor with draft `draft`.
+    pub fn holds(&self, draft: Ulid) -> bool {
+        !self.timed_out && matches!(&self.landing, Landing::Editor { draft: d, .. } if *d == draft)
+    }
+
+    /// A read still awaited for the ask field.
+    pub fn holds_field(&self) -> bool {
+        !self.timed_out && matches!(self.landing, Landing::Field(_))
+    }
+}
+
+pub fn start(landing: Landing) -> Result<Pending> {
     let backend = select_backend(
         ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
             .iter()
@@ -69,7 +91,7 @@ pub fn start(editor: Ulid, body: crate::text::TextArea) -> Result<Pending> {
     std::thread::Builder::new().name("mesimon-paste".into()).spawn(move || {
         let _ = tx.send(read(backend).map_err(|e| format!("{e:#}")));
     })?;
-    Ok(Pending { editor, body, result, started: std::time::Instant::now(), timed_out: false })
+    Ok(Pending { landing, result, started: std::time::Instant::now(), timed_out: false })
 }
 
 fn read(backend: Backend) -> Result<Pasted> {

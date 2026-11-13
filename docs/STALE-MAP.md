@@ -43730,3 +43730,24 @@ The rows the ask's lines past the first take on the page's box were cleared with
 which is the terminal's own background (white on the author's profile), not the page's painted
 ground (`theme.bg`). They are cleared to `theme.bg` now. The render test asserted the rows' text
 only; `an_ask_of_lines_grows_the_box_and_moves_the_zone_up` now reads their cells' ground too.
+
+## A picture stays in the ask field (T-1210, 2026-11-13, the author: "ticket page input include images … currently it opens a big composer for some reason")
+
+**Changed.** `^v` (and Alt+V) in a ticket's ask field (`InputPurpose::Prompt`, the card's and
+the ticket page's) reads the clipboard into the field itself: a picture is `[Image #N]` at the
+cursor, text is text (`paste_lines`). Since T-853 the key grew the field into the ask room and
+read there, because the one-line field held words alone; since T-1191 the field holds lines and
+draws them, so the room was no longer needed for it. The field now holds pictures as the room
+does: `InputPurpose::Prompt::images`, `[Image #N]` in the words. Enter puts up the pictures the
+words still name and sends the words linked (`App::send_field`, the room's `upload_draft` then
+`commit_prompt` then `DiscardAttachmentUploads`); a refusal puts the field back with its
+pictures. Enter while the field's read is out sends nothing ("clipboard read pending"). Tab
+carries the pictures into the room, and a clean Esc carries them back with the words keeping
+their markers (`fold_ask` packed them into links before, which dropped a pasted picture's bytes).
+The clipboard read's answer lands by `image_paste::Landing` (the editor's draft or the field,
+each with its text as it stood); `app/images.rs::land` is the one insertion both use. The
+composer's `^v` still grows into the room; a column's field has no `^v` (no ticket to keep it).
+
+Tests: `a_picture_pasted_into_the_ask_field_stays_there_and_rides_the_prompt` (replaces
+`a_picture_pasted_into_an_ask_rides_the_prompt_as_an_upload`, which asserted the growth),
+`the_ask_fields_pictures_ride_into_the_room_and_back`.
