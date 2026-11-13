@@ -75,11 +75,13 @@ function KeyBar({ store, ticket }) {
   const card = cardAnswers(store, ticket.agent);
   const asks = !card && ticket.agent?.state === "needs attention";
   const live = store.keysReach(ticket) && !card;
+  // A typed line and its Enter on their way: no second line, no Enter.
+  const typing = store.typing;
   const send = (press) => store.sendKeys(press);
   return html`<footer class="keys-area" aria-label="Keys">
     ${asks && live && html`<p id="keys-asks" class="stopped-why">These keys answer what the agent’s terminal is asking.</p>`}
     <div class="key-bar" role="group" aria-label="Keys for the agent's terminal">
-      ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live}
+      ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live || (typing && key === "enter")}
         aria-label=${key.replace("_", " ")} onClick=${() => send({ key })}>${label}</button>`)}
       ${DIGITS.map((d) => html`<button type="button" class="key" key=${d} data-text=${d} disabled=${!live}
         onClick=${() => send({ text: d })}>${d}</button>`)}
@@ -87,16 +89,18 @@ function KeyBar({ store, ticket }) {
     <form id="keys-form" class="keys-line" onSubmit=${(e) => {
       e.preventDefault();
       const node = line.current;
+      if (typing) return;
       // A line goes, then its Enter once the host has it; alone, Enter.
-      // A refused line keeps the field and sends no Enter (T-1218).
-      if (node.value) store.typeLine(node.value, () => (node.value = ""));
+      // A refused line keeps the field and sends no Enter, and the field
+      // clears only if it still holds the line that went (T-1218).
+      if (node.value) store.typeLine(node.value, (sent) => node.value === sent && (node.value = ""));
       else send({ key: "enter" });
     }}>
       <span class="keys-prompt" aria-hidden="true">›</span>
       <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
         enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal" maxlength=${KEYS_TEXT_MAX_BYTES}
         placeholder=${live ? "Type a line, Enter sends it" : card ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
-      <button id="keys-send" type="submit" class="send" disabled=${!live} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
+      <button id="keys-send" type="submit" class="send" disabled=${!live || typing} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
     </form>
   </footer>`;
 }

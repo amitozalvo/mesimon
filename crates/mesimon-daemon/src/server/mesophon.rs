@@ -409,10 +409,13 @@ const READING_MAX: usize = 4;
 /// 40 ms after the Escape still cycled the mode, 45 ms and later typed
 /// `[Z` (its escape timeout is about 50 ms). Codex's decoder (crossterm)
 /// joins only bytes it reads together, so its window is shorter. Ten
-/// times the measured edge. It does not guarantee anything about bytes
-/// another writer puts into the pane (the person's own terminal, the
-/// daemon's other roads, which `control_keys_owed` keeps apart), nor an
-/// agent whose decoder waits longer than this.
+/// times the measured edge, counted from when tmux answered the Escape's
+/// call. It does not guarantee anything about bytes another writer puts
+/// into the pane (the person's own terminal, the daemon's other roads,
+/// which `control_keys_owed` keeps apart), nor an agent whose decoder waits
+/// longer than this; and an agent that reads no input for longer than the
+/// window (a stalled process) receives the Escape and the next key in one
+/// read, as one key.
 const ESCAPE_QUIET: Duration = Duration::from_millis(500);
 /// An agent's step and latest reply line, read from its transcript, and the
 /// file's length and mtime when read: a browser asks for the board every two
@@ -3529,13 +3532,20 @@ impl Daemon {
         let sid = id.simple().to_string()[..16].to_string();
         let sent = match (key, text) {
             (Some(key), None) => {
-                // Marked before tmux is asked: a press that failed may still
-                // have reached the pane.
-                if key == api::PaneKey::Escape {
+                // Marked before tmux is asked, and again once it answered,
+                // failed or not: the window runs from when the Escape could
+                // last have reached the pane, however long tmux took (a
+                // press that failed may still have reached it).
+                let escape = key == api::PaneKey::Escape;
+                if escape {
                     self.control.escaped.retain(|_, at| at.elapsed() < ESCAPE_QUIET);
                     self.control.escaped.insert(id, Instant::now());
                 }
-                self.backend.press_key(&sid, key.tmux())
+                let sent = self.backend.press_key(&sid, key.tmux());
+                if escape {
+                    self.control.escaped.insert(id, Instant::now());
+                }
+                sent
             }
             (None, Some(text)) => {
                 let text = mesimon_core::text::scrub_text(&text);
@@ -4396,6 +4406,7 @@ impl Daemon {
             .into(),
             promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
             exit: agent_exit(s).filter(|_| !s.codex_stopping),
+            card_answers: self.control_dialog_of(s).map(|d| dialog_card_answers(s.kind, d)),
         }
     }
 
@@ -4520,12 +4531,7 @@ impl Daemon {
         let Some(s) = self.board.sessions.iter().find(|s| s.id == id) else { return false };
         self.control_permission_of(id).is_some()
             || self.control_trust_of(s).is_some()
-            || self.control_dialog_of(s).is_some_and(|d| match &d.content {
-                api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => true,
-                api::DialogContent::Questions { questions } => {
-                    dialog_answerable_for(s.kind, questions)
-                }
-            })
+            || self.control_dialog_of(s).is_some_and(|d| dialog_card_answers(s.kind, d))
     }
 
     /// A phone's words on their way into this pane (T-568): a steer parked
@@ -6069,6 +6075,16 @@ fn codex_takes(dialog: &api::Dialog, response: &api::DialogAnswer) -> bool {
     }
 }
 
+/// Whether the phone's card answers this dialog (T-1218): what the board
+/// tells the page beside it, and what `control_answers_here` holds keys
+/// back for, so the two never disagree.
+fn dialog_card_answers(kind: SessionKind, dialog: &api::Dialog) -> bool {
+    match &dialog.content {
+        api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => true,
+        api::DialogContent::Questions { questions } => dialog_answerable_for(kind, questions),
+    }
+}
+
 /// The question shapes the board answers on a Codex seat (T-846): one
 /// question with options, as `codex_takes` admits.
 pub(super) fn dialog_answerable_for(kind: SessionKind, questions: &[api::Question]) -> bool {
@@ -6776,6 +6792,7 @@ mod tests {
                     said: None,
                     tier: None,
                     exit: None,
+                    card_answers: None,
                 }),
                 tags: Vec::new(),
                 picked: None,
@@ -9471,6 +9488,85 @@ mod keys_resume_tests {
         d.control.escaped.insert(id, past);
         let line = Some("[Z".to_string());
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, line)), went);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218 round 2: the board tells the page whether its card answers
+    /// the dialog, by the host's own per-provider test, and the keys wait
+    /// exactly there: a two-question batch is a card on a Claude seat and
+    /// the pane's alone on a Codex one, where the keys go in.
+    #[test]
+    fn the_board_says_whether_the_card_answers_and_the_keys_follow_it() {
+        use mesimon_core::board::Reason;
+        let dir = std::env::temp_dir().join(format!("msmn-t1218q-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let t = d.board.sessions[0].ticket;
+        let worker = super::super::queued_person_push_tests::worker_ticket;
+        d.board.tickets = vec![worker(t, "TODO", "a")];
+        let (ticket, id) = (t.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let ask = |q: &str| api::Question {
+            question: q.into(),
+            header: "H".into(),
+            options: vec![api::QuestionOption { label: "Yes".into(), description: String::new() }],
+            multi_select: false,
+        };
+        let batch = api::DialogContent::Questions { questions: vec![ask("Size?"), ask("Colour?")] };
+        d.control.dialogs.insert(id, api::Dialog { request: "q1".into(), content: batch });
+        d.board.sessions[0].set_state(SessionState::RequiresAction { reason: Reason::Question });
+        let says = |d: &Daemon| {
+            let (Reply::Board { tickets, .. }, _) = d.control_board() else { panic!("board") };
+            tickets[0].agent.as_ref().and_then(|a| a.card_answers)
+        };
+        let tab = Some(api::PaneKey::Tab);
+
+        assert_eq!(says(&d), Some(true));
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, tab, None)),
+            "the agent waits on you: answer it on its card"
+        );
+        d.board.sessions[0].kind = SessionKind::Codex;
+        assert_eq!(says(&d), Some(false), "a Codex batch is the pane's");
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, tab, None)),
+            "the pane did not take it"
+        );
+        // With no dialog drawn the board says nothing.
+        d.control.dialogs.clear();
+        assert_eq!(says(&d), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1218 round 2: the Escape's window runs from when tmux answered,
+    /// not from before it ran: a tmux call that takes a while does not
+    /// spend the window, so the next key still waits it out behind the
+    /// Escape's delivery. Here tmux's server holds the call 300 ms.
+    #[test]
+    fn an_escape_s_window_runs_from_when_tmux_answered() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1218w-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let (ticket, id) = (d.board.sessions[0].ticket.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let hold = Duration::from_millis(300);
+        let sock = dir.join("tmux.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            std::thread::sleep(hold);
+            drop(conn);
+        });
+        let before = Instant::now();
+        let esc = Some(api::PaneKey::Escape);
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, esc, None)),
+            "the pane did not take it"
+        );
+        server.join().unwrap();
+        let mark = d.control.escaped[&id];
+        assert!(mark.duration_since(before) >= hold, "marked {:?} in", mark.duration_since(before));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

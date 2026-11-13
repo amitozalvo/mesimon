@@ -219,8 +219,11 @@ one `keys` op ({ key } or { text }) into the ticket's agent session alone, and
 an empty composer over a working turn is Stop, an Escape the same way. A typed
 line (at most 512 bytes) goes first, and its Enter only once the host answered
 it `edited`, 150 ms behind; a refused line sends no Enter and stays in the
-field. The bar rests only while the page answers the agent's dialog on a card
-(a permission not expired, a plan, a question it answers, the folder trust);
+field. One line at a time: while a line and its Enter are on their way, Send
+and the Enter key rest, and the field clears only if it still holds that line.
+The bar rests only while the page answers the agent's dialog on a card
+(a permission not expired, a plan, a question it answers, the folder trust;
+the board's `agent.card_answers` is the host's word on a dialog where it says);
 at any other stop the keys go in and answer the agent's own dialog, and the
 bar says so (T-1218). The host holds a pane's next key for 500 ms after an
 Escape, and takes none while it is still typing input of its own there. A

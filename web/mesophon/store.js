@@ -61,6 +61,10 @@ export const KEYS_TEXT_MAX_BYTES = 512;
 // (measured on Claude Code 2.1.323: in one tmux call, behind 200 bytes),
 // while one a separate call later (~5 ms) submits.
 export const ENTER_AFTER_TEXT_MS = 150;
+// How long a typed line holds the key bar's Send at most (T-1218): an
+// answer that never comes (a socket gone quiet) frees it, as the
+// connection's own ten-second silence does.
+const TYPING_MAX_MS = 10000;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
 // Opened from the home screen, not a browser tab.
@@ -752,27 +756,44 @@ export class Store {
   // A line typed into the pane, then Enter (T-1218): the Enter goes only
   // once the host answered the line `edited`, and a beat behind it, so it
   // submits rather than landing in the line's burst. A refusal sends no
-  // Enter, which would submit whatever the agent's box already held.
-  // `done` runs once the line went in, for the field to clear.
+  // Enter, which would submit whatever the agent's box already held. One
+  // line at a time (`typing`): a second waits until the first's Enter went;
+  // and an Enter whose connection, ticket or session changed meanwhile is
+  // dropped. `done(text)` runs once the line went in, for the field.
+  get typing() {
+    const line = this.typingLine;
+    return !!line && line.connection === this.connection && line.incarnation === this.connection?.incarnation &&
+      Date.now() - line.at < TYPING_MAX_MS;
+  }
   typeLine(text, done = () => {}) {
     const ticket = this.board?.current;
-    if (!text || !this.keysReach(ticket)) return false;
+    if (!text || this.typing || !this.keysReach(ticket)) return false;
     if (new TextEncoder().encode(text).length > KEYS_TEXT_MAX_BYTES) {
       this.say(`Not sent: a line fits ${KEYS_TEXT_MAX_BYTES} bytes.`);
       this.emit();
       return false;
     }
+    const c = this.connection;
     const pane = { op: "keys", ticket: ticket.id, session: ticket.agent.session };
-    const id = this.connection.request({ ...pane, text }, (reply) => {
+    const line = { connection: c, incarnation: c.incarnation, ticket: pane.ticket, session: pane.session, at: Date.now() };
+    const finish = () => {
+      if (this.typingLine !== line) return;
+      this.typingLine = undefined;
+      this.emit();
+    };
+    const id = c.request({ ...pane, text }, (reply) => {
+      if (this.typingLine !== line) return;
       if (reply.result !== "edited") {
+        finish();
         this.onKeysReply(reply.result === "rejected" ? reply : { result: "rejected", message: "" });
         return;
       }
-      done();
+      done(text);
       setTimeout(() => {
         const now = this.board?.current;
-        if (now?.id !== pane.ticket || now.agent?.session !== pane.session) return;
-        this.sendKeys({ key: "enter" });
+        const same = this.typing && this.typingLine === line && now?.id === line.ticket && now.agent?.session === line.session;
+        if (same) this.sendKeys({ key: "enter" });
+        finish();
       }, ENTER_AFTER_TEXT_MS);
     });
     if (id === undefined) {
@@ -780,6 +801,8 @@ export class Store {
       this.emit();
       return false;
     }
+    this.typingLine = line;
+    this.emit();
     return true;
   }
   // Stop the turn (T-1208): the desk's Escape in the agent's pane.

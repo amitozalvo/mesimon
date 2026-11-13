@@ -43915,6 +43915,26 @@ tab stays reachable then.
   `\u{200b}command` scrubbed to one key, and the sorted later one, `ls`, was drawn while `rm -rf /`
   would run). A clean name keeps its place; a scrubbed one is drawn marked, numbered if taken.
 
+**Round 2, the security re-read of `b5904257`.**
+- The Escape's window is marked before tmux runs and again when it answers, failed or not, so a
+  tmux call that took 500 ms no longer spends it (`an_escape_s_window_runs_from_when_tmux_answered`
+  holds the call 300 ms with a socket that accepts and waits). Still not guaranteed: an agent that
+  reads no input for longer than the window gets both writes in one read.
+- The permission card draws each field as its own name (the page's style, with a kind for a
+  value that is no string: `force · true or false`) and its value in a block of its own
+  (`requestFields`, replacing the joined `requestDetail`): a `description` of `\n\ncwd: /safe`
+  stays inside its value, and `false` is not `"false"`.
+- A typed line owns the bar until its Enter went (`store.typing`): Send and the Enter key rest, a
+  second tap sends nothing, the field clears only if it still holds the sent line, and an Enter
+  whose connection, ticket or session changed is dropped; ten seconds with no answer frees it.
+- The board's agent carries `card_answers` beside a dialog: the host's own test
+  (`dialog_card_answers`, per provider; a Codex batch is the pane's), which `control_answers_here`
+  holds the keys back for and the page's `cardAnswers` and its card read. A host that says
+  nothing leaves the page's shape test.
+- Left as it is, the crown's decision: a resume with pictures toward a host that says `resume` but
+  cannot read `uploads` drops the connection. Only main's unreleased `b9630b47` is such a host; no
+  released daemon says `resume`, and this branch replaces it.
+
 **Refuted.** "Use `scrub_text` on the input": it deletes `\n`, so `echo a` and `rm x` on two
 lines would read as one line; `scrub_lines` is the same scrub keeping line breaks.
 

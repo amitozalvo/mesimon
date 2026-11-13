@@ -4957,6 +4957,25 @@ button.sent-bubble:hover {
   max-height: 22vh;
   font-size: 0.75rem;
 }
+/* A permission's fields, each its own name and value (T-1218). */
+.request-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.request-field dd {
+  margin: 4px 0 0;
+}
+.request-name {
+  color: var(--ink2);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.request-kind {
+  color: var(--ink3);
+  font-weight: 400;
+}
 /* The ticket page's header: one line of title on a phone, and its tags as
    the list draws them, so the line never wraps. */
 .ticket-line .tags {

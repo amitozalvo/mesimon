@@ -778,6 +778,12 @@ pub struct Agent {
     /// Why it stopped (T-1208), on an `exited` or `failed` agent alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<AgentExit>,
+    /// Whether this host answers the agent's `dialog` from the phone's
+    /// card (T-1218): its own test, per provider (a Codex seat takes one
+    /// single-choice question, never a batch). Only beside a `dialog`; a
+    /// host from before says nothing and the page judges by the shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_answers: Option<bool>,
 }
 
 /// The page a pairing QR opens (T-497): the relay's browser origin with the
@@ -1448,6 +1454,7 @@ mod tests {
                 said: None,
                 tier: None,
                 exit: None,
+                card_answers: None,
             }),
             tags: vec![],
             picked: None,

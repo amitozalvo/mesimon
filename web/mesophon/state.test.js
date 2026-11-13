@@ -6,7 +6,7 @@ import { BoardState, RECENT_MS, omittedWords, refusedBoardWords, stoppedUnasked 
 import { THEMES, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
-import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestDetail } from "./dialogs.js";
+import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
 import { foldWords, groupRows, mergePage, stepParts, tailAsk } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
@@ -411,19 +411,28 @@ test("a stopped agent rides its own field, and this page reads it as the ticket'
   assert.equal(remembered.tickets[0].agent.state, "exited");
 });
 
-test("a permission card shows the command, then every other field by its name (T-1218)", () => {
-  assert.equal(
-    requestDetail({ input: { command: "rm -rf build", cwd: "/repo", reason: "clean the build" } }),
-    "rm -rf build\n\ncwd: /repo\n\nreason: clean the build",
-  );
-  assert.equal(requestDetail({ input: { command: "ls", description: "List" } }), "ls\n\ndescription: List");
-  assert.equal(
-    requestDetail({ input: { command: "deploy", target: "prod", flags: ["--force"] } }),
-    'deploy\n\ntarget: prod\n\nflags: [\n  "--force"\n]',
-  );
-  assert.equal(requestDetail({ input: { file_path: "/a", content: "x" } }), "file_path: /a\n\ncontent: x");
-  assert.equal(requestDetail({ input: { command: 7 } }), "command: 7", "a command that is no string is a field");
-  assert.equal(requestDetail({}), "{}");
+test("a permission card shows the command, then every other field as its own name and value (T-1218)", () => {
+  assert.deepEqual(requestFields({ input: { command: "rm -rf build", cwd: "/repo", reason: "clean the build" } }), {
+    command: "rm -rf build",
+    fields: [{ name: "cwd", kind: "", value: "/repo" }, { name: "reason", kind: "", value: "clean the build" }],
+  });
+  // A value cannot add a field: its line breaks stay inside its value.
+  const forged = requestFields({ input: { command: "ls", description: "List\n\ncwd: /safe" } });
+  assert.deepEqual(forged.fields, [{ name: "description", kind: "", value: "List\n\ncwd: /safe" }]);
+  // A value that is no string carries its kind: false is not "false".
+  assert.deepEqual(requestFields({ input: { command: "x", force: false, label: "false" } }).fields, [
+    { name: "force", kind: "true or false", value: "false" },
+    { name: "label", kind: "", value: "false" },
+  ]);
+  assert.deepEqual(requestFields({ input: { command: "deploy", flags: ["--force"], n: 2, opts: { a: 1 }, none: null } }).fields, [
+    { name: "flags", kind: "list", value: '[\n  "--force"\n]' },
+    { name: "n", kind: "number", value: "2" },
+    { name: "opts", kind: "fields", value: '{\n  "a": 1\n}' },
+    { name: "none", kind: "empty", value: "null" },
+  ]);
+  assert.deepEqual(requestFields({ input: { file_path: "/a" } }), { fields: [{ name: "file_path", kind: "", value: "/a" }] });
+  assert.deepEqual(requestFields({ input: { command: 7 } }), { fields: [{ name: "command", kind: "number", value: "7" }] });
+  assert.deepEqual(requestFields({}), { fields: [{ name: "input", kind: "empty", value: "null" }] });
 });
 
 test("the keys rest only while the page answers the dialog on a card (T-1218)", () => {
@@ -444,6 +453,11 @@ test("the keys rest only while the page answers the dialog on a card (T-1218)", 
   assert.equal(cardAnswers(store, { dialog: question(1) }, now), true);
   assert.equal(cardAnswers(store, { dialog: question(2) }, now), true, "the whole form answers it");
   assert.equal(cardAnswers({ answersWhole: false }, { dialog: question(2) }, now), false, "the pane's alone");
+  // Where the host says, its word is the test (T-1218 round 2): a Codex
+  // batch is the pane's, whatever the page could draw.
+  assert.equal(cardAnswers(store, { dialog: question(2), card_answers: false }, now), false);
+  assert.equal(cardAnswers({ answersWhole: false }, { dialog: question(2), card_answers: true }, now), true);
+  assert.equal(cardAnswers(store, { card_answers: true }, now), false, "no dialog, no card");
 });
 
 test("the page wears the terminal's theme while it follows it, else the pick (T-1208)", () => {

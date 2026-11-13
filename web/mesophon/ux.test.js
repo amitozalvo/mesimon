@@ -85,6 +85,9 @@ function fixture() {
     // Keys into an agent's pane and resumes (T-1208), as the host took them.
     keys: [],
     keysRefusal: "",
+    // While set, a `keys` answer waits in `heldKeys` until released.
+    holdKeys: false,
+    heldKeys: [],
     resumes: [],
     // Requests the host could not parse: the socket closed under them.
     dropped: [],
@@ -489,7 +492,9 @@ function fixture() {
           }
           if (request.op === "keys") {
             state.keys.push(request);
-            answer(state.keysRefusal ? { result: "rejected", message: state.keysRefusal } : { result: "edited", ticket: request.ticket });
+            const reply = state.keysRefusal ? { result: "rejected", message: state.keysRefusal } : { result: "edited", ticket: request.ticket };
+            if (state.holdKeys) state.heldKeys.push(() => answer(reply));
+            else answer(reply);
           }
           if (request.op === "resume") {
             // As strict as the host (T-1218): its `Request` denies unknown
@@ -3247,6 +3252,31 @@ async function terminalFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#keys-text").getAttribute("maxlength"), "512");
     await page.locator("#keys-text").fill("");
     await page.evaluate(() => fixture.keys.splice(5));
+    // T-1218 round 2: one line at a time. While the line and its Enter are
+    // on their way, Send and the Enter key rest; a newer line typed then is
+    // not cleared by the first one's receipt.
+    await page.evaluate(() => (fixture.holdKeys = true));
+    await page.locator("#keys-text").fill("first");
+    await page.locator("#keys-send").click();
+    await until(page, () => fixture.keys.length === 6);
+    assert(await page.locator("#keys-send").isDisabled(), "no second line while the first is on its way");
+    assert(await page.locator('.key[data-key="enter"]').isDisabled());
+    await page.locator("#keys-text").fill("second");
+    await page.locator("#keys-text").press("Enter");
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => fixture.keys.length), 6, "a second tap sends nothing");
+    await page.evaluate(() => {
+      fixture.holdKeys = false;
+      fixture.heldKeys.splice(0).forEach((release) => release());
+    });
+    await until(page, () => fixture.keys.length === 7);
+    assert.deepEqual((await keys()).slice(5), [{ ...pane, text: "first" }, { ...pane, key: "enter" }]);
+    assert.equal(await page.locator("#keys-text").inputValue(), "second", "the newer line stays");
+    await until(page, () => !document.querySelector("#keys-send").disabled);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => fixture.keys.length), 7);
+    await page.locator("#keys-text").fill("");
+    await page.evaluate(() => fixture.keys.splice(5));
     if (size === "phone") {
       const short = await page.locator("#detail").evaluate((node) =>
         [...node.querySelectorAll("button, input")]
@@ -3273,6 +3303,16 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector('.key[data-key="escape"]')?.disabled);
     assert(await page.locator("#keys-text").isDisabled());
     assert.equal(await page.locator("#keys-asks").count(), 0);
+    // T-1218 round 2: each field its own name and value; a value's line
+    // breaks stay inside it, and `false` says its kind.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.permission.input = { command: "ls", description: "List\n\ncwd: /safe", cwd: "/repo", force: false };
+      fixture.update();
+    });
+    await until(page, () => document.querySelectorAll("#attention .request-field").length === 3);
+    assert.deepEqual(await page.locator("#attention .request-name").allTextContents(), ["description", "cwd", "force · true or false"]);
+    assert.deepEqual(await page.locator("#attention .request-field pre").allTextContents(), ["List\n\ncwd: /safe", "/repo", "false"]);
+    assert.equal(await page.locator("#attention > pre.attention-code").textContent(), "ls");
     // T-1218, the person's decision: with no card to answer it on (expired,
     // or never given) the keys answer the agent's own dialog, and say so.
     await page.evaluate(() => {
@@ -3287,6 +3327,30 @@ async function terminalFlow(browser, engineName, size, viewport) {
     });
     await until(page, () => !document.querySelector("#keys-text").disabled && !!document.querySelector("#keys-asks"));
     assert(await page.locator("#tab-terminal").isEnabled(), "the Terminal tab stays reachable");
+    // T-1218 round 2: the host's word on its card wins. A Codex batch it
+    // cannot answer leaves the keys live and the card to the pane; the
+    // same batch on a seat it answers rests them.
+    await page.evaluate(() => {
+      const ask = (question) => ({ question, header: "H", multiSelect: false, options: [{ label: "Yes", description: "" }] });
+      fixture.tickets[0].agent.dialog = { kind: "questions", request: "q-batch", questions: [ask("Size?"), ask("Colour?")] };
+      fixture.tickets[0].agent.card_answers = false;
+      fixture.update();
+    });
+    await until(page, () => /needs a local answer in the pane/.test(document.querySelector("#attention")?.textContent || ""));
+    assert(await page.locator("#keys-text").isEnabled());
+    assert.deepEqual(await page.locator("#attention .option").evaluateAll((ns) => ns.map((n) => n.disabled)), [true, true],
+      "no option sends");
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.card_answers = true;
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#keys-text").disabled);
+    await page.evaluate(() => {
+      delete fixture.tickets[0].agent.dialog;
+      delete fixture.tickets[0].agent.card_answers;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector("#keys-text").disabled);
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "working";
       fixture.update();

@@ -54,17 +54,35 @@ export function requestSummary(permission) {
 }
 
 // The whole request, for the ticket page (T-1208): a command as it would
-// run, then every other field by its name (T-1218), so nothing the
-// approval covers is left off the card: a Codex command's `cwd` and
-// `reason`, an MCP tool's arguments beside its `command`.
-export function requestDetail(permission) {
+// run, then every other field (T-1218), so nothing the approval covers is
+// left off the card: a Codex command's `cwd` and `reason`, an MCP tool's
+// arguments beside its `command`. Each field is its own name and value,
+// never one text an agent's words could add a field to; a value that is no
+// string carries its kind and is drawn as JSON, so `false` and "false"
+// differ.
+const KINDS = { boolean: "true or false", number: "number" };
+const kindOf = (value) =>
+  value === null ? "empty" : Array.isArray(value) ? "list" : KINDS[typeof value] || (typeof value === "object" ? "fields" : "");
+export function requestFields(permission) {
   const input = permission?.input;
-  if (!input || typeof input !== "object" || Array.isArray(input)) return JSON.stringify(input ?? {}, null, 2);
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return { fields: [{ name: "input", kind: kindOf(input ?? null), value: JSON.stringify(input ?? null, null, 2) }] };
   const command = typeof input.command === "string" ? input.command : undefined;
   const fields = Object.entries(input)
     .filter(([name]) => command === undefined || name !== "command")
-    .map(([name, value]) => `${name}: ${typeof value === "string" ? value : JSON.stringify(value, null, 2)}`);
-  return [...(command === undefined ? [] : [command]), ...fields].join("\n\n");
+    .map(([name, value]) => typeof value === "string"
+      ? { name, kind: "", value }
+      : { name, kind: kindOf(value), value: JSON.stringify(value, null, 2) });
+  return { ...(command === undefined ? {} : { command }), fields };
+}
+
+function RequestFields({ permission }) {
+  const { command, fields } = requestFields(permission);
+  return html`${command !== undefined && html`<pre class="attention-code">${command}</pre>`}
+    ${fields.length > 0 && html`<dl class="request-fields">${fields.map(({ name, kind, value }) => html`<div class="request-field" key=${name}>
+      <dt class="request-name">${name}${kind && html`<span class="request-kind"> · ${kind}</span>`}</dt>
+      <dd><pre class="attention-code">${value}</pre></dd>
+    </div>`)}</dl>`}`;
 }
 
 // Whether the ticket's agent stands on a dialog this page answers on a card
@@ -76,7 +94,11 @@ export function cardAnswers(store, agent, now = Date.now()) {
   if (agent.trust) return true;
   if (agent.permission && now < agent.permission.expires_at) return true;
   const dialog = agent.dialog;
-  if (dialog?.kind === "plan") return true;
+  if (!dialog) return false;
+  // The host's own test where it says (T-1218): it is per provider, and a
+  // Codex batch is the pane's however the page would draw it.
+  if (typeof agent.card_answers === "boolean") return agent.card_answers;
+  if (dialog.kind === "plan") return true;
   return answerable(dialog) || (measured(dialog) && store.answersWhole);
 }
 
@@ -95,7 +117,7 @@ export function Attention({ store, ticket, entry, live }) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
       <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Permission · ${permission.tool}</span></h3>
-      <pre class="attention-code">${requestDetail(permission)}</pre>
+      <${RequestFields} permission=${permission} />
       <p class="attention-note">${expired
         ? "Remote request expired. Check the pane."
         : "Here or at the terminal, whichever answers first wins."}</p>
@@ -121,10 +143,13 @@ export function Attention({ store, ticket, entry, live }) {
         <button type="button" class="btn btn-attn" ...${answer({ answer: "accept" })}>Accept · approve edits manually</button>
       </div>
     </section>`;
-  const supported = answerable(dialog);
+  // A host that says its card cannot answer this dialog (T-1218) leaves it
+  // to the pane: no form, no option that sends.
+  const pane = ticket.agent.card_answers === false;
+  const supported = !pane && answerable(dialog);
   // Offline it is drawn disabled; a live host too old for `answers` leaves
   // the dialog to the pane.
-  if (!supported && measured(dialog) && (!live || store.answersWhole))
+  if (!pane && !supported && measured(dialog) && (!live || store.answersWhole))
     return html`<${QuestionsForm} store=${store} dialog=${dialog} entry=${entry} off=${off} send=${send} />`;
   const draft = entry?.dialogDraft?.request === dialog.request ? entry.dialogDraft.text : "";
   return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
