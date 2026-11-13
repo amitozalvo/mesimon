@@ -44082,6 +44082,25 @@ Ctrl+Enter sends nothing, then releases it; the check fails with the fix reverte
 for the picture being read") and passes with it. Run: `node --test` (61), the phone UX run on
 Chromium (with the fix, then without, to see the test fail) and on WebKit.
 
+**Two page bugs from the final security read.**
+1. A typed Terminal line crossed tickets: `KeyBar` is reused across tickets and its line was an
+   uncontrolled input, so ticket A's unsent line showed in ticket B's Terminal tab and Send typed
+   it, then Enter, into B's agent. The line now lives on the conversation's session entry
+   (`entry.keysLine`, memory only, as the field's draft lives there), the input is keyed by the
+   entry and controlled, and a line that went clears only on its own entry (T-1218's check that
+   the field still holds it, kept). `terminalFlow` types a line on ticket-0, opens another
+   working ticket's Terminal tab (empty; Send sends Enter alone to that agent), and comes back to
+   find the line; with the old shared field the check fails ("another ticket's line is not
+   carried over").
+2. The page's Resume sent the field's words with no `uploads`, a picture's mark and no picture.
+   With words or pictures in the field it now calls `submitPrompt`, the field's own road
+   (pictures up first, tier, the sending and reading guards), and is off while one is being
+   read or sent; with an empty field it resumes at once. `terminalFlow` resumes with a picture by
+   that button and checks `uploads`; before the fix it failed ("the picture goes with the page's
+   Resume"). It was not the rerun: that one went through the field's Send, the reading race
+   fixed above. Checks: `node --test` (61), the Chromium phone UX run (each new check run once
+   against its bug first, failing, then green), `npm test` (84) once, green.
+
 ## A question's phone card survives an unconfirmed answer and unrelated lifecycle frames (T-1217, 2026-11-13)
 
 **Scope.** The investigation is in this ticket's note. The crown's go named four proved

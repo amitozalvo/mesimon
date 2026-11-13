@@ -71,8 +71,12 @@ const DIGITS = ["1", "2", "3", "4"];
 
 // The Terminal tab's keyboard (T-1208): a bar of keys, and a line typed
 // into the pane, Enter after it, or each key as it is typed.
+// The typed line belongs to its conversation (T-1219), kept on the session's
+// entry as the composer's draft is: another ticket's or another session's
+// Terminal tab never shows it, so it never goes to that agent, and it is
+// there again on coming back. The page holds it in memory only.
 function KeyBar({ store, ticket }) {
-  const line = useRef();
+  const entry = store.entry;
   // A dialog the page answers on a card is answered there (T-1208): the
   // terminal refuses keys at it, so the bar rests until it is gone. At any
   // other stop the keys go in and answer the agent's own dialog (T-1218).
@@ -92,17 +96,26 @@ function KeyBar({ store, ticket }) {
     </div>
     <form id="keys-form" class="keys-line" onSubmit=${(e) => {
       e.preventDefault();
-      const node = line.current;
-      if (typing) return;
+      if (typing || !entry) return;
       // A line goes, then its Enter once the host has it; alone, Enter.
       // A refused line keeps the field and sends no Enter, and the field
-      // clears only if it still holds the line that went (T-1218).
-      if (node.value) store.typeLine(node.value, (sent) => node.value === sent && (node.value = ""));
+      // clears only if it still holds the line that went (T-1218): its own
+      // conversation's, wherever the page is by then.
+      const text = entry.keysLine || "";
+      if (text)
+        store.typeLine(text, (sent) => {
+          if (entry.keysLine !== sent) return;
+          entry.keysLine = "";
+          store.emit();
+        });
       else send({ key: "enter" });
     }}>
       <span class="keys-prompt" aria-hidden="true">›</span>
-      <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+      <input id="keys-text" key=${entry?.key} value=${entry?.keysLine || ""} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
         enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal" maxlength=${KEYS_TEXT_MAX_BYTES}
+        onInput=${(e) => {
+          if (entry) entry.keysLine = e.currentTarget.value;
+        }}
         placeholder=${live ? "Type a line, then ⏎" : card ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
       <button id="keys-send" type="submit" class="send" disabled=${!live || typing} aria-label="Send the line and Enter, or Enter alone"><${Icon} name="enter" size=${18} width=${2.2} /></button>
     </form>
@@ -110,8 +123,13 @@ function KeyBar({ store, ticket }) {
 }
 
 // An agent whose process ended (T-1208): why and when, and the two ways on.
+// With words or pictures in the field, Resume takes the field's own road
+// (T-1219), pictures uploaded first and the sending guards with it; it once
+// sent the words with a picture's mark and no picture. With none, it
+// resumes at once.
 function StoppedLine({ store, ticket }) {
   const agent = ticket.agent;
+  const entry = store.entry;
   const waiting = startWaiting(store.startOf(ticket));
   const at = agent.exit?.at;
   const when = Number.isFinite(at) ? ageWords(store.board, at) : "";
@@ -121,8 +139,9 @@ function StoppedLine({ store, ticket }) {
       ? `${agent.provider} was logged out. Log in to ${agent.provider} at your terminal first; then Resume picks its conversation up where it stopped, with what you type below if anything.`
       : `${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.`}</p>
     <div class="stopped-actions">
-      <button id="resume-agent" type="button" class=${loggedOut(agent) ? "btn" : "btn btn-pri"} disabled=${!store.canResume || waiting}
-        onClick=${() => store.resumeAgent(ticket.id, store.entry?.draft || "", store.entry?.tier || "") && store.setDraft("")}><${Icon} name="play" size=${15} /><span>Resume</span></button>
+      <button id="resume-agent" type="button" class=${loggedOut(agent) ? "btn" : "btn btn-pri"}
+        disabled=${!store.canResume || waiting || !!entry?.sending || entry?.reading > 0}
+        onClick=${() => (entry?.draft.trim() ? store.submitPrompt() : store.resumeAgent(ticket.id, "", entry?.tier || ""))}><${Icon} name="play" size=${15} /><span>Resume</span></button>
       <button id="fresh-agent" type="button" class="btn" disabled=${!store.canStart || waiting}
         onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
     </div>

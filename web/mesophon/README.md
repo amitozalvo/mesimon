@@ -214,7 +214,9 @@ a ticket outside the board's last column, is listed under Stopped
 `resume`): the same session's conversation taken up again, with the words
 typed, their pictures and a picked tier when there are any (the field's Send,
 as every send of words with a picture, waits while a picture is still being
-read, so none goes without it); Start fresh is the
+read, so none goes without it; the page's Resume button takes that same road when
+there are words or pictures in the field, and resumes at once when there are
+none); Start fresh is the
 `start` op on the free seat, and its sheet says the old conversation is left
 behind. The stopped agent rides the board reply's `stopped` (T-1218), where no
 agent holds the seat, and the page reads it as the ticket's agent: `agent`
@@ -240,6 +242,8 @@ that says `keys`, the Terminal tab's foot is a key bar and a typed line, each
 press one `keys` op ({ key } or { text }) into the ticket's agent session
 alone; the line's ⏎ is Enter when it is empty, so every key is in view at
 360 px. An empty composer over a working turn is Stop, an Escape the same way.
+The typed line belongs to its conversation, kept as the field's draft is:
+another ticket's Terminal tab never shows it, so it never goes to that agent.
 A typed line (at most 512 bytes) goes first, and its Enter only once the host
 answered it `edited`, 150 ms behind; a refused line sends no Enter and stays in
 the field. One line at a time: while a line and its Enter are on their way, the

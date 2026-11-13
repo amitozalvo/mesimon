@@ -3240,6 +3240,24 @@ async function terminalFlow(browser, engineName, size, viewport) {
     assert.equal(resumed.uploads.length, 1);
     assert.match(resumed.prompt, /^Pick it up from the failing test/);
     assert.deepEqual(await page.evaluate(() => fixture.dropped), []);
+    // T-1219: the page's own Resume takes the field's road, its picture
+    // with it: it once sent the words with the picture's mark and no picture.
+    await page.evaluate(() => {
+      const t = fixture.tickets.find((x) => x.id === "crashed");
+      t.agent = null;
+      t.stopped = { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "crashed", at: Date.now() } };
+      fixture.update();
+    });
+    await page.locator("#stopped-line").waitFor();
+    await until(page, () => !document.querySelector("#resume-agent").disabled && !document.querySelector("#prompt").disabled);
+    await page.locator("#prompt").fill("Again, with the shot");
+    await page.locator("#prompt-picture").setInputFiles({ name: "again.png", mimeType: "image/png", buffer: noisePng(50, 30) });
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#resume-agent").click();
+    await until(page, () => fixture.resumes.length === 4);
+    const again = await page.evaluate(() => fixture.resumes[3]);
+    assert.equal(again.uploads?.length, 1, "the picture goes with the page's Resume");
+    assert.match(again.prompt, /^Again, with the shot/);
     await overview();
 
     // The Terminal tab: the screen, a key bar and a typed line, all into
@@ -3264,6 +3282,30 @@ async function terminalFlow(browser, engineName, size, viewport) {
       { ...pane, text: "yes, go on" },
       { ...pane, key: "enter" },
     ]);
+    // T-1219: a typed line belongs to its conversation. Another ticket's
+    // Terminal tab never shows it, so it never goes to that agent, and it
+    // is there again on coming back.
+    const other = await page.evaluate(() => {
+      const t = fixture.tickets.find((x) => x.id !== "ticket-0" && x.agent?.state === "working");
+      return { ticket: t.id, session: t.agent.session };
+    });
+    await page.locator("#keys-text").fill("private line for ticket-0");
+    await overview();
+    await page.locator(`.ticket[data-id="${other.ticket}"]`).first().click();
+    await page.locator("#tab-terminal").click();
+    await page.locator("#keys-form").waitFor();
+    await until(page, () => document.querySelector("#keys-text") && !document.querySelector("#keys-text").disabled);
+    assert.equal(await page.locator("#keys-text").inputValue(), "", "another ticket's line is not carried over");
+    await page.locator("#keys-send").click();
+    await until(page, () => fixture.keys.length === 6);
+    assert.deepEqual((await keys()).at(-1), { op: "keys", ticket: other.ticket, session: other.session, key: "enter" });
+    await overview();
+    await page.locator('.ticket[data-id="ticket-0"]').first().click();
+    await page.locator("#tab-terminal").click();
+    await page.locator("#keys-form").waitFor();
+    assert.equal(await page.locator("#keys-text").inputValue(), "private line for ticket-0", "its own line is kept");
+    await page.locator("#keys-text").fill("");
+    await page.evaluate(() => fixture.keys.splice(5));
     assert.equal(await page.locator("#keys-text").inputValue(), "");
     // T-1218: a refused line sends no Enter, which would submit whatever
     // the agent's box held, and the line stays to fix.
