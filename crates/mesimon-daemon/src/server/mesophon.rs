@@ -3490,6 +3490,17 @@ impl Daemon {
         if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
             return reject("input is already pending");
         }
+        // A dialog up is answered on its own road (T-1208): the permission
+        // card's allow-once or deny, the question's checked choice. A key
+        // there would pick an option the card never offers, "don't ask
+        // again" among them.
+        if self.pane_waits_on_you(id) {
+            return reject(if self.control_answers_here(id) {
+                "the agent waits on you: answer it on its card"
+            } else {
+                "the agent waits on you: answer it at your terminal"
+            });
+        }
         let sid = id.simple().to_string()[..16].to_string();
         let sent = match (key, text) {
             (Some(key), None) => self.backend.press_key(&sid, key.tmux()),
@@ -9209,6 +9220,20 @@ mod keys_resume_tests {
         assert_eq!(refusal(d.control_keys(&phone(), &elsewhere, &session, key, None)), gone);
         let stranger = uuid::Uuid::new_v4().to_string();
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &stranger, key, None)), gone);
+
+        // A dialog up takes no key: its answer has its own road.
+        let state = d.board.sessions[0].state.clone();
+        d.board.sessions[0].set_state(SessionState::RequiresAction {
+            reason: mesimon_core::board::Reason::Permission,
+        });
+        for press in [key, Some(api::PaneKey::Enter)] {
+            let held = refusal(d.control_keys(&phone(), &ticket, &session, press, None));
+            assert!(held.starts_with("the agent waits on you"), "{held}");
+        }
+        let digit = Some("2".to_string());
+        let held = refusal(d.control_keys(&phone(), &ticket, &session, None, digit));
+        assert!(held.starts_with("the agent waits on you"), "{held}");
+        d.board.sessions[0].set_state(state);
 
         d.board.sessions[0].kind = SessionKind::Bash;
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, key, None)), gone);

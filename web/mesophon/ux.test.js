@@ -3171,7 +3171,8 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.locator("#keys-form").waitFor();
     assert.equal(await page.locator("#prompt").count(), 0, "the keys take the composer's place");
     await page.locator('.key[data-key="escape"]').click();
-    await page.locator('.key[data-key="back_tab"]').click();
+    await page.locator('.key[data-key="tab"]').click();
+    assert.equal(await page.locator('.key[data-key="back_tab"]').count(), 0, "no permission-mode cycle from a phone");
     await page.locator('.key[data-text="2"]').click();
     await page.locator("#keys-text").fill("yes, go on");
     await page.locator("#keys-send").click();
@@ -3179,7 +3180,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
     const pane = { op: "keys", ticket: "ticket-0", session: "session-0" };
     assert.deepEqual(await keys(), [
       { ...pane, key: "escape" },
-      { ...pane, key: "back_tab" },
+      { ...pane, key: "tab" },
       { ...pane, text: "2" },
       { ...pane, text: "yes, go on" },
       { ...pane, key: "enter" },
@@ -3201,6 +3202,18 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => /that session is a shell/.test(document.querySelector("#toast")?.textContent || ""));
     assert.equal(await page.evaluate(() => fixture.keys.length), 6);
     await page.evaluate(() => (fixture.keysRefusal = ""));
+    // A dialog up is answered on its card: the bar rests until it is gone.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.state = "needs attention";
+      fixture.update();
+    });
+    await until(page, () => document.querySelector('.key[data-key="escape"]')?.disabled);
+    assert(await page.locator("#keys-text").isDisabled());
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.state = "working";
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector('.key[data-key="escape"]').disabled);
 
     // Stop: an empty field over a working turn is the desk's Escape.
     await page.locator("#tab-chat").click();

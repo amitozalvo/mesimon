@@ -59,7 +59,7 @@ function TicketTabs({ store, ticket, panes, at }) {
 // The keys a phone has no key for (T-1208), sent straight into the
 // agent's pane: the desk's own keys at its prompt and its dialogs.
 const KEYS = [
-  ["escape", "esc"], ["tab", "tab"], ["back_tab", "⇧tab"], ["ctrl_c", "^C"], ["up", "↑"], ["down", "↓"],
+  ["escape", "esc"], ["tab", "tab"], ["ctrl_c", "^C"], ["up", "↑"], ["down", "↓"],
   ["left", "←"], ["right", "→"], ["enter", "⏎"], ["ctrl_r", "^R"], ["ctrl_d", "^D"], ["backspace", "⌫"],
 ];
 const DIGITS = ["1", "2", "3", "4"];
@@ -68,7 +68,10 @@ const DIGITS = ["1", "2", "3", "4"];
 // into the pane, Enter after it, or each key as it is typed.
 function KeyBar({ store, ticket }) {
   const line = useRef();
-  const live = store.keysReach(ticket);
+  // A dialog up is answered on its card (T-1208): the terminal refuses keys
+  // there, so the bar rests until it is gone.
+  const asks = ticket.agent?.state === "needs attention";
+  const live = store.keysReach(ticket) && !asks;
   const send = (press) => store.sendKeys(press);
   return html`<footer class="keys-area" aria-label="Keys">
     <div class="key-bar" role="group" aria-label="Keys for the agent's terminal">
@@ -88,7 +91,7 @@ function KeyBar({ store, ticket }) {
       <span class="keys-prompt" aria-hidden="true">›</span>
       <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
         enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal"
-        placeholder=${live ? "Type a line, Enter sends it" : "The agent's terminal is out of reach"} />
+        placeholder=${live ? "Type a line, Enter sends it" : asks ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
       <button id="keys-send" type="submit" class="send" disabled=${!live} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
     </form>
   </footer>`;

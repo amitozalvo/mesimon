@@ -43828,7 +43828,10 @@ ones. make sure a crashed agent session will be recoverable using the new design
 - `keys` op (feature `keys`, `Action::PressKeys`, Paired only, on a `Resource::Session`;
   every other principal is judged as `Mutate`): one named key or one scrubbed line (512 B) into
   the ticket's agent session's pane via `control_target`, so a shell, a terminal, another
-  ticket's session or a dead pane is refused, and none goes in under a pending delivery. The
+  ticket's session or a dead pane is refused, and none goes in under a pending delivery or while
+  the agent waits on you (`pane_waits_on_you`: a permission or a question is answered on its card,
+  so no key picks "don't ask again"). Shift+Tab is not on the list: it cycles Claude Code's
+  permission mode, and a phone never turns on auto-accept (a commit review's finding). The
   Terminal tab's foot is a key bar and a typed line; an empty composer over a working turn is
   Stop, an Escape.
 - `resume` op (feature `resume`, under `StartAgent` + `authorize_execution`): the ticket's

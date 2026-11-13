@@ -325,13 +325,14 @@ pub enum Request {
 
 /// The keys a phone's key bar sends an agent pane (T-1208), each one tmux
 /// key name. A closed list: nothing a phone types reaches tmux as a key
-/// spelling of its own.
+/// spelling of its own. Shift+Tab is left out on purpose: in Claude Code it
+/// cycles the permission mode, and a phone never turns on auto-accept (the
+/// plan card accepts with edits still asked).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneKey {
     Escape,
     Tab,
-    BackTab,
     Enter,
     Up,
     Down,
@@ -349,7 +350,6 @@ impl PaneKey {
         match self {
             PaneKey::Escape => "Escape",
             PaneKey::Tab => "Tab",
-            PaneKey::BackTab => "BTab",
             PaneKey::Enter => "Enter",
             PaneKey::Up => "Up",
             PaneKey::Down => "Down",
@@ -1319,11 +1319,16 @@ mod tests {
     #[test]
     fn keys_and_resume_parse_the_page_s_shapes() {
         let keys: Request = serde_json::from_value(serde_json::json!(
-            {"op":"keys","ticket":"t","session":"s","key":"back_tab"}
+            {"op":"keys","ticket":"t","session":"s","key":"ctrl_c"}
         ))
         .unwrap();
         let Request::Keys { key: Some(key), text: None, .. } = keys else { panic!("{keys:?}") };
-        assert_eq!(key.tmux(), "BTab");
+        assert_eq!(key.tmux(), "C-c");
+        // The permission mode's cycle is no key of the phone's.
+        assert!(serde_json::from_value::<Request>(serde_json::json!(
+            {"op":"keys","ticket":"t","session":"s","key":"back_tab"}
+        ))
+        .is_err());
         let typed: Request = serde_json::from_value(serde_json::json!(
             {"op":"keys","ticket":"t","session":"s","text":"yes"}
         ))
