@@ -123,13 +123,22 @@ fn press(app: &mut App, c: char) {
     app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("key");
 }
 
-/// The transcript's link walk: Tab forward, Shift+Tab back (T-1112).
+/// The link walk on every surface that picks (T-1192): `^n` forward, `^p`
+/// back.
 fn next_link(app: &mut App) {
-    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).expect("^n");
 }
 
 fn prev_link(app: &mut App) {
-    app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).expect("shift+tab");
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).expect("^p");
+}
+
+/// A cell the pick pass painted as the live pick (T-1192): the words
+/// inverted — in the page's ground on a lit one where the profile mixes
+/// colour, SGR 7 where it cannot.
+fn picked_cell(cell: &ratatui::buffer::Cell, theme: &crate::theme::Theme) -> bool {
+    cell.modifier.contains(Modifier::REVERSED)
+        || (theme.bg.is_some() && Some(cell.fg) == theme.bg && cell.bg != Color::Reset)
 }
 
 fn render(app: &App, w: u16, h: u16) -> Vec<String> {
@@ -7399,7 +7408,13 @@ fn transcript_enter(app: &mut App) {
 }
 
 /// The marker on the terminal, not merely an internal cursor index.
-fn transcript_mark(buffer: &ratatui::buffer::Buffer, row_word: &str, needle: &str, marked: bool) {
+fn transcript_mark(
+    theme: &Theme,
+    buffer: &ratatui::buffer::Buffer,
+    row_word: &str,
+    needle: &str,
+    marked: bool,
+) {
     let lines = lines_of(buffer);
     // Inside the dialog: the open card above it can show the same words.
     let top = lines.iter().position(|line| line.contains("TRANSCRIPT ∙")).unwrap_or(0);
@@ -7409,7 +7424,7 @@ fn transcript_mark(buffer: &ratatui::buffer::Buffer, row_word: &str, needle: &st
     let x = line[..byte].width() as u16;
     for col in x..x + needle.width() as u16 {
         assert_eq!(
-            buffer[(col, y as u16)].modifier.contains(Modifier::UNDERLINED),
+            picked_cell(&buffer[(col, y as u16)], theme),
             marked,
             "{row_word}: {needle} at {col}, {y}"
         );
@@ -7430,10 +7445,10 @@ fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
     next_link(&mut app);
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
-    transcript_mark(&buf, "prose same", "same", false);
-    transcript_mark(&buf, "first same", "same", false);
-    transcript_mark(&buf, "second same", "same", true);
-    transcript_mark(&buf, "second same", "second", false);
+    transcript_mark(&app.theme, &buf, "prose same", "same", false);
+    transcript_mark(&app.theme, &buf, "first same", "same", false);
+    transcript_mark(&app.theme, &buf, "second same", "same", true);
+    transcript_mark(&app.theme, &buf, "second same", "second", false);
     let cached = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
     let candidates = app.open_transcript_view().unwrap().links();
     let _ = cells(&app, 120, 30);
@@ -7441,7 +7456,7 @@ fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
     assert!(std::rc::Rc::ptr_eq(&candidates, &app.open_transcript_view().unwrap().links()));
     transcript_enter(&mut app);
     assert_eq!(app.pending_open, Some(vec!["open".into(), "https://b.test".into()]));
-    assert!(matches!(app.mode, Mode::Normal));
+    assert!(matches!(app.mode, Mode::Transcript { .. }), "the dialog stays under the flash");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -7474,15 +7489,15 @@ fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
             .flat_map(|y| (0..120).map(move |x| (x, y)))
             .filter_map(|(x, y)| {
                 let cell = &buf[(x, y as u16)];
-                cell.modifier.contains(Modifier::UNDERLINED).then(|| cell.symbol().to_string())
+                picked_cell(cell, &app.theme).then(|| cell.symbol().to_string())
             })
             .collect();
         let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
         let expected =
             if name == "wrapped-label" { format!("{label}{target}") } else { target.clone() };
         assert_eq!(compact(&marked), expected, "only the selected link's cells are marked");
-        transcript_mark(&buf, "before ", "before", false);
-        transcript_mark(&buf, " after", "after", false);
+        transcript_mark(&app.theme, &buf, "before ", "before", false);
+        transcript_mark(&app.theme, &buf, " after", "after", false);
         transcript_enter(&mut app);
         assert_eq!(app.pending_open, Some(vec!["open".into(), target]));
         let _ = std::fs::remove_dir_all(dir);
@@ -7525,10 +7540,10 @@ fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
                 words(&rendered),
                 "selection cannot reflow code or raw text"
             );
-            transcript_mark(&buf, "before ", "before", false);
-            transcript_mark(&buf, "before ", "~", true);
+            transcript_mark(&app.theme, &buf, "before ", "before", false);
+            transcript_mark(&app.theme, &buf, "before ", "~", true);
             if !hidden {
-                transcript_mark(&buf, "before ", "https://example.test/", true);
+                transcript_mark(&app.theme, &buf, "before ", "https://example.test/", true);
             }
             transcript_enter(&mut app);
             assert_eq!(app.pending_open, Some(vec!["open".into(), target.clone()]));
@@ -7552,20 +7567,19 @@ fn transcript_commands_are_selected_marked_and_copied() {
     assert_eq!(copied().as_deref(), Some(text), "nothing selected: the message");
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
-    transcript_mark(&buf, "cargo test", "cargo test -p x \\", true);
-    transcript_mark(&buf, "cargo test", "$", false);
-    transcript_mark(&buf, "--test hook_e2e", "--test hook_e2e", true);
-    transcript_mark(&buf, "ls src/lib.rs", "ls src/lib.rs", false);
+    transcript_mark(&app.theme, &buf, "cargo test", "cargo test -p x \\", true);
+    transcript_mark(&app.theme, &buf, "cargo test", "$", false);
+    transcript_mark(&app.theme, &buf, "--test hook_e2e", "--test hook_e2e", true);
+    transcript_mark(&app.theme, &buf, "ls src/lib.rs", "ls src/lib.rs", false);
     assert!(app.ctx().link_command);
-    use mesimon_core::keymap::{hint_for, Scope, Verb};
-    assert_eq!(hint_for(Scope::Transcript, Verb::TranscriptLinkOpen, &app.ctx()), None);
-    transcript_enter(&mut app);
-    assert!(matches!(app.mode, Mode::Transcript { .. }), "enter opens nothing");
-    assert!(app.pending_open.is_none());
     press(&mut app, 'c');
     assert_eq!(copied().as_deref(), Some("cargo test -p x \\\n--test hook_e2e"));
     assert!(app.status.starts_with("command"), "{}", app.status);
-    // The fence's words are commands, not paths: two links in all.
+    assert!(matches!(app.mode, Mode::Transcript { .. }), "copying keeps the dialog");
+    assert!(!app.ctx().link_picked, "an acted pick flashes, then is let go (T-1192)");
+    // The fence's words are commands, not paths: two links in all. The
+    // key after the copy meets the dialog with nothing picked.
+    next_link(&mut app);
     next_link(&mut app);
     assert_eq!(app.transcript_cursor_link().unwrap().text, "ls src/lib.rs");
     assert_eq!(app.transcript_links().len(), 2);
@@ -7582,15 +7596,17 @@ fn an_agents_bang_line_and_a_code_span_are_commands_too() {
     press(&mut app, '}');
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
-    transcript_mark(&buf, "reset.sh", "bash /tmp/s/reset.sh", true);
-    transcript_mark(&buf, "reset.sh", "!", false);
-    transcript_mark(&buf, "owner.pw", "cat ~/.cache/s/owner.pw", false);
+    transcript_mark(&app.theme, &buf, "reset.sh", "bash /tmp/s/reset.sh", true);
+    transcript_mark(&app.theme, &buf, "reset.sh", "!", false);
+    transcript_mark(&app.theme, &buf, "owner.pw", "cat ~/.cache/s/owner.pw", false);
     press(&mut app, 'c');
     assert_eq!(copied().as_deref(), Some("bash /tmp/s/reset.sh"));
+    // The copy lets the pick go (T-1192): the walk starts over.
+    next_link(&mut app);
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
-    transcript_mark(&buf, "owner.pw", "cat ~/.cache/s/owner.pw", true);
-    transcript_mark(&buf, "reset.sh", "bash /tmp/s/reset.sh", false);
+    transcript_mark(&app.theme, &buf, "owner.pw", "cat ~/.cache/s/owner.pw", true);
+    transcript_mark(&app.theme, &buf, "reset.sh", "bash /tmp/s/reset.sh", false);
     press(&mut app, 'c');
     assert_eq!(copied().as_deref(), Some("cat ~/.cache/s/owner.pw"));
     assert_eq!(app.transcript_links().len(), 2, "the email is no link");
@@ -7608,8 +7624,8 @@ fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     assert!(app.transcript_cursor_link().is_none());
     assert!(app.link_hovered().is_none());
     let buf = cells(&app, 120, 30);
-    transcript_mark(&buf, "older T-1", "T-1", false);
-    assert!(!app.ctx().transcript_link_selected);
+    transcript_mark(&app.theme, &buf, "older T-1", "T-1", false);
+    assert!(!app.ctx().link_picked);
     transcript_enter(&mut app);
     assert!(matches!(app.mode, Mode::Transcript { .. }));
     assert_eq!(app.selected_ticket().unwrap().id, ulid_n(3));
@@ -7636,7 +7652,9 @@ fn transcript_links_load_archived_ids_and_keep_them_across_snapshots() {
     app.refresh().unwrap();
     app.poll_archive();
     assert_eq!(app.transcript_cursor_link().unwrap().text, "T-2");
-    transcript_mark(&cells(&app, 120, 30), "archived T-2", "T-2", true);
+    transcript_mark(&app.theme, &cells(&app, 120, 30), "archived T-2", "T-2", true);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert!(matches!(app.mode, Mode::Transcript { .. }), "esc lets the pick go first");
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     app.refresh().unwrap();
     assert!(app.board.ticket(ulid_n(2)).is_none(), "leaving the dialog releases the archive");
@@ -8494,8 +8512,8 @@ fn golden_editor_reader_120() {
     let lines = render(&app, 120, 30);
     golden("editor_reader_unwrapped_120x30", &lines);
 
-    // Wrapped again, the link selected by `tab`: drawn underlined, and
-    // Enter says it opens it.
+    // Wrapped again, the link picked by `^n`: drawn inverted, the rest
+    // receded, and the footer is the pick's.
     app.reader_unwrapped = false;
     if let Mode::Editor(ed) = &mut app.mode {
         let r = ed.reader.as_mut().expect("a reader");
@@ -8503,8 +8521,9 @@ fn golden_editor_reader_120() {
         r.reveal.set(true);
     }
     let lines = render(&app, 120, 30);
-    assert!(app.ctx().reader_link_selected);
-    assert!(lines.iter().any(|l| l.contains("enter open link")), "{lines:?}");
+    assert!(app.ctx().link_picked);
+    let foot = lines.last().expect("a footer");
+    assert!(foot.contains("LINK") && foot.contains("enter open"), "{lines:?}");
     golden("editor_reader_link_120x30", &lines);
 }
 
@@ -13117,7 +13136,7 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     let mut app = tier_app();
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("on coder ∙ ^n next")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("on coder ∙ ^r next")), "{rows:?}");
     assert!(rows.iter().any(|r| r.contains("starts on coder")), "{rows:?}");
     golden("ticket_tier_120x30", &rows);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
@@ -15512,12 +15531,12 @@ fn the_zone_reads_the_whole_conversation_and_tab_walks_the_links_on_screen() {
     assert!(lines.iter().any(|l| l.trim() == "you"), "the person's turns are headed:\n{text}");
     assert!(text.contains("mesimon.dev/proposal"), "{text}");
     assert!(!text.contains("mesimon.dev/research"), "the first reply is above the window:\n{text}");
-    assert!(lines.last().is_some_and(|l| l.contains("tab link")), "the walk is offered:\n{text}");
+    assert!(lines.last().is_some_and(|l| l.contains("^n link")), "the walk is offered:\n{text}");
     next_link(&mut app);
     let link = app.page_cursor_link().expect("the visible link is selected");
     assert_eq!(link.text, "https://mesimon.dev/proposal");
     let lines = render(&app, 120, 30);
-    assert!(lines.last().is_some_and(|l| l.contains("enter open link")), "{lines:#?}");
+    assert!(lines.last().is_some_and(|l| l.contains("enter open")), "{lines:#?}");
     next_link(&mut app);
     assert!(app.page_cursor_link().is_none(), "past the last link the walk lets go");
     let lines = render(&app, 120, 30);
@@ -15536,6 +15555,72 @@ fn the_zone_reads_the_whole_conversation_and_tab_walks_the_links_on_screen() {
     next_link(&mut app);
     let link = app.page_cursor_link().expect("the link that came into view");
     assert_eq!(link.text, "https://mesimon.dev/research");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// T-1192: a picked link on the page is a state of its own. The footer
+/// names it (`LINK` and the pick's keys), the link wears the inverted
+/// shimmer and every other cell above the footer recedes. Esc lets it go
+/// and the page stays; Enter acts, the link flashes and is let go, and the
+/// key after it is the page's again — the reported bug was a pick that kept
+/// taking Enter until an Esc, which then also left the page.
+#[test]
+fn a_picked_link_on_the_page_is_named_acted_on_and_let_go() {
+    let (mut app, path) = app_live("tlive-pick", false);
+    app.opener = Some("open".into());
+    app.now = || 1_000_000;
+    let rest = cells(&app, 120, 30);
+    next_link(&mut app);
+    let buf = cells(&app, 120, 30);
+    let lines = lines_of(&buf);
+    let foot = lines.last().expect("a footer");
+    for words in ["LINK", "enter open", "c copy", "^n ^p link", "esc let go"] {
+        assert!(foot.contains(words), "{words}: {foot}");
+    }
+    let y = lines.iter().position(|l| l.contains("mesimon.dev/proposal")).expect("the link");
+    let x = lines[y][..lines[y].find("https://").unwrap()].width() as u16;
+    let url = "https://mesimon.dev/proposal".len() as u16;
+    for col in x..x + url {
+        assert!(picked_cell(&buf[(col, y as u16)], &app.theme), "the pick at {col},{y}");
+    }
+    assert!(!picked_cell(&buf[(x - 2, y as u16)], &app.theme), "only the link");
+    let title = lines.iter().position(|l| l.contains("Fix OSC-11 detection")).expect("title");
+    let (tx, ty) = (lines[title].find("Fix").unwrap() as u16, title as u16);
+    assert_ne!(buf[(tx, ty)].fg, rest[(tx, ty)].fg, "the rest of the page recedes");
+    assert!(!buf[(tx, ty)].modifier.contains(Modifier::BOLD), "and drops its weight");
+
+    // Esc lets the pick go; the page stays, as it was.
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert!(matches!(app.screen, Screen::Ticket { .. }), "esc on a pick stays on the page");
+    assert!(app.page_cursor_link().is_none());
+    let back = cells(&app, 120, 30);
+    assert_eq!(back[(tx, ty)].fg, rest[(tx, ty)].fg, "and the page comes back");
+
+    // Enter opens the link and flashes it; the keys are the page's at once.
+    next_link(&mut app);
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert_eq!(
+        app.pending_open,
+        Some(vec!["open".to_string(), "https://mesimon.dev/proposal".to_string()])
+    );
+    assert!(!app.ctx().link_picked, "acted on, it holds no key");
+    assert_eq!(app.pick_drawn(), Some(Some(0)), "but it flashes");
+    let flash = cells(&app, 120, 30);
+    assert!(!lines_of(&flash).last().unwrap().contains("LINK"), "the footer is the page's");
+    // The flash runs its course on the clock and lets the link go.
+    app.now = || 1_000_000 + crate::theme::LINK_ACK_MS;
+    assert!(app.settle_link_ack());
+    assert!(app.page_cursor_link().is_none());
+    assert_eq!(app.pick_drawn(), None);
+    // Mid-flash, the next key lets it go first and is the page's own: here
+    // `^n` starts the walk over rather than stepping past the acted link.
+    app.now = || 2_000_000;
+    next_link(&mut app);
+    press(&mut app, 'c');
+    app.now = || 2_000_050;
+    next_link(&mut app);
+    let link = app.page_cursor_link().expect("picked again");
+    assert_eq!(link.text, "https://mesimon.dev/proposal");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

@@ -27,4 +27,4 @@
  -- shift+enter  ask agent ------------------------------------------------------           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
    ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
    ⏵⏵ auto mode on
- jk select session ∙ tab link ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe           ? keys
+ jk select session ∙ ^n link ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe            ? keys

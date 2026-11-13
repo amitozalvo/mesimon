@@ -741,7 +741,7 @@ fn mark_literal(
         .flat_map(|span| {
             target_runs(&span.content, Emph::default(), selected).into_iter().map(move |run| {
                 let style = if run.emph.selected {
-                    span.style.add_modifier(Modifier::UNDERLINED)
+                    picked(span.style)
                 } else {
                     span.style
                 };
@@ -784,7 +784,7 @@ fn command_row(text: &str, width: usize, style: Style, bang: bool) -> Vec<Span<'
     let (lead, rest) = text.split_at(lead);
     let spans = vec![
         Span::styled(lead.to_string(), style),
-        Span::styled(rest.to_string(), style.add_modifier(Modifier::UNDERLINED)),
+        Span::styled(rest.to_string(), picked(style)),
     ];
     fit(spans, text, width, style)
 }
@@ -805,7 +805,7 @@ fn fit(
             end > budget && span.style.add_modifier.contains(Modifier::UNDERLINED)
         });
         clip(&mut spans, budget);
-        let mark = if hidden_selection { style.add_modifier(Modifier::UNDERLINED) } else { style };
+        let mark = if hidden_selection { picked(style) } else { style };
         spans.push(Span::styled("~", mark));
     }
     spans
@@ -1073,9 +1073,22 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
         }
     }
     if e.selected {
-        s = s.add_modifier(Modifier::UNDERLINED);
+        s = picked(s);
     }
     s
+}
+
+/// The ink a picked link's cells carry out of every renderer (T-1192): an
+/// underline in a colour no theme holds. `ui::pick` reads it off the
+/// finished frame, wherever the surface drew it, and paints the pick's
+/// shimmer in its place — so the page, the transcript and the reader share
+/// one look, and a frame that never reaches that pass shows the old
+/// underline rather than nothing.
+pub(crate) const PICK_MARK: ratatui::style::Color = ratatui::style::Color::Rgb(1, 2, 3);
+
+/// `style` marked as a picked link's (`PICK_MARK`).
+pub(crate) fn picked(style: Style) -> Style {
+    style.add_modifier(Modifier::UNDERLINED).underline_color(PICK_MARK)
 }
 
 /// One display word: the parts are the styled runs it is made of, kept

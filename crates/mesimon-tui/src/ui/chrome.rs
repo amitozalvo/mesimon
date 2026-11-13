@@ -829,6 +829,10 @@ fn dialog_open(app: &App) -> bool {
 /// tail, a text field, a move, a dialog) is named here, where the hints
 /// it changed are.
 fn mode_word(app: &App) -> Option<&'static str> {
+    // A pick holds the keys it names (T-1192), on whichever surface.
+    if app.pick_live() {
+        return Some(Scope::Link.word());
+    }
     let scope = app.scope();
     // A text field says which field it is; "INPUT" would be true and useless.
     let word = match &app.mode {
@@ -922,7 +926,9 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         pad_to(&mut spans);
         return Line::from(spans).style(band);
     }
-    let scope = app.scope();
+    // A live pick's keys are the footer's (T-1192): the frame around it
+    // has receded, and these are what still read.
+    let scope = if app.pick_live() { Scope::Link } else { app.scope() };
     let ctx = app.frame_ctx();
     let (own, right) = keymap::footer_split(scope, &ctx);
     let own: Vec<&Binding> = if dialog_open(app) { Vec::new() } else { own };

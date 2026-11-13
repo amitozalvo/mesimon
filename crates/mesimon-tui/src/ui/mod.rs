@@ -13,6 +13,7 @@ pub(crate) mod diff;
 mod editor;
 mod help;
 mod menu;
+mod pick;
 mod prs;
 pub(crate) mod releases;
 mod search;
@@ -92,6 +93,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The live window is a fact of the frame that draws it (T-1143).
     app.live_rect.set(None);
     draw_screen(f, app);
+    // A picked link's look (T-1192), over whichever surface drew it.
+    pick::paint(f, app);
     // The mouse's half (T-716): the hints the frame left whole are what a
     // click presses, and the hover lights what the pointer is over.
     let mut hits = app.hits.borrow_mut();

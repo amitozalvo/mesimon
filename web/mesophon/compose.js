@@ -176,7 +176,7 @@ export function QuickNew({ store }) {
   </form>`;
 }
 
-// The agent tiers a start may pick (T-643), as the desk's `^n` cycles them:
+// The agent tiers a start may pick (T-643), as the desk's `^r` cycles them:
 // a row of choices like the column's, and the picked one's launch in words.
 function TierChoices({ tiers, picked, onPick }) {
   if (!tiers.length) return null;

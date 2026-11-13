@@ -868,6 +868,19 @@ const LAYOUT_FLASH_PHASE: Duration = Duration::from_millis(400);
 const LAYOUT_FLASH_PHASES: u32 = 3;
 
 /// Is a flash begun `at` still running?
+/// One step of a link walk over `len` stops (T-1192): from none the first
+/// (or, backward, the last); past either end, none again — so a walk never
+/// strands a pick, and the next press starts it over.
+fn walk_stop(at: Option<usize>, len: usize, forward: bool) -> Option<usize> {
+    match (at, forward) {
+        _ if len == 0 => None,
+        (None, true) => Some(0),
+        (None, false) => Some(len - 1),
+        (Some(i), true) => (i + 1 < len).then_some(i + 1),
+        (Some(i), false) => i.checked_sub(1),
+    }
+}
+
 fn flash_running(at: Instant) -> bool {
     at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
 }
@@ -1162,7 +1175,7 @@ impl Pager {
 pub enum EditorPurpose {
     /// A new ticket: title + description, with the mini composer's picks
     /// riding along so Shift+Tab and `^t` keep working in the bigger room.
-    /// `tier` (T-443) is the field's `^n` pick, a tier id; `None` is the
+    /// `tier` (T-443) is the field's `^r` pick, a tier id; `None` is the
     /// default.
     Compose {
         workspace: Option<WorkspaceStrategy>,
@@ -1179,7 +1192,7 @@ pub enum EditorPurpose {
     /// title row is the destination, read-only: the ticket's title, or the
     /// column's name.
     /// `plan` (T-434) is the field's `^p`, riding along like the rest.
-    /// `tier` (T-443) is the field's `^n`, riding along the same way.
+    /// `tier` (T-443) is the field's `^r`, riding along the same way.
     Ask {
         target: AskTarget,
         queued: bool,
@@ -1582,7 +1595,7 @@ pub enum InputPurpose {
         /// `^p` (T-434): the claude Shift+Enter starts on the new ticket
         /// runs in plan mode. Rides the draft into the room and back.
         plan: bool,
-        /// `^n` (T-443): the tier the new ticket starts on, a tier id, riding
+        /// `^r` (T-443): the tier the new ticket starts on, a tier id, riding
         /// the mint. `None` is the default.
         tier: Option<String>,
     },
@@ -1626,7 +1639,7 @@ pub enum InputPurpose {
         /// a start, a wake, or an idle pane parked and woken with the flag.
         /// Off wherever the seat cannot take it (`App::plan_able`).
         plan: bool,
-        /// `^n` (T-443): the tier these words are for, a tier id. `None`
+        /// `^r` (T-443): the tier these words are for, a tier id. `None`
         /// leaves the ticket's tier as it is; a pick is sent with the words
         /// and applied first, so they ride the switch.
         tier: Option<String>,
@@ -1726,7 +1739,7 @@ const SHELL_TAIL_LINES: u16 = 60;
 /// keeps the card open for the whole walk instead of blinking once per press.
 const TAG_FLASH: Duration = Duration::from_millis(1500);
 
-/// How long `^n` holds the card open on the tier it landed on (T-562): the
+/// How long `^r` holds the card open on the tier it landed on (T-562): the
 /// card names the default only for this long, so a stop on it is seen and a
 /// card at rest stays quiet. Every press re-arms it, as the tag flash's does.
 pub(crate) const TIER_FLASH: Duration = Duration::from_millis(1000);
@@ -2071,7 +2084,7 @@ pub struct App {
     /// then lets go. Keyed to the TICKET: moving the cursor ends the reveal,
     /// because a flash is about the card you just tagged and no other.
     pub tag_flash: Option<(ulid::Ulid, Instant)>,
-    /// `^n`'s reveal (T-562), the tag flash's shape: the ticket whose tier
+    /// `^r`'s reveal (T-562), the tag flash's shape: the ticket whose tier
     /// it just picked, and when. The card opens and names the tier — the
     /// default included — for `TIER_FLASH`, then lets go.
     pub tier_flash: Option<(ulid::Ulid, Instant)>,
@@ -2143,9 +2156,12 @@ pub struct App {
     /// Whether the last ticket page drew its two zones (the terminal wide
     /// enough): the live window has nowhere to stand otherwise.
     pub page_zone: std::cell::Cell<bool>,
-    /// The zone's selected link (`tab`): the session it belongs to and the
+    /// The zone's picked link (`^n`): the session it belongs to and the
     /// link's place, so a conversation that grows under it keeps it.
     pub page_link: std::cell::RefCell<Option<(uuid::Uuid, LinkAt)>>,
+    /// When a pick was acted on (T-1192), on the injected clock: Enter or
+    /// `c` flashes the link for `theme::LINK_ACK_MS` before it is let go.
+    pub link_ack: Option<u64>,
     /// Per ticket, what its agent last said against what the cursor has
     /// seen of it (`Spoke`): a card whose entry disagrees keeps its done
     /// mark in the calm register; one that agrees wears it grey. Kept by
@@ -2656,6 +2672,7 @@ impl App {
             page_doc: std::cell::RefCell::new(None),
             page_unseen: std::cell::Cell::new(None),
             page_link: std::cell::RefCell::new(None),
+            link_ack: None,
             page_zone: std::cell::Cell::new(true),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
@@ -3067,6 +3084,7 @@ impl App {
             || self.uncrowned_at.is_some_and(|(id, _)| self.uncrowning_ms(id).is_some())
             || self.striking()
             || self.link_striking()
+            || self.link_ack_ms().is_some()
             || self.gliding()
             || self.summary_pulsing()
             || self.settings_striking()
@@ -3145,6 +3163,143 @@ impl App {
             Mode::Normal if matches!(self.screen, Screen::Ticket { .. }) => self.page_cursor_link(),
             _ => None,
         }
+    }
+
+    /// The link or command picked on one of the three surfaces that walk
+    /// them (T-1192): the ticket page's conversation, the transcript
+    /// dialog, the note reader. `^k`'s row is a list's cursor, not a pick.
+    pub(crate) fn picked_link(&self) -> Option<TicketLink> {
+        match self.mode {
+            Mode::Links { .. } => None,
+            _ => self.cursor_link(),
+        }
+    }
+
+    /// A pick the keys are on: picked, and not acted on yet. While it is,
+    /// the `Link` scope is asked first and the footer is its.
+    pub(crate) fn pick_live(&self) -> bool {
+        !self.help && self.link_ack.is_none() && self.picked_link().is_some()
+    }
+
+    /// Ms into an acted pick's flash (T-1192), while it runs.
+    pub(crate) fn link_ack_ms(&self) -> Option<u64> {
+        let since = (self.now)().saturating_sub(self.link_ack?);
+        (since < crate::theme::LINK_ACK_MS).then_some(since)
+    }
+
+    /// What the frame draws of a pick: `None` for none, `Some(None)` for a
+    /// live one (the shimmer, everything else receded), `Some(Some(ms))`
+    /// for one acted on `ms` ago (the flash, the page coming back).
+    pub(crate) fn pick_drawn(&self) -> Option<Option<u64>> {
+        if self.help || self.picked_link().is_none() {
+            return None;
+        }
+        match self.link_ack {
+            None => Some(None),
+            Some(_) => self.link_ack_ms().map(Some),
+        }
+    }
+
+    /// Let the pick go on whichever surface holds it; the surface stays.
+    pub(crate) fn let_go_link(&mut self) {
+        self.link_ack = None;
+        match &mut self.mode {
+            Mode::Transcript { link_idx, .. } => *link_idx = None,
+            Mode::Editor(ed) if ed.reading => {
+                if let Some(r) = ed.reader.as_mut() {
+                    r.link = None;
+                }
+            }
+            _ => {}
+        }
+        *self.page_link.borrow_mut() = None;
+        self.ctx_dirty();
+    }
+
+    /// An acted pick whose flash has run its course is let go. `true` when
+    /// that changed the frame.
+    pub(crate) fn settle_link_ack(&mut self) -> bool {
+        if self.link_ack.is_some() && self.link_ack_ms().is_none() {
+            self.let_go_link();
+            return true;
+        }
+        false
+    }
+
+    /// A key while a pick is live (T-1192): the `Link` scope's, when it
+    /// binds the key; `None` hands the key on to the surface — the walk
+    /// too, which each surface steps its own way.
+    fn key_link(&mut self, key: Key) -> Option<Result<()>> {
+        if !self.pick_live() {
+            return None;
+        }
+        let ctx = self.ctx();
+        let verb = keymap::resolve(Scope::Link, key, &ctx)?;
+        let link = self.picked_link()?;
+        Some(match verb {
+            Verb::LinkLetGo => {
+                self.let_go_link();
+                Ok(())
+            }
+            Verb::LinkCopy => {
+                let (subject, text) = link.copied();
+                self.status = self.copy(subject, &text);
+                self.link_ack = Some((self.now)());
+                Ok(())
+            }
+            Verb::LinkAct if link.target == LinkTarget::Command => {
+                self.link_ack = Some((self.now)());
+                self.ask_command(&link.text)
+            }
+            // A ticket's page or a terminal editor takes the screen: the
+            // pick goes with the surface, and there is nothing to flash.
+            Verb::LinkAct if matches!(link.target, LinkTarget::Ticket(_)) => {
+                self.let_go_link();
+                if !matches!(self.mode, Mode::Normal) {
+                    self.mode = Mode::Normal;
+                }
+                self.open_link(link);
+                Ok(())
+            }
+            Verb::LinkAct => {
+                self.open_link(link);
+                self.link_ack = Some((self.now)());
+                Ok(())
+            }
+            _ => return None,
+        })
+    }
+
+    /// Enter on a picked command (T-1192): the ask field opens with `!`
+    /// and the command in it, the road the person took by hand (the
+    /// author: "shift+enter then paste the command with the !"). A
+    /// dialog's pick closes the dialog first: the field is the card's or
+    /// the page's. Nothing is sent until the person's Enter.
+    fn ask_command(&mut self, command: &str) -> Result<()> {
+        if !matches!(self.mode, Mode::Normal) {
+            self.link_ack = None;
+            self.mode = Mode::Normal;
+        }
+        // The rail's row does not decide where an ask goes on this page
+        // (T-476); a shell's capture is its own Shift+Enter, not this.
+        let ctx = Ctx {
+            sel_shell: false,
+            sel_terminal: false,
+            col_header: false,
+            ticket_unsent: false,
+            ticket_queued: false,
+            ..self.ctx()
+        };
+        self.dispatch(Verb::Prompt, Key::ShiftEnter, self.scope(), &ctx)?;
+        if let Mode::Input { purpose: InputPurpose::Prompt { .. }, buffer } = &mut self.mode {
+            *buffer = EditBuffer::from_text(
+                // A continued line is one command: the shell drops a
+                // backslash-newline, and the field holds one line.
+                format!("!{}", crate::text::one_line(&command.replace("\\\n", ""))),
+                mesimon_core::command::PROMPT_MAX_BYTES,
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn transcript_cursor_link(&self) -> Option<TicketLink> {
@@ -4641,6 +4796,7 @@ impl App {
     /// returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
         let mut dirty = self.pump()?;
+        dirty |= self.settle_link_ack();
         // The tour's practice board, on its own clock (T-763).
         if let Some(tour) = self.tour.as_mut() {
             dirty |= tour.tick(mesimon_core::clock::now_ms())?;
@@ -6267,18 +6423,16 @@ impl App {
         self.page_selected().map(|(_, l)| l.link)
     }
 
-    /// `tab` on the ticket page (T-1143): the next link among the rows on
-    /// screen, after the selected one; past the last, none — the walk is
-    /// the window's, and the window is the reader's to move.
-    fn page_link_next(&mut self) {
+    /// `^n` / `^p` on the ticket page (T-1143, T-1192): the next (or the
+    /// previous) link among the rows on screen; past either end, none —
+    /// the walk is the window's, and the window is the reader's to move.
+    fn page_link_step(&mut self, forward: bool) {
         let Some(RailRow::Session(s)) = self.rail_row() else { return };
         let id = s.id;
         let visible = self.page_visible_links();
-        let selected = self.page_selected().map(|(i, _)| i);
-        let next = match selected {
-            Some(i) => visible.iter().find(|(j, _)| *j > i).map(|(_, l)| l.at),
-            None => visible.first().map(|(_, l)| l.at),
-        };
+        let selected =
+            self.page_selected().and_then(|(i, _)| visible.iter().position(|(j, _)| *j == i));
+        let next = walk_stop(selected, visible.len(), forward).map(|k| visible[k].1.at);
         *self.page_link.borrow_mut() = next.map(|at| (id, at));
         self.ctx_dirty();
     }
@@ -8331,6 +8485,9 @@ impl App {
             Some(RailRow::Session(s)) => Some(s),
             _ => None,
         };
+        // Every frame's read lets a page pick go once the cursor is off its
+        // session, the page left included (T-1143).
+        let _ = self.page_selected();
         let editor = match &self.mode {
             Mode::Editor(e) => Some(e),
             _ => None,
@@ -8496,7 +8653,13 @@ impl App {
             card_prs_word: self.prefs.card_prs.key(),
             preview_scrolls: self.preview.view.get().max > 0,
             ticket_links: self.page_visible(|on| on.next().is_some()).unwrap_or(false),
-            ticket_link_selected: self.page_cursor_link().is_some(),
+            link_picked: self.pick_live(),
+            link_askable: subject.is_some_and(|t| {
+                !self.ticket_queued(t)
+                    && self.unsent_of(t).is_none()
+                    && !self.launch_parked(t)
+                    && !self.box_held(t)
+            }),
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
             // what you have before fetching it again. This is also what keeps
@@ -8552,7 +8715,6 @@ impl App {
                 .open_transcript_view()
                 .is_some_and(|t| t.messages().len() > 1),
             transcript_links: !self.transcript_links().is_empty(),
-            transcript_link_selected: self.transcript_cursor_link().is_some(),
             transcript_scrolls: self
                 .open_transcript_view()
                 .is_some_and(|t| t.pager.view.get().max > 0),
@@ -8803,9 +8965,6 @@ impl App {
             reader_links: editor
                 .filter(|e| e.reading)
                 .is_some_and(|e| !self.reader_links(e).is_empty()),
-            reader_link_selected: editor
-                .filter(|e| e.reading)
-                .is_some_and(|e| self.reader_cursor_link(e).is_some()),
             link_command: self.cursor_link().is_some_and(|l| l.target == LinkTarget::Command),
             editor_word: self.editor().map_or("", |e| e.word),
             editor_pick: self.prefs.editor.unwrap_or(crate::prefs::AUTO),
@@ -8862,7 +9021,7 @@ impl App {
             tier_on_model: false,
             tier_can_nudge: false,
         };
-        // Agent tiers (T-443): the rows, the dialogs' Enter words and `^n`.
+        // Agent tiers (T-443): the rows, the dialogs' Enter words and `^r`.
         self.fill_tier_ctx(&mut ctx);
         self.fill_boards_ctx(&mut ctx);
         // The sharing dialog's Enter reads its word off the row under the
@@ -9038,6 +9197,17 @@ impl App {
         // an atom it does not bind is a character to type.
         if let Mode::Input { .. } = self.mode {
             return self.key_input(code, mods);
+        }
+        // A pick's keys before the surface's (T-1192). An acted pick still
+        // flashing is let go at the next key, so that key meets the
+        // surface as it will be.
+        if let Some(key) = crate::keys::to_key(code, mods) {
+            if self.link_ack.is_some() {
+                self.let_go_link();
+            }
+            if let Some(out) = self.key_link(key) {
+                return out;
+            }
         }
         if let Mode::Editor(Editor { reading: true, .. }) = self.mode {
             return self.key_reader(code, mods);
@@ -9832,7 +10002,7 @@ impl App {
             // The boards this one reaches (T-733).
             Verb::CrownLinks => self.open_boards_list(),
             Verb::CrownTour => self.open_tour(),
-            // `^n` on the board or the ticket page; the fields take theirs
+            // `^r` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
             Verb::TierNext => self.cycle_tier()?,
             Verb::TierModelName => self.type_tier_model(),
@@ -10727,27 +10897,20 @@ impl App {
                 }
                 if let Some(t) = self.transcript.as_ref() { t.reveal_link.set(false); }
             }
-            Verb::TranscriptLinkNext | Verb::TranscriptLinkPrev => {
+            // The page's walk and the transcript's are one (T-1192): the
+            // next stop, round to none past either end.
+            Verb::LinkNext | Verb::LinkPrev if matches!(self.mode, Mode::Transcript { .. }) => {
                 let len = self.transcript_links().len();
-                if len > 0 {
-                    if let Mode::Transcript { link_idx, .. } = &mut self.mode {
-                        *link_idx = Some(match (*link_idx, verb == Verb::TranscriptLinkNext) {
-                            (None, true) => 0,
-                            (None, false) => len - 1,
-                            (Some(idx), true) => (idx + 1) % len,
-                            (Some(idx), false) => (idx + len - 1) % len,
-                        });
-                    }
-                    if let Some(t) = self.transcript.as_ref() { t.reveal_link.set(true); }
+                if let Mode::Transcript { link_idx, .. } = &mut self.mode {
+                    *link_idx = walk_stop(*link_idx, len, verb == Verb::LinkNext);
+                }
+                if let Some(t) = self.transcript.as_ref() {
+                    t.reveal_link.set(true);
                 }
             }
-            Verb::TranscriptLinkOpen => {
-                if let Some(link) = self.transcript_cursor_link() {
-                    self.mode = Mode::Normal;
-                    self.open_link(link);
-                }
-            }
-            Verb::TicketLinkNext => self.page_link_next(),
+            Verb::LinkNext | Verb::LinkPrev => self.page_link_step(verb == Verb::LinkNext),
+            // Asked through `key_link` only; a stray one does nothing.
+            Verb::LinkAct | Verb::LinkLetGo => {}
             Verb::PullRequests => {
                 if let Some(ticket) = self.subject() {
                     self.mode = Mode::PullRequests { ticket, idx: 0 };
@@ -11385,17 +11548,6 @@ impl App {
             },
             Scope::Ticket => {
                 if let Screen::Ticket { ticket, .. } = self.screen {
-                    // The zone's selected link (T-1143) takes the press
-                    // before the row does: it was asked for with `tab`.
-                    if let Some(link) = self.page_cursor_link() {
-                        if link.target == LinkTarget::Command {
-                            let (subject, text) = link.copied();
-                            self.status = self.copy(subject, &text);
-                        } else {
-                            self.open_link(link);
-                        }
-                        return Ok(());
-                    }
                     if let Some(note) = self.selected_note() {
                         return self.open_note_editor(ticket, Some(note));
                     }
@@ -13351,7 +13503,7 @@ impl App {
                 | InputPurpose::RenameColumn { .. }
                 | InputPurpose::SetMergeBranch => {}
             },
-            // `^n` (T-443): the tier the launch these words end in runs on,
+            // `^r` (T-443): the tier the launch these words end in runs on,
             // riding the draft or the ask. The keymap offers it only where
             // the field's ring has somewhere to go.
             Some(Verb::TierNext) => match &mut purpose {
@@ -13632,7 +13784,6 @@ impl App {
             return Ok(());
         };
         let links = self.reader_links(&ed).len();
-        let chosen = self.reader_cursor_link(&ed);
         let ring = self.note_ring(&ed).is_some();
         let Some(r) = ed.reader.as_mut() else {
             self.mode = Mode::Editor(ed);
@@ -13659,7 +13810,7 @@ impl App {
             // each note's top, then its links. Past the last link `tab` is
             // the next note's top; back past the top `shift+tab` is the
             // previous note's last link. A lone note comes round to itself.
-            Verb::TranscriptLinkNext => match r.link {
+            Verb::LinkNext => match r.link {
                 None if links > 0 => {
                     r.link = Some(0);
                     r.reveal.set(true);
@@ -13671,7 +13822,7 @@ impl App {
                 _ if ring => return self.reader_walk_notes(ed, 1),
                 _ => r.link = None,
             },
-            Verb::TranscriptLinkPrev => match r.link {
+            Verb::LinkPrev => match r.link {
                 Some(0) => r.link = None,
                 Some(i) => {
                     r.link = Some(i - 1);
@@ -13687,13 +13838,6 @@ impl App {
                 }
                 None => {}
             },
-            // A selected link opens, as the transcript's Enter does.
-            Verb::NoteEdit if chosen.is_some() => {
-                if let Some(link) = chosen {
-                    self.open_link(link);
-                }
-                return Ok(());
-            }
             // The editor grows out of the card, on the note the reader
             // was on, cursor at its top.
             Verb::NoteEdit => {
@@ -13775,7 +13919,7 @@ impl App {
                 }
                 EditorPurpose::Note { .. } => {}
             },
-            // The field's `^n` (T-443) in the room.
+            // The field's `^r` (T-443) in the room.
             Some(Verb::TierNext) => match &mut ed.purpose {
                 EditorPurpose::Compose { tier, .. } => self.step_field_tier(None, tier),
                 EditorPurpose::Ask { target: AskTarget::Ticket(t), tier, .. } => {
@@ -14826,7 +14970,7 @@ impl App {
     }
 
     /// Is the cursor card open for `ticket` — the `p` preference, or a
-    /// quick-tag digit or a `^n` still inside its reveal? Only the board
+    /// quick-tag digit or a `^r` still inside its reveal? Only the board
     /// asks, and only of the card under the cursor: the flash is keyed to the
     /// ticket, so the first `j` closes it and no second card ever opens
     /// behind it.
@@ -16020,7 +16164,7 @@ impl App {
         } else {
             "asked"
         };
-        // The field's `^n` pick (T-443) rides every receipt: the words go
+        // The field's `^r` pick (T-443) rides every receipt: the words go
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
         let immediately = immediately && !queued && !accept_plan;
@@ -18835,7 +18979,7 @@ mod tests {
         assert!(app.pending_spawn_focus.is_none(), "the board asked after the key settles it");
     }
 
-    /// Two `^n` before the first's board lands step the tier twice (T-812
+    /// Two `^r` before the first's board lands step the tier twice (T-812
     /// review), and a tag's colour and a tag's wearing cycle the same way.
     #[test]
     fn repeated_presses_each_step_once_while_the_board_lands_late() {
@@ -20172,8 +20316,8 @@ mod tests {
         press(&mut app, '{');
         press(&mut app, '{');
         assert_eq!(on_note(&app), Some(ulid::Ulid(92)), "round to the last");
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(on_note(&app), Some(ulid::Ulid(91)), "no links: shift+tab walks back");
+        ctrl(&mut app, 'p');
+        assert_eq!(on_note(&app), Some(ulid::Ulid(91)), "no links: ^p walks back");
         assert_eq!(app.board.tickets[0].workspace, None, "and never picks");
         assert!(!app.ctx().reader_unwrapped);
         press(&mut app, 'w');
@@ -20185,30 +20329,33 @@ mod tests {
         assert!(!app.ctx().reader_unwrapped);
     }
 
-    /// T-1139: `tab` walks the note's links, as the transcript's does, and
-    /// Enter opens the one selected, closing the reader; Esc lets a link go
-    /// before it closes, and Enter on no link edits.
+    /// T-1139, T-1192: `^n ^p` walk the note's links, as the page's and the
+    /// transcript's do; Enter opens the one picked and the reader stays
+    /// under its flash; Esc lets a link go before it closes, and Enter on
+    /// no link edits.
     #[test]
-    fn tab_walks_the_links_in_the_reader_and_enter_opens_one() {
+    fn ctrl_n_walks_the_links_in_the_reader_and_enter_opens_one() {
         let (mut app, _) =
             app_with_notes_state(None, &[(90, "See https://a.test/one and https://b.test/two.")]);
         app.opener = Some("open".into());
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(app.ctx().reader_links);
-        assert!(!app.ctx().reader_link_selected);
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert!(app.ctx().reader_link_selected);
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        // first → second → first → second (back from the wrap).
+        assert!(!app.ctx().link_picked);
+        ctrl(&mut app, 'n');
+        assert!(app.ctx().link_picked);
+        ctrl(&mut app, 'n');
+        ctrl(&mut app, 'p');
+        ctrl(&mut app, 'n');
+        // first → second → first → second.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(editor(&app).reading, "esc lets the link go first");
-        assert!(!app.ctx().reader_link_selected);
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().link_picked);
+        ctrl(&mut app, 'p');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal), "opening closes the reader");
+        assert!(editor(&app).reading, "opening keeps the reader under the flash");
         assert_eq!(app.status, "opening https://b.test/two");
+        assert!(!app.ctx().link_picked, "acted on: let go");
+        assert!(app.pick_drawn().is_some(), "but still drawn, flashing");
 
         let (mut app, _) = app_with_notes_state(None, &[(90, "no links here")]);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
@@ -20223,7 +20370,7 @@ mod tests {
     /// next note's top; `shift+tab` runs back past a top to the previous
     /// note's last link; round again either way.
     #[test]
-    fn tab_runs_on_from_the_links_into_the_next_note() {
+    fn ctrl_n_runs_on_from_the_links_into_the_next_note() {
         let (mut app, _) = app_with_notes_state(
             None,
             &[
@@ -20236,9 +20383,10 @@ mod tests {
             let ed = editor(app);
             (on_note(app).map(|n| n.0), ed.reader.as_ref().and_then(|r| r.link))
         };
-        let tab = |app: &mut App| app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        tab(&mut app);
+        let open = |app: &mut App| app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let tab = |app: &mut App| ctrl(app, 'n');
+        let back = |app: &mut App| ctrl(app, 'p');
+        open(&mut app);
         assert_eq!(at(&app), (Some(90), None), "the card's tab: the description's top");
         let forward = [
             (Some(90), Some(0)),
@@ -20268,7 +20416,7 @@ mod tests {
 
         // A lone note comes round to its own top.
         let (mut app, _) = app_with_notes_state(None, &[(90, "https://a.test/1")]);
-        tab(&mut app);
+        open(&mut app);
         tab(&mut app);
         assert_eq!(at(&app), (Some(90), Some(0)));
         tab(&mut app);
@@ -20277,11 +20425,10 @@ mod tests {
         assert_eq!(at(&app), (Some(90), Some(0)));
     }
 
-    /// T-1141: a shell fence's command is a link to copy. The reader's tab
-    /// lands on it beside a URL, `c` copies the selected one (and is no key
-    /// with nothing selected), and Enter on a command neither opens nor
-    /// edits. `^k` lists it as a `command` row, where Enter is inert too,
-    /// `c` copies it and the first-link key skips it.
+    /// T-1141, T-1192: a shell fence's command is a link. The reader's `^n`
+    /// lands on it beside a URL, `c` copies the picked one (and is no key
+    /// with nothing picked). `^k` lists it as a `command` row, where Enter
+    /// is inert, `c` copies it and the first-link key skips it.
     #[test]
     fn a_command_in_a_note_is_copied_from_the_reader_and_the_links_dialog() {
         let copied = || crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
@@ -20292,16 +20439,15 @@ mod tests {
         assert!(editor(&app).reading);
         let before = copied();
         press(&mut app, 'c');
-        assert_eq!(copied(), before, "nothing selected: c copies nothing");
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(copied(), before, "nothing picked: c copies nothing");
+        ctrl(&mut app, 'n');
         assert!(app.ctx().link_command);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(editor(&app).reading, "enter neither edits nor closes");
-        assert!(app.pending_open.is_none());
         press(&mut app, 'c');
         assert_eq!(copied().as_deref(), Some("make test"));
         assert_eq!(app.status, "command copied");
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        // The key after the copy finds nothing picked: the walk starts over.
+        ctrl(&mut app, 'n');
+        ctrl(&mut app, 'n');
         assert!(!app.ctx().link_command, "the URL is a link");
         press(&mut app, 'c');
         assert_eq!(copied().as_deref(), Some("https://a.test/x"));
@@ -20321,6 +20467,35 @@ mod tests {
         app.rich_keys = true;
         app.handle_key(KeyCode::Char('K'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
         assert_eq!(app.pending_open, Some(vec!["open".into(), "https://a.test/x".into()]));
+    }
+
+    /// T-1192: Enter on a picked command hands it to the ticket's agent the
+    /// way the person did by hand — the reader closes and the ask field
+    /// opens with `!` and the command in it, sent only on the person's
+    /// Enter. A continued line is one command. Where no ask can go (one is
+    /// already waiting) Enter is no key and `c` still copies.
+    #[test]
+    fn enter_on_a_picked_command_asks_the_agent_with_it() {
+        let body = "Try:\n\n```sh\n$ make test \\\n    --all\n```";
+        let (mut app, sent) = app_with_notes_state(None, &[(90, body)]);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        ctrl(&mut app, 'n');
+        assert!(app.ctx().link_command);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Link, Verb::LinkAct, &app.ctx()),
+            Some(("enter", "ask agent"))
+        );
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let Mode::Input { purpose: InputPurpose::Prompt { .. }, buffer } = &app.mode else {
+            panic!("the ask field: {:?}", app.mode)
+        };
+        assert_eq!(buffer.as_str(), "!make test --all");
+        assert!(!sent_contains(&sent, "Prompt"), "nothing is sent: {:?}", sent.borrow());
+        assert_eq!(app.scope(), Scope::Input);
+
+        let held = Ctx { link_picked: true, link_command: true, ..Ctx::default() };
+        assert_eq!(mesimon_core::keymap::resolve(Scope::Link, Key::Enter, &held), None);
     }
 
     /// A card with no description has nothing to read: `tab` opens the
@@ -23035,12 +23210,12 @@ mod tests {
         }
     }
 
-    /// `^n`'s reveal names the tier the press landed on from its first
+    /// `^r`'s reveal names the tier the press landed on from its first
     /// frame (T-1131): before its board lands, the card read the old board
     /// and flashed the tier it was leaving. Quick presses step from the
     /// laid tier without a wait, as quick digits do (T-911).
     #[test]
-    fn ctrl_n_reveals_its_tier_before_the_board_lands() {
+    fn ctrl_r_reveals_its_tier_before_the_board_lands() {
         use mesimon_core::board::AgentProvider;
         use mesimon_core::tier::{Effort, Tier};
         let mut board = board_three_columns();
@@ -23059,14 +23234,14 @@ mod tests {
         app.catch_up_wait = Duration::from_millis(20);
         let one = ulid::Ulid(1);
         let hold = slow(&mut app);
-        let ctrl_n =
-            |app: &mut App| app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
-        ctrl_n(&mut app);
+        let ctrl_r =
+            |app: &mut App| app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        ctrl_r(&mut app);
         assert!(app.snapshot_in_flight(), "its board is out");
         assert_eq!(app.card_tier_word(one).as_deref(), Some("quick"), "never the tier it left");
         hold.borrow_mut().pushes = 1;
         app.pump().unwrap();
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"), "the second steps on");
         let picks: Vec<String> =
             sent.borrow().iter().filter(|c| c.starts_with("SetTicketTier ")).cloned().collect();
@@ -23080,12 +23255,12 @@ mod tests {
         assert_eq!(app.board.ticket(one).unwrap().tier, None, "the default, stored as inherit");
     }
 
-    /// `^n` (T-443): on a card it picks the ticket's next tier at once —
+    /// `^r` (T-443): on a card it picks the ticket's next tier at once —
     /// the ring is the tiers a person made, plus the default where it is a
     /// built-in (T-562: `codex` is not in it), and the default comes back
     /// as inherit — and in the composer it is a pick that rides the mint.
     #[test]
-    fn ctrl_n_picks_a_tickets_tier_and_rides_the_composers_mint() {
+    fn ctrl_r_picks_a_tickets_tier_and_rides_the_composers_mint() {
         use mesimon_core::board::AgentProvider;
         use mesimon_core::tier::{Effort, Tier};
         let mut board = board_three_columns();
@@ -23102,14 +23277,14 @@ mod tests {
         app.cursor_row = Some(0);
         // The reply row off (T-1132), where the flash alone opens the card.
         app.peek = false;
-        let ctrl_n =
-            |app: &mut App| app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        let ctrl_r =
+            |app: &mut App| app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
         let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         assert!(sent_contains(&sent, "SetTicketTier"));
         assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
         assert!(app.status.contains("quick") && app.status.contains("starts on"), "{}", app.status);
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         assert_eq!(pick(&app), None, "back to the default, stored as inherit");
         assert!(!sent_contains(&sent, "\"codex\""), "the built-in codex is not in the cycle");
         // The press opens the card on the tier it landed on — the default
@@ -23131,7 +23306,7 @@ mod tests {
             },
             buffer: EditBuffer::from_text("new work".into(), mesimon_core::board::TITLE_MAX_BYTES),
         };
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         assert!(
             matches!(
                 &app.mode,
@@ -23142,12 +23317,12 @@ mod tests {
             app.mode
         );
         // A full turn of the ring is no pick at all.
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         assert!(matches!(
             &app.mode,
             Mode::Input { purpose: InputPurpose::Create { tier: None, .. }, .. }
         ));
-        ctrl_n(&mut app);
+        ctrl_r(&mut app);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             sent.borrow()
@@ -25154,7 +25329,7 @@ mod tests {
         assert_eq!(app.status, "restarted agent in plan mode ∙ asked");
     }
 
-    /// T-1163: an ask with a `^n` pick at an idle pane is a park and a wake
+    /// T-1163: an ask with a `^r` pick at an idle pane is a park and a wake
     /// on the new tier, and the receipt says the agent restarted on it —
     /// never a refusal, and never a shake of the card.
     #[test]
@@ -25179,7 +25354,7 @@ mod tests {
             app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         }
         assert!(app.ctx().prompting && !app.ctx().ask_queued);
-        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
         for ch in "go".chars() {
             app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
         }

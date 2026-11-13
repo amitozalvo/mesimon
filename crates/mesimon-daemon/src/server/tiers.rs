@@ -12,7 +12,7 @@ use super::*;
 use mesimon_core::tier::{self, Book, MachineTiers, Tier, TierScope};
 
 /// How long a ticket's pick must stand still before its running seat is
-/// relaunched: `^n` pressed three times on the way to a tier relaunches
+/// relaunched: `^r` pressed three times on the way to a tier relaunches
 /// once, on the last.
 pub(super) const TIER_SETTLE_MS: u64 = 2_000;
 
@@ -135,7 +135,7 @@ impl Daemon {
         }
     }
 
-    /// Set a ticket's pick (the command, the ask field's `^n`, the
+    /// Set a ticket's pick (the command, the ask field's `^r`, the
     /// composer's mint): validated, stored as inherit when it is the
     /// default, and — on a seat with a pane — owed as a switch when it is
     /// not what the seat runs. The caller persists sessions and broadcasts.
@@ -316,7 +316,7 @@ impl Daemon {
     }
 
     /// `Command::MoveTier` (T-562): one layer's order, which the tiers list
-    /// draws and `^n` cycles. A board moves only its own tiers.
+    /// draws and `^r` cycles. A board moves only its own tiers.
     pub(super) fn move_tier(&mut self, scope: TierScope, id: String, to: usize) -> Response {
         let ordered = self.tier_book().ordered(scope);
         let refused = || Response::Err {

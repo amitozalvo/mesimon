@@ -21,10 +21,10 @@
           │                                                                    │
           │                                                                    │
           │  ~                                                                 │
-          ╰─────── enter edit ∙ { } note ∙ jk scroll ∙ tab link ∙ hl sideways ─╯
+          ╰──────── enter edit ∙ { } note ∙ jk scroll ∙ ^n link ∙ hl sideways ─╯
 
 
 
 
 
- enter edit ∙ { } note ∙ jk scroll ∙ tab link ∙ hl sideways ∙ w wrap ∙ esc close                                 ? keys
+ enter edit ∙ { } note ∙ jk scroll ∙ ^n link ∙ hl sideways ∙ w wrap ∙ esc close                                  ? keys

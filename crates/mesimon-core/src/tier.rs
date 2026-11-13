@@ -370,7 +370,7 @@ impl<'a> Book<'a> {
         self.cycle(self.board.live_agent(ticket).and_then(|s| s.kind.provider()))
     }
 
-    /// What `^n` steps through, for a seat of `seat`'s provider or none: the
+    /// What `^r` steps through, for a seat of `seat`'s provider or none: the
     /// tiers a person made, in the tiers list's order. The built-ins ride
     /// only where they must (T-562, user: "skip built-ins in ^n") — the
     /// default when it is one, so a pick can always come back to it, and
@@ -392,7 +392,7 @@ impl<'a> Book<'a> {
     }
 
     /// The tiers an agent may name for a ticket it files or starts (T-584),
-    /// as `list_board` lists them: `^n`'s ring for an empty seat
+    /// as `list_board` lists them: `^r`'s ring for an empty seat
     /// ([`Self::cycle`]) — the tiers a person made, in the tiers list's
     /// order, with the default first when it is a built-in. While nobody
     /// made a tier the ring is both built-ins, and only the default is
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(back, machine);
     }
 
-    /// T-584: what an agent may name — `^n`'s ring for an empty seat, and
+    /// T-584: what an agent may name — `^r`'s ring for an empty seat, and
     /// only the default while nobody made a tier — by id or by name, and
     /// the refusal lists every id it could have named.
     #[test]

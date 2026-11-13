@@ -193,8 +193,12 @@ were. Before you step in, the page already shows the session's screen: at the fo
 preview, as its terminal draws it, in the agent's own colours, the input box, a question, a
 permission prompt or a plan, and above that the screen's rows going out into the page, with the
 whole conversation as mesimon reads it over them, newest at the foot: `{` and `}` page back
-through it, and `tab` walks the links on the rows you can see, `enter` opening the one it stops
-on (past the last link it lets go, and a link you page away from is let go). A question, a
+through it, and `ctrl-n` / `ctrl-p` walk the links on the rows you can see (past either end they
+let go, and a link you page away from is let go). A picked link shimmers and the rest of the page
+steps back, so you can tell you are on one: `enter` opens it, `c` copies it, and `esc` lets it go
+without leaving the page. On a command, `enter` opens the ask field with `!` and the command in
+it, ready to send to the agent. The transcript and the note reader pick links with the same
+keys. A question, a
 permission prompt, a plan to approve or a trust prompt shows whole, the plan's text included; a
 dialog makes the window taller and the turn's end makes it shorter. The shin stands on the rail's
 foot level with the input box, wherever the cursor is, whenever the rail leaves it the room. The
@@ -350,8 +354,9 @@ an untagged code block that starts with a prompt (`$ `, `! `) or a program's nam
 `cargo`…), and inline code that does the same, such as `` `cat ~/notes.txt` ``.
 `enter` opens one: a web address in your browser, a text file in your editor, another ticket by
 moving to it. `c` copies it instead. A command is only copied, never run, and `enter` does
-nothing on one. The transcript's `tab` walks the same commands, and there `c` copies the one
-selected.
+nothing on one. The ticket page, the transcript and the note reader walk the same commands with
+`ctrl-n` / `ctrl-p`; there `c` copies the picked one and `enter` puts it in the ask field after
+`!`.
 
 A note section headed `Summary` is the ticket's checklist. Write it in the description or let the
 agent write it in a note of its own:

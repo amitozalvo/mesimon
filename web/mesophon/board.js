@@ -118,7 +118,7 @@ export class BoardState {
     groups.created.sort((a, b) => b.created - a.created);
     return groups;
   }
-  // The tiers a ticket may pick (T-643), the desk's `^n` ring: a seat that
+  // The tiers a ticket may pick (T-643), the desk's `^r` ring: a seat that
   // holds an agent, awake or parked, keeps its provider, so it is offered
   // that provider's tiers alone.
   tierRing(ticket) {

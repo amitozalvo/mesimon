@@ -134,7 +134,7 @@ pub enum Command {
         /// `SetWorkspace` into the lock. Absent means the column's own default.
         #[serde(default)]
         workspace: Option<WorkspaceStrategy>,
-        /// The composer's tier pick (T-443, `^n` in the field), a tier id
+        /// The composer's tier pick (T-443, `^r` in the field), a tier id
         /// riding the mint for the `workspace` reason: a Shift+Enter starts
         /// the agent before a later `SetTicketTier` could land.
         /// Absent means the default.
@@ -337,7 +337,7 @@ pub enum Command {
         /// from an older client = no plan.
         #[serde(default)]
         plan: bool,
-        /// The ask field's tier pick (T-443, `^n`): applied to the ticket
+        /// The ask field's tier pick (T-443, `^r`): applied to the ticket
         /// first (`SetTicketTier`'s rules), then the words go the way a
         /// tier switch goes — an idle pane is parked and woken on the new
         /// tier with the words held, and a pane mid-turn waits for its idle
@@ -776,7 +776,7 @@ pub enum Command {
         id: String,
     },
     /// Reposition a tier in one layer's order (T-562) — the order the
-    /// tiers list draws and `^n` cycles. `to_index` is a slot among the
+    /// tiers list draws and `^r` cycles. `to_index` is a slot among the
     /// tiers that layer orders: the machine's own, or a board's own (its
     /// versions of machine tiers stand where the machine puts them). It is
     /// clamped there, as `MoveTag`'s is.
@@ -1400,7 +1400,7 @@ pub enum Command {
         #[serde(default)]
         idempotency_key: Option<String>,
         /// The new ticket's tier (T-584), an id (or a name) from
-        /// `list_board`'s `tiers`, stored as the composer's `^n` pick is.
+        /// `list_board`'s `tiers`, stored as the composer's `^r` pick is.
         /// The crown's alone: a worker's ticket is an idea for a person to
         /// pick up, and the person picks its tier.
         #[serde(default, skip_serializing_if = "Option::is_none")]

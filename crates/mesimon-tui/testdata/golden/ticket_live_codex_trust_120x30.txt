@@ -27,4 +27,4 @@
    2. Back to Agent Command Center                                                          █▀███▀▀███▀█
                                                                                             ▀▀▀▀▀▀▀▀▀▀▀▀
  -- w  trust this folder ∙ enter answers it in its pane -------------------------
- jk select session ∙ tab link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                   ? keys
+ jk select session ∙ ^n link ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                    ? keys

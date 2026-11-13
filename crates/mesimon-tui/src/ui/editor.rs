@@ -441,7 +441,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             if *plan {
                 ctx_spans.push(Span::styled(" ∙ plan mode".to_string(), dim1));
             }
-            // `^n` (T-443): the tier the new ticket starts on, where it is
+            // `^r` (T-443): the tier the new ticket starts on, where it is
             // not the default — said beside `plan mode`, the other launch pick.
             if let Some(word) = app.field_tier_word(None, tier.as_deref()) {
                 ctx_spans.push(Span::styled(format!(" ∙ {word}"), dim1));
@@ -544,7 +544,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             } else {
                 Span::styled(said, dim1)
             });
-            // `^n` (T-443): the tier the words switch the agent to.
+            // `^r` (T-443): the tier the words switch the agent to.
             let ticket = match target {
                 AskTarget::Ticket(t) => Some(*t),
                 AskTarget::Column(_) => None,
@@ -719,8 +719,13 @@ fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
     let lines = fits.then(|| reader_lines(app, ed, words, 0, crate::rich::Surface::Elevated));
     app.preview_measured();
     let ctx = app.frame_ctx();
-    let (own, _) = keymap::footer_split(Scope::Reader, &ctx);
-    let own: Vec<_> = own.into_iter().filter(|b| b.verb != keymap::Verb::Back).collect();
+    // A live pick's keys are the edge's too (T-1192): Enter is the pick's.
+    let scope = if app.pick_live() { Scope::Link } else { Scope::Reader };
+    let (own, _) = keymap::footer_split(scope, &ctx);
+    let own: Vec<_> = own
+        .into_iter()
+        .filter(|b| b.verb != keymap::Verb::Back && b.verb != keymap::Verb::LinkLetGo)
+        .collect();
     let tail = super::chrome::hint_spans(&own, &ctx, ink, inner.width.saturating_sub(4).into());
     let title = edge_heading(app, ed, ink);
     dialog::frame(f, app, area, surface, ink, dialog::Edges { title, tail });

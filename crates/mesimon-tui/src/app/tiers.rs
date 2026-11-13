@@ -1,4 +1,4 @@
-//! Agent tiers in the TUI (T-443): `^n` on a ticket and in a field, the
+//! Agent tiers in the TUI (T-443): `^r` on a ticket and in a field, the
 //! words the board says a tier in, and the Settings row and the two dialogs
 //! that edit the machine's tiers and a board's.
 //!
@@ -121,7 +121,7 @@ impl App {
 
     // ------------------------------------------------------------ the cycle
 
-    /// Whether `^n` has somewhere to go right now: the open field's ring, or
+    /// Whether `^r` has somewhere to go right now: the open field's ring, or
     /// the subject ticket's.
     pub(crate) fn tier_cycle_ctx(&self) -> bool {
         let book = self.tiers();
@@ -143,7 +143,7 @@ impl App {
         }
     }
 
-    /// `^n` on the board or the ticket page: the ticket's next tier, at
+    /// `^r` on the board or the ticket page: the ticket's next tier, at
     /// once. The status says what the press did to the seat.
     ///
     /// The step is laid on the card at once (T-1131), as a digit's tag is
@@ -175,7 +175,7 @@ impl App {
         Ok(())
     }
 
-    /// What `^n` did, in the seat's words: where there is no agent yet, it
+    /// What `^r` did, in the seat's words: where there is no agent yet, it
     /// starts on the tier; a parked one wakes on it; a live one switches at
     /// its idle — or already runs it.
     fn tier_press_words(&self, ticket: ulid::Ulid, to: &Tier) -> String {
@@ -193,7 +193,7 @@ impl App {
         }
     }
 
-    /// `^n` in a text field: the pick steps along the field's ring, and
+    /// `^r` in a text field: the pick steps along the field's ring, and
     /// comes back to `None` on the tier the launch would run anyway — so a
     /// full turn of the ring leaves the draft as it was.
     pub(super) fn step_field_tier(
@@ -240,7 +240,7 @@ impl App {
 
     /// The open card's tier word, beside its key: where the ticket's tier
     /// is not the default, which is what every card without one runs — and
-    /// for a moment after `^n`, whatever it landed on, so a stop on the
+    /// for a moment after `^r`, whatever it landed on, so a stop on the
     /// default is seen without a card at rest spelling it (T-562, user:
     /// "show default for a second after clicking ^n, so it won't be verbose
     /// when not needed").
@@ -250,7 +250,7 @@ impl App {
         (want.id != book.default_tier().id || self.tier_flashing(ticket)).then_some(want.name)
     }
 
-    /// Is `^n`'s reveal still up on this ticket's card?
+    /// Is `^r`'s reveal still up on this ticket's card?
     pub(crate) fn tier_flashing(&self, ticket: ulid::Ulid) -> bool {
         self.tier_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TIER_FLASH)
     }

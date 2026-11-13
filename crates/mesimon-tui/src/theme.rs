@@ -1387,10 +1387,51 @@ fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
     d * d * (3.0 - 2.0 * d) * PR_SHIMMER_PEAK
 }
 
+/// How much of its lift the picked link's crest gives `cell` of `cells`,
+/// `at_ms` into its clock (T-1192): one soft crest crossing left to right in
+/// `PICK_SHIMMER_MS`, a short rest, again — for as long as the link is
+/// picked, so the pick never reads as a resting mark. 0 off the crest,
+/// `PICK_SHIMMER_PEAK` on it.
+fn pick_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
+    if cells == 0 {
+        return 0.0;
+    }
+    let at = at_ms % (PICK_SHIMMER_MS + PICK_SHIMMER_REST_MS);
+    if at >= PICK_SHIMMER_MS {
+        return 0.0;
+    }
+    let t = at as f32 / PICK_SHIMMER_MS as f32;
+    let span = cells as f32 + 2.0 * PICK_SHIMMER_BAND;
+    let front = -PICK_SHIMMER_BAND + span * ease(t);
+    let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PICK_SHIMMER_BAND;
+    if d <= 0.0 {
+        return 0.0;
+    }
+    d * d * (3.0 - 2.0 * d) * PICK_SHIMMER_PEAK
+}
+
 /// Sine ease-in-out over `0..=1`: starts and lands gently.
 fn ease(t: f32) -> f32 {
     0.5 - 0.5 * (std::f32::consts::PI * t.clamp(0.0, 1.0)).cos()
 }
+
+/// A picked link's crest (T-1192, the author: "a slight constant shimmer
+/// to prevent users from forgetting it's this state") crosses it in this
+/// long, whatever its length, then rests `PICK_SHIMMER_REST_MS`.
+pub(crate) const PICK_SHIMMER_MS: u64 = 1_400;
+const PICK_SHIMMER_REST_MS: u64 = 600;
+/// Cells either side of the pick's crest that it lifts.
+const PICK_SHIMMER_BAND: f32 = 4.0;
+/// How far the crest lifts the pick's ground toward the brightest ink.
+const PICK_SHIMMER_PEAK: f32 = 0.8;
+/// How long an acted pick flashes before it is let go (T-1192, the author:
+/// "when clicking enter or copying the current selection I would animate
+/// it before it being deselected"): up to the brightest ink in
+/// `LINK_ACK_UP_MS`, held until `LINK_ACK_HOLD_MS`, then eased back to the
+/// words as they were while the receded frame comes back.
+pub(crate) const LINK_ACK_MS: u64 = 450;
+const LINK_ACK_UP_MS: u64 = 90;
+const LINK_ACK_HOLD_MS: u64 = 170;
 
 /// How long the crowning runs on a newly crowned card and page (T-411): the
 /// time its wavefront takes to cross the title (T-442), whatever the title's
@@ -2434,6 +2475,78 @@ impl Theme {
             k if k > 0.0 => Style::default().fg(mix(lift, ink, k)),
             _ => still,
         }
+    }
+
+    /// The picked link's inks (T-1192), where the profile mixes colour:
+    /// its ground (the quiet full ink), the crest's (the brightest), and
+    /// its letters (the page's ground). `None` holds the pick still as the
+    /// drag selection's inversion.
+    fn pick_inks(&self) -> Option<(Color, Color, Color)> {
+        if !self.has_colour() {
+            return None;
+        }
+        match (self.rest.dim1, self.sel.base, self.bg) {
+            (g @ Color::Rgb(..), c @ Color::Rgb(..), Some(l @ Color::Rgb(..))) => Some((g, c, l)),
+            _ => None,
+        }
+    }
+
+    /// One cell of a picked link (T-1192), the `cell`th of `cells`, at
+    /// `now_ms`: the words inverted, a crest lifting the ground as it
+    /// crosses. Grey on grey, so the one saturated colour stays needs-you's;
+    /// fg/bg repainted on the frame clock, never SGR 5. Where the profile
+    /// cannot mix, the drag selection's inversion, still.
+    pub fn link_pick(&self, now_ms: u64, cells: usize, cell: usize) -> Style {
+        let Some((ground, crest, letters)) = self.pick_inks() else { return self.selection() };
+        let k = pick_crest(now_ms, cells, cell);
+        Style::default().bg(mix(crest, ground, k)).fg(letters)
+    }
+
+    /// One cell of a pick acted on `ms` ago (T-1192): its ground rises to
+    /// the crest's ink, holds, then both ground and letters ease back to
+    /// the cell's own `fg` and `bg`. Without colour to mix, the inversion
+    /// holds through the rise and the cell is its own after.
+    pub fn link_ack(&self, ms: u64, fg: Color, bg: Color) -> Style {
+        let Some((ground, crest, letters)) = self.pick_inks() else {
+            return if ms < LINK_ACK_HOLD_MS {
+                self.selection()
+            } else {
+                Style::default().fg(fg).bg(bg)
+            };
+        };
+        if ms < LINK_ACK_UP_MS {
+            let k = ease(ms as f32 / LINK_ACK_UP_MS as f32);
+            return Style::default().bg(mix(crest, ground, k)).fg(letters);
+        }
+        if ms < LINK_ACK_HOLD_MS {
+            return Style::default().bg(crest).fg(letters);
+        }
+        let k = ease((ms - LINK_ACK_HOLD_MS) as f32 / (LINK_ACK_MS - LINK_ACK_HOLD_MS) as f32);
+        let own = if bg == Color::Reset { self.bg.unwrap_or(bg) } else { bg };
+        Style::default().bg(mix(own, crest, k)).fg(mix(fg, letters, k))
+    }
+
+    /// How much of the recess a pick holds the rest of the frame in
+    /// (T-1192): all of it while live (`None`) and through an act's rise and
+    /// hold, easing to none as the act's flash fades.
+    pub fn pick_recess(ack_ms: Option<u64>) -> f32 {
+        match ack_ms {
+            Some(ms) if ms >= LINK_ACK_HOLD_MS => {
+                1.0 - ease((ms - LINK_ACK_HOLD_MS) as f32 / (LINK_ACK_MS - LINK_ACK_HOLD_MS) as f32)
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// An ink `k` of the way into the board's recess (`recede`): where the
+    /// colours do not mix, receded from the half up.
+    pub fn recede_by(&self, c: Color, k: f32) -> Color {
+        mix(self.recede(c), c, k)
+    }
+
+    /// A painted ground `k` of the way into the recess (`recede_ground`).
+    pub fn recede_ground_k(&self, c: Color, k: f32) -> Color {
+        mix(self.recede_ground(c), c, k)
     }
 
     /// A lowered hand's words (T-888): the needs-you colour faded half way
@@ -3581,6 +3694,41 @@ mod tests {
     /// right to left and back left to right (T-858), lifting `ink` toward
     /// `lift` and never past it, then a rest at `ink`. Grey on grey: no
     /// colour of its own. Mono holds still.
+    /// T-1192: a picked link is inverted under a crest that crosses it left
+    /// to right, rests, and comes again; its letters are the page's ground
+    /// throughout. Acted on, it rises to the crest's ink, holds, and lands
+    /// on the cell's own colours while the recess lets go. Grey on grey on
+    /// every flavor; mono holds the drag selection's inversion.
+    #[test]
+    fn a_pick_shimmers_and_an_act_flashes_back_to_the_words() {
+        const N: usize = 20;
+        for flavor in Flavor::ALL {
+            let t = Theme::new(flavor, Profile::TrueColor);
+            let Some((ground, crest, letters)) = t.pick_inks() else { continue };
+            let lit = |ms: u64| -> Vec<usize> {
+                (0..N).filter(|&c| t.link_pick(ms, N, c).bg != Some(ground)).collect()
+            };
+            for ms in (0..PICK_SHIMMER_MS + PICK_SHIMMER_REST_MS).step_by(100) {
+                for c in 0..N {
+                    assert_eq!(t.link_pick(ms, N, c).fg, Some(letters), "{flavor:?}");
+                }
+            }
+            let early = lit(PICK_SHIMMER_MS / 3);
+            let late = lit(PICK_SHIMMER_MS * 2 / 3);
+            assert!(!early.is_empty() && early.len() < N, "{flavor:?}: a crest");
+            assert!(early[0] < late[0], "{flavor:?}: left to right");
+            assert!(lit(PICK_SHIMMER_MS + PICK_SHIMMER_REST_MS / 2).is_empty(), "{flavor:?}");
+            let (fg, bg) = (t.rest.dim1, t.bg.unwrap());
+            assert_eq!(t.link_ack(LINK_ACK_UP_MS, fg, bg).bg, Some(crest), "{flavor:?}: risen");
+            assert_eq!(t.link_ack(LINK_ACK_MS, fg, bg), Style::default().fg(fg).bg(bg));
+            assert_eq!(Theme::pick_recess(None), 1.0);
+            assert_eq!(Theme::pick_recess(Some(LINK_ACK_HOLD_MS - 1)), 1.0);
+            assert_eq!(Theme::pick_recess(Some(LINK_ACK_MS)), 0.0);
+        }
+        let mono = Theme::new(Flavor::Graphite, Profile::Mono);
+        assert_eq!(mono.link_pick(300, N, 3), mono.selection(), "mono holds still");
+    }
+
     #[test]
     fn a_running_pipelines_shimmer_crosses_slowly_then_rests() {
         const N: usize = 16;

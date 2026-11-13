@@ -212,7 +212,7 @@ pub(super) fn render_workspace_selector(
     if plan {
         spans.push(Span::styled(" ∙ plan mode", Style::default().fg(theme.sel.dim1)));
     }
-    // `^n` (T-443): the tier the new ticket starts on, where it is not the
+    // `^r` (T-443): the tier the new ticket starts on, where it is not the
     // default — the other launch pick, beside plan mode.
     if let Some(word) = tier_word {
         spans.push(Span::styled(format!(" ∙ {word}"), Style::default().fg(theme.sel.dim1)));
@@ -247,7 +247,7 @@ pub(super) fn render_ask_mode(
         said.push_str(if fits { INTERRUPTS } else { INTERRUPTS_SHORT });
     }
     let mut spans = vec![Span::raw(" ".repeat(lead)), Span::styled(said, ink)];
-    // `^n` (T-443): the tier the words switch the agent to.
+    // `^r` (T-443): the tier the words switch the agent to.
     if let Some(tier) = tier_word {
         spans.push(Span::styled(format!(" ∙ {tier}"), Style::default().fg(theme.sel.dim1)));
     }
@@ -1079,7 +1079,7 @@ pub(super) fn render(
     // the id was one focus away on every card; with `p` on, the cursor card
     // names its own, and `P` names every card's.
     // The ticket's agent tier (T-443) is one of its own facts, and rides
-    // the same row where it is not the default, or for a moment after `^n`
+    // the same row where it is not the default, or for a moment after `^r`
     // (`App::card_tier_word`).
     let meta_row = open && (ctx.names_key || !tags.is_empty() || tier_word.is_some());
     // The cursor card's accordion, or — under `P` (T-237) — a resting card

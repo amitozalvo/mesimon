@@ -27,4 +27,4 @@
  -- queued ∙ after its turn ∙ ^y send now ∙ ^u drop -----------------------------           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
    ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
    ⏵⏵ auto mode on
- ^y send now ∙ ^u drop ∙ jk select session ∙ tab link ∙ enter focus ∙ shift+enter edit the queued ask            ? keys
+ ^y send now ∙ ^u drop ∙ jk select session ∙ ^n link ∙ enter focus ∙ shift+enter edit the queued ask             ? keys

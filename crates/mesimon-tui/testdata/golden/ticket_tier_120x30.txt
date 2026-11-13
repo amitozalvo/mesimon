@@ -1,7 +1,7 @@
  TICKET (T-1)   mesimon › kanban-tui
 
  Decay treatments
- TODO for >1y ∙ created >1y ago ∙ on coder ∙ ^n next
+ TODO for >1y ∙ created >1y ago ∙ on coder ∙ ^r next
 
 
   PREVIEW                                                                                  SESSIONS                  0

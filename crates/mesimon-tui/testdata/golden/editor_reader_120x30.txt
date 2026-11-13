@@ -21,10 +21,10 @@
           │  • the goldens moved with it                                       │
           │                                                                    │
           │    cargo test -p mesimon-tui ~                                     │
-          ╰────────── enter edit ∙ { } note ∙ jk scroll ∙ tab link ∙ w unwrap ─╯
+          ╰─────────── enter edit ∙ { } note ∙ jk scroll ∙ ^n link ∙ w unwrap ─╯
 
 
 
 
 
- enter edit ∙ { } note ∙ jk scroll ∙ tab link ∙ w unwrap ∙ esc close                                             ? keys
+ enter edit ∙ { } note ∙ jk scroll ∙ ^n link ∙ w unwrap ∙ esc close                                              ? keys

@@ -190,9 +190,9 @@ out of reach. Its receipt uses the same ticks: a clock while your terminal start
 taken its first prompt. If the answer is lost, the browser asks what became of it and
 never starts it again.
 
-The start sheet lists the board's **agent tiers**, the ones **^n** cycles at your
+The start sheet lists the board's **agent tiers**, the ones **^r** cycles at your
 terminal, with the ticket's own picked and the picked one's model and effort under them.
-Pick another and the ticket keeps it, as **^n** does, and the agent starts on it. A
+Pick another and the ticket keeps it, as **^r** does, and the agent starts on it. A
 sleeping agent is offered its own provider's tiers only.
 
 Your terminal refuses a start, and the page says why, when the ticket already has an
@@ -243,7 +243,7 @@ longer prompt is refused with its size, never cut, and oversized responses are r
 Words that wait at the relay for an away terminal are limited to 16 KiB, because the sealed
 envelope must fit the relay's mailbox; the phone says how much to cut and keeps the draft.
 
-Beside **Queue** and **Steer**, a menu picks the agent's **tier**, as **^n** in your
+Beside **Queue** and **Steer**, a menu picks the agent's **tier**, as **^r** in your
 terminal's ask field does: the agent's own provider's tiers, the ticket's picked. A prompt
 sent on another tier changes the ticket's tier, and your terminal restarts the agent on it
 when its turn ends, the same conversation resumed, with your words as the first thing it

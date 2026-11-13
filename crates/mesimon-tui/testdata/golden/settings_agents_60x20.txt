@@ -15,6 +15,6 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  │ what a ticket starts on unless ^n picks its own ∙ C~ │
+  │ what a ticket starts on unless ^r picks its own ∙ C~ │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

@@ -296,13 +296,18 @@ pub enum Scope {
     /// scroll, `{ }` page, `w` turns the wrap off and `hl` then scroll
     /// sideways, `tab` walks the notes, Enter edits the one on screen.
     Reader,
+    /// A link or command picked on the ticket page's conversation, in the
+    /// transcript dialog or in the note reader (T-1192): one set of keys
+    /// for all three. Asked first while a pick is live; a key it does not
+    /// bind is the surface's, so nothing else stops working.
+    Link,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 39] = [
+    pub const ALL: [Scope; 40] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -342,6 +347,7 @@ impl Scope {
         Scope::Boards,
         Scope::Transcript,
         Scope::Reader,
+        Scope::Link,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -385,6 +391,9 @@ impl Scope {
             | Scope::Editor
             | Scope::Search
             | Scope::MergeChord
+            // Asked before the surface's own scope, which is the fall
+            // through (T-1192): `q` must stay the page's, not quit.
+            | Scope::Link
             // Setup (T-816) is not left but by its last page's Enter: no
             // Settings, reload or suspend reaches past it, only its own keys
             // and `?`.
@@ -423,6 +432,7 @@ impl Scope {
             Scope::Summary => "SUMMARY",
             Scope::Transcript => "TRANSCRIPT",
             Scope::Reader => "NOTE",
+            Scope::Link => "LINK",
             Scope::PullRequests => "PULL REQUESTS",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
@@ -546,15 +556,17 @@ pub enum Verb {
     TranscriptNewer,
     /// `{` in the transcript dialog: the message before.
     TranscriptOlder,
-    /// Move the transcript's selected link.
-    TranscriptLinkNext,
-    /// Move the transcript's selected link backward.
-    TranscriptLinkPrev,
-    /// Open the transcript's selected link.
-    TranscriptLinkOpen,
-    /// Tab on the ticket page (T-1143): the next link among the rows the
-    /// zone is showing of the conversation, then none again.
-    TicketLinkNext,
+    /// `^n` (T-1192): pick the next link or command on the ticket page's
+    /// conversation, in the transcript dialog or in the note reader; past
+    /// the last, none again.
+    LinkNext,
+    /// `^p`: the same walk backward.
+    LinkPrev,
+    /// Enter on a picked link: a link opens; a command opens the ask field
+    /// with `!` and the command in it (T-1192).
+    LinkAct,
+    /// Esc on a picked link: it is let go, and the surface stays.
+    LinkLetGo,
     /// `^h` on the board or the ticket page: the PULL REQUESTS dialog over
     /// the ticket's pull requests (T-759). Inert while the forge has bound
     /// none, so the dialog is never opened empty.
@@ -840,7 +852,7 @@ pub enum Verb {
     DefaultTier,
     /// The Settings door to the tiers list (T-443).
     Tiers,
-    /// `^n` (T-443): the ticket's next agent tier — on the board and the
+    /// `^r` (T-443): the ticket's next agent tier — on the board and the
     /// ticket page at once, in the composer and the ask field as a pick
     /// that rides the draft or the words, like `^p`.
     TierNext,
@@ -1441,11 +1453,14 @@ pub struct Ctx {
     /// keeps `{ }` inert — and unhinted — under a reply that fits.
     pub preview_scrolls: bool,
     /// The ticket page's zone shows a row of the conversation with a link
-    /// on it (T-1143): `tab` walks those rows' links.
+    /// on it (T-1143): `^n` walks those rows' links.
     pub ticket_links: bool,
-    /// One of the zone's links is selected: Enter opens it (or copies a
-    /// command), `tab` moves on.
-    pub ticket_link_selected: bool,
+    /// A link or command is picked on the page, in the transcript or in
+    /// the reader (T-1192): the `Link` scope's keys are asked first.
+    pub link_picked: bool,
+    /// The picked command can go to the ticket's agent: an ask field opens
+    /// for it (no ask already waiting, the seat not mid-launch).
+    pub link_askable: bool,
     pub update_ready: bool,
     /// A newer release than this build is published, and taking the offer
     /// downloads it. Never true beside `update_ready`: a binary already
@@ -1524,8 +1539,8 @@ pub struct Ctx {
     /// The transcript dialog holds more than one message, so `{ }` has
     /// somewhere to step.
     pub transcript_messages: bool,
+    /// The transcript's message holds a link or command: `^n` picks one.
     pub transcript_links: bool,
-    pub transcript_link_selected: bool,
     /// The transcript dialog's message is longer than its window, so `jk`
     /// has rows to scroll.
     pub transcript_scrolls: bool,
@@ -1536,14 +1551,12 @@ pub struct Ctx {
     /// Unwrapped, a line is wider than the window, so `hl` has cells to
     /// scroll (T-1139).
     pub reader_sideways: bool,
-    /// The note on the reader holds a link it can open (T-1139): `tab`
+    /// The note on the reader holds a link it can open (T-1139): `^n`
     /// walks them.
     pub reader_links: bool,
-    /// A link is selected in the reader: Enter opens it, `c` copies it,
-    /// Esc lets it go.
-    pub reader_link_selected: bool,
-    /// The link under the cursor of `^k`, the transcript or the reader is
-    /// a shell command (T-1141): `c` copies it, and Enter opens nothing.
+    /// The link under the cursor of `^k`, or the one picked on the page,
+    /// the transcript or the reader, is a shell command (T-1141): `c`
+    /// copies it; `^k`'s Enter opens nothing, a pick's asks the agent.
     pub link_command: bool,
     /// The forge has bound at least one pull request to the subject ticket
     /// (T-739), as the last snapshot said. What `^h` gates on.
@@ -2864,15 +2877,16 @@ static BOARD: &[Binding] = &[
         // ... switch agent tier for each ticket without entering the
         // session"). A Ctrl-letter because the same key works inside the
         // ask field and the composer, which swallow every plain letter;
-        // `^n` for next, the only way it goes — Ctrl has no Shift twin on
-        // the legacy floor, so the ring wraps rather than reverses. Applies
+        // `^r` (T-1192: `^n ^p` are the link walk's, the pair every list
+        // takes), the only way it goes — Ctrl has no Shift twin on the
+        // legacy floor, so the ring wraps rather than reverses. Applies
         // at once: an empty seat starts on it, a parked one wakes on it, a
         // live one switches at its next idle. Overlay-only on the board, the
         // crown's reason: the open card wears the tier, and the status line
         // says what the press did.
-        keys: &[Key::Ctrl('n')],
+        keys: &[Key::Ctrl('r')],
         verb: Verb::TierNext,
-        show: "^n",
+        show: "^r",
         hint: |_| "tier",
         avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
         class: Class::Plain,
@@ -3353,11 +3367,11 @@ static TICKET: &[Binding] = &[
     },
     Binding {
         // The conversation's links (T-1143), the rows on screen only:
-        // `tab` forward, round to none; `shift+tab` is the workspace's
-        // here, so there is no walk back.
-        keys: &[Key::Tab],
-        verb: Verb::TicketLinkNext,
-        show: "tab",
+        // `^n` forward and `^p` back (T-1192), round to none either way.
+        // A picked one's keys are the `Link` scope's.
+        keys: &[Key::Ctrl('n'), Key::Ctrl('p')],
+        verb: Verb::LinkNext,
+        show: "^n",
         hint: |_| "link",
         avail: |c| c.ticket_links,
         class: Class::Plain,
@@ -3372,10 +3386,6 @@ static TICKET: &[Binding] = &[
         hint: |c| {
             if c.shell_close_armed {
                 "enter again confirms"
-            } else if c.ticket_link_selected && c.link_command {
-                "copy command"
-            } else if c.ticket_link_selected {
-                "open link"
             } else if c.sel_new_agent {
                 "start agent"
             } else if c.sel_note && c.team_viewer {
@@ -3401,7 +3411,6 @@ static TICKET: &[Binding] = &[
                 || c.sel_note
                 || c.sel_new_agent
                 || c.sel_terminal
-                || c.ticket_link_selected
         },
         class: Class::Plain,
         group: Group::Sessions,
@@ -3613,12 +3622,12 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // The board's `^n` on the ticket page (T-443): same verb, same
+        // The board's `^r` on the ticket page (T-443): same verb, same
         // press. Drawn beside the tier on the state row, where it operates,
         // so overlay-only in the footer.
-        keys: &[Key::Ctrl('n')],
+        keys: &[Key::Ctrl('r')],
         verb: Verb::TierNext,
-        show: "^n",
+        show: "^r",
         hint: |_| "tier",
         avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
         class: Class::Plain,
@@ -5936,7 +5945,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 format!("{here} ∙ machine: {} ∙ {}", c.tier_machine_default, c.tier_default_summary)
             } else if !c.pref_scope_board {
                 format!(
-                    "what a ticket starts on unless ^n picks its own ∙ {}",
+                    "what a ticket starts on unless ^r picks its own ∙ {}",
                     c.tier_default_summary
                 )
             } else {
@@ -5953,7 +5962,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if c.pref_scope_board {
                 "this board's tiers, and its own versions of the machine's".into()
             } else {
-                "a name for a launch: provider, model, effort ∙ ^n cycles a ticket through them"
+                "a name for a launch: provider, model, effort ∙ ^r cycles a ticket through them"
                     .into()
             }
         },
@@ -7701,29 +7710,19 @@ static TRANSCRIPT: &[Binding] = &[
         prio: 10,
     },
     Binding {
-        // Tab walks the links forward and `shift+tab` back (T-1112), one
+        // The page's walk (T-1192): `^n` forward and `^p` back, one
         // binding so the footer spends one item on it; `n`/`N` are the same
-        // walk, unshown (`directional` tells the ways apart).
-        keys: &[Key::Tab, Key::BackTab, Key::Char('n'), Key::Char('N')],
-        verb: Verb::TranscriptLinkNext,
-        show: "tab",
+        // walk, unshown (`directional` tells the ways apart). A picked
+        // one's keys are the `Link` scope's.
+        keys: &[Key::Ctrl('n'), Key::Ctrl('p'), Key::Char('n'), Key::Char('N')],
+        verb: Verb::LinkNext,
+        show: "^n",
         hint: |_| "link",
         avail: |c| c.transcript_links,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 12,
-    },
-    Binding {
-        keys: &[Key::Enter],
-        verb: Verb::TranscriptLinkOpen,
-        show: "enter",
-        hint: |_| "open link",
-        avail: |c| c.transcript_link_selected && !c.link_command,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 14,
     },
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
@@ -7768,17 +7767,15 @@ static TRANSCRIPT: &[Binding] = &[
 /// toggle it, and then it becomes needed"). The transcript dialog's keys
 /// otherwise ("let's use { } to cycle the notes and tab to cycle links
 /// inside the current note like in transcript popup"): `{ }` walk the
-/// notes, `tab` the note's links, and Enter opens a selected one.
+/// notes, `^n ^p` the note's links (T-1192), and a picked one's keys are
+/// the `Link` scope's.
 static READER: &[Binding] = &[
     Binding {
-        // One atom, one binding: the selected link's opener while there is
-        // one, the editor otherwise. Esc lets the link go first.
         keys: &[Key::Enter],
         verb: Verb::NoteEdit,
         show: "enter",
-        hint: |c| if c.reader_link_selected { "open link" } else { "edit" },
-        // A selected command has nothing to open (T-1141): `c` copies it.
-        avail: |c| !c.link_command,
+        hint: |_| "edit",
+        avail: always,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -7809,30 +7806,18 @@ static READER: &[Binding] = &[
         prio: 8,
     },
     Binding {
-        // The transcript's link walk (T-1112), forward and back in one
-        // binding, that goes on to the next note past the last link and to
-        // the previous one back past the top: one ring of stops.
-        keys: &[Key::Tab, Key::BackTab],
-        verb: Verb::TranscriptLinkNext,
-        show: "tab",
+        // The page's link walk (T-1192), forward and back in one binding,
+        // that goes on to the next note past the last link and to the
+        // previous one back past the top: one ring of stops.
+        keys: &[Key::Ctrl('n'), Key::Ctrl('p')],
+        verb: Verb::LinkNext,
+        show: "^n",
         hint: |c| if c.reader_links { "link" } else { "next note" },
         avail: |c| c.reader_links || c.editor_cycles,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
         prio: 12,
-    },
-    Binding {
-        // The selected link or command, as `^k`'s `c` copies a row.
-        keys: &[Key::Char('c')],
-        verb: Verb::LinkCopy,
-        show: "c",
-        hint: |_| "copy",
-        avail: |c| c.reader_link_selected,
-        class: Class::Plain,
-        group: Group::Ticket,
-        mutates: false,
-        prio: 13,
     },
     Binding {
         // The page keys page; `{ }` are the notes'. Overlay-only.
@@ -7878,6 +7863,62 @@ static READER: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 250,
+    },
+];
+
+/// A picked link or command (T-1192), on the ticket page's conversation,
+/// in the transcript dialog or in the note reader: the same keys on all
+/// three (the author: "consolidate them"). Asked before the surface's own
+/// scope while a pick is live, so a key it does not bind is the
+/// surface's — the walk itself included, which each surface steps its own
+/// way. Enter on a command hands it to the agent the way the person did by
+/// hand (shift+enter, then `!` and the command); `c` copies either; Esc
+/// lets the pick go and leaves the surface where it was.
+static LINK: &[Binding] = &[
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::LinkAct,
+        show: "enter",
+        hint: |c| if c.link_command { "ask agent" } else { "open" },
+        avail: |c| c.link_picked && (!c.link_command || c.link_askable),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 5,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: |c| c.link_picked,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        // Hinted here, walked by the surface (`App::key_link`).
+        keys: &[Key::Ctrl('n'), Key::Ctrl('p')],
+        verb: Verb::LinkNext,
+        show: "^n ^p",
+        hint: |_| "link",
+        avail: |c| c.link_picked,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Esc],
+        verb: Verb::LinkLetGo,
+        show: "esc",
+        hint: |_| "let go",
+        avail: |c| c.link_picked,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
     },
 ];
 
@@ -8086,14 +8127,14 @@ static INPUT: &[Binding] = &[
         prio: 29,
     },
     Binding {
-        // `^n` in the field (T-443): the tier the launch these words end in
+        // `^r` in the field (T-443): the tier the launch these words end in
         // runs on, a pick that rides the draft or the ask like `^p` — the
         // row under the field wears it, Enter sends it, Esc drops it. Gated
         // on `tier_cycle`, the TUI's read of the field's ring: a column's
         // field, and a seat with nothing else to be, offer no key.
-        keys: &[Key::Ctrl('n')],
+        keys: &[Key::Ctrl('r')],
         verb: Verb::TierNext,
-        show: "^n",
+        show: "^r",
         hint: |_| "tier",
         avail: |c| (c.composing || c.prompting) && c.tier_cycle,
         class: Class::Plain,
@@ -8629,10 +8670,10 @@ static EDITOR: &[Binding] = &[
         prio: 26,
     },
     Binding {
-        // The one-line field's `^n` (T-443) in the bigger room.
-        keys: &[Key::Ctrl('n')],
+        // The one-line field's `^r` (T-443) in the bigger room.
+        keys: &[Key::Ctrl('r')],
         verb: Verb::TierNext,
-        show: "^n",
+        show: "^r",
         hint: |_| "tier",
         avail: |c| c.editing && (c.editor_composing || c.editor_asking) && c.tier_cycle,
         class: Class::Plain,
@@ -8859,6 +8900,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Summary => SUMMARY,
         Scope::Transcript => TRANSCRIPT,
         Scope::Reader => READER,
+        Scope::Link => LINK,
         Scope::PullRequests => PULL_REQUESTS,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
@@ -8942,7 +8984,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::PageDown, Key::Char('{')) => Verb::HalfPageUp,
         (Verb::PageDown, Key::PageUp) => Verb::PageUp,
         (Verb::TranscriptNewer, Key::Char('{')) => Verb::TranscriptOlder,
-        (Verb::TranscriptLinkNext, Key::BackTab | Key::Char('N')) => Verb::TranscriptLinkPrev,
+        (Verb::LinkNext, Key::Ctrl('p') | Key::Char('N')) => Verb::LinkPrev,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
         (Verb::NextNote, Key::Char('{')) => Verb::PrevNote,
         (v, _) => v,
@@ -9315,17 +9357,13 @@ mod tests {
         let ring = Ctx { editor_cycles: true, ..Default::default() };
         assert_eq!(resolve(Scope::Reader, Key::Char('}'), &ring), Some(Verb::NextNote));
         assert_eq!(resolve(Scope::Reader, Key::Char('{'), &ring), Some(Verb::PrevNote));
-        assert_eq!(resolve(Scope::Reader, Key::Tab, &ring), Some(Verb::TranscriptLinkNext));
-        assert_eq!(
-            hint_for(Scope::Reader, Verb::TranscriptLinkNext, &ring),
-            Some(("tab", "next note"))
-        );
+        assert_eq!(resolve(Scope::Reader, Key::Ctrl('n'), &ring), Some(Verb::LinkNext));
+        assert_eq!(hint_for(Scope::Reader, Verb::LinkNext, &ring), Some(("^n", "next note")));
         let linked = Ctx { reader_links: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Reader, Key::Tab, &linked), Some(Verb::TranscriptLinkNext));
-        assert_eq!(resolve(Scope::Reader, Key::BackTab, &linked), Some(Verb::TranscriptLinkPrev));
+        assert_eq!(resolve(Scope::Reader, Key::Ctrl('n'), &linked), Some(Verb::LinkNext));
+        assert_eq!(resolve(Scope::Reader, Key::Ctrl('p'), &linked), Some(Verb::LinkPrev));
+        assert_eq!(resolve(Scope::Reader, Key::Tab, &linked), None, "tab is free (T-1192)");
         assert_eq!(hint_for(Scope::Reader, Verb::NoteEdit, &linked), Some(("enter", "edit")));
-        let chosen = Ctx { reader_link_selected: true, ..linked };
-        assert_eq!(hint_for(Scope::Reader, Verb::NoteEdit, &chosen), Some(("enter", "open link")));
     }
 
     #[test]
@@ -9371,6 +9409,7 @@ mod tests {
                 Scope::Boards => 36,
                 Scope::Transcript => 37,
                 Scope::Reader => 38,
+                Scope::Link => 39,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -11971,27 +12010,19 @@ mod tests {
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &Ctx::default()), None);
         let linked = Ctx { transcript_links: true, ..Default::default() };
         for (key, verb) in [
-            (Key::Tab, Verb::TranscriptLinkNext),
-            (Key::Char('n'), Verb::TranscriptLinkNext),
-            (Key::BackTab, Verb::TranscriptLinkPrev),
-            (Key::Char('N'), Verb::TranscriptLinkPrev),
+            (Key::Ctrl('n'), Verb::LinkNext),
+            (Key::Char('n'), Verb::LinkNext),
+            (Key::Ctrl('p'), Verb::LinkPrev),
+            (Key::Char('N'), Verb::LinkPrev),
         ] {
             assert_eq!(resolve(Scope::Transcript, key, &linked), Some(verb), "{key}");
         }
-        assert_eq!(resolve(Scope::Transcript, Key::Tab, &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Transcript, Key::Ctrl('n'), &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Transcript, Key::Tab, &linked), None, "tab is free (T-1192)");
         assert_eq!(resolve(Scope::Transcript, Key::Char('l'), &linked), None, "l is free");
         assert_eq!(resolve(Scope::Transcript, Key::Char('h'), &linked), None, "h is free");
-        assert_eq!(
-            hint_for(Scope::Transcript, Verb::TranscriptLinkNext, &linked),
-            Some(("tab", "link"))
-        );
-        assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), None);
-        let selected = Ctx { transcript_link_selected: true, ..linked };
-        assert_eq!(
-            resolve(Scope::Transcript, Key::Enter, &selected),
-            Some(Verb::TranscriptLinkOpen)
-        );
-        assert_eq!(resolve(Scope::Transcript, Key::Enter, &Ctx::default()), None);
+        assert_eq!(hint_for(Scope::Transcript, Verb::LinkNext, &linked), Some(("^n", "link")));
+        assert_eq!(resolve(Scope::Transcript, Key::Enter, &linked), None, "a pick's, in Link");
         let long = Ctx { transcript_scrolls: true, ..Default::default() };
         assert_eq!(resolve(Scope::Transcript, Key::Char('j'), &long), Some(Verb::ScrollDown));
         assert_eq!(resolve(Scope::Transcript, Key::Char('k'), &long), Some(Verb::ScrollUp));
@@ -12001,10 +12032,8 @@ mod tests {
         );
     }
 
-    /// T-1141: a shell command is a link to copy, never to open. On one,
-    /// Enter is unbound in `^k`, the transcript and the reader (its hint
-    /// goes with it), and `c` copies; the reader's `c` is live only while
-    /// something is selected.
+    /// T-1141: a shell command is a link to copy, never to open: in `^k`
+    /// Enter is unbound on one (its hint goes with it) and `c` copies.
     #[test]
     fn a_command_is_copied_and_enter_opens_nothing() {
         let command = Ctx { link_command: true, ..Default::default() };
@@ -12012,19 +12041,45 @@ mod tests {
         assert_eq!(resolve(Scope::Links, Key::Enter, &command), None);
         assert_eq!(hint_for(Scope::Links, Verb::Act, &command), None);
         assert_eq!(resolve(Scope::Links, Key::Char('c'), &command), Some(Verb::LinkCopy));
-        let picked =
-            Ctx { transcript_links: true, transcript_link_selected: true, ..command.clone() };
-        assert_eq!(resolve(Scope::Transcript, Key::Enter, &picked), None);
-        assert_eq!(resolve(Scope::Transcript, Key::Char('c'), &picked), Some(Verb::LinkCopy));
-        let read = Ctx { reader_links: true, reader_link_selected: true, ..command.clone() };
-        assert_eq!(resolve(Scope::Reader, Key::Enter, &read), None);
-        assert_eq!(resolve(Scope::Reader, Key::Char('c'), &read), Some(Verb::LinkCopy));
-        assert_eq!(hint_for(Scope::Reader, Verb::LinkCopy, &read), Some(("c", "copy")));
-        let url = Ctx { link_command: false, ..read.clone() };
-        assert_eq!(resolve(Scope::Reader, Key::Enter, &url), Some(Verb::NoteEdit));
-        assert_eq!(resolve(Scope::Reader, Key::Char('c'), &url), Some(Verb::LinkCopy));
-        let none = Ctx { reader_links: true, ..Default::default() };
-        assert_ne!(resolve(Scope::Reader, Key::Char('c'), &none), Some(Verb::LinkCopy));
+    }
+
+    /// T-1192: a pick on the page, the transcript or the reader has one set
+    /// of keys. Enter opens a link and asks the agent with a command (only
+    /// where an ask can go), `c` copies either, `^n ^p` walk, Esc lets go;
+    /// with nothing picked the scope binds nothing, so every key is the
+    /// surface's. The tier left `^n` for `^r` everywhere it was.
+    #[test]
+    fn a_pick_has_one_set_of_keys() {
+        let none = Ctx::default();
+        for key in [Key::Enter, Key::Char('c'), Key::Esc, Key::Ctrl('n'), Key::Ctrl('p')] {
+            assert_eq!(resolve(Scope::Link, key, &none), None, "{key}");
+        }
+        let url = Ctx { link_picked: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Link, Key::Enter, &url), Some(Verb::LinkAct));
+        assert_eq!(hint_for(Scope::Link, Verb::LinkAct, &url), Some(("enter", "open")));
+        assert_eq!(resolve(Scope::Link, Key::Char('c'), &url), Some(Verb::LinkCopy));
+        assert_eq!(resolve(Scope::Link, Key::Esc, &url), Some(Verb::LinkLetGo));
+        assert_eq!(resolve(Scope::Link, Key::Ctrl('n'), &url), Some(Verb::LinkNext));
+        assert_eq!(resolve(Scope::Link, Key::Ctrl('p'), &url), Some(Verb::LinkPrev));
+        assert_eq!(resolve(Scope::Link, Key::Char('q'), &url), None, "q stays the surface's");
+        let command = Ctx { link_command: true, link_askable: true, ..url.clone() };
+        assert_eq!(resolve(Scope::Link, Key::Enter, &command), Some(Verb::LinkAct));
+        assert_eq!(hint_for(Scope::Link, Verb::LinkAct, &command), Some(("enter", "ask agent")));
+        let held = Ctx { link_askable: false, ..command };
+        assert_eq!(resolve(Scope::Link, Key::Enter, &held), None, "no ask can go: c copies");
+        assert_eq!(resolve(Scope::Link, Key::Char('c'), &held), Some(Verb::LinkCopy));
+        let page = Ctx { ticket_links: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::Ctrl('n'), &page), Some(Verb::LinkNext));
+        assert_eq!(resolve(Scope::Ticket, Key::Ctrl('p'), &page), Some(Verb::LinkPrev));
+        assert_ne!(resolve(Scope::Ticket, Key::Tab, &page), Some(Verb::LinkNext));
+        let tiers = Ctx { has_ticket: true, tier_cycle: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Ctrl('r'), &tiers), Some(Verb::TierNext), "{scope:?}");
+            assert_ne!(resolve(scope, Key::Ctrl('n'), &tiers), Some(Verb::TierNext), "{scope:?}");
+        }
+        let field = Ctx { prompting: true, tier_cycle: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('r'), &field), Some(Verb::TierNext));
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('n'), &field), None);
     }
 
     /// `q` pops one level and `?` is reachable from every screen — the two
@@ -12070,6 +12125,9 @@ mod tests {
                     | Scope::SnoozeChord
                     | Scope::MergeChord
                     | Scope::TagChord
+                    // Asked first while a pick is live; `?` falls to the
+                    // surface's scope, which has it.
+                    | Scope::Link
             ) {
                 continue; // chord tails, pending move and text fields own every key
             }

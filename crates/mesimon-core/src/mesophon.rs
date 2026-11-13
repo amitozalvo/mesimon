@@ -121,7 +121,7 @@ pub enum Request {
         text: String,
         #[serde(default = "queue_by_default")]
         queued: bool,
-        /// The composer's tier pick (T-643), the desk ask field's `^n`: a
+        /// The composer's tier pick (T-643), the desk ask field's `^r`: a
         /// tier id from the board reply's `tiers`, applied to the ticket
         /// first. A pick the agent did not launch on relaunches it at its
         /// next idle with the words held, so the words queue whatever
@@ -177,7 +177,7 @@ pub enum Request {
         #[serde(default)]
         prompt: Option<String>,
         /// The tier to start or wake it on (T-643), a tier id from the board
-        /// reply's `tiers`: applied to the ticket first, as the desk's `^n`
+        /// reply's `tiers`: applied to the ticket first, as the desk's `^r`
         /// is before its Shift+Enter. Absent, the ticket's own. Sent only to
         /// a host that says `tiers`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -414,7 +414,7 @@ pub struct TagPick {
     pub name: String,
 }
 
-/// One agent tier a phone may pick (T-643), as the desk's `^n` offers it:
+/// One agent tier a phone may pick (T-643), as the desk's `^r` offers it:
 /// `provider` is `claude` or `codex`, the word `Agent::provider` spells, so
 /// a seat that holds an agent is offered its own provider's tiers alone.
 /// `summary` is the launch in words (`Claude Code ∙ opus ∙ high`).
@@ -834,7 +834,7 @@ pub enum Reply {
         /// The board's tag vocabulary: every tag a new ticket may wear.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_tags: Vec<TagOption>,
-        /// The tiers a start or a prompt may pick (T-643), the desk's `^n`
+        /// The tiers a start or a prompt may pick (T-643), the desk's `^r`
         /// ring for an empty seat, in its order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tiers: Vec<TierOption>,

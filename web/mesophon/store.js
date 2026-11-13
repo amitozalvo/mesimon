@@ -2245,7 +2245,7 @@ export class Store {
     this.entry.mode = mode;
     this.sync();
   }
-  // The composer's tier pick (T-643), the desk ask field's `^n`: it rides
+  // The composer's tier pick (T-643), the desk ask field's `^r`: it rides
   // the next prompt, and a pick the agent did not launch on restarts it on
   // that tier when its turn ends, with the words.
   setPromptTier(tier) {

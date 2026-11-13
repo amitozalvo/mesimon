@@ -3134,7 +3134,7 @@ impl Daemon {
             return reject("a prompt is queued for this ticket at your terminal");
         }
         // The pick lands on the ticket before the seat is read, as the desk's
-        // `^n` before its Shift+Enter (T-643): an empty seat starts on it and
+        // `^r` before its Shift+Enter (T-643): an empty seat starts on it and
         // a parked one wakes on it. A sleeping Codex seat refuses a Claude
         // tier in `apply_ticket_tier`'s words.
         if let Some(pick) = tier {
@@ -4486,7 +4486,7 @@ impl Daemon {
             };
         }
         // The composer's tier pick (T-643) lands first, as the desk ask
-        // field's `^n` does: a pick the pane did not launch on is owed as a
+        // field's `^r` does: a pick the pane did not launch on is owed as a
         // switch, which is a relaunch at idle, so the words queue and ride
         // it (`deliver` relaunches an owed idle pane instead of pasting).
         if let Some(pick) = tier {
@@ -5037,7 +5037,7 @@ fn note_gate<'a>(
     Ok(Some(meta.id))
 }
 
-/// The tiers a phone may pick (T-643): the desk's `^n` ring for an empty
+/// The tiers a phone may pick (T-643): the desk's `^r` ring for an empty
 /// seat, in its order. A seat that holds an agent keeps its provider, so the
 /// page offers it the tiers whose `provider` is the agent's.
 fn projected_tiers(book: &mesimon_core::tier::Book) -> Vec<api::TierOption> {
@@ -7825,7 +7825,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(shell(&board, &terminals, &foregrounds, b), None, "a dead shell");
     }
 
-    /// A phone is offered the desk's `^n` ring (T-643): both built-ins while
+    /// A phone is offered the desk's `^r` ring (T-643): both built-ins while
     /// nobody made a tier, then the tiers a person made with the default in
     /// front when it is a built-in, each with its provider's word.
     #[test]

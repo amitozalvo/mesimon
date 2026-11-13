@@ -43604,3 +43604,54 @@ without its cursor is a marker row, and would lose its `›` for that frame.
 base ink and no reverse cell on the tab row; `golden_ticket_live_dialog_120` now pins the
 unmarked option. Two goldens moved by the pointer and the arrows alone. TUI-only: no e2e, no
 full suite. The rebase onto main was conflict-free and ran nothing.
+
+## One pick for links on the page, the transcript and the reader: `^n ^p`, a shimmer, the rest receded, a flash on act (T-1192, 2026-11-13, the author: "tab cycle links in transcript UX ∙ visibly hard to notice … enter copies, which is unintuitive, for commands (with !) I would expect it to put it in input … when returning it's still active and swallows all input until escape is clicked and it also takes you out of ticket page (bug) ∙ rethink the keys, maybe ^n ^p instead of tab"; then "a slight constant shimmer … mute the rest of the text … animate it before it being deselected"; "don't forget the transcript popup as well, consolidate them")
+
+**Keys.** A new `Scope::Link` (word `LINK`, parent none) holds a pick's keys for all three
+surfaces: Enter `LinkAct` (`open`, or `ask agent` on a command where `Ctx::link_askable`: no
+ask waiting or unsent, the seat not launching or held), `c` `LinkCopy`, `^n ^p` (hinted; the
+surface walks), Esc `LinkLetGo`. `App::key_link` asks it first while `App::pick_live` (a pick
+on the page, the transcript or the reader, not acted on, no `?` overlay); any key it does not
+bind is the surface's, so nothing is swallowed. The walk is `^n`/`^p` on the page (`Verb::LinkNext`
+/`LinkPrev`, replacing `TicketLinkNext` and the transcript's `TranscriptLink*`), in the transcript
+(`n`/`N` still unshown) and in the reader (still a ring into the notes). Page and transcript walk
+alike now (`walk_stop`): past either end, none — the transcript used to wrap. Tab and Shift+Tab no
+longer walk links anywhere. **Tier moved from `^n` to `^r`** on the board, the page, the ask
+field and the big editor (free in every scope); the tour, the Settings details, Remote Control's
+doc, the crown-only refusal text and comments say `^r`. `Ctx::ticket_link_selected`,
+`transcript_link_selected`, `reader_link_selected` are gone for `link_picked`.
+
+**Acting.** Enter on a command closes a dialog (transcript, reader) and opens the ask field
+(`App::ask_command` through `Verb::Prompt`, shell/terminal/column facts masked) with
+`!command` in it, a backslash-newline joined; nothing is sent until the person's Enter. Enter on
+a URL/file opens it and the surface stays (the transcript used to close); a ticket link lets the
+pick go and moves, as before. Enter or `c` sets `App::link_ack` on the injected clock: the pick
+is no longer live, flashes for `theme::LINK_ACK_MS` (450 ms: rise 90, hold to 170, ease back),
+then `settle_link_ack` (each tick) lets it go; any key meanwhile lets it go first. Esc lets a
+pick go and keeps the surface. **The bug** was the page's pick outliving its act: Enter copied
+again and again, and the page's Esc was Back.
+
+**Look.** Renderers only mark: `rich::picked` underlines in `PICK_MARK` (an RGB no theme holds).
+`ui/pick.rs::paint`, after every screen's draw, strips the mark everywhere and, while a pick is
+drawn, paints its cells `Theme::link_pick` (letters in the page's ground on `rest.dim1`, a crest
+toward `sel.base` crossing left to right every `PICK_SHIMMER_MS` + rest) and recedes every other
+cell above the footer row (`Theme::recede_by`/`recede_ground_k`, bold dropped); an act eases both
+back (`link_ack`, `pick_recess`). Grey on grey, fg/bg on the frame clock, no SGR 5; mono keeps the
+drag selection's inversion still. The footer says `LINK  enter open ∙ c copy ∙ ^n ^p link ∙ esc
+let go`; the transcript's and reader's edges show the pick's keys too. The live shimmer rides the
+100 ms frames (as the PR shimmer does); the flash asks the 16 ms ones (`animating`).
+
+**Refuted.** A background tint for the pick: code blocks and the person's words already sit on
+the one raised surface (`selected_bg`), so a tint would vanish on them. A `Scope::Link` returned
+by `App::scope()`: mouse, hover and dispatch read `scope() == Ticket` in a dozen places; the scope
+is asked beside it instead. `^n` for links only where a link shows and tier otherwise: one key, two
+meanings by screen state.
+
+**Tests.** `keymap::a_pick_has_one_set_of_keys` (the scope, askable, tier on `^r` in four scopes),
+`a_picked_link_on_the_page_is_named_acted_on_and_let_go` (footer, inverted cells, receded title,
+Esc stays, Enter opens and flashes, settle, a key mid-flash), `enter_on_a_picked_command_asks_the_agent_with_it`,
+`theme::a_pick_shimmers_and_an_act_flashes_back_to_the_words`; the transcript and reader tests now
+walk on `^n ^p` and read the painted pick (`picked_cell`). Goldens moved by key words only
+(`^n link`, `^r tier`, the reader-link golden's `LINK` footer and edge). Not run: the post-merge
+full suite — the diff's `server.rs` line is the refusal's literal and `command.rs` comments only, no
+dispatch; no rig run — the agent-facing change is the refusal naming `^r`, no behaviour.
