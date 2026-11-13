@@ -376,11 +376,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor = prompt_of(t).filter(|_| !left).map(
+        let field = prompt_of(t).filter(|_| !left).map(
             |(buf, queued, immediately, accept_plan, plan, tier)| {
-                // The prompt row and its delivery row, shared with the ticket
-                // page (T-476): the cursor is in the first of them.
-                let (rows, x_off) = card::render_ask_field(
+                // The prompt rows and the delivery row, shared with the
+                // ticket page (T-476): the cursor is on its line's row.
+                let (rows, x_off, y_off) = card::render_ask_field(
                     &ctx,
                     app,
                     t.id,
@@ -392,13 +392,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 );
                 let at = lines.len();
                 lines.extend(rows);
-                (at, x_off)
+                (at, y_off, x_off)
             },
         );
+        let edit_cursor = field.map(|(at, y_off, x_off)| (at + usize::from(y_off), x_off));
         // The second tag hangs in the row under the card: the field's first
         // row when one hangs there, else the blank row between cards.
-        let hang = match (end, edit_cursor) {
-            (Some(end), Some((at, _))) => {
+        let hang = match (end, field) {
+            (Some(end), Some((at, ..))) => {
                 end.hang(&mut lines[at]);
                 None
             }

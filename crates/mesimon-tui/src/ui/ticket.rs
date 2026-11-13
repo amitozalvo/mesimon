@@ -841,16 +841,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     });
     // A field the body has no room for is not drawn; the mode word in the
     // footer still says ASK, and the keys still work.
-    let field_rows = field.as_ref().map_or(0, |(rows, _)| rows.len() as u16);
+    let field_rows = field.as_ref().map_or(0, |(rows, ..)| rows.len() as u16);
     let field = field.filter(|_| body_h > field_rows && rail_h > field_rows);
     let field_rows = if field.is_some() { field_rows } else { 0 };
     let draw_field = |f: &mut Frame, x: u16, y: u16| {
-        if let Some((rows, x_off)) = field.as_ref() {
+        if let Some((rows, x_off, y_off)) = field.as_ref() {
             f.render_widget(
                 Paragraph::new(rows.clone()),
                 Rect { x, y, width: field_w, height: field_rows },
             );
-            // The hardware cursor in the prompt row (06 §5.7), as on the card.
+            // The hardware cursor in the prompt row (06 §5.7), as on the card;
+            // on its line's row in a field of lines (T-1191).
+            let y = y + *y_off;
             let at = (x + (*x_off).min(field_w.saturating_sub(1)), y);
             f.set_cursor_position(at);
             super::field_spot(app, Rect { x, y, width: field_w, height: 1 }, at);
@@ -920,7 +922,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // (T-1156), which the ask field opens in place, as the live window's.
         let boxed = seat.is_some() || sel.is_some_and(|s| launch.is_some() && launch::booting(s));
         let hybrid = boxed || sel.is_some_and(|s| app.live_shot(s.id).is_some());
-        let content_h = if hybrid { body_h } else { body_h - field_rows };
+        // The ask's lines past its first (T-1191): on a box the field is
+        // typed in, the box grows by them as the agent's own does, the
+        // zone's content laid out that many rows shorter, so it moves up
+        // rather than going under the field.
+        let grow = match ask {
+            Some((buf, ..)) if hybrid && field.is_some() => {
+                (crate::text::edit_rows_n(buf, super::card::ASK_LINES) - 1) as u16
+            }
+            _ => 0,
+        };
+        let content_h = if hybrid { body_h - grow } else { body_h - field_rows };
         // Before the window's first capture the zone already asks the size
         // the live rows will have (`draw_preview`'s live branch: the zone
         // under its two heading rows), so the window's reader fits the pane
@@ -1007,7 +1019,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             {
                 // The card's own rule (`render_ask_field`): a delivery row
                 // when the field it built has one.
-                let delivery = field.as_ref().is_some_and(|(rows, _)| rows.len() > 1);
+                let delivery =
+                    field.as_ref().is_some_and(|(rows, ..)| rows.len() > 1 + grow as usize);
                 // Over a dialog the rows go above the box, which stays
                 // whole with its question: the words, then the delivery
                 // row, over the pane's rows the seam left there.
@@ -1016,20 +1029,42 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 } else {
                     field_y
                 };
+                // The rows under the words' first — the box's bottom rule,
+                // the status line, a dialog under the field — move down by
+                // the lines past the first (T-1191), into the rows the zone
+                // was laid out short of, and the lines take theirs.
+                if grow > 0 {
+                    let cols = zone.x..zone.x + zone.width;
+                    let buf = f.buffer_mut();
+                    for y in (field_y + 1..zone.y + zone.height).rev() {
+                        for x in cols.clone() {
+                            buf[(x, y + grow)] = buf[(x, y)].clone();
+                        }
+                    }
+                    for y in field_y + 1..=field_y + grow {
+                        for x in cols.clone() {
+                            buf[(x, y)].reset();
+                        }
+                    }
+                    if let Some(r) = app.live_rect.get() {
+                        app.live_rect.set(Some(Rect { height: r.height + grow, ..r }));
+                    }
+                }
                 let placeholder = super::card::ask_placeholder(app, ticket_id, accept_plan, queued);
-                let (line, cx) = composer_row(theme, c, buf, placeholder);
+                let (rows, cx, cy) = composer_row(theme, c, buf, placeholder);
                 // The pane's own mark stays as the pane drew it: the row
                 // begins at its words' column; over a dialog, at the mark's.
                 let x = if c.bare { c.x } else { c.words_x };
-                let rect = Rect { x, y: field_y, width: c.right - x, height: 1 };
-                f.render_widget(Paragraph::new(line), rect);
-                let at = (x + cx.min(rect.width.saturating_sub(1)), field_y);
+                let n = rows.len() as u16;
+                let rect = Rect { x, y: field_y, width: c.right - x, height: n };
+                f.render_widget(Paragraph::new(rows), rect);
+                let at = (x + cx.min(rect.width.saturating_sub(1)), field_y + cy);
                 f.set_cursor_position(at);
-                super::field_spot(app, rect, at);
+                super::field_spot(app, Rect { y: at.1, height: 1, ..rect }, at);
                 // The delivery row under the words, the card's, across the
                 // pane's width on the selected ground: where the eye goes
                 // after the words, with the key that cycles it.
-                let under = field_y + 1;
+                let under = field_y + n;
                 if delivery && under < body_y + body_h {
                     let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
                     let tier_word = app.field_tier_word(Some(ticket_id), tier);
@@ -1613,40 +1648,48 @@ pub(super) struct Composer {
     pub rule: Option<char>,
 }
 
-/// The ask field as one row on the pane's composer (T-1143), drawn as the
-/// agent would draw what is typed: the words in the pane's ink one space
-/// past its words' column (the agent's own is too close to the mark to
-/// read as typed), the placeholder dim where there are none, nothing
-/// painted. The pane's own placeholder under it is covered to the edge.
-/// The row starts at the words' column, after the pane's own mark, or at
-/// the mark's where the page draws one (`bare`). Returns the row and the
-/// cursor's column offset from its first column.
+/// The ask field on the pane's composer (T-1143), a row per line of it
+/// (T-1191), drawn as the agent would draw what is typed: the words in the
+/// pane's ink one space past its words' column (the agent's own is too
+/// close to the mark to read as typed), the placeholder dim where there are
+/// none, nothing painted. The pane's own placeholder under it is covered to
+/// the edge. The rows start at the words' column, after the pane's own
+/// mark, or at the mark's where the page draws one (`bare`). Returns the
+/// rows, the cursor's column offset from their first column and its row.
 fn composer_row(
     theme: &crate::theme::Theme,
     c: Composer,
     buffer: &crate::text::EditBuffer,
     placeholder: &str,
-) -> (Line<'static>, u16) {
+) -> (Vec<Line<'static>>, u16, u16) {
     let lead = if c.bare { (c.words_x - c.x) as usize } else { 0 } + 1;
     let width = (c.right - c.words_x) as usize + lead - 1;
     // One cell past the words for the cursor to rest on.
     let budget = width.saturating_sub(lead + 1);
-    let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let mut spans = Vec::new();
-    if c.bare {
-        spans.push(Span::styled(format!("{:<lead$}", "❯"), theme.dim2()));
-    } else {
-        spans.push(Span::raw(" "));
-    }
-    let words = if buffer.as_str().is_empty() {
-        Span::styled(truncate(placeholder, budget), theme.dim3())
-    } else {
-        Span::styled(shown, Style::default().fg(theme.rest.base))
-    };
-    let used = lead + words.width();
-    spans.push(words);
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
-    (Line::from(spans), (lead as u16) + cx)
+    // A row per line of the ask (T-1191), at the first one's column.
+    let (shown, cx, cy) = crate::text::edit_rows(buffer, budget, super::card::ASK_LINES);
+    let rows = shown
+        .into_iter()
+        .enumerate()
+        .map(|(i, shown)| {
+            let mut spans = Vec::new();
+            if c.bare && i == 0 {
+                spans.push(Span::styled(format!("{:<lead$}", "❯"), theme.dim2()));
+            } else {
+                spans.push(Span::raw(" ".repeat(lead)));
+            }
+            let words = if buffer.as_str().is_empty() {
+                Span::styled(truncate(placeholder, budget), theme.dim3())
+            } else {
+                Span::styled(shown, Style::default().fg(theme.rest.base))
+            };
+            let used = lead + words.width();
+            spans.push(words);
+            spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+            Line::from(spans)
+        })
+        .collect();
+    (rows, (lead as u16) + cx, cy as u16)
 }
 
 /// The delivery row under the composer row (T-1143): the card's mode row

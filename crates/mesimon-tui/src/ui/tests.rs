@@ -15778,6 +15778,36 @@ fn the_live_window_follows_the_rail_cursor_and_leaves_room_for_the_field() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// An ask of lines (T-1191) grows the box on the pane's composer as the
+/// agent's own does: a row per line under the top rule, the cursor on its
+/// line's row, the delivery row and the status line under the last, and
+/// the zone's rows over the box moved up by the lines past the first.
+#[test]
+fn an_ask_of_lines_grows_the_box_and_moves_the_zone_up() {
+    let (mut app, path) = app_live("tlive-lines", false);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    ask_field(&mut app, "rebase onto main", false);
+    let one = render(&app, 120, 30);
+    let first = one.iter().position(|l| l.contains("rebase onto main")).expect("the field");
+    ask_field(&mut app, "rebase onto main\nthen run the tests\nand push", false);
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("rebase onto main")).expect("the field");
+    assert_eq!(at, first - 2, "two rows up for two more lines: {lines:#?}");
+    assert!(lines[at - 1].contains("────"), "under the box's top rule: {lines:#?}");
+    assert!(lines[at + 1].contains("then run the tests"), "{lines:#?}");
+    assert!(lines[at + 2].contains("and push"), "{lines:#?}");
+    assert!(lines[at + 3].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
+    assert_eq!(lines[at + 4..], one[first + 2..], "the status line as it was: {lines:#?}");
+    let zone = one.iter().position(|l| l.contains("PREVIEW")).expect("the heading") + 1;
+    let cols = |l: &String| l.chars().take(88).collect::<String>().trim_end().to_string();
+    assert_eq!(
+        lines[zone + 1..at - 1].iter().map(cols).collect::<Vec<_>>(),
+        one[zone + 3..first - 1].iter().map(cols).collect::<Vec<_>>(),
+        "the zone's rows moved by two"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// An idle Claude Code pane over the conversation, its last reply drawn
 /// in the pane as well (`fresh` adds a sentence the transcript has not
 /// caught up with), then the turn's spinner line and the composer.

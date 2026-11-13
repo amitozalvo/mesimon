@@ -20,8 +20,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, merged_mark, Register, Tier};
 use crate::text::{
-    age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
-    EditBuffer,
+    age_slot, created_at_epoch_ms, edit_rows, edit_window, marquee_offset, marquee_window,
+    truncate, EditBuffer,
 };
 use crate::theme::{BarWeight, CrownSweep, LandKind, Landing, Theme};
 
@@ -89,29 +89,54 @@ pub(super) fn render_prompt(
     buffer: &EditBuffer,
     placeholder: &str,
 ) -> (Line<'static>, u16) {
+    let (mut rows, x_off, _) = render_prompt_rows(ctx, buffer, placeholder, 1);
+    (rows.remove(0), x_off)
+}
+
+/// The most rows the ask field's lines take (T-1191); past them the rows
+/// are a window that keeps the cursor's line.
+pub(super) const ASK_LINES: usize = 6;
+
+/// `render_prompt`, a row per line of the buffer (T-1191): at most `max`,
+/// the caret on the first, the lines under it at the words' column. Returns
+/// the rows, the cursor's x offset and its row among them.
+pub(super) fn render_prompt_rows(
+    ctx: &CardCtx,
+    buffer: &EditBuffer,
+    placeholder: &str,
+    max: usize,
+) -> (Vec<Line<'static>>, u16, u16) {
     let theme = ctx.theme;
     // Bar-width indent, pad, caret, space. The caret is what an empty field has to
     // show; without it the state is an empty row.
     let lead = crate::tags::BAR as u16 + 3;
     let budget = (ctx.width as usize).saturating_sub(lead as usize + 2);
-    let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let mut spans = vec![
-        Span::raw(" ".repeat(crate::tags::BAR + 1)),
-        Span::styled("› ", Style::default().fg(theme.sel.dim2)),
-    ];
-    if buffer.as_str().is_empty() {
-        // An empty field says what it is for, in the same words the key was
-        // hinted with. The hardware cursor sits on the first letter of it,
-        // which is how every placeholder has ever worked.
-        spans
-            .push(Span::styled(truncate(placeholder, budget), Style::default().fg(theme.sel.dim3)));
-    } else {
-        spans.push(Span::styled(
-            shown,
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-        ));
-    }
-    (Line::from(spans).style(theme.selected_row()), lead + cx)
+    let (shown, cx, cy) = edit_rows(buffer, budget, max);
+    let words = Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD);
+    let rows = shown
+        .into_iter()
+        .enumerate()
+        .map(|(i, shown)| {
+            let caret = if i == 0 { "› " } else { "  " };
+            let mut spans = vec![
+                Span::raw(" ".repeat(crate::tags::BAR + 1)),
+                Span::styled(caret, Style::default().fg(theme.sel.dim2)),
+            ];
+            if buffer.as_str().is_empty() {
+                // An empty field says what it is for, in the same words the
+                // key was hinted with. The hardware cursor sits on the first
+                // letter of it, which is how every placeholder has ever worked.
+                spans.push(Span::styled(
+                    truncate(placeholder, budget),
+                    Style::default().fg(theme.sel.dim3),
+                ));
+            } else {
+                spans.push(Span::styled(shown, words));
+            }
+            Line::from(spans).style(theme.selected_row())
+        })
+        .collect();
+    (rows, lead + cx, cy as u16)
 }
 
 /// What a blank Enter would do in the seat's own words (see
@@ -161,10 +186,9 @@ pub(super) fn render_ask_field(
     accept_plan: bool,
     plan: bool,
     tier: Option<&str>,
-) -> (Vec<Line<'static>>, u16) {
+) -> (Vec<Line<'static>>, u16, u16) {
     let placeholder = ask_placeholder(app, ticket, accept_plan, queued);
-    let (line, x_off) = render_prompt(ctx, buffer, placeholder);
-    let mut rows = vec![line];
+    let (mut rows, x_off, y_off) = render_prompt_rows(ctx, buffer, placeholder, ASK_LINES);
     // The delivery row, where the ask can wait (2026-09-04): after the
     // field, so the cursor row is unchanged. Plan mode (T-434) shows on the
     // same row, so a seat that cannot wait — a worktree ticket's empty seat
@@ -180,7 +204,7 @@ pub(super) fn render_ask_field(
             app.ask_interrupts(&target, (queued, immediately), accept_plan, plan),
         ));
     }
-    (rows, x_off)
+    (rows, x_off, y_off)
 }
 
 /// The composer's workspace row (M4): git glyph + one word, Shift+Tab cycles.

@@ -932,11 +932,12 @@ fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
     }
 }
 
-/// A remembered ask back in the one-line field. An ask written in the room
-/// (T-380) keeps its line breaks in the history it went out with; the field
-/// is one line, so they are spaces here — `Tab` reopens the room on it.
+/// A remembered ask back in the field, its line breaks with it: the field
+/// holds lines since T-1191 (until then they were spaces here).
 fn history_field(text: &str) -> EditBuffer {
-    EditBuffer::from_text(crate::text::one_line(text), mesimon_core::command::PROMPT_MAX_BYTES)
+    let mut buf = EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES);
+    buf.paste_lines(text);
+    buf
 }
 
 /// One step through a list of `n` rows, clamped at both ends.
@@ -5769,7 +5770,13 @@ impl App {
                 InputPurpose::RenameColumn { .. } => "a column name",
                 InputPurpose::Prompt { .. } => "an ask",
             };
-            (what, buffer.paste(text), buffer.limit())
+            // The ask field keeps the paste's lines (T-1191); every other
+            // field here is one line.
+            let pasted = match purpose {
+                InputPurpose::Prompt { .. } => buffer.paste_lines(text),
+                _ => buffer.paste(text),
+            };
+            (what, pasted, buffer.limit())
         } else if let Mode::Search(s) = &mut self.mode {
             ("a search query", s.query.paste(text), s.query.limit())
         } else if let Mode::Editor(ed) = &mut self.mode {
@@ -13454,6 +13461,19 @@ impl App {
             return Ok(());
         };
         let word = crate::keys::word_wise(mods);
+        // The ask field holds lines (T-1191): `↑`/`↓` walk them first, and
+        // reach the history only from the first line and the last.
+        if matches!(purpose, InputPurpose::Prompt { .. }) && mods.is_empty() {
+            let moved = match code {
+                KeyCode::Up => buffer.up(),
+                KeyCode::Down => buffer.down(),
+                _ => false,
+            };
+            if moved {
+                self.mode = Mode::Input { purpose, buffer };
+                return Ok(());
+            }
+        }
         let key = crate::keys::to_key_text(code, mods);
         let ctx = self.ctx();
         let verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
@@ -13628,6 +13648,16 @@ impl App {
                 // An unhandled chord must never type its letter.
                 KeyCode::Char(_) if word => {}
                 KeyCode::Char(c) => buffer.insert(c),
+                // Shift+Enter in the ask field, which the keymap leaves
+                // unbound there: a line break, as in the agents' own boxes
+                // (T-1191). Plain Enter is always bound, so only the
+                // distinct spelling arrives here.
+                KeyCode::Enter
+                    if key == Some(keymap::Key::ShiftEnter)
+                        && matches!(purpose, InputPurpose::Prompt { .. }) =>
+                {
+                    buffer.newline()
+                }
                 _ => {}
             },
         }
@@ -24240,13 +24270,17 @@ mod tests {
             assert!(!sent_contains(&sent, "PromptSession"));
             assert!(app.legacy_shift_enter);
             assert!(!app.rich_keys);
-            // A second chord sends the field, as a second real Shift+Enter does.
+            // A second chord breaks a line, as a second real Shift+Enter
+            // does (T-1191); Enter sends both.
             for c in "run the tests".chars() {
                 press(&mut app, c);
             }
             app.handle_key(KeyCode::Enter, KeyModifiers::ALT).unwrap();
+            assert!(!sent_contains(&sent, "PromptSession"));
+            press(&mut app, 'x');
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert!(sent_contains(&sent, "PromptSession"));
-            assert!(sent_contains(&sent, "run the tests"));
+            assert!(sent_contains(&sent, "run the tests\\nx"), "{:?}", sent.borrow());
             assert!(app.pending_attach.is_none());
         }
     }
@@ -24745,16 +24779,16 @@ mod tests {
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
         assert_eq!(app.status, "asked");
         assert_eq!(app.prompt_history, vec!["fix\nthe tests".to_string()]);
-        // Recalled into the one-line field as one line; `Tab` reopens the
-        // room on that line.
+        // Recalled into the field with its lines (T-1191); `Tab` reopens
+        // the room on them.
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         match &app.mode {
-            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "fix the tests"),
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "fix\nthe tests"),
             other => panic!("not in the field: {other:?}"),
         }
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(editor(&app).body.as_str(), "fix the tests");
+        assert_eq!(editor(&app).body.as_str(), "fix\nthe tests");
     }
 
     /// The room's Esc is the composer's: clean, it folds back into the
@@ -26085,19 +26119,38 @@ mod tests {
         assert_eq!(field(&app), "run the tests", "the repeat is now the newest");
     }
 
-    /// The finger is still holding shift from the press that opened the
-    /// field, so the second Shift+Enter has to land somewhere — and sending
-    /// is the only thing it could sanely mean.
+    /// Shift+Enter in the ask field breaks a line, as in the agents' own
+    /// boxes (T-1191): `↑`/`↓` walk the lines before the history, a paste
+    /// keeps its lines, and Enter sends them as one ask.
     #[test]
-    fn a_second_shift_enter_sends_the_prompt_too() {
+    fn shift_enter_in_the_ask_field_breaks_a_line() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.prompt_history = vec!["older".into()];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         for c in "ship it".chars() {
             press(&mut app, c);
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(sent_contains(&sent, "ship it"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        for c in "now".chars() {
+            press(&mut app, c);
+        }
+        let field = |app: &App| match &app.mode {
+            Mode::Input { buffer, .. } => buffer.as_str().to_string(),
+            other => panic!("not in the field: {other:?}"),
+        };
+        assert_eq!(field(&app), "ship it\nnow");
+        // `↑` is the line above, at its column, not the history.
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        press(&mut app, '!');
+        assert_eq!(field(&app), "shi!p it\nnow");
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        app.on_paste("one\r\ntwo\n").unwrap();
+        assert_eq!(field(&app), "shi!p it\nnowone\ntwo");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "shi!p it\\nnowone\\ntwo"), "{:?}", sent.borrow());
         assert_eq!(app.mode, Mode::Normal);
     }
 

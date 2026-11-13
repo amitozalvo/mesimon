@@ -43686,3 +43686,33 @@ nothing there was changed. Triple-click (a line) was not asked for and is not bu
 Tests: `mouse::a_word_is_what_a_path_or_a_key_needs_whole`,
 `ui::a_double_click_selects_a_word_and_the_release_copies_it` (word copied, slow second press is a
 click, a card's double-click still opens it).
+
+## Shift+Enter in the ask field breaks a line (T-1191, 2026-11-13, the author: "shift+enter on the input will send it instead of adding a new line like in claude code / codex")
+
+**Changed.** The ask field (`InputPurpose::Prompt`, the card's and the ticket page's) holds lines.
+Its Shift+Enter was `Verb::SaveStart`, sending like Enter on the reasoning that the finger which
+opened the field is still holding shift; the binding is now the composer's alone, and the Input
+scope leaves the key unbound while prompting, so `key_input`'s fallthrough types it as
+`EditBuffer::newline` (the keymap allows one binding per key in a scope, so a second
+`EditorNewline` binding beside `SaveStart` was refused by `no_key_bound_twice_in_a_chain`). The
+legacy ESC CR spelling arrives as the same key and breaks a line too; a terminal that cannot tell
+Shift+Enter from Enter sends, as before. `↑`/`↓` walk the lines first (`EditBuffer::up`/`down`,
+the nearest column) and reach the history only from the first and the last line; Home, End, `^u`
+and a click act on the cursor's line. A paste keeps its lines (`paste_lines`: CRLF and a lone CR
+become LF, `scrub_cells`, blank ends trimmed), and a recalled ask keeps the lines it went out with
+(`history_field`; they were spaces since T-380). The daemon already kept `\n` in an ask
+(`sanitize_prompt`, T-380) and pastes it bracketed, so one ask stays one turn.
+
+**Drawn.** A row per line, at most `card::ASK_LINES` (6), the window keeping the cursor's line
+(`text::edit_rows`); each row still scrolls sideways as the one-line field did, so a one-line ask
+draws exactly as before and no golden moved. On a card the rows hang under it before the delivery
+row. On the page's box (the live window's composer row, the seat's and a launch's foot box, the
+rows over a dialog) the box grows as the agent's own does: the zone is laid out `grow` rows
+shorter, so the conversation moves up rather than under the field, and the rows under the first
+line (the bottom rule with its delivery words, the status line, a dialog) are moved down into the
+rows it was short of. The column header's field stays one row (`render_prompt`, the cursor's
+line). Not done: no wrap of a long line (it scrolls, as before); no `\`+Enter.
+
+Tests: `shift_enter_in_the_ask_field_breaks_a_line` (replaces `a_second_shift_enter_sends_the_prompt_too`),
+`an_ask_of_lines_grows_the_box_and_moves_the_zone_up`, `edit_rows_window_the_cursor_line`;
+`escape_return_opens_the_ask_…` and `tab_grows_the_ask_field_into_the_room_…` follow the change.

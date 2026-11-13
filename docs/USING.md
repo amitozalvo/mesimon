@@ -205,7 +205,10 @@ foot level with the input box, wherever the cursor is, whenever the rail leaves 
 pane's input box shows no blinking cursor: the page is a picture until `shift+enter`
 opens the ask field on that box's own row, after its mark, and the cursor appears there, so what you
 type reads as it will to the agent; the delivery word (`now`, `queued`) and the `shift+tab` that
-cycles it are the row under it. While the page shows a pane, the pane is sized to the page (never while a terminal is
+cycles it are the row under it. In the ask field, on the page and on a card, `shift+enter` starts a
+new line, as it does in the agent's own box, and `enter` sends every line as one message; `↑` and
+`↓` move between the lines before they step through earlier asks, and a pasted text keeps its
+lines. The box grows by a row per line, up to six, and the conversation moves up to make room. While the page shows a pane, the pane is sized to the page (never while a terminal is
 attached to it), and it takes your terminal's size again when you step in. The pointer resting
 on a row of the rail moves the cursor there, as it does on a card. `v` shows the diff once there is a worktree, and `m` on the branch line merges it:
 fast-forward only, so mesimon never mints a merge commit. A second `m` tells the agent its branch

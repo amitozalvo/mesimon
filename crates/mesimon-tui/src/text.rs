@@ -286,9 +286,87 @@ impl EditBuffer {
         self.text
     }
 
-    /// Display cells left of the cursor — the renderer's scroll anchor.
+    /// Display cells left of the cursor on its line — the renderer's
+    /// scroll anchor.
     pub(crate) fn width_before_cursor(&self) -> usize {
-        self.text[..self.cursor].width()
+        self.text[self.line_start()..self.cursor].width()
+    }
+
+    /// Byte offset where the cursor's line starts. A field holds a `'\n'`
+    /// only where the ask field put one (T-1191); every other field is one
+    /// line, and its line is the whole text.
+    fn line_start(&self) -> usize {
+        self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1)
+    }
+
+    /// Byte offset where the cursor's line ends: at its `'\n'`, or the end.
+    fn line_end(&self) -> usize {
+        self.text[self.cursor..].find('\n').map_or(self.text.len(), |i| self.cursor + i)
+    }
+
+    /// A line break at the cursor: the ask field's Shift+Enter (T-1191),
+    /// the line Claude Code's and Codex's own boxes take on that key. The
+    /// break counts toward the limit, as the daemon counts it.
+    pub(crate) fn newline(&mut self) {
+        if self.room() == 0 {
+            return;
+        }
+        self.text.insert(self.cursor, '\n');
+        self.cursor += 1;
+    }
+
+    /// A bracketed paste into the ask field (T-1191), which holds lines: the
+    /// paste keeps its line breaks (`"\r\n"` and a lone `'\r'` become
+    /// `'\n'`) and every other control goes as `TextArea::paste` drops it;
+    /// the blank lines at either end are trimmed, as a copied line's own
+    /// newline is. Up to the limit, never splitting a cluster.
+    pub(crate) fn paste_lines(&mut self, raw: &str) -> Pasted {
+        let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let clean = mesimon_core::text::scrub_cells(&unified, true);
+        let clean = clean.trim_matches('\n').trim_end();
+        let mut trimmed = false;
+        for g in clean.graphemes(true) {
+            if g.len() > self.room() {
+                trimmed = true;
+                break;
+            }
+            self.text.insert_str(self.cursor, g);
+            self.cursor += g.len();
+        }
+        Pasted { trimmed }
+    }
+
+    /// Zero-based line the cursor is on.
+    pub(crate) fn cursor_line(&self) -> usize {
+        self.text[..self.cursor].matches('\n').count()
+    }
+
+    /// `↑` inside a field of lines (T-1191): to the line above, at the
+    /// nearest column. `false` on the first line, where the key is the
+    /// history's.
+    pub(crate) fn up(&mut self) -> bool {
+        let start = self.line_start();
+        if start == 0 {
+            return false;
+        }
+        let col = self.text[start..self.cursor].width();
+        let above = self.text[..start - 1].rfind('\n').map_or(0, |i| i + 1);
+        self.cursor = boundary_at(&self.text, above, start - 1, col);
+        true
+    }
+
+    /// `↓` inside a field of lines: to the line below, at the nearest
+    /// column. `false` on the last line, where the key is the history's.
+    pub(crate) fn down(&mut self) -> bool {
+        let end = self.line_end();
+        if end == self.text.len() {
+            return false;
+        }
+        let col = self.text[self.line_start()..self.cursor].width();
+        let below = end + 1;
+        let below_end = self.text[below..].find('\n').map_or(self.text.len(), |i| below + i);
+        self.cursor = boundary_at(&self.text, below, below_end, col);
+        true
     }
 
     /// One typed character. Past the limit the key is inert: the same bound
@@ -318,9 +396,12 @@ impl EditBuffer {
         self.cursor = start;
     }
 
+    /// To the start of the cursor's line: the whole text in a one-line
+    /// field.
     pub(crate) fn kill_to_start(&mut self) {
-        self.text.drain(..self.cursor);
-        self.cursor = 0;
+        let start = self.line_start();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
     }
 
     pub(crate) fn left(&mut self) {
@@ -339,19 +420,20 @@ impl EditBuffer {
         self.cursor = word_end_after(&self.text, self.cursor);
     }
 
+    /// The cursor's line's start and end: the text's in a one-line field.
     pub(crate) fn home(&mut self) {
-        self.cursor = 0;
+        self.cursor = self.line_start();
     }
 
     pub(crate) fn end(&mut self) {
-        self.cursor = self.text.len();
+        self.cursor = self.line_end();
     }
 
-    /// Put the cursor `cells` display cells into the text (a click, T-716):
+    /// Put the cursor `cells` display cells into its line (a click, T-716):
     /// before the cluster that cell falls in — or, past its middle, after
-    /// it — and at the end past the text.
+    /// it — and at the line's end past its text.
     pub(crate) fn place(&mut self, cells: usize) {
-        self.cursor = boundary_at(&self.text, 0, self.text.len(), cells);
+        self.cursor = boundary_at(&self.text, self.line_start(), self.line_end(), cells);
     }
 }
 
@@ -382,6 +464,42 @@ pub(crate) fn edit_window(text: &str, w_before: usize, budget: usize) -> (String
         marquee_window(text, budget, skip)
     };
     (shown, w_before.saturating_sub(skip) as u16)
+}
+
+/// The ask field's rows (T-1191): one row per line of the buffer, at most
+/// `max` of them, the window keeping the cursor's line on screen, each row
+/// scrolled sideways as the one-line field scrolls (`edit_window`) — the
+/// cursor's row to keep the cursor in it, the others from their start.
+/// Returns the rows, the cursor's column and the cursor's row among them.
+/// A one-line text is exactly `edit_window`'s single row.
+pub(crate) fn edit_rows(buf: &EditBuffer, budget: usize, max: usize) -> (Vec<String>, u16, usize) {
+    let at = buf.cursor_line();
+    let n = buf.as_str().split('\n').count();
+    let max = max.max(1);
+    let first = (at + 1).saturating_sub(max).min(n.saturating_sub(max));
+    let mut cx = 0;
+    let rows = buf
+        .as_str()
+        .split('\n')
+        .enumerate()
+        .skip(first)
+        .take(max)
+        .map(|(i, line)| {
+            if i == at {
+                let (shown, x) = edit_window(line, buf.width_before_cursor(), budget);
+                cx = x;
+                shown
+            } else {
+                edit_window(line, 0, budget).0
+            }
+        })
+        .collect();
+    (rows, cx, at - first)
+}
+
+/// How many rows `edit_rows` gives a buffer under `max`.
+pub(crate) fn edit_rows_n(buf: &EditBuffer, max: usize) -> usize {
+    buf.as_str().split('\n').count().clamp(1, max.max(1))
 }
 
 /// A multi-line field: a note, not a title. One `String` with `'\n'` inside
@@ -1089,6 +1207,30 @@ mod tests {
         assert_eq!(b.as_str(), "abcdef");
         assert_eq!(b.paste("y"), Pasted { trimmed: true });
         assert_eq!(b.as_str(), "abcdef");
+    }
+
+    /// The ask field's rows (T-1191): a row per line, the window keeping
+    /// the cursor's line, a line break counted toward the limit.
+    #[test]
+    fn edit_rows_window_the_cursor_line() {
+        let mut b = EditBuffer::new(64);
+        for (i, line) in ["one", "two", "three"].iter().enumerate() {
+            if i > 0 {
+                b.newline();
+            }
+            line.chars().for_each(|c| b.insert(c));
+        }
+        assert_eq!(edit_rows(&b, 10, 6), (vec!["one".into(), "two".into(), "three".into()], 5, 2));
+        assert_eq!(edit_rows(&b, 10, 2), (vec!["two".into(), "three".into()], 5, 1));
+        assert!(b.up() && b.up() && !b.up(), "two lines up, then the history's");
+        assert_eq!(edit_rows(&b, 10, 2), (vec!["one".into(), "two".into()], 3, 0));
+        b.home();
+        assert_eq!(b.width_before_cursor(), 0);
+        assert_eq!(edit_rows_n(&b, 2), 2);
+        let mut full = EditBuffer::new(1);
+        full.insert('a');
+        full.newline();
+        assert_eq!(full.as_str(), "a", "no room, no break");
     }
 
     #[test]

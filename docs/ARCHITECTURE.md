@@ -753,8 +753,8 @@ startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026
 **And on a ticket that already has an agent, the same key ASKS it.** Shift+Enter says one sentence
 — *ask claude, and stay on the board* — at three stages: before the ticket exists it mints, spawns
 and submits the title (`Verb::SaveStart`); on a ticket with a live claude PANE it opens a one-line
-field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field Enter sends and so
-does a second Shift+Enter (the finger is still holding shift). **On a ticket whose claude seat is
+field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field Enter sends, and a
+second Shift+Enter breaks a line (T-1191; until then it sent too, the finger still holding shift). **On a ticket whose claude seat is
 EMPTY the board's press opens the same field** (T-379; from 2026-09-03 to then it spawned on the
 title at once, hint `ask claude the title`): the words are the first prompt, a blank Enter is the
 title, hint `start + ask claude`, and the delivery row opens at `now` on a quiet shared checkout and

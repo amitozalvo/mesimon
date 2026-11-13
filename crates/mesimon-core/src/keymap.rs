@@ -8059,25 +8059,17 @@ static INPUT: &[Binding] = &[
         // when composing (a rename has nothing to start) and only when the
         // terminal can tell this key from Enter at all.
         //
-        // A prompt field is the third state, and there the two Enters agree:
-        // the field was OPENED with Shift+Enter, so the finger is already
-        // holding shift and the second press must land somewhere. Sending is
-        // the only thing it could sanely mean — the alternative was a dead
-        // key in the middle of the gesture that opened the field.
+        // The ask field leaves the key unbound since T-1191 (the author:
+        // "shift+enter on the input will send it instead of adding a new
+        // line like in claude code / codex"), so the field types it, as a
+        // line break, the one the agents' own boxes take on it. It sent
+        // until then, on the reasoning that the finger which opened the
+        // field with Shift+Enter is still holding shift.
         keys: &[Key::ShiftEnter],
         verb: Verb::SaveStart,
         show: "shift+enter",
-        // Silent while prompting: `enter send` one cell to the left already
-        // says it, and two footer cells reading "send" teach nothing twice.
-        // Bound but unhinted is the shape `space` and `> <` already use.
-        hint: |c| {
-            if c.prompting {
-                ""
-            } else {
-                "save + ask agent"
-            }
-        },
-        avail: |c| (c.composing || c.prompting) && c.shift_enter(),
+        hint: |_| "save + ask agent",
+        avail: |c| c.composing && c.shift_enter(),
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -9903,7 +9895,10 @@ mod tests {
         let prompting = Ctx { prompting: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &composing), Some(Verb::SaveStart));
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &onboard), Some(Verb::Prompt));
-        assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), Some(Verb::SaveStart));
+        // The ask field's own Shift+Enter is unbound (T-1191): the field
+        // types it as a line break, and the gesture that opened it no
+        // longer sends it.
+        assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), None);
         // A column header (T-378) is the same home one row up, not a fourth
         // idea: the same verb, the same field, the same sentence said to
         // every seat in the column at once. T-405 made the plural reach an
