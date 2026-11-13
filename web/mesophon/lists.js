@@ -6,7 +6,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { CodeBox, RequestFields, TrustAccept, answerable, pickedOption } from "./dialogs.js";
+import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, pickedOption } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
 import { RECENT_MS, omittedWords } from "./board.js";
@@ -281,9 +281,10 @@ function NeedCard({ store, ticket, board, live }) {
           </div>`
         : trust
           ? html`<div class="need-actions"><${TrustAccept} trust=${trust} off=${off} send=${send} /></div>`
-        : dialog?.kind === "plan" || (dialog && !question)
-          ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog.kind === "plan" ? "Review plan" : "Answer in the ticket"}</button></div>`
+        : dialog?.kind === "plan" || (dialog && !question) || ticket.agent.dialog_omitted
+          ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog?.kind === "plan" ? "Review plan" : ticket.agent.dialog_omitted ? "Open ticket" : "Answer in the ticket"}</button></div>`
           : null}
+    ${ticket.agent.dialog_omitted && html`<p class="need-note">${DIALOG_OMITTED}</p>`}
     ${entry?.delivery && html`<p class="need-delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry.delivery}</span></p>`}
   </article>`;
 }

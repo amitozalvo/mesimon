@@ -44029,3 +44029,79 @@ iterating, then `npm test` whole; the tester's scenarios rerun at 390x844, 360x6
 regenerated `assets/demo/remote.png` and `remote-conversation.png`. After the rebase (a
 conflict resolved in code): `node --test state.test.js assets.test.js`, the Chromium phone UX run,
 `npm test` once, `cargo ut`, and the joins screenshotted at 360x640 and 390x844.
+## A question's phone card survives an unconfirmed answer and unrelated lifecycle frames (T-1217, 2026-11-13)
+
+**Scope.** The investigation is in this ticket's note. The crown's go named four proved
+paths to fix; the reported incident still has no reproduction identifying which path it took.
+Rebased onto T-1218 (`c2cf8901`): its decision that missing or unanswerable cards leave Terminal
+keys available, its separate `stopped` projection and its input/escape guards remain.
+
+**What changed.**
+- A question answer that times out without a confirming edge, on either the mod or key road,
+  settles `unknown` (`answer_unconfirmed`). A failed capture, empty screen or unfamiliar shape
+  cannot delete its projection. Its closing evidence still does. Plan/trust screen checks and
+  the existing meaning of confirmed answers are unchanged.
+- Transcript recovery's `GIVEN` fence skips only a projection that still exists. A recovered
+  projection also records `GIVEN`, so it can be recovered again without transcript growth if
+  lost. The existing per-session closing-edge map fences the request: a completion, dismissal
+  or closure heard before its transcript result cannot immediately resurrect it. `Closed`
+  records a failure/turn/session end without claiming that an answer was accepted.
+- Under the 48 KiB reply cap, waiting cards precede working, stopped and other non-waiting
+  tickets. Only as many dialogs as necessary are omitted, from the end. Each retained ticket
+  whose dialog did not fit carries `dialog_omitted: true` and `card_answers: false`; the page
+  says it is too large here and points to the ticket's Terminal tab. Inbox offers Open ticket.
+  `control_answers_here` checks the fitted reply, so a dialog or whole ticket left out cannot
+  refuse keys by advertising an invisible answer card. Budgeting never changes the host's
+  stored dialog. Whole tickets omitted still use the existing omitted count.
+- `SessionStart` with source `compact`, in either the frame's reason or payload, preserves the
+  question. A mismatching old-pane `SessionEnd`/`PaneDied` is rejected before permission or
+  dialog projections are touched.
+- A nested `AskUserQuestion`/`ExitPlanMode` completion with an `agent_id` takes the existing
+  nested tool-completion road, not the lead's interaction-completion signal.
+
+**Compatibility.** `dialog_omitted` defaults to false and is absent from serialized replies
+when false. Old hosts remain readable; old pages ignore the additional reply field. This is
+inside the existing sealed board answer, with the same answer cap and no new request or relay
+wire variant. The relay routing contract was checked by code read; no relay half is needed.
+
+**Refuted.** An answer's timeout or a failed shape read proves neither that the question ended
+nor that the input was consumed. `GIVEN` alone is not a permanent reason to skip recovery after
+the projection disappears. Keeping only live-agent rows is not sufficient budget priority:
+working agents can consume the space that a waiting question needs.
+
+**Known and open, outside this delivery.** Sibling `PreToolUse` dismissal; two calls in one
+message beyond T-988; the 15-minute re-affirmation gap; restart recovery holes; a cached page
+and the Notes tab hiding a card; unprojectable question shapes. Each still needs an incident
+observation or its own design. A simultaneous phone/terminal capture at disappearance, naming
+the session and time, would let the daemon's hook/answer history distinguish them; include
+whether an answer, reconnect, compaction or daemon handover immediately preceded it.
+
+**Verified.** Eight new `t1217_` daemon tests failed on the pre-fix assertions, then passed:
+both delivery roads' unconfirmed answers; unseen/unrecognised screens; recovery and closing
+fences; compact continuation; old-pane death; nested interaction completion; waiting-card
+budget priority; explicit omission with keys available. The recovery case additionally lost
+a recovered projection a second time without file growth: that strengthened assertion failed
+before the recovered projection also recorded `GIVEN`.
+
+The requested checks passed: `cargo ut` (3,155 passed, 12 existing ignored),
+`cargo build --workspace`, supervised `--test crown
+crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart` (1), supervised `--test agents
+plan_accept_e2e::` (26), supervised `--test agents approve_bridge` (4),
+`node --test state.test.js assets.test.js` (60), and
+`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone node ux.test.js`. The phone test switches
+an answerable question to an omitted dialog, checks its explanation in Chat and Terminal,
+and checks that the Terminal input becomes enabled. Rust formatting for the touched files
+and `git diff --check` pass. Fixture audits were clean.
+
+**Reruns.** The new tests initially did not compile because `Dialog` has no `PartialEq`;
+assertions were corrected to compare request/content before the red baseline. Targeted runs
+were repeated after the implementation and after strengthening recovery; one verification
+was repeated because its tool output was unavailable. The first `cargo ut` failed the existing
+`a_phone_s_keys_wait_only_for_a_card_it_can_answer`: its fixture had an agent but no board
+ticket. The new fitted-reply guard correctly saw no phone card. Added that fixture's ticket,
+kept every assertion, and reran `cargo ut` successfully, also covering the final condition
+that limits changed timeout receipts to questions. The first browser run stopped before
+tests because Playwright was missing in this worktree; linked the existing installation,
+reran successfully, and removed the temporary link. No end-to-end check needed a rerun.
+No full workspace suite, clippy or live-model run was performed. A full workspace suite is
+owed after the merge because production `server.rs` changed.

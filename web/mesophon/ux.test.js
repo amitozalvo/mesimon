@@ -3358,6 +3358,17 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#keys-text").disabled);
     await page.evaluate(() => {
       delete fixture.tickets[0].agent.dialog;
+      fixture.tickets[0].agent.dialog_omitted = true;
+      fixture.tickets[0].agent.card_answers = false;
+      fixture.update();
+    });
+    await until(page, () => /too large to show here/.test(document.querySelector("#attention")?.textContent || ""));
+    assert(await page.locator("#keys-text").isEnabled(), "an omitted dialog leaves the Terminal answer reachable");
+    await page.locator("#tab-chat").click();
+    assert.match(await page.locator("#attention").textContent(), /Terminal tab to answer/);
+    await page.locator("#tab-terminal").click();
+    await page.evaluate(() => {
+      delete fixture.tickets[0].agent.dialog_omitted;
       delete fixture.tickets[0].agent.card_answers;
       fixture.update();
     });

@@ -749,6 +749,10 @@ pub struct Agent {
     pub permission: Option<Permission>,
     #[serde(default)]
     pub dialog: Option<Dialog>,
+    /// This reply could not fit the dialog. The question still stands;
+    /// the phone can answer through its Terminal tab instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dialog_omitted: bool,
     /// The folder trust dialog the agent stopped on before it started
     /// (T-844), while it stands. Its own field: a browser from before it
     /// draws nothing for a field it does not know, where an unknown
@@ -1455,6 +1459,7 @@ mod tests {
                 tier: None,
                 exit: None,
                 card_answers: None,
+                dialog_omitted: false,
             }),
             tags: vec![],
             picked: None,

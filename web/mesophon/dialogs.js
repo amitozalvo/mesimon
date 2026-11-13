@@ -5,6 +5,8 @@ import { Icon } from "./icons.js";
 import { Markdown } from "./markdown.js";
 import { answerBusy } from "./sessions.js";
 
+export const DIALOG_OMITTED = "This dialog is too large to show here. Use the ticket’s Terminal tab to answer.";
+
 // The single-choice question a card answers in place, one tap an answer.
 export const answerable = (dialog) =>
   dialog?.kind === "questions" && dialog.questions.length === 1 && !dialog.questions[0].multiSelect;
@@ -105,7 +107,8 @@ export function Attention({ store, ticket, entry, live }) {
   const permission = ticket?.agent?.permission;
   const dialog = ticket?.agent?.dialog;
   const trust = ticket?.agent?.trust;
-  if (!permission && !dialog && !trust) return html`<section id="attention" hidden></section>`;
+  const omitted = ticket?.agent?.dialog_omitted;
+  if (!permission && !dialog && !trust && !omitted) return html`<section id="attention" hidden></section>`;
   // An answer on its way, never a prompt queued for the turn (T-568).
   const busy = answerBusy(entry);
   const off = !live || busy;
@@ -128,6 +131,10 @@ export function Attention({ store, ticket, entry, live }) {
       </div>
     </section>`;
   }
+  if (omitted && !dialog)
+    return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
+      <p class="attention-note">${DIALOG_OMITTED}</p>
+    </section>`;
   const answer = (response, enabled = true) => ({
     disabled: off || !enabled,
     onClick: () => send({ op: "dialog", request: dialog.request, response }),

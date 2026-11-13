@@ -266,7 +266,7 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         "PostToolUse" => {
             match (interaction_tool(frame), frame.payload.get("tool_name").and_then(Value::as_str))
             {
-                (Some(tool), _) => Some(Signal::PostToolUse { tool }),
+                (Some(tool), _) if !has_agent_id(frame) => Some(Signal::PostToolUse { tool }),
                 // A message to a teammate wakes it, so it is working again
                 // whatever it last reported (T-135). `to` is the addressee.
                 (None, Some("SendMessage")) => match frame

@@ -5871,9 +5871,6 @@ impl Daemon {
                 self.pr_created(t);
             }
         }
-        self.control_release_permission(id, &frame);
-        self.control_observe_dialog(id, &frame);
-        let answered = self.dialog_answered(id, &frame);
         let now = now_ms();
         let mut observation = self
             .board
@@ -5892,27 +5889,13 @@ impl Daemon {
                 crate::agents::adapter(hook_kind).map(|adapter| adapter.parse_hook(&frame, record))
             })
             .unwrap_or_default();
-        // An answer read against the held call (T-988): a sibling still to be
-        // answered re-affirms its dialog, which cancels a leave to `Running`
-        // the answered call's end set settling, read off the tail before this
-        // frame came, and never a stated end's; an answer of another message,
-        // or one after a stated end, moves nothing.
-        match answered {
-            Some(mesophon::Answered::Stands(tool)) => {
-                observation.signal = Some(Signal::DialogStands { tool });
-            }
-            Some(mesophon::Answered::Nothing) => observation.signal = None,
-            None => {}
-        }
         // Pane death is transport lifecycle shared by shells and both agents.
         if frame.event == "PaneDied" {
             observation.signal = Some(Signal::PaneDied {
                 status: frame.reason.as_deref().and_then(|s| s.parse().ok()),
             });
         }
-        let mut dirty = observation.metadata_changed;
-        let signal = observation.signal;
-        if let Some(sig) = signal {
+        if let Some(sig) = observation.signal.as_ref() {
             // A death that names ANOTHER pane is the previous tenant's. A
             // wake re-uses the record's session name and its session uuid
             // for the new pane; sleep SIGTERMs and returns, so an ask, a `c`
@@ -5926,7 +5909,7 @@ impl Daemon {
             // `TMUX_PANE` through a Claude hook) and the record keeps the
             // one it spawned: a mismatch is dropped, no tmux asked (T-245).
             // A frame or a record without one is trusted as before.
-            if let Some((theirs, ours)) = self.straggler_death(id, &sig, frame.pane.as_deref()) {
+            if let Some((theirs, ours)) = self.straggler_death(id, sig, frame.pane.as_deref()) {
                 self.journal.line(&format!(
                     "straggler dropped: session {id} {} from pane {theirs}, record's pane is {ours}",
                     frame.event
@@ -5934,6 +5917,25 @@ impl Daemon {
                 self.feed.hook_event(&frame.session, &frame.event, Some("straggler"));
                 return;
             }
+        }
+        self.control_release_permission(id, &frame);
+        self.control_observe_dialog(id, &frame);
+        let answered = self.dialog_answered(id, &frame);
+        // An answer read against the held call (T-988): a sibling still to be
+        // answered re-affirms its dialog, which cancels a leave to `Running`
+        // the answered call's end set settling, read off the tail before this
+        // frame came, and never a stated end's; an answer of another message,
+        // or one after a stated end, moves nothing.
+        match answered {
+            Some(mesophon::Answered::Stands(tool)) => {
+                observation.signal = Some(Signal::DialogStands { tool });
+            }
+            Some(mesophon::Answered::Nothing) => observation.signal = None,
+            None => {}
+        }
+        let mut dirty = observation.metadata_changed;
+        let signal = observation.signal;
+        if let Some(sig) = signal {
             let held = self.async_stop_pending(id);
             let sig = self.hold_async_stop(id, sig, &frame, observation.detail.clone(), now);
             dirty |= held != self.async_stop_pending(id)

@@ -494,6 +494,7 @@ test("the keys rest only while the page answers the dialog on a card (T-1218)", 
   assert.equal(cardAnswers(store, { dialog: question(2), card_answers: false }, now), false);
   assert.equal(cardAnswers({ answersWhole: false }, { dialog: question(2), card_answers: true }, now), true);
   assert.equal(cardAnswers(store, { card_answers: true }, now), false, "no dialog, no card");
+  assert.equal(cardAnswers(store, { dialog_omitted: true, card_answers: false }, now), false, "an omitted dialog leaves the keys available");
 });
 
 test("the page wears the terminal's theme while it follows it, else the pick (T-1208)", () => {
