@@ -15798,6 +15798,15 @@ fn an_ask_of_lines_grows_the_box_and_moves_the_zone_up() {
     assert!(lines[at + 2].contains("and push"), "{lines:#?}");
     assert!(lines[at + 3].contains("now  shift+tab"), "the delivery row under: {lines:#?}");
     assert_eq!(lines[at + 4..], one[first + 2..], "the status line as it was: {lines:#?}");
+    // The rows the lines took are on the page ground, not the terminal's
+    // own (a reset cell is the terminal's default, white on a light one).
+    let buf = cells(&app, 120, 30);
+    let ground = app.theme.bg.expect("the test theme paints its ground");
+    for y in [at, at + 1, at + 2] {
+        for x in [0u16, 4, 60] {
+            assert_eq!(buf[(x, y as u16)].bg, ground, "({x}, {y}) on the page ground");
+        }
+    }
     let zone = one.iter().position(|l| l.contains("PREVIEW")).expect("the heading") + 1;
     let cols = |l: &String| l.chars().take(88).collect::<String>().trim_end().to_string();
     assert_eq!(

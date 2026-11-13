@@ -3406,12 +3406,7 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| {
-            c.sel_session
-                || c.sel_note
-                || c.sel_new_agent
-                || c.sel_terminal
-        },
+        avail: |c| c.sel_session || c.sel_note || c.sel_new_agent || c.sel_terminal,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,

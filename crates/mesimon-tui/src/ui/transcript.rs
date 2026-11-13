@@ -97,10 +97,8 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     // A live pick's keys are the edge's too (T-1192): Enter is the pick's.
     let scope = if app.pick_live() { Scope::Link } else { Scope::Transcript };
     let (own, _) = keymap::footer_split(scope, &ctx);
-    let own: Vec<_> = own
-        .into_iter()
-        .filter(|b| b.verb != Verb::Back && b.verb != Verb::LinkLetGo)
-        .collect();
+    let own: Vec<_> =
+        own.into_iter().filter(|b| b.verb != Verb::Back && b.verb != Verb::LinkLetGo).collect();
     let tail =
         super::chrome::hint_spans(&own, &ctx, &theme.rest, inner.width.saturating_sub(4).into());
     dialog::frame(f, app, area, None, &theme.rest, Edges { title, tail });

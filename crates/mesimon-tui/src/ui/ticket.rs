@@ -1041,9 +1041,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                             buf[(x, y + grow)] = buf[(x, y)].clone();
                         }
                     }
+                    // Blank on the page ground: a reset cell is the
+                    // terminal's own background, white on a light profile.
                     for y in field_y + 1..=field_y + grow {
                         for x in cols.clone() {
-                            buf[(x, y)].reset();
+                            let cell = &mut buf[(x, y)];
+                            cell.reset();
+                            if let Some(bg) = theme.bg {
+                                cell.set_bg(bg);
+                            }
                         }
                     }
                     if let Some(r) = app.live_rect.get() {

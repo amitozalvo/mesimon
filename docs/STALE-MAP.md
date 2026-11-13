@@ -43716,3 +43716,10 @@ line). Not done: no wrap of a long line (it scrolls, as before); no `\`+Enter.
 Tests: `shift_enter_in_the_ask_field_breaks_a_line` (replaces `a_second_shift_enter_sends_the_prompt_too`),
 `an_ask_of_lines_grows_the_box_and_moves_the_zone_up`, `edit_rows_window_the_cursor_line`;
 `escape_return_opens_the_ask_…` and `tab_grows_the_ask_field_into_the_room_…` follow the change.
+
+## The ask's extra rows are on the page ground (T-1191, 2026-11-13, the author, with a picture: "background is white on the extra lines, why?")
+
+The rows the ask's lines past the first take on the page's box were cleared with `Cell::reset`,
+which is the terminal's own background (white on the author's profile), not the page's painted
+ground (`theme.bg`). They are cleared to `theme.bg` now. The render test asserted the rows' text
+only; `an_ask_of_lines_grows_the_box_and_moves_the_zone_up` now reads their cells' ground too.

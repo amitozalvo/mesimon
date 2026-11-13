@@ -740,11 +740,7 @@ fn mark_literal(
         .into_iter()
         .flat_map(|span| {
             target_runs(&span.content, Emph::default(), selected).into_iter().map(move |run| {
-                let style = if run.emph.selected {
-                    picked(span.style)
-                } else {
-                    span.style
-                };
+                let style = if run.emph.selected { picked(span.style) } else { span.style };
                 Span::styled(run.text, style)
             })
         })
@@ -782,10 +778,8 @@ fn command_row(text: &str, width: usize, style: Style, bang: bool) -> Vec<Span<'
     let lead = text.len() - body.len()
         + prompts.iter().find(|p| body.starts_with(**p)).map_or(0, |p| p.len());
     let (lead, rest) = text.split_at(lead);
-    let spans = vec![
-        Span::styled(lead.to_string(), style),
-        Span::styled(rest.to_string(), picked(style)),
-    ];
+    let spans =
+        vec![Span::styled(lead.to_string(), style), Span::styled(rest.to_string(), picked(style))];
     fit(spans, text, width, style)
 }
 
