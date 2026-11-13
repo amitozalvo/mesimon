@@ -6331,11 +6331,11 @@ fn codex_dialog_step(
 /// (y)`, the last `No, and tell Codex what to do differently (esc)`, the
 /// cursor `›` on one, and the footer `Press enter to confirm or esc to
 /// cancel`. An allow walks to the first `Yes` row, a deny to the `No` row,
-/// and Enter confirms. The heading is not read. The key is bound to the
-/// request the phone answered, not its rows alone (T-1227): the request must
-/// be one the board can bind (`codex_binding`) and the screen must draw it
-/// exactly (`codex_draws`), so a dialog that replaced it between the tap and
-/// the key gets nothing. The request's standing is re-read each key from
+/// and Enter confirms. The key is bound to the request the phone answered,
+/// not its rows alone (T-1227): the request must be one the board can bind
+/// (`codex_binding`) and the screen must draw it exactly under the command
+/// dialog's heading (`codex_draws`), so a dialog that replaced it between
+/// the tap and the key gets nothing. The request's standing is re-read each key from
 /// the projection the snapshot keeps.
 fn codex_approval_step(
     screen: &str,
@@ -6461,17 +6461,22 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 /// the next word would not have fitted within `cols` less this.
 const CODEX_WRAP_MARGIN: u16 = 5;
 
+/// The heading of Codex's command approval, as measured on 0.163.0 (T-846).
+const CODEX_COMMAND_HEADING: &str = "Would you like to run the following command?";
+
 /// Whether Codex's approval dialog on `screen`, `cols` wide, draws
-/// `binding` exactly (T-1227), found by its structure: above the rows (the
-/// last `1.` over the footer, as `dialog_rows_to` reads them) exactly one
-/// line begins `$ `; that line and the lines under it down to a blank are
-/// the command, and only blank lines follow down to the rows; the
-/// paragraph above it is the reason where it begins `Reason: `, and a
-/// request with no reason must have none drawn. Each paragraph spells its
-/// text whole (`codex_spells`).
+/// `binding` exactly (T-1227), found by fixed markers, not by blank lines:
+/// the pane's capture drops every blank line (`capture_tail_sized`), so
+/// blank lines are skipped here and a screen reads the same with or
+/// without them. Above the rows (the last `1.` over the footer, as
+/// `dialog_rows_to` reads them) exactly one line begins `$ `: it and every
+/// line under it down to the rows are the command. Above it, the nearest
+/// `CODEX_COMMAND_HEADING`; between the two, an `Environment: ` line if
+/// drawn, then nothing for a request with no reason, or for one with a
+/// reason the lines that spell it after `Reason: `. Each spells its text
+/// whole (`codex_spells`).
 fn codex_draws(screen: &str, cols: u16, binding: &CodexBinding) -> bool {
-    let lines: Vec<&str> = screen.lines().collect();
-    let blank = |l: &&str| l.trim().is_empty();
+    let lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let Some(footer) = lines.iter().rposition(|l| l.contains("Press enter to confirm")) else {
         return false;
     };
@@ -6486,22 +6491,20 @@ fn codex_draws(screen: &str, cols: u16, binding: &CodexBinding) -> bool {
     else {
         return false;
     };
-    let end = start + lines[start..rows].iter().take_while(|l| !blank(l)).count();
-    if !lines[end..rows].iter().all(blank) {
+    if !codex_spells(&lines[start..rows], "$ ", &binding.command, cols) {
         return false;
     }
-    if !codex_spells(&lines[start..end], "$ ", &binding.command, cols) {
+    let Some(heading) = lines[..start].iter().rposition(|l| l.trim() == CODEX_COMMAND_HEADING)
+    else {
         return false;
+    };
+    let mut between = &lines[heading + 1..start];
+    if between.first().is_some_and(|l| l.trim_start().starts_with("Environment: ")) {
+        between = &between[1..];
     }
-    let above = lines[..start].iter().rposition(|l| !blank(l));
-    let paragraph = above.map(|last| {
-        let first = lines[..=last].iter().rposition(blank).map_or(0, |b| b + 1);
-        &lines[first..=last]
-    });
-    let reason = paragraph.filter(|p| p[0].trim_start().starts_with("Reason:"));
-    match (&binding.reason, reason) {
-        (Some(text), Some(p)) => codex_spells(p, "Reason: ", text, cols),
-        (None, None) => true,
+    match (&binding.reason, between) {
+        (None, []) => true,
+        (Some(text), drawn) if !drawn.is_empty() => codex_spells(drawn, "Reason: ", text, cols),
         _ => false,
     }
 }
@@ -9363,7 +9366,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
             "Would you like to run the following command?",
             "Would you like to make the following edits?",
         );
-        assert_eq!(codex_approval_step(&edits, 80, true, &p), Ok(DialogStep::Submit));
+        // T-1227: a command is bound only under the command dialog's heading.
+        assert_eq!(codex_approval_step(&edits, 80, true, &p), Err(Miss::LabelNotFound));
+        // The pane's capture drops blank lines (`capture_tail_sized`): the
+        // same dialog reads the same without them.
+        let captured: String = CODEX_APPROVAL
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(codex_approval_step(&captured, 80, true, &p), Ok(DialogStep::Submit));
         for bad in [
             CODEX_APPROVAL.replace("Press enter to confirm or esc to cancel", "").as_str(),
             CODEX_APPROVAL.replace("› 1.", "  1.").as_str(),
@@ -9411,8 +9423,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
                  do differently (esc)\n\n  Press enter to confirm or esc to cancel\n"
             )
         };
-        let step =
-            |screen: &str, cols, p: &api::Permission| codex_approval_step(screen, cols, true, p);
+        // Every case reads the same as the pane's capture gives it, blank
+        // lines dropped (`capture_tail_sized`).
+        let step = |screen: &str, cols, p: &api::Permission| {
+            let captured: String =
+                screen.lines().filter(|l| !l.trim().is_empty()).map(|l| format!("{l}\n")).collect();
+            let drawn = codex_approval_step(screen, cols, true, p);
+            assert_eq!(codex_approval_step(&captured, cols, true, p), drawn, "{screen}");
+            drawn
+        };
         let (yes, miss) = (Ok(DialogStep::Submit), Err(Miss::LabelNotFound));
         let why = Some("Reason: Inspect the workspace");
         let a = codex_approval(Some("Inspect the workspace"), Some("/bin/zsh -lc ls"));
@@ -9426,6 +9445,14 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(step(&screen(None, "  $ ls"), 80, &a), miss);
         let bare = codex_approval(None, Some("/bin/zsh -lc ls"));
         assert_eq!(step(&screen(why, "  $ ls"), 80, &bare), miss);
+        // Not under the command dialog's heading, or something drawn between
+        // it and the reason, is not this dialog.
+        let headless = screen(why, "  $ ls").replace(CODEX_COMMAND_HEADING, "Run this?");
+        assert_eq!(step(&headless, 80, &a), miss);
+        let extra = screen(why, "  $ ls").replace("Environment: local", "Sandbox: off");
+        assert_eq!(step(&extra, 80, &a), miss);
+        let no_env = screen(why, "  $ ls").replace("  Environment: local\n", "");
+        assert_eq!(step(&no_env, 80, &a), yes);
         assert_eq!(step(&screen(None, "  $ ls"), 80, &bare), yes);
         // The second read's pairs. B's real line break is not A's blank:
         // `echo safe` could have held `rm` at 80 columns, so it was no wrap.

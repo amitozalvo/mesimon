@@ -44356,11 +44356,14 @@ tab's keys answer the agent's own dialog).
   projected, so the stop reads needs-you with no card and `control_answers_here` lets the
   Terminal tab's keys in (T-1218's line). An edit's, a permission's and a tool's approval were
   walked on their reason alone before T-1227; they are the keys' now.
-- **Drawn exactly, found by structure** (`codex_draws`, `codex_spells`): above the rows (the
-  last `1.` over the footer) exactly one line begins `$ `; it and the lines under it down to a
-  blank are the command, and only blank lines follow down to the rows. The paragraph right
-  above it is the reason when it begins `Reason: `, spelled whole there; a request with no
-  reason must have no such paragraph, and one with a reason must have it. No blank is squeezed:
+- **Drawn exactly, found by fixed markers** (`codex_draws`, `codex_spells`). The pane's capture
+  drops every blank line (`capture_tail_sized`), so blank lines are skipped and no structure
+  rests on them. Above the rows (the last `1.` over the footer) exactly one line begins `$ `; it
+  and every line under it down to the rows are the command. Above it, the nearest heading
+  `Would you like to run the following command?` (`CODEX_COMMAND_HEADING`, measured on 0.163.0;
+  only a command's approval binds, so an edit's heading binds nothing); between the two, an
+  `Environment: ` line if drawn, then nothing for a request with no reason, or for one with a
+  reason the lines spelling it after `Reason: `. No blank is squeezed:
   inside a line the text is compared as drawn (the pane's trailing blanks and the dialog's
   indent aside, a continuation line at the first line's indent exactly). The one tolerance is
   the measured wrap: where a line breaks, the join is the blank Codex's wrap took or none (the
@@ -44462,3 +44465,17 @@ passed. One rerun: the first `cargo ut` failed `gitstatus::tests::a_real_checkou
 (a real git checkout making 100 commits, untouched by this diff), which passed alone and in the
 `--no-fail-fast` run with nothing changed. No rig run: nothing an agent or the crown is told
 changed.
+
+**Round 2b: the capture has no blank lines.** An automated review of `04575d59` found the round 2
+match read paragraphs by blank lines, which `capture_tail_sized` drops: on a real capture every
+approval with a reason was refused (the "paragraph" above `$ ` ran to the capture's top) and one
+with no reason was walked onto a dialog drawing a reason (shown on `04575d59` with the capture's
+shape: `(Ok(Submit), Err(LabelNotFound))` for the two). The match now rests on the heading, the
+`Environment:` line, `Reason: ` and the one `$ ` line, skipping blank lines; every case in
+`a_codex_approval_is_walked_only_onto_its_own_whole_command` and the T-846 capture in
+`a_codex_approval_walks_to_yes_or_no_and_confirms` run on both the drawn screen and its
+blank-free capture. Refuted: "capture with blank lines kept for the walk": other walks
+(`dialog_rows_to`) read a blank under a row as the row's continuation, and the markers need no
+second capture.
+Checks after 2b: `cargo build --workspace`, `cargo ut --no-fail-fast` (same counts, 0 failed),
+the three e2e sets (31 passed). No reruns.
