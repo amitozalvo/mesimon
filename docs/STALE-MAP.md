@@ -44029,6 +44029,7 @@ iterating, then `npm test` whole; the tester's scenarios rerun at 390x844, 360x6
 regenerated `assets/demo/remote.png` and `remote-conversation.png`. After the rebase (a
 conflict resolved in code): `node --test state.test.js assets.test.js`, the Chromium phone UX run,
 `npm test` once, `cargo ut`, and the joins screenshotted at 360x640 and 390x844.
+
 ## A question's phone card survives an unconfirmed answer and unrelated lifecycle frames (T-1217, 2026-11-13)
 
 **Scope.** The investigation is in this ticket's note. The crown's go named four proved
@@ -44082,6 +44083,8 @@ and the Notes tab hiding a card; unprojectable question shapes. Each still needs
 observation or its own design. A simultaneous phone/terminal capture at disappearance, naming
 the session and time, would let the daemon's hook/answer history distinguish them; include
 whether an answer, reconnect, compaction or daemon handover immediately preceded it.
+
+A subagent's own `AskUserQuestion` that Claude Code really draws in the pane now leaves the lead reading working while that dialog waits (before, needs-you with no card); nothing in the repository measures whether such a dialog is drawn or whether `classic.PermissionRequest` carries `agentId` on the mod road; a capture on both roads decides the fix, which belongs in the attention machine.
 
 **Mod-road limit.** `classic.PreToolUse` itself has no `agentId` (daemon `CLAUDE.md`). The mod
 already supplements it from `tool.call`, by call id (`mod/hooks/register.ts`, `agents` and
@@ -44142,3 +44145,16 @@ pre-fix failures to 11 green tests; unit, e2e and page checks needed no rerun th
 The mod e2e uses its stand-in engine and verifies the bridge, not live classic-event ordering.
 No full workspace suite, clippy, browser UX rerun or live-model run; the post-merge workspace
 suite remains owed for the branch's production `server.rs` change.
+
+**Rebased onto T-1219 (`b1b26c8f`).** Main's STALE-MAP block stays first. The page import
+conflict keeps `CodeBox`, `RequestFields` and `pickedOption` alongside the omission text;
+`sessions.js`, including `answerWords`, is main's whole file. The omission note sits in the
+compact card's body before Open ticket, using the page's existing note and action styles.
+The UX case opens that card, checks its 44 px touch target and available Terminal input,
+and captures Inbox and ticket views. The unmeasured subagent-dialog case is recorded above.
+After the code conflict was resolved: `cargo ut` (3,158 passed, 12 existing ignored),
+`cargo build --workspace`, `node --test state.test.js assets.test.js` (61), and
+`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone node ux.test.js` all passed on the first
+run of this rebase. Both omission screenshots were inspected; the text and button fit the
+compact card and the ticket's Terminal controls remain available. Main's STALE-MAP prefix
+and `sessions.js` were checked byte-for-byte. No additional e2e file or full suite was run.

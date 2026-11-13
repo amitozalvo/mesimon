@@ -3364,6 +3364,16 @@ async function terminalFlow(browser, engineName, size, viewport) {
     });
     await until(page, () => /too large to show here/.test(document.querySelector("#attention")?.textContent || ""));
     assert(await page.locator("#keys-text").isEnabled(), "an omitted dialog leaves the Terminal answer reachable");
+    await shot("dialog-omitted-ticket");
+    await overview();
+    const omittedCard = page.locator('.need:has(.ticket[data-id="ticket-0"])');
+    assert.match(await omittedCard.locator(".need-body .need-note").textContent(), /too large to show here/);
+    const openOmitted = omittedCard.getByRole("button", { name: "Open ticket", exact: true });
+    const openBox = await openOmitted.boundingBox();
+    assert(openBox.height >= 44 && openBox.x + openBox.width <= viewport.width, "the compact card keeps its whole touch target");
+    await shot("dialog-omitted-inbox");
+    await openOmitted.click();
+    await until(page, () => !!document.querySelector("#keys-text") && !document.querySelector("#keys-text").disabled);
     await page.locator("#tab-chat").click();
     assert.match(await page.locator("#attention").textContent(), /Terminal tab to answer/);
     await page.locator("#tab-terminal").click();

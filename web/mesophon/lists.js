@@ -270,6 +270,7 @@ function NeedCard({ store, ticket, board, live }) {
         </button>`;
       })}</div>
     </div>`}
+    ${ticket.agent.dialog_omitted && html`<div class="need-body"><p class="need-note">${DIALOG_OMITTED}</p></div>`}
     ${!live
       ? html`<p class="need-note"><${Icon} name="moon" size=${14} /><span>Answer this when your terminal is back.</span></p>`
       : permission
@@ -284,7 +285,6 @@ function NeedCard({ store, ticket, board, live }) {
         : dialog?.kind === "plan" || (dialog && !question) || ticket.agent.dialog_omitted
           ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog?.kind === "plan" ? "Review plan" : ticket.agent.dialog_omitted ? "Open ticket" : "Answer in the ticket"}</button></div>`
           : null}
-    ${ticket.agent.dialog_omitted && html`<p class="need-note">${DIALOG_OMITTED}</p>`}
     ${entry?.delivery && html`<p class="need-delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry.delivery}</span></p>`}
   </article>`;
 }
