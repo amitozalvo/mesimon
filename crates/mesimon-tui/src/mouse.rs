@@ -314,13 +314,54 @@ pub(crate) fn paint_selection(
         let last = if y == to.1 { to.0 } else { area.right().saturating_sub(1) };
         let mut row = String::new();
         for x in first.max(area.left())..=last.min(area.right().saturating_sub(1)) {
+            // A wide letter's second cell is the letter's, not a blank.
+            let tail = x > area.left()
+                && buf[(x, y)].symbol() == " "
+                && buf[(x - 1, y)].symbol().width() > 1;
             let cell = &mut buf[(x, y)];
-            row.push_str(cell.symbol());
+            if !tail {
+                row.push_str(cell.symbol());
+            }
             cell.set_style(style);
         }
         rows.push(row.trim_end().to_string());
     }
     rows.join("\n")
+}
+
+/// The word drawn at `at` (T-1209), as the ends a selection paints: the
+/// run of word cells on its row either side of it. A word is what a path,
+/// a ticket key, a branch or an address needs whole: letters and digits
+/// with `/ - + \ ~ _ .` (iTerm2's default set), less a sentence's closing
+/// `.`. A wide letter's second cell stays with its letter. None on a blank
+/// or a mark between words.
+pub(crate) fn word_at(buf: &Buffer, at: At) -> Option<(At, At)> {
+    let area = buf.area;
+    if !area.contains(Position { x: at.0, y: at.1 }) {
+        return None;
+    }
+    let symbol = |x: u16| buf[(x, at.1)].symbol();
+    // The cell a wide letter covers past its own reads as a blank.
+    let tail = |x: u16| x > area.left() && symbol(x) == " " && symbol(x - 1).width() > 1;
+    let letter = |x: u16| {
+        symbol(x).chars().next().is_some_and(|c| c.is_alphanumeric() || r"/-+\~_.".contains(c))
+    };
+    let wordy = |x: u16| letter(x) || (tail(x) && letter(x - 1));
+    let start = if tail(at.0) { at.0 - 1 } else { at.0 };
+    if !letter(start) {
+        return None;
+    }
+    let (mut a, mut b) = (start, at.0);
+    while a > area.left() && wordy(a - 1) {
+        a -= 1;
+    }
+    while b + 1 < area.right() && wordy(b + 1) {
+        b += 1;
+    }
+    while b > a && symbol(b) == "." {
+        b -= 1;
+    }
+    (b >= start).then_some(((a, at.1), (b, at.1)))
 }
 
 #[cfg(test)]
@@ -329,6 +370,32 @@ mod tests {
 
     fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
         Rect { x, y, width: w, height: h }
+    }
+
+    /// A double-click's word (T-1209): a path, a key or a branch whole,
+    /// a sentence's period and the marks around it left out, a wide
+    /// letter's two cells together, nothing on a blank.
+    #[test]
+    fn a_word_is_what_a_path_or_a_key_needs_whole() {
+        let line = "see (crates/mesimon-tui/src/app.rs) and T-1209. 日本語 ok";
+        let mut buf = Buffer::empty(rect(0, 0, 60, 1));
+        buf.set_string(0, 0, line, ratatui::style::Style::default());
+        let theme = Theme::new(crate::theme::Flavor::ALL[0], crate::theme::Profile::TrueColor);
+        let word = |x: u16| {
+            let mut buf = buf.clone();
+            word_at(&buf, (x, 0)).map(|(a, b)| paint_selection(&mut buf, a, b, &theme))
+        };
+        let x = |s: &str| line[..line.find(s).expect(s)].width() as u16;
+        assert_eq!(word(x("mesimon-tui") + 3).as_deref(), Some("crates/mesimon-tui/src/app.rs"));
+        assert_eq!(word(x("T-1209")).as_deref(), Some("T-1209"), "the period is the sentence's");
+        assert_eq!(word(x("T-1209") + 5).as_deref(), Some("T-1209"));
+        assert_eq!(word(x("T-1209") + 6), None, "on the period itself");
+        // A wide letter: from its first cell or its second, the whole run.
+        let wide = x("日本語");
+        assert_eq!(word(wide).as_deref(), Some("日本語"));
+        assert_eq!(word(wide + 5).as_deref(), Some("日本語"));
+        assert_eq!(word(x("see") + 3), None, "a blank");
+        assert_eq!(word(x("(crates")), None, "a mark");
     }
 
     #[test]

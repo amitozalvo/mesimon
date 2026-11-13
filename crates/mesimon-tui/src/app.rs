@@ -952,6 +952,10 @@ const SHIN_BLINK: Duration = Duration::from_millis(200);
 /// dialog (T-844): the dialog's own question, the accept key beside it.
 pub(crate) const TRUST_ROW: &str = "trust folder?";
 
+/// How soon a second press on the cell a click was made counts as a
+/// double-click (T-1209): the common desktop default.
+pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
 /// Rows a reading zone moves per notch of the wheel (T-716): a notch is a
 /// small gesture, and one row a notch reads as stuck.
 const WHEEL_ROWS: isize = 3;
@@ -2281,6 +2285,13 @@ pub struct App {
     /// `selected_text`; the release copies that.
     pub selection: Cell<Option<(crate::mouse::At, crate::mouse::At)>>,
     pub selected_text: std::cell::RefCell<String>,
+    /// The selection is the word under its cell, not the cells between
+    /// its ends (T-1209): a double-click on text. The draw finds the word
+    /// on the frame, since only the frame knows what is drawn there.
+    pub(crate) select_word: Cell<bool>,
+    /// The last click, where and when it was released: a second press on
+    /// it soon after is a double-click (`DOUBLE_CLICK`).
+    pub(crate) last_click: Cell<Option<((u16, u16), Instant)>>,
     /// This frame's `Ctx`, built on the first `frame_ctx` read and shared
     /// by every draw fn after it (T-255): a board frame used to build it
     /// three times and a ticket-page frame six, each build a sort and a
@@ -2730,6 +2741,8 @@ impl App {
             press_at: Cell::new(None),
             selection: Cell::new(None),
             selected_text: std::cell::RefCell::new(String::new()),
+            select_word: Cell::new(false),
+            last_click: Cell::new(None),
             frame_ctx: std::cell::RefCell::new(None),
             columns_sorted,
             columns_pinned,
@@ -5184,6 +5197,7 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.pointer.set(Some(at));
                 let Some(from) = self.press_at.get() else { return Ok(false) };
+                self.select_word.set(false);
                 self.selection.set((from != at).then_some((from, at)));
                 Ok(true)
             }
@@ -5206,27 +5220,72 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.pointer.set(Some(at));
                 self.press_at.set(Some(at));
-                Ok(self.selection.take().is_some())
+                let had = self.selection.take().is_some();
+                // The second press of a double-click on text selects the
+                // word under it (T-1209); the release copies it, as a
+                // drag's does. The frame drawn for this press finds it.
+                let word = self.double_click(at) && self.word_selectable(at);
+                self.select_word.set(word);
+                if word {
+                    self.selection.set(Some((at, at)));
+                }
+                Ok(had || word)
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let from = self.press_at.take();
+                let word = self.select_word.replace(false);
                 if let Some((a, b)) = self.selection.take() {
-                    if a != b {
-                        let text = std::mem::take(&mut *self.selected_text.borrow_mut());
+                    let text = std::mem::take(&mut *self.selected_text.borrow_mut());
+                    if a != b || (word && !text.trim().is_empty()) {
                         if !text.trim().is_empty() {
                             self.status = crate::clipboard::copy_status("selection", &text);
                         }
+                        self.last_click.set(None);
                         return Ok(true);
                     }
                 }
                 match from {
-                    Some(from) => self.click(from),
+                    Some(from) => {
+                        // A third press is a new first click, not a second
+                        // double-click: the word's press clears the clock.
+                        self.last_click.set((!word).then(|| (from, Instant::now())));
+                        self.click(from)
+                    }
                     None => Ok(false),
                 }
             }
             MouseEventKind::ScrollDown => self.wheel(at, 1),
             MouseEventKind::ScrollUp => self.wheel(at, -1),
             _ => Ok(false),
+        }
+    }
+
+    /// Whether a press at `at` is the second of a double-click: on the
+    /// row the last click was, a column off at most (a hand's jitter
+    /// across a cell edge), within `DOUBLE_CLICK` of its release.
+    fn double_click(&self, at: (u16, u16)) -> bool {
+        self.last_click.get().is_some_and(|(was, when)| {
+            was.1 == at.1 && was.0.abs_diff(at.0) <= 1 && when.elapsed() < DOUBLE_CLICK
+        })
+    }
+
+    /// Whether a double-click at `at` selects a word: on text a click
+    /// moves nothing — plain text, or text being typed, where the first
+    /// click already placed the cursor. On a card, a row, a tag or a key
+    /// the second click keeps acting (a click on the selected thing is its
+    /// Enter, T-716), and off a dialog it is still that dialog's Esc.
+    fn word_selectable(&self, at: (u16, u16)) -> bool {
+        use crate::mouse::{Hit, Target};
+        if self.arcade.borrow().is_some() {
+            return false;
+        }
+        match self.hits.borrow().at(at.0, at.1) {
+            Hit::Nothing => true,
+            Hit::Spot(spot) => matches!(
+                spot.target,
+                Target::Field { .. } | Target::Title { .. } | Target::Body { .. } | Target::Lane(_)
+            ),
+            Hit::Outside => false,
         }
     }
 

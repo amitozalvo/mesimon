@@ -14048,6 +14048,54 @@ fn a_drag_selects_text_and_the_release_copies_it() {
     assert!(app.selection.get().is_none());
 }
 
+/// A double-click on text selects the word under it and the release
+/// copies it (T-1209), so a key or a path needs no careful drag. On a
+/// card the second click still opens it (T-716), and a second press past
+/// the double-click window is a click of its own.
+#[test]
+fn a_double_click_selects_a_word_and_the_release_copies_it() {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let mut app = app_graphite(fixture(false));
+    let lines = render(&app, 120, 30);
+    // The cursor card's line over the footer: plain text, no spot.
+    let line = spot_of(&lines, "Decay treatments ∙");
+    let first = (line.0 + "Decay ".len() as u16, line.1);
+    let at = (first.0 + 3, first.1);
+    click(&mut app, at);
+    render(&app, 120, 30);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
+    let buf = cells(&app, 120, 30);
+    assert_eq!(app.selected_text.borrow().as_str(), "treatments");
+    assert_eq!(buf[first].fg, app.theme.bg.expect("painted"), "lit from the word's first cell");
+    assert_ne!(buf[(first.0 - 1, first.1)].fg, app.theme.bg.expect("painted"), "not the blank");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), at);
+    let copied = crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+    assert_eq!(copied.as_deref(), Some("treatments"));
+    assert_eq!(app.status, "selection copied");
+    assert!(app.selection.get().is_none());
+
+    // Slow: the second press is a click again, and selects nothing.
+    app.status.clear();
+    click(&mut app, at);
+    app.last_click.set(app.last_click.get().map(|(at, when)| {
+        (at, when - crate::app::DOUBLE_CLICK - std::time::Duration::from_millis(1))
+    }));
+    render(&app, 120, 30);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
+    render(&app, 120, 30);
+    assert!(app.selected_text.borrow().is_empty(), "past the window");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), at);
+    assert!(app.status.is_empty());
+
+    // A card: the first click selects it, the second opens its page.
+    let card = spot_of(&lines, "Grapheme truncation");
+    click(&mut app, card);
+    render(&app, 120, 30);
+    click(&mut app, card);
+    assert!(matches!(app.screen, crate::app::Screen::Ticket { .. }), "the card opened");
+    assert!(app.status.is_empty(), "nothing copied");
+}
+
 /// A click in text being typed puts the cursor there (T-716): in the
 /// composer's one-line title on its card, then — grown into the dialog —
 /// in its title and in the body, which takes the keys from the title.

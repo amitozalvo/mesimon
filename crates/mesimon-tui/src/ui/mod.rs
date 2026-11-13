@@ -107,8 +107,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         // A drag is selecting text: what it covers is what the release
         // copies, read off the frame it was made on.
         (true, Some((a, b)), _) => {
-            *app.selected_text.borrow_mut() =
-                crate::mouse::paint_selection(f.buffer_mut(), a, b, &app.theme);
+            // A double-click's selection is the word drawn under it (T-1209).
+            let ends = if app.select_word.get() {
+                crate::mouse::word_at(f.buffer_mut(), a)
+            } else {
+                Some((a, b))
+            };
+            *app.selected_text.borrow_mut() = ends
+                .map(|(a, b)| crate::mouse::paint_selection(f.buffer_mut(), a, b, &app.theme))
+                .unwrap_or_default();
         }
         (true, None, Some(at)) => crate::mouse::paint_hover(f.buffer_mut(), &hits, at, &app.theme),
         _ => {}

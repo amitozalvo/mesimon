@@ -43655,3 +43655,34 @@ walk on `^n ^p` and read the painted pick (`picked_cell`). Goldens moved by key 
 (`^n link`, `^r tier`, the reader-link golden's `LINK` footer and edge). Not run: the post-merge
 full suite — the diff's `server.rs` line is the refusal's literal and `command.rs` comments only, no
 dispatch; no rig run — the agent-facing change is the refusal naming `^r`, no behaviour.
+
+## A double-click on text selects a word (T-1209, 2026-11-13)
+
+**The ask.** "double clicking not doing anything, it should allow to select a word instead of the
+user having to carefully drag the cursor." The board reads the mouse (T-716), so the terminal's
+own double-click never reaches it; the board's selection only knew a drag.
+
+**Built.** A second left press within `DOUBLE_CLICK` (500 ms) of a click's release, on its row
+and at most a column off, arms `App::select_word`; the frame drawn for that press finds the word
+on the buffer (`mouse::word_at`) and paints it through `paint_selection`, and the release copies
+it as a drag's does ("selection copied"). A word is letters and digits with `/ - + \ ~ _ .`
+(iTerm2's default set) less a closing `.`, so a path, a ticket key or a branch comes whole and a
+sentence's period does not. A blank or a mark under the press selects nothing and the release is
+an ordinary click. `paint_selection` no longer copies a wide letter's second cell as a space
+(a drag across CJK text copied `日 本 語`).
+
+**Where, and where not.** Only where a click moves nothing: plain text (`Hit::Nothing`), a typed
+field, title or note body (the first click already placed the cursor), a column's empty lane. On a
+card, a row, a tag, a file or a key hint the second click keeps acting: T-716's "a click on the
+selected thing is its Enter" is the board's double-click open, and it stays. Off a dialog the
+press is still that dialog's Esc.
+
+**Refuted.** The agent pane's tmux was suspected first: its conf runs `unbind-key -a`, but that
+clears only the prefix table, and the root `DoubleClick1Pane` forwards to a pane that reads the
+mouse (Claude Code fullscreen sets `mouse_any_flag`). A scratch tmux pair showed the pane gets a
+clean press/release pair twice, and Claude Code's own renderer counts clicks (`onMultiClick`), so
+nothing there was changed. Triple-click (a line) was not asked for and is not built.
+
+Tests: `mouse::a_word_is_what_a_path_or_a_key_needs_whole`,
+`ui::a_double_click_selects_a_word_and_the_release_copies_it` (word copied, slow second press is a
+click, a card's double-click still opens it).
