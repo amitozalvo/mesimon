@@ -315,6 +315,14 @@ impl EditBuffer {
         self.cursor += 1;
     }
 
+    /// The ask field on the board is one line (T-1212): its line breaks
+    /// become spaces. Byte for byte, so the cursor stays where it was.
+    pub(crate) fn flatten_lines(&mut self) {
+        if self.text.contains('\n') {
+            self.text = self.text.replace('\n', " ");
+        }
+    }
+
     /// A bracketed paste into the ask field (T-1191), which holds lines: the
     /// paste keeps its line breaks (`"\r\n"` and a lone `'\r'` become
     /// `'\n'`) and every other control goes as `TextArea::paste` drops it;

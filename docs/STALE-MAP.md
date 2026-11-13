@@ -43751,3 +43751,22 @@ composer's `^v` still grows into the room; a column's field has no `^v` (no tick
 Tests: `a_picture_pasted_into_the_ask_field_stays_there_and_rides_the_prompt` (replaces
 `a_picture_pasted_into_an_ask_rides_the_prompt_as_an_upload`, which asserted the growth),
 `the_ask_fields_pictures_ride_into_the_room_and_back`.
+
+## The board's ask field is one line again (T-1212, 2026-11-13, the author: "board tickets prompt inputs (shift+enter) should be single line and open the big composer if pressing tab / shift+enter … keep ticket page input behaviour")
+
+**Changed.** T-1191 gave the ask field lines on both surfaces; the board's (a card's and a column
+header's, `App::board_field`: `Screen::Board`) is one line again, the page's keeps its lines.
+Shift+Enter on the board's field, still unbound in the keymap's Input scope, is decided in
+`key_input`: a blank field (whitespace only) takes `Verb::Save`, exactly Enter; a field with words
+takes `Verb::Describe` (Tab's road into the ask room) and the room's body gets a `newline` after
+the words, then `Editor::saved`, so a clean Esc still folds back to the field and the words (the
+fold's `paste_lines` trims the trailing line). The field never holds a line break on the board: a
+paste flattens (`EditBuffer::paste`, as before T-1191), and a recalled ask, a fold-back, a refused
+picture send and a `^v` text landing go through `EditBuffer::flatten_lines` (`\n` to a space, byte
+for byte, so the cursor holds). Rendering is untouched: one line draws one row.
+
+Tests: `shift_enter_on_the_boards_ask_field_opens_the_composer` (new);
+`shift_enter_in_the_ask_field_breaks_a_line` now runs on the ticket page;
+`escape_return_opens_the_ask_…` (board: the composer, `^s` sends) and
+`tab_grows_the_ask_field_into_the_room_…` (board recall is one line, the page's keeps lines)
+follow the change.

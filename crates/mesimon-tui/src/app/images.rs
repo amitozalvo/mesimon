@@ -91,6 +91,7 @@ impl App {
             return false;
         }
         const CHANGED: &str = "text changed while reading clipboard ∙ paste again";
+        let one_line = self.board_field();
         self.status = match (&mut self.mode, pending.landing) {
             (Mode::Editor(ed), Landing::Editor { body, .. }) => {
                 if ed.body != body || ed.focus != Field::Body {
@@ -113,6 +114,10 @@ impl App {
                 } else {
                     let limit = buffer.limit();
                     let status = land(buffer, images, limit, "send", result);
+                    // The board's field is one line (T-1212).
+                    if one_line {
+                        buffer.flatten_lines();
+                    }
                     // The words are the person's own now, not a recalled ask.
                     *walk = None;
                     status
@@ -164,7 +169,7 @@ impl App {
                 if let InputPurpose::Prompt { images: held, .. } = &mut purpose {
                     *held = images;
                 }
-                self.mode = Mode::Input { purpose, buffer: history_field(&text) };
+                self.mode = Mode::Input { purpose, buffer: history_field(&text, self.board_field()) };
                 Ok(())
             }
         }

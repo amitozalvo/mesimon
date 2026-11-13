@@ -8059,7 +8059,9 @@ static INPUT: &[Binding] = &[
         // line like in claude code / codex"), so the field types it, as a
         // line break, the one the agents' own boxes take on it. It sent
         // until then, on the reasoning that the finger which opened the
-        // field with Shift+Enter is still holding shift.
+        // field with Shift+Enter is still holding shift. On the board the
+        // field is one line (T-1212) and `App::key_input` makes the key
+        // Enter on a blank field, the ask room on words.
         keys: &[Key::ShiftEnter],
         verb: Verb::SaveStart,
         show: "shift+enter",

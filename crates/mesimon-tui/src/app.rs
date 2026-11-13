@@ -933,10 +933,15 @@ fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
 }
 
 /// A remembered ask back in the field, its line breaks with it: the field
-/// holds lines since T-1191 (until then they were spaces here).
-fn history_field(text: &str) -> EditBuffer {
+/// holds lines since T-1191 (until then they were spaces here). The board's
+/// field is one line (T-1212), so there they are spaces again; `Tab` opens
+/// the composer on them.
+fn history_field(text: &str, one_line: bool) -> EditBuffer {
     let mut buf = EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES);
     buf.paste_lines(text);
+    if one_line {
+        buf.flatten_lines();
+    }
     buf
 }
 
@@ -5776,10 +5781,13 @@ impl App {
                 InputPurpose::RenameColumn { .. } => "a column name",
                 InputPurpose::Prompt { .. } => "an ask",
             };
-            // The ask field keeps the paste's lines (T-1191); every other
-            // field here is one line.
+            // The ask field keeps the paste's lines (T-1191), on the
+            // ticket page; on the board it is one line (T-1212), as every
+            // other field here is.
             let pasted = match purpose {
-                InputPurpose::Prompt { .. } => buffer.paste_lines(text),
+                InputPurpose::Prompt { .. } if !matches!(self.screen, Screen::Board) => {
+                    buffer.paste_lines(text)
+                }
                 _ => buffer.paste(text),
             };
             (what, pasted, buffer.limit())
@@ -13486,7 +13494,25 @@ impl App {
         }
         let key = crate::keys::to_key_text(code, mods);
         let ctx = self.ctx();
-        let verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        let mut verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        // The board's ask field is one line (T-1212): its Shift+Enter is
+        // Enter while the field is blank, and otherwise opens the composer
+        // on the words with a new line under them, where the line break
+        // the key asked for has room. The ticket page's field holds lines
+        // and types it (T-1191).
+        let mut break_line = false;
+        if verb.is_none()
+            && key == Some(keymap::Key::ShiftEnter)
+            && matches!(purpose, InputPurpose::Prompt { .. })
+            && self.board_field()
+        {
+            if buffer.as_str().trim().is_empty() {
+                verb = Some(Verb::Save);
+            } else {
+                verb = Some(Verb::Describe);
+                break_line = true;
+            }
+        }
         match verb {
             Some(Verb::Cancel) => {
                 if purpose == InputPurpose::SetMergeBranch {
@@ -13562,6 +13588,12 @@ impl App {
                             tier,
                             buffer.as_str(),
                         );
+                        // The new line is the key's own, not an edit: a
+                        // clean Esc still folds back to the field's words.
+                        if break_line {
+                            room.body.newline();
+                            room.saved();
+                        }
                         // The field's pictures ride into the room (T-1210).
                         room.images.extend(images);
                         room
@@ -13636,7 +13668,7 @@ impl App {
                         _ => None,
                     };
                     if let Some((idx, draft)) = next {
-                        buffer = history_field(&self.prompt_history[idx]);
+                        buffer = history_field(&self.prompt_history[idx], self.board_field());
                         *walk = Some(HistoryWalk { idx, draft });
                     }
                 }
@@ -13646,7 +13678,7 @@ impl App {
                     if let Some(w) = walk.take() {
                         match self.prompt_history.get(w.idx + 1) {
                             Some(newer) => {
-                                buffer = history_field(newer);
+                                buffer = history_field(newer, self.board_field());
                                 *walk = Some(HistoryWalk { idx: w.idx + 1, draft: w.draft });
                             }
                             None => {
@@ -14367,7 +14399,7 @@ impl App {
             },
             // The field holds pictures as the room does (T-1210): the words
             // keep `[Image #N]`, and the pictures ride beside them.
-            buffer: history_field(ed.body.as_str()),
+            buffer: history_field(ed.body.as_str(), self.board_field()),
         };
     }
 
@@ -14749,6 +14781,12 @@ impl App {
         matches!(self.screen, Screen::Board)
             .then(|| self.cursor_card.get().map(|r| (r, Instant::now())))
             .flatten()
+    }
+
+    /// The ask field open on the board, a card's or a column's, which is
+    /// one line (T-1212); the ticket page's holds lines (T-1191).
+    pub(super) fn board_field(&self) -> bool {
+        matches!(self.screen, Screen::Board)
     }
 
     /// The editor on one of a ticket's notes, read from the daemon, or a
@@ -24303,15 +24341,22 @@ mod tests {
             assert!(!sent_contains(&sent, "PromptSession"));
             assert!(app.legacy_shift_enter);
             assert!(!app.rich_keys);
-            // A second chord breaks a line, as a second real Shift+Enter
-            // does (T-1191); Enter sends both.
+            // A second chord is a second real Shift+Enter: on the page it
+            // breaks a line (T-1191) and Enter sends both; on the board it
+            // opens the composer with the line broken (T-1212), and `^s`
+            // sends both.
             for c in "run the tests".chars() {
                 press(&mut app, c);
             }
             app.handle_key(KeyCode::Enter, KeyModifiers::ALT).unwrap();
             assert!(!sent_contains(&sent, "PromptSession"));
             press(&mut app, 'x');
-            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            if app.screen == Screen::Board {
+                assert_eq!(editor(&app).body.as_str(), "run the tests\nx");
+                app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+            } else {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            }
             assert!(sent_contains(&sent, "PromptSession"));
             assert!(sent_contains(&sent, "run the tests\\nx"), "{:?}", sent.borrow());
             assert!(app.pending_attach.is_none());
@@ -24812,16 +24857,26 @@ mod tests {
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
         assert_eq!(app.status, "asked");
         assert_eq!(app.prompt_history, vec!["fix\nthe tests".to_string()]);
-        // Recalled into the field with its lines (T-1191); `Tab` reopens
-        // the room on them.
+        // Recalled into the board's one-line field as one line (T-1212);
+        // `Tab` reopens the room on that line.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "fix the tests"),
+            other => panic!("not in the field: {other:?}"),
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(editor(&app).body.as_str(), "fix the tests");
+        // On the ticket page the field holds lines, and the ask comes back
+        // with them (T-1191).
+        app.mode = Mode::Normal;
+        app.screen = Screen::Ticket { ticket: app.board.tickets[0].id, rail_idx: 0 };
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         match &app.mode {
             Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "fix\nthe tests"),
             other => panic!("not in the field: {other:?}"),
         }
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(editor(&app).body.as_str(), "fix\nthe tests");
     }
 
     /// The room's Esc is the composer's: clean, it folds back into the
@@ -26190,12 +26245,13 @@ mod tests {
         assert_eq!(field(&app), "run the tests", "the repeat is now the newest");
     }
 
-    /// Shift+Enter in the ask field breaks a line, as in the agents' own
-    /// boxes (T-1191): `↑`/`↓` walk the lines before the history, a paste
-    /// keeps its lines, and Enter sends them as one ask.
+    /// Shift+Enter in the ticket page's ask field breaks a line, as in the
+    /// agents' own boxes (T-1191): `↑`/`↓` walk the lines before the
+    /// history, a paste keeps its lines, and Enter sends them as one ask.
     #[test]
     fn shift_enter_in_the_ask_field_breaks_a_line() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: app.board.tickets[0].id, rail_idx: 0 };
         app.rich_keys = true;
         app.prompt_history = vec!["older".into()];
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
@@ -26223,6 +26279,48 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "shi!p it\\nnowone\\ntwo"), "{:?}", sent.borrow());
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// The board's ask field is one line (T-1212): Shift+Enter on a blank
+    /// field is Enter, and on words opens the composer with a new line
+    /// under them; a clean Esc folds back to the words, and a paste or a
+    /// recalled ask of lines lands as one line.
+    #[test]
+    fn shift_enter_on_the_boards_ask_field_opens_the_composer() {
+        let field = |app: &App| match &app.mode {
+            Mode::Input { buffer, .. } => buffer.as_str().to_string(),
+            other => panic!("not in the field: {other:?}"),
+        };
+        // Blank: the same as Enter, on two like boards.
+        let (mut by_enter, enter_sent, _) = app_with_claude(SessionState::Running, false);
+        by_enter.rich_keys = true;
+        by_enter.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        by_enter.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, by_enter.mode);
+        assert_eq!(*sent.borrow(), *enter_sent.borrow());
+
+        app.mode = Mode::Normal;
+        app.prompt_history = vec!["fix\nthe tests".into()];
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.on_paste("ship\r\nit\n").unwrap();
+        assert_eq!(field(&app), "ship it", "a paste of lines is one line");
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!sent_contains(&sent, "Prompt"), "{:?}", sent.borrow());
+        let ed = editor(&app);
+        assert!(ed.asking());
+        assert_eq!(ed.body.as_str(), "ship it\n");
+        assert_eq!(ed.body.cursor(), "ship it\n".len(), "the cursor is on the new line");
+        assert!(!ed.dirty(), "the key's new line is not an edit");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(field(&app), "ship it", "a clean Esc folds back to the words");
+        // A recalled ask of lines is one line here.
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(field(&app), "fix the tests");
     }
 
     /// Esc leaves without asking anything, the way every other field here
