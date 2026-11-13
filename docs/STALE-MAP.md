@@ -44340,19 +44340,42 @@ snapshot replaced the projection: the phone's allow of A pressed Yes on B. (2) A
 words, header, options and descriptions and a plan's markdown went to the phone as the agent
 wrote them; T-1218 had scrubbed only the permission's copy.
 
-**What shipped.**
-- `codex_approval_step` walks only where the dialog draws the request's whole command
-  (`codex_draws_command`) and, where it has one, its reason too. The drawn command is read from
-  the first line that starts `$ ` down to the rows (the last `1.` above the footer), blank
-  lines aside; inside a line a run of blanks is one, and where the pane wrapped, the join is a
-  blank or none (Codex's wrap breaks words at `/` too, as the T-846 capture's row 2 shows). The
-  item's command is unwrapped as the dialog unwraps it (`codex_drawn_command`: the script of a
-  `bash|zsh|sh -lc|-c '…'`, read by `shell_words`, a POSIX word reader, else the command as the
-  item spells it). A command the snapshot cut (`…`), quoting that does not parse, a screen that
-  clips it, holds it inside a longer one or ends like it, and a failed capture (an empty
-  screen, no footer) get no key: `label_not_found` / `shape_unrecognised` on the receipt, as
-  an unrecognised screen did before. A request with no command the dialog draws (an edit's, a
-  permission's, a tool's approval) is now the terminal's: before, its reason alone let it walk.
+**What shipped** (round 2, from the cold read of `ad5c09b3`, folded in: the card approves only
+what the daemon can bind exactly, and a request it cannot bind is never a card, so the Terminal
+tab's keys answer the agent's own dialog).
+- **Bindable, judged once** (`codex_binding`): only a command's approval (`what: command`); its
+  command unwrapped as the dialog unwraps it (the script of a `bash|zsh|sh -lc|-c '…'`, read by
+  `shell_words`, a POSIX word reader, else the command as the item spells it); the command and
+  the reason each one plain line (`plain_line`: no line break, tab, non-ASCII blank or control,
+  no two blanks in a row, none at either end, nothing the scrub removes); neither cut by the
+  snapshot's bound (a trailing `…`). An argv is joined by the observer so a shell reads the same
+  words back (`observation::command_text`: a plain word bare, any other `sh_quote`d), so
+  `["/bin/bash","-lc","echo hello"]` unwraps to `echo hello` and is approved; an argv holding a
+  word that is not a string spells nothing.
+- **Not bindable, no card** (`control_codex_ask`): the request is marked seen and nothing is
+  projected, so the stop reads needs-you with no card and `control_answers_here` lets the
+  Terminal tab's keys in (T-1218's line). An edit's, a permission's and a tool's approval were
+  walked on their reason alone before T-1227; they are the keys' now.
+- **Drawn exactly, found by structure** (`codex_draws`, `codex_spells`): above the rows (the
+  last `1.` over the footer) exactly one line begins `$ `; it and the lines under it down to a
+  blank are the command, and only blank lines follow down to the rows. The paragraph right
+  above it is the reason when it begins `Reason: `, spelled whole there; a request with no
+  reason must have no such paragraph, and one with a reason must have it. No blank is squeezed:
+  inside a line the text is compared as drawn (the pane's trailing blanks and the dialog's
+  indent aside, a continuation line at the first line's indent exactly). The one tolerance is
+  the measured wrap: where a line breaks, the join is the blank Codex's wrap took or none (the
+  T-846 capture breaks a word after a `/`), and a break counts only where the line before it
+  could not have held the next line's first word within the pane's width less
+  `CODEX_WRAP_MARGIN` (5 columns: T-846's capture wrapped a row after 75 of 80). The width is
+  `PaneTail.cols`, now carried by `dialog_capture_sized` into `dialog_step_for`; with it unknown
+  (0) no break counts. So B's `echo safe` / `rm -rf important` is not A's `echo safe rm -rf
+  important` at 80 columns, `'backup  copy'` is not `'backup copy'`, and a reason holding a
+  `$ ` line makes two such lines, no structure.
+- **A refused walk ends the card** (`control_deliver_dialogs`): a Codex approval's walk refused
+  `label_not_found` or `shape_unrecognised` (the screen could not be bound, a failed capture
+  included) drops the request's card at once, as an expired one reads, so the keys take over;
+  the request stays seen, so the next snapshot does not offer it again. The receipt's words are
+  as before.
 - `phone_dialog_scrubbed`, inside `phone_dialog_within`, so the board answer and the crowded
   plan's head both carry it: a question's words and descriptions through `scrub_lines`, its
   header and option labels through `scrub_text`, a plan's markdown through `scrub_lines`, a
@@ -44360,21 +44383,34 @@ wrote them; T-1218 had scrubbed only the permission's copy.
   `phone_trust` from the same scrub: `control_dialog_of` never carries a trust dialog, which an
   automated review of the first commit caught); T-1218's mark `[hidden characters removed]` where
   the scrub changed something (a plan's on a line of its own under the cut, so a head says it
-  too). Options stay as many and in their order: a label the scrub changed is drawn marked, and
-  numbered (`… 2`, `… 3`) where another option already reads the same, clean labels first, as
-  `phone_permission` numbers a field name (`marked` and `unclaimed` are now shared by both). The
-  stored dialog is untouched: the native walk reads the agent's strings, the answer names the
-  request and the option's index.
+  too). Options stay as many and in their order, no two drawn alike (`drawn_apart`, shared with
+  `phone_permission`'s field names): compared as the page draws them (`as_drawn`: a run of
+  blanks one, none at either end, as `.option-label` collapses white space), a name drawn as it
+  is spelled and untouched by the scrub keeps it, any other is marked where the scrub changed it
+  and numbered (`… 2`, `… 3`) where another already draws the same. `Stag\u{200b}ing` and
+  `Staging  [hidden characters removed]` no longer read as one, nor `command` and `command `.
+  The stored dialog is untouched: the native walk reads the agent's strings, the answer names
+  the request and the option's index.
+- **The mark is text.** An agent can write `[hidden characters removed]` itself: the mark tells
+  the person something was removed where the daemon removed it, and proves nothing where it did
+  not. Numbering keeps such a label apart from a scrubbed one; it cannot say which is which.
 
 **Request-id binding: not offered.** The Codex runtime (`agents/codex/runtime.rs`) relays the
 TUI's WebSocket and only observes it; its contract is that observation never acknowledges an
 approval. Answering the request by id from the relay is possible on the wire but would be the
 daemon replying on the TUI's behalf, an authorization change and unmeasured on the TUI's
-drawing, so it is not done here. **The window left:** the dialog does not draw the folder
-(measured on 0.163.0: `Environment: local`, `Reason:`, `$ command`, no cwd), so a request
-swapped between the tap and the key for one with the same command and reason and another folder
-is walked as the same approval; and a command differing only by a blank exactly where the pane
-wrapped reads the same. Same command and folder is the same approval, as the ticket allows.
+drawing, so it is not done here. **The whole window left:**
+- The capture and the key are two calls: a dialog swapped between the last capture and the
+  Enter takes the Enter, whatever the match decided (inherited from T-846; only a provider
+  operation bound to the request id closes it, a decision this ticket does not make).
+- The folder is not drawn (measured on 0.163.0: `Environment: local`, `Reason:`, `$ command`,
+  no cwd): a request with the same command and reason in another folder is the same approval.
+- The shell and the wrapper's mode are not drawn: `bash -lc 'x'` and `zsh -c 'x'` both draw
+  `x`, and an unwrapped `x` draws `x` too.
+- At a wrap the join is a blank or none: two commands differing only by one blank exactly where
+  the pane's width forced a break read alike; and a real line break whose next word would have
+  fitted only in the pane's last `CODEX_WRAP_MARGIN` columns reads as a wrap. Where Codex's own
+  wrap leaves more than that unused, a true wrap reads as no wrap: refused, the keys answer.
 
 **The crown's `get_ticket` does not get the phone's copy.** `agent_needs_you` reads
 `control_questions` and `control_plan` and has scrubbed them since T-566/T-582 (`scrub_text` on
@@ -44387,7 +44423,11 @@ at two indices.
 **Refuted.** "Require the cwd on screen": the dialog never draws it, so every approval would be
 refused. "Contains the command anywhere on the screen": `ls` is in `ls; rm -rf ~`, and row 2's
 `don't ask again for commands that start with …` repeats a prefix. "Compare with every blank
-squeezed out": `rm -rf /tmp/x` and `rm -rf / tmp/x` squeeze alike.
+squeezed out": `rm -rf /tmp/x` and `rm -rf / tmp/x` squeeze alike. Round 2: "a blank or nothing at any
+line break" (round 1's join, unconditioned): it read B's real line break as A's blank; the
+break is now a wrap only where the width forced it. "Squeeze blank runs inside a line": quoted
+blanks are the command's. "The first `$ ` line starts the command": a reason can draw one.
+"Number only equal strings": the page collapses blanks.
 
 **Verified.** `a_codex_approval_is_walked_only_onto_its_own_whole_command` and
 `a_phone_s_question_and_plan_are_scrubbed_and_answer_the_same_request` each failed on
@@ -44404,3 +44444,21 @@ a tidy of the option labels' loop (72 passed). No rig run: nothing an agent or t
 changed.
 After the review's trust fix, `cargo ut` (same counts, 0 failed) and `cargo build --workspace`
 ran again; the trust case is in the question-and-plan test.
+
+**Round 2, verified.** Rebased onto `d040c550` (web-only commits, no conflict). Tests run first on
+`ad5c09b3`'s code, each failing there: the reader's pairs (`echo safe rm -rf important` against
+B's two lines and `'backup copy'` against `'backup  copy'` both walked there),
+`an_unbindable_codex_approval_is_no_card_and_a_refused_walk_ends_one` (an unbindable request was
+a card), the drawn-alike labels in `a_phone_s_question_and_plan_are_scrubbed_and_answer_the_same_request`
+and field names in `a_phone_s_permission_card_is_scrubbed_and_answers_the_same_request`, and
+`observation::tests::an_argv_command_is_joined_so_a_shell_reads_its_words_back`; all pass now,
+with `a_codex_approval_is_walked_only_onto_its_own_whole_command` grown to every pair, the
+`$ ` line in a reason and the width cases. `a_codex_approval_walks_to_yes_or_no_and_confirms`
+changed by decision 2 alone: a request with no reason is no longer walked on a dialog that draws
+one. `cargo build --workspace`; `cargo ut --no-fail-fast` (72 + 17 + 762 + 849 + 24 + 1,443
+passed); `--test agents approve_bridge`, `plan_accept_e2e::` and
+`provider_e2e::a_codex_question_is_carried_to_the_board_and_answered_by_keys_until_resolved`: 31
+passed. One rerun: the first `cargo ut` failed `gitstatus::tests::a_real_checkout_samples_its_own_branch`
+(a real git checkout making 100 commits, untouched by this diff), which passed alone and in the
+`--no-fail-fast` run with nothing changed. No rig run: nothing an agent or the crown is told
+changed.

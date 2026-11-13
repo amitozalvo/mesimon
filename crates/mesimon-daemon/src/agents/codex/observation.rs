@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{Ask, AskKind, AskOption, AskQuestion};
 use mesimon_core::attention::{rank, Signal, TurnOutcome};
 use mesimon_core::board::{FailReason, Reason, SessionState, StopReason, UnknownReason};
+use mesimon_core::text::sh_quote;
 use serde_json::Value;
 
 const MAX_IDENTITIES: usize = 1024;
@@ -56,12 +57,22 @@ fn bound(text: &str, max: usize) -> String {
     out
 }
 
-/// A command as the protocol spells it: one string, or an argv array.
+/// A command as the protocol spells it: one string, or an argv array,
+/// joined so a POSIX shell reads the same words back (T-1227): a word of
+/// plain characters as it is, any other single-quoted (`sh_quote`), so
+/// `["/bin/bash","-lc","echo hello"]` keeps `echo hello` one word. An
+/// argv with a word that is not a string spells nothing.
 fn command_text(value: &Value) -> Option<String> {
+    let plain = |w: &str| {
+        !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c))
+    };
     match value {
         Value::String(s) => Some(bound(s, Ask::TEXT)),
         Value::Array(parts) => {
-            let words: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+            let words: Vec<String> = parts
+                .iter()
+                .map(|w| w.as_str().map(|w| if plain(w) { w.into() } else { sh_quote(w) }))
+                .collect::<Option<_>>()?;
             (!words.is_empty()).then(|| bound(&words.join(" "), Ask::TEXT))
         }
         _ => None,
@@ -1146,6 +1157,21 @@ mod tests {
 
     fn resolve(ledger: &mut Ledger, id: Value) -> Update {
         ledger.observe(7, &frame("serverRequest/resolved", json!({"requestId":id})))
+    }
+
+    /// T-1227: an argv keeps its words' boundaries when joined, so the
+    /// wrapper's script is read back whole; a string is taken as given, and
+    /// an argv with a word that is not a string spells nothing.
+    #[test]
+    fn an_argv_command_is_joined_so_a_shell_reads_its_words_back() {
+        assert_eq!(
+            command_text(&json!(["/bin/bash", "-lc", "echo it's here"])).as_deref(),
+            Some("/bin/bash -lc 'echo it'\\''s here'")
+        );
+        assert_eq!(command_text(&json!(["git", "status"])).as_deref(), Some("git status"));
+        assert_eq!(command_text(&json!(["echo", ""])).as_deref(), Some("echo ''"));
+        assert_eq!(command_text(&json!("a  b")).as_deref(), Some("a  b"));
+        assert_eq!(command_text(&json!(["ls", 3])), None);
     }
 
     #[test]
