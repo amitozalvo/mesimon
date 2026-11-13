@@ -44501,3 +44501,21 @@ pair run alone; a card for `echo café`) and pass. Refuted: "count columns with 
 the crown's decision is no width tables, and ASCII makes a byte a column.
 Checks: `cargo build --workspace`, `cargo ut --no-fail-fast` (72 + 17 + 762 + 850 + 24 + 1,443
 passed), the three e2e sets (31 passed). No reruns.
+
+## `^n` walks links bottom up, `^p` top down, on the page and in the transcript (T-1231, 2026-11-14, the author: "^n to cycle will walk bottom up ∙ ^p will start top bottom")
+
+**Changed.** `walk_stop` (T-1192's one walk for the ticket page and the transcript) takes `up`
+instead of `forward`, and both callers pass `verb == Verb::LinkNext`: from none `^n` picks the
+bottom link on screen and climbs, `^p` picks the top one and descends; past either end, none,
+as before. The newest words sit at the bottom of both surfaces, so the first `^n` lands beside
+them. The transcript's unshown `n`/`N` follow, being the same walk.
+
+**Not changed.** The reader keeps document order: its `^n` runs on past the last link into the
+next note's top (T-1112's ring), and a bottom-up walk there would ring the notes backwards.
+Keys, hints and footers are unchanged (`^n ^p link`).
+
+**Tests.** `a_link_cited_twice_is_walked_twice` now walks `c, a, b, a`, then none past the top,
+then `^p` lands on the first `a`; it fails on the old order. The transcript tests that reached
+the second link with two `^n` reach it with one (`…repeated_labels_and_prose`, the commands and
+bang-line tests after a copy), and those that needed the first link first walk with `^p`.
+Verified: `cargo ut` (TUI 1,443). TUI-only: no e2e, no full suite, no goldens moved.

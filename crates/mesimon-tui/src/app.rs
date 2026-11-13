@@ -867,20 +867,20 @@ pub const GLIDE: Duration = GROW;
 const LAYOUT_FLASH_PHASE: Duration = Duration::from_millis(400);
 const LAYOUT_FLASH_PHASES: u32 = 3;
 
-/// Is a flash begun `at` still running?
-/// One step of a link walk over `len` stops (T-1192): from none the first
-/// (or, backward, the last); past either end, none again — so a walk never
-/// strands a pick, and the next press starts it over.
-fn walk_stop(at: Option<usize>, len: usize, forward: bool) -> Option<usize> {
-    match (at, forward) {
+/// One step of a link walk over `len` stops, top to bottom (T-1192): from
+/// none the first (or, going `up`, the last); past either end, none again —
+/// so a walk never strands a pick, and the next press starts it over.
+fn walk_stop(at: Option<usize>, len: usize, up: bool) -> Option<usize> {
+    match (at, up) {
         _ if len == 0 => None,
-        (None, true) => Some(0),
-        (None, false) => Some(len - 1),
-        (Some(i), true) => (i + 1 < len).then_some(i + 1),
-        (Some(i), false) => i.checked_sub(1),
+        (None, false) => Some(0),
+        (None, true) => Some(len - 1),
+        (Some(i), false) => (i + 1 < len).then_some(i + 1),
+        (Some(i), true) => i.checked_sub(1),
     }
 }
 
+/// Is a flash begun `at` still running?
 fn flash_running(at: Instant) -> bool {
     at.elapsed() < LAYOUT_FLASH_PHASE * LAYOUT_FLASH_PHASES
 }
@@ -6490,8 +6490,8 @@ impl App {
 
     /// The zone's selected link, while the cursor is still on its session
     /// and the link is on a row the zone shows: paged away, or the zone
-    /// gone with the terminal's width, Enter is the row's again and `tab`
-    /// starts from the first link on screen. The cursor off its session (another
+    /// gone with the terminal's width, Enter is the row's again and `^n`
+    /// starts from the last link on screen. The cursor off its session (another
     /// row, or the page left) lets it go for good, so coming back finds
     /// the row's Enter, not a link chosen before; every frame's `ctx` asks.
     fn page_selected(&self) -> Option<(usize, PageLink)> {
@@ -6514,16 +6514,16 @@ impl App {
         self.page_selected().map(|(_, l)| l.link)
     }
 
-    /// `^n` / `^p` on the ticket page (T-1143, T-1192): the next (or the
-    /// previous) link among the rows on screen; past either end, none —
-    /// the walk is the window's, and the window is the reader's to move.
-    fn page_link_step(&mut self, forward: bool) {
+    /// `^n` / `^p` on the ticket page (T-1143, T-1192): the link above (or
+    /// below) among the rows on screen; past either end, none — the walk is
+    /// the window's, and the window is the reader's to move.
+    fn page_link_step(&mut self, up: bool) {
         let Some(RailRow::Session(s)) = self.rail_row() else { return };
         let id = s.id;
         let visible = self.page_visible_links();
         let selected =
             self.page_selected().and_then(|(i, _)| visible.iter().position(|(j, _)| *j == i));
-        let next = walk_stop(selected, visible.len(), forward).map(|k| visible[k].1.at);
+        let next = walk_stop(selected, visible.len(), up).map(|k| visible[k].1.at);
         *self.page_link.borrow_mut() = next.map(|at| (id, at));
         self.ctx_dirty();
     }
@@ -11033,8 +11033,9 @@ impl App {
                 }
                 if let Some(t) = self.transcript.as_ref() { t.reveal_link.set(false); }
             }
-            // The page's walk and the transcript's are one (T-1192): the
-            // next stop, round to none past either end.
+            // The page's walk and the transcript's are one (T-1192): `^n`
+            // walks bottom up, where the newest words are, and `^p` top
+            // down (T-1231); round to none past either end.
             Verb::LinkNext | Verb::LinkPrev if matches!(self.mode, Mode::Transcript { .. }) => {
                 let len = self.transcript_links().len();
                 if let Mode::Transcript { link_idx, .. } = &mut self.mode {

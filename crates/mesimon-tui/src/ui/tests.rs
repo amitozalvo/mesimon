@@ -124,7 +124,8 @@ fn press(app: &mut App, c: char) {
 }
 
 /// The link walk on every surface that picks (T-1192): `^n` forward, `^p`
-/// back.
+/// back. On the page and in the transcript forward is bottom up, where the
+/// newest words are (T-1231); the reader walks a note top down.
 fn next_link(app: &mut App) {
     app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).expect("^n");
 }
@@ -7452,7 +7453,7 @@ fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
     press(&mut app, '}');
     transcript_enter(&mut app);
     assert!(app.pending_open.is_none(), "opening the dialog selects nothing");
-    next_link(&mut app);
+    // `^n` starts at the bottom (T-1231): the second link first.
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
     transcript_mark(&app.theme, &buf, "prose same", "same", false);
@@ -7483,9 +7484,9 @@ fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
         app.opener = Some("open".into());
         press(&mut app, '}');
         let _ = cells(&app, 120, 30);
-        next_link(&mut app);
+        prev_link(&mut app);
         let _ = cells(&app, 120, 30);
-        next_link(&mut app);
+        prev_link(&mut app);
         let buf = cells(&app, 120, 30);
         assert!(app.open_transcript_view().unwrap().pager.view.get().offset > 0);
         let lines = lines_of(&buf);
@@ -7532,8 +7533,8 @@ fn transcript_links_reveal_clipped_literal_targets_without_reflowing() {
             press(&mut app, '}');
             let _ = cells(&app, 120, 30);
             let baseline = app.rich_cache.borrow().as_ref().unwrap().rows.clone();
-            next_link(&mut app);
-            next_link(&mut app);
+            prev_link(&mut app);
+            prev_link(&mut app);
             let buf = cells(&app, 120, 30);
             assert!(
                 app.open_transcript_view().unwrap().pager.view.get().offset > 0,
@@ -7575,7 +7576,7 @@ fn transcript_commands_are_selected_marked_and_copied() {
     press(&mut app, '}');
     press(&mut app, 'c');
     assert_eq!(copied().as_deref(), Some(text), "nothing selected: the message");
-    next_link(&mut app);
+    prev_link(&mut app);
     let buf = cells(&app, 120, 30);
     transcript_mark(&app.theme, &buf, "cargo test", "cargo test -p x \\", true);
     transcript_mark(&app.theme, &buf, "cargo test", "$", false);
@@ -7588,8 +7589,8 @@ fn transcript_commands_are_selected_marked_and_copied() {
     assert!(matches!(app.mode, Mode::Transcript { .. }), "copying keeps the dialog");
     assert!(!app.ctx().link_picked, "an acted pick flashes, then is let go (T-1192)");
     // The fence's words are commands, not paths: two links in all. The
-    // key after the copy meets the dialog with nothing picked.
-    next_link(&mut app);
+    // key after the copy meets the dialog with nothing picked, so `^n`
+    // starts at the bottom (T-1231).
     next_link(&mut app);
     assert_eq!(app.transcript_cursor_link().unwrap().text, "ls src/lib.rs");
     assert_eq!(app.transcript_links().len(), 2);
@@ -7604,15 +7605,15 @@ fn an_agents_bang_line_and_a_code_span_are_commands_too() {
     let text = "Run:\n\n```\n! bash /tmp/s/reset.sh\n```\n\nThen `cat ~/.cache/s/owner.pw`, type it in as `a@b.test`.";
     let (mut app, dir) = linked_transcript("loose-commands", &[text], false);
     press(&mut app, '}');
-    next_link(&mut app);
+    prev_link(&mut app);
     let buf = cells(&app, 120, 30);
     transcript_mark(&app.theme, &buf, "reset.sh", "bash /tmp/s/reset.sh", true);
     transcript_mark(&app.theme, &buf, "reset.sh", "!", false);
     transcript_mark(&app.theme, &buf, "owner.pw", "cat ~/.cache/s/owner.pw", false);
     press(&mut app, 'c');
     assert_eq!(copied().as_deref(), Some("bash /tmp/s/reset.sh"));
-    // The copy lets the pick go (T-1192): the walk starts over.
-    next_link(&mut app);
+    // The copy lets the pick go (T-1192): the walk starts over, and `^n`
+    // starts at the bottom (T-1231).
     next_link(&mut app);
     let buf = cells(&app, 120, 30);
     transcript_mark(&app.theme, &buf, "owner.pw", "cat ~/.cache/s/owner.pw", true);
@@ -16222,8 +16223,10 @@ fn earlier_messages_landing_keep_a_paged_back_place() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// The same link cited in two messages is two links on the page: `tab`
-/// walks past the second to the ones after it, never back to the first.
+/// The same link cited in two messages is two links on the page: `^n`
+/// walks past the second to the ones above it, never back to the first.
+/// `^n` walks bottom up, where the newest words are, and `^p` top down
+/// (T-1231).
 #[test]
 fn a_link_cited_twice_is_walked_twice() {
     let said = |text: &str| {
@@ -16261,12 +16264,21 @@ fn a_link_cited_twice_is_walked_twice() {
     assert_eq!(
         walked,
         [
+            "https://mesimon.dev/c",
             "https://mesimon.dev/a",
             "https://mesimon.dev/b",
-            "https://mesimon.dev/a",
-            "https://mesimon.dev/c"
+            "https://mesimon.dev/a"
         ],
-        "every link on screen, in reading order"
+        "every link on screen, bottom up"
+    );
+    next_link(&mut app);
+    assert_eq!(app.page_cursor_link(), None, "past the top, none");
+    prev_link(&mut app);
+    let _ = render(&app, 120, 30);
+    assert_eq!(
+        app.page_cursor_link().map(|l| l.text).as_deref(),
+        Some("https://mesimon.dev/a"),
+        "^p starts at the top"
     );
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
