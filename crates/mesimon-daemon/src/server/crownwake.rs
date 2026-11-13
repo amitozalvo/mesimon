@@ -43,8 +43,11 @@
 //! exited: crashed, status 1: start Codex app-server: No such file or
 //! directory (os error 2)`). No turn began, so no turn's end or
 //! `expect_secs` would ever say it, and the start's expectation goes with
-//! it. A seat a daemon restart finds dead so is told the same way, `found
-//! at a restart`. A watched or held ticket's death is heard too.
+//! it. Words the mod took are no such evidence: they are the seat's though
+//! their ack never came. A seat a daemon restart finds dead so is told the
+//! same way, `found at a restart`, where the restart's own never-prompted
+//! reading (the resend's) says no prompt was taken while no daemon ran. A
+//! watched or held ticket's death is heard too.
 //!
 //! And one that is no event at all (T-599): **lingering** — a worker it
 //! started has sat idle at its composer with background tasks running for
@@ -955,17 +958,24 @@ impl CrownWake {
 }
 
 /// A record the restart's reconcile just moved from live into `exited:
-/// crashed` whose launch words the last daemon handed over unsent (T-722):
-/// a seat that died mid-launch while no daemon ran, or before the restart's
-/// hook frame came (T-1220). `was_live`: the record was persisted live, so
-/// this reconcile is what found it dead; a corpse persisted dead was told,
-/// or not, by the daemon that saw it die.
+/// crashed` whose launch words the last daemon handed over unsent (T-722)
+/// and that took no prompt since, by the evidence the restart's own resend
+/// asks for (`never_prompted`, `history_missing`; round 3): a person may
+/// have typed into the surviving pane while no daemon ran, and `unsent`
+/// alone does not know it. A seat that died mid-launch while no daemon ran,
+/// or before the restart's hook frame came (T-1220). Where it cannot be
+/// established that no prompt was taken (a Codex seat, a record with no
+/// transcript path), it is no failed start: the exited card says the rest. `was_live`: the record
+/// was persisted live, so this reconcile is what found it dead; a corpse
+/// persisted dead was told, or not, by the daemon that saw it die.
 pub(super) fn found_dead_at_launch(was_live: bool, rec: &SessionRecord) -> bool {
     let crashed = SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed };
     was_live
         && rec.kind.is_agent()
         && rec.state == crashed
         && rec.unsent.as_ref().is_some_and(|u| u.brief)
+        && super::never_prompted(rec)
+        && crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec))
 }
 
 /// What a turn's end says about the worker, and why. `before` is the
@@ -2705,9 +2715,15 @@ impl Daemon {
     /// takes the entry), or kept as `unsent` when its delivery gave up
     /// (T-570) or a daemon handed them over (T-722), which any prompt the
     /// seat takes clears. A brief is a launch's, as the start's receipt
-    /// reads it (`Prompt::Launch`); a crown ask's words are no launch.
+    /// reads it (`Prompt::Launch`); a crown ask's words are no launch. Words
+    /// the mod took (`taken`: its bridge's ack, or its `entered` report) are
+    /// the seat's though their ack is late or never comes (round 3): the
+    /// entry is kept for that ack, and is no evidence here. No road marks
+    /// such words `unsent`: a mod's take is never handed over
+    /// (`hand_over_owed`) nor given up as unreceived, and its `entered`
+    /// clears the mark its own delivery left.
     fn launch_unbegun(&self, rec: &SessionRecord) -> bool {
-        let owed = self.owed.get(&rec.id).filter(|o| o.ask.is_none());
+        let owed = self.owed.get(&rec.id).filter(|o| o.ask.is_none() && !o.taken);
         owed.and_then(|o| o.parked.as_ref().or(o.sent.as_ref())).is_some_and(|w| w.brief)
             || rec.unsent.as_ref().is_some_and(|u| u.brief)
     }
@@ -5572,6 +5588,24 @@ pub(in crate::server) mod tests {
         pane_died(&mut b, seat);
         assert!(owed_for(&b.d, b.worker).is_none(), "the pane's death after it is no news");
 
+        // Words the mod took or reported entered (round 3) are the seat's,
+        // its turn begun or queued, though their `UserPromptSubmit` ack is
+        // late or never comes (a deaf mod): a crash after it is no failed
+        // start, though the entry is still kept for that ack.
+        let mut b = crate::server::crownask::ledger_tests::bed("taken-death");
+        let seat = launching(&mut b);
+        let owed = b.d.owed.get_mut(&seat).unwrap();
+        owed.frame = Some("frame-1".into());
+        owed.sent = owed.parked.take();
+        owed.taken = true;
+        at(&mut b, seat, SessionState::Idle { stop_reason: StopReason::Unknown });
+        pane_died(&mut b, seat);
+        assert_eq!(b.d.board.session(seat).unwrap().state, crashed());
+        assert!(
+            owed_for(&b.d, b.worker).is_none_or(|w| w.cause != WakeCause::Unstarted),
+            "the mod has the words"
+        );
+
         // A seat whose launch words were taken (their ack) began a turn: a
         // crash after it is no failed start, whatever it shows.
         for state in [SessionState::Running, SessionState::Spawning] {
@@ -5644,9 +5678,12 @@ pub(in crate::server) mod tests {
     fn a_launch_found_dead_at_a_restart_wakes_the_crown() {
         let mut b = crate::server::crownask::ledger_tests::bed("found-dead");
         let seat = b.d.board.sessions[0].id;
+        let dir = b.d.paths.state_dir.clone();
         let rec = &mut b.d.board.sessions[0];
         rec.started_by = Some(b.crown);
         rec.state = crashed();
+        rec.claude_session_id = Some(uuid::Uuid::new_v4());
+        rec.transcript_path = Some(dir.join("never-written.jsonl").display().to_string());
         assert!(!found_dead_at_launch(true, rec), "no launch words kept: nothing to say");
         rec.unsent = Some(mesimon_core::board::Unsent { text: String::new(), brief: true });
         assert!(found_dead_at_launch(true, rec));
@@ -5655,6 +5692,23 @@ pub(in crate::server) mod tests {
         let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
         assert_eq!(wake.cause, WakeCause::Unstarted);
         assert_eq!(wake.changed(), ["its agent exited: crashed, status 1, found at a restart"]);
+
+        // Round 3: `unsent` says what the last daemon handed over, not that
+        // no prompt ran since. A person may have typed into the surviving
+        // pane while no daemon ran: its transcript exists, and the corpse is
+        // no failed start. Where the restart cannot establish that no
+        // prompt was taken (no transcript path, a Codex seat), it says
+        // nothing.
+        let rec = &mut b.d.board.sessions[0];
+        let written = dir.join("written.jsonl");
+        std::fs::write(&written, "{}\n").unwrap();
+        rec.transcript_path = Some(written.display().to_string());
+        assert!(!found_dead_at_launch(true, rec), "a prompt was taken while no daemon ran");
+        rec.transcript_path = None;
+        assert!(!found_dead_at_launch(true, rec), "cannot be established: silent");
+        rec.transcript_path = Some(dir.join("never-written.jsonl").display().to_string());
+        rec.kind = SessionKind::Codex;
+        assert!(!found_dead_at_launch(true, rec), "a Codex seat has no never-prompted read");
     }
 
     /// T-1220, T-1217's second loss: the launch's words stayed owed to the

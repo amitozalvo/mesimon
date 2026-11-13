@@ -44159,7 +44159,7 @@ run of this rebase. Both omission screenshots were inspected; the text and butto
 compact card and the ticket's Terminal controls remain available. Main's STALE-MAP prefix
 and `sessions.js` were checked byte-for-byte. No additional e2e file or full suite was run.
 
-## A worker that dies at launch wakes the crown, and leaves nothing that mutes its ticket (T-1220, 2026-11-13, the crown's brief from T-1217's two losses; round 2 from the cold read of `6711c98a`)
+## A worker that dies at launch wakes the crown, and leaves nothing that mutes its ticket (T-1220, 2026-11-13, the crown's brief from T-1217's two losses; round 2 from the cold read of `6711c98a`; round 3 from its re-read)
 
 **What changed.**
 - A seat whose launch never began a turn and that goes into `exited: crashed` wakes the crown once,
@@ -44169,7 +44169,10 @@ and `sessions.js` were checked byte-for-byte. No additional e2e file or full sui
   (round 2): the launch's brief still owed to the seat and unacked (an ack, whoever typed the
   prompt, takes the entry), or kept as `unsent` (T-570's give-up, T-722's handover), which any
   prompt clears; a crown ask's words are no launch's (`launch_unbegun`, the start receipt's own
-  `Prompt::Launch` reading). The first cut asked for `Spawning`, and missed a Claude seat past its
+  `Prompt::Launch` reading). Words the mod took (`taken`: its bridge's ack or its `entered`
+  report) are no such evidence (round 3): the entry is kept for a `UserPromptSubmit` ack that may
+  be late or never come (the deaf-mod road), and the agent has its words. No road marks a taken
+  delivery `unsent` (`hand_over_owed` and the unreceived give-up skip it, `entered` clears it). The first cut asked for `Spawning`, and missed a Claude seat past its
   `SessionStart` with the brief still waiting, and T-1217's own failure whenever the Codex
   runtime's `Unknown{ObservationLost}` landed before `PaneDied`.
 - Either death frame tells it (`PaneDied`, or Claude's `SessionEnd` saying a crash first), judged
@@ -44186,8 +44189,11 @@ and `sessions.js` were checked byte-for-byte. No additional e2e file or full sui
   its last line whoever wrote it.
 - A seat a daemon restart finds dead (round 2): the reconcile, which sets it exited with no death
   frame, picks a record it just moved from live to `exited: crashed` that carries its brief as
-  `unsent` (`found_dead_at_launch`), and once the crown's ledger is restored `hear_found_dead`
-  tells it the same way, `…, found at a restart`, with the dead pane's status where tmux held it.
+  `unsent` and took no prompt since by the reading the restart's own resend asks for
+  (`never_prompted`, `history_missing`; round 3: a person may type into the surviving pane while
+  no daemon runs, and `unsent` does not know it) (`found_dead_at_launch`), and once the crown's
+  ledger is restored `hear_found_dead` tells it the same way, `…, found at a restart`, with the
+  dead pane's status where tmux held it.
 - Words owed to a seat that exits are dropped at its death (`apply_change`, any edge into
   `Exited`; the journal says `session … exited: the words owed to it are dropped`). `pending_on`
   counts `owed` by ticket, so the dead seat's launch entry read as words on their way and `due`
@@ -44212,6 +44218,9 @@ drop, and nothing reads it by ticket.
   a crash or SIGKILL, not a clean stop, which runs `hand_over_owed`): the restart has no evidence
   that the launch never began, and says nothing. Telling it would need the launch's words
   persisted at the spawn, a new mechanism.
+- A corpse found at a restart whose no-prompt cannot be established is not told (round 3): a
+  Codex seat (no never-prompted reading), a Claude record with no transcript path. The exited
+  card is on the board; telling it would need a no-prompt record kept at the hand-over.
 - A start with no words (a wake at the prompt box, `start_agent` on another tier) has no launch
   words to judge by, and its death is not told as a failed start.
 - A crash mid-turn still wakes nothing: outside this brief; its owed words are dropped all the same.
@@ -44242,3 +44251,10 @@ The second start, same daemon, took the brief whole (115 chars), ended its turn,
 woke the crown `finished`: wakes `['unstarted', 'finished']`. Crown: 4 turns, 5 tool calls,
 tokens in 28 + cache read 622,888 + cache write 5,944, out 599. The pane's weekly quota figure is
 not readable from this session, so the cost is given as the rig's token counts.
+
+**Round 3, verified.** The taken-delivery case in `a_worker_that_dies_at_launch_wakes_the_crown_once`
+(the entry kept, `taken`, the seat crashed: no `could not start`) and the restart cases in
+`a_launch_found_dead_at_a_restart_wakes_the_crown` (a transcript written while no daemon ran, no
+transcript path, a Codex seat: each silent) failed on `277acfd4` and pass. `cargo ut` (3,163
+passed), `--test crown crown_e2e::` (117 passed). No reruns. No second live rig run: the wake's
+words did not change.
