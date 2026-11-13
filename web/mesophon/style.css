@@ -303,7 +303,7 @@
   --line2: rgba(7, 54, 66, 0.17);
   --ink: #073642;
   --ink2: #586e75;
-  --ink3: #60767e;
+  --ink3: #5c727a;
   --ink4: #93a1a1;
   --attn: #8a6600;
   --attn-ink: #ffffff;
@@ -604,7 +604,7 @@
   --line2: rgba(76, 79, 105, 0.17);
   --ink: #4c4f69;
   --ink2: #64677e;
-  --ink3: #6b6e84;
+  --ink3: #676a80;
   --ink4: #9e9fb0;
   --attn: #b04a00;
   --attn-ink: #ffffff;
@@ -3538,11 +3538,19 @@ dialog.compose[open] {
 dialog.compose::backdrop {
   background: rgba(6, 7, 8, 0.62);
 }
-:root[data-theme="chalk"] dialog.compose::backdrop {
+/* The scrim follows the theme's own lightness (T-1219), never the device's:
+   a dark theme on a light device keeps the dark scrim, and the reverse.
+   `::backdrop` does not inherit the page's tokens in every engine, so the
+   light themes are named. */
+:root[data-theme="chalk"] dialog.compose::backdrop,
+:root[data-theme="solarized"] dialog.compose::backdrop,
+:root[data-theme="latte"] dialog.compose::backdrop,
+:root[data-theme="gruvbox-light"] dialog.compose::backdrop {
   background: rgba(34, 37, 43, 0.3);
 }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="graphite"]) dialog.compose::backdrop {
+  :root[data-theme="system"] dialog.compose::backdrop,
+  :root:not([data-theme]) dialog.compose::backdrop {
     background: rgba(34, 37, 43, 0.3);
   }
 }
@@ -5060,4 +5068,417 @@ input[type="checkbox"][role="switch"]:checked::after {
 }
 .theme-row {
   height: 10px;
+}
+
+/* ==== T-1219: polish after the browser test ====================================== */
+
+/* ---- the header's strip: a dot and a count per kind, the board's name first ----- */
+.pill .pips {
+  gap: 9px;
+}
+.pip-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+/* On a narrow page the quieter counts give way before the board's name does. */
+@media (max-width: 420px) {
+  .pip-count-idle {
+    display: none;
+  }
+}
+@media (max-width: 340px) {
+  .pip-count-working {
+    display: none;
+  }
+}
+@media (max-width: 1100px) {
+  #board-header {
+    min-width: 0;
+  }
+  #board-menu {
+    flex: 0 1 auto;
+  }
+}
+/* Two hundred percent zoom on a phone (195 px): the counts go, then the
+   brand's shin and chevron, and Settings leaves the tab bar (the pill opens
+   it), so four tabs keep their 44 px and nothing scrolls sideways. */
+@media (max-width: 280px) {
+  .pill .pips,
+  #board-menu .shin,
+  #board-menu .muted {
+    display: none;
+  }
+  #board-header {
+    gap: 6px;
+    padding-right: 6px;
+  }
+  .pill {
+    padding: 0 9px;
+  }
+  #modes {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 4px 2px;
+  }
+  #settings-mode {
+    display: none;
+  }
+  #modes .mode .icon {
+    padding: 4px 8px;
+  }
+}
+
+/* ---- cards: the key rides the title's line when there are no tags -------------- */
+.card-corner .ticket-meta {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.card-corner .ticket-meta + * {
+  margin-inline-start: 2px;
+}
+/* A one-line card is still a 44 px press. */
+.ticket.card {
+  min-height: 44px;
+  justify-content: center;
+}
+
+/* ---- what a person approves is never cut short unseen -------------------------- */
+.code-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.need-code.cut,
+.attention-code.cut {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.8em), transparent);
+}
+.need-code.whole,
+.attention-code.whole {
+  max-height: none;
+  overflow: visible;
+}
+.code-more {
+  align-self: flex-start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  text-align: start;
+}
+.icon.flip {
+  rotate: 180deg;
+}
+/* A needs-you card's face is its 44 px press, reaching into the card's own
+   padding, so a one-line title leaves no band above what the card asks. */
+.need-open {
+  justify-content: flex-start;
+  margin: -11px -12px 0 -15px;
+  padding: 11px 12px 0 15px;
+  border-radius: 12px 12px 0 0;
+}
+.need-open:has(.face-one) {
+  margin-bottom: -10px;
+}
+
+/* ---- the ticket page's header: whole tags, "+N", and the line opened ------------ */
+.line-tags {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* One row of tags: the ones past "+N" are out of the flow, still measured. */
+.ticket-line .line-tags .tags {
+  position: relative;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.ticket-line .line-tags .tag {
+  display: inline-block;
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ticket-line .line-tags .tag::before {
+  display: inline-block;
+  margin-inline-end: 4px;
+  vertical-align: 0.05em;
+}
+.ticket-line .line-tags .tag:first-child {
+  flex-shrink: 1;
+}
+.ticket-line .line-tags .tag-off {
+  position: absolute;
+  visibility: hidden;
+}
+.tags-more {
+  flex: none;
+  color: var(--ink2);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.ticket-line .chip-column,
+.ticket-line .add-tag {
+  flex: none;
+}
+/* Opened in place (a host that edits nothing): the whole title, every tag. */
+#detail[data-head="open"] .ticket-line .chips,
+#detail[data-head="open"] .ticket-line .line-tags,
+#detail[data-head="open"] .ticket-line .line-tags .tags {
+  flex-wrap: wrap;
+}
+
+/* ---- the Terminal tab's keys: every one in view ---------------------------------- */
+.key-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  gap: 4px;
+  overflow: visible;
+}
+.key {
+  min-width: 0;
+  padding: 0;
+}
+
+/* ---- a short screen (the keyboard up, a phone on its side): the newest lines
+   keep their room. Below 340 px, or with the keyboard up, the ticket's line
+   leaves the header until the screen is tall again, and the keys' foot
+   tightens. */
+@media (max-height: 340px) {
+  #detail .ticket-line {
+    display: none;
+  }
+}
+:root[data-keyboard="up"] #detail .ticket-line {
+  display: none;
+}
+@media (max-height: 480px) {
+  .detail-head {
+    padding-top: 4px;
+    padding-bottom: 2px;
+  }
+  .keys-area {
+    gap: 4px;
+    padding-top: 4px;
+    padding-bottom: calc(4px + var(--safe-bottom, 0px));
+  }
+}
+
+/* ---- contrast: secondary text reads at 4.5:1 in every theme ----------------------- */
+/* An option's description sits on the option's raised ground: the second ink. */
+.option-desc {
+  color: var(--ink2);
+}
+/* The conversation's edge words are words, not a rule. */
+.chat-edge {
+  color: var(--ink3);
+}
+
+/* ---- the option a person picked on a card: marked until the dialog is gone ------ */
+.option-picked {
+  background: var(--s3);
+  box-shadow: inset 0 0 0 1.5px var(--ink2);
+}
+.option-picked .option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---- an empty board offers its first ticket -------------------------------------- */
+.empty-board {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+.empty-board p {
+  margin: 0;
+}
+
+/* ---- the toast clears Sent's quick bar ------------------------------------------- */
+@media (max-width: 1100px) {
+  #shell[data-mode="sent"]:not([data-detail="true"]) ~ .toast {
+    bottom: calc(152px + var(--safe-bottom));
+  }
+}
+
+/* ---- a fenced block is never shorter than its Copy ------------------------------- */
+.markdown-code-box .markdown-code {
+  min-height: 44px;
+}
+
+/* ---- Settings, the sheets and the sidebar ---------------------------------------- */
+/* The board's name is the sidebar's title: a press lists the boards. */
+.side-pick.side-title {
+  min-height: 44px;
+  margin: -10px 0 -10px -6px;
+  padding: 0 6px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 1.125rem;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+.side-pick.side-title:hover,
+.side-pick.side-title[aria-expanded="true"] {
+  color: var(--ink);
+}
+/* A sheet opens on its heading, not on a ring at its corner. */
+#settings-heading:focus {
+  outline: none;
+}
+/* One Send at a time: the sheet's own at its foot, and the header's only
+   where a keyboard or a short screen could hide the foot. */
+@media (min-height: 561px) {
+  :root:not([data-keyboard="up"]) #new-ticket-sheet .compose-send-top {
+    visibility: hidden;
+  }
+}
+@media (max-height: 560px) {
+  #new-ticket-sheet .compose-send {
+    display: none;
+  }
+}
+:root[data-keyboard="up"] #new-ticket-sheet .compose-send {
+  display: none;
+}
+/* A yes-or-no switch is a 44 px press: the track and the knob are drawn
+   inside a box of that height. */
+input[type="checkbox"][role="switch"] {
+  width: 48px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+}
+input[type="checkbox"][role="switch"]::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: 3px;
+  width: 42px;
+  height: 26px;
+  box-sizing: border-box;
+  border: 1px solid var(--line2);
+  border-radius: 13px;
+  background: var(--s2);
+}
+input[type="checkbox"][role="switch"]::after {
+  top: 12px;
+  left: 6px;
+}
+input[type="checkbox"][role="switch"]:checked {
+  border: 0;
+  background: transparent;
+}
+input[type="checkbox"][role="switch"]:checked::before {
+  border-color: var(--ink2);
+  background: var(--ink2);
+}
+
+/* ---- a phone on its side: the list keeps its room -------------------------------- */
+/* The header, the list's title and its search share rows, and the tab bar
+   keeps its icons alone; every press stays 44 px. */
+@media (max-width: 1100px) and (max-height: 500px) and (orientation: landscape) {
+  #board-header {
+    min-height: 48px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+  .list-tools {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 14px;
+    row-gap: 4px;
+    padding-top: 4px;
+    padding-bottom: 6px;
+  }
+  .list-tools > .column-tabs {
+    grid-column: 1 / -1;
+  }
+  #list-title {
+    font-size: 1.25rem;
+  }
+  #modes {
+    padding-top: 0;
+    padding-bottom: calc(0px + var(--safe-bottom, 0px));
+  }
+  #modes .mode {
+    min-height: 44px;
+  }
+  /* Out of sight, still each tab's name. */
+  #modes .mode > span:not(.badge):not(.mode-disc) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #modes .badge {
+    top: 0;
+  }
+  .toast {
+    bottom: calc(56px + var(--safe-bottom));
+  }
+  #shell[data-mode="sent"]:not([data-detail="true"]) ~ .toast {
+    bottom: calc(120px + var(--safe-bottom));
+  }
+}
+@media (max-width: 280px) {
+  .pill .pips + .pill-word {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* ---- nothing scrolls sideways at 195 px (200 % zoom on a phone) ------------------ */
+.search input {
+  min-width: 0;
+  width: 100%;
+}
+/* A tag name too long for its card ends in an ellipsis, never past the edge. */
+#tickets .tag {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#tickets .tag::before {
+  display: inline-block;
+  margin-inline-end: 4px;
+  vertical-align: 0.05em;
+}
+@media (max-width: 280px) {
+  .ticket-tabs {
+    padding: 0 4px;
+  }
+  .ticket-tabs button {
+    padding: 0 6px;
+  }
+}
+.list-tools > *,
+.search {
+  min-width: 0;
+}
+.card-line .tags {
+  min-width: 0;
+  max-width: 100%;
+}
+.ticket-tabs button,
+.pill-button {
+  min-width: 44px;
 }

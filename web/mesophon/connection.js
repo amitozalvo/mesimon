@@ -3,7 +3,7 @@
 
 // The one line a retry loop shows, from the first loss to the next welcome:
 // a closed socket and the next attempt say the same thing (T-639).
-const RECONNECTING = "Reconnecting… Last received view is stale.";
+const RECONNECTING = "Reconnecting… The board shown is the last one received.";
 // Attempts in a row that ended without a welcome before the page names what
 // is out of reach (T-706): a live socket that closed is no failed attempt,
 // one that failed is often a network still waking, and the retry after it
@@ -89,7 +89,7 @@ export class Connection {
     // back to a first connect's.
     if (code) this.onState("connecting", "Pairing…");
     else if (attempt) this.onState("reconnecting", RECONNECTING);
-    else this.onState("connecting", "Connecting… Last received view is stale.");
+    else this.onState("connecting", "Connecting… The board shown is the last one received.");
     this.crypto = new this.Browser(this.identity.seed);
     const credential = this.identity.credential;
     const ws = (this.socket = new WebSocket(

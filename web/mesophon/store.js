@@ -3,7 +3,7 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState, refusedBoardWords } from "./board.js";
-import { Sessions, answerBusy, dropPictures, landed } from "./sessions.js";
+import { Sessions, answerBusy, answerWords, dropPictures, landed } from "./sessions.js";
 import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
@@ -126,6 +126,8 @@ export class Store {
     // What the page wears (T-1208): "terminal" follows the board's theme,
     // "system" the device's appearance, else one of themes.js's.
     this.theme = "terminal";
+    // The terminal's theme this device last wore (T-1219).
+    this.lastWorn = "";
     // How tight the lists sit: "compact" or "comfortable" (T-1208).
     this.density = "compact";
     this.alertStatus = "";
@@ -178,11 +180,25 @@ export class Store {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
+  // The theme the page wears (T-1208): the board's own while it follows the
+  // terminal, so a new board's snapshot repaints the page. Before a board
+  // says one, the terminal's theme this device last wore (T-1219), so a
+  // load does not flash the device's appearance first.
+  get worn() {
+    return wornTheme(this.theme, this.board?.terminalTheme || this.lastWorn);
+  }
   emit() {
-    // The theme the page wears (T-1208): the board's own while it follows
-    // the terminal, so a new board's snapshot repaints the page.
-    const worn = wornTheme(this.theme, this.board?.terminalTheme);
+    const worn = this.worn;
     if (document.documentElement.dataset.theme !== worn) document.documentElement.dataset.theme = worn;
+    const terminal = this.board?.terminalTheme;
+    if (this.theme === "terminal" && terminal && terminal !== this.lastWorn) {
+      this.lastWorn = terminal;
+      try {
+        localStorage.setItem("mesophon-worn", terminal);
+      } catch {
+        /* The next load wears the device's appearance until the board says. */
+      }
+    }
     this.version++;
     for (const fn of this.listeners) fn();
   }
@@ -518,9 +534,14 @@ export class Store {
   }
   // Away, the screen is the terminal's to show: the conversation held reads.
   get chatShown() {
-    // A parked or a stopped agent has no screen: its conversation shows.
-    const screenless = ["sleeping", "exited"].includes(this.board?.current?.agent?.state);
-    return this.chatCapable && (this.outputView !== "raw" || screenless || (!this.live && !!this.entry?.chat));
+    // No agent, a parked or a stopped one, or a terminal away has no screen
+    // to show: the conversation does, so a tab that cannot be used is never
+    // the selected one (T-1219).
+    return this.chatCapable && (this.outputView !== "raw" || !this.screenShown(this.board?.current));
+  }
+  // Whether a ticket's agent has a screen this page can show (T-1208).
+  screenShown(ticket) {
+    return !!ticket?.agent && this.live && !["sleeping", "exited", "stopping"].includes(ticket.agent.state);
   }
   // The page before the held part of the conversation, one ask at a time;
   // asked again once the ask in flight lands.
@@ -549,7 +570,7 @@ export class Store {
     if (this.outputView === view) return;
     this.outputView = view;
     try {
-      localStorage.setItem("mesophon-output", view);
+      localStorage.setItem("mesophon-view", view);
     } catch {
       /* The choice still holds for this page. */
     }
@@ -619,6 +640,11 @@ export class Store {
     const id = c.request(body, target.key);
     if (id === undefined) return;
     this.sessions.sent(target, id, c.incarnation, body.op, "");
+    // What was answered (T-1219): the line says it, and the card marks the
+    // option picked.
+    const agent = this.board?.tickets.find((t) => t.id === body.ticket)?.agent;
+    target.answer.said = answerWords(agent, body);
+    if (body.response?.answer === "choice") target.answer.pick = { request: body.request, index: body.response.index };
     this.sync();
   }
 
@@ -2738,7 +2764,7 @@ export class Store {
       // A retry loop already says what it is doing (T-639).
       if (this.phase !== "reconnecting") {
         this.phase = "checking";
-        this.status = "Checking connection… Last received view is stale.";
+        this.status = "Checking the connection… The board shown is the last one received.";
       }
       this.sync();
       this.connection.tick();

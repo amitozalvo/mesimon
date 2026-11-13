@@ -1,13 +1,23 @@
 // The bounded host projection and local list preferences, one instance per board.
-// An agent whose process ended unasked (T-1208): crashed, killed, logged
-// out. One the person quit or cleared is only idle. An older host says no
-// reason, and its exited agent stays idle too.
-const UNASKED = ["crashed", "killed", "logged_out"];
-export const stoppedUnasked = (agent) => agent?.state === "exited" && UNASKED.includes(agent.exit?.reason);
-const phase = (ticket) =>
+// An agent whose process ended unasked and is still news (T-1208, T-1219):
+// a crash or a logout in the last day, on a ticket outside the board's last
+// column. A person's own kill, a quit or a clear is only idle, and so is an
+// older stop or one on a finished ticket: each stays resumable on its
+// ticket page. An older host says no reason, and its exited agent stays
+// idle too. An age it cannot tell keeps it.
+const UNASKED = ["crashed", "logged_out"];
+export const STOPPED_MS = 86400000;
+export function stoppedUnasked(ticket, columns = [], now = Date.now()) {
+  const agent = ticket?.agent;
+  if (agent?.state !== "exited" || !UNASKED.includes(agent.exit?.reason)) return false;
+  if (columns.length > 1 && ticket.column === columns.at(-1)) return false;
+  const at = Number.isFinite(agent.exit.at) ? agent.exit.at : agent.since;
+  return !(now - at >= STOPPED_MS);
+}
+const phase = (ticket, columns, now) =>
   ticket.agent?.state === "needs attention"
     ? "needs"
-    : stoppedUnasked(ticket.agent)
+    : stoppedUnasked(ticket, columns, now)
       ? "stopped"
       : ["starting", "working"].includes(ticket.agent?.state)
         ? "working"
@@ -19,10 +29,11 @@ export const RECENT_MS = 3600000;
 // hour old, and an age it cannot tell (an older host sends no since) keeps
 // it. A ticket Now lists by no agent is listed while it is under an hour
 // old (T-668), so one just filed is there to start.
-const nowGroup = (ticket, now) => {
+const nowGroup = (ticket, columns, now) => {
   if (ticket.agent) {
     const age = now - ticket.agent.since;
-    if (phase(ticket) !== "idle" || !(age >= RECENT_MS)) return phase(ticket);
+    const group = phase(ticket, columns, now);
+    if (group !== "idle" || !(age >= RECENT_MS)) return group;
   }
   return now - ticket.created < RECENT_MS ? "created" : undefined;
 };
@@ -82,6 +93,15 @@ export class BoardState {
         this.tickets.find((t) => t.agent) || this.tickets[0]
       )?.id;
   }
+  // The board's own moment: a remembered board is measured at the moment
+  // it describes, not now.
+  get now() {
+    return this.cached ? this.receivedAt : Date.now();
+  }
+  // Whether a ticket's agent stopped unasked and is still news (T-1219).
+  stoppedNow(ticket) {
+    return stoppedUnasked(ticket, this.columns, this.now);
+  }
   get current() {
     return this.tickets.find((t) => t.id === this.selected);
   }
@@ -95,11 +115,10 @@ export class BoardState {
   }
   visible() {
     const query = this.search.toLocaleLowerCase().trim();
-    // A remembered board is measured at the moment it describes, not now.
-    const now = this.cached ? this.receivedAt : Date.now();
+    const now = this.now;
     const visible = this.tickets.filter(
       (t) =>
-        (this.mode === "board" || (this.mode === "agents" ? nowGroup(t, now) : t.agent)) &&
+        (this.mode === "board" || (this.mode === "agents" ? nowGroup(t, this.columns, now) : t.agent)) &&
         (this.mode !== "agents" ||
           this.filter === "all" ||
           (this.filter === "running"
@@ -123,9 +142,9 @@ export class BoardState {
   // Now's groups: the agents by the host's own state word and nothing else,
   // then the tickets created within the hour, newest first (T-668).
   sections() {
-    const now = this.cached ? this.receivedAt : Date.now();
+    const now = this.now;
     const groups = { needs: [], stopped: [], working: [], idle: [], created: [] };
-    for (const ticket of this.visible()) groups[nowGroup(ticket, now)].push(ticket);
+    for (const ticket of this.visible()) groups[nowGroup(ticket, this.columns, now)].push(ticket);
     groups.created.sort((a, b) => b.created - a.created);
     return groups;
   }

@@ -41,7 +41,10 @@ function destination(store, pictured) {
 // sheet's and the column-and-tags sheet's (T-530).
 function TagChoices({ allowed, worn, onToggle, disabled = false }) {
   const groups = [];
-  for (const tag of allowed) {
+  // A tag the ticket wears that the host no longer offers is still shown
+  // (T-1219): the sheet is where every tag of the ticket can be read.
+  const shown = [...allowed, ...worn.filter((t) => !allowed.some((a) => a.group === t.group && a.name === t.name))];
+  for (const tag of shown) {
     const group = groups.find((g) => g.group === tag.group);
     if (group) group.tags.push(tag);
     else groups.push({ group: tag.group, tags: [tag] });
@@ -205,6 +208,9 @@ export function StartSheet({ store }) {
   });
   if (!ask || !ticket) return html`<dialog id="start-sheet" class="compose" ref=${ref}></dialog>`;
   const asleep = ticket.agent?.state === "sleeping";
+  // Over a stopped agent (T-1219) a start is a fresh one: its conversation
+  // stays behind, for Resume while nothing new runs.
+  const fresh = store.stopped(ticket);
   const words = !!ask.text.trim();
   const tiers = store.tierChoices(ticket);
   return html`<dialog id="start-sheet" class="compose" ref=${ref} aria-labelledby="start-heading"
@@ -222,7 +228,7 @@ export function StartSheet({ store }) {
     }}>
       <header class="compose-head">
         <button type="button" class="btn btn-quiet" onClick=${() => store.closeStart()}>Cancel</button>
-        <h2 id="start-heading">${asleep ? "Wake agent" : "Start agent"} · ${ticket.key}</h2>
+        <h2 id="start-heading">${asleep ? "Wake agent" : fresh ? "Start fresh" : "Start agent"} · ${ticket.key}</h2>
         <span></span>
       </header>
       <div class="compose-body">
@@ -237,9 +243,10 @@ export function StartSheet({ store }) {
               e.currentTarget.form.requestSubmit();
             }
           }}></textarea></label>
+        ${fresh && html`<p class="field-note start-fresh-note">A new agent, with a new conversation. ${ticket.agent.provider}’s last conversation is left behind: Resume, not this, picks it up.</p>`}
         <p class="field-note">${asleep
-          ? "Empty wakes it and says nothing, as the board’s wake does."
-          : `Empty starts it on the ticket’s title and details, as the board’s Shift+Enter does.${tiers.length ? "" : " Your terminal picks the provider."}`}</p>
+          ? "Empty wakes it and says nothing."
+          : `Empty starts it on the ticket’s title and details.${tiers.length ? "" : " Your terminal picks the provider."}`}</p>
         <${TierChoices} tiers=${tiers} picked=${ask.tier} onPick=${(tier) => store.setStartTier(tier)} />
       </div>
       <footer class="compose-foot">

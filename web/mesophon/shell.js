@@ -10,7 +10,6 @@ import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet, AwaySheet } from "./compose.js";
 import { NoteSheet } from "./notepad.js";
 import { THEMES } from "./themes.js";
-import { stoppedUnasked } from "./board.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -56,36 +55,50 @@ const linkLabel = {
   nonet: "No connection",
 };
 
+// The pill's word (T-1219): the strip's own state, so the two never say
+// different things at once.
+const linkWord = (store) =>
+  store.link === "connecting" && store.phase === "reconnecting"
+    ? "Reconnecting"
+    : store.link === "connecting" && store.phase === "checking"
+      ? "Checking"
+      : linkLabel[store.link];
+
 function LinkIcon({ link, size = 14 }) {
   if (link === "live") return html`<span class="dot" aria-hidden="true"></span>`;
   if (link === "connecting") return html`<${Icon} name="spinner" size=${size} cls="spin" />`;
   return html`<${Icon} name=${link === "asleep" ? "moon" : "wifiOff"} size=${size} />`;
 }
 
-// The header's strip (T-1208): one dot per agent on the board, needs-you
-// first, then stopped, working and idle, and the link's word. A press opens
-// Settings, where the connection's hops are spelled out.
-const PIP_ORDER = { needs: 0, stopped: 1, working: 2, idle: 3 };
-const pipOf = (agent) =>
-  agent.state === "needs attention"
+// The header's strip (T-1208): how many agents need you, stopped, work and
+// idle, each a dot and its count (T-1219: a dot per agent pushed the board's
+// name out), and the link's word. A press opens Settings, where the
+// connection's hops are spelled out. On a narrow page the quieter counts
+// give way first (style.css), so the board's name keeps its room.
+const PIPS = ["needs", "stopped", "working", "idle"];
+const pipOf = (board, ticket) =>
+  ticket.agent.state === "needs attention"
     ? "needs"
-    : stoppedUnasked(agent)
+    : board.stoppedNow(ticket)
       ? "stopped"
-      : ["starting", "working"].includes(agent.state)
+      : ["starting", "working"].includes(ticket.agent.state)
         ? "working"
         : "idle";
 function Pill({ store }) {
   const link = store.link;
-  const pips = (store.board?.tickets || [])
-    .filter((t) => t.agent && !["sleeping", "exited"].includes(t.agent.state) || stoppedUnasked(t.agent))
-    .map((t) => pipOf(t.agent))
-    .sort((a, b) => PIP_ORDER[a] - PIP_ORDER[b])
-    .slice(0, 12);
-  return html`<button type="button" class="pill-button" aria-label=${`Connection: ${linkLabel[link]}`}
+  const board = store.board;
+  const counts = {};
+  for (const t of board?.tickets || [])
+    if (t.agent && (!["sleeping", "exited"].includes(t.agent.state) || board.stoppedNow(t))) {
+      const pip = pipOf(board, t);
+      counts[pip] = (counts[pip] || 0) + 1;
+    }
+  const pips = PIPS.filter((p) => counts[p]);
+  return html`<button type="button" class="pill-button" aria-label=${`Connection: ${linkWord(store)}`}
     aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
     <span class="pill" data-link=${link}>
-      ${link === "live" && pips.length > 0 && html`<span class="pips" aria-hidden="true">${pips.map((p, i) => html`<i class=${`pip pip-${p}`} key=${i}></i>`)}</span>`}
-      ${link !== "live" && html`<${LinkIcon} link=${link} />`}<span class="pill-word">${linkLabel[link]}</span></span>
+      ${link === "live" && pips.length > 0 && html`<span class="pips" aria-hidden="true">${pips.map((p) => html`<span class=${`pip-count pip-count-${p}`} key=${p}><i class=${`pip pip-${p}`}></i>${counts[p]}</span>`)}</span>`}
+      ${link !== "live" && html`<${LinkIcon} link=${link} />`}<span class="pill-word">${linkWord(store)}</span></span>
   </button>`;
 }
 
@@ -237,23 +250,30 @@ function ThemePicker({ store }) {
   const follows = store.theme === "terminal";
   const terminal = store.board?.terminalTheme;
   const worn = THEMES.find((t) => t.id === terminal);
+  // The tile of the theme on the page is marked (T-1219): following, it is
+  // the terminal's, or System until the terminal says one.
+  const on = (id) => (follows ? store.worn === id : store.theme === id);
   const pick = (id) => store.setTheme(id);
   return html`<section class="theme-picker" aria-labelledby="theme-heading">
     <h3 id="theme-heading" class="label">Theme</h3>
     <label class="setting-switch">
       <span>Follow the terminal<small>${follows
-        ? worn ? `Wearing ${worn.name}, as your terminal does.` : "Your terminal has not said its theme yet: the device’s appearance meanwhile."
+        ? worn
+          ? `Wearing ${worn.name}, as your terminal does.`
+          : store.worn !== "system"
+            ? "Your terminal has not said its theme yet: the one it last wore meanwhile."
+            : "Your terminal has not said its theme yet: the device’s appearance meanwhile."
         : "Wear the theme your terminal wears."}</small></span>
       <input id="theme-follow" type="checkbox" role="switch" checked=${follows}
         onChange=${(e) => pick(e.currentTarget.checked ? "terminal" : worn?.id || "system")} />
     </label>
     <div class="theme-grid" role="radiogroup" aria-label="Themes">
       <button type="button" class="theme-tile theme-system" role="radio" data-theme-id="system"
-        aria-checked=${String(store.theme === "system")} onClick=${() => pick("system")}>
+        aria-checked=${String(on("system"))} onClick=${() => pick("system")}>
         <span class="theme-pv theme-pv-split" aria-hidden="true"><span></span><span></span></span>
         <span class="theme-name">System<small>Graphite or Chalk</small></span></button>
       ${THEMES.map((t) => html`<button type="button" key=${t.id} class="theme-tile" role="radio" data-theme-id=${t.id}
-        aria-checked=${String(store.theme === t.id || (follows && terminal === t.id))}
+        aria-checked=${String(on(t.id))}
         onClick=${() => pick(t.id)}>
         <span class="theme-pv" aria-hidden="true" style=${{ background: t.bg }}>
           ${[t.attn, t.calm, t.dim].map((dot, i) => html`<span class="theme-row" key=${i} style=${{ background: t.card, borderLeftColor: t.tags[i] }}>
@@ -287,7 +307,7 @@ function Settings({ store }) {
     <div class="compose-form">
       <header class="compose-head">
         <span></span>
-        <h2 id="settings-heading">Settings</h2>
+        <h2 id="settings-heading" tabindex="-1" autofocus>Settings</h2>
         <button id="settings-done" type="button" class="btn btn-quiet compose-send-top" onClick=${close}>Done</button>
       </header>
       <div class="compose-body settings">
@@ -317,11 +337,13 @@ function Settings({ store }) {
 // forgets that one on this browser after a second word (T-673). The drawer
 // a phone or a tablet opens from the header lists them already (T-699), so
 // there the name is only words.
+// The board's name is the sidebar's title (T-1219): the product's word above
+// it named a board called mesimon twice.
 function BoardPicker({ store, drawer }) {
   const open = store.boardMenuOpen;
   if (drawer)
-    return html`<span class="side-sub side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>`;
-  return html`<button id="board-picker" type="button" class="side-sub side-pick" aria-haspopup="menu"
+    return html`<span class="side-title side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>`;
+  return html`<button id="board-picker" type="button" class="side-title side-pick" aria-haspopup="menu"
     aria-expanded=${String(open)} aria-controls="board-list" onClick=${() => store.openBoardMenu(!open)}>
     <span class="side-pick-name">${store.board?.title || store.active?.title || "Paired board"}</span>
     <${Icon} name="chevronDown" size=${12} width=${2.4} /></button>`;
@@ -366,7 +388,7 @@ function Sidebar({ store, bp }) {
     <aside id="sidebar" class=${open ? "open" : ""} aria-label="Boards and settings">
       <div class="side-brand">
         <${Shin} scale=${3} light=${lightOf(store)} />
-        <span class="side-brand-text"><span class="side-title">mesimon</span><${BoardPicker} store=${store} drawer=${open} /></span>
+        <span class="side-brand-text"><${BoardPicker} store=${store} drawer=${open} /></span>
         <button id="side-toggle" type="button" class="icon-btn side-toggle" aria-expanded=${String(!store.rail)}
           aria-label=${store.rail ? "Expand the sidebar" : "Collapse the sidebar"} title=${store.rail ? "Expand" : "Collapse"}
           onClick=${() => store.setRail(!store.rail)}><${Icon} name="panelLeft" size=${18} /></button>
@@ -442,7 +464,7 @@ function WorkList({ store, bp }) {
         <h2 id="list-title">${{ agents: "Inbox", board: "Board", sent: "Sent" }[mode]}</h2>
         <span id="count">${count}</span>
         ${board?.cached && html`<span class="chip chip-quiet">As of ${lastSeen(board)}</span>`}
-        ${bp !== "phone" && html`<${NewTicketButton} store=${store} board=${board} id="new-ticket" cls="btn btn-pri new-ticket" />`}
+        ${bp === "desktop" && html`<${NewTicketButton} store=${store} board=${board} id="new-ticket" cls="btn btn-pri new-ticket" />`}
       </div>
       ${mode !== "sent" && html`<label class="search"><${Icon} name="search" size=${16} /><span class="sr-only">Find a ticket</span>
             <input id="search" type="search" placeholder="Find a ticket…" value=${board?.search || ""}

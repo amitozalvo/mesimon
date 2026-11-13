@@ -202,32 +202,52 @@ so an async predicate passes at once.
 
 The compact page (T-1208). The phone's tab bar is Inbox (the agents by state),
 Board, New ticket, Sent and Settings; every control stays at least 44 px tall,
-and the compactness is type, spacing and one-line rows. A card's left edge
-wears its first tag's tint, as the TUI's tag bar does. An agent whose process
-ended unasked (`exit.reason` crashed, killed or logged out, on a host that
-says why) is listed under Stopped until it runs again, with Resume, the `resume`
-op (feature `resume`): the same session's conversation taken up again, with the
-words typed, their pictures and a picked tier when there are any; Start fresh
-is the `start` op on the free seat. The stopped agent rides the board reply's
-`stopped` (T-1218), where no agent holds the seat, and the page reads it as the
-ticket's agent: `agent` stays the held seat, so a page from before still offers
-its Start. A Codex agent still stopping reads `stopping`, with neither offered.
-A quit or cleared agent is only idle. The ticket page has three tabs: Chat (the
-conversation), Terminal (the agent's pane, `preview`) and Notes. On a host that
-says `keys`, the Terminal tab's foot is a key bar and a typed line, each press
-one `keys` op ({ key } or { text }) into the ticket's agent session alone, and
-an empty composer over a working turn is Stop, an Escape the same way. A typed
-line (at most 512 bytes) goes first, and its Enter only once the host answered
-it `edited`, 150 ms behind; a refused line sends no Enter and stays in the
-field. One line at a time: while a line and its Enter are on their way, Send
-and the Enter key rest, and the field clears only if it still holds that line.
-The bar rests only while the page answers the agent's dialog on a card
-(a permission not expired, a plan, a question it answers, the folder trust;
-the board's `agent.card_answers` is the host's word on a dialog where it says);
-at any other stop the keys go in and answer the agent's own dialog, and the
-bar says so (T-1218). The host holds a pane's next key for 500 ms after an
-Escape, and takes none while it is still typing input of its own there. A
-ticket's shells are the terminal's: the page draws no shell mark and opens none.
-Settings picks the page's theme: by default it follows the terminal's (the
-board reply's `theme`, which the TUI tells its daemon), or one of the fifteen,
-or the device's appearance; and a density, compact or comfortable.
+and the compactness is type, spacing and one-line rows: a card with no tags
+carries its key (and the Inbox its column) on the title's line (T-1219). A
+card's left edge wears its first tag's tint, as the TUI's tag bar does. The
+header's pill counts the agents that need you, stopped, work and idle, a dot
+and a number each; on a narrow page the quieter counts give way before the
+board's name does. An agent that crashed or was logged out in the last day, on
+a ticket outside the board's last column, is listed under Stopped
+(`exit.reason`, on a host that says why), with Resume, the `resume` op (feature
+`resume`): the same session's conversation taken up again, with the words
+typed, their pictures and a picked tier when there are any; Start fresh is the
+`start` op on the free seat, and its sheet says the old conversation is left
+behind. The stopped agent rides the board reply's `stopped` (T-1218), where no
+agent holds the seat, and the page reads it as the ticket's agent: `agent`
+stays the held seat, so a page from before still offers its Start. A Codex
+agent still stopping reads `stopping`, with neither offered. A logged-out
+agent says a login at the terminal comes first. A person's own kill, a quit or
+a clear, an older stop or one on a finished ticket is only idle, and stays
+resumable on its ticket page. A permission's command and each of its other
+fields (T-1218: its own name and value), on its card and on its ticket page,
+or a trusted folder, too long for its box says so and shows the whole of it on
+one press: nothing is approved unseen. An answer's line says what was answered
+(Approved once, Denied, the option picked, which is ticked). The ticket page
+has three tabs: Chat (the conversation), Terminal (the agent's pane,
+`preview`) and Notes; a tab that cannot be used (no agent, a parked, stopping
+or stopped one, the terminal away) is never the selected one, and the Terminal
+pick is remembered as `mesophon-view`. Its header's tags end whole, with "+N"
+for the rest; the line opens the card sheet, which shows the whole title and
+every tag (on a host that edits nothing, the line opens in place). On a host
+that says `keys`, the Terminal tab's foot is a key bar and a typed line, each
+press one `keys` op ({ key } or { text }) into the ticket's agent session
+alone; the line's ⏎ is Enter when it is empty, so every key is in view at
+360 px. An empty composer over a working turn is Stop, an Escape the same way.
+A typed line (at most 512 bytes) goes first, and its Enter only once the host
+answered it `edited`, 150 ms behind; a refused line sends no Enter and stays in
+the field. One line at a time: while a line and its Enter are on their way, the
+⏎ rests, and the field clears only if it still holds that line. The bar rests
+only while the page answers the agent's dialog on a card (a permission not
+expired, a plan, a question it answers, the folder trust; the board's
+`agent.card_answers` is the host's word on a dialog where it says); at any
+other stop the keys go in and answer the agent's own dialog, and the bar says
+so (T-1218). The host holds a pane's next key for 500 ms after an Escape, and
+takes none while it is still typing input of its own there. Chat and the
+screen stay on their newest line when the viewport shrinks (the keyboard
+opening). A ticket's shells are the terminal's: the page draws no shell mark
+and opens none. Settings picks the page's theme: by default it follows the
+terminal's (the board reply's `theme`, which the TUI tells its daemon; the
+device remembers the last one, as `mesophon-worn`, and wears it at load), or
+one of the fifteen, or the device's appearance; and a density, compact or
+comfortable.

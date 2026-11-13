@@ -2,11 +2,11 @@
 // panes beside it (T-701), and the composer. Every element keeps its place
 // in the DOM even when empty, so revocation visibly clears protected content
 // rather than removing it.
-import { html, useLayoutEffect, useRef } from "./html.js";
+import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
 import { Attention, cardAnswers } from "./dialogs.js";
-import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, exitWords, stateAge } from "./lists.js";
+import { CrownMark, StartButton, StartReceipt, WorktreeMark, ageWords, crownTouch, exitWords, loggedOut, stateAge } from "./lists.js";
 import { NotePane, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
@@ -15,6 +15,7 @@ import { Chat } from "./transcript.js";
 import { letterWords } from "./letters.js";
 import { KEYS_TEXT_MAX_BYTES } from "./store.js";
 import { swipePanes } from "./swipe.js";
+import { keepAtEnd } from "./viewport.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which
@@ -42,7 +43,7 @@ const screenRows = (text) => {
 function TicketTabs({ store, ticket, panes, at }) {
   const chat = store.chatShown;
   const notes = panes.length - 1;
-  const screen = !!ticket.agent && store.live && !["sleeping", "exited", "stopping"].includes(ticket.agent.state);
+  const screen = store.screenShown(ticket);
   const show = (view) => {
     store.showPane(ticket.id, 0);
     store.setOutputView(view);
@@ -58,10 +59,13 @@ function TicketTabs({ store, ticket, panes, at }) {
 }
 
 // The keys a phone has no key for (T-1208), sent straight into the
-// agent's pane: the desk's own keys at its prompt and its dialogs.
+// agent's pane: the desk's own keys at its prompt and its dialogs. Enter is
+// the line's own ⏎ (T-1219), which sends Enter alone when the line is
+// empty, so the other fourteen fit two rows of a 360 px phone, none under
+// 44 px and none behind a sideways scroll.
 const KEYS = [
   ["escape", "esc"], ["tab", "tab"], ["ctrl_c", "^C"], ["up", "↑"], ["down", "↓"],
-  ["left", "←"], ["right", "→"], ["enter", "⏎"], ["ctrl_r", "^R"], ["ctrl_d", "^D"], ["backspace", "⌫"],
+  ["left", "←"], ["right", "→"], ["ctrl_r", "^R"], ["ctrl_d", "^D"], ["backspace", "⌫"],
 ];
 const DIGITS = ["1", "2", "3", "4"];
 
@@ -81,7 +85,7 @@ function KeyBar({ store, ticket }) {
   return html`<footer class="keys-area" aria-label="Keys">
     ${asks && live && html`<p id="keys-asks" class="stopped-why">These keys answer what the agent’s terminal is asking.</p>`}
     <div class="key-bar" role="group" aria-label="Keys for the agent's terminal">
-      ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live || (typing && key === "enter")}
+      ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live}
         aria-label=${key.replace("_", " ")} onClick=${() => send({ key })}>${label}</button>`)}
       ${DIGITS.map((d) => html`<button type="button" class="key" key=${d} data-text=${d} disabled=${!live}
         onClick=${() => send({ text: d })}>${d}</button>`)}
@@ -99,8 +103,8 @@ function KeyBar({ store, ticket }) {
       <span class="keys-prompt" aria-hidden="true">›</span>
       <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
         enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal" maxlength=${KEYS_TEXT_MAX_BYTES}
-        placeholder=${live ? "Type a line, Enter sends it" : card ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
-      <button id="keys-send" type="submit" class="send" disabled=${!live || typing} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
+        placeholder=${live ? "Type a line, then ⏎" : card ? "The agent waits on you: answer it above" : "The agent's terminal is out of reach"} />
+      <button id="keys-send" type="submit" class="send" disabled=${!live || typing} aria-label="Send the line and Enter, or Enter alone"><${Icon} name="enter" size=${18} width=${2.2} /></button>
     </form>
   </footer>`;
 }
@@ -113,9 +117,11 @@ function StoppedLine({ store, ticket }) {
   const when = Number.isFinite(at) ? ageWords(store.board, at) : "";
   return html`<div id="stopped-line" class="agent-line stopped-line" role="group" aria-label="Agent stopped">
     <p><span class="mark mark-stopped" aria-hidden="true"></span><b>${exitWords(agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`}</b></p>
-    <p class="stopped-why">${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.</p>
+    <p class="stopped-why">${loggedOut(agent)
+      ? `${agent.provider} was logged out. Log in to ${agent.provider} at your terminal first; then Resume picks its conversation up where it stopped, with what you type below if anything.`
+      : `${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.`}</p>
     <div class="stopped-actions">
-      <button id="resume-agent" type="button" class="btn btn-pri" disabled=${!store.canResume || waiting}
+      <button id="resume-agent" type="button" class=${loggedOut(agent) ? "btn" : "btn btn-pri"} disabled=${!store.canResume || waiting}
         onClick=${() => store.resumeAgent(ticket.id, store.entry?.draft || "", store.entry?.tier || "") && store.setDraft("")}><${Icon} name="play" size=${15} /><span>Resume</span></button>
       <button id="fresh-agent" type="button" class="btn" disabled=${!store.canStart || waiting}
         onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
@@ -137,6 +143,7 @@ function Output({ store, ticket, entry, live }) {
       node.scrollTop = entry?.following ? node.scrollHeight : entry?.scroll || 0;
     } else if (entry?.following) node.scrollTop = node.scrollHeight;
   });
+  useLayoutEffect(() => keepAtEnd(ref.current, () => !!entry?.following));
   const text =
     entry?.displayed ||
     (entry?.receivedAt
@@ -336,7 +343,7 @@ function Composer({ store, ticket, entry, live }) {
 // The heading, two lines of it at most (T-701), and the rename it opens
 // (T-530): a press on the title writes over it, whole, Enter saves and
 // Escape puts it back.
-function Title({ store, ticket }) {
+function Title({ store, ticket, open = false }) {
   const ask = ticket && store.renaming?.ticket === ticket.id ? store.renaming : undefined;
   const field = useRef();
   // The caret starts at the end: a rename is most often a tweak.
@@ -367,7 +374,7 @@ function Title({ store, ticket }) {
     </form>`;
   const renames = !!ticket && store.canEdit("rename") && !store.editWaiting(ticket, "rename");
   return html`<div class="title-row">
-    <h2 id="selection" class=${`${renames ? "" : "clamp"}${ticket?.crown ? " crowned" : ""}`} tabindex="-1" dir="auto">${!ticket
+    <h2 id="selection" class=${`${renames || open ? "" : "clamp"}${ticket?.crown ? " crowned" : ""}`} tabindex="-1" dir="auto">${!ticket
       ? "Select a ticket"
       : renames
         ? html`<button id="rename" type="button" class="title-button clamp" aria-describedby="rename-hint"
@@ -382,20 +389,69 @@ function Title({ store, ticket }) {
 // that takes the choice, and a choice still open, as the TUI's Shift+Tab.
 export const choosesWorkspace = (store, ticket) => store.canEdit("workspace") && !!ticket?.workspace?.open;
 
+// The ticket page's tags on one line (T-1219): the tags that fit whole, then
+// "+N" for the rest, never one cut mid-word (a single tag too long for the
+// line ends in an ellipsis). The room is the line's less its other chips;
+// every tag stays in the page, the ones that do not fit out of the flow, so
+// each is measured again as the line widens. The card sheet (or, on a host
+// that edits nothing, the line opened in place) shows every one.
+const TAG_GAP = 8;
+const MORE_ROOM = 34;
+function LineTags({ ticket, all }) {
+  const tags = ticket.tags || [];
+  const ref = useRef();
+  const [fit, setFit] = useState(tags.length);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    const line = node?.parentElement;
+    if (!node || !line) return;
+    const measure = () => {
+      // A tag squeezed to its ellipsis is measured at its whole width.
+      const widths = [...node.querySelectorAll(".tag")].map((k) => Math.max(k.getBoundingClientRect().width, k.scrollWidth));
+      const style = getComputedStyle(line);
+      const gap = parseFloat(style.columnGap) || 0;
+      let room = line.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+      for (const other of line.children)
+        if (other !== node && other.getClientRects().length) room -= other.getBoundingClientRect().width + gap;
+      let n = 0;
+      let used = 0;
+      while (n < widths.length) {
+        const next = used + (n ? TAG_GAP : 0) + widths[n];
+        if (next + (n + 1 < widths.length ? MORE_ROOM : 0) > room) break;
+        used = next;
+        n++;
+      }
+      setFit(Math.max(1, n));
+    };
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    const watch = new ResizeObserver(measure);
+    watch.observe(line);
+    return () => watch.disconnect();
+  }, [tags.map((t) => t.name).join("\n")]);
+  if (!tags.length) return null;
+  const shown = all ? tags.length : Math.min(fit, tags.length);
+  return html`<span class="line-tags" ref=${ref}><span class="tags">${tags.map((t, i) => html`<span class=${`tag tint-${t.tint}${i < shown ? "" : " tag-off"}`} key=${`${t.group}:${t.name}`}>${t.name}</span>`)}</span>${shown < tags.length && html`<span class="tags-more">+${tags.length - shown}<span class="sr-only"> more</span></span>`}</span>`;
+}
+
 // The ticket's line (T-510, T-701): the shin while an agent holds the seat,
 // then the tags, the column and the worktree's glyph, and with a host that
 // takes the card edits (T-530) the whole of it one button that opens the
 // sheet moving and tagging it, where the branch and its state are spelled
 // out. The glyph is the card's (`WorktreeMark`), with the count to merge.
-function TicketLine({ store, ticket }) {
+// On a host that edits nothing the line opens in place (T-1219): the whole
+// title and every tag.
+function TicketLine({ store, ticket, open, setOpen }) {
   const moves = store.canEdit("move");
   const tags = store.canEdit("tag") && store.board.allowedTags.length > 0;
   const add = tags && !ticket.tags?.length;
   const chooses = choosesWorkspace(store, ticket);
   const archives = store.canEdit("archive");
   const crowns = store.canEdit("crown");
-  const chips = html`<${Tags} ticket=${ticket} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
-  if (!moves && !tags && !chooses && !archives && !crowns) return html`<div class="chips">${chips}</div>`;
+  const chips = html`<${LineTags} ticket=${ticket} all=${open} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
+  if (!moves && !tags && !chooses && !archives && !crowns)
+    return html`<button id="line-open" type="button" class="chips chips-edit" aria-expanded=${String(open)}
+      aria-label=${open ? "Show less" : "Show the whole title and every tag"} onClick=${() => setOpen(!open)}>${chips}</button>`;
   const verbs = [moves && "move", tags && "tag", crowns && "crown", archives && "archive"].filter(Boolean);
   const said = verbs.length > 1 ? `${verbs.slice(0, -1).join(", ")} or ${verbs.at(-1)}` : verbs[0] || "";
   const edits = said && `${said[0].toUpperCase()}${said.slice(1)} this ticket`;
@@ -500,18 +556,21 @@ export function Detail({ store, bp }) {
     return swipePanes(node, (step) => store.showPane(ticket.id, at + step));
   }, [ticket?.id, at]);
   const anim = animOf(agent);
-  return html`<article id="detail" aria-labelledby="selection">
+  // The header opened in place (T-1219), for one ticket at a time.
+  const [opened, setOpened] = useState();
+  const open = !!ticket && opened === ticket.id;
+  return html`<article id="detail" aria-labelledby="selection" data-head=${open ? "open" : undefined}>
     <header class="detail-head">
       <button id="back" type="button" class="icon-btn" aria-label="Back" onClick=${() => store.back()}><${Icon} name="back" size=${22} /></button>
       <button id="close-detail" type="button" class="icon-btn" aria-label="Close" onClick=${() => store.back()}><${Icon} name="x" size=${20} /></button>
       <div class="detail-title">
-        <${Title} store=${store} ticket=${ticket} />
+        <${Title} store=${store} ticket=${ticket} open=${open} />
         ${ticket && html`<div class="ticket-line">
           <span class="detail-shin" hidden=${!agent}>
             ${agent && html`<${Shin} scale=${2} anim=${anim} />
               <span id="agent-word" class="sr-only">${agent.provider} · ${agent.state}${since ? ` · ${since}` : ""}</span>`}
           </span>
-          <${TicketLine} store=${store} ticket=${ticket} />
+          <${TicketLine} store=${store} ticket=${ticket} open=${open} setOpen=${(on) => setOpened(on ? ticket.id : undefined)} />
         </div>`}
       </div>
     </header>

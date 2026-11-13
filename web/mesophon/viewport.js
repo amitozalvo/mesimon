@@ -44,3 +44,17 @@ export function followViewport(win = window, root = win.document.documentElement
   win.addEventListener("resize", apply);
   apply();
 }
+
+// A list that follows its newest line stays on it when its box or its rows
+// change size without a render (T-1219): the keyboard opening shrinks the
+// box, a larger text size or a picture loading grows a row. `following` is
+// asked at each change, so a reader who scrolled up stays where they are.
+export function keepAtEnd(node, following) {
+  if (!node || typeof ResizeObserver !== "function") return undefined;
+  const watch = new ResizeObserver(() => {
+    if (following() && node.getClientRects().length) node.scrollTop = node.scrollHeight;
+  });
+  watch.observe(node);
+  for (const child of node.children) watch.observe(child);
+  return () => watch.disconnect();
+}

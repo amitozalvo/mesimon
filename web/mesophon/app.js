@@ -6,18 +6,21 @@ import { Store } from "./store.js";
 import { html, render } from "./html.js";
 import { App } from "./shell.js";
 import { followViewport } from "./viewport.js";
-import { wornTheme } from "./themes.js";
 
 const store = new Store(Browser);
 try {
   store.theme = localStorage.getItem("mesophon-theme") || "terminal";
+  store.lastWorn = localStorage.getItem("mesophon-worn") || "";
   store.density = localStorage.getItem("mesophon-density") === "comfortable" ? "comfortable" : "compact";
   store.rail = localStorage.getItem("mesophon-sidebar") === "rail";
-  store.outputView = localStorage.getItem("mesophon-output") === "raw" ? "raw" : "chat";
+  // The Chat or Terminal choice (T-1208). The raw switch's own key from
+  // before it meant something else, and is dropped (T-1219).
+  localStorage.removeItem("mesophon-output");
+  store.outputView = localStorage.getItem("mesophon-view") === "raw" ? "raw" : "chat";
 } catch {
   /* System appearance remains usable when preferences are unavailable. */
 }
-document.documentElement.dataset.theme = wornTheme(store.theme);
+document.documentElement.dataset.theme = store.worn;
 document.documentElement.dataset.density = store.density;
 // Opened from the service worker's kept copy (sw.js), not from the relay:
 // it shows what this browser remembers and talks to nothing until the

@@ -43950,3 +43950,82 @@ approve_bridge`, `node --test state.test.js assets.test.js`, and the UX suite on
 size. One rerun: the first `cargo ut` stopped compiling on a core test's `Ticket` literal missing
 `stopped`, fixed and run again. No file under `server.rs`, `command.rs`, `mcp.rs`, `authorize.rs`,
 a state file or the tmux backend changed, so no post-merge workspace suite is owed.
+
+## Remote Control polish after the browser test: nothing clipped before Approve, every key in view, denser cards (T-1219, 2026-11-13, the crown's brief from T-1216's browser test and bug review of T-1208)
+
+Web only (`web/mesophon/`); no Rust, no protocol change.
+
+**What changed, by the brief's item.**
+1. A permission's command (and a trust dialog's folder), on the Inbox card and the ticket page, is
+   a `CodeBox` (`dialogs.js`): measured after layout and on resize, a box too small fades at its
+   foot, says "Only part shown · show the whole command", and one press shows all of it.
+2. The Terminal tab's keys are a grid (`auto-fit, minmax(44px, 1fr)`): two rows of 7 at 360 px,
+   none under 44 px, no sideways scroll. Enter left the bar: the line's send button is ⏎ and was
+   already Enter alone on an empty line (its submit handler is unchanged, T-1218's).
+3. Chat and the screen follow their newest line on a size change with no render (`keepAtEnd`,
+   `viewport.js`, a ResizeObserver asking `following` each time). Under 340 px tall or with the
+   keyboard up, the ticket's line leaves the header: 5 lines at 360x330.
+4. A card with no tags carries its meta (crown word, column in the Inbox, key) on the title's
+   line, before the age; cards keep 44 px. Ten cards on an 844 px Board where there were seven.
+5. The ticket header's tags end whole, then "+N" (`LineTags`, measured against the line's room);
+   one tag too long ellipsizes. The line opens the card sheet (whole title, every tag; a worn
+   tag the host no longer offers is listed too); on a host that edits nothing it opens in place.
+6. The pill counts per kind (needs, stopped, working, idle) instead of a dot per agent; idle
+   gives way under 420 px, working under 340, all counts, the brand's shin and chevron under
+   280, where Settings also leaves the tab bar (the pill opens it). 195 px: no sideways scroll on
+   either engine, every control 44 px.
+7. `.option-desc` takes `--ink2`, `.chat-edge` `--ink3`; solarized and latte `--ink3` darkened to
+   4.5:1 on their ground. The all-themes loop in `ux.test.js` adds `--ink3` on `--bg` and the two
+   drawn kinds measured on a probe.
+8. Answers say what was answered (`answerWords`, `sessions.js`): "Approved once · sent to the
+   agent", `Answered "JSON" · the agent has not confirmed it yet`, and the picked option is
+   ticked; no "keys" or "pane" in what a person reads. A logged-out agent says to log in at the
+   terminal first, and its Resume is not the primary button. The Start fresh sheet is titled so
+   and says the old conversation is left behind, with no Shift+Enter. The pill's word is the
+   strip's state ("Reconnecting"), and the strip says "The board shown is the last one
+   received". An empty board offers New ticket.
+9. The toast sits above Sent's quick bar. 10. A fenced block is at least as tall as its Copy.
+11. The switch is a 44 px box; Settings opens on its heading; a tile marks the worn theme while
+   following (System until the terminal says); the New ticket sheet shows one Send (the header's
+   only under 561 px or with the keyboard up); the desktop sidebar's title is the board's name
+   alone (the product word above it named a board called mesimon twice).
+12. A phone on its side (landscape, under 500 px): header, list title and search share rows, the
+   tab bar keeps icons (labels out of sight, still the tabs' names); "New ticket" in the list
+   header is the desktop's alone, the tab bar's + everywhere else. List room 213 to 243 px.
+13. The composer's backdrop is keyed to the four light themes (and System by the device).
+14. The device remembers the terminal's theme (`mesophon-worn`) and wears it at load.
+15. A tab that cannot be used (no agent, parked or stopped, the terminal away) is never the
+   selected one (`screenShown`). The Terminal pick is remembered as `mesophon-view`; the raw
+   switch's `mesophon-output` from before T-1208 is removed at load.
+16. Stopped (Inbox and pill) is a crash or a logout of the last day on a ticket outside the
+   board's last column (`stoppedUnasked(ticket, columns, now)`, `BoardState.stoppedNow`); a
+   kill, an older stop or a finished ticket's is idle and resumable on its ticket page.
+
+**Rebased onto T-1218 (round 2, `c2cf8901`), both kept whole.** Three joins, decided here:
+(1) T-1218's `RequestFields` (the command, then each other field its own name and value) draws
+every box as a `CodeBox`, on the ticket page and now on the Inbox card too, which showed only the
+command before (`requestSummary`, gone): no field of a permission is cut short, or left out,
+above Approve once. (2) The line's ⏎ is Send and Enter alone; T-1218's rest while a typed line
+and its Enter are on their way stays on it (`!live || typing`), and the bar has no Enter key to
+rest. (3) T-1218's "These keys answer what the agent's terminal is asking" sits above the two
+rows, one line at 360 px. `screenShown` counts T-1218's `stopping` as no screen. A dialog no
+card answers (T-1218's `card_answers: false`) says "This card cannot answer it: the Terminal
+tab's keys can, or your terminal." where the host takes keys (it said "in the pane" before T-1219
+and "at your terminal" alone after). Two fixes from
+the crown's look at the after-shots: a tagless needs-you card's 44 px face now reaches into the
+card's padding, so no band sits between its title and its question; the key line's placeholder
+is "Type a line, then ⏎", whole at 360 px.
+
+**Chosen, and not done.** In the Inbox a tagless card's column and key take room from its
+one-line title (the brief's item 4 asked for exactly that line); the Board shows no column, so
+there the title keeps more. Under 340 px tall the column and tags are out of the header until the
+screen is taller (the brief's "more than four lines"). The pill's counts drop idle first, not the
+board's name. `requestDetail`, the key bar's submit and `store.js` `resumeAgent`/`sendPrompt` were
+left to T-1218 and taken whole from it at the rebase.
+
+**Verified.** `node --test state.test.js assets.test.js`; the UX suite on Chromium phone while
+iterating, then `npm test` whole; the tester's scenarios rerun at 390x844, 360x640, 195x422,
+844x390 and 640x360 on Chromium and WebKit, screenshots looked at. `npm run shot:remote`
+regenerated `assets/demo/remote.png` and `remote-conversation.png`. After the rebase (a
+conflict resolved in code): `node --test state.test.js assets.test.js`, the Chromium phone UX run,
+`npm test` once, `cargo ut`, and the joins screenshotted at 360x640 and 390x844.

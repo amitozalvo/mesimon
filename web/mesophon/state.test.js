@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
+import { Sessions, answerBusy, answerWords, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
 import { THEMES, wornTheme } from "./themes.js";
@@ -177,11 +177,35 @@ test("dialog and approval receipts preserve drafts and never imply execution", (
   sessions.reply(entry, { result: "delivery", status: "decision_sent" });
   assert.equal(entry.answer.unresolved, false);
   assert.equal(entry.draft, "later follow-up");
-  assert.match(entry.delivery, /Decision sent/);
+  assert.equal(entry.delivery, "Your answer · sent to the agent.");
   sessions.sent(entry, 8, "host", "dialog", "");
   sessions.lost();
   assert.match(entry.delivery, /unknown/);
   assert.equal(entry.draft, "later follow-up");
+});
+
+test("an answer's line says what was answered, in a phone's words (T-1219)", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  const agent = { dialog: { request: "q", kind: "questions", questions: [{ question: "Which?", options: [{ label: "CSV" }, { label: "JSON" }] }] } };
+  assert.equal(answerWords(agent, { op: "permission", decision: "allow" }), "Approved once");
+  assert.equal(answerWords(agent, { op: "permission", decision: "deny" }), "Denied");
+  assert.equal(answerWords(agent, { op: "dialog", response: { answer: "choice", index: 1 } }), "Answered “JSON”");
+  assert.equal(answerWords(agent, { op: "dialog", response: { answer: "reject" } }), "Question declined");
+  assert.equal(answerWords({ dialog: { kind: "plan" } }, { op: "dialog", response: { answer: "accept" } }), "Plan accepted");
+  sessions.sent(entry, 1, "host", "permission", "");
+  entry.answer.said = "Denied";
+  sessions.reply(entry, { result: "delivery", status: "decision_sent" });
+  assert.equal(entry.delivery, "Denied · sent to the agent.");
+  sessions.sent(entry, 2, "host", "dialog", "");
+  entry.answer.said = "Answered “JSON”";
+  sessions.reply(entry, { result: "delivery", status: "input_sent" });
+  assert.equal(entry.delivery, "Answered “JSON” · the agent has not confirmed it yet.");
+  assert.doesNotMatch(entry.delivery, /keys|pane/i);
+  sessions.sent(entry, 3, "host", "dialog", "");
+  entry.answer.said = "Answered “JSON”";
+  sessions.reply(entry, { result: "delivery", status: "answered" });
+  assert.equal(entry.delivery, "Answered “JSON”.");
 });
 
 test("a dialog answer is answered only on the hook's word, and an unknown one says why (T-567)", () => {
@@ -200,7 +224,7 @@ test("a dialog answer is answered only on the hook's word, and an unknown one sa
   sessions.sent(entry, 2, "host", "dialog", "");
   sessions.reply(entry, { result: "delivery", status: "input_sent" });
   assert.equal(entry.answer.waiting, false);
-  assert.equal(entry.delivery, "Keys sent, not confirmed · check the pane.");
+  assert.equal(entry.delivery, "Answered · the agent has not confirmed it yet.");
   assert.equal(receiptTick(entry.answer.status), "one");
   // No key could be chosen: no tick, the reason in words, try again.
   sessions.sent(entry, 3, "host", "dialog", "");
@@ -208,7 +232,7 @@ test("a dialog answer is answered only on the hook's word, and an unknown one sa
   assert.equal(entry.answer.waiting, false);
   assert.equal(
     entry.delivery,
-    "Could not answer: the option does not read as one row on the screen; the selection already moved · try again or answer in the pane.",
+    "Could not answer: the option does not read as one row on the screen; the selection already moved · try again, or answer at your terminal.",
   );
   assert.equal(receiptTick(entry.answer.status), null);
   // An older host names no reason, and a word this page does not know shows as it came.
@@ -351,7 +375,7 @@ test("a batch is answered whole: one answer per question, words in place of pick
   assert.deepEqual(dialogForm(entry, { ...dialog, request: "r2" }).picks, [[], [], []]);
   assert.equal(
     reasonText("answer_differs; cursor moved"),
-    "the pane's answers differ from yours, so Submit was not pressed; the selection already moved",
+    "the terminal's answers differ from yours, so it was not submitted; the selection already moved",
   );
   assert.equal(reasonText("tick_not_taken"), "an option did not take its tick");
 });
@@ -371,25 +395,37 @@ test("Now groups agents by the host's own state word", () => {
   assert.equal(board.sections().working.length, 0);
 });
 
-test("an agent whose process ended unasked is Stopped until resumed; one its person quit is only idle (T-1208)", () => {
+test("a crash or a logout of the last day, outside the last column, is Stopped; a kill, a quit or an older stop is idle (T-1208, T-1219)", () => {
   const now = Date.now();
-  const rows = ["crashed", "killed", "out", "quit", "cleared", "older-host"].map((id) => ticket(id, id));
-  const exit = (row, reason) => Object.assign(row.agent, { state: "exited", since: now - 5 * RECENT_MS, exit: { reason, at: now - 5 * RECENT_MS } });
+  const rows = ["crashed", "killed", "out", "quit", "cleared", "older-host", "old-crash", "done-crash", "no-at"].map((id) => ticket(id, id));
+  const exit = (row, reason, ago = 5 * RECENT_MS) => Object.assign(row.agent, { state: "exited", since: now - ago, exit: { reason, at: now - ago } });
   exit(rows[0], "crashed");
   exit(rows[1], "killed");
   exit(rows[2], "logged_out");
   exit(rows[3], "user_quit");
   exit(rows[4], "cleared");
   Object.assign(rows[5].agent, { state: "exited", since: now - 60000 });
+  exit(rows[6], "crashed", 25 * RECENT_MS);
+  exit(rows[7], "crashed", 60000);
+  rows[7].column = "DONE";
+  // No `at`: the state's own age stands in.
+  Object.assign(rows[8].agent, { state: "exited", since: now - 2 * RECENT_MS, exit: { reason: "crashed" } });
   const board = new BoardState();
-  board.update({ title: "Board", columns: ["TODO"], tickets: rows });
+  board.update({ title: "Board", columns: ["TODO", "DONE"], tickets: rows });
   const { stopped, idle } = board.sections();
-  // Hours later a crash still waits for the person; a quit has left Now.
-  assert.deepEqual(stopped.map((t) => t.id), ["crashed", "killed", "out"]);
-  assert.deepEqual(idle.map((t) => t.id), ["older-host"]);
-  assert.equal(stoppedUnasked(rows[0].agent), true);
-  assert.equal(stoppedUnasked(rows[3].agent), false);
+  // Hours later a crash still waits for the person; a kill is the person's
+  // own, a quit has left Now, and a day-old or finished one is the ticket
+  // page's to resume.
+  assert.deepEqual(stopped.map((t) => t.id), ["crashed", "out", "no-at"]);
+  assert.deepEqual(idle.map((t) => t.id), ["older-host", "done-crash"]);
+  assert.equal(board.stoppedNow(rows[0]), true);
+  assert.equal(board.stoppedNow(rows[1]), false);
+  assert.equal(board.stoppedNow(rows[6]), false);
+  assert.equal(stoppedUnasked(rows[0], board.columns, now + 20 * RECENT_MS), false, "a day on, it leaves");
+  assert.equal(stoppedUnasked(rows[3]), false);
   assert.equal(stoppedUnasked(undefined), false);
+  // A one-column board has no finished column to leave out.
+  assert.equal(stoppedUnasked(rows[7], ["DONE"], now), true);
 });
 
 test("a stopped agent rides its own field, and this page reads it as the ticket's agent (T-1218)", () => {

@@ -6,6 +6,7 @@ import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
 import { Linked, Markdown } from "./markdown.js";
+import { keepAtEnd } from "./viewport.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -123,6 +124,7 @@ export function Chat({ store, entry, doing, tail }) {
     // A page too short to scroll asks for the one before by itself.
     if (chat?.floor != null && node.scrollHeight <= node.clientHeight) store.olderSoon();
   });
+  useLayoutEffect(() => keepAtEnd(ref.current, () => entry?.chatFollowing !== false));
   const rows = chat?.rows || [];
   // Away (T-698), the conversation is what this page last held or the
   // shelf's newest page: earlier pages wait for the terminal.

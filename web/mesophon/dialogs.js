@@ -1,6 +1,6 @@
 // Structured host dialogs. Payloads come from the daemon and render as text
 // nodes, never HTML. Native outcomes remain the host's to observe.
-import { html } from "./html.js";
+import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon } from "./icons.js";
 import { Markdown } from "./markdown.js";
 import { answerBusy } from "./sessions.js";
@@ -45,13 +45,10 @@ export function formAnswers(dialog, form) {
   return answers.every(Boolean) ? answers : null;
 }
 
-// A one-line description of a tool request, for cards and headings.
-export function requestSummary(permission) {
-  const input = permission?.input;
-  if (input && typeof input.command === "string") return input.command;
-  if (input && typeof input.file_path === "string") return input.file_path;
-  return JSON.stringify(input ?? {});
-}
+// The option this page answered with (T-1219), marked on its card until the
+// dialog is gone.
+export const pickedOption = (entry, dialog, index) =>
+  entry?.answer?.pick?.request === dialog?.request && entry.answer.pick.index === index;
 
 // The whole request, for the ticket page (T-1208): a command as it would
 // run, then every other field (T-1218), so nothing the approval covers is
@@ -76,12 +73,14 @@ export function requestFields(permission) {
   return { ...(command === undefined ? {} : { command }), fields };
 }
 
-function RequestFields({ permission }) {
+// Each box is a `CodeBox` (T-1219): no field of a permission, on its card or
+// its ticket page, is cut short unseen above Approve once.
+export function RequestFields({ permission, cls = "attention-code" }) {
   const { command, fields } = requestFields(permission);
-  return html`${command !== undefined && html`<pre class="attention-code">${command}</pre>`}
+  return html`${command !== undefined && html`<${CodeBox} key=${`${permission.request}:command`} cls=${cls} text=${command} what="command" />`}
     ${fields.length > 0 && html`<dl class="request-fields">${fields.map(({ name, kind, value }) => html`<div class="request-field" key=${name}>
       <dt class="request-name">${name}${kind && html`<span class="request-kind"> · ${kind}</span>`}</dt>
-      <dd><pre class="attention-code">${value}</pre></dd>
+      <dd><${CodeBox} key=${`${permission.request}:${name}`} cls=${cls} text=${value} what="field" /></dd>
     </div>`)}</dl>`}`;
 }
 
@@ -117,9 +116,9 @@ export function Attention({ store, ticket, entry, live }) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
       <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Permission · ${permission.tool}</span></h3>
-      <${RequestFields} permission=${permission} />
+      <${RequestFields} permission=${permission} cls="attention-code" />
       <p class="attention-note">${expired
-        ? "Remote request expired. Check the pane."
+        ? "This request expired here: answer it at your terminal."
         : "Here or at the terminal, whichever answers first wins."}</p>
       <div class="attention-actions">
         <button type="button" class="btn" disabled=${off || expired}
@@ -158,9 +157,10 @@ export function Attention({ store, ticket, entry, live }) {
       <div class="options">
         ${question.options.map((option, index) => {
           const described = option.description ? `att-${dialog.request}-${index}` : undefined;
-          return html`<button type="button" class="option" aria-label=${option.label} aria-describedby=${described}
-            ...${answer({ answer: "choice", index }, supported)}>
-            <span class="option-label">${option.label}</span>
+          const picked = pickedOption(entry, dialog, index);
+          return html`<button type="button" class=${`option${picked ? " option-picked" : ""}`} aria-label=${option.label} aria-describedby=${described}
+            aria-pressed=${picked ? "true" : undefined} ...${answer({ answer: "choice", index }, supported)}>
+            <span class="option-label">${option.label}${picked && html`<${Icon} name="check" size=${15} width=${2.4} />`}</span>
             ${described && html`<span class="option-desc" id=${described}>${option.description}</span>`}
           </button>`;
         })}
@@ -179,7 +179,9 @@ export function Attention({ store, ticket, entry, live }) {
               if (text.trim()) send({ op: "dialog", request: dialog.request, response: { answer: "text", text } });
             }}>Send answer</button>
         </div>`
-      : html`<p class="attention-note">This dialog shape needs a local answer in the pane.</p>`}
+      : html`<p class="attention-note">${store.takesKeys
+          ? "This card cannot answer it: the Terminal tab’s keys can, or your terminal."
+          : "This card cannot answer it: answer it at your terminal."}</p>`}
   </section>`;
 }
 
@@ -191,7 +193,7 @@ function TrustCard({ ticket, trust, off, send }) {
   const harness = ticket.agent.provider === "codex" ? "Codex" : "Claude Code";
   return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
     <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Trust this folder</span></h3>
-    ${trust.folder && html`<pre class="attention-code">${trust.folder}</pre>`}
+    ${trust.folder && html`<${CodeBox} key=${trust.request} cls="attention-code" text=${trust.folder} what="folder" />`}
     <p class="attention-note">${harness} asks before it works in a folder for the first time. You started this agent from mesimon; accepting presses Yes in its terminal, as you would there, and it goes on with its brief. To decline, answer in the terminal: No ends the agent.</p>
     <div class="attention-actions"><${TrustAccept} trust=${trust} off=${off} send=${send} /></div>
   </section>`;
@@ -261,4 +263,29 @@ function QuestionsForm({ store, dialog, entry, off, send }) {
         onClick=${() => answers && send({ op: "dialog", request: dialog.request, response: { answer: "answers", answers } })}>Submit ${several ? "answers" : "answer"}</button>
     </div>
   </section>`;
+}
+
+// What a person approves is never cut short unseen (T-1219): a box too small
+// for its text fades at its foot and says so, and one press shows the whole
+// of it, on the card that asks. Measured after each layout and on resize, so
+// a larger text size or a turned phone says so too.
+export function CodeBox({ text, cls, what = "text" }) {
+  const box = useRef();
+  const [cut, setCut] = useState(false);
+  const [whole, setWhole] = useState(false);
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (!node) return;
+    const measure = () => setCut(!whole && node.scrollHeight > node.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver !== "function") return;
+    const watch = new ResizeObserver(measure);
+    watch.observe(node);
+    return () => watch.disconnect();
+  }, [text, whole]);
+  return html`<div class="code-box">
+    <pre ref=${box} class=${`${cls}${whole ? " whole" : cut ? " cut" : ""}`} tabindex=${cut ? "0" : undefined}>${text}</pre>
+    ${(cut || whole) && html`<button type="button" class="code-more" aria-expanded=${String(whole)} onClick=${() => setWhole(!whole)}>
+      <${Icon} name="chevronDown" size=${14} width=${2.4} cls=${whole ? "flip" : ""} /><span>${whole ? "Show less" : `Only part shown · show the whole ${what}`}</span></button>`}
+  </div>`;
 }

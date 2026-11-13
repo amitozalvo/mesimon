@@ -6,10 +6,10 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { TrustAccept, answerable, requestSummary } from "./dialogs.js";
+import { CodeBox, RequestFields, TrustAccept, answerable, pickedOption } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
-import { RECENT_MS, omittedWords, stoppedUnasked } from "./board.js";
+import { RECENT_MS, omittedWords } from "./board.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -152,11 +152,11 @@ function FromHere({ store, ticket }) {
 
 // The ticket's state at its title's start (T-948): the agent's mark. A
 // ticket's shells are the terminal's alone (T-1208): the phone draws none.
-function StateMark({ ticket }) {
+function StateMark({ ticket, board }) {
   const state = ticket.agent?.state;
   if (state === "needs attention") return html`<span class="title-glyph"><span class="mark mark-attn" aria-hidden="true"></span></span>`;
   if (state === "starting" || state === "working") return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
-  if (stoppedUnasked(ticket.agent)) return html`<span class="title-glyph"><span class="mark mark-stopped" aria-hidden="true"></span><span class="sr-only">stopped: </span></span>`;
+  if (board.stoppedNow(ticket)) return html`<span class="title-glyph"><span class="mark mark-stopped" aria-hidden="true"></span><span class="sr-only">stopped: </span></span>`;
   if (!ticket.agent) return null;
   return html`<span class="title-glyph"><span class=${`mark ${state === "sleeping" || state === "exited" ? "mark-asleep" : "mark-idle"}`} aria-hidden="true"></span></span>`;
 }
@@ -172,6 +172,9 @@ const EXIT_WORDS = {
   resumed: "Resumed elsewhere",
 };
 export const exitWords = (agent) => EXIT_WORDS[agent?.exit?.reason] || "Stopped";
+// A logged-out agent resumes only after a login at the terminal (T-1219):
+// the phone cannot log in for it, so Resume is not its main way on.
+export const loggedOut = (agent) => agent?.exit?.reason === "logged_out";
 
 // The ticket's first tag tints the card's edge, as the TUI's tag bar does.
 const tintOf = (ticket) => ticket.tags?.[0]?.tint;
@@ -182,17 +185,21 @@ const tintOf = (ticket) => ticket.tags?.[0]?.tint;
 // under it moves from card to card), and at the right its worktree mark and
 // the agent's age; the tags, with the key at the right (after
 // what the crown last did, and the column, where the list around it is not
-// that column); and, live, what it is on. The agent's state is its mark and
-// the card's ink, never words, and the crown's word has no line of its own
-// (T-886). Each word keeps to one line: a line too narrow sends a whole word
-// to the next. An archived ticket (T-665) says so where its column would be.
+// that column); and, live, what it is on. A card with no tags has no line
+// for the key alone (T-1219): it rides the title's line, before the age.
+// The agent's state is its mark and the card's ink, never words, and the
+// crown's word has no line of its own (T-886). Each word keeps to one line:
+// a line too narrow sends a whole word to the next. An archived ticket
+// (T-665) says so where its column would be.
 function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
-  return html`<span class="face">
-    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
-    <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
-    <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
+  const tagged = ticket.tags?.length > 0;
+  const meta = html`<span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>`;
+  return html`<span class=${`face${tagged ? "" : " face-one"}`}>
+    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} board=${board} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
+    <span class="card-corner">${!tagged && meta}<${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
+    ${tagged && html`<span class="card-line"><${Tags} ticket=${ticket} />${meta}</span>`}
     <${Headline} agent=${agent} />
   </span>`;
 }
@@ -244,19 +251,21 @@ function NeedCard({ store, ticket, board, live }) {
     </button>
     ${permission && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Wants to use ${permission.tool}</span></p>
-      <pre class="need-code">${requestSummary(permission)}</pre>
+      <${RequestFields} permission=${permission} cls="need-code" />
     </div>`}
     ${trust && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Asks to trust this folder before it starts</span></p>
-      ${trust.folder && html`<pre class="need-code">${trust.folder}</pre>`}
+      ${trust.folder && html`<${CodeBox} key=${trust.request} cls="need-code" text=${trust.folder} what="folder" />`}
     </div>`}
     ${question && html`<div class="need-body">
       <p class="need-question" dir="auto">${question.question}</p>
       <div class="options">${question.options.map((option, index) => {
         const described = option.description ? `need-${dialog.request}-${index}` : undefined;
-        return html`<button type="button" class="option" disabled=${off} aria-label=${option.label} aria-describedby=${described}
+        const picked = pickedOption(entry, dialog, index);
+        return html`<button type="button" class=${`option${picked ? " option-picked" : ""}`} disabled=${off} aria-label=${option.label} aria-describedby=${described}
+          aria-pressed=${picked ? "true" : undefined}
           onClick=${() => send({ op: "dialog", request: dialog.request, response: { answer: "choice", index } })}>
-          <span class="option-label">${option.label}</span>
+          <span class="option-label">${option.label}${picked && html`<${Icon} name="check" size=${15} width=${2.4} />`}</span>
           ${described && html`<span class="option-desc" id=${described}>${option.description}</span>`}
         </button>`;
       })}</div>
@@ -285,14 +294,15 @@ function StoppedCard({ store, ticket, board, live }) {
   const waiting = startWaiting(store.startOf(ticket));
   const at = ticket.agent.exit?.at;
   const when = Number.isFinite(at) ? ageWords(board, at) : "";
+  const out = loggedOut(ticket.agent);
   return html`<article class="need stopped" data-tint=${tintOf(ticket)}>
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(ticket.id === board.selected)}
       onClick=${() => store.select(ticket.id)}>
       <${Face} store=${store} ticket=${ticket} board=${board} column=${true} />
     </button>
-    <div class="need-body"><p class="need-line">${exitWords(ticket.agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`} · its conversation is kept</p></div>
+    <div class="need-body"><p class="need-line">${exitWords(ticket.agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`} · ${out ? "log in at your terminal first, then Resume" : "its conversation is kept"}</p></div>
     <div class="need-actions">
-      <button type="button" class="btn btn-pri resume-agent" disabled=${!live || !store.canResume || waiting}
+      <button type="button" class=${`btn${out ? "" : " btn-pri"} resume-agent`} disabled=${!live || !store.canResume || waiting}
         onClick=${() => store.resumeAgent(ticket.id)}><${Icon} name="play" size=${14} /><span>Resume</span></button>
       <button type="button" class="btn fresh-agent" disabled=${!live || !store.canStart || waiting}
         onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
@@ -341,6 +351,15 @@ function Waiting({ store }) {
   </${Group}>`;
 }
 
+// An empty board says so, and offers the first ticket (T-1219).
+function NoTickets({ store }) {
+  return html`<div class="empty empty-board">
+    <p>This board has no tickets yet.</p>
+    <button id="empty-new" type="button" class="btn btn-pri" disabled=${!store.board}
+      onClick=${() => store.openComposer()}><${Icon} name="plus" size=${16} width=${2.4} /><span>New ticket</span></button>
+  </div>`;
+}
+
 export function NowList({ store, board, live }) {
   const { needs, stopped, working, idle, created } = board.sections();
   const empty = !needs.length && !stopped.length && !working.length && !idle.length && !created.length;
@@ -362,11 +381,9 @@ export function NowList({ store, board, live }) {
     ${created.length > 0 && html`<${Group} label="Recently created" count=${created.length}>
       <div class="cards">${created.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
-    ${empty && html`<p class="empty">${board.search
-      ? "No tickets match your search."
-      : board.tickets.length
-        ? "Nothing in the last hour. Open Board to see every ticket."
-        : "This board has no tickets yet."}</p>`}
+    ${empty && (!board.search && !board.tickets.length
+      ? html`<${NoTickets} store=${store} />`
+      : html`<p class="empty">${board.search ? "No tickets match your search." : "Nothing in the last hour. Open Board to see every ticket."}</p>`)}
   `;
 }
 
@@ -393,7 +410,7 @@ export function BoardList({ store, board, bp }) {
   const columns = bp === "phone" ? board.columns.filter((c) => c === board.column) : board.columns;
   if (!tickets.length && board.search) return html`<p class="empty">No tickets match your search.</p>`;
   if (!board.tickets.length && !store.sent.waiting(store.active?.pin.board).length)
-    return html`<p class="empty">This board has no tickets yet.</p>`;
+    return html`<${NoTickets} store=${store} />`;
   return html`<div class=${bp === "desktop" ? "kanban" : bp === "phone" ? "stack single" : "stack"}>${columns.map((column) => {
     const group = tickets.filter((t) => t.column === column);
     const ghosts = store.sent.waiting(store.active?.pin.board).filter((i) => i.column === column);

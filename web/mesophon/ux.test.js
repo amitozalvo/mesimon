@@ -679,7 +679,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
   page.on("pageerror", (error) => errors.push(String(error)));
   const sheet = page.locator("#new-ticket-sheet");
   const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
-  const openSheet = () => page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+  const openSheet = () => page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
   const connected = () =>
     until(page, () => document.querySelector("#connection").textContent === "Connected");
   const status = (name) => page.locator(`.sent-item[data-status="${name}"]`);
@@ -849,7 +849,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
           setTimeout(() => (clearInterval(sample), done([...seen])), 3600);
         }),
     );
-    assert.deepEqual(strip, ["Reconnecting… Last received view is stale.|true"]);
+    assert.deepEqual(strip, ["Reconnecting… The board shown is the last one received.|true"]);
     await page.locator("#quick-more").click();
     await sheet.waitFor({ state: "visible" });
     assert.match(await sheet.locator(".compose-dest").textContent(), /waits at the relay/);
@@ -1336,7 +1336,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     // ticket sheet, sent in pieces that name no ticket, then the create
     // that links it, live even to a host that keeps mail.
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
-    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    await page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
     const composer = page.locator("#new-ticket-sheet");
     await composer.waitFor({ state: "visible" });
     await page.locator("#new-title").fill("Pictured ticket");
@@ -1363,7 +1363,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.equal(Object.keys(await page.evaluate(() => fixture.uploads)).length, before + 1, "the removed picture never went up");
     assert.equal(await page.evaluate(() => fixture.deposits.length), deposits, "a pictured ticket is never sealed");
     // The sheet starts the next ticket empty.
-    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    await page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
     await composer.waitFor({ state: "visible" });
     assert.equal(await composer.locator(".note-pic").count(), 0);
     assert.equal(await page.locator("#new-description").inputValue(), "");
@@ -1378,7 +1378,7 @@ async function notesFlow(browser, engineName, size, viewport) {
       fixture.channel().close();
     });
     await until(page, () => document.querySelector("#shell").dataset.link === "asleep");
-    await page.locator(size === "phone" ? "#new-ticket-fab" : "#new-ticket").click();
+    await page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
     await composer.waitFor({ state: "visible" });
     await page.locator("#new-title").fill("Pictured while away");
     await page.locator("#new-picture").setInputFiles({ name: "away.png", mimeType: "image/png", buffer: png });
@@ -1746,7 +1746,8 @@ async function startFlow(browser, engineName, size, viewport) {
       "Mesimon",
     );
     assert(await page.locator("#add-board").isVisible());
-    assert.equal(await page.locator("#sidebar .side-title").textContent(), "mesimon");
+    // The board's name is the sidebar's title, said once (T-1219).
+    assert.equal(await page.locator("#sidebar .side-brand-text").textContent(), "Mesimon");
     await shot("board-picker");
     await page.keyboard.press("Escape");
     await page.locator("#board-list").waitFor({ state: "hidden" });
@@ -2539,6 +2540,12 @@ async function chatFlow(browser, engineName, size, viewport) {
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     window.fixture.features.push("transcript");
+    // The raw switch's choice from before T-1208 opens no ticket on the
+    // Terminal tab (T-1219).
+    if (!sessionStorage.getItem("old-choice")) {
+      sessionStorage.setItem("old-choice", "1");
+      localStorage.setItem("mesophon-output", "raw");
+    }
     // Tall enough that one page overflows the panel at every size: a page
     // that does not is followed by the one before it by itself.
     const words = (i) => i === 37
@@ -2685,7 +2692,8 @@ async function chatFlow(browser, engineName, size, viewport) {
     await page.locator("#tab-terminal").click();
     await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
     assert.equal(await chat.count(), 0);
-    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), "raw");
+    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-view")), "raw");
+    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), null, "the old key is gone");
     assert.equal(await page.locator("#tab-terminal").getAttribute("aria-selected"), "true");
     // A host that takes no keys keeps the composer under the screen.
     assert.equal(await page.locator("#keys-form").count(), 0);
@@ -2702,6 +2710,9 @@ async function chatFlow(browser, engineName, size, viewport) {
     await chat.waitFor();
     assert(await page.locator("#tab-terminal").isDisabled());
     assert(await chat.isVisible());
+    // A tab that cannot be used is never the selected one (T-1219).
+    assert.equal(await page.locator("#tab-terminal").getAttribute("aria-selected"), "false");
+    assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true");
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and the Terminal tab passed`);
   } catch (error) {
@@ -3053,11 +3064,11 @@ async function batchFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "answer_differs" }; });
     await button("Submit answers").click();
     await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
-    assert.match((await receipt()).text, /the pane's answers differ from yours, so Submit was not pressed · try again or answer in the pane/);
+    assert.match((await receipt()).text, /the terminal's answers differ from yours, so it was not submitted · try again, or answer at your terminal/);
     assert(await button("Submit answers").isEnabled());
     await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
     await button("Submit answers").click();
-    await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Answers submitted."));
     assert.equal((await receipt()).ticks, 2);
     // Words in place of the ticks: the ticks step aside and the words go.
     await page.evaluate(() => { fixture.dialogReply = undefined; });
@@ -3090,7 +3101,7 @@ async function batchFlow(browser, engineName, size, viewport) {
       fixture.features = fixture.features.filter((f) => f !== "dialog_multi");
     });
     await connected();
-    await until(page, () => document.querySelector("#attention").textContent.includes("needs a local answer in the pane"));
+    await until(page, () => document.querySelector("#attention").textContent.includes("This card cannot answer it"));
     assert.equal(await attention.getByRole("checkbox").count(), 0);
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: a batch and a several-choice question answered whole, receipts and an older host passed`);
@@ -3253,14 +3264,14 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.locator("#keys-text").fill("");
     await page.evaluate(() => fixture.keys.splice(5));
     // T-1218 round 2: one line at a time. While the line and its Enter are
-    // on their way, Send and the Enter key rest; a newer line typed then is
-    // not cleared by the first one's receipt.
+    // on their way, the line's ⏎ (Send, and Enter alone, T-1219) rests; a
+    // newer line typed then is not cleared by the first one's receipt.
     await page.evaluate(() => (fixture.holdKeys = true));
     await page.locator("#keys-text").fill("first");
     await page.locator("#keys-send").click();
     await until(page, () => fixture.keys.length === 6);
     assert(await page.locator("#keys-send").isDisabled(), "no second line while the first is on its way");
-    assert(await page.locator('.key[data-key="enter"]').isDisabled());
+    assert.equal(await page.locator('.key[data-key="enter"]').count(), 0, "Enter is the line's ⏎ (T-1219)");
     await page.locator("#keys-text").fill("second");
     await page.locator("#keys-text").press("Enter");
     await page.waitForTimeout(200);
@@ -3312,7 +3323,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelectorAll("#attention .request-field").length === 3);
     assert.deepEqual(await page.locator("#attention .request-name").allTextContents(), ["description", "cwd", "force · true or false"]);
     assert.deepEqual(await page.locator("#attention .request-field pre").allTextContents(), ["List\n\ncwd: /safe", "/repo", "false"]);
-    assert.equal(await page.locator("#attention > pre.attention-code").textContent(), "ls");
+    assert.equal(await page.locator("#attention > .code-box > pre.attention-code").textContent(), "ls");
     // T-1218, the person's decision: with no card to answer it on (expired,
     // or never given) the keys answer the agent's own dialog, and say so.
     await page.evaluate(() => {
@@ -3336,7 +3347,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
       fixture.tickets[0].agent.card_answers = false;
       fixture.update();
     });
-    await until(page, () => /needs a local answer in the pane/.test(document.querySelector("#attention")?.textContent || ""));
+    await until(page, () => /This card cannot answer it: the Terminal tab’s keys can, or your terminal\./.test(document.querySelector("#attention")?.textContent || ""));
     assert(await page.locator("#keys-text").isEnabled());
     assert.deepEqual(await page.locator("#attention .option").evaluateAll((ns) => ns.map((n) => n.disabled)), [true, true],
       "no option sends");
@@ -4570,9 +4581,12 @@ try {
                   );
                 return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
               };
-              return [
+              const tokens = [
                 ["--ink", "--bg"],
                 ["--ink3", "--s1"],
+                // Muted words on the ground (T-1219): group labels, counts,
+                // the tabs at rest, a card's key and its tag names.
+                ["--ink3", "--bg"],
                 ["--ink2", "--s2"],
                 ["--pri-ink", "--pri"],
                 ["--attn-ink", "--attn"],
@@ -4581,6 +4595,28 @@ try {
                   y = luminance(b);
                 return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
               });
+              // Two kinds of text as drawn (T-1219): an option's description
+              // on its option, and the conversation's edge words on the page.
+              const rgb = (text) => {
+                const [r, g, b] = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(text).slice(1).map(Number);
+                return [r, g, b]
+                  .map((c) => c / 255)
+                  .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+                  .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+              };
+              const probe = document.createElement("div");
+              probe.innerHTML = '<button class="option"><span class="option-desc">x</span></button><div class="chat"><p class="chat-edge">x</p></div>';
+              document.body.append(probe);
+              const drawn = [
+                [probe.querySelector(".option-desc"), probe.querySelector(".option")],
+                [probe.querySelector(".chat-edge"), document.body],
+              ].map(([text, ground]) => {
+                const x = rgb(getComputedStyle(text).color),
+                  y = rgb(getComputedStyle(ground).backgroundColor);
+                return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+              });
+              probe.remove();
+              return [...tokens, ...drawn];
             });
             assert(
               contrast.every((ratio) => ratio >= 4.5),
@@ -4741,12 +4777,12 @@ try {
           await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "label_wrapped" }; });
           await attention("Blue").click();
           await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
-          assert.match((await receiptLine()).text, /the option does not read as one row on the screen · try again or answer in the pane/);
+          assert.match((await receiptLine()).text, /the option does not read as one row on the screen · try again, or answer at your terminal/);
           assert.equal((await receiptLine()).ticks, 0);
           assert(await attention("Blue").isEnabled());
           await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
           await attention("Blue").click();
-          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Blue”."));
           assert.equal((await receiptLine()).ticks, 2);
           await page.evaluate(() => { fixture.dialogReply = undefined; });
           await page.locator("#attention input").fill("Purple");
@@ -4803,7 +4839,7 @@ try {
           assert(await attention("Dark").isEnabled(), "a queued prompt does not lock the answer");
           await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
           await attention("Dark").click();
-          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered."));
+          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Dark”."));
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1)),
             { op: "dialog", request: "question-2", response: { answer: "choice", index: 1 }, ticket: "m2", session: "m2-session" });
           // The row says whose words wait and on what, as the host says it.

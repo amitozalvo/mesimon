@@ -31,10 +31,10 @@ const reasonWords = {
   shape_unrecognised: "the screen does not show this question",
   deadline: "it took too long",
   state_changed: "the agent moved on",
-  pane_unreachable: "the pane did not take the keys",
+  pane_unreachable: "the agent's terminal did not take it",
   // A batch or a several-choice question (T-571).
   tick_not_taken: "an option did not take its tick",
-  answer_differs: "the pane's answers differ from yours, so Submit was not pressed",
+  answer_differs: "the terminal's answers differ from yours, so it was not submitted",
   "cursor moved": "the selection already moved",
 };
 export const reasonText = (reason) =>
@@ -209,9 +209,9 @@ function deliveryWords(status, reply, receipt) {
     {
       queued: "Queued.",
       awaiting_delivery: "Sending… Awaiting delivery.",
-      decision_sent: "Decision sent. Check the output for the agent’s response.",
-      answered: "Answered.",
-      input_sent: "Keys sent, not confirmed · check the pane.",
+      decision_sent: `${receipt.said || "Your answer"} · sent to the agent.`,
+      answered: receipt.said ? `${receipt.said}.` : "Answered.",
+      input_sent: `${receipt.said || "Answered"} · the agent has not confirmed it yet.`,
       submitted:
         "Submitted to the agent. This confirms input delivery, not completion.",
       rejected: reply.message
@@ -220,7 +220,24 @@ function deliveryWords(status, reply, receipt) {
       unknown: "Delivery unknown. Check the agent before sending again.",
     }[status] || "Delivery unknown. Check the agent before sending again.";
   if (status === "unknown" && reply.reason)
-    words = `Could not answer: ${reasonText(reply.reason)} · try again or answer in the pane.`;
+    words = `Could not answer: ${reasonText(reply.reason)} · try again, or answer at your terminal.`;
   const replaced = replacedWords(receipt.replaced);
   return replaced && !["rejected", "unknown"].includes(status) ? `${words} ${replaced}` : words;
+}
+
+// What an answer said, in a phone's words (T-1219), for its receipt's line:
+// a permission approved or denied, the option picked or the words typed.
+export function answerWords(agent, body) {
+  if (body.op === "permission") return body.decision === "allow" ? "Approved once" : "Denied";
+  const response = body.response || {};
+  const dialog = agent?.dialog;
+  if (response.answer === "choice") {
+    const label = dialog?.questions?.[0]?.options?.[response.index]?.label;
+    return label ? `Answered “${label}”` : "Answered";
+  }
+  if (response.answer === "text") return `Answered “${response.text}”`;
+  if (response.answer === "answers") return dialog?.questions?.length > 1 ? "Answers submitted" : "Answer submitted";
+  if (response.answer === "accept") return dialog?.kind === "plan" ? "Plan accepted" : agent?.trust ? "Folder trusted" : "Accepted";
+  if (response.answer === "reject") return dialog?.kind === "plan" ? "Plan rejected" : "Question declined";
+  return "";
 }
