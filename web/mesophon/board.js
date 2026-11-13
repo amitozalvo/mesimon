@@ -1,10 +1,17 @@
 // The bounded host projection and local list preferences, one instance per board.
+// An agent whose process ended unasked (T-1208): crashed, killed, logged
+// out. One the person quit or cleared is only idle. An older host says no
+// reason, and its exited agent stays idle too.
+const UNASKED = ["crashed", "killed", "logged_out"];
+export const stoppedUnasked = (agent) => agent?.state === "exited" && UNASKED.includes(agent.exit?.reason);
 const phase = (ticket) =>
   ticket.agent?.state === "needs attention"
     ? "needs"
-    : ["starting", "working"].includes(ticket.agent?.state)
-      ? "working"
-      : "idle";
+    : stoppedUnasked(ticket.agent)
+      ? "stopped"
+      : ["starting", "working"].includes(ticket.agent?.state)
+        ? "working"
+        : "idle";
 // How long a stopped agent stays on Now (T-560): about an hour.
 export const RECENT_MS = 3600000;
 // Which of Now's groups lists a ticket at `now`, if any: an agent that needs
@@ -60,6 +67,8 @@ export class BoardState {
       tiers: Array.isArray(reply.tiers) ? reply.tiers : [],
       archived: Array.isArray(reply.archived) ? reply.archived : [],
       omitted: Number.isInteger(reply.omitted) && reply.omitted > 0 ? reply.omitted : 0,
+      // The theme the terminal wears (T-1208), for a page that follows it.
+      terminalTheme: typeof reply.theme === "string" ? reply.theme : "",
       cached,
       shelved,
       receivedAt: at,
@@ -113,7 +122,7 @@ export class BoardState {
   // then the tickets created within the hour, newest first (T-668).
   sections() {
     const now = this.cached ? this.receivedAt : Date.now();
-    const groups = { needs: [], working: [], idle: [], created: [] };
+    const groups = { needs: [], stopped: [], working: [], idle: [], created: [] };
     for (const ticket of this.visible()) groups[nowGroup(ticket, now)].push(ticket);
     groups.created.sort((a, b) => b.created - a.created);
     return groups;
@@ -150,6 +159,7 @@ export class BoardState {
       // Sent's archived tickets (T-665), as their cards read: no agent.
       ...(this.archived.length && { archived: this.archived.map(card) }),
       ...(this.omitted && { omitted: this.omitted }),
+      ...(this.terminalTheme && { theme: this.terminalTheme }),
       title: this.title,
       columns: this.columns,
       default_column: this.defaultColumn,
@@ -183,6 +193,8 @@ export class BoardState {
           provider: agent.provider,
           state: agent.state,
           since: agent.since,
+          // Why it stopped (T-1208), so a cold start still offers the resume.
+          ...(agent.exit?.reason && { exit: { reason: agent.exit.reason, ...(Number.isFinite(agent.exit.at) && { at: agent.exit.at }) } }),
           promptable: false,
         },
       })),

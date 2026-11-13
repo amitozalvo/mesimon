@@ -53,6 +53,15 @@ export function requestSummary(permission) {
   return JSON.stringify(input ?? {});
 }
 
+// The whole request, for the ticket page (T-1208): a command as it would
+// run, with what the agent said it is for; anything else as its fields.
+export function requestDetail(permission) {
+  const input = permission?.input;
+  if (input && typeof input.command === "string")
+    return typeof input.description === "string" && input.description ? `${input.command}\n\n# ${input.description}` : input.command;
+  return JSON.stringify(input ?? {}, null, 2);
+}
+
 export function Attention({ store, ticket, entry, live }) {
   const permission = ticket?.agent?.permission;
   const dialog = ticket?.agent?.dialog;
@@ -68,10 +77,10 @@ export function Attention({ store, ticket, entry, live }) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
       <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Permission · ${permission.tool}</span></h3>
-      <pre class="attention-code">${JSON.stringify(permission.input, null, 2)}</pre>
+      <pre class="attention-code">${requestDetail(permission)}</pre>
       <p class="attention-note">${expired
         ? "Remote request expired. Check the pane."
-        : "Approve this request once, or deny it. The terminal’s own dialog stays open too, and whichever answers first wins."}</p>
+        : "Here or at the terminal, whichever answers first wins."}</p>
       <div class="attention-actions">
         <button type="button" class="btn" disabled=${off || expired}
           onClick=${() => send({ op: "permission", request: permission.request, decision: "deny" })}>Deny</button>

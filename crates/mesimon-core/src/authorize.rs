@@ -70,6 +70,12 @@ pub enum Action {
     /// be choosing its own tier. The keyboard's own `CrownTicket` command
     /// stays the `Mutate` it always was.
     CrownTicket,
+    /// Press one key, or type one line, into one agent session's pane
+    /// (T-1208): the owner's paired phone's key bar on the ticket page. The
+    /// daemon targets only an agent session with a live pane, never a shell;
+    /// for every other principal it is the `Mutate` on the session it always
+    /// was, so no agent reaches a pane by it.
+    PressKeys,
     /// Write, add or delete one note on one ticket (T-532): the owner's
     /// paired phone edits notes without `Mutate` on the ticket, which would
     /// also move, rename and merge it. An agent's `write_note` stays a
@@ -148,7 +154,8 @@ impl Decision {
 /// edits, on the ticket (and a move's destination column), and
 /// `ChooseWorkspace` the fourth (T-642), `ArchiveTicket` the fifth (T-737);
 /// for everyone else they are `Mutate`. `Annotate` is its note edit, on a ticket (T-532).
-/// `ParkAgent` is its one lifecycle write, on a session (T-1090).
+/// `ParkAgent` is its one lifecycle write, on a session (T-1090), and
+/// `PressKeys` its key bar into one agent session's pane (T-1208).
 /// `CrownTicket` puts the crown on a ticket or takes it off (T-1182), the
 /// owner's alone.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
@@ -195,6 +202,15 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
         return match (principal, resource) {
             (Principal::Paired { .. }, Resource::Session { .. }) => Decision::Allow,
             (Principal::Paired { .. }, _) => deny("a paired device parks one agent session"),
+            _ => authorize(principal, &Action::Mutate, resource),
+        };
+    }
+    if *action == Action::PressKeys {
+        return match (principal, resource) {
+            (Principal::Paired { .. }, Resource::Session { .. }) => Decision::Allow,
+            (Principal::Paired { .. }, _) => {
+                deny("a paired device presses keys in one agent session")
+            }
             _ => authorize(principal, &Action::Mutate, resource),
         };
     }
@@ -260,8 +276,8 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             Action::Read => Decision::Allow,
             _ => deny(
                 "paired devices only read, prompt, answer existing permissions, file tickets, \
-                 start and park agents, move, rename, tag, crown and archive tickets, choose \
-                 their workspace and write notes",
+                 start, resume and park agents, press keys in an agent's pane, move, rename, \
+                 tag, crown and archive tickets, choose their workspace and write notes",
             ),
         },
         Principal::Agent { .. } => match (action, resource) {
@@ -537,6 +553,35 @@ mod tests {
             for resource in elsewhere.iter().chain([&session]) {
                 assert_eq!(
                     authorize(&by, &Action::ParkAgent, resource),
+                    authorize(&by, &Action::Mutate, resource),
+                    "{by:?} {resource:?}"
+                );
+            }
+        }
+    }
+
+    /// The phone's key bar (T-1208) reaches one session and nothing a
+    /// session `Mutate` would add; for everyone else a key press is answered
+    /// exactly as `Mutate` is, so an agent never presses keys in a pane.
+    #[test]
+    fn a_phone_presses_keys_in_one_session_and_others_keep_mutate() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        let elsewhere = [
+            Resource::Board,
+            Resource::Ticket { id: ulid::Ulid::nil() },
+            Resource::Column { name: "TODO".into() },
+            Resource::Shell { ticket: ulid::Ulid::nil(), id: uuid::Uuid::nil() },
+        ];
+        assert_eq!(authorize(&paired, &Action::PressKeys, &session), Decision::Allow);
+        for resource in &elsewhere {
+            assert!(authorize(&paired, &Action::PressKeys, resource).denied(), "{resource:?}");
+        }
+        assert!(authorize(&agent(), &Action::PressKeys, &session).denied());
+        for by in [Principal::Local, agent(), remote(), automation()] {
+            for resource in elsewhere.iter().chain([&session]) {
+                assert_eq!(
+                    authorize(&by, &Action::PressKeys, resource),
                     authorize(&by, &Action::Mutate, resource),
                     "{by:?} {resource:?}"
                 );

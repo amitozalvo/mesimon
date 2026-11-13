@@ -110,7 +110,7 @@ itself: Claude Code or Codex, exactly as you know it.
 **Remote Control.** Pair your phone from `esc` › Remote Control and answer your agents from
 wherever you are.
 
-<img src="assets/demo/remote.png" width="330" alt="Remote Control on a phone: the Now screen, a permission request on a card with Deny and Approve once under it, and two working agents below">
+<img src="assets/demo/remote.png" width="330" alt="Remote Control on a phone: the Inbox, a permission request on a card with Deny and Approve once under it, and two working agents below">
 
 <sub>The card lights on your phone when an agent needs you. Tap to approve, deny, pick an
 answer or accept a plan, and file a ticket from the **+** button; it lands when your computer

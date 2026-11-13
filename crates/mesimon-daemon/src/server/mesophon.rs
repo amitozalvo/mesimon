@@ -966,6 +966,10 @@ impl Daemon {
                     "transcript",
                     // A tier picked for a start or a prompt (T-643).
                     "tiers",
+                    // The key bar into an agent's pane (T-1208).
+                    "keys",
+                    // A stopped agent's conversation brought back (T-1208).
+                    "resume",
                     // Tickets for an away host wait at the relay (T-497).
                     if self.control.mail { "mailbox" } else { "" },
                     // Words for an agent wait there too (T-881).
@@ -1212,6 +1216,17 @@ impl Daemon {
             api::Request::TellAgent { ticket, note } => {
                 self.control_tell_agent(&by, &ticket, &note)
             }
+            api::Request::Keys { ticket, session, key, text } => {
+                self.control_keys(&by, &ticket, &session, key, text)
+            }
+            api::Request::Resume { ticket, session, prompt, tier } => self.control_resume(
+                &by,
+                (grant, device, command.id),
+                &ticket,
+                &session,
+                prompt,
+                tier,
+            ),
         };
         self.control.remember(grant, command.id, reply.clone());
         let bytes = measured.unwrap_or_else(|| measure(&reply));
@@ -3447,6 +3462,132 @@ impl Daemon {
         Reply::Edited { ticket: ticket.into() }
     }
 
+    /// The phone's key bar (T-1208): one named key, or one line typed, into
+    /// the pane of the agent session the card names. `control_target` holds
+    /// it to an agent with a live pane on that ticket, so a shell, a
+    /// terminal or a session elsewhere is refused; and no key goes in under
+    /// a delivery the daemon is still typing.
+    fn control_keys(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        session: &str,
+        key: Option<api::PaneKey>,
+        text: Option<String>,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = self.control_target(ticket, session) else {
+            return reject("the agent's pane is not open; open the ticket again");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::PressKeys, &Resource::Session { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        if self.control.dialog_deliveries.contains_key(&id) || self.control_input_in_flight(id) {
+            return reject("input is already pending");
+        }
+        let sid = id.simple().to_string()[..16].to_string();
+        let sent = match (key, text) {
+            (Some(key), None) => self.backend.press_key(&sid, key.tmux()),
+            (None, Some(text)) => {
+                let text = mesimon_core::text::scrub_text(&text);
+                if text.is_empty() {
+                    return reject("nothing to type");
+                }
+                if text.len() > api::KEYS_TEXT_MAX_BYTES {
+                    return reject("too long for one line");
+                }
+                self.backend.send_text(&sid, &text)
+            }
+            _ => return reject("send one key or one line"),
+        };
+        if sent.is_err() {
+            return reject("the pane did not take it");
+        }
+        self.feed.board(by.actor(), "mesophon_keys", ulid::Ulid::from_string(ticket).ok());
+        Reply::Edited { ticket: ticket.into() }
+    }
+
+    /// A stopped agent brought back from the phone (T-1208), the desk's
+    /// Enter on the rail's corpse: `resume_session_in` on the ticket's
+    /// `dead_agent`, keeping its conversation, with the words held for its
+    /// first turn when there are some (`prompt_sleeping`'s road, which
+    /// resumes a corpse as it wakes a parked agent). Gated as `Start` is,
+    /// a resume being a start of the same seat, and answered on its receipt
+    /// road so the page follows it with `status`.
+    fn control_resume(
+        &mut self,
+        by: &Principal,
+        (grant, device, command): (BoardId, DeviceId, u64),
+        ticket: &str,
+        session: &str,
+        prompt: Option<String>,
+        tier: Option<String>,
+    ) -> Reply {
+        let reject = |message: &str| Reply::Rejected { message: message.into() };
+        let Some(id) = ulid::Ulid::from_string(ticket)
+            .ok()
+            .filter(|id| self.board.ticket(*id).is_some_and(|t| !t.is_archived()))
+        else {
+            return reject("ticket unavailable");
+        };
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::StartAgent, &Resource::Ticket { id })
+        {
+            return reject(&format!("denied: {reason}"));
+        }
+        let policy = self.board.ticket(id).map(|t| t.effective_execution_policy());
+        if policy.is_some_and(|p| mesimon_core::authorize::authorize_execution(by, p).denied()) {
+            return reject(
+                "this ticket came from outside the board: resume its agent at your terminal",
+            );
+        }
+        if let Some(message) = self.team_viewer_refusal() {
+            return reject(&message);
+        }
+        let Some(corpse) = self.board.dead_agent(id).map(|s| s.id) else {
+            return reject("this ticket has no stopped agent to resume");
+        };
+        if uuid::Uuid::parse_str(session).ok() != Some(corpse) {
+            return reject("session changed; open the ticket again");
+        }
+        if self.control.starts.contains_key(&id)
+            || self.pending_spawns.iter().any(|s| s.ticket == id && s.kind.is_agent())
+            || self.pending_resumes.iter().any(|r| r.ticket == id)
+        {
+            return reject("an agent is already starting on this ticket");
+        }
+        if let Some(pick) = tier {
+            if let Err(message) = self.apply_ticket_tier(id, Some(pick)) {
+                return reject(&message);
+            }
+            self.persist_sessions();
+        }
+        let words = match prompt.as_deref().map(mesimon_core::command::sanitize_prompt) {
+            Some(Err(message)) => return reject(&message),
+            Some(Ok(words)) => words,
+            None => None,
+        };
+        let answer = match words {
+            Some(text) => self.prompt_sleeping(id, text, false, super::Ack::PROMPT),
+            None => self.resume_session_in(corpse, false, false),
+        };
+        self.person_woke(Some(corpse), &answer);
+        let (status, session) = match answer {
+            Response::Spawned { id, .. } => ("starting", Some(id)),
+            Response::Provisioning => ("provisioning", None),
+            Response::Err { message } => return reject(&message),
+            other => return reject(&format!("unexpected resume answer: {other:?}")),
+        };
+        self.feed.board(by.actor(), "mesophon_resume_agent", Some(id));
+        self.control.starts.insert(id, StartWait { grant, device, command, session });
+        Reply::delivery(status)
+    }
+
     /// The crown from the owner's phone (T-1182), the desk's `^o`:
     /// `crown_ticket` as at the desk, so a ticket whose agent the crown
     /// started, or a board whose columns are barred, refuses in the desk's
@@ -4040,7 +4181,10 @@ impl Daemon {
                     let q = self.queued.iter().find(|q| q.ticket == t.id);
                     row.queued = q.map(|q| q.text.clone());
                     row.queue = q.map(|q| self.control_queue(q, &order));
-                    row.agent = self.board.live_agent(t.id).map(|s| {
+                    // A stopped agent stays in sight (T-1208): the corpse
+                    // the rail keeps, where no live agent holds the seat,
+                    // so a phone can resume it.
+                    row.agent = self.board.agent_or_corpse(t.id).map(|s| {
                         let (doing, said) = self.control_words(s);
                         self.control_agent(t, s, doing, said)
                     });
@@ -4053,6 +4197,7 @@ impl Daemon {
             // queue, since an archived ticket has neither on the board.
             archived: sent_archived(&self.board).map(|t| self.control_card(t, &book)).collect(),
             omitted: 0,
+            theme: self.worn_theme.clone(),
         };
         // A transcript no live agent reads any more leaves the cache.
         let live: HashSet<&str> = self.board.sessions.iter().filter_map(preview_path).collect();
@@ -4183,6 +4328,7 @@ impl Daemon {
             }
             .into(),
             promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
+            exit: agent_exit(s),
         }
     }
 
@@ -4891,6 +5037,18 @@ fn permission_peer_closed(stream: &UnixStream) -> bool {
 /// ticket, read as `spawn_session` reads it, in words for someone away from
 /// the terminal. A parked one is no refusal since T-510: the start wakes it,
 /// as the desk's Shift+Enter does.
+/// Why an agent stopped, for a phone (T-1208): the record's own reason in
+/// its serde word, and when it entered that state. `None` while it runs.
+fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
+    let reason = match s.state {
+        SessionState::Exited { reason } => serde_json::to_value(reason),
+        SessionState::Failed { reason } => serde_json::to_value(reason),
+        _ => return None,
+    };
+    let reason = reason.ok()?.as_str()?.to_string();
+    Some(api::AgentExit { reason, at: s.state_changed_at })
+}
+
 fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
     let held = board.live_agent(ticket)?;
     if held.codex_stopping {
@@ -6468,6 +6626,7 @@ mod tests {
                     doing: None,
                     said: None,
                     tier: None,
+                    exit: None,
                 }),
                 tags: Vec::new(),
                 picked: None,
@@ -6490,6 +6649,7 @@ mod tests {
                 tiers: vec![],
                 archived: vec![],
                 omitted: 0,
+                theme: None,
             };
             let answer = measure(&reply).unwrap();
             assert!(answer <= 48 * 1024, "the board answer: {answer} bytes");
@@ -8978,6 +9138,146 @@ mod crown_tests {
             panic!("no ticket was crowned")
         };
         assert_eq!(message, "ticket unavailable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod keys_resume_tests {
+    use super::*;
+    use mesimon_core::board::ExitReason;
+
+    fn phone() -> Principal {
+        Principal::Paired { device: "d".into(), grant: "g".into() }
+    }
+    fn refusal(reply: Reply) -> String {
+        match reply {
+            Reply::Rejected { message } => message,
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+
+    /// T-1208: the key bar reaches the agent session the card names and
+    /// nothing else: not another ticket's, not a shell, not a dead pane,
+    /// never for an agent; one key or one line, scrubbed and capped. The
+    /// test's tmux socket listens to nothing, so a press that passed every
+    /// gate is refused by tmux alone.
+    #[test]
+    fn a_phone_s_keys_reach_only_the_ticket_s_agent_pane() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1208k-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let (ticket, id) = (d.board.sessions[0].ticket.to_string(), d.board.sessions[0].id);
+        let session = id.to_string();
+        let key = Some(api::PaneKey::Escape);
+        let gone = "the agent's pane is not open; open the ticket again";
+
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, key, None)),
+            "the pane did not take it"
+        );
+        let typed = Some("yes".to_string());
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, None, typed)),
+            "the pane did not take it"
+        );
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, None, None)),
+            "send one key or one line"
+        );
+        let both = Some("x".to_string());
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, key, both)),
+            "send one key or one line"
+        );
+        let bell = Some("\u{7}\u{1b}".to_string());
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, None, bell)),
+            "nothing to type"
+        );
+        let long = Some("a".repeat(api::KEYS_TEXT_MAX_BYTES + 1));
+        assert_eq!(
+            refusal(d.control_keys(&phone(), &ticket, &session, None, long)),
+            "too long for one line"
+        );
+
+        let agent = Principal::Agent { session: id };
+        let denied = refusal(d.control_keys(&agent, &ticket, &session, key, None));
+        assert!(denied.starts_with("denied:"), "{denied}");
+
+        let elsewhere = ulid::Ulid::new().to_string();
+        assert_eq!(refusal(d.control_keys(&phone(), &elsewhere, &session, key, None)), gone);
+        let stranger = uuid::Uuid::new_v4().to_string();
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &stranger, key, None)), gone);
+
+        d.board.sessions[0].kind = SessionKind::Bash;
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, key, None)), gone);
+        d.board.sessions[0].kind = SessionKind::Claude;
+        d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Crashed });
+        assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, key, None)), gone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1208: a stopped agent stays on the phone's board with why it
+    /// stopped, and a resume reaches only that corpse: not a live agent,
+    /// not another session, never for an agent principal.
+    #[test]
+    fn a_phone_sees_and_resumes_only_the_ticket_s_stopped_agent() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1208r-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        d.queued.clear();
+        let ticket = d.board.sessions[0].ticket;
+        let worker = super::super::queued_person_push_tests::worker_ticket;
+        d.board.tickets = vec![worker(ticket, "TODO", "a")];
+        let (t, id) = (ticket.to_string(), d.board.sessions[0].id);
+        let s = id.to_string();
+        let to = (BoardId::random(), mesimon_team::crypto::DeviceKeys::generate().id(), 1);
+
+        let none = "this ticket has no stopped agent to resume";
+        assert_eq!(refusal(d.control_resume(&phone(), to, &t, &s, None, None)), none);
+
+        d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Crashed });
+        let at = d.board.sessions[0].state_changed_at;
+        let (Reply::Board { tickets, .. }, _) = d.control_board() else { panic!("board") };
+        let agent = tickets[0].agent.as_ref().expect("the corpse stays in sight");
+        assert_eq!(agent.state, "exited");
+        assert_eq!(agent.exit, Some(api::AgentExit { reason: "crashed".into(), at }));
+        assert!(!agent.promptable);
+
+        let other = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            refusal(d.control_resume(&phone(), to, &t, &other, None, None)),
+            "session changed; open the ticket again"
+        );
+        let agent = Principal::Agent { session: id };
+        assert!(refusal(d.control_resume(&agent, to, &t, &s, None, None)).starts_with("denied:"));
+        assert_eq!(
+            refusal(d.control_resume(&phone(), to, "nope", &s, None, None)),
+            "ticket unavailable"
+        );
+        // Dismissed is the one exit the rail hides, and so does the phone.
+        d.board.sessions[0].set_state(SessionState::Exited { reason: ExitReason::Dismissed });
+        assert_eq!(refusal(d.control_resume(&phone(), to, &t, &s, None, None)), none);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1208: the terminal's theme reaches the phone's board as the TUI
+    /// pushed it, and only a flavor's word is kept.
+    #[test]
+    fn the_worn_theme_rides_the_phone_s_board() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1208t-{}", std::process::id()));
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(&dir);
+        let theme = |d: &Daemon| match d.control_board().0 {
+            Reply::Board { theme, .. } => theme,
+            _ => panic!("board"),
+        };
+        assert_eq!(theme(&d), None);
+        assert!(matches!(d.set_worn_theme("gruvbox-light".into()), Response::Ok));
+        assert_eq!(theme(&d).as_deref(), Some("gruvbox-light"));
+        for bad in ["", "Nord", "nord;rm", "a".repeat(33).as_str()] {
+            assert!(matches!(d.set_worn_theme(bad.into()), Response::Err { .. }), "{bad:?}");
+        }
+        assert_eq!(theme(&d).as_deref(), Some("gruvbox-light"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

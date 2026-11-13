@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
-import { BoardState, RECENT_MS, omittedWords, refusedBoardWords } from "./board.js";
+import { BoardState, RECENT_MS, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
+import { THEMES, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, dialogForm, formAnswers, measured } from "./dialogs.js";
@@ -368,6 +369,45 @@ test("Now groups agents by the host's own state word", () => {
   board.search = "three";
   assert.deepEqual(board.sections().idle.map((t) => t.id), ["three"]);
   assert.equal(board.sections().working.length, 0);
+});
+
+test("an agent whose process ended unasked is Stopped until resumed; one its person quit is only idle (T-1208)", () => {
+  const now = Date.now();
+  const rows = ["crashed", "killed", "out", "quit", "cleared", "older-host"].map((id) => ticket(id, id));
+  const exit = (row, reason) => Object.assign(row.agent, { state: "exited", since: now - 5 * RECENT_MS, exit: { reason, at: now - 5 * RECENT_MS } });
+  exit(rows[0], "crashed");
+  exit(rows[1], "killed");
+  exit(rows[2], "logged_out");
+  exit(rows[3], "user_quit");
+  exit(rows[4], "cleared");
+  Object.assign(rows[5].agent, { state: "exited", since: now - 60000 });
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["TODO"], tickets: rows });
+  const { stopped, idle } = board.sections();
+  // Hours later a crash still waits for the person; a quit has left Now.
+  assert.deepEqual(stopped.map((t) => t.id), ["crashed", "killed", "out"]);
+  assert.deepEqual(idle.map((t) => t.id), ["older-host"]);
+  assert.equal(stoppedUnasked(rows[0].agent), true);
+  assert.equal(stoppedUnasked(rows[3].agent), false);
+  assert.equal(stoppedUnasked(undefined), false);
+});
+
+test("the page wears the terminal's theme while it follows it, else the pick (T-1208)", () => {
+  assert.equal(THEMES.length, 15);
+  assert.equal(new Set(THEMES.map((t) => t.id)).size, 15);
+  assert.equal(wornTheme("terminal", "nord"), "nord");
+  assert.equal(wornTheme("terminal", ""), "system", "a terminal that said nothing: the device's");
+  assert.equal(wornTheme("terminal", "no-such-theme"), "system");
+  assert.equal(wornTheme("latte", "nord"), "latte");
+  assert.equal(wornTheme("system", "nord"), "system");
+  assert.equal(wornTheme("gone", "nord"), "system");
+  // A remembered board keeps the theme, so a cold start wears it.
+  const board = new BoardState();
+  board.update({ title: "Board", columns: ["TODO"], tickets: [], theme: "mocha" });
+  assert.equal(board.terminalTheme, "mocha");
+  const remembered = new BoardState();
+  remembered.update(board.snapshot(), { cached: true });
+  assert.equal(remembered.terminalTheme, "mocha");
 });
 
 test("Now keeps a stopped agent for an hour; the Board keeps it always (T-560)", () => {

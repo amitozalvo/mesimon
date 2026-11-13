@@ -6,17 +6,19 @@ import { Store } from "./store.js";
 import { html, render } from "./html.js";
 import { App } from "./shell.js";
 import { followViewport } from "./viewport.js";
+import { wornTheme } from "./themes.js";
 
 const store = new Store(Browser);
 try {
-  store.theme = localStorage.getItem("mesophon-theme") || "system";
+  store.theme = localStorage.getItem("mesophon-theme") || "terminal";
+  store.density = localStorage.getItem("mesophon-density") === "comfortable" ? "comfortable" : "compact";
   store.rail = localStorage.getItem("mesophon-sidebar") === "rail";
   store.outputView = localStorage.getItem("mesophon-output") === "raw" ? "raw" : "chat";
-  store.rawSwitch = localStorage.getItem("mesophon-raw-switch") === "on";
 } catch {
   /* System appearance remains usable when preferences are unavailable. */
 }
-document.documentElement.dataset.theme = store.theme;
+document.documentElement.dataset.theme = wornTheme(store.theme);
+document.documentElement.dataset.density = store.density;
 // Opened from the service worker's kept copy (sw.js), not from the relay:
 // it shows what this browser remembers and talks to nothing until the
 // relay's own page can be had (T-497).

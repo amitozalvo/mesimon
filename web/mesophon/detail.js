@@ -6,7 +6,7 @@ import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
 import { Attention } from "./dialogs.js";
-import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, stateAge } from "./lists.js";
+import { CrownMark, StartButton, StartReceipt, Tags, WorktreeMark, ageWords, crownTouch, exitWords, stateAge } from "./lists.js";
 import { NotePane, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
@@ -34,18 +34,83 @@ const screenRows = (text) => {
   );
 };
 
-// The conversation or the pane's screen (T-626), a small switch on the
-// divider that Settings puts there (T-701): most people never want the
-// screen, so by default there is no switch and the conversation is all. A
-// parked agent's conversation is still its file; its screen is gone, so it
-// has no switch, nor while the terminal is away (T-698).
-function OutputView({ store, ticket, at = 0 }) {
+// The ticket page's tabs (T-1208): the conversation, the agent's own
+// terminal screen, and the notes. A parked agent's conversation is still
+// its file, but its screen is gone, and away the screen is the terminal's
+// to show (T-698): there the Terminal tab is off.
+function TicketTabs({ store, ticket, panes, at }) {
   const chat = store.chatShown;
-  if (at !== 0 || !store.rawSwitch || !store.chatCapable || !store.live || !ticket?.agent || ticket.agent.state === "sleeping") return null;
-  return html`<button id="output-view" type="button" class="view-toggle" aria-pressed=${String(!chat)}
-    aria-label=${chat ? "Show the terminal screen" : "Show the conversation"}
-    onClick=${() => store.setOutputView(chat ? "raw" : "chat")}>
-    <${Icon} name="terminal" size=${11} width=${2.4} /><span>raw</span></button>`;
+  const notes = panes.length - 1;
+  const screen = !!ticket.agent && store.live && !["sleeping", "exited"].includes(ticket.agent.state);
+  const show = (view) => {
+    store.showPane(ticket.id, 0);
+    store.setOutputView(view);
+  };
+  const tab = (id, on, label, press, off = false, count = "") => html`<button id=${id} type="button" role="tab"
+    aria-selected=${String(on)} class=${on ? "on" : ""} disabled=${off} onClick=${press}>${label}${count !== "" && html`<span class="tab-count">${count}</span>`}</button>`;
+  return html`<nav id="ticket-tabs" class="ticket-tabs" role="tablist" aria-label="Ticket">
+    ${store.chatCapable && tab("tab-chat", at === 0 && chat, "Chat", () => show("chat"))}
+    ${tab("tab-terminal", at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
+    ${tab("tab-notes", at > 0, "Notes", () => (notes ? store.showPane(ticket.id, at > 0 ? at : 1) : store.editNote(ticket.id)),
+      !notes && !store.canWriteNotes, notes || "")}
+  </nav>`;
+}
+
+// The keys a phone has no key for (T-1208), sent straight into the
+// agent's pane: the desk's own keys at its prompt and its dialogs.
+const KEYS = [
+  ["escape", "esc"], ["tab", "tab"], ["back_tab", "⇧tab"], ["ctrl_c", "^C"], ["up", "↑"], ["down", "↓"],
+  ["left", "←"], ["right", "→"], ["enter", "⏎"], ["ctrl_r", "^R"], ["ctrl_d", "^D"], ["backspace", "⌫"],
+];
+const DIGITS = ["1", "2", "3", "4"];
+
+// The Terminal tab's keyboard (T-1208): a bar of keys, and a line typed
+// into the pane, Enter after it, or each key as it is typed.
+function KeyBar({ store, ticket }) {
+  const line = useRef();
+  const live = store.keysReach(ticket);
+  const send = (press) => store.sendKeys(press);
+  return html`<footer class="keys-area" aria-label="Keys">
+    <div class="key-bar" role="group" aria-label="Keys for the agent's terminal">
+      ${KEYS.map(([key, label]) => html`<button type="button" class="key" key=${key} data-key=${key} disabled=${!live}
+        aria-label=${key.replace("_", " ")} onClick=${() => send({ key })}>${label}</button>`)}
+      ${DIGITS.map((d) => html`<button type="button" class="key" key=${d} data-text=${d} disabled=${!live}
+        onClick=${() => send({ text: d })}>${d}</button>`)}
+    </div>
+    <form id="keys-form" class="keys-line" onSubmit=${(e) => {
+      e.preventDefault();
+      const node = line.current;
+      const text = node.value;
+      if (text && !send({ text })) return;
+      send({ key: "enter" });
+      node.value = "";
+    }}>
+      <span class="keys-prompt" aria-hidden="true">›</span>
+      <input id="keys-text" ref=${line} type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+        enterkeyhint="send" disabled=${!live} aria-label="Type into the agent's terminal"
+        placeholder=${live ? "Type a line, Enter sends it" : "The agent's terminal is out of reach"} />
+      <button id="keys-send" type="submit" class="send" disabled=${!live} aria-label="Send the line and Enter"><${Icon} name="up" size=${18} width=${2.2} /></button>
+    </form>
+  </footer>`;
+}
+
+// An agent whose process ended (T-1208): why and when, and the two ways on.
+function StoppedLine({ store, ticket }) {
+  const agent = ticket.agent;
+  const waiting = startWaiting(store.startOf(ticket));
+  const at = agent.exit?.at;
+  const when = Number.isFinite(at) ? ageWords(store.board, at) : "";
+  return html`<div id="stopped-line" class="agent-line stopped-line" role="group" aria-label="Agent stopped">
+    <p><span class="mark mark-stopped" aria-hidden="true"></span><b>${exitWords(agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`}</b></p>
+    <p class="stopped-why">${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.</p>
+    <div class="stopped-actions">
+      <button id="resume-agent" type="button" class="btn btn-pri" disabled=${!store.canResume || waiting}
+        onClick=${() => store.resumeAgent(ticket.id, store.entry?.draft || "") && store.setDraft("")}><${Icon} name="play" size=${15} /><span>Resume</span></button>
+      <button id="fresh-agent" type="button" class="btn" disabled=${!store.canStart || waiting}
+        onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
+    </div>
+    ${!store.live && html`<p class="stopped-why">Resuming needs your terminal back.</p>`}
+  </div>`;
 }
 
 function Output({ store, ticket, entry, live }) {
@@ -106,7 +171,9 @@ function startPlaceholder(store, ticket, asleep) {
 function Composer({ store, ticket, entry, live }) {
   // A parked agent has no pane to type at: the field is its wake (T-709).
   const asleep = ticket?.agent?.state === "sleeping";
-  const agent = asleep ? undefined : ticket?.agent;
+  // A stopped agent (T-1208) has no pane either: the field resumes it.
+  const stopped = store.stopped(ticket);
+  const agent = asleep || stopped ? undefined : ticket?.agent;
   // The desk's Shift+Enter on an empty or a parked seat (T-709): the same
   // field, and the press starts or wakes the agent on the words. A host
   // that starts no agents from here keeps the field off, as before.
@@ -134,6 +201,8 @@ function Composer({ store, ticket, entry, live }) {
       : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
         !!entry?.answer?.waiting || !entry?.draft.trim());
   const fieldOff = sending || (starts ? startOff : !agent);
+  // Stop (T-1208): an empty field over a working turn is the desk's Escape.
+  const stops = !!agent && ["working", "starting"].includes(agent.state) && !entry?.draft.trim() && store.keysReach(ticket);
   // A picture with the words (T-853): offered wherever the words can go,
   // to a host that keeps it with the ticket.
   const pictures = !!entry && !fieldOff && store.canAskPictures;
@@ -196,7 +265,7 @@ function Composer({ store, ticket, entry, live }) {
           : "No agent selected"}</p>
       <div class="composer" data-open=${String(open)} data-starts=${String(starts)}>
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
-          placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : agent ? `Message ${agent.provider}…` : starts ? startPlaceholder(store, ticket, asleep) : "No agent to message"}
+          placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
           required disabled=${fieldOff}
           value=${entry?.draft || ""} onInput=${(e) => {
             mark(e);
@@ -222,7 +291,9 @@ function Composer({ store, ticket, entry, live }) {
             : starts
             ? html`<p id="start-what" class="start-what"><${Icon} name="play" size=${13} /><span>${asleep
                 ? `Wakes ${ticket.agent.provider}, then says this.`
-                : "Starts an agent on these words."}</span></p>`
+                : stopped && store.resumes
+                  ? `Resumes ${ticket.agent.provider}’s conversation, then says this.`
+                  : "Starts an agent on these words."}</span></p>`
             : html`<fieldset id="prompt-mode" class="segmented" disabled=${!agent}>
             <legend class="sr-only">Delivery</legend>
             <label class=${mode === "queue" ? "on" : ""}><input type="radio" name="prompt-mode" value="queue"
@@ -236,7 +307,9 @@ function Composer({ store, ticket, entry, live }) {
             </select></label>`}
           ${!starts && !mails && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
         </div>
-        <button id="send" type="submit" class="send" disabled=${sendOff}
+        <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
+          onClick=${() => store.stopTurn()}><${Icon} name="stop" size=${16} /></button>
+        <button id="send" type="submit" class="send" hidden=${stops} disabled=${sendOff}
           aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
             ? html`<${Icon} name="play" size=${18} />`
             : html`<${Icon} name="up" size=${20} width=${2.2} />`}</button>
@@ -388,7 +461,6 @@ function PaneBar({ store, ticket, panes, at }) {
       onClick=${() => store.showPane(ticket.id, at - 1)}>
       ${at > 0 && html`<span class="pane-arrow" aria-hidden="true">‹</span>`}<span dir="auto">${name}</span></button>
     <span class="pane-rule" aria-hidden="true"></span>
-    <${OutputView} store=${store} ticket=${ticket} at=${at} />
     <button id="pane-next" type="button" class="pane-next" disabled=${last && !(at === 0 && !notes && writes)} hidden=${!rhs}
       aria-label=${at === 0 ? (notes ? `${rhs} · swipe left to read them` : "Add a description") : last ? rhs : `${rhs} · next note`}
       onClick=${next}>${at === 0 && !notes && writes && html`<${Icon} name="plus" size=${11} width=${2.6} />`}<span>${rhs}</span>${(at === 0 ? notes > 0 : !last) && html`<span class="pane-arrow" aria-hidden="true">›</span>`}</button>
@@ -432,12 +504,14 @@ export function Detail({ store, bp }) {
         </div>`}
       </div>
     </header>
-    ${ticket && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
+    ${ticket && html`<${TicketTabs} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
+    ${ticket && at > 0 && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
     <div class="panes" ref=${track}>
       <div class="pane-track" style=${{ "--pane": at }}>
         <section class="pane pane-transcript" aria-label="Transcript" aria-hidden=${String(at !== 0)} inert=${at !== 0 || undefined}>
           <div class="detail-scroll">
             <${CrownLine} store=${store} ticket=${ticket} />
+            ${store.stopped(ticket) && html`<${StoppedLine} store=${store} ticket=${ticket} />`}
             ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
               <p id="agent-state">${seatWords(store, agent)}</p>
               ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
@@ -453,6 +527,8 @@ export function Detail({ store, bp }) {
         </section>`)}
       </div>
     </div>
-    <${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />
+    ${ticket && at === 0 && !store.chatShown && store.keysReach(ticket)
+      ? html`<${KeyBar} store=${store} ticket=${ticket} />`
+      : html`<${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />`}
   </article>`;
 }

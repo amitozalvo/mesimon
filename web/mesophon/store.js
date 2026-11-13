@@ -15,6 +15,7 @@ import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPic
 import { mergePage, tailAsk } from "./transcript.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { PromptMail } from "./letters.js";
+import { wornTheme } from "./themes.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
@@ -110,7 +111,11 @@ export class Store {
     this.forgetting = undefined;
     // The first-prompt sheet a start opens (T-510): the ticket and the words.
     this.startAsk = undefined;
-    this.theme = "system";
+    // What the page wears (T-1208): "terminal" follows the board's theme,
+    // "system" the device's appearance, else one of themes.js's.
+    this.theme = "terminal";
+    // How tight the lists sit: "compact" or "comfortable" (T-1208).
+    this.density = "compact";
     this.alertStatus = "";
     // The desktop sidebar folded to a rail of icons (T-506); app.js reads
     // the remembered choice in.
@@ -120,9 +125,6 @@ export class Store {
     // The ticket page's output (T-626): the conversation (`chat`) or the
     // pane's screen (`raw`); app.js reads the remembered choice in.
     this.outputView = "chat";
-    // Whether the ticket page offers the screen at all (T-701): a Settings
-    // row, off by default; app.js reads the remembered choice in.
-    this.rawSwitch = false;
     this.remembered = new Map(); // board id -> signature of the stored snapshot
     this.sent = new Sent();
     this.sentLoaded = new Set(); // boards whose stored Sent list is read
@@ -165,6 +167,10 @@ export class Store {
     return () => this.listeners.delete(fn);
   }
   emit() {
+    // The theme the page wears (T-1208): the board's own while it follows
+    // the terminal, so a new board's snapshot repaints the page.
+    const worn = wornTheme(this.theme, this.board?.terminalTheme);
+    if (document.documentElement.dataset.theme !== worn) document.documentElement.dataset.theme = worn;
     this.version++;
     for (const fn of this.listeners) fn();
   }
@@ -500,7 +506,9 @@ export class Store {
   }
   // Away, the screen is the terminal's to show: the conversation held reads.
   get chatShown() {
-    return this.chatCapable && (this.outputView !== "raw" || !this.rawSwitch || (!this.live && !!this.entry?.chat));
+    // A parked or a stopped agent has no screen: its conversation shows.
+    const screenless = ["sleeping", "exited"].includes(this.board?.current?.agent?.state);
+    return this.chatCapable && (this.outputView !== "raw" || screenless || (!this.live && !!this.entry?.chat));
   }
   // The page before the held part of the conversation, one ask at a time;
   // asked again once the ask in flight lands.
@@ -625,8 +633,9 @@ export class Store {
     return ticket && this.active ? this.starts.get(this.active.pin.board, ticket.id) : undefined;
   }
   // The seat a start reaches (T-510): empty, or a parked agent it wakes.
+  // A stopped agent's seat is free too (T-1208): a start there begins anew.
   startable(ticket) {
-    return !!ticket && (!ticket.agent || ticket.agent.state === "sleeping");
+    return !!ticket && (!ticket.agent || ["sleeping", "exited"].includes(ticket.agent.state));
   }
   // The words come first (T-510), as at the desk's Shift+Enter field: a
   // sheet asks for the first turn, and a blank one is the ticket's own
@@ -681,7 +690,7 @@ export class Store {
       return false;
     }
     this.starts.sent(board, id, command, c.incarnation, ticket.key);
-    this.say(ticket.agent ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock");
+    this.say(ticket.agent?.state === "sleeping" ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock");
     this.emit();
     return true;
   }
@@ -689,12 +698,89 @@ export class Store {
   // desk's Shift+Enter on an empty or a parked seat, from the same field a
   // live agent is messaged at. The words are the first turn; a blank field
   // stays off, the page's button is the start on the title.
+  // Over a stopped agent (T-1208) the press resumes its conversation with
+  // the words, on a host that resumes.
   composerStarts(ticket) {
-    return this.startsAgents && this.startable(ticket);
+    return (this.startsAgents && this.startable(ticket)) || (this.stopped(ticket) && this.resumes);
+  }
+  // Whether the host resumed agents when last live, as `startsAgents`.
+  get resumes() {
+    return !!this.active?.resumes;
+  }
+  // ---- the agent's own pane (T-1208) ---------------------------------------
+  // Keys typed straight into the agent's pane: the Terminal tab's key bar,
+  // its line, and Stop (Escape). Only an agent's session, never a shell:
+  // the host refuses any other.
+  get takesKeys() {
+    return this.live && !!this.connection?.features?.includes("keys");
+  }
+  keysReach(ticket) {
+    const state = ticket?.agent?.state;
+    return this.takesKeys && !!state && !["sleeping", "exited", "unknown"].includes(state);
+  }
+  // `press` is { key } (a named key) or { text } (typed words).
+  sendKeys(press) {
+    const ticket = this.board?.current;
+    if (!this.keysReach(ticket)) return false;
+    const id = this.connection.request(
+      { op: "keys", ticket: ticket.id, session: ticket.agent.session, ...press },
+      (reply) => this.onKeysReply(reply),
+    );
+    if (id === undefined) {
+      this.say("Not sent: the connection dropped.");
+      this.emit();
+      return false;
+    }
+    // The screen shows what the keys did on its next read.
+    setTimeout(() => this.preview(), 250);
+    return true;
+  }
+  onKeysReply(reply) {
+    if (reply.result === "rejected") {
+      this.say(`Not sent: ${reply.message || "your terminal refused the keys"}`);
+      this.emit();
+    }
+  }
+  // Stop the turn (T-1208): the desk's Escape in the agent's pane.
+  stopTurn() {
+    if (this.sendKeys({ key: "escape" })) {
+      this.say("Stopping the turn…");
+      this.emit();
+    }
+  }
+  // An agent whose process ended (T-1208): its conversation is kept, and a
+  // resume takes it up again, with words when there are any.
+  stopped(ticket) {
+    return ticket?.agent?.state === "exited";
+  }
+  get canResume() {
+    return this.live && !!this.connection?.features?.includes("resume");
+  }
+  resumeAgent(id, text = "", uploads = []) {
+    const board = this.active?.pin.board;
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!board || !this.stopped(ticket) || !this.canResume || startWaiting(this.startOf(ticket))) return false;
+    const prompt = text.trim();
+    const c = this.connection;
+    const command = c.request(
+      { op: "resume", ticket: id, session: ticket.agent.session, ...(prompt ? { prompt } : {}),
+        ...(uploads.length ? { uploads } : {}) },
+      startContext(id),
+    );
+    if (command === undefined) {
+      this.say("Not resumed: the connection dropped. Try again when your terminal is back.");
+      this.emit();
+      return false;
+    }
+    this.starts.sent(board, id, command, c.incarnation, ticket.key);
+    this.say(`Resuming the agent on ${ticket.key}…`, "clock");
+    this.emit();
+    return true;
   }
   get canComposeStart() {
     const ticket = this.board?.current;
-    return this.composerStarts(ticket) && this.canStart && !startWaiting(this.startOf(ticket));
+    return this.composerStarts(ticket) && (this.stopped(ticket) ? this.canResume : this.canStart) &&
+      !startWaiting(this.startOf(ticket));
   }
   onStartReply(id, reply) {
     const item = this.starts.get(this.active?.pin.board, id);
@@ -2038,8 +2124,11 @@ export class Store {
     const notes = !!this.connection.features?.includes("notes");
     const filedPictures = !!this.connection.features?.includes("filed_pictures");
     const mailPrompts = !!this.connection.features?.includes("mail_prompts");
+    const resumes = !!this.connection.features?.includes("resume");
     if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes
-      || !!chosen.filedPictures !== filedPictures || !!chosen.mailPrompts !== mailPrompts) {
+      || !!chosen.filedPictures !== filedPictures || !!chosen.mailPrompts !== mailPrompts
+      || !!chosen.resumes !== resumes) {
+      chosen.resumes = resumes;
       chosen.collects = collects;
       chosen.starts = starts;
       chosen.notes = notes;
@@ -2328,7 +2417,8 @@ export class Store {
       return;
     }
     if (starts) {
-      if (this.startAgent(entry.ticket, text, entry.tier, uploads)) {
+      const resumes = this.resumes && this.stopped(this.board?.tickets.find((t) => t.id === entry.ticket));
+      if (resumes ? this.resumeAgent(entry.ticket, text, uploads) : this.startAgent(entry.ticket, text, entry.tier, uploads)) {
         entry.draft = "";
         entry.tier = undefined;
         entry.delivery = "";
@@ -2363,7 +2453,7 @@ export class Store {
   // page only: a wake hours later, with nobody watching, is not asked for.
   mailsPrompt(ticket) {
     const agent = ticket?.agent;
-    return !this.live && this.collects && !!this.active?.mailPrompts && !!agent && agent.state !== "sleeping";
+    return !this.live && this.collects && !!this.active?.mailPrompts && !!agent && !["sleeping", "exited"].includes(agent.state);
   }
   // The ticket's letter on its way, or lost: one at a time, as the host
   // keeps one queued ask per ticket.
@@ -2525,9 +2615,9 @@ export class Store {
   }
 
   // ---- preferences -----------------------------------------------------------
+  // "terminal", "system" or a theme's id; `emit` puts it on the page.
   setTheme(theme) {
     this.theme = theme;
-    document.documentElement.dataset.theme = theme;
     try {
       localStorage.setItem("mesophon-theme", theme);
     } catch {
@@ -2535,12 +2625,11 @@ export class Store {
     }
     this.emit();
   }
-  // The screen's switch on the ticket page (T-701). Off, the conversation
-  // is shown whatever was chosen last.
-  setRawSwitch(on) {
-    this.rawSwitch = !!on;
+  setDensity(density) {
+    this.density = density === "comfortable" ? "comfortable" : "compact";
+    document.documentElement.dataset.density = this.density;
     try {
-      localStorage.setItem("mesophon-raw-switch", on ? "on" : "off");
+      localStorage.setItem("mesophon-density", this.density);
     } catch {
       /* In-memory choice still applies. */
     }

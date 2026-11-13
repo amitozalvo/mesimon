@@ -43808,3 +43808,53 @@ footer but the pick, and that took the card a ticket link names too — T-820's 
 and read as gone. `ui/pick.rs` now leaves the named card's rect (`App::link_hovered`, the spot's
 card) as the board drew it. Test: `a_picked_ticket_link_keeps_its_card_lit_on_the_board` (pins the
 blink's lit phase through `spin_epoch`; fails on the merged pass, passes now). TUI-only.
+
+## Remote Control redesigned: compact Inbox and Board, the agent's terminal keys, crash resume, fifteen themes (T-1208, 2026-11-13, the author: "remote control UI is too bulky … provide a similar UI [to Claude Code on Android] with a small touch of mesimon"; proposal prototype approved, then "go")
+
+The author picked, on a clickable prototype: mesimon's own themes on the phone (all fifteen of the
+TUI's, following the terminal's by default), Inbox and Board both first-class, compact density,
+and in scope settings, live terminal keys, notes and attachments (not review and merge). Then:
+"hide non agent sessions (terminal sessions) of tickets for now, and don't allow to create new
+ones. make sure a crashed agent session will be recoverable using the new design".
+
+**What changed.**
+- The page: a five-tab bar (Inbox, Board, New ticket, Sent, Settings); one-line titles in the
+  Inbox; tags as a tint square and a small name in lists; the first tag's tint on a card's left
+  edge (the TUI's tag bar); the column tabs an underlined rail; Deny apart from Approve. Every
+  control stays 44 px tall (the suite's existing law): compactness is type and spacing.
+- The ticket page has tabs: Chat, Terminal (the agent's pane, `preview`), Notes. The pane bar
+  only walks the notes now. The Settings "raw switch" (T-701) is gone: the screen is a tab.
+  A permission on the ticket page shows its command as it would run, not its JSON.
+- `keys` op (feature `keys`, `Action::PressKeys`, Paired only, on a `Resource::Session`;
+  every other principal is judged as `Mutate`): one named key or one scrubbed line (512 B) into
+  the ticket's agent session's pane via `control_target`, so a shell, a terminal, another
+  ticket's session or a dead pane is refused, and none goes in under a pending delivery. The
+  Terminal tab's foot is a key bar and a typed line; an empty composer over a working turn is
+  Stop, an Escape.
+- `resume` op (feature `resume`, under `StartAgent` + `authorize_execution`): the ticket's
+  stopped agent (`dead_agent`) resumed with its conversation, `prompt_sleeping`'s road when
+  there are words; answered on the start receipt road. A plain `start` on an exited seat starts
+  fresh (verified): that is the page's Start fresh.
+- The board reply's agent is the live one or else the stopped one (was `null` after an exit),
+  with `exit: {reason, at}` for exited and failed. The page lists crashed, killed and logged-out
+  agents under Stopped, with Resume and Start fresh, however long ago; a quit or cleared one is
+  only idle. The remembered board keeps `exit`, so a cold start still offers it.
+- `Command::SetWornTheme { flavor }` (Local): the TUI pushes the theme it wears (start, a pick,
+  an OS flip); the daemon holds it in memory and the board reply carries `theme`. The page wears
+  it while "Follow the terminal" is on (the default). The thirteen new themes' tokens are derived
+  from `theme.rs`'s palettes; secondary ink is lifted until it reads at 4.6:1 on cards, and the
+  UX suite checks AA on all fifteen.
+- Shells are the terminal's: the page draws no shell mark and opens none (T-948's mark went).
+
+**Deferred.** Settings rows that change the Mac (notifications, behaviour, agents and tiers,
+crown, terminal, usage) need the daemon to read and write the TUI's `prefs.json`, which it never
+does today; the usage meter and bulk sleep/archive likewise. Not built here.
+
+**Verified.** `npm test` in `web/mesophon` (state and assets, and the UX suite on Chromium and
+WebKit, with a new `terminalFlow`: keys, a refused key said once, Stop, a crash resumed with
+and without words, the terminal's theme followed, a pick winning). Rust: `cargo ut`,
+`cargo build --workspace`, `--test board m1_e2e::`, `--test agents status_line_e2e::` and
+`approve_bridge`. One earlier `cargo ut` run failed `mesimon-backend-tmux`'s
+`legacy_enter_and_detach_reach_fresh_and_surviving_clients` (code not touched); it passed alone
+and in the next full `cargo ut`: a rerun, not a repair. The full workspace suite is owed after
+the merge (`command.rs`, `authorize.rs`, `server.rs`).

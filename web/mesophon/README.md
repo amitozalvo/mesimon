@@ -41,6 +41,8 @@ reload shows an edit) beside a host board built from this checkout.
   (pairing, sidebar, Now, Board and Sent, the ticket, permission/question/plan/trust
   cards, the New ticket sheet and Sent's bar). Host text is always a text node.
 - `shin.js`, `icons.js`: the mascot from `assets/mascot/shin.txt` and inline icons.
+- `themes.js`: the terminal's fifteen themes (T-1208) as the picker shows them, and
+  which one the page wears; `style.css` holds each theme's tokens.
 - `app.js`: boot and window-level events, the service worker's registration and
   the browser's install prompt.
 - `sw.js`: the service worker. It keeps a whole copy of the page's files and
@@ -197,3 +199,21 @@ own page, unless the new-ticket sheet is open.
 `until` in `ux.test.js` polls with `page.evaluate`, which awaits a predicate's
 promise. Playwright's `waitForFunction` does not: a pending Promise is truthy,
 so an async predicate passes at once.
+
+The compact page (T-1208). The phone's tab bar is Inbox (the agents by state),
+Board, New ticket, Sent and Settings; every control stays at least 44 px tall,
+and the compactness is type, spacing and one-line rows. A card's left edge
+wears its first tag's tint, as the TUI's tag bar does. An agent whose process
+ended unasked (`exit.reason` crashed, killed or logged out, on a host that
+says why) is listed under Stopped until it runs again, with Resume, the `resume`
+op (feature `resume`): the same session's conversation taken up again, with the
+words typed when there are any; Start fresh is the `start` op on the free seat.
+A quit or cleared agent is only idle. The ticket page has three tabs: Chat (the
+conversation), Terminal (the agent's pane, `preview`) and Notes. On a host that
+says `keys`, the Terminal tab's foot is a key bar and a typed line, each press
+one `keys` op ({ key } or { text }) into the ticket's agent session alone, and
+an empty composer over a working turn is Stop, an Escape the same way. A
+ticket's shells are the terminal's: the page draws no shell mark and opens none.
+Settings picks the page's theme: by default it follows the terminal's (the
+board reply's `theme`, which the TUI tells its daemon), or one of the fifteen,
+or the device's appearance; and a density, compact or comfortable.

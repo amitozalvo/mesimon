@@ -259,6 +259,7 @@ impl World {
             claude_md: Default::default(),
             claude_default_mode: None,
             status_top: false,
+            worn_theme: None,
             team: Default::default(),
             mesophon: Default::default(),
             terminals: Vec::new(),
@@ -513,6 +514,7 @@ impl World {
             Command::SetAutomation { .. }
             | Command::SetUsageWants { .. }
             | Command::SetStatusLine { .. }
+            | Command::SetWornTheme { .. }
             | Command::RefreshUsage { .. } => Response::Ok,
             // The census of sessions started elsewhere: the lesson's own.
             Command::RescanExternal => self.snapshot(),

@@ -9,6 +9,8 @@ import { NowList, BoardList, SentList, ColumnTabs, lastSeen } from "./lists.js";
 import { Detail } from "./detail.js";
 import { NewTicket, QuickNew, StartSheet, CardSheet, AwaySheet } from "./compose.js";
 import { NoteSheet } from "./notepad.js";
+import { THEMES } from "./themes.js";
+import { stoppedUnasked } from "./board.js";
 
 // Subscribe during the commit, not after paint: a fast boot can emit before
 // a deferred effect runs, and that change would never reach the page.
@@ -60,11 +62,30 @@ function LinkIcon({ link, size = 14 }) {
   return html`<${Icon} name=${link === "asleep" ? "moon" : "wifiOff"} size=${size} />`;
 }
 
+// The header's strip (T-1208): one dot per agent on the board, needs-you
+// first, then stopped, working and idle, and the link's word. A press opens
+// Settings, where the connection's hops are spelled out.
+const PIP_ORDER = { needs: 0, stopped: 1, working: 2, idle: 3 };
+const pipOf = (agent) =>
+  agent.state === "needs attention"
+    ? "needs"
+    : stoppedUnasked(agent)
+      ? "stopped"
+      : ["starting", "working"].includes(agent.state)
+        ? "working"
+        : "idle";
 function Pill({ store }) {
   const link = store.link;
+  const pips = (store.board?.tickets || [])
+    .filter((t) => t.agent && !["sleeping", "exited"].includes(t.agent.state) || stoppedUnasked(t.agent))
+    .map((t) => pipOf(t.agent))
+    .sort((a, b) => PIP_ORDER[a] - PIP_ORDER[b])
+    .slice(0, 12);
   return html`<button type="button" class="pill-button" aria-label=${`Connection: ${linkLabel[link]}`}
     aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
-    <span class="pill" data-link=${link}><${LinkIcon} link=${link} /><span>${linkLabel[link]}</span></span>
+    <span class="pill" data-link=${link}>
+      ${link === "live" && pips.length > 0 && html`<span class="pips" aria-hidden="true">${pips.map((p, i) => html`<i class=${`pip pip-${p}`} key=${i}></i>`)}</span>`}
+      ${link !== "live" && html`<${LinkIcon} link=${link} />`}<span class="pill-word">${linkLabel[link]}</span></span>
   </button>`;
 }
 
@@ -113,7 +134,7 @@ function ModeButtons({ store, board, ids = false }) {
   return html`
     <button id=${ids ? "agents-mode" : undefined} type="button" class="mode" data-mode="agents"
       aria-pressed=${String(mode === "agents")} onClick=${() => store.setMode("agents")}>
-      <${Icon} name="inbox" size=${22} width=${1.8} /><span>Now</span>
+      <${Icon} name="inbox" size=${22} width=${1.8} /><span>Inbox</span>
       ${needs > 0 && html`<span class="badge">${needs}</span>`}
     </button>
     <button id=${ids ? "board-mode" : undefined} type="button" class="mode" data-mode="board"
@@ -126,6 +147,25 @@ function ModeButtons({ store, board, ids = false }) {
       <${Icon} name="send" size=${22} width=${1.8} /><span>Sent</span>
       ${unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`}
     </button>`;
+}
+
+// The phone's tab bar (T-1208): Inbox and Board, New ticket in the middle,
+// then Sent and Settings.
+function TabBar({ store, board }) {
+  const mode = board?.mode || "agents";
+  const needs = board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0;
+  const unsettled = store.sent.unsettled(store.active?.pin.board);
+  const tab = (id, m, icon, label, extra) => html`<button id=${id} type="button" class="mode" data-mode=${m}
+      aria-pressed=${String(mode === m)} onClick=${() => store.setMode(m)}>
+      <${Icon} name=${icon} size=${22} width=${1.8} /><span>${label}</span>${extra}</button>`;
+  return html`
+    ${tab("agents-mode", "agents", "inbox", "Inbox", needs > 0 && html`<span class="badge">${needs}</span>`)}
+    ${tab("board-mode", "board", "kanban", "Board", null)}
+    <button id="new-ticket-fab" type="button" class="mode mode-new" disabled=${!board} aria-label="New ticket"
+      onClick=${() => store.openComposer(mode === "board" ? board.column : undefined)}><span class="mode-disc"><${Icon} name="plus" size=${20} width=${2.4} /></span></button>
+    ${tab("sent-mode", "sent", "send", "Sent", unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`)}
+    <button id="settings-mode" type="button" class="mode" aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
+      <${Icon} name="settings" size=${22} width=${1.8} /><span>Settings</span></button>`;
 }
 
 // On a phone's Board the ticket starts in the column on screen; elsewhere in
@@ -190,6 +230,40 @@ function About({ store }) {
   </section>`;
 }
 
+// The page's theme (T-1208): following the terminal's by default, or one
+// of the terminal's own themes, or the device's appearance. Each tile is
+// drawn in its own theme's colours.
+function ThemePicker({ store }) {
+  const follows = store.theme === "terminal";
+  const terminal = store.board?.terminalTheme;
+  const worn = THEMES.find((t) => t.id === terminal);
+  const pick = (id) => store.setTheme(id);
+  return html`<section class="theme-picker" aria-labelledby="theme-heading">
+    <h3 id="theme-heading" class="label">Theme</h3>
+    <label class="setting-switch">
+      <span>Follow the terminal<small>${follows
+        ? worn ? `Wearing ${worn.name}, as your terminal does.` : "Your terminal has not said its theme yet: the device’s appearance meanwhile."
+        : "Wear the theme your terminal wears."}</small></span>
+      <input id="theme-follow" type="checkbox" role="switch" checked=${follows}
+        onChange=${(e) => pick(e.currentTarget.checked ? "terminal" : worn?.id || "system")} />
+    </label>
+    <div class="theme-grid" role="radiogroup" aria-label="Themes">
+      <button type="button" class="theme-tile theme-system" role="radio" data-theme-id="system"
+        aria-checked=${String(store.theme === "system")} onClick=${() => pick("system")}>
+        <span class="theme-pv theme-pv-split" aria-hidden="true"><span></span><span></span></span>
+        <span class="theme-name">System<small>Graphite or Chalk</small></span></button>
+      ${THEMES.map((t) => html`<button type="button" key=${t.id} class="theme-tile" role="radio" data-theme-id=${t.id}
+        aria-checked=${String(store.theme === t.id || (follows && terminal === t.id))}
+        onClick=${() => pick(t.id)}>
+        <span class="theme-pv" aria-hidden="true" style=${{ background: t.bg }}>
+          ${[t.attn, t.calm, t.dim].map((dot, i) => html`<span class="theme-row" key=${i} style=${{ background: t.card, borderLeftColor: t.tags[i] }}>
+            <i style=${{ background: dot }}></i><b style=${{ background: t.ink }}></b></span>`)}
+        </span>
+        <span class="theme-name">${t.name}<small>${t.about}</small></span></button>`)}
+    </div>
+  </section>`;
+}
+
 // Settings (T-548): a dialog the sidebar's foot opens, so the sidebar holds
 // only the boards and the views. Always drawn, open or not, so the theme
 // control is in the page from the first frame.
@@ -217,13 +291,15 @@ function Settings({ store }) {
         <button id="settings-done" type="button" class="btn btn-quiet compose-send-top" onClick=${close}>Done</button>
       </header>
       <div class="compose-body settings">
-        <label class="field">Appearance<select id="theme" value=${store.theme} onChange=${(e) => store.setTheme(e.currentTarget.value)}>
-          <option value="system">System</option>
-          <option value="graphite">Graphite</option>
-          <option value="chalk">Chalk</option>
-        </select></label>
-        <label class="field setting-switch"><span>Terminal screen switch<small>A <b>raw</b> switch on the ticket page shows the agent's terminal screen. The conversation is the default either way.</small></span>
-          <input id="raw-switch" type="checkbox" checked=${store.rawSwitch} onChange=${(e) => store.setRawSwitch(e.currentTarget.checked)} /></label>
+        <${ThemePicker} store=${store} />
+        <div class="setting-row">
+          <span class="setting-label">Density</span>
+          <div class="segmented density" role="group" aria-label="Density">
+            ${["compact", "comfortable"].map((d) => html`<button id=${`density-${d}`} type="button" key=${d}
+              class=${store.density === d ? "on" : ""} aria-pressed=${String(store.density === d)}
+              onClick=${() => store.setDensity(d)}>${d === "compact" ? "Compact" : "Comfortable"}</button>`)}
+          </div>
+        </div>
         <div class="settings-actions">
           <${Install} store=${store} />
           <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
@@ -363,7 +439,7 @@ function WorkList({ store, bp }) {
   return html`<section id="work-list" aria-label="Work list">
     <div class="list-tools">
       <div class="list-heading">
-        <h2 id="list-title">${{ agents: "Now", board: "Board", sent: "Sent" }[mode]}</h2>
+        <h2 id="list-title">${{ agents: "Inbox", board: "Board", sent: "Sent" }[mode]}</h2>
         <span id="count">${count}</span>
         ${board?.cached && html`<span class="chip chip-quiet">As of ${lastSeen(board)}</span>`}
         ${bp !== "phone" && html`<${NewTicketButton} store=${store} board=${board} id="new-ticket" cls="btn btn-pri new-ticket" />`}
@@ -386,9 +462,7 @@ function WorkList({ store, bp }) {
         : loading && html`<div class="loading"><${Shin} size="medium" scale=${4} mood="awake" light="dim" />${!store.refused && html`<p>Reaching your board…</p>`}</div>`}
     </nav>
     ${board && mode === "sent" && html`<${QuickNew} store=${store} />`}
-    ${board && mode !== "sent" && bp === "phone" && html`<${NewTicketButton} store=${store} board=${board}
-      id="new-ticket-fab" cls="fab" column=${mode === "board" ? board.column : undefined} />`}
-    <nav id="modes" aria-label="View"><${ModeButtons} store=${store} board=${board} ids=${true} /></nav>
+    <nav id="modes" aria-label="View"><${TabBar} store=${store} board=${board} /></nav>
   </section>`;
 }
 

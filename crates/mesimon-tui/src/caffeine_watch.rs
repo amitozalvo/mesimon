@@ -320,6 +320,7 @@ mod tests {
             claude_md: Default::default(),
             claude_default_mode: None,
             status_top: false,
+            worn_theme: None,
             team: Default::default(),
             mesophon: Default::default(),
             terminals: Vec::new(),

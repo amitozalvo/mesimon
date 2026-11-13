@@ -255,6 +255,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // Same for the status line's side (T-264): a daemon that outlived the
     // last board holds bottom until a board says top.
     app.reconcile_status_line();
+    // And the theme it wears, for a phone that follows it (T-1208).
+    app.reconcile_worn_theme();
     let notices: Vec<String> = [loaded.notice, board.notice].into_iter().flatten().collect();
     if !notices.is_empty() {
         app.status = notices.join(" ∙ ");

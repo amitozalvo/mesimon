@@ -161,8 +161,572 @@
   --tag-8: #84398d;
   --tag-9: #9a2f63;
 }
+/* The TUI's other flavors (theme.rs, T-1208): the same tokens, derived from each
+   palette's ground, selection, ink ramp, needs-you, calm, error and tag ring. */
+:root[data-theme="blue"] {
+  color-scheme: dark;
+  --bg: #000087;
+  --bg2: #000069;
+  --s1: #12168b;
+  --s2: #22298e;
+  --s3: #384095;
+  --line: rgba(246, 240, 231, 0.08);
+  --line2: rgba(246, 240, 231, 0.17);
+  --ink: #f6f0e7;
+  --ink2: #d1cbc3;
+  --ink3: #b8b2aa;
+  --ink4: #7b766f;
+  --attn: #ffd700;
+  --attn-ink: #000087;
+  --attn-line: rgba(255, 215, 0, 0.4);
+  --calm: #59d3d3;
+  --calm-soft: rgba(89, 211, 211, 0.12);
+  --err: #ff7f50;
+  --screen: #000054;
+  --out: #ebe5dc;
+  --pri: #f6f0e7;
+  --pri-ink: #000087;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #000087;
+  --sh-hi: #f6f0e7;
+  --sh-body: #d1cbc3;
+  --sh-shade: #b0aaa2;
+  --sh-eye: #000087;
+  --sh-glint: #fcf6ed;
+  --sh-blush: #f8a0c3;
+  --tag-0: #ff8887;
+  --tag-1: #bfac15;
+  --tag-2: #80bb52;
+  --tag-3: #21c289;
+  --tag-4: #00bfbb;
+  --tag-5: #00bbdc;
+  --tag-6: #52b2ff;
+  --tag-7: #a0a2ff;
+  --tag-8: #de8ee6;
+  --tag-9: #f986b7;
+}
+:root[data-theme="amber"] {
+  color-scheme: dark;
+  --bg: #1b1201;
+  --bg2: #150e01;
+  --s1: #251903;
+  --s2: #2d1e04;
+  --s3: #3e2e12;
+  --line: rgba(243, 236, 222, 0.08);
+  --line2: rgba(243, 236, 222, 0.17);
+  --ink: #f3ecde;
+  --ink2: #c08b1e;
+  --ink3: #aa7c1d;
+  --ink4: #664a14;
+  --attn: #ffb000;
+  --attn-ink: #1b1201;
+  --attn-line: rgba(255, 176, 0, 0.4);
+  --calm: #deae65;
+  --calm-soft: rgba(222, 174, 101, 0.12);
+  --err: #f26d78;
+  --screen: #110b01;
+  --out: #e4cfa4;
+  --pri: #f3ecde;
+  --pri-ink: #1b1201;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #1b1201;
+  --sh-hi: #f3ecde;
+  --sh-body: #c08b1e;
+  --sh-shade: #a0751c;
+  --sh-eye: #1b1201;
+  --sh-glint: #d59b2c;
+  --sh-blush: #ed96b7;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="green"] {
+  color-scheme: dark;
+  --bg: #081a0c;
+  --bg2: #061409;
+  --s1: #0f2314;
+  --s2: #142b1a;
+  --s3: #243c2a;
+  --line: rgba(232, 241, 230, 0.08);
+  --line2: rgba(232, 241, 230, 0.17);
+  --ink: #e8f1e6;
+  --ink2: #b9c3b7;
+  --ink3: #98a196;
+  --ink4: #5f675e;
+  --attn: #45e66b;
+  --attn-ink: #081a0c;
+  --attn-line: rgba(69, 230, 107, 0.4);
+  --calm: #a3d6ae;
+  --calm-soft: rgba(163, 214, 174, 0.12);
+  --err: #f26d78;
+  --screen: #051007;
+  --out: #dae3d8;
+  --pri: #e8f1e6;
+  --pri-ink: #081a0c;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #081a0c;
+  --sh-hi: #e8f1e6;
+  --sh-body: #b9c3b7;
+  --sh-shade: #8d968b;
+  --sh-eye: #081a0c;
+  --sh-glint: #9fe0af;
+  --sh-blush: #ea97b9;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="solarized"] {
+  color-scheme: light;
+  --bg: #fdf6e3;
+  --bg2: #f6f0dd;
+  --s1: #fefbf4;
+  --s2: #f7f0dd;
+  --s3: #eee8d5;
+  --line: rgba(7, 54, 66, 0.08);
+  --line2: rgba(7, 54, 66, 0.17);
+  --ink: #073642;
+  --ink2: #586e75;
+  --ink3: #60767e;
+  --ink4: #93a1a1;
+  --attn: #8a6600;
+  --attn-ink: #ffffff;
+  --attn-line: rgba(138, 102, 0, 0.4);
+  --calm: #1e6f6a;
+  --calm-soft: rgba(30, 111, 106, 0.09);
+  --err: #9a4247;
+  --screen: #f5eedb;
+  --out: #1f4751;
+  --pri: #073642;
+  --pri-ink: #fdf6e3;
+  --scrim: rgba(7, 54, 66, 0.3);
+  --shadow: 0 14px 36px rgba(7, 54, 66, 0.14);
+  --bar: #fdf6e3;
+  --sh-hi: #b9c2c2;
+  --sh-body: #f0ead9;
+  --sh-shade: #93a1a1;
+  --sh-eye: #073642;
+  --sh-glint: #fdf6e3;
+  --sh-blush: #b3638a;
+  --tag-0: #a12e36;
+  --tag-1: #6a5e00;
+  --tag-2: #3c6d00;
+  --tag-3: #006f4c;
+  --tag-4: #006c6a;
+  --tag-5: #00697c;
+  --tag-6: #00629e;
+  --tag-7: #534dae;
+  --tag-8: #84398d;
+  --tag-9: #9a2f63;
+}
+:root[data-theme="void"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg2: #000000;
+  --s1: #0c0c0d;
+  --s2: #161719;
+  --s3: #28292c;
+  --line: rgba(233, 231, 225, 0.08);
+  --line2: rgba(233, 231, 225, 0.17);
+  --ink: #e9e7e1;
+  --ink2: #b6b2a9;
+  --ink3: #96928a;
+  --ink4: #5e5b55;
+  --attn: #f0a93a;
+  --attn-ink: #000000;
+  --attn-line: rgba(240, 169, 58, 0.4);
+  --calm: #6fbfb0;
+  --calm-soft: rgba(111, 191, 176, 0.12);
+  --err: #d5809a;
+  --screen: #000000;
+  --out: #dad7d0;
+  --pri: #e9e7e1;
+  --pri-ink: #000000;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #000000;
+  --sh-hi: #e9e7e1;
+  --sh-body: #b6b2a9;
+  --sh-shade: #8c8880;
+  --sh-eye: #000000;
+  --sh-glint: #f1efe9;
+  --sh-blush: #ea94b8;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --bg2: #242932;
+  --s1: #333a48;
+  --s2: #383f4e;
+  --s3: #464c5c;
+  --line: rgba(236, 239, 244, 0.08);
+  --line2: rgba(236, 239, 244, 0.17);
+  --ink: #eceff4;
+  --ink2: #b5b8c0;
+  --ink3: #a1a5ad;
+  --ink4: #656a75;
+  --attn: #f2c26b;
+  --attn-ink: #2e3440;
+  --attn-line: rgba(242, 194, 107, 0.4);
+  --calm: #88c0d0;
+  --calm-soft: rgba(136, 192, 208, 0.12);
+  --err: #ed969e;
+  --screen: #1d2028;
+  --out: #dcdee4;
+  --pri: #eceff4;
+  --pri-ink: #2e3440;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #2e3440;
+  --sh-hi: #eceff4;
+  --sh-body: #b5b8c0;
+  --sh-shade: #9398a0;
+  --sh-eye: #2e3440;
+  --sh-glint: #eceff4;
+  --sh-blush: #f9a2c8;
+  --tag-0: #ff8f8e;
+  --tag-1: #c3af1d;
+  --tag-2: #84bf56;
+  --tag-3: #2bc68d;
+  --tag-4: #08c3c0;
+  --tag-5: #05bedf;
+  --tag-6: #5cb5ff;
+  --tag-7: #a4a7fe;
+  --tag-8: #e292eb;
+  --tag-9: #fd89ba;
+}
+:root[data-theme="mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg2: #171724;
+  --s1: #262637;
+  --s2: #2d2e3f;
+  --s3: #3a3c4f;
+  --line: rgba(205, 214, 244, 0.08);
+  --line2: rgba(205, 214, 244, 0.17);
+  --ink: #cdd6f4;
+  --ink2: #9da4be;
+  --ink3: #8a90a8;
+  --ink4: #54576c;
+  --attn: #ffa46b;
+  --attn-ink: #1e1e2e;
+  --attn-line: rgba(255, 164, 107, 0.4);
+  --calm: #94e2d5;
+  --calm-soft: rgba(148, 226, 213, 0.12);
+  --err: #eba0ac;
+  --screen: #13131d;
+  --out: #bfc7e4;
+  --pri: #cdd6f4;
+  --pri-ink: #1e1e2e;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #1e1e2e;
+  --sh-hi: #cdd6f4;
+  --sh-body: #9da4be;
+  --sh-shade: #7d829a;
+  --sh-eye: #1e1e2e;
+  --sh-glint: #cdd6f4;
+  --sh-blush: #e490bc;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="tokyo"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --bg2: #14151e;
+  --s1: #202332;
+  --s2: #262a3c;
+  --s3: #32374d;
+  --line: rgba(192, 202, 245, 0.08);
+  --line2: rgba(192, 202, 245, 0.17);
+  --ink: #c0caf5;
+  --ink2: #929abc;
+  --ink3: #848baa;
+  --ink4: #51546a;
+  --attn: #ff9e64;
+  --attn-ink: #1a1b26;
+  --attn-line: rgba(255, 158, 100, 0.4);
+  --calm: #73daca;
+  --calm-soft: rgba(115, 218, 202, 0.12);
+  --err: #e4849c;
+  --screen: #101118;
+  --out: #b2bce4;
+  --pri: #c0caf5;
+  --pri-ink: #1a1b26;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #1a1b26;
+  --sh-hi: #c0caf5;
+  --sh-body: #929abc;
+  --sh-shade: #787f9c;
+  --sh-eye: #1a1b26;
+  --sh-glint: #c0caf5;
+  --sh-blush: #e08dbd;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="rose"] {
+  color-scheme: dark;
+  --bg: #191724;
+  --bg2: #14121c;
+  --s1: #1e1c2d;
+  --s2: #232035;
+  --s3: #312e45;
+  --line: rgba(224, 222, 244, 0.08);
+  --line2: rgba(224, 222, 244, 0.17);
+  --ink: #e0def4;
+  --ink2: #acaabe;
+  --ink3: #8e8c9e;
+  --ink4: #575565;
+  --attn: #f8b95a;
+  --attn-ink: #191724;
+  --attn-line: rgba(248, 185, 90, 0.4);
+  --calm: #9ccfd8;
+  --calm-soft: rgba(156, 207, 216, 0.12);
+  --err: #e17893;
+  --screen: #100e16;
+  --out: #d0cee4;
+  --pri: #e0def4;
+  --pri-ink: #191724;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #191724;
+  --sh-hi: #e0def4;
+  --sh-body: #acaabe;
+  --sh-shade: #848294;
+  --sh-eye: #191724;
+  --sh-glint: #e0def4;
+  --sh-blush: #e892bc;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+:root[data-theme="gruvbox"] {
+  color-scheme: dark;
+  --bg: #282828;
+  --bg2: #1f1f1f;
+  --s1: #302f2e;
+  --s2: #383433;
+  --s3: #46423d;
+  --line: rgba(235, 219, 178, 0.08);
+  --line2: rgba(235, 219, 178, 0.17);
+  --ink: #ebdbb2;
+  --ink2: #b3a88b;
+  --ink3: #a1987e;
+  --ink4: #635f53;
+  --attn: #fabd2f;
+  --attn-ink: #282828;
+  --attn-line: rgba(250, 189, 47, 0.4);
+  --calm: #8ec07c;
+  --calm-soft: rgba(142, 192, 124, 0.12);
+  --err: #f58a74;
+  --screen: #191919;
+  --out: #dacca6;
+  --pri: #ebdbb2;
+  --pri-ink: #282828;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #282828;
+  --sh-hi: #ebdbb2;
+  --sh-body: #b3a88b;
+  --sh-shade: #938a74;
+  --sh-eye: #282828;
+  --sh-glint: #ebdbb2;
+  --sh-blush: #ee94ae;
+  --tag-0: #f87d7d;
+  --tag-1: #baa600;
+  --tag-2: #7eb84f;
+  --tag-3: #21c188;
+  --tag-4: #04bcb9;
+  --tag-5: #09b8d7;
+  --tag-6: #45acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d485de;
+  --tag-9: #ef7cad;
+}
+:root[data-theme="latte"] {
+  color-scheme: light;
+  --bg: #eff1f5;
+  --bg2: #e6e9ef;
+  --s1: #f9f9fb;
+  --s2: #e7eaf0;
+  --s3: #dce0e8;
+  --line: rgba(76, 79, 105, 0.08);
+  --line2: rgba(76, 79, 105, 0.17);
+  --ink: #4c4f69;
+  --ink2: #64677e;
+  --ink3: #6b6e84;
+  --ink4: #9e9fb0;
+  --attn: #b04a00;
+  --attn-ink: #ffffff;
+  --attn-line: rgba(176, 74, 0, 0.4);
+  --calm: #0f6b70;
+  --calm-soft: rgba(15, 107, 112, 0.09);
+  --err: #a8323f;
+  --screen: #e5e8ee;
+  --out: #53566f;
+  --pri: #4c4f69;
+  --pri-ink: #eff1f5;
+  --scrim: rgba(76, 79, 105, 0.3);
+  --shadow: 0 14px 36px rgba(76, 79, 105, 0.14);
+  --bar: #eff1f5;
+  --sh-hi: #c0c1cc;
+  --sh-body: #e0e3ea;
+  --sh-shade: #9e9fb0;
+  --sh-eye: #4c4f69;
+  --sh-glint: #eff1f5;
+  --sh-blush: #b3638a;
+  --tag-0: #a12e36;
+  --tag-1: #6a5e00;
+  --tag-2: #3c6d00;
+  --tag-3: #006f4c;
+  --tag-4: #006c6a;
+  --tag-5: #00697c;
+  --tag-6: #00629e;
+  --tag-7: #534dae;
+  --tag-8: #84398d;
+  --tag-9: #9a2f63;
+}
+:root[data-theme="gruvbox-light"] {
+  color-scheme: light;
+  --bg: #fbf1c7;
+  --bg2: #f4e7be;
+  --s1: #fdf9e9;
+  --s2: #f5e8bf;
+  --s3: #ebdbb2;
+  --line: rgba(60, 56, 54, 0.08);
+  --line2: rgba(60, 56, 54, 0.17);
+  --ink: #3c3836;
+  --ink2: #605b52;
+  --ink3: #716b5f;
+  --ink4: #a7a088;
+  --attn: #8a5a06;
+  --attn-ink: #ffffff;
+  --attn-line: rgba(138, 90, 6, 0.4);
+  --calm: #386a4b;
+  --calm-soft: rgba(56, 106, 75, 0.09);
+  --err: #974546;
+  --screen: #f2e5bb;
+  --out: #47423e;
+  --pri: #3c3836;
+  --pri-ink: #fbf1c7;
+  --scrim: rgba(60, 56, 54, 0.3);
+  --shadow: 0 14px 36px rgba(60, 56, 54, 0.14);
+  --bar: #fbf1c7;
+  --sh-hi: #c6c1b2;
+  --sh-body: #eddfba;
+  --sh-shade: #a7a088;
+  --sh-eye: #3c3836;
+  --sh-glint: #fbf1c7;
+  --sh-blush: #b3638a;
+  --tag-0: #a12e36;
+  --tag-1: #6a5e00;
+  --tag-2: #3c6d00;
+  --tag-3: #006f4c;
+  --tag-4: #006c6a;
+  --tag-5: #00697c;
+  --tag-6: #00629e;
+  --tag-7: #534dae;
+  --tag-8: #84398d;
+  --tag-9: #9a2f63;
+}
+:root[data-theme="ice"] {
+  color-scheme: dark;
+  --bg: #071b1a;
+  --bg2: #051514;
+  --s1: #0d2423;
+  --s2: #122b2b;
+  --s3: #223c3c;
+  --line: rgba(230, 241, 242, 0.08);
+  --line2: rgba(230, 241, 242, 0.17);
+  --ink: #e6f1f2;
+  --ink2: #adbbbb;
+  --ink3: #8d9c9b;
+  --ink4: #526262;
+  --attn: #2ee6e0;
+  --attn-ink: #071b1a;
+  --attn-line: rgba(46, 230, 224, 0.4);
+  --calm: #a1eae5;
+  --calm-soft: rgba(161, 234, 229, 0.12);
+  --err: #dc8d9a;
+  --screen: #041110;
+  --out: #d5e1e2;
+  --pri: #e6f1f2;
+  --pri-ink: #071b1a;
+  --scrim: rgba(4, 5, 6, 0.62);
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  --bar: #071b1a;
+  --sh-hi: #e6f1f2;
+  --sh-body: #adbbbb;
+  --sh-shade: #829190;
+  --sh-eye: #071b1a;
+  --sh-glint: #83e1dc;
+  --sh-blush: #ea97bc;
+  --tag-0: #f47a7a;
+  --tag-1: #baa601;
+  --tag-2: #7eb850;
+  --tag-3: #20c188;
+  --tag-4: #00bcb9;
+  --tag-5: #00b8d8;
+  --tag-6: #46acfc;
+  --tag-7: #9697ff;
+  --tag-8: #d182da;
+  --tag-9: #eb79aa;
+}
+
+/* "system": graphite or chalk by the device's appearance. Any named theme wins. */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="graphite"]) {
+  :root[data-theme="system"],
+  :root:not([data-theme]) {
     color-scheme: light;
     --bg: #faf8f4;
     --bg2: #f2efe9;
@@ -2257,25 +2821,6 @@ select {
 }
 /* Chat or the screen (T-626): since T-701 a small pill on the divider,
    there only when Settings puts it there. */
-.view-toggle {
-  min-height: 24px;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin: -4px 0;
-  padding: 0 7px 0 6px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--s2);
-  color: var(--ink2);
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
-}
-.view-toggle[aria-pressed="true"] {
-  background: var(--s3);
-  color: var(--ink);
-}
 
 /* ---- the conversation (T-626): the transcript as a chat, newest at the bottom -- */
 .chat {
@@ -2914,9 +3459,6 @@ select {
   margin-left: auto;
   padding: 0 16px 0 12px;
 }
-.fab {
-  display: none;
-}
 .add-to-column {
   min-height: 44px;
   display: flex;
@@ -2961,9 +3503,6 @@ select {
 }
 /* A shell open on a card (T-948): the terminal glyph, quiet as the
    worktree's; a running command is the state mark's spinner. */
-.shell-mark {
-  color: var(--ink3);
-}
 .wt-dormant {
   color: var(--ink4);
 }
@@ -3814,24 +4353,6 @@ button.sent-bubble:hover {
   #work-list {
     position: relative;
   }
-  .fab {
-    position: absolute;
-    right: 16px;
-    bottom: 82px;
-    z-index: 4;
-    min-height: 52px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 20px 0 16px;
-    border: 0;
-    border-radius: 18px;
-    background: var(--pri);
-    color: var(--pri-ink);
-    font-size: 0.9375rem;
-    font-weight: 600;
-    box-shadow: var(--shadow);
-  }
   #shell:not([data-mode="sent"]) #tickets {
     padding-bottom: 88px;
   }
@@ -3930,4 +4451,594 @@ button.sent-bubble:hover {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ==== T-1208: the compact page ===============================================
+   Tighter type and rows, the tag bar on a card's edge, a five-tab bar, the
+   ticket page's tabs and the terminal's keys, and the theme picker. Written
+   last so it wins over the rules above it at equal specificity. */
+
+/* ---- density: compact by default, comfortable a Settings choice ---------------- */
+:root {
+  --row-gap: 8px;
+  --card-pad: 10px 12px 10px 15px;
+  --title-size: 0.90625rem;
+}
+:root[data-density="comfortable"] {
+  --row-gap: 12px;
+  --card-pad: 13px 14px 13px 17px;
+  --title-size: 0.9375rem;
+}
+
+/* ---- the header's strip: a dot per agent, then the link's word ------------------ */
+.pill .pips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink4);
+}
+.pip-needs {
+  background: var(--attn);
+  box-shadow: 0 0 0 2.5px var(--attn-line);
+}
+.pip-stopped {
+  border-radius: 2px;
+  background: var(--err);
+}
+.pip-working {
+  background: var(--calm);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.pill .pips + .pill-word {
+  padding-left: 7px;
+  border-left: 1px solid var(--line2);
+}
+
+/* ---- the list ------------------------------------------------------------------- */
+#list-title {
+  font-size: 1.375rem;
+}
+.list-tools {
+  gap: 10px;
+}
+.search input {
+  min-height: 44px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-radius: 12px;
+}
+#tickets {
+  gap: 16px;
+}
+.group {
+  gap: var(--row-gap);
+}
+.cards,
+.needs {
+  gap: var(--row-gap);
+}
+.ticket.card,
+.need {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+}
+.ticket.card {
+  min-height: 0;
+  gap: 4px;
+  padding: var(--card-pad);
+}
+/* The ticket's first tag on the card's edge, as the TUI's tag bar (T-1208). */
+.ticket.card[data-tint]::after,
+.need[data-tint]::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+}
+.ticket.card[data-tint="0"]::after, .need[data-tint="0"]::after { background: var(--tag-0); }
+.ticket.card[data-tint="1"]::after, .need[data-tint="1"]::after { background: var(--tag-1); }
+.ticket.card[data-tint="2"]::after, .need[data-tint="2"]::after { background: var(--tag-2); }
+.ticket.card[data-tint="3"]::after, .need[data-tint="3"]::after { background: var(--tag-3); }
+.ticket.card[data-tint="4"]::after, .need[data-tint="4"]::after { background: var(--tag-4); }
+.ticket.card[data-tint="5"]::after, .need[data-tint="5"]::after { background: var(--tag-5); }
+.ticket.card[data-tint="6"]::after, .need[data-tint="6"]::after { background: var(--tag-6); }
+.ticket.card[data-tint="7"]::after, .need[data-tint="7"]::after { background: var(--tag-7); }
+.ticket.card[data-tint="8"]::after, .need[data-tint="8"]::after { background: var(--tag-8); }
+.ticket.card[data-tint="9"]::after, .need[data-tint="9"]::after { background: var(--tag-9); }
+.ticket-title {
+  font-size: var(--title-size);
+  line-height: 1.35;
+}
+/* Inbox reads like a list of conversations: one line a title. */
+#shell[data-mode="agents"] #tickets .ticket-title {
+  -webkit-line-clamp: 1;
+}
+.ticket-meta {
+  font-size: 0.6875rem;
+}
+.headline {
+  font-size: 0.78125rem;
+}
+.headline-step {
+  font-size: 0.71875rem;
+}
+/* A tag in a list is its tint's square and its name, small (T-1208): the
+   filled chip stays on the ticket page's line. */
+#tickets .tag,
+.sent-meta .tag {
+  height: auto;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  color: var(--ink3);
+  font-size: 0.625rem;
+}
+#tickets .tag::before,
+.sent-meta .tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--tint, var(--ink4));
+}
+#tickets .tags {
+  gap: 2px 8px;
+}
+.need {
+  gap: 10px;
+  padding: 11px 12px 12px 15px;
+}
+.need-code {
+  max-height: 3.4em;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+.need-question {
+  font-size: 0.875rem;
+}
+.option {
+  min-height: 44px;
+  padding: 7px 12px;
+  border-radius: 10px;
+}
+.option-label {
+  font-size: 0.875rem;
+}
+.option-desc {
+  font-size: 0.75rem;
+}
+.need-actions .btn {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 0.875rem;
+}
+/* Deny apart from Approve (T-1208): the two never sit under one thumb. */
+.need-actions {
+  justify-content: space-between;
+}
+.need.stopped {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--err) 45%, transparent);
+}
+.need.stopped .need-actions {
+  justify-content: flex-start;
+}
+.mark-stopped {
+  border-radius: 2px;
+  background: var(--err);
+}
+.mark-asleep {
+  box-shadow: inset 0 0 0 1.5px var(--ink4);
+}
+
+/* ---- the board's columns: an underlined rail ------------------------------------ */
+.column-tabs {
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+.column-tab {
+  min-height: 44px;
+  padding: 0 9px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink3);
+  font-size: 0.6875rem;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.column-tab[aria-pressed="true"] {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+/* ---- the tab bar: Inbox, Board, New, Sent, Settings ----------------------------- */
+@media (max-width: 1100px) {
+  #modes {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0;
+    padding: 4px 6px;
+  }
+  #modes .mode {
+    min-height: 50px;
+  }
+  /* The open tab's icon keeps its filled pill (T-950), a little narrower
+     for five tabs. */
+  #modes .mode .icon {
+    padding: 4px 14px;
+  }
+  #modes .mode-new .mode-disc {
+    width: 46px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--pri);
+    color: var(--pri-ink);
+  }
+  #modes .mode-new .mode-disc .icon {
+    padding: 0;
+    background: none;
+    color: inherit;
+  }
+  #modes .mode-new:disabled .mode-disc {
+    background: var(--s3);
+    color: var(--ink4);
+  }
+}
+@media (min-width: 1101px) {
+  #new-ticket-fab,
+  #settings-mode {
+    display: none;
+  }
+}
+
+/* ---- the ticket page ------------------------------------------------------------ */
+.detail-head {
+  padding-bottom: 6px;
+}
+.detail-title {
+  gap: 4px;
+}
+.ticket-tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.ticket-tabs button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink3);
+  font-size: 0.84375rem;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.ticket-tabs button.on {
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+.ticket-tabs button:disabled {
+  color: var(--ink4);
+}
+.tab-count {
+  color: var(--ink4);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.pane-bar {
+  border-top: 0;
+}
+/* The stop of a working turn sits where the arrow does. */
+.composer .send-stop {
+  grid-area: send;
+  background: var(--s3);
+  color: var(--ink);
+}
+.stopped-line {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--err) 55%, transparent);
+  border-radius: 14px;
+}
+.stopped-line p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stopped-why {
+  color: var(--ink3);
+  font-size: 0.8125rem;
+}
+.stopped-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---- the Terminal tab's keys ----------------------------------------------------- */
+.keys-area {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 12px calc(10px + var(--safe-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.key-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.key-bar::-webkit-scrollbar {
+  display: none;
+}
+.key {
+  flex: none;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-bottom-width: 2px;
+  border-radius: 9px;
+  background: var(--s1);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+.key:active:not(:disabled) {
+  translate: 0 1px;
+}
+.key:disabled {
+  color: var(--ink4);
+}
+.keys-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 3px 3px 12px;
+  border-radius: 22px;
+  background: var(--s1);
+}
+.keys-prompt {
+  color: var(--attn);
+  font-family: var(--mono);
+}
+#keys-text {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  outline: none;
+}
+.keys-line .send {
+  width: 44px;
+  height: 44px;
+}
+
+/* ---- Settings: the theme picker and density -------------------------------------- */
+.theme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.theme-tile {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--s1);
+  text-align: start;
+}
+.theme-tile[aria-checked="true"] {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+.theme-pv {
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px;
+}
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 13px;
+  padding: 0 6px;
+  border-left: 3px solid;
+  border-radius: 4px;
+}
+.theme-row i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+}
+.theme-row b {
+  height: 4px;
+  flex: 1;
+  border-radius: 2px;
+  opacity: 0.75;
+}
+.theme-pv-split {
+  flex-direction: row;
+  gap: 0;
+  padding: 0;
+}
+.theme-pv-split span {
+  flex: 1;
+  background: #131417;
+}
+.theme-pv-split span + span {
+  background: #faf8f4;
+}
+.theme-name {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 9px 8px;
+  font-size: 0.8125rem;
+}
+.theme-name small {
+  overflow: hidden;
+  color: var(--ink3);
+  font-size: 0.6875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.segmented.density {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--s1);
+}
+.segmented.density button {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink3);
+  font-size: 0.8125rem;
+}
+.segmented.density button.on {
+  background: var(--s3);
+  color: var(--ink);
+}
+
+/* ---- T-1208: second pass -------------------------------------------------------- */
+/* Deny keeps its own width; Approve takes the rest, apart from it. */
+.need-actions .btn:not(.btn-attn):not(.btn-pri),
+.attention-actions .btn:not(.btn-attn) {
+  flex: 0 0 auto;
+  min-width: 84px;
+}
+.attention-actions {
+  gap: 16px;
+}
+.attention-note {
+  font-size: 0.75rem;
+}
+.attention-code {
+  max-height: 22vh;
+  font-size: 0.75rem;
+}
+/* The ticket page's header: one line of title on a phone, and its tags as
+   the list draws them, so the line never wraps. */
+.ticket-line .tags {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.ticket-line .tag {
+  height: auto;
+  gap: 4px;
+  padding: 0;
+  background: none;
+  color: var(--ink3);
+  font-size: 0.625rem;
+}
+.ticket-line .tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--tint, var(--ink4));
+}
+.ticket-line .chip-column {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.625rem;
+}
+.detail-shin .shin {
+  width: 24px;
+  height: auto;
+}
+@media (max-width: 700px) {
+  #selection {
+    font-size: 1rem;
+  }
+  #selection.clamp,
+  #selection .clamp {
+    -webkit-line-clamp: 1;
+  }
+  .detail-head {
+    padding: 8px 12px 6px;
+  }
+}
+/* A switch for a yes-or-no setting. */
+input[type="checkbox"][role="switch"] {
+  appearance: none;
+  position: relative;
+  width: 42px;
+  height: 26px;
+  flex: none;
+  margin: 0;
+  border: 1px solid var(--line2);
+  border-radius: 13px;
+  background: var(--s2);
+  cursor: pointer;
+}
+input[type="checkbox"][role="switch"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--ink3);
+  transition: translate 0.15s;
+}
+input[type="checkbox"][role="switch"]:checked {
+  border-color: var(--ink2);
+  background: var(--ink2);
+}
+input[type="checkbox"][role="switch"]:checked::after {
+  translate: 16px 0;
+  background: var(--bg);
+}
+.theme-picker .setting-switch {
+  display: grid;
+}
+.theme-pv {
+  height: 48px;
+  gap: 3px;
+  padding: 6px 8px;
+}
+.theme-row {
+  height: 10px;
 }

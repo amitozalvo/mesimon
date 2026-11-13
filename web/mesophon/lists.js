@@ -9,7 +9,7 @@ import { Shin } from "./shin.js";
 import { TrustAccept, answerable, requestSummary } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
-import { RECENT_MS, omittedWords } from "./board.js";
+import { RECENT_MS, omittedWords, stoppedUnasked } from "./board.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -150,24 +150,31 @@ function FromHere({ store, ticket }) {
     : null;
 }
 
-// The ticket's state at its title's start (T-948): the agent's mark, and a
-// command running in the ticket's shell spins as an agent's work does,
-// under anything the agent needs and over its idle mark.
+// The ticket's state at its title's start (T-948): the agent's mark. A
+// ticket's shells are the terminal's alone (T-1208): the phone draws none.
 function StateMark({ ticket }) {
   const state = ticket.agent?.state;
   if (state === "needs attention") return html`<span class="title-glyph"><span class="mark mark-attn" aria-hidden="true"></span></span>`;
-  if (state === "starting" || state === "working" || ticket.shell?.busy) return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
+  if (state === "starting" || state === "working") return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
+  if (stoppedUnasked(ticket.agent)) return html`<span class="title-glyph"><span class="mark mark-stopped" aria-hidden="true"></span><span class="sr-only">stopped: </span></span>`;
   if (!ticket.agent) return null;
-  return html`<span class="title-glyph"><span class="mark mark-idle" aria-hidden="true"></span></span>`;
+  return html`<span class="title-glyph"><span class=${`mark ${state === "sleeping" || state === "exited" ? "mark-asleep" : "mark-idle"}`} aria-hidden="true"></span></span>`;
 }
 
-// A shell open on the ticket (T-948), the TUI's `!` terminal or an adopted
-// one: the terminal glyph beside the state's, busy or at its prompt. Live
-// only.
-function ShellMark({ ticket }) {
-  if (!ticket.shell) return null;
-  return html`<span class="title-glyph shell-mark" title="terminal"><${Icon} name="terminal" size=${13} width=${2.2} /><span class="sr-only">terminal</span></span>`;
-}
+// Why an agent's process ended (T-1208), in the card's words.
+const EXIT_WORDS = {
+  crashed: "Crashed",
+  killed: "Killed",
+  logged_out: "Logged out",
+  user_quit: "Quit",
+  cleared: "Cleared",
+  dismissed: "Dismissed",
+  resumed: "Resumed elsewhere",
+};
+export const exitWords = (agent) => EXIT_WORDS[agent?.exit?.reason] || "Stopped";
+
+// The ticket's first tag tints the card's edge, as the TUI's tag bar does.
+const tintOf = (ticket) => ticket.tags?.[0]?.tint;
 
 // A ticket, drawn the same wherever it is listed (T-533), in the TUI card's
 // order (T-855): the title, led on its first line by the agent's mark and
@@ -183,7 +190,7 @@ function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   return html`<span class="face">
-    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} /><${ShellMark} ticket=${ticket} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
+    <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
     <span class="card-corner"><${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
     <span class="card-line"><${Tags} ticket=${ticket} /><span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span></span>
     <${Headline} agent=${agent} />
@@ -195,7 +202,7 @@ function Face({ store, ticket, board, column, archived }) {
 function Card({ store, ticket, board, column, drag }) {
   const needs = ticket.agent?.state === "needs attention";
   const cls = `ticket card${needs ? " card-attn" : ""}${drag?.before === ticket.id ? " drop-before" : ""}`;
-  return html`<button type="button" class=${cls} data-id=${ticket.id}
+  return html`<button type="button" class=${cls} data-id=${ticket.id} data-tint=${tintOf(ticket)}
     aria-pressed=${String(ticket.id === board.selected)} onClick=${() => store.select(ticket.id)}
     draggable=${drag ? "true" : undefined}
     onDragStart=${drag && ((e) => {
@@ -230,7 +237,7 @@ function NeedCard({ store, ticket, board, live }) {
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
   const expired = permission && Date.now() >= permission.expires_at;
   const tick = receiptTick(entry?.latest?.status);
-  return html`<article class="need">
+  return html`<article class="need" data-tint=${tintOf(ticket)}>
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>
       <${Face} store=${store} ticket=${ticket} board=${board} column=${true} />
@@ -269,6 +276,27 @@ function NeedCard({ store, ticket, board, live }) {
           ? html`<div class="need-actions"><button type="button" class="btn btn-attn" onClick=${() => store.select(ticket.id)}>${dialog.kind === "plan" ? "Review plan" : "Answer in the ticket"}</button></div>`
           : null}
     ${entry?.delivery && html`<p class="need-delivery" role="status">${tick && html`<${Tick} state=${tick} />`}<span>${entry.delivery}</span></p>`}
+  </article>`;
+}
+
+// An agent whose process ended unasked (T-1208): its conversation is kept,
+// and Resume takes it up again from here. Start fresh begins a new one.
+function StoppedCard({ store, ticket, board, live }) {
+  const waiting = startWaiting(store.startOf(ticket));
+  const at = ticket.agent.exit?.at;
+  const when = Number.isFinite(at) ? ageWords(board, at) : "";
+  return html`<article class="need stopped" data-tint=${tintOf(ticket)}>
+    <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(ticket.id === board.selected)}
+      onClick=${() => store.select(ticket.id)}>
+      <${Face} store=${store} ticket=${ticket} board=${board} column=${true} />
+    </button>
+    <div class="need-body"><p class="need-line">${exitWords(ticket.agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`} · its conversation is kept</p></div>
+    <div class="need-actions">
+      <button type="button" class="btn btn-pri resume-agent" disabled=${!live || !store.canResume || waiting}
+        onClick=${() => store.resumeAgent(ticket.id)}><${Icon} name="play" size=${14} /><span>Resume</span></button>
+      <button type="button" class="btn fresh-agent" disabled=${!live || !store.canStart || waiting}
+        onClick=${() => store.openStart(ticket.id)}>Start fresh</button>
+    </div>
   </article>`;
 }
 
@@ -314,18 +342,21 @@ function Waiting({ store }) {
 }
 
 export function NowList({ store, board, live }) {
-  const { needs, working, idle, created } = board.sections();
-  const empty = !needs.length && !working.length && !idle.length && !created.length;
+  const { needs, stopped, working, idle, created } = board.sections();
+  const empty = !needs.length && !stopped.length && !working.length && !idle.length && !created.length;
   return html`
     <${Asleep} store=${store} />
     <${Waiting} store=${store} />
     ${needs.length > 0 && html`<${Group} label="Needs you" count=${needs.length} attn=${true}>
       <div class="needs">${needs.map((t) => html`<${NeedCard} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
     </${Group}>`}
+    ${stopped.length > 0 && html`<${Group} label="Stopped" count=${stopped.length}>
+      <div class="needs">${stopped.map((t) => html`<${StoppedCard} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
+    </${Group}>`}
     ${working.length > 0 && html`<${Group} label="Working" count=${working.length}>
       <div class="cards">${working.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
-    ${idle.length > 0 && html`<${Group} label="Recently idle" count=${idle.length}>
+    ${idle.length > 0 && html`<${Group} label="Idle" count=${idle.length}>
       <div class="cards">${idle.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}
     ${created.length > 0 && html`<${Group} label="Recently created" count=${created.length}>

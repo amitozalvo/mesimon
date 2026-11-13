@@ -295,6 +295,84 @@ pub enum Request {
         ticket: String,
         note: String,
     },
+    /// One key, or a line of typing, into the ticket's agent pane (T-1208):
+    /// the ticket page's key bar. Only the agent session the card names, its
+    /// pane alive; never a shell. Exactly one of `key` and `text`. Answered
+    /// `edited` once tmux took it. Sent only to a host that says `keys`.
+    Keys {
+        ticket: String,
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<PaneKey>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+    /// Bring a stopped agent's conversation back (T-1208): the ticket's
+    /// corpse (`Board::dead_agent`, an exited record the person has not
+    /// dismissed) resumed as the desk's Enter on its rail row does, with
+    /// `prompt` as the first words when given. Answered as `Start` is
+    /// (`starting`/`provisioning`, then `started` by `status`). Sent only to
+    /// a host that says `resume`.
+    Resume {
+        ticket: String,
+        session: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<String>,
+    },
+}
+
+/// The keys a phone's key bar sends an agent pane (T-1208), each one tmux
+/// key name. A closed list: nothing a phone types reaches tmux as a key
+/// spelling of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneKey {
+    Escape,
+    Tab,
+    BackTab,
+    Enter,
+    Up,
+    Down,
+    Left,
+    Right,
+    Backspace,
+    CtrlC,
+    CtrlD,
+    CtrlR,
+}
+
+impl PaneKey {
+    /// tmux's `send-keys` name for the key.
+    pub const fn tmux(self) -> &'static str {
+        match self {
+            PaneKey::Escape => "Escape",
+            PaneKey::Tab => "Tab",
+            PaneKey::BackTab => "BTab",
+            PaneKey::Enter => "Enter",
+            PaneKey::Up => "Up",
+            PaneKey::Down => "Down",
+            PaneKey::Left => "Left",
+            PaneKey::Right => "Right",
+            PaneKey::Backspace => "BSpace",
+            PaneKey::CtrlC => "C-c",
+            PaneKey::CtrlD => "C-d",
+            PaneKey::CtrlR => "C-r",
+        }
+    }
+}
+
+/// The longest line a phone's key bar types into a pane at once (T-1208).
+pub const KEYS_TEXT_MAX_BYTES: usize = 512;
+
+/// Why an agent stopped (T-1208), on an exited or failed agent: the
+/// record's own reason word, and when it stopped where the record says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExit {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
 }
 
 /// A ticket a paired browser sealed for the host's mailbox (T-497): the
@@ -686,6 +764,9 @@ pub struct Agent {
     /// that differs, the agent switches at its next idle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
+    /// Why it stopped (T-1208), on an `exited` or `failed` agent alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<AgentExit>,
 }
 
 /// The page a pairing QR opens (T-497): the relay's browser origin with the
@@ -849,6 +930,11 @@ pub enum Reply {
         /// order. Zero and absent otherwise, and from an older host.
         #[serde(default, skip_serializing_if = "is_zero")]
         omitted: u32,
+        /// The theme the terminal wears now (T-1208), its flavor's word
+        /// (`graphite`, `nord`…), for a phone set to follow it. Absent while
+        /// no board has said, and from an older host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<String>,
     },
     Preview {
         lines: Vec<String>,
@@ -1227,6 +1313,50 @@ mod tests {
         assert_eq!((row.at, row.rev, row.by.as_str()), (1_790_845_550_000, 4, "you"));
     }
 
+    /// The key bar and the resume (T-1208) speak the shapes the page sends:
+    /// a closed list of keys, one of key or text, and a resume with or
+    /// without words; a key the list lacks is refused, never passed on.
+    #[test]
+    fn keys_and_resume_parse_the_page_s_shapes() {
+        let keys: Request = serde_json::from_value(serde_json::json!(
+            {"op":"keys","ticket":"t","session":"s","key":"back_tab"}
+        ))
+        .unwrap();
+        let Request::Keys { key: Some(key), text: None, .. } = keys else { panic!("{keys:?}") };
+        assert_eq!(key.tmux(), "BTab");
+        let typed: Request = serde_json::from_value(serde_json::json!(
+            {"op":"keys","ticket":"t","session":"s","text":"yes"}
+        ))
+        .unwrap();
+        assert!(matches!(typed, Request::Keys { key: None, text: Some(t), .. } if t == "yes"));
+        assert!(serde_json::from_value::<Request>(serde_json::json!(
+            {"op":"keys","ticket":"t","session":"s","key":"F12"}
+        ))
+        .is_err());
+        for (key, word) in [(PaneKey::CtrlC, "ctrl_c"), (PaneKey::Escape, "escape")] {
+            assert_eq!(serde_json::to_value(key).unwrap(), serde_json::json!(word));
+        }
+        let bare: Request = serde_json::from_value(serde_json::json!(
+            {"op":"resume","ticket":"t","session":"s"}
+        ))
+        .unwrap();
+        assert!(matches!(bare, Request::Resume { prompt: None, tier: None, .. }));
+        let worded: Request = serde_json::from_value(serde_json::json!(
+            {"op":"resume","ticket":"t","session":"s","prompt":"go on","tier":"opus"}
+        ))
+        .unwrap();
+        assert!(
+            matches!(worded, Request::Resume { prompt: Some(p), tier: Some(_), .. } if p == "go on")
+        );
+        let exit = AgentExit { reason: "crashed".into(), at: Some(7) };
+        assert_eq!(
+            serde_json::to_value(&exit).unwrap(),
+            serde_json::json!({"reason":"crashed","at":7})
+        );
+        let unknown = AgentExit { reason: "killed".into(), at: None };
+        assert_eq!(serde_json::to_value(&unknown).unwrap(), serde_json::json!({"reason":"killed"}));
+    }
+
     /// The sheet's facts ride the board reply beside what an older browser
     /// already reads, and a board without them still parses.
     #[test]
@@ -1241,6 +1371,7 @@ mod tests {
             tiers: vec![],
             archived: vec![],
             omitted: 0,
+            theme: None,
         };
         let json = serde_json::to_value(&bare).unwrap();
         assert_eq!(
@@ -1290,6 +1421,7 @@ mod tests {
                 doing: None,
                 said: None,
                 tier: None,
+                exit: None,
             }),
             tags: vec![],
             picked: None,

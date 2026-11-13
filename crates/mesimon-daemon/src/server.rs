@@ -718,6 +718,9 @@ pub struct Daemon {
     /// A person has seen the unknown-cleanup warning for this exact generation.
     /// Never persisted or inherited by queued/automatic resume operations.
     cleanup_resume_offers: HashMap<uuid::Uuid, u64>,
+    /// The theme the terminal last said it wears (T-1208,
+    /// `Command::SetWornTheme`), for a phone that follows it. Memory only.
+    worn_theme: Option<String>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
@@ -2037,6 +2040,7 @@ impl Daemon {
             cost_due: true,
             recovery: HashMap::new(),
             cleanup_resume_offers: HashMap::new(),
+            worn_theme: None,
             reaping: HashMap::new(),
             server_restart: None,
             rss_cache: (0, 0),
@@ -3712,6 +3716,7 @@ impl Daemon {
             }
             Command::SetReviewedPrs { on } => self.set_reviewed_prs(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
+            Command::SetWornTheme { flavor } => self.set_worn_theme(flavor),
             Command::SetUsageWants { claude, codex } => {
                 if self.usage.set_wants(conn_key(stream), Wants { claude, codex }) {
                     self.broadcast();
@@ -12515,6 +12520,7 @@ impl Daemon {
             claude_md: self.claude_md.status().for_board(&self.board),
             claude_default_mode: user_default_mode(),
             status_top: self.backend.status_top(),
+            worn_theme: self.worn_theme.clone(),
             crown_touches: self.recent_crown_touches(),
             crown_said: self.crown_said_view(),
             links: self.links_view(),
@@ -12588,6 +12594,28 @@ impl Daemon {
         }
         self.broadcast();
         Response::Ok
+    }
+
+    /// `Command::SetWornTheme` (T-1208): the terminal's theme, kept for the
+    /// phone's board. A flavor's word is a short lowercase name; anything
+    /// else is refused, never stored or passed on.
+    fn set_worn_theme(&mut self, flavor: String) -> Response {
+        if !Self::worn_theme_word(&flavor) {
+            return Response::Err { message: format!("not a theme name: {flavor:?}") };
+        }
+        if self.worn_theme.as_deref() != Some(flavor.as_str()) {
+            self.worn_theme = Some(flavor);
+            self.broadcast();
+            self.control_changed();
+        }
+        Response::Ok
+    }
+
+    /// A theme's word as the TUI's flavor names spell it (T-1208): one to
+    /// 32 lowercase letters and hyphens.
+    pub(super) fn worn_theme_word(flavor: &str) -> bool {
+        (1..=32).contains(&flavor.len())
+            && flavor.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
     }
 
     /// What mesimon owes each ticket (see `Pending`). Empty until the queued

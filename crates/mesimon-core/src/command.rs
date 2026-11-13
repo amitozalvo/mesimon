@@ -635,6 +635,14 @@ pub enum Command {
     SetStatusLine {
         top: bool,
     },
+    /// The theme the terminal wears now (T-1208), its flavor's word, for a
+    /// paired phone set to follow it. The TUI pushes it at start, on every
+    /// retheme and whenever a snapshot reads the daemon holding another; the
+    /// daemon reads no preference file. Held in memory only. Local only:
+    /// how the person's own screen looks is nothing an agent has a say in.
+    SetWornTheme {
+        flavor: String,
+    },
     /// Which providers' subscription quota this board wants read (T-327) —
     /// the Usage settings' provider switches, while the line is on. Held per
     /// CONNECTION like the merge train: the daemon reads for the union of the
@@ -1697,7 +1705,7 @@ impl Command {
             }
             // Chrome over the panes, not the board's history: the feed says
             // what the board did, and where the status line sits is neither.
-            SetStatusLine { .. } => m(Mutate, false, None),
+            SetStatusLine { .. } | SetWornTheme { .. } => m(Mutate, false, None),
             // The daemon's reading schedule, never board state: a viewer of a
             // shared board reads their own quota like anyone (T-327).
             SetUsageWants { .. } | RefreshUsage { .. } => m(Read, false, None),
@@ -2166,6 +2174,11 @@ pub enum Response {
         /// this disagrees. Absent from an older daemon parses as bottom.
         #[serde(default)]
         status_top: bool,
+        /// The theme the daemon last heard the terminal wear (T-1208, see
+        /// [`Command::SetWornTheme`]): the TUI pushes its own when this
+        /// disagrees. Absent from an older daemon, or before any push.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worn_theme: Option<String>,
         /// The `!` terminals alive on the private server (T-366): one per
         /// directory, named by ticket. What the ticket page's ghost row and
         /// the card's spinner read; none of it is persisted, the panes are

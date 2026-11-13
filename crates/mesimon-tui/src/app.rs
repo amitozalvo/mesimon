@@ -1997,6 +1997,12 @@ pub struct App {
     pub status_top: bool,
     /// When `SetStatusLine` was last pushed — the reconcile's back-off.
     status_pushed_at: Option<Instant>,
+    /// The theme the daemon holds for a phone that follows the terminal
+    /// (T-1208), off the snapshot; `reconcile_worn_theme` pushes ours.
+    pub worn_theme: Option<String>,
+    /// When `SetWornTheme` was last pushed, and which flavor: a new flavor
+    /// pushes at once, the same one waits out the back-off.
+    theme_pushed: Option<(Instant, Flavor)>,
     /// The m flow's reply — rendered on the ticket screen's identity line
     /// (next to the branch state it acts on), never the footer. Cleared with
     /// `status` on the next keypress.
@@ -2612,6 +2618,8 @@ impl App {
             pending: snap.pending,
             automation: snap.automation,
             status_top: snap.status_top,
+            worn_theme: snap.worn_theme,
+            theme_pushed: None,
             claude_md: snap.claude_md,
             claude_default_mode: snap.claude_default_mode,
             team: snap.team,
@@ -4025,6 +4033,7 @@ impl App {
         self.reconcile_train();
         self.reconcile_status_line();
         self.reconcile_usage_wants();
+        self.reconcile_worn_theme();
         self.settle_pending_spawn_focus()
     }
 
@@ -4194,6 +4203,7 @@ impl App {
             claude_md,
             claude_default_mode,
             status_top,
+            worn_theme,
             team,
             mesophon,
             terminals,
@@ -4289,6 +4299,7 @@ impl App {
         self.claude_md = claude_md;
         self.claude_default_mode = claude_default_mode;
         self.status_top = status_top;
+        self.worn_theme = worn_theme;
         self.team = team;
         self.control = mesophon;
         self.terminals = terminals;
@@ -6626,6 +6637,7 @@ impl App {
         }
         self.ground = ground;
         self.preview(self.prefs.for_ground(ground));
+        self.reconcile_worn_theme();
     }
 
     /// Start or stop the OS appearance watch so that it runs exactly while
@@ -6857,6 +6869,7 @@ impl App {
             };
         }
         self.preview(self.resting_flavor());
+        self.reconcile_worn_theme();
         if pinned {
             let var = std::env::var("MESIMON_THEME").unwrap_or_default();
             self.status.push_str(&format!(" ∙ MESIMON_THEME={var} pins the next launch"));
@@ -7364,6 +7377,25 @@ impl App {
             && self.status_pushed_at.is_none_or(|t| t.elapsed() >= STATUS_PUSH_BACKOFF)
         {
             self.push_status_line();
+        }
+    }
+
+    /// Tell the daemon the theme this terminal wears (T-1208), for a paired
+    /// phone that follows it: when a snapshot reads another, after a pick
+    /// and when the OS ground flips. A flavor not yet pushed goes at once;
+    /// the same one again waits out the back-off, which is what keeps an
+    /// older daemon's refusal from being a push a frame.
+    pub(crate) fn reconcile_worn_theme(&mut self) {
+        let flavor = self.theme.flavor;
+        if self.worn_theme.as_deref() == Some(flavor.name()) {
+            return;
+        }
+        let due = self
+            .theme_pushed
+            .is_none_or(|(at, was)| was != flavor || at.elapsed() >= STATUS_PUSH_BACKOFF);
+        if due {
+            self.theme_pushed = Some((Instant::now(), flavor));
+            let _ = self.req(Command::SetWornTheme { flavor: flavor.name().into() });
         }
     }
 
@@ -17137,6 +17169,7 @@ struct Snapshot {
     claude_md: mesimon_core::command::ClaudeMdStatus,
     claude_default_mode: Option<String>,
     status_top: bool,
+    worn_theme: Option<String>,
     /// Board sharing (T-215): read by the team screens once they exist.
     team: mesimon_core::team::TeamInfo,
     mesophon: mesimon_core::mesophon::Info,
@@ -17175,6 +17208,7 @@ impl Snapshot {
                 claude_md,
                 claude_default_mode,
                 status_top,
+                worn_theme,
                 team,
                 mesophon,
                 terminals,
@@ -17203,6 +17237,7 @@ impl Snapshot {
                 claude_md,
                 claude_default_mode,
                 status_top,
+                worn_theme,
                 team,
                 mesophon,
                 terminals,
@@ -17845,6 +17880,12 @@ pub(crate) mod test_support {
                         automation: self.automation.clone(),
                         claude_default_mode: Some("auto".into()),
                         status_top: self.status_top,
+                        // The fake holds what the board last pushed (T-1208),
+                        // read back off its own log as a daemon would keep it.
+                        worn_theme: self.sent.borrow().iter().rev().find_map(|c| {
+                            let rest = c.strip_prefix("SetWornTheme { flavor: \"")?;
+                            Some(rest.trim_end_matches("\" }").to_string())
+                        }),
                         team: Default::default(),
                         mesophon: Default::default(),
                         terminals: self.terminals.clone(),
@@ -19418,6 +19459,7 @@ mod tests {
             automation: Default::default(),
             claude_default_mode: None,
             status_top: false,
+            worn_theme: None,
             team: Default::default(),
             mesophon: Default::default(),
             terminals: Vec::new(),
@@ -24580,6 +24622,36 @@ mod tests {
             keymap::resolve(Scope::Settings, Key::Char('r'), &ctx),
             Some(Verb::UsageRefresh)
         );
+    }
+
+    /// The worn theme (T-1208) goes to the daemon for a phone that follows
+    /// the terminal: pushed when a snapshot reads another, nothing more once
+    /// the daemon holds it, and a new flavor pushes at once, back-off or not.
+    #[test]
+    fn the_worn_theme_is_pushed_until_the_daemon_holds_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let pushes = |sent: &std::cell::RefCell<Vec<String>>| {
+            sent.borrow().iter().filter(|c| c.contains("SetWornTheme")).count()
+        };
+        let worn = app.theme.flavor.name();
+        app.worn_theme = None;
+        app.theme_pushed = None;
+        app.reconcile_worn_theme();
+        assert_eq!(pushes(&sent), 1);
+        assert!(sent_contains(&sent, &format!("SetWornTheme {{ flavor: \"{worn}\" }}")));
+        // The fake daemon echoes it: the next landing pushes nothing.
+        app.refresh().unwrap();
+        assert_eq!(app.worn_theme.as_deref(), Some(worn));
+        app.reconcile_worn_theme();
+        assert_eq!(pushes(&sent), 1);
+        // A retheme pushes at once, inside the back-off.
+        app.preview(if app.theme.flavor == Flavor::Nord { Flavor::Mocha } else { Flavor::Nord });
+        app.reconcile_worn_theme();
+        assert_eq!(pushes(&sent), 2);
+        // The same flavor again waits out the back-off.
+        app.worn_theme = None;
+        app.reconcile_worn_theme();
+        assert_eq!(pushes(&sent), 2);
     }
 
     /// The status line row (T-264) writes the preference AND tells the

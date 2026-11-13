@@ -2094,6 +2094,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
         | Command::SetStatusLine { .. }
+        // The person's theme, for their phone: their screen, never an agent's.
+        | Command::SetWornTheme { .. }
         // A quota probe launches the user's own CLI under their sign-in
         // (T-327): the person's board asks for it, never an agent.
         | Command::SetUsageWants { .. }

@@ -558,6 +558,14 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// One named key into a session's pane (T-1208), a phone's key bar.
+    /// `key` is tmux's own key name, from the caller's closed list
+    /// (`mesimon_core::mesophon::PaneKey::tmux`), never a phone's spelling.
+    pub fn press_key(&self, sid16: &str, key: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", sid16, key])?;
+        Ok(())
+    }
+
     pub fn dialog_key(&self, sid16: &str, key: DialogKey) -> Result<()> {
         let key = match key {
             DialogKey::Up => "Up",

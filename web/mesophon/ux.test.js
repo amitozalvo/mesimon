@@ -82,6 +82,10 @@ function fixture() {
     starts: [],
     startCommands: [],
     startDisposition: "starting",
+    // Keys into an agent's pane and resumes (T-1208), as the host took them.
+    keys: [],
+    keysRefusal: "",
+    resumes: [],
     // The card edits (T-530): applied and answered `edited`, `rejected`
     // with `editRefusal`, or held unanswered.
     edits: [],
@@ -480,6 +484,19 @@ function fixture() {
               state.begin(request.ticket, id);
             }
           }
+          if (request.op === "keys") {
+            state.keys.push(request);
+            answer(state.keysRefusal ? { result: "rejected", message: state.keysRefusal } : { result: "edited", ticket: request.ticket });
+          }
+          if (request.op === "resume") {
+            state.resumes.push(request);
+            answer({ result: "delivery", status: "starting" });
+            // Its session takes the turn at once: the next `status` says so.
+            state.answers[id] = { result: "delivery", status: "started" };
+            const ticket = state.tickets.find((t) => t.id === request.ticket);
+            ticket.agent = { session: ticket.agent.session, provider: ticket.agent.provider, state: "starting", promptable: true };
+            state.update();
+          }
           if (["rename", "move", "tag", "workspace", "archive", "park", "crown"].includes(request.op)) {
             state.edits.push(request);
             if (state.editDisposition === "rejected") answer({ result: "rejected", message: state.editRefusal });
@@ -649,9 +666,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
   const theme = (name) =>
     page.evaluate((name) => {
-      const control = document.querySelector("#theme");
-      control.value = name;
-      control.dispatchEvent(new Event("change"));
+      document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
     }, name);
   const quick = async (title) => {
     await page.locator("#quick-title").fill(title);
@@ -1080,13 +1095,16 @@ async function notesFlow(browser, engineName, size, viewport) {
   // shown, the bar's right end goes to the next and its left end back,
   // and `at` is where the bar says the page is.
   const pane = page.locator('.pane-note[aria-hidden="false"] .note-pane');
-  const at = (n) => until(page, (n) => document.querySelector("#pane-bar")?.dataset.pane === String(n), n);
-  const next = () => page.locator("#pane-next").click();
+  // The pane shown (T-1208): the transcript under the Chat tab, a note
+  // under Notes, where the bar walks the notes.
+  const paneAt = () => page.evaluate(() => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane"));
+  const at = (n) => until(page, (n) => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane") === String(n), n);
+  const next = async () => ((await paneAt()) === "0" ? page.locator("#tab-notes").click() : page.locator("#pane-next").click());
   const back = () => page.locator("#pane-name").click();
-  const named = () => page.locator("#pane-name").textContent();
+  const named = async () => ((await paneAt()) === "0" ? "Transcript" : page.locator("#pane-name").textContent());
   // Back to the transcript, then right until the pane named `text` is shown.
   const goTo = async (text) => {
-    for (let i = 0; i < 8 && !(await page.locator("#pane-name").isDisabled()); i++) await back();
+    for (let i = 0; i < 8 && (await paneAt()) !== "0"; i++) await back();
     for (let i = 0; i < 8 && !(await named()).includes(text); i++) await next();
     assert.match(await named(), new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   };
@@ -1113,10 +1131,10 @@ async function notesFlow(browser, engineName, size, viewport) {
     // The transcript first while an agent works, the bar counting the notes
     // to its right; a swipe reaches the description, whole, and nothing in
     // a body becomes markup.
-    await page.locator("#pane-bar").waitFor();
+    await page.locator("#ticket-tabs").waitFor();
     await at(0);
     assert.equal(await named(), "Transcript");
-    assert.match(await page.locator("#pane-next").textContent(), /2 notes/);
+    assert.match(await page.locator("#tab-notes").textContent(), /Notes2/);
     await swipe(page, page.locator(".panes"), -200);
     await at(1);
     assert.match(await named(), /Description/);
@@ -1361,8 +1379,8 @@ async function notesFlow(browser, engineName, size, viewport) {
     await open("ticket-4");
     await at(0);
     assert.equal(await page.locator(".pane-note").count(), 0);
-    assert.match(await page.locator("#pane-next").textContent(), /note/);
-    await page.locator("#pane-next").click();
+    assert.match(await page.locator("#tab-notes").textContent(), /^Notes$/);
+    await page.locator("#tab-notes").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator("#note-heading").textContent(), "Description · T-4");
     await sheet.getByRole("button", { name: "Cancel" }).click();
@@ -1408,7 +1426,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     // lands on the list (T-742) and the ticket is opened again.
     await page.reload();
     await open("ticket-0");
-    await page.locator("#pane-bar").waitFor();
+    await page.locator("#ticket-tabs").waitFor();
     await goTo("Plan: retry the train");
     await until(page, () => /Written away/.test(document.querySelector('.pane-note[aria-hidden="false"]').textContent));
     await pane.locator(".note-strip .tick").waitFor();
@@ -1519,9 +1537,7 @@ async function startFlow(browser, engineName, size, viewport) {
     }
     for (const theme of ["graphite", "chalk"]) {
       await page.evaluate((name) => {
-        const control = document.querySelector("#theme");
-        control.value = name;
-        control.dispatchEvent(new Event("change"));
+        document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
       }, theme);
       await shot(`start-ticket-${theme}`);
     }
@@ -2637,35 +2653,31 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#chat").textContent.includes("Fresh start"));
     assert.equal(await rowCount(), 2);
     assert((await chat.textContent()).includes("Start of the conversation"));
-    // The raw view is the pane's screen, behind a switch Settings puts on
-    // the divider (T-701); the choice is remembered.
-    assert.equal(await page.locator("#output-view").count(), 0, "no switch until Settings says so");
-    await page.evaluate(() => document.querySelector("#raw-switch").click());
-    await page.locator("#output-view").waitFor();
-    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-raw-switch")), "on");
-    assert.equal(await page.locator("#output-view").getAttribute("aria-pressed"), "false");
-    await page.locator("#output-view").click();
+    // The raw view is the pane's screen, the Terminal tab (T-1208); the
+    // choice is remembered.
+    assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true");
+    await page.locator("#tab-terminal").click();
     await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
     assert.equal(await chat.count(), 0);
     assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-output")), "raw");
-    assert.equal(await page.locator("#output-view").getAttribute("aria-pressed"), "true");
-    // Switched off in Settings, the conversation is back whatever was chosen.
-    await page.evaluate(() => document.querySelector("#raw-switch").click());
-    await chat.waitFor();
-    assert.equal(await page.locator("#output-view").count(), 0);
-    await page.evaluate(() => document.querySelector("#raw-switch").click());
-    await page.locator("#output-view").waitFor();
-    await page.locator("#output-view").click();
+    assert.equal(await page.locator("#tab-terminal").getAttribute("aria-selected"), "true");
+    // A host that takes no keys keeps the composer under the screen.
+    assert.equal(await page.locator("#keys-form").count(), 0);
+    await page.locator("#prompt").waitFor();
+    await page.locator("#tab-chat").click();
     await chat.waitFor();
     // A parked agent's conversation is still its file; its screen is gone.
+    await page.locator("#tab-terminal").click();
+    await page.locator("#preview").waitFor();
     await page.evaluate(() => {
       fixture.tickets[0].agent.state = "sleeping";
       fixture.update();
     });
-    await until(page, () => !document.querySelector("#output-view"));
+    await chat.waitFor();
+    assert(await page.locator("#tab-terminal").isDisabled());
     assert(await chat.isVisible());
     assert.deepEqual(errors, []);
-    console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and raw toggle passed`);
+    console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and the Terminal tab passed`);
   } catch (error) {
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-failure.png`) });
     throw error;
@@ -2729,7 +2741,7 @@ async function shelfFlow(browser, engineName, size, viewport) {
     assert(!(await page.locator("body").textContent()).includes("Forged board"), "the relay's own copy is not read");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="shelf-1"]').locator("visible=true").click();
-    await page.locator("#pane-next").click();
+    await page.locator("#tab-notes").click();
     await until(page, () => document.querySelector('.pane-note[aria-hidden="false"]')?.textContent.includes("Shelf description canary"));
     assert.match(await page.locator('.pane-note[aria-hidden="false"] .note-pane-meta').textContent(), /as of/);
     await page.locator("#pane-name").click();
@@ -2737,7 +2749,7 @@ async function shelfFlow(browser, engineName, size, viewport) {
     assert.match(await page.locator("#chat-as-of").textContent(), /As of/);
     assert.match(await page.locator("#chat").textContent(), /Earlier parts need your terminal/);
     assert(await page.locator("#send").isDisabled(), "nothing on the shelf is answered");
-    assert.equal(await page.locator("#output-view").count(), 0, "no screen to switch to while away");
+    assert(await page.locator("#tab-terminal").isDisabled(), "no screen to switch to while away");
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-shelf.png`) });
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: the shelf's board, notes and conversation read while the terminal is away`);
@@ -3064,6 +3076,152 @@ async function batchFlow(browser, engineName, size, viewport) {
   }
 }
 
+// The agent's own terminal from a phone (T-1208): the Terminal tab's keys
+// and its typed line, Stop on a working turn, a crashed agent resumed with
+// its conversation, and the page wearing the terminal's theme.
+async function terminalFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  await context.addInitScript(() => {
+    const f = window.fixture;
+    f.features.push("transcript", "keys", "resume", "start");
+    const at = Date.now() - 600000;
+    f.tickets.push({ id: "crashed", key: "T-77", title: "An agent that crashed", column: "IN PROGRESS", tags: [],
+      agent: { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: at, exit: { reason: "crashed", at } } });
+    f.tickets.push({ id: "quit", key: "T-78", title: "An agent its person quit", column: "IN PROGRESS", tags: [],
+      agent: { session: "s-quit", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "user_quit", at: Date.now() } } });
+    f.theme = "nord";
+    const snapshot = f.snapshot.bind(f);
+    f.snapshot = () => ({ ...snapshot(), ...(f.theme ? { theme: f.theme } : {}) });
+  });
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const shot = (name) =>
+    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+  const keys = () => page.evaluate(() => fixture.keys.map(({ op, ticket, session, key, text }) => ({ op, ticket, session, ...(key ? { key } : {}), ...(text ? { text } : {}) })));
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
+  };
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+
+    // The page follows the terminal's theme by default, and a pick wins.
+    await until(page, () => document.documentElement.dataset.theme === "nord");
+    await page.evaluate(() => document.querySelector('.theme-tile[data-theme-id="latte"]').click());
+    await until(page, () => document.documentElement.dataset.theme === "latte");
+    assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-theme")), "latte");
+    assert(!(await page.locator("#theme-follow").isChecked()));
+    await page.evaluate(() => document.querySelector("#theme-follow").click());
+    await until(page, () => document.documentElement.dataset.theme === "nord");
+    await page.evaluate(() => {
+      fixture.theme = "gruvbox";
+      fixture.update();
+    });
+    await until(page, () => document.documentElement.dataset.theme === "gruvbox");
+    await page.evaluate(() => document.querySelector("#density-comfortable").click());
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.density), "comfortable");
+    await page.evaluate(() => document.querySelector("#density-compact").click());
+
+    // A crashed agent is listed as stopped until it is resumed; one its
+    // person quit is not. Resume keeps the conversation: the same session.
+    const stopped = page.locator('.group:has(.ticket[data-id="crashed"])');
+    await stopped.waitFor();
+    assert.equal(await stopped.locator(".group-label").textContent(), "Stopped1");
+    assert.match(await stopped.locator(".need-line").textContent(), /^Crashed 10m ago · its conversation is kept$/);
+    assert.equal(await page.locator('.need.stopped .ticket[data-id="quit"]').count(), 0);
+    await shot("stopped");
+    await stopped.locator(".resume-agent").click();
+    await until(page, () => fixture.resumes.length === 1);
+    assert.deepEqual(await page.evaluate(() => fixture.resumes[0]), { op: "resume", ticket: "crashed", session: "s-crashed" });
+    await until(page, () => !document.querySelector('.need.stopped .ticket[data-id="crashed"]'));
+
+    // On the ticket page a stopped agent says why, and the field resumes it
+    // with the words typed.
+    await page.evaluate(() => {
+      const t = fixture.tickets.find((x) => x.id === "crashed");
+      t.agent = { session: "s-crashed", provider: "claude", state: "exited", promptable: false, since: Date.now(), exit: { reason: "killed", at: Date.now() } };
+      fixture.update();
+    });
+    await page.locator('.ticket[data-id="crashed"]').first().click();
+    await page.locator("#stopped-line").waitFor();
+    assert.match(await page.locator("#stopped-line").textContent(), /Killed just now/);
+    // The first resume has run: the field is free for the next.
+    await until(page, () => !document.querySelector("#prompt").disabled);
+    assert(await page.locator("#tab-terminal").isDisabled(), "a stopped agent has no screen");
+    await page.locator("#prompt").fill("Pick it up from the failing test");
+    await page.locator("#send").click();
+    await until(page, () => fixture.resumes.length === 2);
+    assert.deepEqual(await page.evaluate(() => fixture.resumes[1]),
+      { op: "resume", ticket: "crashed", session: "s-crashed", prompt: "Pick it up from the failing test" });
+    await overview();
+
+    // The Terminal tab: the screen, a key bar and a typed line, all into
+    // the agent's own pane.
+    await page.locator('.ticket[data-id="ticket-0"]').first().click();
+    await page.locator("#tab-terminal").click();
+    await until(page, () => document.querySelector("#preview")?.textContent.includes("line 49"));
+    await page.locator("#keys-form").waitFor();
+    assert.equal(await page.locator("#prompt").count(), 0, "the keys take the composer's place");
+    await page.locator('.key[data-key="escape"]').click();
+    await page.locator('.key[data-key="back_tab"]').click();
+    await page.locator('.key[data-text="2"]').click();
+    await page.locator("#keys-text").fill("yes, go on");
+    await page.locator("#keys-send").click();
+    await until(page, () => fixture.keys.length === 5);
+    const pane = { op: "keys", ticket: "ticket-0", session: "session-0" };
+    assert.deepEqual(await keys(), [
+      { ...pane, key: "escape" },
+      { ...pane, key: "back_tab" },
+      { ...pane, text: "2" },
+      { ...pane, text: "yes, go on" },
+      { ...pane, key: "enter" },
+    ]);
+    assert.equal(await page.locator("#keys-text").inputValue(), "");
+    if (size === "phone") {
+      const short = await page.locator("#detail").evaluate((node) =>
+        [...node.querySelectorAll("button, input")]
+          .filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("terminal-keys");
+    // A refusal is said, and nothing is sent again.
+    await page.evaluate(() => (fixture.keysRefusal = "that session is a shell"));
+    await page.locator('.key[data-key="ctrl_c"]').click();
+    await until(page, () => /that session is a shell/.test(document.querySelector("#toast")?.textContent || ""));
+    assert.equal(await page.evaluate(() => fixture.keys.length), 6);
+    await page.evaluate(() => (fixture.keysRefusal = ""));
+
+    // Stop: an empty field over a working turn is the desk's Escape.
+    await page.locator("#tab-chat").click();
+    await page.locator("#stop").waitFor();
+    assert(await page.locator("#send").isHidden());
+    await page.locator("#stop").click();
+    await until(page, () => fixture.keys.length === 7);
+    assert.deepEqual((await keys()).at(-1), { ...pane, key: "escape" });
+    await page.locator("#prompt").fill("Words instead");
+    assert(await page.locator("#stop").isHidden(), "words make it a send again");
+    assert(await page.locator("#send").isVisible());
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: the agent's terminal keys, Stop, a crashed agent resumed and the terminal's theme`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-terminal-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 async function pairLinkFlow(browser, engineName) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", serviceWorkers: "block" });
   await context.addInitScript(fixture);
@@ -3134,7 +3292,7 @@ async function backFlow(browser, engineName) {
     watch(page);
     await page.goto(origin);
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
-    assert.equal(await page.locator("#list-title").textContent(), "Now");
+    assert.equal(await page.locator("#list-title").textContent(), "Inbox");
     assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "the launch opens no ticket");
     assert.equal(await page.evaluate(() => !!history.state?.detail), false, "the launch stacks no entry");
     await page.locator('.ticket[data-id="ticket-0"]').click();
@@ -3143,7 +3301,7 @@ async function backFlow(browser, engineName) {
     await until(page, () => document.querySelector("#shell").dataset.detail === "false");
     assert.equal(await page.evaluate(() => location.origin), new URL(origin).origin, "Back stays in the page");
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
-    assert.equal(await page.locator("#list-title").textContent(), "Now");
+    assert.equal(await page.locator("#list-title").textContent(), "Inbox");
     // A reload on the ticket keeps its history entry; the page lands on Now
     // and that entry no longer says a ticket is open.
     await page.locator('.ticket[data-id="ticket-0"]').click();
@@ -3457,9 +3615,7 @@ async function tabsFlow(browser, engineName) {
     page.on("pageerror", (error) => errors.push(String(error)));
     const theme = (name) =>
       page.evaluate((name) => {
-        const control = document.querySelector("#theme");
-        control.value = name;
-        control.dispatchEvent(new Event("change"));
+        document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
       }, name);
     // Each tab's label, icon and pill as drawn, and every box in the bar.
     const bar = () =>
@@ -3711,7 +3867,7 @@ try {
           // Now lists a stopped agent for an hour (T-560); the Board, always.
           assert.equal(
             await page.locator('.group:has(.ticket[data-id="ticket-4"]) .group-label').textContent(),
-            "Recently idle1",
+            "Idle1",
           );
           assert.equal(await page.locator('.ticket[data-id="ticket-6"]').count(), 0);
           // A ticket created within the hour is listed under the agents
@@ -3726,43 +3882,27 @@ try {
             "Recently created1",
           );
           assert.match(await page.locator("#count").textContent(), / · 1 new$/);
-          // A shell open on a ticket (T-948) is the terminal glyph at the
-          // title's start, at its prompt or busy; a running command spins
-          // the state mark as an agent's work does, over an idle agent's
-          // mark too. Both are the title's: nothing of the card is outside it.
+          // A ticket's shells are the terminal's alone (T-1208): a shell open
+          // on it, busy or at its prompt, draws nothing on its card.
           const card = (id) => `.ticket[data-id="${id}"]`;
           const glyphs = (id) =>
             page.locator(`${card(id)} .title-glyph`).evaluateAll((ns) =>
-              ns.map((n) => [n.parentElement.classList.contains("ticket-title"), n.querySelector(".spin") ? "spin" : n.classList.contains("shell-mark") ? "terminal" : n.firstElementChild.classList[1]]),
+              ns.map((n) => [n.parentElement.classList.contains("ticket-title"), n.querySelector(".spin") ? "spin" : n.firstElementChild.classList[1]]),
             );
-          await page.evaluate(() => {
-            fixture.tickets.at(-1).shell = {};
-            fixture.update();
-          });
-          await page.locator(`${card("ticket-new")} .shell-mark`).waitFor();
-          assert.deepEqual(await glyphs("ticket-new"), [[true, "terminal"]], "a shell at its prompt is no work");
-          assert.equal(await page.locator(`${card("ticket-new")} .shell-mark`).getAttribute("title"), "terminal");
           await page.evaluate(() => {
             fixture.tickets.at(-1).shell = { busy: true };
             fixture.tickets[4].shell = { busy: true };
             fixture.update();
           });
-          await page.locator(`${card("ticket-new")} .spin`).waitFor();
-          await page.locator(`${card("ticket-4")} .spin`).waitFor();
-          assert.deepEqual(await glyphs("ticket-new"), [[true, "spin"], [true, "terminal"]]);
-          assert.deepEqual(await glyphs("ticket-4"), [[true, "spin"], [true, "terminal"]]);
-          await page.evaluate(() => {
-            fixture.tickets[4].shell = {};
-            fixture.update();
-          });
           await page.locator(`${card("ticket-4")} .mark-idle`).waitFor();
-          assert.deepEqual(await glyphs("ticket-4"), [[true, "mark-idle"], [true, "terminal"]]);
+          assert.deepEqual(await glyphs("ticket-new"), [], "a busy shell is no work of the agent's");
+          assert.deepEqual(await glyphs("ticket-4"), [[true, "mark-idle"]]);
+          assert.equal(await page.locator(".shell-mark").count(), 0);
           await page.evaluate(() => {
             delete fixture.tickets[4].shell;
             fixture.tickets.pop();
             fixture.update();
           });
-          await until(page, () => !document.querySelector('.ticket[data-id="ticket-4"] .shell-mark'));
           await until(page, () => !document.querySelector('.ticket[data-id="ticket-new"]'));
           // A ticket is one card in Now and on the Board (T-533): its tags
           // show in both, a needs-you card wears the same face, and Now adds
@@ -3850,7 +3990,7 @@ try {
             });
           await pair("IN PROGRESS");
           await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
-          assert.deepEqual(await glyphs("glyph-on"), [[true, "spin"], [true, "terminal"]]);
+          assert.deepEqual(await glyphs("glyph-on"), [[true, "spin"]]);
           assert.deepEqual(await glyphs("glyph-off"), []);
           {
             const [on, off] = await rows(["glyph-on", "glyph-off"]);
@@ -3916,8 +4056,8 @@ try {
           await select(0);
           assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
           // The heading is the title alone; the key sits at the right of the
-          // tags' line (T-510), and a tag wears its tint as its ground, the
-          // TUI's chip. No provider chip: the shin and the output say so.
+          // tags' line (T-510), and a tag wears its tint as the square before
+          // its name (T-1208). No provider chip: the shin and the output say so.
           assert.equal(await page.locator("#detail .selection-key").textContent(), "T-0");
           assert(!(await page.locator("#selection").textContent()).endsWith("T-0"), "the key left the heading");
           assert.deepEqual(await page.locator("#detail .chips .chip").allTextContents(), ["IN PROGRESS"]);
@@ -3925,7 +4065,7 @@ try {
           const [tagGround, tint] = await page.locator("#detail .chips .tag.tint-0").evaluate((n) => {
             const hex = getComputedStyle(document.documentElement).getPropertyValue("--tag-0").trim().slice(1);
             const [r, g, b] = hex.match(/../g).map((c) => parseInt(c, 16));
-            return [getComputedStyle(n).backgroundColor, `rgb(${r}, ${g}, ${b})`];
+            return [getComputedStyle(n, "::before").backgroundColor, `rgb(${r}, ${g}, ${b})`];
           });
           assert.equal(tagGround, tint);
           await until(page, () =>
@@ -4256,11 +4396,10 @@ try {
           }
           await select(2); // long title and 50-line output at every width/theme
           await page.locator("#prompt").fill("A comfortable composer");
-          for (const theme of ["graphite", "chalk"]) {
+          // Every theme the terminal has (T-1208) reads at AA on the page.
+          for (const theme of ["graphite", "void", "nord", "mocha", "tokyo", "rose", "gruvbox", "blue", "amber", "green", "ice", "solarized", "latte", "gruvbox-light", "chalk"]) {
             await page.evaluate((theme) => {
-              const control = document.querySelector("#theme");
-              control.value = theme;
-              control.dispatchEvent(new Event("change"));
+              document.querySelector(`.theme-tile[data-theme-id="${theme}"]`).click();
             }, theme);
             const contrast = await page.evaluate(() => {
               const style = getComputedStyle(document.documentElement);
@@ -4290,7 +4429,7 @@ try {
             });
             assert(
               contrast.every((ratio) => ratio >= 4.5),
-              `text contrast: ${contrast}`,
+              `${theme} text contrast: ${contrast}`,
             );
             assert(
               await page.evaluate(
@@ -4369,7 +4508,7 @@ try {
           }
           await settings.waitFor({ state: "visible" });
           assert.equal(await settings.locator("#about .hop").count(), 3);
-          for (const id of ["theme", "alerts", "forget"])
+          for (const id of ["theme-follow", "alerts", "forget"])
             assert(await settings.locator(`#${id}`).isVisible(), id);
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings.png`) });
           await page.keyboard.press("Escape");
@@ -4640,6 +4779,7 @@ try {
         await batchFlow(browser, engineName, size, viewport);
         await notesFlow(browser, engineName, size, viewport);
         await chatFlow(browser, engineName, size, viewport);
+        await terminalFlow(browser, engineName, size, viewport);
         await shelfFlow(browser, engineName, size, viewport);
         await mailPromptFlow(browser, engineName, size, viewport);
       }
