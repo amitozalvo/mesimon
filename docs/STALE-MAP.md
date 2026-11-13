@@ -44660,3 +44660,20 @@ author's.
 Chromium at phone size (`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone`), green; the
 picture compared with the prototype's by screenshot at 390 px. Not run here: WebKit and the
 desktop and tablet sizes.
+
+## DONE's default: an agent started there moves the ticket to IN PROGRESS (T-1239, 2026-11-14)
+
+**What changed.** `board::template_settings("DONE")` gains `on_working: Some("IN PROGRESS")`,
+the rule TODO and REVIEW already carry. A ticket in DONE whose agent starts working again (a
+follow-up prompt, a wake) moves to IN PROGRESS instead of sitting in DONE while it works; the
+turn's end then takes it to REVIEW through IN PROGRESS's `on_done`, as any other ticket.
+
+**Reach.** The template seeds a FRESH Kanban board (and Setup's Kanban choice, and the ancient
+v3→v4 migration). An existing board keeps its DONE settings: a column's rules are the person's
+once written, and re-seeding them on load would undo a choice. The pull-request templates'
+MERGED/PRODUCTION columns are unchanged; the ticket named DONE only.
+
+**Tests.** `automove::the_template_rules_survive_on_the_columns` now asserts DONE + running →
+IN PROGRESS (was `None`); `board::delete_refuses_live_tickets_and_the_last_column_and_clears_refs`
+now lists DONE's `on_working` among the refs deleting IN PROGRESS clears. Verified: `cargo ut`,
+`--test board column_e2e:: setup_e2e::` (rename and delete of IN PROGRESS carry the new ref).

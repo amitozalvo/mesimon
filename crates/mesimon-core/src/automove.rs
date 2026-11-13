@@ -100,8 +100,9 @@ mod tests {
         assert_eq!(automove(&col("TODO"), &running(), Confidence::Medium), Some("IN PROGRESS"));
         assert_eq!(automove(&col("IN PROGRESS"), &done(), Confidence::High), Some("REVIEW"));
         assert_eq!(automove(&col("REVIEW"), &running(), Confidence::High), Some("IN PROGRESS"));
+        // T-1239: an agent started again on a DONE ticket is work in progress.
+        assert_eq!(automove(&col("DONE"), &running(), Confidence::High), Some("IN PROGRESS"));
         // The edges the template does not wire.
-        assert_eq!(automove(&col("DONE"), &running(), Confidence::High), None);
         assert_eq!(automove(&col("DONE"), &done(), Confidence::High), None);
         assert_eq!(automove(&col("TODO"), &done(), Confidence::High), None);
         assert_eq!(automove(&col("REVIEW"), &done(), Confidence::High), None);

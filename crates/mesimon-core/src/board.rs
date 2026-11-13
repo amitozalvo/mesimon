@@ -3052,9 +3052,13 @@ pub fn template_settings(name: &str) -> Option<ColumnSettings> {
             refuses_new: true,
             ..d()
         },
-        "DONE" => {
-            ColumnSettings { requires_merge: true, reclaim: true, free_worktree: true, ..d() }
-        }
+        "DONE" => ColumnSettings {
+            on_working: Some("IN PROGRESS".into()),
+            requires_merge: true,
+            reclaim: true,
+            free_worktree: true,
+            ..d()
+        },
         _ => return None,
     })
 }
@@ -5880,7 +5884,8 @@ mod tests {
             vec![
                 ("IN PROGRESS".to_string(), "default_column"),
                 ("TODO".to_string(), "on_working"),
-                ("REVIEW".to_string(), "on_working")
+                ("REVIEW".to_string(), "on_working"),
+                ("DONE".to_string(), "on_working")
             ]
         );
         assert_eq!(b.default_column, None, "the default goes with its column");
