@@ -44016,6 +44016,34 @@ the crown's look at the after-shots: a tagless needs-you card's 44 px face now r
 card's padding, so no band sits between its title and its question; the key line's placeholder
 is "Type a line, then ⏎", whole at 360 px.
 
+**Round 2, from the browser re-test (fixed forward on this branch).**
+1. The header opened in place showed its title under the tag line: the phone's `max-height:
+   4.5em` on `#selection` is lifted while open, the line sits 8 px lower, and a touch screen
+   keeps no hover ground on the line after the tap. The whole title, then every tag.
+2. A Codex agent `stopping` (T-1218) reads "Stopping…" on its card (the headline line, with
+   the working spinner, listed under Working) and on its page (a line saying words typed wait),
+   and the field keeps words with "these words wait here until it has stopped" while Send rests.
+3. The Inbox card approves only a request that is its command and at most its description. One
+   with other fields shows the command, "N more fields · open the ticket to read them", Deny,
+   and "Review to approve", which opens the ticket page where each field is drawn.
+4. Under 400 px the column word (`data-part="column"`, kept out of the class list so the Inbox
+   and Board cards keep one anatomy) leaves a tagless card's title line; the key and age stay.
+5. 360x330: `.output`'s `min-height: 200px` hid the screen's last lines under the keys; on a
+   short page the box takes the room there is, `#preview`'s room for Jump to latest is trimmed,
+   and the key area's padding tightens below 340 px: five whole lines, the last one whole. The
+   title centres on the back button, no band. `keepAtEnd` was rewritten after three findings:
+   a shrinking box fires a scroll before the resize is seen, its offset unchanged (Chromium) or
+   moved by scroll anchoring (WebKit), which the store read as the reader leaving the end; the
+   list's own scroll handler can re-render mid-event, whose cleanup dropped the listener; and a
+   reader's scroll must still win. So a scroll while the box is not the height last seen is the
+   resize's, the state and the listener live with the element (a WeakMap), and the resize
+   decides by what was known before it.
+6. Sent's quick bar gives the column picker 96 px under 400 px, so "New ticket…" shows whole.
+   A field's kind says "yes/no" and "group" (was "true or false", "fields"); "number" stays,
+   since drawn, 2 and "2" read alike, which is what T-1218's kinds are for. Where the last
+   attempt got past the relay and was still closed, the pill says "Terminal away" and the strip
+   "Your terminal is away: the relay answers, the terminal does not. Trying again…".
+
 **Chosen, and not done.** In the Inbox a tagless card's column and key take room from its
 one-line title (the brief's item 4 asked for exactly that line); the Board shows no column, so
 there the title keeps more. Under 340 px tall the column and tags are out of the header until the
@@ -44028,7 +44056,19 @@ iterating, then `npm test` whole; the tester's scenarios rerun at 390x844, 360x6
 844x390 and 640x360 on Chromium and WebKit, screenshots looked at. `npm run shot:remote`
 regenerated `assets/demo/remote.png` and `remote-conversation.png`. After the rebase (a
 conflict resolved in code): `node --test state.test.js assets.test.js`, the Chromium phone UX run,
-`npm test` once, `cargo ut`, and the joins screenshotted at 360x640 and 390x844.
+`npm test` once, `cargo ut`, and the joins screenshotted at 360x640 and 390x844. Round 2:
+`node --test state.test.js assets.test.js`, the Chromium phone UX run (one rerun:
+`terminalFlow`'s resume with a picture sent no `uploads` once, passed on the rerun, code not
+touched by round 2), `npm test` once, each item screenshotted at 390x844 and 360x640 (360x330
+for item 5) on Chromium and WebKit. New suite checks: the Inbox card of a many-field permission;
+the strip's terminal-away line; kinds "yes/no" and "group". The first `npm test` stopped on the
+desktop check of a host silent for ten seconds on an open socket, which waited for
+"Reconnecting": there the relay answered and the terminal did not, so it now reads the
+terminal-away line, and the check takes either; the second `npm test` passed whole. Rebased
+onto T-1217 (`b5cd9fc0`): one import line in `lists.js` joined (its `DIALOG_OMITTED` beside
+`requestFields`; its too-large note and Open ticket sit beside the round-2 card), then
+`node --test` (61), the Chromium phone UX run, `cargo ut` (3158 passed) and `npm test` (84) again,
+all green on the first run.
 
 ## A question's phone card survives an unconfirmed answer and unrelated lifecycle frames (T-1217, 2026-11-13)
 

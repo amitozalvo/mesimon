@@ -19,7 +19,7 @@ const phase = (ticket, columns, now) =>
     ? "needs"
     : stoppedUnasked(ticket, columns, now)
       ? "stopped"
-      : ["starting", "working"].includes(ticket.agent?.state)
+      : ["starting", "working", "stopping"].includes(ticket.agent?.state)
         ? "working"
         : "idle";
 // How long a stopped agent stays on Now (T-560): about an hour.

@@ -58,7 +58,9 @@ const linkLabel = {
 // The pill's word (T-1219): the strip's own state, so the two never say
 // different things at once.
 const linkWord = (store) =>
-  store.link === "connecting" && store.phase === "reconnecting"
+  store.link === "connecting" && store.terminalAway
+    ? "Terminal away"
+    : store.link === "connecting" && store.phase === "reconnecting"
     ? "Reconnecting"
     : store.link === "connecting" && store.phase === "checking"
       ? "Checking"
@@ -81,7 +83,7 @@ const pipOf = (board, ticket) =>
     ? "needs"
     : board.stoppedNow(ticket)
       ? "stopped"
-      : ["starting", "working"].includes(ticket.agent.state)
+      : ["starting", "working", "stopping"].includes(ticket.agent.state)
         ? "working"
         : "idle";
 function Pill({ store }) {

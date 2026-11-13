@@ -59,9 +59,11 @@ export const pickedOption = (entry, dialog, index) =>
 // never one text an agent's words could add a field to; a value that is no
 // string carries its kind and is drawn as JSON, so `false` and "false"
 // differ.
-const KINDS = { boolean: "true or false", number: "number" };
+// In a phone's words (T-1219). A number keeps its kind: drawn, 2 and "2"
+// read alike.
+const KINDS = { boolean: "yes/no", number: "number" };
 const kindOf = (value) =>
-  value === null ? "empty" : Array.isArray(value) ? "list" : KINDS[typeof value] || (typeof value === "object" ? "fields" : "");
+  value === null ? "empty" : Array.isArray(value) ? "list" : KINDS[typeof value] || (typeof value === "object" ? "group" : "");
 export function requestFields(permission) {
   const input = permission?.input;
   if (!input || typeof input !== "object" || Array.isArray(input))

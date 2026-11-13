@@ -210,6 +210,9 @@ function Composer({ store, ticket, entry, live }) {
   const pick = store.promptTier(ticket);
   const switching = !!agent && store.switchesTier(ticket);
   const steerOff = waitsOnYou(agent) || switching;
+  // A Codex agent still stopping (T-1218) takes no words yet (T-1219): the
+  // field keeps them, and says why Send waits.
+  const stopping = agent?.state === "stopping";
   const mode = steerOff ? "queue" : entry?.mode || "queue";
   const sending = !!entry?.sending;
   const sendOff = sending || !!letter || (starts
@@ -283,7 +286,7 @@ function Composer({ store, ticket, entry, live }) {
           : "No agent selected"}</p>
       <div class="composer" data-open=${String(open)} data-starts=${String(starts)}>
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
-          placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
+          placeholder=${mails ? `Message ${agent.provider} · it waits for your terminal…` : stopping ? `${agent.provider} is stopping · words wait here…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
           required disabled=${fieldOff}
           value=${entry?.draft || ""} onInput=${(e) => {
             mark(e);
@@ -331,7 +334,9 @@ function Composer({ store, ticket, entry, live }) {
           aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
             ? html`<${Icon} name="play" size=${18} />`
             : html`<${Icon} name="up" size=${20} width=${2.2} />`}</button>
-        <p id="steer-why" class="steer-why" hidden=${!steerOff || !open || mails}>${switching
+        <p id="steer-why" class="steer-why" hidden=${!(steerOff || stopping) || !open || mails}>${stopping
+          ? `${agent.provider} is stopping: these words wait here until it has stopped.`
+          : switching
           ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
           : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>
@@ -582,6 +587,10 @@ export function Detail({ store, bp }) {
           <div class="detail-scroll">
             <${CrownLine} store=${store} ticket=${ticket} />
             ${store.stopped(ticket) && html`<${StoppedLine} store=${store} ticket=${ticket} />`}
+            ${agent?.state === "stopping" && html`<div id="stopping-line" class="agent-line stopping-line" role="status">
+              <p><${Icon} name="spinner" size=${15} width=${2.4} cls="spin" /><b>Stopping…</b></p>
+              <p class="stopped-why">${agent.provider} is stopping. Words typed below wait here until it has stopped; then Resume or Start fresh takes them.</p>
+            </div>`}
             ${seatOpen && html`<div class="agent-line" role="group" aria-label="Agent">
               <p id="agent-state">${seatWords(store, agent)}</p>
               ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}

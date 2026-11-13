@@ -849,7 +849,8 @@ async function ticketFlow(browser, engineName, size, viewport) {
           setTimeout(() => (clearInterval(sample), done([...seen])), 3600);
         }),
     );
-    assert.deepEqual(strip, ["Reconnecting… The board shown is the last one received.|true"]);
+    // The relay answers and the terminal does not: the line says so (T-1219).
+    assert.deepEqual(strip, ["Your terminal is away: the relay answers, the terminal does not. Trying again…|true"]);
     await page.locator("#quick-more").click();
     await sheet.waitFor({ state: "visible" });
     assert.match(await sheet.locator(".compose-dest").textContent(), /waits at the relay/);
@@ -3321,7 +3322,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
       fixture.update();
     });
     await until(page, () => document.querySelectorAll("#attention .request-field").length === 3);
-    assert.deepEqual(await page.locator("#attention .request-name").allTextContents(), ["description", "cwd", "force · true or false"]);
+    assert.deepEqual(await page.locator("#attention .request-name").allTextContents(), ["description", "cwd", "force · yes/no"]);
     assert.deepEqual(await page.locator("#attention .request-field pre").allTextContents(), ["List\n\ncwd: /safe", "/repo", "false"]);
     assert.equal(await page.locator("#attention > .code-box > pre.attention-code").textContent(), "ls");
     // T-1218, the person's decision: with no card to answer it on (expired,
@@ -3603,7 +3604,7 @@ async function refusedFlow(browser, engineName) {
     await page.evaluate(() => localStorage.setItem("fixture-refuse", "1"));
     await page.reload();
     await until(page, () => fixture.auths.length > 0 && fixture.sockets.some((s) => s.readyState === 3));
-    await until(page, () => /Reconnecting|Connecting/.test(document.querySelector("#connection").textContent));
+    await until(page, () => /Reconnecting|Connecting|Trying again/.test(document.querySelector("#connection").textContent));
     identity = await stored();
     assert.equal(identity.credential, "fixture-2");
     assert.deepEqual(identity.boards.map((b) => b.pin.board), ["board-a"]);
@@ -4368,10 +4369,10 @@ try {
             await page.evaluate(() => {
               fixture.holdAll = true;
             });
+            // The relay answered and the terminal fell silent: the retry's
+            // line says the terminal is away (T-1219).
             await until(page, () =>
-              document
-                .querySelector("#connection")
-                .textContent.includes("Reconnecting"),
+              /Reconnecting|Trying again/.test(document.querySelector("#connection").textContent),
             );
             assert(await page.locator("#send").isDisabled());
             await page.evaluate(() => {
@@ -4777,6 +4778,20 @@ try {
           await attention("Approve once").click();
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
             { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
+          // T-1219 round 2: a permission with fields past its description is
+          // answered on its ticket page, where each is drawn; its Inbox card
+          // names how many and offers no Approve once.
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.permission = { request: "permission-2", tool: "Bash", input: { command: "ls", cwd: "/repo", force: true }, expires_at: Date.now() + 40000 };
+            fixture.update();
+          });
+          if (size === "phone") await page.locator("#back").click();
+          await page.locator('.mode[data-mode="agents"]:visible').first().click();
+          const fieldsCard = page.locator('.need:has(.ticket[data-id="m2"])');
+          await until(page, () => /2 more fields/.test(document.querySelector(".need .need-more")?.textContent || ""));
+          assert.equal(await fieldsCard.getByRole("button", { name: "Approve once" }).count(), 0);
+          await fieldsCard.locator(".need-more").click();
+          await until(page, () => document.querySelectorAll("#attention .request-field").length === 2 && document.querySelector("#attention").textContent.includes("Approve once"));
           await page.evaluate(() => {
             fixture.tickets[0].agent.permission = null;
             fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",

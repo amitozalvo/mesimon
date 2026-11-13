@@ -47,12 +47,33 @@ export function followViewport(win = window, root = win.document.documentElement
 
 // A list that follows its newest line stays on it when its box or its rows
 // change size without a render (T-1219): the keyboard opening shrinks the
-// box, a larger text size or a picture loading grows a row. `following` is
-// asked at each change, so a reader who scrolled up stays where they are.
+// box, a larger text size or a picture loading grows a row. A reader who
+// scrolled up stays where they are. A box that shrinks fires a scroll
+// before the resize is seen, its offset unchanged or moved by the browser's
+// scroll anchoring, and the list's own handler reads that as the reader
+// leaving the end: a scroll that comes while the box is not the height last
+// seen is the resize's, and the resize judges the end by what was known
+// before it. What each list knows lives with its element, and its scroll
+// listener with it: a render that subscribes again (the list's own scroll
+// handler can cause one, mid-event) never drops a scroll.
+const ends = new WeakMap();
 export function keepAtEnd(node, following) {
   if (!node || typeof ResizeObserver !== "function") return undefined;
+  let end = ends.get(node);
+  if (!end) {
+    end = { top: node.scrollTop, height: node.clientHeight, atEnd: following(), following };
+    ends.set(node, end);
+    node.addEventListener("scroll", () => {
+      if (node.clientHeight !== end.height || node.scrollTop === end.top) return;
+      end.top = node.scrollTop;
+      end.atEnd = end.following();
+    });
+  }
+  end.following = following;
   const watch = new ResizeObserver(() => {
-    if (following() && node.getClientRects().length) node.scrollTop = node.scrollHeight;
+    end.height = node.clientHeight;
+    if (end.atEnd && node.getClientRects().length) node.scrollTop = node.scrollHeight;
+    end.top = node.scrollTop;
   });
   watch.observe(node);
   for (const child of node.children) watch.observe(child);

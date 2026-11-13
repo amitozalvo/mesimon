@@ -215,6 +215,11 @@ export class Store {
       : undefined;
   }
   // What the header's status pill says.
+  // A retry whose last attempt got past the relay and was still closed: the
+  // terminal, or its grant, is what is out of reach (T-1219).
+  get terminalAway() {
+    return this.phase === "reconnecting" && !!this.connection?.relayReached && !!this.connection?.misses;
+  }
   get link() {
     // The kept copy loads when the relay's page did not come in time.
     if (this.kept) return this.online ? "relay" : "nonet";
@@ -2175,6 +2180,10 @@ export class Store {
       this.peekShelf();
     }
     this.status = state === "revoked" ? "Removing access…" : message;
+    // The relay answered and the terminal did not (T-1219): say that the
+    // terminal is away while the page keeps trying, not only "Reconnecting".
+    if (state === "reconnecting" && this.terminalAway)
+      this.status = "Your terminal is away: the relay answers, the terminal does not. Trying again…";
     let revocationSaved;
     if (state === "revoked" || state === "unverified") {
       if (this.active) {

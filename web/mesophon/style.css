@@ -5482,3 +5482,121 @@ input[type="checkbox"][role="switch"]:checked::before {
 .pill-button {
   min-width: 44px;
 }
+
+/* ==== T-1219 round 2: from the browser re-test ==================================== */
+
+/* The header opened in place shows the whole title, and the line under it never
+   paints over the title's last line: no cap on the title, the line below it
+   with room, and no hover ground left on a touch screen after the tap. */
+#detail[data-head="open"] #selection {
+  max-height: none;
+}
+#detail[data-head="open"] .ticket-line {
+  margin-top: 8px;
+}
+@media (hover: none) {
+  .chips-edit:hover {
+    background: transparent;
+  }
+}
+/* A Codex agent still stopping: said on its card and its page. */
+.headline-stopping {
+  color: var(--ink2);
+}
+.stopping-line {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed var(--line2);
+  border-radius: 14px;
+}
+.stopping-line p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* A permission answered on its ticket: the line saying how many fields wait there. */
+.need-more {
+  align-self: flex-start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  text-align: start;
+}
+/* The column word and its dot, one piece: on a narrow Inbox it leaves a
+   tagless card's title line first, so the title keeps its room (the key and
+   the age stay). */
+.ticket-meta [data-part="column"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 399px) {
+  .card-corner [data-part="column"] {
+    display: none;
+  }
+}
+/* A short screen (the keyboard up at 360x330): the screen's box takes the
+   room there is, so its newest line is never under the keys, and the title
+   sits centred on the back button with no band under it. */
+@media (max-height: 480px) {
+  .output {
+    min-height: 0;
+  }
+  .output-body {
+    min-height: 60px;
+  }
+  /* The room kept under the last line for Jump to latest is the screen's
+     own on a short page. */
+  #preview {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+}
+@media (max-height: 340px) {
+  .detail-head {
+    align-items: center;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .detail-head #back {
+    margin-top: 0;
+  }
+}
+:root[data-keyboard="up"] .detail-head {
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+:root[data-keyboard="up"] .detail-head #back {
+  margin-top: 0;
+}
+@media (max-height: 340px) {
+  .keys-area {
+    gap: 2px;
+    padding-top: 2px;
+    padding-bottom: calc(2px + var(--safe-bottom, 0px));
+  }
+  .keys-line {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  #preview {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+}
+/* Sent's quick bar on a narrow phone: the title field has the room, the
+   column picker gives it. */
+@media (max-width: 400px) {
+  .quick-column select {
+    max-width: 96px;
+  }
+}

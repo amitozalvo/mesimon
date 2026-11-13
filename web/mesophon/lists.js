@@ -6,7 +6,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, pickedOption } from "./dialogs.js";
+import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, pickedOption, requestFields } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
 import { RECENT_MS, omittedWords } from "./board.js";
@@ -107,6 +107,9 @@ export function Tags({ ticket }) {
 // What the agent is on (a tool step, mono) or last said, one line (T-497).
 // Live only: a remembered board never has it.
 export function Headline({ agent }) {
+  // A Codex agent still stopping (T-1218) says so on its card (T-1219): it
+  // is neither idle nor ready for words yet.
+  if (agent?.state === "stopping") return html`<span class="headline headline-stopping">Stopping…</span>`;
   if (agent?.doing) return html`<span class="headline headline-step">› ${agent.doing}</span>`;
   if (agent?.said) return html`<span class="headline" dir="auto">${agent.said}</span>`;
   return null;
@@ -155,7 +158,7 @@ function FromHere({ store, ticket }) {
 function StateMark({ ticket, board }) {
   const state = ticket.agent?.state;
   if (state === "needs attention") return html`<span class="title-glyph"><span class="mark mark-attn" aria-hidden="true"></span></span>`;
-  if (state === "starting" || state === "working") return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
+  if (state === "starting" || state === "working" || state === "stopping") return html`<span class="title-glyph"><${Icon} name="spinner" size=${15} width=${2.4} cls="spin mark-icon" /></span>`;
   if (board.stoppedNow(ticket)) return html`<span class="title-glyph"><span class="mark mark-stopped" aria-hidden="true"></span><span class="sr-only">stopped: </span></span>`;
   if (!ticket.agent) return null;
   return html`<span class="title-glyph"><span class=${`mark ${state === "sleeping" || state === "exited" ? "mark-asleep" : "mark-idle"}`} aria-hidden="true"></span></span>`;
@@ -195,7 +198,7 @@ function Face({ store, ticket, board, column, archived }) {
   const agent = ticket.agent;
   const since = stateAge(board, agent);
   const tagged = ticket.tags?.length > 0;
-  const meta = html`<span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined}>${archived ? "Archived" : ticket.column}</span><span aria-hidden="true">·</span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>`;
+  const meta = html`<span class="ticket-meta">${crownTouch(board, ticket) && html`<${CrownWord} board=${board} ticket=${ticket} /><span aria-hidden="true">·</span>`}${(column || archived) && html`<span class=${archived ? "archived-word" : undefined} data-part="column">${archived ? "Archived" : ticket.column}<span aria-hidden="true">·</span></span>`}<span class="ticket-key">${ticket.key}</span><${FromHere} store=${store} ticket=${ticket} /></span>`;
   return html`<span class=${`face${tagged ? "" : " face-one"}`}>
     <span class=${`ticket-title${ticket.crown ? " crowned" : ""}`} dir="auto"><${StateMark} ticket=${ticket} board=${board} /><${CrownMark} ticket=${ticket} size=${15} />${ticket.title}</span>
     <span class="card-corner">${!tagged && meta}<${WorktreeMark} ticket=${ticket} />${since && html`<span class="card-age">${since}</span>`}</span>
@@ -244,6 +247,12 @@ function NeedCard({ store, ticket, board, live }) {
   const question = answerable(dialog) ? dialog.questions[0] : undefined;
   const expired = permission && Date.now() >= permission.expires_at;
   const tick = receiptTick(entry?.latest?.status);
+  // A permission is approved on its card only when the card shows all of it
+  // (T-1219): the command and at most its description. One with more fields
+  // names how many and is answered on its ticket page, where each is drawn.
+  const asked = permission ? requestFields(permission) : undefined;
+  const whole = !!asked && asked.command !== undefined && asked.fields.every((f) => f.name === "description");
+  const more = asked && !whole ? asked.fields.length : 0;
   return html`<article class="need" data-tint=${tintOf(ticket)}>
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(pressed)}
       onClick=${() => store.select(ticket.id)}>
@@ -251,7 +260,11 @@ function NeedCard({ store, ticket, board, live }) {
     </button>
     ${permission && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Wants to use ${permission.tool}</span></p>
-      <${RequestFields} permission=${permission} cls="need-code" />
+      ${whole
+        ? html`<${RequestFields} permission=${permission} cls="need-code" />`
+        : html`${asked.command !== undefined && html`<${CodeBox} key=${`${permission.request}:command`} cls="need-code" text=${asked.command} what="command" />`}
+          <button type="button" class="need-more" onClick=${() => store.select(ticket.id)}><${Icon} name="file" size=${14} />
+            <span>${asked.command !== undefined ? `${more} more ${more === 1 ? "field" : "fields"}` : `${more} ${more === 1 ? "field" : "fields"}`} · open the ticket to read ${more === 1 ? "it" : "them"}</span></button>`}
     </div>`}
     ${trust && html`<div class="need-body">
       <p class="need-line"><${Icon} name="shield" size=${15} cls="attn-ink" /><span>Asks to trust this folder before it starts</span></p>
@@ -277,8 +290,10 @@ function NeedCard({ store, ticket, board, live }) {
         ? html`<div class="need-actions">
             <button type="button" class="btn" disabled=${off || expired}
               onClick=${() => send({ op: "permission", request: permission.request, decision: "deny" })}>Deny</button>
-            <button type="button" class="btn btn-attn" disabled=${off || expired}
-              onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>
+            ${whole
+              ? html`<button type="button" class="btn btn-attn" disabled=${off || expired}
+                  onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>`
+              : html`<button type="button" class="btn btn-attn need-review" onClick=${() => store.select(ticket.id)}>Review to approve</button>`}
           </div>`
         : trust
           ? html`<div class="need-actions"><${TrustAccept} trust=${trust} off=${off} send=${send} /></div>`

@@ -457,13 +457,13 @@ test("a permission card shows the command, then every other field as its own nam
   assert.deepEqual(forged.fields, [{ name: "description", kind: "", value: "List\n\ncwd: /safe" }]);
   // A value that is no string carries its kind: false is not "false".
   assert.deepEqual(requestFields({ input: { command: "x", force: false, label: "false" } }).fields, [
-    { name: "force", kind: "true or false", value: "false" },
+    { name: "force", kind: "yes/no", value: "false" },
     { name: "label", kind: "", value: "false" },
   ]);
   assert.deepEqual(requestFields({ input: { command: "deploy", flags: ["--force"], n: 2, opts: { a: 1 }, none: null } }).fields, [
     { name: "flags", kind: "list", value: '[\n  "--force"\n]' },
     { name: "n", kind: "number", value: "2" },
-    { name: "opts", kind: "fields", value: '{\n  "a": 1\n}' },
+    { name: "opts", kind: "group", value: '{\n  "a": 1\n}' },
     { name: "none", kind: "empty", value: "null" },
   ]);
   assert.deepEqual(requestFields({ input: { file_path: "/a" } }), { fields: [{ name: "file_path", kind: "", value: "/a" }] });
