@@ -44356,7 +44356,9 @@ wrote them; T-1218 had scrubbed only the permission's copy.
 - `phone_dialog_scrubbed`, inside `phone_dialog_within`, so the board answer and the crowded
   plan's head both carry it: a question's words and descriptions through `scrub_lines`, its
   header and option labels through `scrub_text`, a plan's markdown through `scrub_lines`, a
-  trust dialog's folder through `scrub_text`; T-1218's mark `[hidden characters removed]` where
+  trust dialog's folder through `scrub_text` (its card is `Agent::trust`, built by
+  `phone_trust` from the same scrub: `control_dialog_of` never carries a trust dialog, which an
+  automated review of the first commit caught); T-1218's mark `[hidden characters removed]` where
   the scrub changed something (a plan's on a line of its own under the cut, so a head says it
   too). Options stay as many and in their order: a label the scrub changed is drawn marked, and
   numbered (`… 2`, `… 3`) where another option already reads the same, clean labels first, as
@@ -44400,3 +44402,5 @@ approve_bridge`, `plan_accept_e2e::` and
 proven on captured screens): 31 passed. No reruns; the mesophon unit tests ran once more after
 a tidy of the option labels' loop (72 passed). No rig run: nothing an agent or the crown is told
 changed.
+After the review's trust fix, `cargo ut` (same counts, 0 failed) and `cargo build --workspace`
+ran again; the trust case is in the question-and-plan test.

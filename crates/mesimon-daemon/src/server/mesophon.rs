@@ -4457,13 +4457,7 @@ impl Daemon {
         if s.state != (SessionState::RequiresAction { reason: Reason::Trust }) {
             return None;
         }
-        let dialog = self.control.dialogs.get(&s.id)?;
-        match &dialog.content {
-            api::DialogContent::Trust { folder } => {
-                Some(api::Trust { request: dialog.request.clone(), folder: folder.clone() })
-            }
-            _ => None,
-        }
+        phone_trust(self.control.dialogs.get(&s.id)?)
     }
 
     /// The trust dialog projected on `id`'s seat (T-844), if one stands.
@@ -5312,6 +5306,19 @@ fn phone_dialog_scrubbed(dialog: &api::Dialog) -> api::Dialog {
         },
     };
     api::Dialog { request: dialog.request.clone(), content }
+}
+
+/// A trust dialog as a phone's card offers it (T-844): its request, and its
+/// folder read off the pane through `phone_dialog_scrubbed` (T-1227), so a
+/// path drawn with a bidi or invisible character is marked, not trusted as
+/// shown. `None` for any other dialog.
+fn phone_trust(dialog: &api::Dialog) -> Option<api::Trust> {
+    match phone_dialog_scrubbed(dialog).content {
+        api::DialogContent::Trust { folder } => {
+            Some(api::Trust { request: dialog.request.clone(), folder })
+        }
+        _ => None,
+    }
 }
 
 fn seat_refusal(board: &Board, ticket: ulid::Ulid) -> Option<&'static str> {
@@ -10482,6 +10489,20 @@ mod keys_resume_tests {
             ("toolu_p".into(), "1. Keep\n2. rm -rf /\n\n[hidden characters removed]".into())
         );
         assert_eq!(markdown(phone_dialog(&plan("1. Keep\n"))).1, "1. Keep\n");
+        // A trust card's folder, read off the pane, through the same scrub.
+        let trust = |folder: &str| api::Dialog {
+            request: "trust-1".into(),
+            content: api::DialogContent::Trust { folder: Some(folder.into()) },
+        };
+        assert_eq!(
+            phone_trust(&trust("/tmp/\u{202e}txt.exe")),
+            Some(api::Trust {
+                request: "trust-1".into(),
+                folder: Some("/tmp/txt.exe [hidden characters removed]".into()),
+            })
+        );
+        assert_eq!(phone_trust(&trust("/x")).and_then(|t| t.folder).as_deref(), Some("/x"));
+        assert_eq!(phone_trust(&plan("1. Keep")), None);
     }
 
     /// T-1208: the terminal's theme reaches the phone's board as the TUI
