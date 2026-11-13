@@ -44656,10 +44656,14 @@ and the permission docked over the box; and never built: the Details tab, the `â
 now", the attach menu, the digest line, haptics, a `ctrl` key. Which of these to build is the
 author's.
 
-**Verified.** `node --test state.test.js assets.test.js` (61 passed) and the UX suite on
-Chromium at phone size (`MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone`), green; the
-picture compared with the prototype's by screenshot at 390 px. Not run here: WebKit and the
-desktop and tablet sizes.
+**Verified.** `npm test` in `web/mesophon` on the merged code (`71b38bc2`): state and assets
+61 passed; the UX suite green on Chromium at every size and on WebKit at phone and tablet, then
+one failure on WebKit desktop, `terminalFlow`'s refused key ("timed out waiting for â€¦ that
+session is a shell" in the toast). Rerun: `MESOPHON_UX_ENGINE=webkit MESOPHON_UX_SIZES=desktop
+node ux.test.js` passed whole, that flow and every one after it. A rerun, not a repair. The
+first full run caught a real one first: the chip's drawn face sat over its radio and took the
+press (`dialog.compose .choice input { z-index: 1 }`). Each screen was compared with the
+prototype's by screenshot at 390 px, and the Inbox at 1280 px.
 
 ## DONE's default: an agent started there moves the ticket to IN PROGRESS (T-1239, 2026-11-14)
 
