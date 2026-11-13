@@ -6399,16 +6399,20 @@ fn codex_binding(projection: &api::Permission) -> Option<CodexBinding> {
         .then_some(CodexBinding { command, reason })
 }
 
-/// Text a screen can show exactly (T-1227): one line, no blank but the
-/// plain space, never two in a row nor at either end, and nothing the
-/// scrub would remove (a control or an invisible character).
+/// Text a screen can show exactly (T-1227): printable ASCII alone (0x20 to
+/// 0x7E, round 3: one character is one column, and no blank but the plain
+/// space), never two blanks in a row nor one at either end.
 fn plain_line(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(' ')
         && !s.ends_with(' ')
         && !s.contains("  ")
-        && s.chars().all(|c| c == ' ' || !c.is_whitespace())
-        && mesimon_core::text::scrub_text(s) == s
+        && s.bytes().all(printable_ascii)
+}
+
+/// A byte of printable ASCII, the space included (T-1227 round 3).
+fn printable_ascii(b: u8) -> bool {
+    (0x20..=0x7e).contains(&b)
 }
 
 /// A POSIX shell's words of `line`: blanks split, `'…'` is literal, `"…"`
@@ -6515,23 +6519,27 @@ fn codex_draws(screen: &str, cols: u16, binding: &CodexBinding) -> bool {
 /// one blank Codex's wrap took or by none (a wrap may break a word). A
 /// line break counts only where it is a wrap: the line before it could
 /// not have held the next line's first word (`CODEX_WRAP_MARGIN`); with
-/// the width unknown (`cols` 0) no break counts.
+/// the width unknown (`cols` 0) no break counts. Every line is printable
+/// ASCII once the ASCII spaces padding its end are trimmed (round 3):
+/// anything else is refused, never trimmed or skipped, so a byte counts a
+/// column and a trailing no-break space is no padding.
 fn codex_spells(lines: &[&str], lead: &str, text: &str, cols: u16) -> bool {
+    let lines: Vec<&str> = lines.iter().map(|l| l.trim_end_matches(' ')).collect();
     let Some(first) = lines.first() else { return false };
-    if cols == 0 && lines.len() > 1 {
+    if (cols == 0 && lines.len() > 1) || !lines.iter().all(|l| l.bytes().all(printable_ascii)) {
         return false;
     }
-    let indent = first.len() - first.trim_start().len();
+    let indent = first.len() - first.trim_start_matches(' ').len();
     let width = usize::from(cols.saturating_sub(CODEX_WRAP_MARGIN));
     let Some(head) = first[indent..].strip_prefix(lead) else { return false };
-    let mut parts = vec![head.trim_end()];
+    let mut parts = vec![head];
     for pair in lines.windows(2) {
-        let next = pair[1].trim_end();
-        let Some(body) = next.strip_prefix(&first[..indent]).filter(|b| !b.starts_with(' ')) else {
+        let Some(body) = pair[1].strip_prefix(&first[..indent]).filter(|b| !b.starts_with(' '))
+        else {
             return false;
         };
-        let word = body.split(' ').next().unwrap_or_default().chars().count();
-        if pair[0].trim_end().chars().count() + 1 + word <= width {
+        let word = body.split(' ').next().unwrap_or_default().len();
+        if pair[0].len() + 1 + word <= width {
             return false;
         }
         parts.push(body);
@@ -9524,6 +9532,45 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(shell_words("'open"), None);
     }
 
+    /// T-1227 round 3: a bindable command and reason are printable ASCII,
+    /// and the screen is held to the same, only ASCII space padding at a
+    /// line's end trimmed. The reader's pairs: thirty-three decomposed
+    /// accents (66 characters, 33 columns) made B's real line break read as
+    /// a forced wrap; a trailing no-break space was trimmed from B.
+    #[test]
+    fn a_codex_approval_binds_printable_ascii_only() {
+        let screen = |command: &str| {
+            format!(
+                "  Would you like to run the following command?\n  Environment: local\n\
+                 {command}\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do \
+                 differently (esc)\n  Press enter to confirm or esc to cancel\n"
+            )
+        };
+        let miss = Err(Miss::LabelNotFound);
+        let accents = "e\u{301}".repeat(33);
+        let stale =
+            codex_approval(None, Some(&format!("/bin/zsh -lc 'echo {accents} rm -rf important'")));
+        let b = screen(&format!("  $ echo {accents}\n  rm -rf important"));
+        assert_eq!(codex_approval_step(&b, 80, true, &stale), miss, "accents read as a wrap");
+        assert_eq!(codex_binding(&stale), None, "not printable ASCII");
+        let backup = codex_approval(None, Some("/bin/zsh -lc 'rm -rf backup'"));
+        let nbsp = screen("  $ rm -rf backup\u{a0}");
+        assert_eq!(codex_approval_step(&nbsp, 80, true, &backup), miss, "a trailing NBSP");
+        let padded = screen("  $ rm -rf backup   ");
+        assert_eq!(codex_approval_step(&padded, 80, true, &backup), Ok(DialogStep::Submit));
+        let wide = screen("  $ rm -rf backup\u{3000}");
+        assert_eq!(codex_approval_step(&wide, 80, true, &backup), miss, "an ideographic space");
+        let in_reason = screen("  Reason: tidy\u{a0}up\n  $ rm -rf backup");
+        let tidy = codex_approval(Some("tidy up"), Some("/bin/zsh -lc 'rm -rf backup'"));
+        assert_eq!(codex_approval_step(&in_reason, 80, true, &tidy), miss, "a reason's NBSP");
+        for unbindable in ["echo caf\u{e9}", "echo \u{1f600}", "echo a\u{7f}"] {
+            let p = codex_approval(None, Some(&format!("/bin/zsh -lc '{unbindable}'")));
+            assert_eq!(codex_binding(&p), None, "{unbindable:?}");
+        }
+        let reason = codex_approval(Some("caf\u{e9}"), Some("/bin/zsh -lc ls"));
+        assert_eq!(codex_binding(&reason), None, "a non-ASCII reason");
+    }
+
     /// T-846: a Codex plan's accept is the T-420 press, at the `Yes` row
     /// alone; sending it back is unmeasured and stays the pane's.
     #[test]
@@ -10394,6 +10441,11 @@ mod keys_resume_tests {
         let tab = Some(api::PaneKey::Tab);
         let (went, card) =
             ("the pane did not take it", "the agent waits on you: answer it on its card");
+
+        // Round 3: a command outside printable ASCII is no card either.
+        d.control_codex_ask(id, Some(&ask("\"0\"", "/bin/zsh -lc 'echo caf\u{e9}'")), None);
+        assert!(d.control.permissions.is_empty(), "a non-ASCII command is no card");
+        assert!(!d.control_answers_here(id));
 
         d.control_codex_ask(id, Some(&ask("\"1\"", "/bin/zsh -lc 'echo safe\nrm -rf x'")), None);
         assert!(d.control.permissions.is_empty(), "an unbindable request is no card");

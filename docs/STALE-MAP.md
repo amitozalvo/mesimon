@@ -44346,8 +44346,9 @@ tab's keys answer the agent's own dialog).
 - **Bindable, judged once** (`codex_binding`): only a command's approval (`what: command`); its
   command unwrapped as the dialog unwraps it (the script of a `bash|zsh|sh -lc|-c '…'`, read by
   `shell_words`, a POSIX word reader, else the command as the item spells it); the command and
-  the reason each one plain line (`plain_line`: no line break, tab, non-ASCII blank or control,
-  no two blanks in a row, none at either end, nothing the scrub removes); neither cut by the
+  the reason each one plain line (`plain_line`: printable ASCII alone, 0x20 to 0x7E since round
+  3, so no line break, tab, control, non-ASCII blank, accent or wide character, and a byte is a
+  column; no two blanks in a row, none at either end); neither cut by the
   snapshot's bound (a trailing `…`). An argv is joined by the observer so a shell reads the same
   words back (`observation::command_text`: a plain word bare, any other `sh_quote`d), so
   `["/bin/bash","-lc","echo hello"]` unwraps to `echo hello` and is approved; an argv holding a
@@ -44364,8 +44365,11 @@ tab's keys answer the agent's own dialog).
   only a command's approval binds, so an edit's heading binds nothing); between the two, an
   `Environment: ` line if drawn, then nothing for a request with no reason, or for one with a
   reason the lines spelling it after `Reason: `. No blank is squeezed:
-  inside a line the text is compared as drawn (the pane's trailing blanks and the dialog's
-  indent aside, a continuation line at the first line's indent exactly). The one tolerance is
+  inside a line the text is compared as drawn. The drawn side is held to the same rule (round
+  3): every line of the `$ ` block and of the `Reason:` region must be printable ASCII once the
+  ASCII spaces padding its end are trimmed, and anything else refuses it, never trimmed or
+  skipped (a trailing no-break space is not padding); the dialog's indent is ASCII spaces, a
+  continuation line at the first line's indent exactly. The one tolerance is
   the measured wrap: where a line breaks, the join is the blank Codex's wrap took or none (the
   T-846 capture breaks a word after a `/`), and a break counts only where the line before it
   could not have held the next line's first word within the pane's width less
@@ -44410,10 +44414,13 @@ drawing, so it is not done here. **The whole window left:**
   no cwd): a request with the same command and reason in another folder is the same approval.
 - The shell and the wrapper's mode are not drawn: `bash -lc 'x'` and `zsh -c 'x'` both draw
   `x`, and an unwrapped `x` draws `x` too.
-- At a wrap the join is a blank or none: two commands differing only by one blank exactly where
-  the pane's width forced a break read alike; and a real line break whose next word would have
-  fitted only in the pane's last `CODEX_WRAP_MARGIN` columns reads as a wrap. Where Codex's own
-  wrap leaves more than that unused, a true wrap reads as no wrap: refused, the keys answer.
+- The wrap tolerance, as the predicate accepts it: a real line break in B reads as a wrap
+  wherever B's next word would not have fit in what was left of the line (the pane's width less
+  `CODEX_WRAP_MARGIN`), and there the join may be a blank or none. So a stale A whose command is
+  B's lines joined that way walks onto B where B's lines break at such a point; and two commands
+  differing by one blank exactly at such a break read alike. Where Codex's own wrap leaves more
+  than the margin unused, a true wrap reads as no wrap: refused, the keys answer. The
+  capture-and-key gap above is the larger window either way.
 
 **The crown's `get_ticket` does not get the phone's copy.** `agent_needs_you` reads
 `control_questions` and `control_plan` and has scrubbed them since T-566/T-582 (`scrub_text` on
@@ -44479,3 +44486,18 @@ blank-free capture. Refuted: "capture with blank lines kept for the walk": other
 second capture.
 Checks after 2b: `cargo build --workspace`, `cargo ut --no-fail-fast` (same counts, 0 failed),
 the three e2e sets (31 passed). No reruns.
+
+**Round 3: printable ASCII only** (the re-read of `93814810`). Two Unicode holes: the wrap check
+counted characters, not columns, so thirty-three decomposed `e\u{301}` (66 characters, 33
+columns) made B's real line break after them read as a forced wrap and a stale A `echo <them> rm
+-rf important` walked onto B; and the drawn command's trailing blanks were trimmed as Unicode
+white space, so A `rm -rf backup` walked onto B `rm -rf backup\u{a0}`. Decided: a bindable
+command and reason are printable ASCII alone, and the screen is held to the same with only ASCII
+space padding trimmed; no width tables. `a_codex_approval_binds_printable_ascii_only` (both
+pairs, an ideographic space, an NBSP in the reason, non-ASCII commands and reason not bindable)
+and the non-ASCII case in `an_unbindable_codex_approval_is_no_card_and_a_refused_walk_ends_one`
+(no card) each failed on `93814810`'s code (`Ok(Submit)` on the accents pair, and on the NBSP
+pair run alone; a card for `echo café`) and pass. Refuted: "count columns with a width table":
+the crown's decision is no width tables, and ASCII makes a byte a column.
+Checks: `cargo build --workspace`, `cargo ut --no-fail-fast` (72 + 17 + 762 + 850 + 24 + 1,443
+passed), the three e2e sets (31 passed). No reruns.
