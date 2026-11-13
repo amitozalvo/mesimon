@@ -43910,6 +43910,10 @@ tab stays reachable then.
   tool's name for the phone's copy (`scrub_lines` for values, keeping a multi-line command's
   lines; `scrub_text` for names); the stored request is untouched, so the answer and the Codex
   screen match read the original. The card shows the command, then every other field by name.
+  What the scrub changed is marked `[hidden characters removed]`, since the bytes that run differ
+  from those drawn; and no two fields merge (a security review of the first cut: `command` and
+  `\u{200b}command` scrubbed to one key, and the sorted later one, `ls`, was drawn while `rm -rf /`
+  would run). A clean name keeps its place; a scrubbed one is drawn marked, numbered if taken.
 
 **Refuted.** "Use `scrub_text` on the input": it deletes `\n`, so `echo a` and `rm x` on two
 lines would read as one line; `scrub_lines` is the same scrub keeping line breaks.

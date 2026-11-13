@@ -5148,24 +5148,50 @@ fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
 /// name and input, keys included, through the scrub text leaving the
 /// process takes, so a bidi or invisible character cannot reorder what
 /// the person approves. A value keeps its line breaks (`scrub_lines`): a
-/// multi-line command is approved as the lines it runs. The request id is
-/// the daemon's own and is left alone, so the answer still names the
-/// request the agent is waiting on.
+/// multi-line command is approved as the lines it runs. What the scrub
+/// changed says so (`SCRUBBED`), since the bytes that run are not the ones
+/// drawn; and no two fields merge: a field already clean keeps its name,
+/// and one whose name the scrub changed is drawn under that name marked,
+/// numbered if need be, so a `\u{200b}command` can never take `command`'s
+/// place on the card. The request id is the daemon's own and is left
+/// alone, so the answer still names the request the agent is waiting on.
 fn phone_permission(p: &api::Permission) -> api::Permission {
+    use mesimon_core::text::{scrub_lines, scrub_text};
+    const SCRUBBED: &str = "[hidden characters removed]";
+    fn marked(raw: &str, clean: String) -> String {
+        if clean == raw {
+            clean
+        } else {
+            format!("{clean} {SCRUBBED}")
+        }
+    }
     fn scrub(v: &serde_json::Value) -> serde_json::Value {
-        use mesimon_core::text::{scrub_lines, scrub_text};
         match v {
-            serde_json::Value::String(s) => serde_json::Value::String(scrub_lines(s)),
+            serde_json::Value::String(s) => serde_json::Value::String(marked(s, scrub_lines(s))),
             serde_json::Value::Array(a) => a.iter().map(scrub).collect(),
             serde_json::Value::Object(o) => {
-                o.iter().map(|(k, v)| (scrub_text(k), scrub(v))).collect()
+                let mut out = serde_json::Map::new();
+                let (clean, changed): (Vec<_>, Vec<_>) =
+                    o.iter().partition(|(k, _)| scrub_text(k) == **k);
+                for (k, v) in clean {
+                    out.insert(k.clone(), scrub(v));
+                }
+                for (k, v) in changed {
+                    let base = marked(k, scrub_text(k));
+                    let name = std::iter::once(base.clone())
+                        .chain((2..).map(|n| format!("{base} {n}")))
+                        .find(|name| !out.contains_key(name))
+                        .unwrap_or(base);
+                    out.insert(name, scrub(v));
+                }
+                serde_json::Value::Object(out)
             }
             other => other.clone(),
         }
     }
     api::Permission {
         request: p.request.clone(),
-        tool: mesimon_core::text::scrub_text(&p.tool),
+        tool: marked(&p.tool, scrub_text(&p.tool)),
         input: scrub(&p.input),
         expires_at: p.expires_at,
     }
@@ -9592,24 +9618,39 @@ mod keys_resume_tests {
             input: serde_json::json!({
                 "command": "echo \u{202e}cba\nrm -rf x\u{200b}",
                 "c\u{2066}wd": "/tmp",
-                "args": ["a\u{7}", {"deep": "b\u{202c}"}],
+                "args": ["a\u{7}", {"deep": "b"}],
                 "n": 3,
             }),
             expires_at: 9,
         };
         let phone = phone_permission(&raw);
         assert_eq!(phone.request, "req-1");
-        assert_eq!(phone.tool, "Bash");
+        assert_eq!(phone.tool, "Bash [hidden characters removed]");
         assert_eq!(phone.expires_at, 9);
         assert_eq!(
             phone.input,
             serde_json::json!({
-                "command": "echo cba\nrm -rf x",
-                "cwd": "/tmp",
-                "args": ["a", {"deep": "b"}],
+                "command": "echo cba\nrm -rf x [hidden characters removed]",
+                "cwd [hidden characters removed]": "/tmp",
+                "args": ["a [hidden characters removed]", {"deep": "b"}],
                 "n": 3,
             })
         );
+        // A field whose name scrubs to another's never takes its place: the
+        // command that runs is the one drawn as `command`.
+        let spoof = api::Permission {
+            input: serde_json::json!({
+                "command": "rm -rf /",
+                "\u{200b}command": "ls",
+                "command [hidden characters removed]": "x",
+            }),
+            ..raw
+        };
+        let input = phone_permission(&spoof).input;
+        assert_eq!(input["command"], "rm -rf /");
+        assert_eq!(input["command [hidden characters removed]"], "x");
+        assert_eq!(input["command [hidden characters removed] 2"], "ls");
+        assert_eq!(input.as_object().unwrap().len(), 3);
     }
 
     /// T-1208: the terminal's theme reaches the phone's board as the TUI
