@@ -42,13 +42,26 @@ pub(super) fn paint(f: &mut Frame, app: &App) {
     if picked.is_empty() {
         return;
     }
-    // The footer row is the pick's keys: it stays as drawn.
+    // The footer row is the pick's keys: it stays as drawn. So does the
+    // card a picked ticket link names (T-820): the board blinks it out of
+    // its own recess behind the dialog, and that blink is how the board
+    // says which card the link is.
+    let named = app.link_hovered().and_then(|id| {
+        app.spots.borrow().card(id).map(|c| ratatui::layout::Rect {
+            x: c.x,
+            y: c.y,
+            width: c.width,
+            height: c.rows,
+        })
+    });
     let recess = Theme::pick_recess(ack);
     if recess > 0.0 {
         let foot = area.bottom().saturating_sub(1);
         for y in area.top()..foot {
             for x in area.left()..area.right() {
-                if picked.binary_search_by(|p| (p.y, p.x).cmp(&(y, x))).is_ok() {
+                if picked.binary_search_by(|p| (p.y, p.x).cmp(&(y, x))).is_ok()
+                    || named.is_some_and(|r| r.contains(Position { x, y }))
+                {
                     continue;
                 }
                 let cell = &mut buf[(x, y)];

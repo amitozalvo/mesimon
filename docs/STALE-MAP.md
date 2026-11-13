@@ -43798,3 +43798,13 @@ the editor), `keymap::the_ask_field_queues_only_on_a_shared_checkout` (`enter ru
 **Owed:** a CHANGELOG line at the next bump. **Changed:** A message that begins with `!` in the
 ask field now shows as a shell command, with a red `!` in place of the prompt arrow, before you
 send it.
+
+## T-1192: a picked ticket link keeps its card lit (2026-11-13)
+
+The author, after the merge: "on board, during ^n walking on ticket id should highlight the ticket
+if it's visible in board, used to work now it doesn't". The pick pass recedes every cell above the
+footer but the pick, and that took the card a ticket link names too — T-820's blink, which
+`board::recede` keeps out of the board's own recess on the move ghost's cadence, was receded again
+and read as gone. `ui/pick.rs` now leaves the named card's rect (`App::link_hovered`, the spot's
+card) as the board drew it. Test: `a_picked_ticket_link_keeps_its_card_lit_on_the_board` (pins the
+blink's lit phase through `spin_epoch`; fails on the merged pass, passes now). TUI-only.

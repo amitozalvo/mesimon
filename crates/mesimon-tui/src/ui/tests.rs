@@ -7623,6 +7623,31 @@ fn an_agents_bang_line_and_a_code_span_are_commands_too() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// T-1192: a ticket link picked in the transcript keeps the card it names
+/// lit on the board (T-820's blink), though the pick recedes everything
+/// else: the card is how the board says which ticket the link is.
+#[test]
+fn a_picked_ticket_link_keeps_its_card_lit_on_the_board() {
+    let (mut app, dir) = linked_transcript("named-card", &["newer T-2"], false);
+    let rest = cells(&app, 120, 30);
+    press(&mut app, '}');
+    next_link(&mut app);
+    assert_eq!(app.link_hovered(), Some(ulid_n(2)));
+    // The blink's lit phase: frame 0 of the spinner clock.
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let buf = cells(&app, 120, 30);
+    let card = *app.spots.borrow().card(ulid_n(2)).expect("T-2's card is on the board");
+    let lit: Vec<(u16, u16)> = (card.y..card.y + card.rows)
+        .flat_map(|y| (card.x..card.x + card.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| rest[(x, y)].symbol().trim() != "")
+        .collect();
+    assert!(!lit.is_empty(), "the card has words");
+    for (x, y) in lit {
+        assert_eq!(buf[(x, y)].fg, rest[(x, y)].fg, "the named card at {x},{y} is not receded");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn transcript_links_clear_when_messages_change_and_enter_waits_for_selection() {
     let (mut app, dir) = linked_transcript("unselect", &["older T-1", "newer T-2"], false);
