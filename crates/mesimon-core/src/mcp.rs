@@ -191,7 +191,10 @@ pub const CROWN_WAKES: &str = concat!(
      merge says so. A start_agent whose worktree could not be cut (a repository with no \
      commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
-     the ticket's brief is the person's, and start_agent once it is made tries again. A worker that hit a usage limit (get_ticket on it \
+     the ticket's brief is the person's, and start_agent once it is made tries again. So \
+     does an agent the crown started whose pane dies before its first turn: could not \
+     start, with how it exited (its status, and a Codex runtime's own reason); get_ticket \
+     on it reads state exited, crashed. A worker that hit a usage limit (get_ticket on it \
      carries needs_you: quota) stopped mid-task on the account's limit, and its turn has \
      ended: no word of the crown's resumes it on that tier (ask_agent's words wait), and its \
      work stays where the turn left it. sleep_agent parks it, conversation kept, and \

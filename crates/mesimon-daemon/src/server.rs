@@ -5999,6 +5999,11 @@ impl Daemon {
                         && matches!(s.state, SessionState::Spawning)
                         && now.saturating_sub(s.state_changed_at.unwrap_or(0)) <= LAUNCH_DEATH_MS
                 });
+            // The crown that hears this seat's start, judged on the same
+            // side of the move: a death before the first turn is its news
+            // (T-1220).
+            let launch =
+                matches!(sig, Signal::PaneDied { .. }).then(|| self.launch_heard(id)).flatten();
             let machine = self
                 .machines
                 .entry(id)
@@ -6046,6 +6051,12 @@ impl Daemon {
             }
             if died_at_launch {
                 dirty |= self.probe_server_access();
+            }
+            let crashed = SessionState::Exited { reason: ExitReason::Crashed };
+            if let (Some(heard), Signal::PaneDied { status }) = (launch, &sig) {
+                if self.board.session(id).is_some_and(|s| s.state == crashed) {
+                    self.hear_launch_death(heard, id, *status);
+                }
             }
             // The composer's Shift+Enter, second half: the pane is provably
             // alive and reading, so press the Enter its prefilled title has
@@ -7815,6 +7826,14 @@ impl Daemon {
             }
         }
         let snapshot = rec.clone();
+        // A seat that exited takes no words (T-1220): what was owed to it
+        // goes at its death, or it reads as words on their way to the
+        // ticket (`pending_on`) and mutes the next seat's finished turn. A
+        // launch's words never taken are no `unsent` here: those are kept
+        // only on a seat with a pane, for its resend (T-570, T-722).
+        if !change.to.is_live() && self.drop_owed(id).is_some() {
+            self.journal.line(&format!("session {id} exited: the words owed to it are dropped"));
+        }
         self.receipt_state(&snapshot, change);
         self.feed.session_state(&snapshot, &change.from, hook);
         // A turn ending settles the ticket's rebase ask (T-435): the train's

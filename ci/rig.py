@@ -3293,6 +3293,17 @@ Reply with the single word ready and end your turn."""
                 "done\n")
             return self.restart_on(wrapper, "the mod validated", record,
                                    "the daemon never came up on the mods-off Claude Code")
+        if what == "restart_dead_launch":
+            # LD1 (T-1220): a Claude Code whose every session dies at launch,
+            # status 1, as a Codex seat died while npm reinstalled it (T-1217):
+            # the probes are the real one's, so the daemon comes up.
+            wrapper = self.claude_wrapper(
+                "claude-dead-launch", "The rig's LD1 (T-1220): every session dies at launch.",
+                'case "$1" in --version|plugin|auth) exec "' + self.claude + '" "$@" ;; esac\n'
+                'echo "rig LD1: this Claude Code is gone" >&2\n'
+                "exit 1\n")
+            return self.restart_on(wrapper, None, record,
+                                   "the daemon never came up on the dying Claude Code")
         if what == "async_review":
             # AH1 (T-1075): the real Claude Code, whose launch for this test's
             # ticket alone also takes `--settings` naming one Stop hook with

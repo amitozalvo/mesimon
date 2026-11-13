@@ -38,6 +38,30 @@ pub fn snapshot_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
     paths.rt_dir.join(format!("cdx-{}.json", &id.simple().to_string()[..16]))
 }
 
+/// How the runtime's own last word opens (`runtime::run`): the line it
+/// appends to its app-server log when it stops on an error, before its pane
+/// dies.
+pub const RUNTIME_FAILED: &str = "Mesimon Codex runtime failed: ";
+
+/// The runtime's last word on why it stopped (T-1220), off the tail of its
+/// app-server log: what a launch death says beyond its status ("start Codex
+/// app-server: No such file or directory (os error 2)" when the executable
+/// was gone). A bounded read of a local file, no fork; `None` when the log
+/// or the line is absent.
+pub fn runtime_failure(paths: &crate::paths::Paths, id: uuid::Uuid) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 8 * 1024;
+    let mut log =
+        std::fs::File::open(snapshot_path(paths, id).with_extension("app-server.log")).ok()?;
+    let len = log.metadata().ok()?.len();
+    log.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut tail = Vec::new();
+    log.take(TAIL).read_to_end(&mut tail).ok()?;
+    let tail = String::from_utf8_lossy(&tail);
+    let line = tail.lines().rev().find_map(|l| l.strip_prefix(RUNTIME_FAILED))?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
 pub fn preview_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
     paths.hooks_dir().join(format!("{id}.preview.json"))
 }
@@ -1095,6 +1119,41 @@ mod policy_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-1220: the runtime's last word on a failed start is read off its
+    /// log's tail, under whatever the app-server printed before it; a log
+    /// with no such line, or none at all, says nothing.
+    #[test]
+    fn a_launch_death_reads_the_runtime_s_last_word() {
+        let root = std::env::temp_dir().join(format!("msmn-cdx-word-{}", std::process::id()));
+        let paths = crate::paths::Paths {
+            repo_root: "/repo".into(),
+            proj16: "fixture".into(),
+            rt_dir: root.clone(),
+            state_dir: root.join("state"),
+            board_dir: "/repo/.mesimon".into(),
+        };
+        std::fs::create_dir_all(&root).unwrap();
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(runtime_failure(&paths, id), None, "no log");
+        let log = snapshot_path(&paths, id).with_extension("app-server.log");
+        let noise = "x".repeat(20_000);
+        std::fs::write(&log, format!("{noise}\nlistening\n")).unwrap();
+        assert_eq!(runtime_failure(&paths, id), None, "no runtime word");
+        std::fs::write(
+            &log,
+            format!(
+                "{noise}\n{RUNTIME_FAILED}first\n{RUNTIME_FAILED}start Codex app-server: \
+                 No such file or directory (os error 2)\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime_failure(&paths, id).as_deref(),
+            Some("start Codex app-server: No such file or directory (os error 2)")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn snapshot(sequence: u64) -> Snapshot {
         Snapshot {

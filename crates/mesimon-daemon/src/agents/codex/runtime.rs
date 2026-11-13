@@ -476,7 +476,7 @@ pub fn run(config_path: &Path) -> Result<()> {
         let path = config.snapshot_path.with_extension("app-server.log");
         if let Ok(mut log) = OpenOptions::new().create(true).append(true).mode(0o600).open(path) {
             let diagnostic = bound_text(format!("{error:#}"), 4096);
-            let _ = writeln!(log, "Mesimon Codex runtime failed: {diagnostic}");
+            let _ = writeln!(log, "{}{diagnostic}", super::RUNTIME_FAILED);
         }
     }
     result

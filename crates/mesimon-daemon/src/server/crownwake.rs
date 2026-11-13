@@ -35,7 +35,13 @@
 //! cut, a repository with no commits yet the common case. The start's
 //! receipt said `session_started: false` while the tree was being cut, so
 //! without this line the crown waited on a worker that would never come.
-//! The line carries the card's own words, which end on the fix.
+//! The line carries the card's own words, which end on the fix. The same
+//! line says a start whose agent's pane died before its first turn (T-1220):
+//! `Spawning` to `exited: crashed`, with the exit status and, on a Codex
+//! seat, the runtime's own last word (`its agent exited: crashed, status 1:
+//! start Codex app-server: No such file or directory (os error 2)`). No turn
+//! began, so no turn's end or `expect_secs` would ever say it, and the
+//! start's expectation goes with it. A watched ticket's death is heard too.
 //!
 //! And one that is no event at all (T-599): **lingering** — a worker it
 //! started has sat idle at its composer with background tasks running for
@@ -71,7 +77,9 @@
 //!   crown's held for `^y` or sent by the queue), pasted and not yet
 //!   taken, or a launch's that never reached it (`unsent`: the seat's
 //!   resend, or the one a restart makes, T-722): a finished turn is silent,
-//!   and the turn those words run is judged on its own end (T-591);
+//!   and the turn those words run is judged on its own end (T-591). Words
+//!   owed to a seat that exited are dropped at its death (T-1220): no turn
+//!   will run them, and kept, they muted the ticket's next seat;
 //! - **a turn running**: a finished turn is silent (T-591);
 //! - **its hand up, a question or a plan** — each its own wake: a finished
 //!   turn is silent.
@@ -349,8 +357,9 @@ pub(super) enum WakeCause {
     Raised,
     Planned,
     Asked,
-    /// A start the crown asked for whose worktree could not be cut (T-777).
-    /// The strongest: no agent exists, so nothing else about the worker
+    /// A start the crown asked for whose worktree could not be cut (T-777),
+    /// or whose agent's pane died before its first turn (T-1220). The
+    /// strongest: no agent exists, so nothing else about the worker
     /// is news, and the crown is the one who must act.
     Unstarted,
     /// A person promoted the board's integration branch to main (T-954).
@@ -429,7 +438,8 @@ pub(super) struct CrownWake {
     #[serde(default)]
     pub(super) late: bool,
     /// Why a start could not be made (T-777): the card's words for the
-    /// worktree that was not cut, said in the line's brackets.
+    /// worktree that was not cut, or the agent's death at launch (T-1220),
+    /// said in the line's brackets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unstarted: Option<String>,
     /// The failed turn this wake is about (T-936), as the board saw it fail:
@@ -2559,6 +2569,7 @@ impl Daemon {
                 | WakeCause::Raised
                 | WakeCause::Limited
                 | WakeCause::Failed
+                | WakeCause::Unstarted
         );
         watched_news && (self.watched_by_crown(worker, crown) || self.held_by_crown(worker, crown))
     }
@@ -2661,6 +2672,44 @@ impl Daemon {
         let why = mesimon_core::text::cap_bytes(&why, UNSTARTED_MAX_BYTES).to_string();
         self.expect_unstarted(worker);
         self.owe_said(crown, worker, WakeCause::Unstarted, |w| w.unstarted = Some(why));
+    }
+
+    /// The crown that would hear `seat` die at its launch (T-1220): an
+    /// agent's seat still `Spawning`, on a ticket the crown claims, with
+    /// the crown it claims for. Read before the death moves the record: an
+    /// exited Claude seat holds no agent seat, and with it goes the claim.
+    pub(super) fn launch_heard(&self, seat: uuid::Uuid) -> Option<(ulid::Ulid, ulid::Ulid)> {
+        let rec = self.board.session(seat)?;
+        if !rec.kind.is_agent() || rec.state != SessionState::Spawning {
+            return None;
+        }
+        let crown = self.board.crown_holder()?.id;
+        self.crown_claims(rec.ticket, crown, WakeCause::Unstarted).then_some((crown, rec.ticket))
+    }
+
+    /// A worker's pane died before its first turn (T-1220): `Spawning` to
+    /// `exited: crashed`. No turn began, so no turn's end and no
+    /// `expect_secs` would ever tell the crown: its start failed, and it
+    /// hears `could not start` with the board's words for the death, the
+    /// pane's exit status and, on a Codex seat, the runtime's own last word
+    /// (`codex::runtime_failure`). Once: the record is exited after it.
+    pub(super) fn hear_launch_death(
+        &mut self,
+        (crown, worker): (ulid::Ulid, ulid::Ulid),
+        seat: uuid::Uuid,
+        status: Option<i32>,
+    ) {
+        let mut why = "its agent exited: crashed".to_string();
+        if let Some(status) = status {
+            why.push_str(&format!(", status {status}"));
+        }
+        let codex = self.board.session(seat).is_some_and(|s| s.kind == SessionKind::Codex);
+        if let Some(word) =
+            codex.then(|| crate::agents::codex::runtime_failure(&self.paths, seat)).flatten()
+        {
+            why.push_str(&format!(": {word}"));
+        }
+        self.hear_unstarted(crown, worker, why);
     }
 
     /// `owe_wake` for news with nothing before it, whose words `say` sets
@@ -5373,6 +5422,89 @@ pub(in crate::server) mod tests {
                 "column REVIEW",
                 "opened !2, pipeline passed !2"
             ]
+        );
+    }
+
+    /// A worker's seat on the bed's T-2, `Spawning` as a launch leaves it,
+    /// started by the bed's crown, with the launch's words owed to it.
+    fn launching(b: &mut crate::server::crownask::ledger_tests::Bed) -> uuid::Uuid {
+        let seat = b.d.board.sessions[0].id;
+        let rec = &mut b.d.board.sessions[0];
+        rec.state = SessionState::Spawning;
+        rec.started_by = Some(b.crown);
+        b.d.machines.insert(seat, Machine::new(SessionState::Spawning, 1_000));
+        let words = crate::server::Parked { text: "the brief".into(), brief: true, title: false };
+        b.d.owed
+            .insert(seat, crate::server::Owed::launch(b.worker, words, crate::server::Ack::PROMPT));
+        seat
+    }
+
+    fn pane_died(b: &mut crate::server::crownask::ledger_tests::Bed, seat: uuid::Uuid) {
+        b.d.on_hook(HookFrame {
+            session: seat.to_string(),
+            event: "PaneDied".into(),
+            reason: Some("1".into()),
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        });
+    }
+
+    /// T-1220, T-1217's first loss: a Codex worker the crown started died
+    /// 124 ms into its launch, status 1, and the crown was never told; the
+    /// start's `expect_secs` waited on a turn that never came. The death is
+    /// the start's failure: `could not start`, with the board's words for
+    /// it and the status, once, and the start's expectation goes with it.
+    #[test]
+    fn a_worker_that_dies_at_launch_wakes_the_crown_once() {
+        let mut b = crate::server::crownask::ledger_tests::bed("launch-death");
+        let seat = launching(&mut b);
+        b.d.arm_expect(b.worker, None, 1_800);
+        pane_died(&mut b, seat);
+        let state = &b.d.board.session(seat).unwrap().state;
+        assert_eq!(
+            *state,
+            SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
+        );
+        let wake = owed_for(&b.d, b.worker).expect("the crown is told the start failed");
+        assert_eq!(wake.cause, WakeCause::Unstarted);
+        assert_eq!(wake.changed(), ["its agent exited: crashed, status 1"]);
+        assert!(!b.d.crown_expects.contains_key(&b.worker), "nothing left to time");
+        b.d.crown_wakes.clear();
+        pane_died(&mut b, seat);
+        assert!(owed_for(&b.d, b.worker).is_none(), "a second death frame is no news");
+
+        // A seat that came up and died later is no failed start.
+        let mut b = crate::server::crownask::ledger_tests::bed("later-death");
+        let seat = b.d.board.sessions[0].id;
+        b.d.board.sessions[0].started_by = Some(b.crown);
+        b.d.machines.insert(seat, Machine::new(SessionState::Running, 1_000));
+        pane_died(&mut b, seat);
+        assert!(owed_for(&b.d, b.worker).is_none_or(|w| w.cause != WakeCause::Unstarted));
+    }
+
+    /// T-1220, T-1217's second loss: the launch's words stayed owed to the
+    /// dead seat, `pending_on` counted them by ticket, and the next seat's
+    /// finished turn was judged busy and silent until a daemon restart.
+    /// Words owed to a seat that exited are dropped at its death.
+    #[test]
+    fn words_owed_to_a_dead_seat_do_not_mute_its_ticket() {
+        let mut b = crate::server::crownask::ledger_tests::bed("dead-words");
+        let seat = launching(&mut b);
+        assert!(b.d.pending_on(b.worker, None).words, "the launch's words are owed");
+        pane_died(&mut b, seat);
+        assert!(!b.d.owed.contains_key(&seat), "dropped at the death");
+        // The crown starts it again: a fresh seat, idle at its turn's end.
+        let mut next = b.d.board.sessions[0].clone();
+        next.id = uuid::Uuid::from_u128(1220);
+        next.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        b.d.board.sessions.push(next);
+        let pending = b.d.pending_on(b.worker, None);
+        assert!(!pending.words, "nothing waits for the new seat");
+        assert_eq!(
+            due(Some(WakeCause::Finished), None, &pending),
+            Due::Wake(WakeCause::Finished),
+            "its finished turn is told"
         );
     }
 }

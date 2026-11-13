@@ -27,6 +27,9 @@
 #              naming a wrapper that says 2.1.286), `restart_mods_off` (the
 #              same with a wrapper that starts every session without its
 #              `--plugin-dir`: a Claude Code whose mods are off, T-598),
+#              `restart_dead_launch` (T-1220, LD1: the same with a wrapper that
+#              answers the probes and dies, status 1, on every session it is
+#              asked to start: a launch that dies before its first turn),
 #              `restart_plain` (back to the Claude Code on PATH), `doctor`
 #              (read its claude road line), `limit` (T-802: the worker's
 #              session reports a usage limit through the real hook binary;
@@ -450,6 +453,31 @@ checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle
 
   [[test.steps]]
   rig = "restart_plain"
+
+[[test]]
+id = "LD1"
+title = "LD1 · a worker whose launch dies, then its second start: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Reply with the single word done and end your turn. Read no file and run no command."
+expect = "the rig's daemon restarted on a Claude Code that dies, status 1, on every session it starts: the crown's start_agent gets a seat that goes spawning to exited (crashed) before its first turn, and the board wakes the crown, could not start (its agent exited: crashed, status 1), once (T-1220). The daemon back on the real Claude Code, the crown's second start_agent on the same ticket runs the brief, and that worker's finished turn wakes the crown: the first seat's launch words, never taken, no longer read as words on their way to the ticket."
+checks = ["woke:unstarted", "woke:finished", "crown_line:LD1 told:crashed"]
+
+  [[test.steps]]
+  rig = "restart_dead_launch"
+
+  [[test.steps]]
+  crown = "LD1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: LD1 started. When the board wakes you for {key}, end your turn with the single line LD1 told: followed by the words in the brackets of that wake."
+  until = { woke = "unstarted" }
+  wake = true
+
+  [[test.steps]]
+  rig = "restart_plain"
+
+  [[test.steps]]
+  crown = "LD1: call start_agent for {key} again, with workspace worktree, no tier and no plan, then end your turn with the single line: LD1 again. When the board wakes you for {key}, end your turn with the single line: LD1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
 
 [[test]]
 id = "R9"

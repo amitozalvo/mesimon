@@ -44158,3 +44158,54 @@ After the code conflict was resolved: `cargo ut` (3,158 passed, 12 existing igno
 run of this rebase. Both omission screenshots were inspected; the text and button fit the
 compact card and the ticket's Terminal controls remain available. Main's STALE-MAP prefix
 and `sessions.js` were checked byte-for-byte. No additional e2e file or full suite was run.
+
+## A worker that dies at launch wakes the crown, and leaves nothing that mutes its ticket (T-1220, 2026-11-13, the crown's brief from T-1217's two losses)
+
+**What changed.**
+- A seat the crown claims (started, watched or held) whose pane dies while still `Spawning`, into
+  `exited: crashed`, wakes the crown once with the existing `could not start` line, now also said
+  of a start whose agent died before its first turn: `T-2 "…" could not start (its agent exited:
+  crashed, status 1: start Codex app-server: No such file or directory (os error 2))`. The status
+  is the pane-died frame's; the reason after it is a Codex runtime's own last word, read off the
+  tail of its `.app-server.log` (`codex::runtime_failure`, the line `runtime::run` already wrote,
+  its prefix now one constant `RUNTIME_FAILED`). The claim is judged before the death moves the
+  record (`launch_heard`): an exited Claude seat holds no agent seat, and `started_by_crown` reads
+  false after it. `Unstarted` joins the causes a watched or held ticket is heard for. The start's
+  `expect_secs` goes with the wake (`hear_unstarted`'s `expect_unstarted`): an unbegun start's
+  expectation has no session, `expect_alive` kept it forever, and it would have timed the next
+  seat's first turn.
+- Words owed to a seat that exits are dropped at its death (`apply_change`, any edge into
+  `Exited`; the journal says `session … exited: the words owed to it are dropped`). `pending_on`
+  counts `owed` by ticket, so the dead seat's launch entry read as words on their way and `due`
+  silenced the next seat's finished turn until a daemon restart (T-1217 at 19:58). `unsent` is
+  untouched: it is kept only on a seat with a pane (`mark_unsent`), so the resend a restart makes
+  for a live seat (T-570, T-722) is as it was. A crown ask whose entry goes this way settles
+  `unknown` by `settle_crown_asks`, as for a killed seat.
+- The crownwake header and `CROWN_WAKES` say the new wake; rig case LD1 (`restart_dead_launch`:
+  a Claude Code wrapper that answers the probes and dies, status 1, on every session) checks the
+  wake, its words, and that the second start's finished turn is told.
+
+**Looked at beside it, no leak.** `turn_asks` is set only by an ack, so a seat that never took
+words leaves none, and `turn_ended` on the death takes any earlier one; `queued` is swept at a dead
+seat (`seat_stands`); `control.starts` already reads a death as the start's refusal;
+`pending_submit` is the dead record's flag, cleared with the drop, and nothing reads it by ticket.
+
+**Left, not proven to matter.** Session-keyed maps the death leaves (`codex_input_due`,
+`codex_ready`, `codex_plan_typed`, `codex_modes`, `lingered`, `tasks_since`, `failing`): none is
+read by ticket by `pending_on`, the queue or the train. Not woken: a seat that came up (Claude's
+`SessionStart`, a Codex seat past `Spawning`) and died before taking its words, and a crash
+mid-turn: neither is `Spawning`, and the brief asked for a launch's death; its owed words are
+dropped all the same.
+
+**Refuted.** "Count only a live seat's words in `pending_on`": the same effect, but the entry would
+stay in memory for every other reader of `owed` to step around (the receipts, the crown's asks);
+dropping it at the death is one place.
+
+**Verified.** Three tests, the first two failing on the code before them:
+`a_worker_that_dies_at_launch_wakes_the_crown_once` (the wake, its words, the expectation gone, a
+second death frame silent, a later death no `could not start`),
+`words_owed_to_a_dead_seat_do_not_mute_its_ticket` (the restarted seat's finished turn comes due),
+and `a_launch_death_reads_the_runtime_s_last_word`. `cargo ut` (3,150 passed), `cargo build
+--workspace`, `--test crown crown_e2e::` (117 passed), `ci/rig_test.py`. No reruns. No live rig run
+of LD1 was made: the crown decides on it. `server.rs` outside its tests and `core/src/mcp.rs`
+changed, so the full workspace suite is owed after the merge.
