@@ -107,9 +107,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         // A drag is selecting text: what it covers is what the release
         // copies, read off the frame it was made on.
         (true, Some((a, b)), _) => {
-            // A double-click's selection is the word drawn under it (T-1209).
+            // A double-click's selection is the words drawn under it (T-1209).
             let ends = if app.select_word.get() {
-                crate::mouse::word_at(f.buffer_mut(), a)
+                crate::mouse::word_span(f.buffer_mut(), a, b)
             } else {
                 Some((a, b))
             };

@@ -364,6 +364,20 @@ pub(crate) fn word_at(buf: &Buffer, at: At) -> Option<(At, At)> {
     (b >= start).then_some(((a, at.1), (b, at.1)))
 }
 
+/// A double-click's selection from its word at `a` to the pointer at `b`
+/// (T-1209), grown to whole words at both ends in reading order: each end
+/// on a word takes that word whole, an end off one stays its cell. None
+/// when the press is on no word and the pointer has not left it.
+pub(crate) fn word_span(buf: &Buffer, a: At, b: At) -> Option<(At, At)> {
+    let (lo, hi) = if (a.1, a.0) <= (b.1, b.0) { (a, b) } else { (b, a) };
+    if lo == hi {
+        return word_at(buf, lo);
+    }
+    let start = word_at(buf, lo).map_or(lo, |w| w.0);
+    let end = word_at(buf, hi).map_or(hi, |w| w.1);
+    Some((start, end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

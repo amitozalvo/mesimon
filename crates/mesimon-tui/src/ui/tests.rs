@@ -14049,7 +14049,8 @@ fn a_drag_selects_text_and_the_release_copies_it() {
 }
 
 /// A double-click on text selects the word under it and the release
-/// copies it (T-1209), so a key or a path needs no careful drag. On a
+/// copies it (T-1209), so a key or a path needs no careful drag; held, it
+/// drags by whole words. On a
 /// card the second click still opens it (T-716), and a second press past
 /// the double-click window is a click of its own.
 #[test]
@@ -14073,6 +14074,34 @@ fn a_double_click_selects_a_word_and_the_release_copies_it() {
     assert_eq!(copied.as_deref(), Some("treatments"));
     assert_eq!(app.status, "selection copied");
     assert!(app.selection.get().is_none());
+
+    // Held after the second press, a drag grows by whole words: back onto
+    // the word before, then forward past where it began.
+    let decay = (line.0 + 1, line.1);
+    let created = spot_of(&lines, "created >1y");
+    for (to, words) in
+        [(decay, "Decay treatments"), ((created.0 + 2, created.1), "treatments ∙ created")]
+    {
+        click(&mut app, at);
+        render(&app, 120, 30);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
+        render(&app, 120, 30);
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), to);
+        render(&app, 120, 30);
+        assert_eq!(app.selected_text.borrow().as_str(), words);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), to);
+        let copied = crate::clipboard::COPIED.with(|c| c.borrow().last().cloned());
+        assert_eq!(copied.as_deref(), Some(words));
+    }
+    // Dragged back onto its own word, it is that word again.
+    click(&mut app, at);
+    render(&app, 120, 30);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), at);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), decay);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), first);
+    render(&app, 120, 30);
+    assert_eq!(app.selected_text.borrow().as_str(), "treatments");
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), first);
 
     // Slow: the second press is a click again, and selects nothing.
     app.status.clear();

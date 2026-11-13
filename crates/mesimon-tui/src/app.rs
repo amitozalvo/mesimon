@@ -2286,9 +2286,9 @@ pub struct App {
     /// `selected_text`; the release copies that.
     pub selection: Cell<Option<(crate::mouse::At, crate::mouse::At)>>,
     pub selected_text: std::cell::RefCell<String>,
-    /// The selection is the word under its cell, not the cells between
-    /// its ends (T-1209): a double-click on text. The draw finds the word
-    /// on the frame, since only the frame knows what is drawn there.
+    /// The selection runs whole words, not cells (T-1209): a double-click
+    /// on text, and the drag after it. The draw finds the words on the
+    /// frame, since only the frame knows what is drawn there.
     pub(crate) select_word: Cell<bool>,
     /// The last click, where and when it was released: a second press on
     /// it soon after is a double-click (`DOUBLE_CLICK`).
@@ -5198,8 +5198,11 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.pointer.set(Some(at));
                 let Some(from) = self.press_at.get() else { return Ok(false) };
-                self.select_word.set(false);
-                self.selection.set((from != at).then_some((from, at)));
+                // After a double-click the drag grows by whole words from
+                // the word it began on (T-1209), so it stays a selection
+                // even back on its first cell.
+                let word = self.select_word.get();
+                self.selection.set((word || from != at).then_some((from, at)));
                 Ok(true)
             }
             MouseEventKind::Moved | MouseEventKind::Drag(_) if self.arcade.borrow().is_some() => {
