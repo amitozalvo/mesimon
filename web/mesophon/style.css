@@ -3319,6 +3319,9 @@ select {
   border-radius: 50%;
   background-clip: content-box;
 }
+.composer .send:disabled {
+  background-clip: content-box;
+}
 #prompt:focus {
   outline: none;
 }
@@ -4743,7 +4746,7 @@ button.sent-bubble:hover {
 }
 /* The stop of a working turn sits where the arrow does. */
 .composer .send-stop {
-  background: var(--s3);
+  background-color: var(--s3);
   color: var(--ink);
 }
 .stopped-line {
@@ -5589,4 +5592,154 @@ input[type="checkbox"][role="switch"]:checked::before {
   .quick-column select {
     max-width: 96px;
   }
+}
+
+/* ---- the prototype's shapes (T-1208): rows in the Inbox, small answer presses ----
+   What the redesign's first pass left in the old page's shape. A press still
+   has its 44px box, the page's law: it draws smaller inside it (`::before`
+   is the face) and its row gives the difference back as a negative margin. */
+
+/* An answer's presses: Deny an outline, Approve the one filled press, each
+   34px drawn, sized to its words, Deny at the row's start and the answer at
+   its end (never under one thumb). */
+.need-actions,
+.attention-actions {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block: -5px;
+}
+.need-actions .btn,
+.attention-actions .btn,
+.need-actions .btn:not(.btn-attn):not(.btn-pri),
+.attention-actions .btn:not(.btn-attn) {
+  position: relative;
+  z-index: 0;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 0.875rem;
+}
+.need-actions .btn::before,
+.attention-actions .btn::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 5px 0;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+}
+.need-actions .btn:hover:not(:disabled)::before,
+.attention-actions .btn:hover:not(:disabled)::before {
+  background: var(--s2);
+}
+.need-actions .btn-attn::before,
+.attention-actions .btn-attn::before,
+.need-actions .btn-attn:hover:not(:disabled)::before,
+.attention-actions .btn-attn:hover:not(:disabled)::before {
+  border-color: transparent;
+  background: var(--attn);
+}
+.need-actions .btn-pri::before,
+.need-actions .btn-pri:hover:not(:disabled)::before {
+  border-color: transparent;
+  background: var(--pri);
+}
+.need.stopped .need-actions {
+  justify-content: flex-start;
+}
+
+/* The Inbox is a list of rows: no box around a ticket, a hairline between
+   two, the first tag's bar on the row's edge, the rows edge to edge. */
+#shell[data-mode="agents"] #tickets {
+  gap: 4px;
+  padding-inline: 0;
+}
+#shell[data-mode="agents"] #tickets > :not(.group) {
+  margin-inline: 16px;
+}
+#shell[data-mode="agents"] #tickets .group {
+  gap: 0;
+}
+#shell[data-mode="agents"] #tickets .group-label {
+  padding: 10px 16px 4px;
+}
+#shell[data-mode="agents"] #tickets .cards,
+#shell[data-mode="agents"] #tickets .needs {
+  gap: 0;
+}
+#shell[data-mode="agents"] #tickets .ticket.card,
+#shell[data-mode="agents"] #tickets .need {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+#shell[data-mode="agents"] #tickets .ticket.card {
+  padding: 9px 16px 10px;
+}
+#shell[data-mode="agents"] #tickets .need {
+  gap: 8px;
+  padding: 9px 16px 12px;
+}
+#shell[data-mode="agents"] #tickets .cards > * + *,
+#shell[data-mode="agents"] #tickets .needs > * + * {
+  border-top: 1px solid var(--line);
+}
+#shell[data-mode="agents"] #tickets .ticket.card:hover {
+  background: var(--s1);
+}
+/* The open ticket is marked where the list stays beside it, not on a phone,
+   where a row left behind would stay lit. */
+#shell[data-mode="agents"] #tickets .ticket.card[aria-pressed="true"] {
+  background: transparent;
+}
+@media (min-width: 701px) {
+  #shell[data-mode="agents"] #tickets .ticket.card[aria-pressed="true"],
+  #shell[data-mode="agents"] #tickets .need:has(.need-open[aria-pressed="true"]) {
+    background: var(--s2);
+  }
+}
+#shell[data-mode="agents"] #tickets .ticket.card[data-tint]::after,
+#shell[data-mode="agents"] #tickets .need[data-tint]::after {
+  inset: 10px auto 10px 0;
+  border-radius: 0 3px 3px 0;
+}
+#shell[data-mode="agents"] #tickets .need-open {
+  margin: -9px -16px 0;
+  padding: 9px 16px 0;
+  border-radius: 0;
+}
+#shell[data-mode="agents"] #tickets .need-open:has(.face-one) {
+  margin-bottom: -8px;
+}
+#shell[data-mode="agents"] #tickets .need.stopped {
+  box-shadow: none;
+}
+/* A question's choices on its row: outlined, sized to their words, wrapping. */
+#shell[data-mode="agents"] #tickets .options {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#shell[data-mode="agents"] #tickets .option {
+  width: auto;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: transparent;
+}
+#shell[data-mode="agents"] #tickets .option:hover:not(:disabled) {
+  background: var(--s1);
+}
+#shell[data-mode="agents"] #tickets .option-picked {
+  border-color: var(--attn);
+}
+/* "Only part shown" keeps its 44px press and takes a text line's room. */
+#shell[data-mode="agents"] #tickets .code-more {
+  margin-block: -8px;
 }
