@@ -48,6 +48,8 @@ const ROW_TAGS: usize = 18;
 const ROW_TIER: usize = 14;
 /// Its summary's count, `12/12`.
 const ROW_BOXES: usize = 5;
+/// The summary's progress bar before the count, in cells.
+const ROW_BAR: usize = 8;
 /// The worktree mark's slot, kept on every row so the fields line up.
 const ROW_WT: usize = 3;
 /// A row this narrow keeps its tier and its count, not its tags.
@@ -57,8 +59,9 @@ const ROW_FIELDS_FROM: usize = 60;
 
 /// The fields a table row names between its title and its marks (T-1240):
 /// its tags, each in its own tint, the tier it runs on, and how many of
-/// its summary's boxes are ticked — each in a slot of its own width, so the
-/// rows read as columns. Empty below `ROW_FIELDS_FROM`.
+/// its summary's boxes are ticked, as a bar and a count — each in a slot of
+/// its own width, so the rows read as columns. Empty below
+/// `ROW_FIELDS_FROM`.
 fn row_fields(
     theme: &Theme,
     t_cells: usize,
@@ -66,6 +69,7 @@ fn row_fields(
     tier: Option<&str>,
     summary: Option<&crate::app::TicketSummary>,
     quiet: Style,
+    cursorish: bool,
 ) -> Vec<Span<'static>> {
     if t_cells < ROW_FIELDS_FROM {
         return Vec::new();
@@ -95,13 +99,53 @@ fn row_fields(
     }
     let tier = truncate(tier.unwrap_or(""), ROW_TIER);
     spans.push(Span::styled(format!("{tier:<w$} ", w = ROW_TIER), quiet));
-    let boxes = summary
-        .filter(|s| s.count.total > 0)
-        .map(|s| format!("{}/{}", s.count.done, s.count.total))
-        .unwrap_or_default();
+    let count = summary.map(|s| s.count).filter(|c| c.total > 0);
+    spans.extend(summary_bar(theme, count, cursorish));
+    let boxes = count.map(|c| format!("{}/{}", c.done, c.total)).unwrap_or_default();
     spans.push(Span::styled(format!("{:>w$}", truncate(&boxes, ROW_BOXES), w = ROW_BOXES), quiet));
     spans
 }
+
+/// A table row's summary as a progress bar (T-1240, the author: "the
+/// checklist on table should render as progressbar on the n/N"): `ROW_BAR`
+/// half-height cells, the ticked share in the summary underline's calm ink
+/// and the rest in its track's, and a cell before the count. A ticked box
+/// is at least one cell and an open one keeps the last, so the bar never
+/// reads empty or full when it is not. Blank cells with no summary, and on
+/// a profile with no colours to tell the share from the track, where the
+/// count says it alone.
+fn summary_bar(
+    theme: &Theme,
+    count: Option<mesimon_core::summary::Count>,
+    cursorish: bool,
+) -> Vec<Span<'static>> {
+    let blank = || vec![Span::raw(" ".repeat(ROW_BAR + 1))];
+    let Some(c) = count else { return blank() };
+    if !matches!(
+        theme.summary_under(cursorish, true),
+        Some(s) if s.underline_color.is_some()
+    ) {
+        return blank();
+    }
+    let mut done = (c.done * ROW_BAR + c.total / 2) / c.total;
+    if c.done > 0 {
+        done = done.max(1);
+    }
+    if c.done < c.total {
+        done = done.min(ROW_BAR - 1);
+    }
+    let track = if cursorish { theme.sel.dim3 } else { theme.rest.dim3 };
+    vec![
+        Span::styled(BAR_CELL.repeat(done), Style::default().fg(theme.calm)),
+        Span::styled(BAR_CELL.repeat(ROW_BAR - done), Style::default().fg(track)),
+        Span::raw(" "),
+    ]
+}
+
+/// The progress bar's cell: a lower half block, so the bar sits on the
+/// text's line rather than filling it.
+const BAR_CELL: &str = "▄";
+
 
 /// Render the in-place title editor as a card line (create + rename share it).
 /// Returns the line and the cursor x-offset within the column rect.
@@ -831,7 +875,7 @@ pub(super) fn render(
     // has a mark, so every row's fields stand in the same cells.
     let row_quiet = if cursorish { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
     let fields = if ctx.row {
-        row_fields(theme, t_cells, tags, tier_word, summary, row_quiet)
+        row_fields(theme, t_cells, tags, tier_word, summary, row_quiet, cursorish)
     } else {
         Vec::new()
     };
@@ -1018,7 +1062,8 @@ pub(super) fn render(
             && !sessions.iter().any(|r| r.kind.is_agent() && r.state.has_pane())
     };
     let under = summary
-        .filter(|s| summary_underline && s.count.total > 0)
+        // A table row's bar says it (T-1240).
+        .filter(|s| summary_underline && s.count.total > 0 && !ctx.row)
         .filter(|s| !finished(s) || summary_pulse.is_some())
         .filter(|_| !rows_shown || summary_pulse.is_some())
         .filter(|_| !(doomed || trail || attn_card || held || snooze.is_some()))
@@ -1711,4 +1756,27 @@ pub(super) fn is_waiting(sessions: &[&SessionRecord]) -> bool {
             && !matches!(s.state, SessionState::Sleeping))
             || s.close_asked(mesimon_core::clock::now_ms()).is_some()
     })
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_is_never_empty_or_full_when_it_is_not() {
+        use mesimon_core::summary::Count;
+        let theme = Theme::new(crate::theme::Flavor::Graphite, crate::theme::Profile::TrueColor);
+        let filled = |done, total| {
+            let spans = summary_bar(&theme, Some(Count { done, total }), false);
+            spans[0].content.chars().count()
+        };
+        assert_eq!(filled(0, 5), 0);
+        assert_eq!(filled(1, 40), 1, "a ticked box shows");
+        assert_eq!(filled(39, 40), ROW_BAR - 1, "an open box keeps a cell");
+        assert_eq!(filled(2, 5), 3);
+        assert_eq!(filled(5, 5), ROW_BAR);
+        let blank = summary_bar(&theme, None, false);
+        assert_eq!(blank.len(), 1);
+        assert_eq!(blank[0].content.width(), ROW_BAR + 1, "the slot keeps its width");
+    }
 }

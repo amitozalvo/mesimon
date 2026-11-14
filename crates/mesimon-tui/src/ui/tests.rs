@@ -10399,6 +10399,23 @@ fn test_no_drawn_structure() {
             assert!(note.iter().any(|l| l.contains("in 2.4s")), "note on screen");
             lines.into_iter().chain(note).collect()
         },
+        {
+            // The table (T-1240): a row with two tags and a summary wears the
+            // main tag's `▋`, the second's `▎` and the summary's bar.
+            let mut b = fixture_tagged();
+            if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+                t.notes.push(note_meta(90, "Fix OSC-11", "local"));
+            }
+            let mut table = app_graphite(b);
+            table.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(SUMMARY_NOTE)));
+            table.summary_pulses.clear();
+            table.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+            let lines = sweep(&table);
+            let row = lines.iter().find(|l| l.contains("Fix OSC-11")).expect("the row");
+            assert!(row.starts_with("▋▎"), "both stripes ON SCREEN: {row}");
+            assert!(row.contains('▄'), "the bar ON SCREEN: {row}");
+            lines
+        },
     ];
     // Two entries sweep a screen of their own besides the one they return:
     // the note editor over the board, and the ticket page's second markdown
@@ -10424,7 +10441,9 @@ fn test_no_drawn_structure() {
                     }
                     // The tag stripe ends on `▁` and hangs its second tag as
                     // `▀` (T-1159); the theme picker's tint ring is `▉▉`. `▎`
-                    // belongs to description bars; `░` is the tag picker's
+                    // belongs to description bars and a table row's second
+                    // tag; `▋` is a table row's main tag and `▄` its
+                    // summary's bar (T-1240); `░` is the tag picker's
                     // swatch for a tag with no colour (T-1184); frames,
                     // the mascot and the pairing QR keep their own
                     // position-scoped exceptions.
@@ -10433,6 +10452,8 @@ fn test_no_drawn_structure() {
                             || ch == '▀'
                             || ch == '▉'
                             || ch == '▎'
+                            || ch == '▋'
+                            || ch == '▄'
                             || ch == '░'
                             || on_perimeter(frames, x, y)
                             || mascot.as_ref().is_some_and(|d| d.glyph(x, y) == Some(ch))

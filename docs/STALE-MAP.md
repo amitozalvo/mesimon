@@ -44895,3 +44895,19 @@ A table row's first tag is `▋` (five eighths; `▌` read as the same width as 
 the author: "can the first one be just a little bigger?") in the bar's cell, the second stays `▎`
 beside it, so the main tag reads first and the two stay apart (the cell's last three eighths are
 the gap). Checks: `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes` asks for `▋` then `▎`.
+
+## The table's checklist is a progress bar (T-1240 follow-up, 2026-11-14, the author: "the checklist on table should render as progressbar on the n/N, even with the price of making it a little bigger")
+
+- **What changed.** A table row's summary slot is an eight-cell bar of `▄` before the `n/N`: the
+  ticked share in the summary underline's calm ink, the rest in its track's (`dim3`), a ticked
+  box at least one cell and an open one keeping the last (`card::summary_bar`). The row drops the
+  card's own summary underline, which the bar replaces. No bar on a profile whose underline has
+  no colour (the count says it alone). The slot grew by nine cells, taken from the title.
+- **The drawn-structure law missed the table.** `test_no_drawn_structure` swept no table, so the
+  main tag's `▋` (the follow-up before this) landed without its exception. The sweep now draws a
+  table row with two tags and a summary and asserts `▋▎` and the bar on screen; `▋` and `▄` are
+  allowlisted beside `▎`, by role.
+- **Checks.** `cargo ut`; `the_bar_is_never_empty_or_full_when_it_is_not`; the three table
+  goldens reminted (the wider slot). `the_crown_s_bolt_runs_from_the_header_to_its_row` failed
+  once in a `cargo ut` run, passed three times alone and in a rerun of the TUI suite: a rerun,
+  left (the ticket page's strike, which this change does not touch).

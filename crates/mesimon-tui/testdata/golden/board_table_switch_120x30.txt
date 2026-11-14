@@ -1,7 +1,7 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
   TODO  2                                                   REVIEW  2                        DONE  1
-  Decay treatments      IN PROGRESS  2
+  Decay treatments      IN PROGRESS  2                                            clau
                                                               ✓ Grapheme truncation          z Painted accent bar
    Keymap validator        ⠋ Fix OSC-11 detection
                                                                x Flaky e2e on runner
