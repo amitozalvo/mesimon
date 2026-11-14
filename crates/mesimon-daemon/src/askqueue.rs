@@ -183,7 +183,7 @@ mod tests {
         save(&p, &e).unwrap();
         let text = std::fs::read_to_string(queue_file(&p)).unwrap();
         assert!(text.contains(&format!("\"schema_version\": {QUEUE_SCHEMA_AGY}")), "{text}");
-        assert!(QUEUE_SCHEMA_AGY > QUEUE_SCHEMA);
+        const { assert!(QUEUE_SCHEMA_AGY > QUEUE_SCHEMA) };
         let (back, notices, barred) = load_or_recover(&p);
         assert!(notices.is_empty() && !barred, "{notices:?}");
         assert_eq!(back, e);

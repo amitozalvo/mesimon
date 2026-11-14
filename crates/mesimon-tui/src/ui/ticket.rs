@@ -1777,11 +1777,10 @@ fn delivery_row(
 /// The reading rows' gutter: the pane's marks' two columns.
 pub(super) const GUTTER: &str = "  ";
 
-/// A row of a person's words as Claude Code draws them (the author,
-/// 2026-11-06: "use same theme like claude code does (the background color +
-/// >)"): the prompt mark in the gutter on the message's `first` row, the
-/// raised surface out to `total` cells. The ticket page's and the transcript
-/// dialog's (T-1152).
+/// A row of a person's words as Claude Code draws them (the author, 2026-11-06:
+/// "use same theme like claude code does (the background color + >)"): the
+/// prompt mark in the gutter on the message's `first` row, the raised surface
+/// out to `total` cells. The ticket page's and the transcript dialog's (T-1152).
 pub(super) fn persons_row(
     theme: &crate::theme::Theme,
     line: Line<'static>,
