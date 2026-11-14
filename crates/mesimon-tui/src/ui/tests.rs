@@ -14181,6 +14181,38 @@ fn a_click_and_the_wheel_walk_the_rail() {
     assert!(matches!(app.screen, Screen::Ticket { rail_idx: 0, .. }), "{:?}", app.screen);
 }
 
+/// The ask field open on the ticket page (T-1260): the wheel over the
+/// preview still scrolls it, the field keeps its text and stays open, and
+/// over the rail the wheel walks nothing.
+#[test]
+fn the_wheel_scrolls_the_preview_while_asking() {
+    use ratatui::crossterm::event::MouseEventKind;
+    let long: String = (1..=60).map(|i| format!("row {i:02} of the reply\n\n")).collect();
+    let path = write_transcript("wheel-while-asking", &reply_record(&long));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    ask_field(&mut app, "keep going", false);
+    let lines = render(&app, 120, 30);
+    assert_eq!(app.preview.view.get().offset, 0, "a fresh page starts at the top");
+    let at = spot_of(&lines, "row 01 of the reply");
+    mouse(&mut app, MouseEventKind::ScrollDown, at);
+    let lines = render(&app, 120, 30);
+    assert_eq!(app.preview.view.get().offset, 3, "one notch is three rows");
+    assert!(matches!(app.mode, Mode::Input { .. }), "the field stays open");
+    assert!(lines.iter().any(|l| l.contains("keep going")), "{}", lines.join("\n"));
+    mouse(&mut app, MouseEventKind::ScrollUp, at);
+    render(&app, 120, 30);
+    assert_eq!(app.preview.view.get().offset, 0);
+
+    let (x, y) = spot_of(&lines, "SESSIONS");
+    mouse(&mut app, MouseEventKind::ScrollDown, (x + 2, y + 3));
+    assert!(matches!(app.screen, Screen::Ticket { rail_idx: 0, .. }), "{:?}", app.screen);
+    assert!(matches!(app.mode, Mode::Input { .. }), "the field stays open");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// A diff's file list: a click opens the file in the pane.
 #[test]
 fn a_click_opens_a_diff_file() {

@@ -5798,6 +5798,21 @@ impl App {
                     Ok(())
                 })
             }
+            // A field typed on the page (the ask, a rename) owns the keys,
+            // not the eye (T-1260): the wheel still scrolls the preview. Over
+            // the rail it walks nothing, since its Up/Down would land in the
+            // field.
+            Screen::Ticket { .. }
+                if self.tag_armed.is_none() && matches!(self.mode, Mode::Input { .. }) =>
+            {
+                if matches!(target, Some(Target::Rail(_))) {
+                    return Ok(false);
+                }
+                self.person(|app| {
+                    app.preview.scroll(dir * WHEEL_ROWS);
+                    Ok(())
+                })
+            }
             Screen::Ticket { .. } if self.scope() != Scope::Ticket => Ok(false),
             Screen::Ticket { .. } if matches!(target, Some(Target::Rail(_))) => {
                 // The wheel moves the cursor as a key does, so the rest that

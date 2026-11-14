@@ -45668,3 +45668,18 @@ only.
 
 Test: `asynchooks::a_reported_shell_with_a_quote_in_its_command_is_not_hook_work` (the measured
 argv's shape; an unlisted shell stays hook work). Run: `cargo ut`, `--test agents async_hook_e2e::`.
+
+## The wheel scrolls the ticket page's preview while the ask field is open (T-1260, 2026-11-14, the author: "can't scroll transript with scrollwheel while ticket page input is active")
+
+**Cause.** Not a terminal limit: the wheel event arrived. `App::wheel` dropped every wheel on the
+ticket page whose scope was not `Scope::Ticket` (a guard from T-716), and an open field is
+`Scope::Input`.
+
+**Shipped.** On the ticket page with a `Mode::Input` field (the ask, a rename) and no tag picker
+armed, the wheel scrolls the preview three rows per notch, as it does with no field. The field keeps
+its text and stays open. Over the rail it walks nothing: the rail walks by pressing Up/Down, which
+would land in the field. **Not changed:** the note editor and every other mode on the page still
+drop the wheel.
+
+Test: `ui::tests::the_wheel_scrolls_the_preview_while_asking` (offset 0 → 3 → 0, field open; a
+wheel on the rail leaves `rail_idx`). Run: `cargo ut`. TUI-only, no e2e reaches it.
