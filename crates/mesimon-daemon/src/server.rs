@@ -1068,6 +1068,13 @@ pub struct Daemon {
     /// merge is judged where the merge found the ticket (`train_takes`).
     /// Memory only: it speaks for a look in flight across one merge.
     merged_out_of: HashMap<ulid::Ulid, (String, String)>,
+    /// Sessions whose running turn is the merged notice's (T-1247), set by
+    /// the ack of that paste (`Owed::notice`) and taken by the turn's end or
+    /// the next prompt. The board's own sentence moves no card: on DONE's
+    /// `on_working` (T-1239) the notice turn took every merged ticket to
+    /// IN PROGRESS and its end to REVIEW, and on a board without
+    /// `on_merged` it did the same from REVIEW. Memory only.
+    notice_turns: std::collections::HashSet<uuid::Uuid>,
     /// What the turn now running on a ticket was asked for (T-469), set by
     /// the ack of words that carried a reason (`Owed::asked`) and taken by
     /// that turn's end: the crown's ask comes back as an answer, a
@@ -2175,6 +2182,7 @@ impl Daemon {
             crown_written_for: None,
             crown_landed: Vec::new(),
             merged_out_of: HashMap::new(),
+            notice_turns: Default::default(),
             turn_asks: Default::default(),
             turns_open: Default::default(),
             failing: HashMap::new(),
@@ -2658,6 +2666,9 @@ struct Owed {
     /// its ack marks the turn that took them (`Daemon::turn_asks`). A
     /// merge step's; the crown's `ask_agent` rides `ask`.
     asked: Option<TurnAsk>,
+    /// These words are the merged notice (T-1247): their ack marks the turn
+    /// that took them as one no column rule moves (`Daemon::notice_turns`).
+    notice: bool,
     /// The crown's ask these words are (T-938): this entry's own ack, and
     /// no other prompt, hands it (`crownask`).
     ask: Option<ulid::Ulid>,
@@ -2801,6 +2812,7 @@ impl Owed {
             filled: false,
             ack,
             asked: None,
+            notice: false,
             ask: None,
             steer: None,
             screen_after: now,
@@ -7111,6 +7123,9 @@ impl Daemon {
         }) && crate::agents::pastes(self.session_kind(id));
         if !command {
             self.receipt_prompt(id, ahead.is_some() || ahead_of_launch);
+            // A prompt begins a turn of its own: only the notice's ack,
+            // below, marks it as the notice's (T-1247).
+            self.notice_turns.remove(&id);
         }
         if let Some(ask) = ahead {
             self.drop_owed(id);
@@ -7170,6 +7185,9 @@ impl Daemon {
             self.control_submitted(id);
             if let Some(ask) = owed.asked {
                 self.mark_turn(ticket, ask);
+            }
+            if owed.notice && !command {
+                self.notice_turns.insert(id);
             }
             // This entry's own ack hands the crown's ask it carries (T-938);
             // no other prompt does. The hook's own text, where it carries
@@ -8178,6 +8196,20 @@ impl Daemon {
         // never a column name compared here.
         let Some(col) = self.board.column(&t.column) else { return };
         let from = t.column.clone();
+        // The merged notice's turn (T-1247) is the board's own sentence and
+        // the agent's reply to it: the card stays where the merge put it.
+        // Its end takes the mark; a dialog or a park mid-turn keeps it.
+        if self.notice_turns.contains(&session) {
+            if matches!(
+                to,
+                SessionState::Idle { stop_reason: StopReason::EndTurn | StopReason::Interrupted }
+                    | SessionState::Failed { .. }
+            ) {
+                self.notice_turns.remove(&session);
+            }
+            self.feed.movement_decision(ticket, &from, None, "merged_notice_turn");
+            return;
+        }
         let decision = mesimon_core::automove::explain(&col.settings, to, confidence);
         let dest = decision.destination.map(str::to_string);
         self.feed.movement_decision(ticket, &from, dest.as_deref(), decision.outcome);
@@ -14863,6 +14895,12 @@ impl Daemon {
         // The turn that takes these words is a merge step: the crown is not
         // woken for it (T-469).
         self.tag_owed(id, TurnAsk::Merge);
+        // The merged notice's turn moves no card (T-1247), whoever sent it.
+        if matches!(request, mesimon_core::command::MergeRequest::MergedNotice) {
+            if let Some(o) = self.owed.values_mut().find(|o| o.ticket == id) {
+                o.notice = true;
+            }
+        }
         // A delivered rebase ask is remembered against the base tip, by hand
         // or by train: the train does not ask again until the base moves
         // (2026-09-04). With the forge's conflict on its PR, against that

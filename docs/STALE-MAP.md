@@ -45300,3 +45300,35 @@ ask) are still read by the fallback seam; no capture of agy's question dialog ex
 Test: `live::tests::agy_s_box_is_found_and_its_echoes_are_not` (agy 1.5.9's screens from
 T-1233's captures). `cargo ut`. No e2e reaches the change (a private reader of the TUI); no golden
 draws an agy pane.
+
+## The board's merged-notice turn moves no card (T-1247, 2026-11-14, the author chose this over reverting T-1239)
+
+**What was wrong.** T-1239 gave a fresh board's DONE `on_working: IN PROGRESS`, which T-1037 had
+refused on purpose: REVIEW's `on_merged` puts a merged ticket in DONE, the merged notice then
+starts a turn there, `on_working` took the card to IN PROGRESS and that turn's end to REVIEW.
+Four e2es caught it after the merge (`crown_e2e::the_merged_wake_waits_for_the_notice_turn`,
+`…a_hand_merge_of_a_crown_started_worker_tells_it_by_itself`,
+`…one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask`,
+`sleep_offer_e2e::z_sleeps_only_the_done_column`).
+
+**Refuted.** The ticket's "seen live" (T-1233 leaving DONE) was not T-1239: the author's board
+predates both seeds, its REVIEW has no `on_merged` and its DONE no `on_working`. The feed shows
+T-1233 merged at 16:19:03 and moved REVIEW → IN PROGRESS by REVIEW's own `on_working` on the
+notice turn. Same class, older cause, and a revert of T-1239 would not have touched it.
+
+**Shipped.** `Owed::notice`, set by `merge_to_agent` for `MergeRequest::MergedNotice` (the
+train's, the crown's and a person's `m` alike); its ack in `ack_owed` puts the session in
+`Daemon::notice_turns` (memory only), and any other prompt takes it out. `auto_move` moves
+nothing for a marked session (feed outcome `merged_notice_turn`); the turn's `EndTurn`,
+interrupt or failure takes the mark, a dialog or park mid-turn keeps it. A rebase ask still moves
+the card (the train needs its turn's end in REVIEW). T-1239 stands: a person's follow-up or a
+crown ask on a DONE ticket is a prompt of its own and still moves it to IN PROGRESS.
+
+**Tests.** The notice-turn assertions of the three crown e2es pass unchanged. By the same
+decision (T-1239 kept), `one_landing_…`'s plain turn after the merge now reads `column REVIEW`
+and step 4 finds the card already in REVIEW, so its hand move back is gone. `sleep_offer_e2e`
+drives its sessions idle with `SessionStart` + `Stop` and no `UserPromptSubmit`: a prompt on a
+DONE ticket now moves it, which is T-1239's rule, not Z's subject. Verified: `cargo ut`, the
+three crown e2es, `--test board sleep_offer_e2e:: column_e2e::`, `--test git merge_train_e2e::`.
+The change is in `daemon/src/server.rs` outside its tests: the full workspace suite runs once
+after the merge.

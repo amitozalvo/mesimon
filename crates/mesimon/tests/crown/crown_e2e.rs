@@ -3643,7 +3643,9 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     );
     // And one more turn after it, with nothing new and nothing pending: the
     // worker finished (T-591), and what to do with a merged worker is the
-    // crown's to decide.
+    // crown's to decide. A prompt of its own on a DONE ticket is work again
+    // (T-1239): it leaves DONE, and its end lands it in REVIEW; only the
+    // merged notice's turn left it where it was (T-1247).
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
         lines_with(&worker).len() == 4
@@ -3651,8 +3653,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     assert_eq!(
         lines_with(&worker)[3],
         format!(
-            "{worker} finished its turn (nothing new to merge) ∙ get_ticket key={kw} for state \
-             and notes"
+            "{worker} finished its turn (nothing new to merge, column REVIEW) ∙ get_ticket \
+             key={kw} for state and notes"
         )
     );
     let owed: Vec<_> = pending_of(&mut c, Some(a))
@@ -3663,19 +3665,15 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     h.one_turn(&mut c, sa);
 
     // ---- 4. new work is a new delivery; a person's rebase ask is a step ----
-    // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037). From
-    // here the board is one from before that setting, so 5 is the crown's
-    // own close: REVIEW keeps a merged ticket, and the person brings this
-    // one back for more work.
-    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+    // The merge closed the card in DONE (REVIEW's `on_merged`, T-1037), and
+    // the turn after it brought it back to REVIEW (DONE's `on_working`,
+    // T-1239). From here the board is one from before `on_merged`, so 5 is
+    // the crown's own close: REVIEW keeps a merged ticket.
+    assert_eq!(c.board().ticket(w).unwrap().column, "REVIEW");
     let mut review = c.board().column("REVIEW").unwrap().settings.clone();
     review.on_merged = None;
     assert!(matches!(
         c.request(Command::SetColumnSettings { name: "REVIEW".into(), settings: review }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::MoveTicket { id: w, column: "REVIEW".into(), before: None }),
         Response::Ok
     ));
     commit(&path, "more.txt");

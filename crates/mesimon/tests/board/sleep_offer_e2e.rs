@@ -96,7 +96,8 @@ fn z_sleeps_only_the_done_column() {
             "SessionStart",
             &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
         );
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
+        // No prompt: a turn begun on a DONE ticket takes it to IN PROGRESS
+        // (T-1239), and Z is about idle sessions where they sit.
         hook_send(
             &hook_sock,
             &sid.to_string(),
