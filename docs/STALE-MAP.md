@@ -45635,3 +45635,36 @@ left as it is.
 **Tests.** `a_draft_in_the_box_holds_shift_enter_and_the_title_does_not` now presses
 Shift+Enter: no field opens, `box_refused` is set, the cap draws off its settled column, then
 back. No golden changed: the settled frame is the same.
+
+## A background command with a quote in it is no hook child (T-1259, 2026-11-14, the author: "currently running shells prevent crown wakes even though the crown is idle")
+
+**Seen** on the simbly board's crown (Claude Code 2.1.325, classic mod road), off the feed, the
+transcript and the live process table. The crown started a deploy with `run_in_background` and
+ended its turn. The card read working and its row `crown wakes ∙ after its turn` while two wakes
+waited in `crown.json`.
+
+- The wake's gate was not the cause. `crown_wake_blocked` reads `quiet::takes_words`, which lets a
+  Claude at `Idle{Background}` take words (T-599). The seat never reached that state.
+- The feed: every `Stop` read `signal: TurnStarted, outcome: unchanged`, then `async_hook_wait`
+  `2 unaccounted child processes; delivery and park wait`. T-1044's hold kept the turn open for
+  its ten-minute cap, again at each later `Stop`, while the command ran.
+- Why the shell was unaccounted: `asynchooks::accounted` matches a `Stop`'s listed shell by
+  `argv.contains(command)`. Claude's Bash wrapper puts the command on argv inside `eval '…'`, so
+  each `'` in it is spelled `'"'"'` there. The command held `git log -1 --format='%h %s'`; the
+  plain match failed, the same argv with that spelling undone matched.
+
+**Shipped.** `accounted` also matches the argv with `'"'"'` read as `'`. A listed background
+command with a quote in it releases its `Stop` after the 1.5 s scan like any other, the seat lands
+`Idle{Background}`, and the crown's wake and a queued ask go in.
+
+**Refuted: skipping every Bash-wrapper shell** (argv with `shell-snapshots/snapshot-`). T-1140
+keeps a `!` command's shell as hook work on purpose: the hold is what keeps that card in IN
+PROGRESS. Only a shell the `Stop` lists is accounted, as before. **Not changed:** the wake gate,
+`quiet`, the cap. A shell `known` from before a daemon restart is not carried: the hold is memory
+only.
+
+**Not measured:** other spellings a wrapper might use for a quote (`'\''`), and the hook set's
+`Stop` on an older Claude Code; only the 2.1.325 argv above was read.
+
+Test: `asynchooks::a_reported_shell_with_a_quote_in_its_command_is_not_hook_work` (the measured
+argv's shape; an unlisted shell stays hook work). Run: `cargo ut`, `--test agents async_hook_e2e::`.

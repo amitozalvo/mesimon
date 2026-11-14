@@ -68,8 +68,12 @@ fn accounted(argv: &str, shells: &[String]) -> bool {
         return true;
     }
     // Stop carries each background shell's command. Claude's Bash wrapper
-    // keeps that command on argv, unlike the command-hook runner.
-    shells.iter().any(|s| !s.is_empty() && argv.contains(s))
+    // keeps that command on argv, unlike the command-hook runner: inside
+    // `eval '…'`, so each `'` of the command is spelled `'"'"'` there
+    // (2.1.325, T-1259). Read past that spelling, or a command with a quote
+    // in it is hook work for the ten-minute cap.
+    let unquoted = argv.replace(r#"'"'"'"#, "'");
+    shells.iter().any(|s| !s.is_empty() && (argv.contains(s) || unquoted.contains(s)))
 }
 
 impl Daemon {
@@ -561,6 +565,23 @@ mod tests {
         for argv in ["python3 /plugin/review.py", "/bin/sh -c review", "sleep 30"] {
             assert!(!accounted(argv, &["sleep 600".into()]), "{argv}");
         }
+    }
+
+    /// T-1259: the argv Claude Code 2.1.325 gave a crown's background
+    /// command, whose `--format='%h %s'` kept its `Stop` held for the cap
+    /// and the crown's wakes behind it.
+    #[test]
+    fn a_reported_shell_with_a_quote_in_its_command_is_not_hook_work() {
+        let command = "git log -1 --format='%h %s' && ~/deploy.sh > /tmp/deploy.log 2>&1";
+        let argv = concat!(
+            "/bin/zsh -c source /home/me/.claude/shell-snapshots/snapshot-zsh-1-a.sh ",
+            "2>/dev/null || true && eval 'git log -1 --format='\"'\"'%h %s'\"'\"' && ",
+            "~/deploy.sh > /tmp/deploy.log 2>&1' < /dev/null && pwd -P >| /tmp/claude-b9c2-cwd",
+        );
+        assert!(accounted(argv, &[command.into()]));
+        // A shell the Stop did not list stays hook work (a `!` command's, T-1140).
+        assert!(!accounted(argv, &["git log -1 --format='%h'".into()]));
+        assert!(!accounted(argv, &[]));
     }
 
     #[test]
