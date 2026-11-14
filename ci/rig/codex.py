@@ -96,7 +96,7 @@ def module(name, filename):
 
 
 def add_arguments(parser):
-    parser.add_argument("--live", action="store_true", help="authorize Codex model calls")
+    parser.add_argument("--live", action="store_true", help="authorize model calls (Codex, agy)")
     parser.add_argument("--binary", type=Path,
                         help="evaluate this prebuilt Mesimon binary without rebuilding (Codex only)")
     parser.add_argument("--model", help="Codex model, checked against authenticated model/list")

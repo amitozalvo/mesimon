@@ -1,6 +1,7 @@
 //! T-1225: an agy session through the real daemon, with a stand-in for agy
-//! that runs the hooks and the title command the launch registered. What
-//! agy itself does with them was measured on 1.5.8 (STALE-MAP, T-1225).
+//! that runs the hooks and the title command the launch registered, and
+//! (T-1232) dials the board's server as agy does. What agy itself does with
+//! them was measured on 1.5.8 and 1.5.9 (STALE-MAP, T-1225 and T-1232).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common::*;
@@ -55,6 +56,18 @@ impl Bed {
         std::fs::write(dir.join(word), "").unwrap();
     }
 
+    /// What the hooks printed, one `(event, stdout)` per handler that did.
+    fn printed(&self) -> Vec<(String, String)> {
+        std::fs::read_to_string(self.owner.dir.join("agy-stdout.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let v: serde_json::Value = serde_json::from_str(line).unwrap();
+                (v["event"].as_str().unwrap().into(), v["stdout"].as_str().unwrap().into())
+            })
+            .collect()
+    }
+
     /// Every argv the stand-in was started with, in order.
     fn launches(&self) -> Vec<Vec<String>> {
         std::fs::read_to_string(self.owner.dir.join("agy-argv.jsonl"))
@@ -102,6 +115,9 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
         Response::Ok
     ));
     assert_eq!(c.board().agent_provider, AgentProvider::Agy);
+    // The board's tools and the brief, both on (T-1232).
+    assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
     let t = ticket(&mut c, "Teach the parser a new word");
 
     // A start that carries words is refused before any pane: the board has
@@ -127,6 +143,32 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
     assert!(settings.starts_with(&bed.paths.state_dir), "{settings:?}");
     assert!(pair(&launched[0], "--conversation").is_empty(), "{launched:?}");
     assert!(!launched[0].iter().any(|a| a.contains("dangerously")), "{launched:?}");
+
+    // The board's server beside the hooks, on this board's socket and this
+    // session, and one allow rule for its tools (T-1232).
+    let read = |path: &Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    let config = read(&folder.join(".agents/mcp_config.json"));
+    let args: Vec<String> = config["mcpServers"]["mesimon"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(pair(&args, "--sock"), [bed.paths.orch_sock().to_str().unwrap()]);
+    assert_eq!(pair(&args, "--session"), [id.to_string().as_str()]);
+    assert_eq!(read(&settings)["permissions"]["allow"], serde_json::json!(["mcp(mesimon/*)"]));
+    // The shim answered as agy dials it: `server/discover` refused at once,
+    // then the older handshake and the board's tools.
+    wait_until(Duration::from_secs(10), "the stand-in's server probe", || {
+        bed.owner.dir.join("agy-mcp.json").exists()
+    });
+    let mcp = read(&bed.owner.dir.join("agy-mcp.json"));
+    assert_eq!(mcp["server/discover"]["error"]["code"], -32601, "{mcp}");
+    assert_eq!(mcp["initialize"]["result"]["protocolVersion"], "2025-11-25", "{mcp}");
+    let tools = mcp["tools/list"]["result"]["tools"].as_array().expect("tools/list");
+    assert!(tools.iter().any(|t| t["name"] == "get_ticket"), "{mcp}");
 
     // The first model call is the prompt taken, and names the conversation.
     bed.cue("prompt");
@@ -160,9 +202,18 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
     assert_eq!(pair(woke, "--add-dir"), [folder.to_str().unwrap()]);
     c.await_state(id, "agy back at its prompt", |s| matches!(s, SessionState::Idle { .. }));
 
-    // No hook and no title report printed a byte: an empty object on a tool
-    // hook is agy's refusal of the call.
-    assert!(!bed.owner.dir.join("agy-stdout.log").exists(), "a reporter wrote to stdout");
+    // One handler printed, once: the brief's, on the one `SessionStart` (a
+    // wake has none), as agy's system message. No reporter printed a byte:
+    // an empty object on a tool hook is agy's refusal of the call.
+    let printed = bed.printed();
+    assert_eq!(printed.len(), 1, "{printed:?}");
+    assert_eq!(printed[0].0, "SessionStart");
+    let answer: serde_json::Value = serde_json::from_str(printed[0].1.trim()).unwrap();
+    assert_eq!(
+        answer["injectSteps"][0]["systemMessage"]["systemMessage"],
+        mesimon_core::brief::TEXT,
+        "{answer}"
+    );
     // Nothing of mesimon's is in the checkout or in agy's own folder.
     assert!(!Path::new(&bed.repo).join(".agents").exists());
     assert!(!bed.owner.dir.join("agy-home").exists());

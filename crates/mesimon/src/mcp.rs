@@ -133,7 +133,8 @@ fn handle_line(
         // injection surfaces: `skills/list` (registers SKILL.md bodies into
         // the system prompt and is invisible in tools/list), `server/discover`
         // (a 2026-07-28 probe mesimon does not implement, so refusing is
-        // conformant), and `resources/list` + `prompts/list`, which mesimon
+        // conformant; agy 1.5.9 sends it before `initialize` and takes this
+        // error as its cue for the 2025-11-25 handshake, T-1232), and `resources/list` + `prompts/list`, which mesimon
         // declares no capability for.
         _ => Some(err(id, mcp::METHOD_NOT_FOUND, &format!("method not found: {method}"))),
     }

@@ -34,7 +34,13 @@ fn main() -> Result<()> {
         // Separate opt-in context handler: the observer remains silent and
         // the write gate remains deny-only. Native Codex owns hook trust.
         Some("agent-brief") => {
-            if std::env::var("MESIMON_AGENT_BRIEF").as_deref() == Ok("1") {
+            // agy's hook is written per launch, and only with the brief on
+            // (T-1232): the word on argv is the switch and the shape.
+            if arg_value(&args, "--provider").as_deref()
+                == Some(mesimon_daemon::agents::agy::BRIEF_PROVIDER)
+            {
+                println!("{}", mesimon_daemon::agents::agy::brief_answer());
+            } else if std::env::var("MESIMON_AGENT_BRIEF").as_deref() == Ok("1") {
                 println!(
                     "{}",
                     serde_json::json!({"hookSpecificOutput": {

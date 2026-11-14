@@ -253,6 +253,31 @@ run on a newer CLI.
 
 Offline runner tests: `python3 -B ci/codex_rig_test.py`.
 
+## agy rig (T-1232)
+
+```sh
+python3 -B ci/rig.py --provider agy           # up to the seat at its prompt; no model call
+python3 -B ci/rig.py --provider agy --live    # the brief case on agy's own default model
+python3 -B -m unittest ci/rig_agy_test.py     # the verdict, offline
+```
+
+Behind `MESIMON_AGY=1`, which the rig sets for its daemon. One disposable board
+per case under `ci/test-run.py`; agy keeps the person's own home and sign-in, so
+a live case leaves one conversation in agy's list. The trust list mesimon reads
+as the person's is the fixture's (`MESIMON_AGY_HOME`), so agy asks no trust
+question and nothing is added to the person's list. No tier is set: the built-in
+agy tier passes no `--model`, so agy's own default is the model under test, and
+the verdict names the one the transcript records.
+
+Without `--live` the case checks that agy lists mesimon's tools: agy starts an
+MCP server only at the first prompt or when `/mcp` lists them, and `/mcp` calls
+no model. Case `brief` (`--live`): the ticket's description holds a nonce and
+the typed prompt is the title alone. It passes when the brief is a step of the
+conversation, the first tool call past reading agy's schema files is
+`call_mcp_tool` for mesimon's `get_ticket`, no board tool asked the person, and
+the reply carries the nonce. It types the title into the pane itself: the
+board's own road into agy's prompt box is T-1233's.
+
 ## Judging crown text (T-930)
 
 A change to what the crown is told is judged by what a crown on its real tier

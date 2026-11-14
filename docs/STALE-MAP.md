@@ -44926,3 +44926,55 @@ the gap). Checks: `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes` asks f
 - **Checks.** `cargo ut`;
   `the_bar_holds_its_count_centred_and_is_never_empty_or_full_when_it_is_not` (the centring, the
   ink per ground, the mono fallback); the three table goldens reminted.
+
+## agy gets the brief and the board's tools, behind `MESIMON_AGY=1` (T-1232, 2026-11-14, ticket 2 of T-1225's plan)
+
+**What changed.**
+- A launch whose column gives the board's tools writes `.agents/mcp_config.json` beside
+  `hooks.json` in the session folder, rendered by `hook_settings::mcp_config_json` (the same
+  shim, `--sock`, `--session`, `--tools`), and puts `permissions.allow: ["mcp(mesimon/*)"]` in
+  the session settings file. A launch into a column with tools `off` removes the file and the
+  rule: every wake rewrites both from the column as it stands.
+- With the brief on as well, `SessionStart` gets a second handler after the observer:
+  `mesimon agent-brief --provider agy`, which prints `{"injectSteps":[{"systemMessage":
+  {"systemMessage": brief::TEXT}}]}` (`agy::brief_answer`). The word on argv is the switch: agy's
+  hooks file is per launch, so no environment gate is needed (Codex's `MESIMON_AGENT_BRIEF`
+  stays for Codex's stable hook text). The brief rides with the tools, as Codex's does.
+- The shim already refused `server/discover` with `-32601`; it now says agy is why.
+- `ci/rig.py --provider agy` (`ci/rig/agy.py`, offline verdict test `ci/rig_agy_test.py`): one
+  disposable board per case. Without `--live` it checks real agy lists mesimon's tools.
+
+**Measured on agy 1.5.9, this machine.**
+- **agy starts an MCP server lazily**: not at launch, but at the first prompt or when `/mcp` lists
+  servers (no model call). A stub server saw `server/discover` (`protocolVersion` 2026-07-28 in
+  `_meta`), then `initialize` 2025-11-25, `notifications/initialized`, `tools/list`. `"type":
+  "stdio"` is accepted. agy then writes each tool's schema to `~/.gemini/antigravity-cli/mcp/
+  mesimon/<tool>.json` (its home, its doing).
+- `--settings`' `permissions.allow` parses (agy's log: `permissions=&{Allow:[mcp(mesimon/*)]}`).
+  In the live run agy's mode was its default `auto` and no confirmation came; whether the rule
+  or the mode stopped the prompt is not separated.
+- The brief arrives: the transcript's step 1 is `SYSTEM_MESSAGE` with the text, right after the
+  user's input. Two handlers on one `SessionStart` (one silent, one printing) work.
+- agy's transcript is `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/
+  transcript_full.jsonl`: rows with `type`, `model`, `tool_calls` (a list of `{name, args}`),
+  `content`. The rig reads it; the daemon does not yet (T-1236's reader).
+- `trustedWorkspaces` passed in `--settings` stops the trust dialog for a shared checkout: the
+  rig names its fixture through `MESIMON_AGY_HOME` and agy never asked.
+
+**Live run (one, `--live`, 24.6 s).** Gemini 3.8 Flash (High), agy's default, which the built-in
+tier gets because it passes no `--model`. The typed prompt was the title alone; the model read
+`mcp/mesimon/get_ticket.json`, then called `call_mcp_tool {ServerName: mesimon, ToolName:
+get_ticket, Arguments: {full: true}}` as its first work call, and replied with the nonce from
+the ticket's description. Passed on the first run; no rerun.
+
+**Refuted.**
+- "The rig accepts the trust dialog": its default is "Yes" and accepting writes the fixture's
+  temporary path into the person's own agy trust list.
+- "Check the server under agy's process tree at seat-up": nothing runs until the first prompt.
+
+**Checks.** `cargo ut` (72 + 17 + 763 + 859 + 24 + 1,457 passed, 0 failed); `agy_e2e::` (2
+passed; the stand-in now dials the shim from `mcp_config.json` as agy does and logs each
+printing handler: one `SessionStart`, the brief); `mcp_e2e::` (4) and `brief_offer_e2e::` (2) in
+`tools`; `ci/rig_agy_test.py` (5); the agy rig without `--live` and once with it. No full
+workspace suite owed: no `command.rs`, `mcp.rs` (core), `authorize.rs`, schema, `server.rs` or
+harness change.

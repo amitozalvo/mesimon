@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Real-agent verification: Claude crown/worker tests on the mod road, or
-bounded native Codex cases with --provider codex (ci/rig/README.md).
+"""Real-agent verification: Claude crown/worker tests on the mod road,
+bounded native Codex cases with --provider codex, or agy's with --provider agy
+(ci/rig/README.md).
 
     python3 -B ci/rig.py            build, start or find the rig's daemon, lay
                                     the board, file the tests, run them all
@@ -5210,7 +5211,7 @@ Reply with the single word ready and end your turn."""
 def main():
     global LOG
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--provider", choices=("claude", "codex"), default="claude")
+    ap.add_argument("--provider", choices=("claude", "codex", "agy"), default="claude")
     from codex import add_arguments, run as run_codex
     add_arguments(ap)
     ap.add_argument("--lay", action="store_true", help="lay the Claude board or list Codex cases; start nothing")
@@ -5242,6 +5243,10 @@ def main():
     # neither of which the Codex adapter uses.
     if args.provider == "codex":
         sys.exit(run_codex(repo, args, ap))
+    # agy (T-1232) owns a disposable board per case too.
+    if args.provider == "agy":
+        from agy import run as run_agy
+        sys.exit(run_agy(repo, args, ap))
     if branch == "main" or not branch.startswith("msmn/"):
         die(f"the Claude rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
     if args.live or args.suite != "smoke" or any(value is not None for value in
