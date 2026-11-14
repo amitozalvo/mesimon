@@ -44911,3 +44911,18 @@ the gap). Checks: `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes` asks f
   goldens reminted (the wider slot). `the_crown_s_bolt_runs_from_the_header_to_its_row` failed
   once in a `cargo ut` run, passed three times alone and in a rerun of the TUI suite: a rerun,
   left (the ticket page's strike, which this change does not touch).
+
+## The table's count sits inside its progress bar (T-1240 follow-up, 2026-11-14, the author: "as part of the n/N, not before it. just make sure the text is readable. it should be centered on the progressbar")
+
+- **What changed.** The `▄` bar before the count is gone. The summary slot is nine cells of
+  ground: the ticked share on the calm ink, the rest on the track's `dim3` (the summary
+  underline's two inks, as before), with `n/N` centred across both. Each of the count's cells
+  takes the ink of its own ground: `tag_ink` (the page's ground colour, as a tag chip writes on
+  its tint) on the calm share, the row's base ink on the track. With no underline colour the
+  count stands alone, right-aligned. The slot is five cells narrower than the bar-and-count it
+  replaces; the title has them back.
+- **Refuted for the bar: a glyph.** `▄` came out of the drawn-structure allowlist; the bar is a
+  ground. The law's table sweep now asserts the count on screen.
+- **Checks.** `cargo ut`;
+  `the_bar_holds_its_count_centred_and_is_never_empty_or_full_when_it_is_not` (the centring, the
+  ink per ground, the mono fallback); the three table goldens reminted.

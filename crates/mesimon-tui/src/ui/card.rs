@@ -46,10 +46,8 @@ pub(super) struct CardCtx<'a> {
 const ROW_TAGS: usize = 18;
 /// The tier the ticket runs on: `research-codex` is fourteen cells.
 const ROW_TIER: usize = 14;
-/// Its summary's count, `12/12`.
-const ROW_BOXES: usize = 5;
-/// The summary's progress bar before the count, in cells.
-const ROW_BAR: usize = 8;
+/// The summary's progress bar, its count inside: `12/12` and a margin.
+const ROW_BAR: usize = 9;
 /// The worktree mark's slot, kept on every row so the fields line up.
 const ROW_WT: usize = 3;
 /// A row this narrow keeps its tier and its count, not its tags.
@@ -100,32 +98,34 @@ fn row_fields(
     let tier = truncate(tier.unwrap_or(""), ROW_TIER);
     spans.push(Span::styled(format!("{tier:<w$} ", w = ROW_TIER), quiet));
     let count = summary.map(|s| s.count).filter(|c| c.total > 0);
-    spans.extend(summary_bar(theme, count, cursorish));
-    let boxes = count.map(|c| format!("{}/{}", c.done, c.total)).unwrap_or_default();
-    spans.push(Span::styled(format!("{:>w$}", truncate(&boxes, ROW_BOXES), w = ROW_BOXES), quiet));
+    spans.extend(summary_bar(theme, count, cursorish, quiet));
     spans
 }
 
-/// A table row's summary as a progress bar (T-1240, the author: "the
-/// checklist on table should render as progressbar on the n/N"): `ROW_BAR`
-/// half-height cells, the ticked share in the summary underline's calm ink
-/// and the rest in its track's, and a cell before the count. A ticked box
+/// A table row's summary as a progress bar with its `n/N` in it (T-1240,
+/// the author: "as part of the n/N, not before it … centered on the
+/// progressbar"): `ROW_BAR` cells, the ticked share on the summary
+/// underline's calm ground and the rest on its track's, the count centred
+/// across both. Each of the count's cells takes the ink that reads on its
+/// own ground: the page's ground colour on the calm share, as a tag chip
+/// writes on its tint, and the row's plain ink on the track. A ticked box
 /// is at least one cell and an open one keeps the last, so the bar never
-/// reads empty or full when it is not. Blank cells with no summary, and on
-/// a profile with no colours to tell the share from the track, where the
-/// count says it alone.
+/// reads empty or full when it is not. On a profile whose underline has no
+/// colour the count stands alone, right-aligned in the slot; blank with no
+/// summary.
 fn summary_bar(
     theme: &Theme,
     count: Option<mesimon_core::summary::Count>,
     cursorish: bool,
+    quiet: Style,
 ) -> Vec<Span<'static>> {
-    let blank = || vec![Span::raw(" ".repeat(ROW_BAR + 1))];
-    let Some(c) = count else { return blank() };
+    let Some(c) = count else { return vec![Span::raw(" ".repeat(ROW_BAR))] };
+    let words = truncate(&format!("{}/{}", c.done, c.total), ROW_BAR);
     if !matches!(
         theme.summary_under(cursorish, true),
         Some(s) if s.underline_color.is_some()
     ) {
-        return blank();
+        return vec![Span::styled(format!("{words:>w$}", w = ROW_BAR), quiet)];
     }
     let mut done = (c.done * ROW_BAR + c.total / 2) / c.total;
     if c.done > 0 {
@@ -134,17 +134,22 @@ fn summary_bar(
     if c.done < c.total {
         done = done.min(ROW_BAR - 1);
     }
-    let track = if cursorish { theme.sel.dim3 } else { theme.rest.dim3 };
-    vec![
-        Span::styled(BAR_CELL.repeat(done), Style::default().fg(theme.calm)),
-        Span::styled(BAR_CELL.repeat(ROW_BAR - done), Style::default().fg(track)),
-        Span::raw(" "),
-    ]
+    let ramp = if cursorish { &theme.sel } else { &theme.rest };
+    let on_done = Style::default().bg(theme.calm).fg(theme.tag_ink());
+    let on_track = Style::default().bg(ramp.dim3).fg(ramp.base);
+    let left = (ROW_BAR - words.width()) / 2;
+    let cells: Vec<char> = format!("{}{words:<w$}", " ".repeat(left), w = ROW_BAR - left)
+        .chars()
+        .collect();
+    // One span per run of cells on the same ground.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (ground, range) in [(on_done, 0..done), (on_track, done..ROW_BAR)] {
+        if !range.is_empty() {
+            spans.push(Span::styled(cells[range].iter().collect::<String>(), ground));
+        }
+    }
+    spans
 }
-
-/// The progress bar's cell: a lower half block, so the bar sits on the
-/// text's line rather than filling it.
-const BAR_CELL: &str = "▄";
 
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -1763,20 +1768,30 @@ mod row_tests {
     use super::*;
 
     #[test]
-    fn the_bar_is_never_empty_or_full_when_it_is_not() {
+    fn the_bar_holds_its_count_centred_and_is_never_empty_or_full_when_it_is_not() {
         use mesimon_core::summary::Count;
         let theme = Theme::new(crate::theme::Flavor::Graphite, crate::theme::Profile::TrueColor);
+        let bar = |done, total| summary_bar(&theme, Some(Count { done, total }), false, theme.dim2());
+        let text = |spans: &[Span<'static>]| spans.iter().map(|s| s.content.to_string()).collect::<String>();
         let filled = |done, total| {
-            let spans = summary_bar(&theme, Some(Count { done, total }), false);
-            spans[0].content.chars().count()
+            let spans = bar(done, total);
+            let calm = spans.iter().filter(|s| s.style.bg == Some(theme.calm));
+            calm.map(|s| s.content.chars().count()).sum::<usize>()
         };
         assert_eq!(filled(0, 5), 0);
         assert_eq!(filled(1, 40), 1, "a ticked box shows");
         assert_eq!(filled(39, 40), ROW_BAR - 1, "an open box keeps a cell");
-        assert_eq!(filled(2, 5), 3);
         assert_eq!(filled(5, 5), ROW_BAR);
-        let blank = summary_bar(&theme, None, false);
-        assert_eq!(blank.len(), 1);
-        assert_eq!(blank[0].content.width(), ROW_BAR + 1, "the slot keeps its width");
+        assert_eq!(text(&bar(2, 5)), "   2/5   ", "centred");
+        assert_eq!(text(&bar(12, 12)), "  12/12  ");
+        for s in bar(2, 5) {
+            let ink = if s.style.bg == Some(theme.calm) { theme.tag_ink() } else { theme.rest.base };
+            assert_eq!(s.style.fg, Some(ink), "each ground its own ink: {s:?}");
+        }
+        let blank = summary_bar(&theme, None, false, theme.dim2());
+        assert_eq!(text(&blank).width(), ROW_BAR, "the slot keeps its width");
+        let mono = Theme::new(crate::theme::Flavor::Graphite, crate::theme::Profile::Mono);
+        let alone = summary_bar(&mono, Some(Count { done: 2, total: 5 }), false, mono.dim2());
+        assert_eq!(text(&alone), "      2/5", "no colours: the count alone");
     }
 }
