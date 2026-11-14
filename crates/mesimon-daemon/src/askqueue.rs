@@ -29,6 +29,9 @@ use crate::paths::Paths;
 /// start the restored session in the column's mode — auto, where the person
 /// queued a read-only planning turn — which is a widening.
 pub const QUEUE_SCHEMA: u32 = 2;
+/// The stamp of a queue holding an agy start, and the newest this build
+/// reads: `store::COLUMNS_SCHEMA_AGY`'s reason, for this file.
+pub const QUEUE_SCHEMA_AGY: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueFile {
@@ -73,7 +76,7 @@ pub fn queue_file(paths: &Paths) -> PathBuf {
 pub fn load_or_recover(paths: &Paths) -> (Vec<QueuedEntry>, Vec<Notice>, bool) {
     let (file, notices, barred) = crate::store::load_versioned::<QueueFile>(
         &queue_file(paths),
-        QUEUE_SCHEMA,
+        QUEUE_SCHEMA_AGY,
         "queued asks",
         "",
     );
@@ -89,7 +92,11 @@ pub fn save(paths: &Paths, entries: &[QueuedEntry]) -> Result<()> {
         }
         return Ok(());
     }
-    let qf = QueueFile { schema_version: QUEUE_SCHEMA, entries: entries.to_vec() };
+    let names_agy = entries.iter().any(|e| {
+        matches!(e.seat, PersistedSeat::Start { provider } if crate::store::provider_is_agy(provider))
+    });
+    let schema_version = if names_agy { QUEUE_SCHEMA_AGY } else { QUEUE_SCHEMA };
+    let qf = QueueFile { schema_version, entries: entries.to_vec() };
     crate::store::write_atomic(&f, &serde_json::to_string_pretty(&qf)?, crate::store::PRIVATE)
 }
 
@@ -167,10 +174,25 @@ mod tests {
         assert!(!queue_file(&p).exists(), "an empty queue leaves no file behind");
     }
 
+    /// T-1225: a queued agy start is stamped past the build before agy.
+    #[test]
+    fn an_agy_start_is_stamped_past_the_build_before_it() {
+        let (_d, p) = paths();
+        let mut e = entries();
+        e[0].seat = PersistedSeat::Start { provider: AgentProvider::Agy };
+        save(&p, &e).unwrap();
+        let text = std::fs::read_to_string(queue_file(&p)).unwrap();
+        assert!(text.contains(&format!("\"schema_version\": {QUEUE_SCHEMA_AGY}")), "{text}");
+        assert!(QUEUE_SCHEMA_AGY > QUEUE_SCHEMA);
+        let (back, notices, barred) = load_or_recover(&p);
+        assert!(notices.is_empty() && !barred, "{notices:?}");
+        assert_eq!(back, e);
+    }
+
     #[test]
     fn a_newer_schema_is_left_untouched_and_bars_writes() {
         let (_d, p) = paths();
-        let text = format!("{{\"schema_version\": {}, \"entries\": []}}", QUEUE_SCHEMA + 1);
+        let text = format!("{{\"schema_version\": {}, \"entries\": []}}", QUEUE_SCHEMA_AGY + 1);
         std::fs::write(queue_file(&p), &text).unwrap();
         let (back, notices, barred) = load_or_recover(&p);
         assert!(back.is_empty());

@@ -10,7 +10,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use mesimon_core::board::{
-    AgentProvider, Board, Column, CrownMode, MergeInto, SessionRecord, Ticket, KEY_PREFIX,
+    AgentProvider, Board, Column, CrownMode, MergeInto, SessionKind, SessionRecord, Ticket,
+    KEY_PREFIX,
 };
 use mesimon_core::command::Notice;
 use mesimon_core::prompts::PromptSet;
@@ -102,6 +103,42 @@ pub const MACHINE_TIERS_SCHEMA: u32 = 1;
 /// Older readers must refuse before decoding an unfamiliar session kind,
 /// rather than quarantine the file and forget ownership of its live panes.
 pub const SESSIONS_SCHEMA: u32 = 2;
+
+/// The stamp of a file that names agy (T-1225), and the newest this build
+/// reads; a file that does not name it keeps the counter above. `agy` is a
+/// provider word and a session kind no earlier build decodes, and a file a
+/// build cannot decode it sets aside: on 2026-11-14 a daemon one build old
+/// quarantined the machine's `tiers.toml` over one agy tier, and every board
+/// read no tiers. A file stamped past an older build's counter is refused
+/// there and left where it is, and a board that never names agy costs an
+/// older build nothing. A counter's next bump goes past its number here and
+/// retires it.
+pub const COLUMNS_SCHEMA_AGY: u32 = 10;
+/// [`COLUMNS_SCHEMA_AGY`], for `tiers.toml`.
+pub const MACHINE_TIERS_SCHEMA_AGY: u32 = 2;
+/// [`COLUMNS_SCHEMA_AGY`], for `sessions.json`.
+pub const SESSIONS_SCHEMA_AGY: u32 = 3;
+
+/// Whether an earlier build decodes this provider's word. Exhaustive: a
+/// provider added later is answered here before it compiles.
+pub(crate) fn provider_is_agy(provider: AgentProvider) -> bool {
+    match provider {
+        AgentProvider::ClaudeCode | AgentProvider::Codex => false,
+        AgentProvider::Agy => true,
+    }
+}
+
+/// [`provider_is_agy`], for a session's kind.
+fn kind_is_agy(kind: SessionKind) -> bool {
+    match kind {
+        SessionKind::Claude | SessionKind::Codex | SessionKind::Bash => false,
+        SessionKind::Agy => true,
+    }
+}
+
+fn tiers_name_agy(tiers: &[mesimon_core::tier::Tier]) -> bool {
+    tiers.iter().any(|t| provider_is_agy(t.provider))
+}
 
 fn schema_v1() -> u32 {
     1
@@ -646,9 +683,9 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
             Err(e) => Some(e.to_string()),
             Ok(v) => {
                 let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
-                match verdict(found as u32, COLUMNS_SCHEMA) {
+                match verdict(found as u32, COLUMNS_SCHEMA_AGY) {
                     Verdict::Newer(n) => {
-                        notices.push(future_notice(cols_path, n, COLUMNS_SCHEMA));
+                        notices.push(future_notice(cols_path, n, COLUMNS_SCHEMA_AGY));
                         return (defaults(), true, true, false);
                     }
                     Verdict::Load => match v.try_into::<ColumnsFile>() {
@@ -777,9 +814,9 @@ fn load_sessions(sf: &Path, notices: &mut Vec<Notice>) -> (Vec<SessionRecord>, b
                 }
             } else {
                 let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
-                match verdict(found, SESSIONS_SCHEMA) {
+                match verdict(found, SESSIONS_SCHEMA_AGY) {
                     Verdict::Newer(n) => {
-                        notices.push(future_notice(sf, n, SESSIONS_SCHEMA));
+                        notices.push(future_notice(sf, n, SESSIONS_SCHEMA_AGY));
                         return (Vec::new(), true);
                     }
                     Verdict::Load => match serde_json::from_value::<SessionsFile>(v) {
@@ -999,8 +1036,9 @@ pub fn save_columns_if_changed(paths: &Paths, board: &Board, written: &mut Strin
 
 /// `columns.toml` as `save_columns` would write it.
 fn columns_text(board: &Board) -> Result<String> {
+    let names_agy = provider_is_agy(board.agent_provider) || tiers_name_agy(&board.tiers);
     let cf = ColumnsFile {
-        schema_version: COLUMNS_SCHEMA,
+        schema_version: if names_agy { COLUMNS_SCHEMA_AGY } else { COLUMNS_SCHEMA },
         next_key: board.next_key,
         agent_provider: board.agent_provider,
         crown_budget: board.crown_budget,
@@ -1051,7 +1089,14 @@ pub const LINKS_SCHEMA: u32 = 1;
 pub trait MachineFile:
     Serialize + serde::de::DeserializeOwned + Default + Clone + PartialEq
 {
+    /// The file's stamp.
     const SCHEMA: u32;
+    /// The newest stamp this build reads.
+    const NEWEST: u32 = Self::SCHEMA;
+    /// The stamp this content is written with.
+    fn stamp(&self) -> u32 {
+        Self::SCHEMA
+    }
     /// The file's name, for a refusal.
     const FILE: &'static str;
     /// What the file holds, for the refusal when there is no state root.
@@ -1060,6 +1105,14 @@ pub trait MachineFile:
 
 impl MachineFile for MachineTiers {
     const SCHEMA: u32 = MACHINE_TIERS_SCHEMA;
+    const NEWEST: u32 = MACHINE_TIERS_SCHEMA_AGY;
+    fn stamp(&self) -> u32 {
+        if tiers_name_agy(&self.tiers) {
+            MACHINE_TIERS_SCHEMA_AGY
+        } else {
+            MACHINE_TIERS_SCHEMA
+        }
+    }
     const FILE: &'static str = "tiers.toml";
     const WHAT: &'static str = "the machine's tiers";
 }
@@ -1099,10 +1152,10 @@ pub fn load_machine_file<T: MachineFile>(path: &Path) -> MachineLoad<T> {
         Err(e) => e.to_string(),
         Ok(v) => {
             let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
-            match verdict(found as u32, T::SCHEMA) {
+            match verdict(found as u32, T::NEWEST) {
                 Verdict::Newer(n) => {
                     return MachineLoad {
-                        notice: Some(future_notice(path, n, T::SCHEMA)),
+                        notice: Some(future_notice(path, n, T::NEWEST)),
                         barred: true,
                         ..Default::default()
                     };
@@ -1135,7 +1188,7 @@ pub fn save_machine_file<T: MachineFile>(path: &Path, body: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let f = Stamped { schema_version: T::SCHEMA, body: body.clone() };
+    let f = Stamped { schema_version: body.stamp(), body: body.clone() };
     write_atomic(path, &toml::to_string_pretty(&f)?, PRIVATE)
 }
 
@@ -1231,7 +1284,9 @@ fn sessions_text(board: &Board) -> Result<String> {
         schema_version: u32,
         sessions: &'a [SessionRecord],
     }
-    let sf = Borrowed { schema_version: SESSIONS_SCHEMA, sessions: &board.sessions };
+    let names_agy = board.sessions.iter().any(|s| kind_is_agy(s.kind));
+    let schema_version = if names_agy { SESSIONS_SCHEMA_AGY } else { SESSIONS_SCHEMA };
+    let sf = Borrowed { schema_version, sessions: &board.sessions };
     Ok(serde_json::to_string_pretty(&sf)?)
 }
 
@@ -1920,17 +1975,88 @@ mod tests {
         cleanup(&dir, &paths);
     }
 
+    /// T-1225: a file that names agy is stamped past the build before agy,
+    /// which then refuses it and leaves it where it is. That build set the
+    /// machine's `tiers.toml` aside over one agy tier (2026-11-14). A file
+    /// that names no agy keeps the stamp that build reads.
+    #[test]
+    fn a_file_that_names_agy_is_stamped_past_the_build_before_it() {
+        use mesimon_core::board::SessionState;
+        use mesimon_core::tier::{MachineTiers, Tier};
+        let (dir, paths) = scratch("agystamp");
+        let stamp_toml = |path: &Path| {
+            let v: toml::Value = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            v["schema_version"].as_integer().unwrap() as u32
+        };
+        let refused_before =
+            |found: u32, then: u32| matches!(verdict(found, then), Verdict::Newer(_));
+
+        let tiers_path = dir.join("tiers.toml");
+        let mut tiers = MachineTiers {
+            default_tier: None,
+            tiers: vec![Tier::builtin(AgentProvider::ClaudeCode)],
+        };
+        tiers.tiers[0].id = "01A".into();
+        save_machine_file(&tiers_path, &tiers).unwrap();
+        assert_eq!(stamp_toml(&tiers_path), MACHINE_TIERS_SCHEMA);
+        let mut agy = Tier::builtin(AgentProvider::Agy);
+        agy.id = "01B".into();
+        tiers.tiers.push(agy.clone());
+        save_machine_file(&tiers_path, &tiers).unwrap();
+        assert!(refused_before(stamp_toml(&tiers_path), MACHINE_TIERS_SCHEMA));
+        let back = load_machine_file::<MachineTiers>(&tiers_path);
+        assert_eq!(back.body, tiers);
+        assert!(back.notice.is_none() && !back.barred);
+
+        let columns = paths.board_dir.join("board/columns.toml");
+        let mut board = load_with(&paths, false).unwrap().board;
+        save_columns(&paths, &board).unwrap();
+        save_sessions(&paths, &board).unwrap();
+        assert_eq!(stamp_toml(&columns), COLUMNS_SCHEMA);
+        let sessions_stamp = || {
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(paths.sessions_file()).unwrap())
+                    .unwrap();
+            v["schema_version"].as_u64().unwrap() as u32
+        };
+        assert_eq!(sessions_stamp(), SESSIONS_SCHEMA);
+
+        board.tiers.push(agy);
+        save_columns(&paths, &board).unwrap();
+        assert!(refused_before(stamp_toml(&columns), COLUMNS_SCHEMA), "a board's agy tier");
+        board.tiers.clear();
+        board.agent_provider = AgentProvider::Agy;
+        save_columns(&paths, &board).unwrap();
+        assert!(refused_before(stamp_toml(&columns), COLUMNS_SCHEMA), "a board on agy");
+        board.sessions.push(SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Agy,
+            ulid::Ulid::new(),
+            vec!["agy".into()],
+            dir.display().to_string(),
+            SessionState::Sleeping,
+        ));
+        save_sessions(&paths, &board).unwrap();
+        assert!(refused_before(sessions_stamp(), SESSIONS_SCHEMA));
+
+        let loaded = load_with(&paths, false).unwrap();
+        assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
+        assert_eq!(loaded.board.agent_provider, AgentProvider::Agy);
+        assert_eq!(loaded.board.sessions[0].kind, SessionKind::Agy);
+        cleanup(&dir, &paths);
+    }
+
     #[test]
     fn future_provider_files_preserve_bytes_and_bar_writes() {
         let (dir, paths) = scratch("futureprovider");
         let columns = paths.board_dir.join("board/columns.toml");
         let column_text = format!(
             "schema_version = {}\nnext_key = 1\nagent_provider = \"future_agent\"\ncolumns = []\n",
-            COLUMNS_SCHEMA + 1
+            COLUMNS_SCHEMA_AGY + 1
         );
         let session_text = format!(
             "{{\"schema_version\":{},\"sessions\":[{{\"kind\":\"future_agent\"}}]}}",
-            SESSIONS_SCHEMA + 1
+            SESSIONS_SCHEMA_AGY + 1
         );
         write(&columns, &column_text);
         write(&paths.sessions_file(), &session_text);

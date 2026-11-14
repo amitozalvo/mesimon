@@ -56,6 +56,10 @@ A tier is `core/src/tier.rs`; which one a ticket launches on is `tier::Book`, ne
 1. `core/src/board.rs`: the `AgentProvider` and `SessionKind` variants (their serde words are on
    disk), every method on both, and a `SessionRecord` field for the provider's own conversation
    id, `#[serde(default)]`. `core/src/tier.rs`: a built-in id, `Effort::ring`, `Book::get`.
+   **A build before the variant cannot decode its word, and sets a file it cannot decode
+   aside**: `daemon/src/store.rs::provider_is_agy` and `kind_is_agy` are exhaustive on purpose,
+   and every file that can hold the word (`tiers.toml`, `columns.toml`, `sessions.json`,
+   `queue.json`) is stamped past the older build when it does (`COLUMNS_SCHEMA_AGY`).
 2. `daemon/src/agents/<name>.rs` implementing `AgentAdapter`, and its arm in `agents::adapter`.
    Launch files go under the state dir and ride argv (promise 1); a provider with hooks runs
    `mesimon hook --event <Its own names>` and maps frames to the neutral signals (`Ready`,

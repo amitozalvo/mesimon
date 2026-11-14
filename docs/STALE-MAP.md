@@ -44781,3 +44781,30 @@ or "… with these words"). Checks: `startFlow` presses the empty box on an empt
 lit over a parked one (the blank wake is not pressed there), and at its end starts from under a note on a host with notes and the conversation,
 then reads the Chat tab selected; state and assets tests, the UX suite on Chromium at phone,
 tablet and desktop and on WebKit at phone, green. WebKit at tablet and desktop not run.
+
+## A file that names agy is stamped past the build before agy (T-1225 fix forward, 2026-11-14, the author: "added a tier for agy and immediately after it deleted all my tiers")
+
+- **What happened.** `tiers.toml` is one file every board's daemon reads, and three daemons on the
+  machine were still running the build before agy. One read `provider = "agy"`, could not decode
+  the word, and did what a build does with a file it cannot decode: moved it to
+  `tiers.toml.quarantine-<ms>`. Every board then read no tiers. No byte was lost; the eight tiers
+  were put back from the quarantined copy.
+- **The rule T-1225 missed** is `SESSIONS_SCHEMA` v2's own: "older readers must refuse before
+  decoding an unfamiliar session kind, rather than quarantine the file". agy added a provider word
+  and a session kind and moved no stamp.
+- **What changed.** A file that names agy is written with a stamp one past its counter, which a
+  build before agy refuses and leaves in place (a `future_version` notice, writes barred):
+  `MACHINE_TIERS_SCHEMA_AGY` 2, `COLUMNS_SCHEMA_AGY` 10, `SESSIONS_SCHEMA_AGY` 3,
+  `QUEUE_SCHEMA_AGY` 3. This build reads up to those. A file that names no agy keeps its counter,
+  so a board without agy costs an older build nothing. `store::provider_is_agy` and `kind_is_agy`
+  are exhaustive, so the next provider is answered there before it compiles.
+- **Refuted: bumping the four counters outright.** Every save of `columns.toml` would then shut
+  the released build out of every board, and the first tier edit would empty the tiers of every
+  daemon not yet restarted, for a provider behind a switch nobody else has.
+- **Still true.** A daemon on the older build reads no tiers while the machine's file holds an agy
+  tier, and says so in its advisory; `U` on that board ends it. A counter's next bump goes past
+  its `_AGY` number and retires it.
+- **Checks.** `cargo ut`; `store::tests::a_file_that_names_agy_is_stamped_past_the_build_before_it`
+  and `askqueue::tests::an_agy_start_is_stamped_past_the_build_before_it`; the `tier_e2e`,
+  `agy_e2e` and `ask_queue_e2e` files. The full workspace suite is owed once after the merge
+  (a state file's schema changed).
