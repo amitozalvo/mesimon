@@ -3281,7 +3281,7 @@ select {
   align-items: center;
   gap: 6px;
 }
-.composer .note-pic-icon {
+.composer .attach-press {
   position: relative;
   flex: none;
   width: var(--pill);
@@ -3289,10 +3289,13 @@ select {
   min-height: 0;
   margin: calc((var(--pill) - 44px) / 2) 0;
   padding: 0;
-  justify-content: center;
+  display: grid;
+  place-items: center;
+  border: 0;
   background: transparent;
+  color: var(--ink2);
 }
-.composer .note-pic-icon::before {
+.composer .attach-press::before {
   content: "";
   position: absolute;
   inset: calc((44px - var(--pill)) / 2) 0;
@@ -6206,4 +6209,71 @@ button.set-row:hover {
 .digest .icon {
   flex: none;
   color: var(--ink3);
+}
+
+/* The plus's menu (T-1208), in the box over its bar: a photo, the library,
+   one of this ticket's notes, another ticket. A pick of the last two is
+   typed into the words. */
+.attach-menu {
+  display: grid;
+  margin: 0 6px 0 -6px;
+  border-radius: 12px;
+  background: var(--s2);
+  overflow: hidden;
+}
+.attach-menu[hidden] {
+  display: none;
+}
+.attach-menu > * + * {
+  border-top: 1px solid var(--line);
+}
+.attach-menu .note-pic-add,
+.attach-menu .attach-item {
+  width: 100%;
+  min-height: 44px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+.attach-picks {
+  display: grid;
+  max-height: 30vh;
+  overflow: auto;
+  background: var(--s1);
+}
+.attach-pick {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 39px;
+  border: 0;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  text-align: start;
+}
+.attach-pick b {
+  flex: none;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+.attach-pick span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attach-picks .field-note {
+  padding: 10px 12px 10px 39px;
+}
+a.set-row {
+  text-decoration: none;
 }

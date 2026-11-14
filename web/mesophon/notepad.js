@@ -210,11 +210,11 @@ export function PictureList({ draft, onRemove }) {
 // The file input that picks pictures into a draft, dressed as a button:
 // the icon and whatever `children` says beside it. The composer (T-853)
 // shows the icon alone, a plus.
-export function PicturePick({ id, draft, caret, onAdd, label, icon = "image", children }) {
+export function PicturePick({ id, draft, caret, onAdd, label, icon = "image", capture, children }) {
   const busy = !!draft.sending;
   return html`<label class=${`btn btn-quiet note-pic-add${children ? "" : " note-pic-icon"}`} data-busy=${String(busy || draft.reading > 0)}
     aria-label=${label}>
-    <input id=${id} type="file" accept="image/*" multiple class="sr-only" disabled=${busy}
+    <input id=${id} type="file" accept="image/*" multiple=${!capture} capture=${capture} class="sr-only" disabled=${busy}
       onChange=${async (e) => {
         const files = [...e.currentTarget.files];
         e.currentTarget.value = "";

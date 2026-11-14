@@ -261,6 +261,24 @@ function Composer({ store, ticket, entry, live }) {
   const mark = (e) => {
     caret.current = e.currentTarget.selectionStart;
   };
+  // The plus (T-1208) opens what can go with the words: a photo taken now,
+  // pictures from the library, another ticket's key or one of this ticket's
+  // notes by name. A key or a name is typed into the words where the
+  // cursor was; the agent reads the rest from the board.
+  const [attach, setAttach] = useState("");
+  const others = attach === "ticket" ? (store.board?.found() || []).filter((t) => t.id !== ticket?.id).slice(0, 6) : [];
+  const named = ticket ? store.panesOf(ticket).filter((p) => p.kind === "note") : [];
+  const put = (words) => {
+    const draft = entry?.draft || "";
+    const at = Math.min(caret.current ?? draft.length, draft.length);
+    const lead = at > 0 && !/\s$/.test(draft.slice(0, at)) ? " " : "";
+    store.setDraft(`${draft.slice(0, at)}${lead}${words} ${draft.slice(at)}`);
+    caret.current = at + lead.length + words.length + 1;
+    setAttach("");
+    store.focus = "prompt";
+    store.emit();
+  };
+  const attaches = !!entry && !fieldOff && (pictures || !!agent || starts);
   const tick = receiptTick(entry?.latest?.status);
   // In the conversation a sent prompt is its ghost, then its own row
   // (T-626): no line says it was submitted.
@@ -333,9 +351,24 @@ function Composer({ store, ticket, entry, live }) {
             }
           }}></textarea>
         ${entry?.pictures.length > 0 && html`<div class="composer-pics"><${PictureList} draft=${entry} onRemove=${(n) => store.removePromptPicture(n)} /></div>`}
+        ${attaches && html`<div id="attach-menu" class="attach-menu" hidden=${!attach}>
+          ${pictures && html`<${PicturePick} id="prompt-camera" draft=${entry} caret=${caret} label="Take a photo" capture="environment"
+            onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Take a photo</span></${PicturePick}>
+          <${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Choose from library"
+            onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Choose from library</span></${PicturePick}>`}
+          ${named.length > 0 && html`<button id="attach-note" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "note")}
+            onClick=${() => setAttach(attach === "note" ? "menu" : "note")}><${Icon} name="file" size=${17} /><span>A note on this ticket</span></button>`}
+          ${attach === "note" && html`<div class="attach-picks">${named.map((p, i) => html`<button type="button" class="attach-pick" key=${p.key}
+            onClick=${() => put(`the note “${i === 0 ? "Description" : p.row.name || "Untitled"}”`)}>${i === 0 ? "Description" : p.row.name || "Untitled"}</button>`)}</div>`}
+          <button id="attach-ticket" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "ticket")}
+            onClick=${() => setAttach(attach === "ticket" ? "menu" : "ticket")}><${Icon} name="kanban" size=${17} /><span>Another ticket</span></button>
+          ${attach === "ticket" && html`<div class="attach-picks">${others.map((t) => html`<button type="button" class="attach-pick" key=${t.id}
+            onClick=${() => put(t.key)}><b>${t.key}</b><span dir="auto">${t.title}</span></button>`)}
+            ${!others.length && html`<p class="field-note">No other ticket yet.</p>`}</div>`}
+        </div>`}
         <div class="composer-bar">
-          ${pictures && html`<${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Picture" icon="plus"
-            onAdd=${(files, at) => store.addPromptPictures(files, at)} />`}
+          ${attaches && html`<button id="attach" type="button" class="attach-press" aria-label="Attach" aria-expanded=${String(!!attach)}
+            aria-controls="attach-menu" onClick=${() => setAttach(attach ? "" : "menu")}><${Icon} name=${attach ? "x" : "plus"} size=${17} /></button>`}
           ${mails
             ? html`<p id="away-what" class="start-what"><${Icon} name="moon" size=${13} /><span>${letter
                 ? "One message waits for this ticket · take it back to change it."

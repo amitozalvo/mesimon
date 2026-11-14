@@ -1961,6 +1961,27 @@ async function tierFlow(browser, engineName, size, viewport) {
     // The box's bar, the tier in it, is there before any words (T-1208).
     assert.equal(await page.locator("#prompt-tier").count(), 1);
     assert(await pick.isVisible(), "the tier pill is in the bar");
+    // The plus opens what can go with the words (T-1208): a photo, the
+    // library, another ticket. A ticket picked is its key, typed where the
+    // cursor was, and the menu folds.
+    assert(await page.locator("#attach-menu").isHidden());
+    await page.locator("#attach").click();
+    assert(await page.locator("#attach-menu").isVisible());
+    assert.deepEqual(await page.locator("#attach-menu > .note-pic-add, #attach-menu > .attach-item").evaluateAll((all) => all.map((n) => n.textContent.trim())),
+      ["Take a photo", "Choose from library", "Another ticket"]);
+    assert.equal(await page.locator("#prompt-camera").getAttribute("capture"), "environment");
+    await page.locator("#attach-ticket").click();
+    const other = await page.locator(".attach-pick b").first().textContent();
+    assert.notEqual(other, "T-0", "another ticket, never this one");
+    if (size === "phone")
+      assert.deepEqual(await page.locator("#attach-menu button, #attach").evaluateAll((all) =>
+        all.filter((n) => n.getBoundingClientRect().height < 44).map((n) => n.id || n.textContent)), []);
+    await shot("attach-menu");
+    await page.locator(".attach-pick").first().click();
+    assert.equal(await page.locator("#prompt").inputValue(), `${other} `);
+    assert(await page.locator("#attach-menu").isHidden());
+    assert.equal(await page.locator("#attach").getAttribute("aria-expanded"), "false");
+    await page.locator("#prompt").fill("");
     await page.locator("#prompt").fill("same tier");
     await pick.waitFor();
     assert.deepEqual(await pick.locator("option").allTextContents(), ["claude", "coder"]);

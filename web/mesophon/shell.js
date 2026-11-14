@@ -357,6 +357,13 @@ function Settings({ store }) {
               <span class="set-icon"><${Icon} name="leave" size=${16} /></span>
               <span class="set-label">Forget this browser</span></button>
           </div>
+          <h3 class="set-head">About</h3>
+          <div class="set-list">
+            <a id="release-notes" class="set-row" href="https://github.com/amitozalvo/mesimon/blob/main/CHANGELOG.md" target="_blank" rel="noopener noreferrer">
+              <span class="set-icon"><${Icon} name="file" size=${16} /></span>
+              <span class="set-label">Release notes</span>
+              <${Icon} name="chevronRight" size=${16} cls="set-chev" /></a>
+          </div>
         </div>
         <div class="settings-theme" hidden=${!themed}>
           <${ThemePicker} store=${store} />
