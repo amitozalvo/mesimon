@@ -28,7 +28,7 @@ pub const HOSTED_RELAY: &str = "relay.mesimon.dev:443";
 
 /// Where a license key for the hosted relay is bought (T-647): the sharing
 /// dialog's `Get a license key` opens it.
-pub const CHECKOUT_URL: &str = "https://mesimon.dev/relay";
+pub const CHECKOUT_URL: &str = "https://mesimon.dev/relay/";
 
 /// Whether board sharing runs at all: only with `MESIMON_TEAMS=1`, in every
 /// build, until T-655 and T-656 land. Off, the TUI offers no `Publish this

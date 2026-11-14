@@ -45265,3 +45265,17 @@ the merge (`server.rs`, and `usage.json`'s and `costs.json`'s shapes).
 Rebased onto main past T-1234: `agy.rs`'s module doc conflicted (both kept), and the switch is
 read from T-1234's `App::agy_switch` instead of the environment. `cargo ut` (72 + 17 + 770 + 872
 + 24 + 1,465 passed, 0 failed) and the same 38 agents e2es, first run, no reruns.
+
+## Search Console's "Page with redirect" is the site's own canonical redirects (T-1248, 2026-11-14, "mesimon indexing issue in google")
+
+**Found.** Google mailed "New reason preventing your pages from being indexed: Page with redirect".
+Every mesimon.dev variant that redirects does so on purpose, one 301 hop each, to a page that is
+in the sitemap and names itself canonical: `http://mesimon.dev/` and `https://www.mesimon.dev/`
+to `https://mesimon.dev/`, `/relay` to `/relay/`, `/relay/thanks` to `/relay/thanks/` (noindex
+by T-520). GitHub Pages does all four; none can or should be removed. Google files the variant
+URLs under that reason and indexes the targets, so the notice asks nothing of the site.
+**Refuted:** a broken sitemap or canonical. Both list only the slashed https URLs.
+
+**Changed.** The one slashless link the product itself handed out, `team::CHECKOUT_URL`, now ends
+in `/relay/`, so `Get a license key` lands without the hop. The words drawn beside it stay
+`mesimon.dev/relay`.
