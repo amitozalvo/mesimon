@@ -4558,7 +4558,7 @@ button.sent-bubble:hover {
   line-height: 1.35;
 }
 /* Inbox reads like a list of conversations: one line a title. */
-#shell[data-mode="agents"] #tickets .ticket-title {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket-title {
   -webkit-line-clamp: 1;
 }
 .ticket-meta {
@@ -5654,77 +5654,77 @@ input[type="checkbox"][role="switch"]:checked::before {
 
 /* The Inbox is a list of rows: no box around a ticket, a hairline between
    two, the first tag's bar on the row's edge, the rows edge to edge. */
-#shell[data-mode="agents"] #tickets {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets {
   gap: 4px;
   padding-inline: 0;
 }
-#shell[data-mode="agents"] #tickets > :not(.group) {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets > :not(.group) {
   margin-inline: 16px;
 }
-#shell[data-mode="agents"] #tickets .group {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .group {
   gap: 0;
 }
-#shell[data-mode="agents"] #tickets .group-label {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .group-label {
   padding: 10px 16px 4px;
 }
-#shell[data-mode="agents"] #tickets .cards,
-#shell[data-mode="agents"] #tickets .needs {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .cards,
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .needs {
   gap: 0;
 }
-#shell[data-mode="agents"] #tickets .ticket.card,
-#shell[data-mode="agents"] #tickets .need {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card,
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
-#shell[data-mode="agents"] #tickets .ticket.card {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card {
   padding: 9px 16px 10px;
 }
-#shell[data-mode="agents"] #tickets .need {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need {
   gap: 8px;
   padding: 9px 16px 12px;
 }
-#shell[data-mode="agents"] #tickets .cards > * + *,
-#shell[data-mode="agents"] #tickets .needs > * + * {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .cards > * + *,
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .needs > * + * {
   border-top: 1px solid var(--line);
 }
-#shell[data-mode="agents"] #tickets .ticket.card:hover {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card:hover {
   background: var(--s1);
 }
 /* The open ticket is marked where the list stays beside it, not on a phone,
    where a row left behind would stay lit. */
-#shell[data-mode="agents"] #tickets .ticket.card[aria-pressed="true"] {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card[aria-pressed="true"] {
   background: transparent;
 }
 @media (min-width: 701px) {
-  #shell[data-mode="agents"] #tickets .ticket.card[aria-pressed="true"],
-  #shell[data-mode="agents"] #tickets .need:has(.need-open[aria-pressed="true"]) {
+  #shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card[aria-pressed="true"],
+  #shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need:has(.need-open[aria-pressed="true"]) {
     background: var(--s2);
   }
 }
-#shell[data-mode="agents"] #tickets .ticket.card[data-tint]::after,
-#shell[data-mode="agents"] #tickets .need[data-tint]::after {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .ticket.card[data-tint]::after,
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need[data-tint]::after {
   inset: 10px auto 10px 0;
   border-radius: 0 3px 3px 0;
 }
-#shell[data-mode="agents"] #tickets .need-open {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need-open {
   margin: -9px -16px 0;
   padding: 9px 16px 0;
   border-radius: 0;
 }
-#shell[data-mode="agents"] #tickets .need-open:has(.face-one) {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need-open:has(.face-one) {
   margin-bottom: -8px;
 }
-#shell[data-mode="agents"] #tickets .need.stopped {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .need.stopped {
   box-shadow: none;
 }
 /* A question's choices on its row: outlined, sized to their words, wrapping. */
-#shell[data-mode="agents"] #tickets .options {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .options {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 6px;
 }
-#shell[data-mode="agents"] #tickets .option {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .option {
   width: auto;
   max-width: 100%;
   min-height: 44px;
@@ -5733,14 +5733,14 @@ input[type="checkbox"][role="switch"]:checked::before {
   border-radius: 10px;
   background: transparent;
 }
-#shell[data-mode="agents"] #tickets .option:hover:not(:disabled) {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .option:hover:not(:disabled) {
   background: var(--s1);
 }
-#shell[data-mode="agents"] #tickets .option-picked {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .option-picked {
   border-color: var(--attn);
 }
 /* "Only part shown" keeps its 44px press and takes a text line's room. */
-#shell[data-mode="agents"] #tickets .code-more {
+#shell:is([data-mode="agents"], [data-mode="find"]) #tickets .code-more {
   margin-block: -8px;
 }
 
@@ -6134,4 +6134,12 @@ button.set-row:hover {
   justify-self: start;
   gap: 2px;
   padding-inline: 6px 10px;
+}
+
+/* Find (T-1208): the things to do are Settings' rows, inside the list's gutter. */
+.find-do .set-list {
+  margin: 0 16px;
+}
+#shell[data-mode="find"] #tickets .group-label {
+  padding-bottom: 6px;
 }

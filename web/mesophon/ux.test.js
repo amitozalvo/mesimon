@@ -678,7 +678,13 @@ async function ticketFlow(browser, engineName, size, viewport) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   const sheet = page.locator("#new-ticket-sheet");
-  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  // On a phone Sent is a row in Find (T-1208): through Find when its press
+  // is not on screen.
+  const mode = async (name) => {
+    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+    await press.click();
+  };
   const openSheet = () => page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
   const connected = () =>
     until(page, () => document.querySelector("#connection").textContent === "Connected");
@@ -1553,7 +1559,13 @@ async function startFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  // On a phone Sent is a row in Find (T-1208): through Find when its press
+  // is not on screen.
+  const mode = async (name) => {
+    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+    await press.click();
+  };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -1842,7 +1854,13 @@ async function tierFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  // On a phone Sent is a row in Find (T-1208): through Find when its press
+  // is not on screen.
+  const mode = async (name) => {
+    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+    await press.click();
+  };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -1970,7 +1988,13 @@ async function editFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  const mode = (name) => page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+  // On a phone Sent is a row in Find (T-1208): through Find when its press
+  // is not on screen.
+  const mode = async (name) => {
+    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+    await press.click();
+  };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -2912,7 +2936,9 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
   // Sent lists the tickets this browser filed, never a letter (T-902).
   const view = async (name) => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
-    await page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+    await press.click();
   };
   const sheet = page.locator("#away-sheet");
   const letter = page.locator("#letter-row");
@@ -4006,7 +4032,7 @@ async function tabsFlow(browser, engineName) {
       for (const name of ["graphite", "chalk"]) {
         await theme(name);
         let boxes;
-        for (const mode of ["board", "sent", "agents"]) {
+        for (const mode of ["board", "find", "agents"]) {
           await page.locator(`#${mode}-mode`).click();
           await until(page, (mode) => document.querySelector(`#${mode}-mode`).getAttribute("aria-pressed") === "true", mode);
           const drawn = await bar();
@@ -4095,6 +4121,8 @@ async function keptFlow(browser, engineName) {
     await page.locator("#new-title").fill("Written on the kept page");
     await page.locator("#send-ticket").click();
     await sheet.waitFor({ state: "hidden" });
+    if (!(await page.locator('button[data-mode="sent"]').locator("visible=true").count()))
+      await page.locator('button[data-mode="find"]').locator("visible=true").click();
     await page.locator('button[data-mode="sent"]').locator("visible=true").click();
     await page.locator('.sent-item[data-status="local"]').waitFor();
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-page.png`) });
@@ -4106,6 +4134,8 @@ async function keptFlow(browser, engineName) {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.page), undefined);
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
+    if (!(await page.locator('button[data-mode="sent"]').locator("visible=true").count()))
+      await page.locator('button[data-mode="find"]').locator("visible=true").click();
     await page.locator('button[data-mode="sent"]').locator("visible=true").click();
     await page.locator('.sent-item[data-status="landed"]').filter({ hasText: "Written on the kept page" }).waitFor();
     assert.deepEqual(errors, []);
@@ -4150,15 +4180,18 @@ try {
         const overview = async () => {
           if (size === "phone" && (await page.locator("#back").isVisible())) {
             await page.locator("#back").click();
-            await page.locator("#search").waitFor();
+            await page.locator("#list-title").waitFor();
           }
         };
         const select = async (id) => {
           await overview();
           await page.locator(`.ticket[data-id="ticket-${id}"]`).click();
         };
-        const mode = (name) =>
-          page.locator(`button[data-mode="${name}"]`).locator("visible=true").click();
+        const mode = async (name) => {
+          const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+          if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
+          await press.click();
+        };
         // The delivery pill sits in the box's bar (T-1208).
         const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
         const attention = (name) =>
@@ -4665,10 +4698,25 @@ try {
           );
           // Search does not change selection; Board exposes tickets without agents.
           await overview();
+          // A phone searches in Find (T-1208), whose words leave with it; a
+          // wider page keeps the field over its lists.
+          if (size === "phone") {
+            assert.equal(await page.locator("#search").count(), 0, "no field over a phone's Inbox");
+            await mode("find");
+            assert.equal(await page.locator("#list-title").textContent(), "Find");
+            assert.deepEqual(await page.locator(".find-do .set-label").allTextContents(), ["Sent tickets", "New ticket", "Theme"]);
+            assert(await page.locator(".ticket").count() > 0, "the last few touched, before any words");
+          }
           await page.locator("#search").fill("nothing-matches");
           assert.equal(await page.locator(".ticket").count(), 0);
+          if (size === "phone") {
+            assert.match(await page.locator("#tickets").textContent(), /No tickets match your search/);
+            await page.locator("#search").fill("sent");
+            assert.deepEqual(await page.locator(".find-do .set-label").allTextContents(), ["Sent tickets"]);
+            await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-find.png`) });
+          }
           await page.locator("#search").fill("Agent task 3");
-          await mode("board");
+          if (size !== "phone") await mode("board");
           if (size !== "phone") {
             // A column's purpose is its title's hover (T-506): no blurb under
             // the title and no "empty" line, so every column's cards start level.
@@ -4678,8 +4726,6 @@ try {
             );
             assert.equal(await page.locator(".column-about, .column-empty").count(), 0);
           }
-          if (size === "phone")
-            await page.locator('[data-column="TODO"]').click();
           await select(3);
           assert.equal(
             await page.locator("#agent-state").textContent(),
@@ -4688,8 +4734,13 @@ try {
           assert.equal(await page.locator("[data-start]").count(), 0, "a host without `start`");
           assert(await page.locator("#send").isDisabled());
           await overview();
-          await page.locator("#search").fill("");
+          if (size !== "phone") await page.locator("#search").fill("");
           await mode("agents");
+          if (size === "phone") {
+            await mode("find");
+            assert.equal(await page.locator("#search").inputValue(), "", "Find's words left with it");
+            await mode("agents");
+          }
           await overview();
           const lowerRow = page.locator('.ticket[data-id="ticket-20"]');
           await lowerRow.scrollIntoViewIfNeeded();

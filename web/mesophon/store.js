@@ -408,6 +408,9 @@ export class Store {
   }
   setMode(mode) {
     if (!this.board) return;
+    // A phone's search is Find's own (T-1208): its words leave with it, or
+    // they would narrow an Inbox that shows no field to clear them in.
+    if (narrow() && this.board.mode === "find" && mode !== "find") this.board.search = "";
     this.board.mode = mode;
     // Wide screens show the board as columns; a card opens the side panel.
     if (!narrow()) this.detailOpen = false;

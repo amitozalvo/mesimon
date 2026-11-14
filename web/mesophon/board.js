@@ -47,7 +47,7 @@ export class BoardState {
     this.filter = "all";
     this.search = "";
     this.column = "";
-    this.scroll = { agents: 0, board: 0, sent: 0 };
+    this.scroll = { agents: 0, board: 0, sent: 0, find: 0 };
     this.receivedAt = undefined;
     // True while the view comes from this browser's memory, not the host;
     // `shelved` when that memory is the relay's copy (T-698).
@@ -118,7 +118,7 @@ export class BoardState {
     const now = this.now;
     const visible = this.tickets.filter(
       (t) =>
-        (this.mode === "board" || (this.mode === "agents" ? nowGroup(t, this.columns, now) : t.agent)) &&
+        (this.mode === "board" || this.mode === "find" || (this.mode === "agents" ? nowGroup(t, this.columns, now) : t.agent)) &&
         (this.mode !== "agents" ||
           this.filter === "all" ||
           (this.filter === "running"
@@ -138,6 +138,14 @@ export class BoardState {
           Number(a.agent?.state === "needs attention"),
       );
     return visible;
+  }
+  // What Find lists (T-1208): every ticket the words match, or with no
+  // words yet the few last touched, by the agent's state age, else by when
+  // the ticket was filed.
+  found() {
+    if (this.search.trim()) return this.visible();
+    const at = (t) => t.agent?.since ?? t.created ?? 0;
+    return [...this.tickets].sort((a, b) => at(b) - at(a)).slice(0, 8);
   }
   // Now's groups: the agents by the host's own state word and nothing else,
   // then the tickets created within the hour, newest first (T-668).
