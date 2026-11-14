@@ -2218,7 +2218,19 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     } else {
         return (Vec::new(), 0);
     };
-    cap_spans(theme, cap, cap_style, said, said_style, width).unwrap_or_default()
+    let Some((mut spans, used)) = cap_spans(theme, cap, cap_style, said, said_style, width)
+    else {
+        return (Vec::new(), 0);
+    };
+    // A refused press shakes the cap within its rule (T-1258): the lead
+    // dashes take the offset and the tail gives it back.
+    let dx = if ctx.ticket_box_held { app.box_shake_dx() } else { 0 };
+    if dx == 0 {
+        return (spans, used);
+    }
+    let lead = (2 + dx).max(0) as usize;
+    spans[0] = tail_rule(theme, lead);
+    (spans, used + lead - 2)
 }
 
 /// A closed rule's left end: two dashes, a key cap and its words, and the

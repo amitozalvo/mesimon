@@ -16967,6 +16967,20 @@ fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
     assert!(!lines.last().is_some_and(|l| l.contains("shift+enter")), "not offered: {lines:#?}");
     golden("ticket_live_held_120x30", &lines);
 
+    // The press is refused, not dropped (T-1258): no field opens, and the
+    // rule's key cap shakes off its place, then settles back.
+    let cap_col = |lines: &[String]| {
+        lines.iter().find_map(|l| l.find(" shift+enter ")).expect("the cap")
+    };
+    let settled = cap_col(&lines);
+    app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+    assert_eq!(app.mode, Mode::Normal, "no field over a held box");
+    assert!(app.box_refused.is_some(), "the press shakes");
+    app.box_refused = Some(std::time::Instant::now());
+    assert_ne!(cap_col(&render(&app, 120, 30)), settled, "the cap is off its place");
+    app.box_refused = None;
+    assert_eq!(cap_col(&render(&app, 120, 30)), settled, "and back");
+
     // The title mesimon typed is its own: the key stays.
     for s in app.board_mut().sessions.iter_mut().filter(|s| s.id == uuid_n(31)) {
         s.typed_title = Some(draft.into());

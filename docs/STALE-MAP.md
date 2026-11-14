@@ -45613,3 +45613,25 @@ Verified on the applied tree: `cargo nextest run --workspace --no-fail-fast` und
 every e2e binary was in reach); `node --test state.test.js assets.test.js` (65); the UX suite on
 Chromium at phone, tablet and desktop and on WebKit at phone; `ci/test_run_test.py` (40) and
 `ci/rig_agy_test.py` (5). 64 files, −2,077 +1,559 outside this file.
+
+## A refused Shift+Enter over a held box shakes the key cap (T-1258, 2026-11-14, the author: "right now shift+enter on ticket page held input is rejected silently")
+
+**Shipped.** With someone else's words in the agent's box (T-1156's held box), the ticket page's
+Shift+Enter resolves to no verb and the press was dropped without a sign. It now shakes the
+closed rule's `shift+enter` cap, the row that already says `held ∙ words in its box ∙ enter
+finishes them in the pane`: the same 1-cell, six-step, 360 ms motion as T-423 (`SHAKE_OFFSETS`).
+
+**Mechanics.** `App::box_refused: Option<Instant>` is set in `handle_key`'s unresolved branch
+when the scope is `Ticket`, the key is `ShiftEnter`, `ticket_box_held` and `shift_enter()`
+hold. `App::box_shake_dx()` is read by `ui/ticket.rs::closed_cap`: the two lead dashes take the
+offset and the tail rule gives it back, so the row's width never changes. `shaking()` counts it,
+so frames keep coming until it settles.
+
+**Refuted.** Calling `App::shake(ticket)`: it moves the page's title row, the opposite end of
+the screen from the press. No status line either: the rule already gives the reason. A parked
+start (`ticket_launching`) also drops Shift+Enter silently, but its rule shows no cap to shake;
+left as it is.
+
+**Tests.** `a_draft_in_the_box_holds_shift_enter_and_the_title_does_not` now presses
+Shift+Enter: no field opens, `box_refused` is set, the cap draws off its settled column, then
+back. No golden changed: the settled frame is the same.

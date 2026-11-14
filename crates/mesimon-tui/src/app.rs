@@ -2117,6 +2117,10 @@ pub struct App {
     /// shakes for `SHAKE_OFFSETS` from that instant. Board-side and per
     /// board, like `tag_flash` — a refusal is about the card you pressed on.
     pub refused: Option<(ulid::Ulid, Instant)>,
+    /// When the ticket page's Shift+Enter was last refused over a held box
+    /// (T-1258): the closed rule's key cap shakes for `SHAKE_OFFSETS` from
+    /// that instant, where the press was looking, not the title.
+    pub box_refused: Option<Instant>,
     /// The keyboard's last letter was not a Latin one (T-458): outside a
     /// text field every character but an English letter or a digit is
     /// dropped, and the footer says why, until an English letter or Esc.
@@ -2699,6 +2703,7 @@ impl App {
             tag_flash: None,
             tier_flash: None,
             refused: None,
+            box_refused: None,
             layout_pause: None,
             layout_flash: None,
             status_flash: None,
@@ -3731,6 +3736,7 @@ impl App {
     fn shaking(&self) -> bool {
         let running = |at: Instant| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32;
         self.refused.is_some_and(|(_, at)| running(at))
+            || self.box_refused.is_some_and(running)
             || matches!(&self.mode, Mode::Editor(ed) if ed.title_shake.is_some_and(running))
     }
 
@@ -3743,6 +3749,12 @@ impl App {
             Some((t, at)) if t == ticket => shake_offset(at),
             _ => 0,
         }
+    }
+
+    /// How far the held box's key cap is drawn off its place this frame
+    /// (T-1258): the refusal shake's offset, 0 once it settled.
+    pub fn box_shake_dx(&self) -> i16 {
+        self.box_refused.map_or(0, shake_offset)
     }
 
     /// The reading zone the screen's `{ }` and `j`/`k` move (T-246): the
@@ -9536,6 +9548,14 @@ impl App {
                     d.z_armed = false;
                 }
                 return self.handle_key(code, mods);
+            } else if scope == Scope::Ticket
+                && key == Key::ShiftEnter
+                && ctx.ticket_box_held
+                && ctx.shift_enter()
+            {
+                // Held (T-1258): the rule already says why; the press gets
+                // its no where it was looking, the rule's key cap.
+                self.box_refused = Some(Instant::now());
             }
             return Ok(());
         };
