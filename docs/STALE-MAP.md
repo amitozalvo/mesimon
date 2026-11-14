@@ -45409,3 +45409,14 @@ once against the old order and timed out at "C to be merged on its one rebase".
 switched off: T-1239's `on_working` on a fresh board's DONE took a merged ticket back to
 REVIEW through its notice turn. T-1247 landed while this was in test; after the rebase onto it
 the file is 10 of 10.
+
+## T-1251 — the launch list names the seat's own CLI
+
+**What changed.** The ticket page's launch step read `starting claude` for every seat that was
+not Codex: an agy seat, or a ticket whose tier starts agy, showed claude. `launch_rows` now
+takes `SessionKind::word()` of the record's kind, or of the tier's `start_provider` before a
+record exists, so the step reads `starting agy` / `starting codex` / `starting claude`.
+**Refuted.** A generic `starting agent`: the heading above already says `starting the agent`,
+and the provider's name is the fact the step adds.
+**Verified.** `cargo ut`; `the_launch_list_follows_the_binding_and_the_record` gains an agy
+seat (fails on the old match). TUI-only: no e2e reaches it, no golden changed.

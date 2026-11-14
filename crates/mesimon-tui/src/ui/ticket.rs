@@ -2070,14 +2070,11 @@ fn launch_rows(
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let w = area.width as usize;
-    let agent = match record.map(|r| r.kind) {
-        Some(SessionKind::Codex) => "codex",
-        Some(_) => "claude",
-        None if app.tiers().start_provider(ticket) == mesimon_core::board::AgentProvider::Codex => {
-            "codex"
-        }
-        None => "claude",
-    };
+    // The seat's own CLI once it has a record, else the one the ticket's
+    // tier starts (T-1251: an agy seat read "starting claude").
+    let agent = record
+        .map_or_else(|| app.tiers().start_provider(ticket).session_kind(), |r| r.kind)
+        .word();
     let mut lines = vec![
         Line::default(),
         Line::from(Span::styled("   starting the agent", theme.dim1())),

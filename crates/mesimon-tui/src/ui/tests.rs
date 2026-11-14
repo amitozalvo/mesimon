@@ -16802,6 +16802,17 @@ fn the_launch_list_follows_the_binding_and_the_record() {
     golden("ticket_init_failed_120x30", &lines);
     assert!(!app.ctx().ticket_launching, "an agent exists: its own keys apply");
 
+    // The step names the seat's own CLI (T-1251): an agy seat is not claude.
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(2)) {
+        s.kind = SessionKind::Agy;
+    }
+    let lines = render(&app, 120, 30);
+    assert!(has(&lines, "starting agy"), "{lines:?}");
+    assert!(!has(&lines, "starting claude"), "{lines:?}");
+    for s in app.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(2)) {
+        s.kind = SessionKind::Claude;
+    }
+
     // At its box, the list gives way.
     for s in app.board_mut().sessions.iter_mut().filter(|s| s.ticket == ulid_n(2)) {
         s.state = SessionState::Idle { stop_reason: StopReason::Unknown };
