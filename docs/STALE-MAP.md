@@ -44891,6 +44891,7 @@ change reads no width).
 
 ## The table's main tag is a half block (T-1240 follow-up, 2026-11-14, the author: "can the main tag be bigger than the secondary tag?")
 
-A table row's first tag is `▌` in the bar's cell, the second stays `▎` beside it, so the main tag
-reads first and the two stay apart (the half block's right half is the gap). Checks: `cargo ut`;
-`table_rows_wear_both_tags_as_thin_stripes` now asks for `▌` then `▎`.
+A table row's first tag is `▋` (five eighths; `▌` read as the same width as the `▎` in iTerm2,
+the author: "can the first one be just a little bigger?") in the bar's cell, the second stays `▎`
+beside it, so the main tag reads first and the two stay apart (the cell's last three eighths are
+the gap). Checks: `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes` asks for `▋` then `▎`.

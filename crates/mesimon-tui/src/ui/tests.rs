@@ -6703,8 +6703,8 @@ fn table_rows_open_one_line_at_most() {
     assert!(!lines[at + 2].contains("goldens updated"), "one line, never a wrap");
 }
 
-/// A table row's tags are two stripes side by side, the first a half block
-/// in the bar's cell and the second a thinner one beside it, and no stripe
+/// A table row's tags are two stripes side by side, the first a five-eighths
+/// block in the bar's cell and the second a thinner one beside it, and no stripe
 /// end: rows stand with
 /// no blank row under them for the board's hang (T-1240).
 #[test]
@@ -6724,7 +6724,7 @@ fn table_rows_wear_both_tags_as_thin_stripes() {
         let lines = render(&app, 120, 30);
         let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("the row") as u16;
         let buf = cells(&app, 120, 30);
-        assert_eq!((buf[(0, y)].symbol(), buf[(0, y)].fg), ("▌", first), "the main tag");
+        assert_eq!((buf[(0, y)].symbol(), buf[(0, y)].fg), ("▋", first), "the main tag");
         assert_eq!((buf[(1, y)].symbol(), buf[(1, y)].fg), ("▎", second), "the second beside it");
         for row in y..y + 3 {
             for x in 0..2 {
