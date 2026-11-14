@@ -760,10 +760,37 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     }
     let mut prs: Vec<Pr> = Vec::new();
     let mut full: HashSet<String> = HashSet::new();
+    // GitLab's repositories are listed a host and an account at a time
+    // (T-1243), each reported as its own answer.
+    type Account = (String, PathBuf, Option<String>);
+    let account = |r: &RepoQuery| -> Account {
+        (r.remote.host.clone(), r.cli.bin.clone(), r.viewer.clone())
+    };
+    let mut gitlab: HashMap<Account, Result<(Vec<Pr>, bool), String>> = HashMap::new();
     for r in &q.repos {
-        let error = match list(r) {
-            Ok(mut found) => {
-                if found.len() >= LIST_LIMIT {
+        let listed = match r.cli.forge {
+            Forge::GitHub => list(r).map(|found| {
+                let cut = found.len() >= LIST_LIMIT;
+                (found, cut)
+            }),
+            Forge::GitLab => {
+                let key = account(r);
+                let read = gitlab.entry(key.clone()).or_insert_with(|| {
+                    let group: Vec<&RepoQuery> = q
+                        .repos
+                        .iter()
+                        .filter(|o| o.cli.forge == Forge::GitLab && account(o) == key)
+                        .collect();
+                    list_gitlab(&group)
+                });
+                read.clone().map(|(all, cut)| {
+                    (all.into_iter().filter(|p| p.repo == r.remote.path).collect(), cut)
+                })
+            }
+        };
+        let error = match listed {
+            Ok((mut found, cut)) => {
+                if cut {
                     full.insert(r.remote.path.clone());
                 }
                 prs.append(&mut found);
@@ -1257,59 +1284,60 @@ fn auth_status(c: &Cli, host: &str, timeout: Duration) -> Result<String, String>
     run_for(&c.bin, &status, None, timeout)
 }
 
-/// The signed-in account's PRs in one repository, every state.
+/// The signed-in account's PRs in one GitHub repository, every state.
 fn list(r: &RepoQuery) -> Result<Vec<Pr>, String> {
-    match r.cli.forge {
-        Forge::GitHub => {
-            let repo = r.key();
-            let out = run(
-                &r.cli.bin,
-                &[
-                    "pr",
-                    "list",
-                    "--repo",
-                    &repo,
-                    "--author",
-                    "@me",
-                    "--state",
-                    "all",
-                    "--limit",
-                    &LIST_LIMIT.to_string(),
-                    "--json",
-                    GH_FIELDS,
-                ],
-                Some(&r.dir),
-            )?;
-            Ok(forge::parse_gh(&r.remote.path, &out))
-        }
-        Forge::GitLab => {
-            // The signed-in account's MRs are the whole candidate set: with
-            // the account unknown there is no list, never an unfiltered one
-            // a stranger's MR could bind through.
-            let Some(viewer) = r.viewer.as_deref() else {
-                return Err("signed-in account unknown; glab api user did not answer".into());
-            };
-            let repo = format!("https://{}/{}", r.remote.host, r.remote.path);
-            let out = run(
-                &r.cli.bin,
-                &[
-                    "mr",
-                    "list",
-                    "--repo",
-                    &repo,
-                    "--author",
-                    viewer,
-                    "--all",
-                    "--per-page",
-                    &LIST_LIMIT.to_string(),
-                    "--output",
-                    "json",
-                ],
-                Some(&r.dir),
-            )?;
-            Ok(forge::parse_glab(&r.remote.path, &out))
-        }
+    let repo = r.key();
+    let out = run(
+        &r.cli.bin,
+        &[
+            "pr",
+            "list",
+            "--repo",
+            &repo,
+            "--author",
+            "@me",
+            "--state",
+            "all",
+            "--limit",
+            &LIST_LIMIT.to_string(),
+            "--json",
+            GH_FIELDS,
+        ],
+        Some(&r.dir),
+    )?;
+    Ok(forge::parse_gh(&r.remote.path, &out))
+}
+
+/// The signed-in account's MRs in every repository of `group`, one host's
+/// under one account, every state, and whether the answer was cut at
+/// `LIST_LIMIT` (T-1243). One project is asked by itself; more are asked in
+/// one account-wide read, so a pass costs one call a host, not one a
+/// repository, against GitLab's per-minute limit (100 on gitlab.com's free
+/// plan). Both go through `api`, which answers a 429 at once in words
+/// `rate_limited` reads: `glab mr list` sleeps to the limit's reset and
+/// tries again, past `CALL_TIMEOUT`.
+fn list_gitlab(group: &[&RepoQuery]) -> Result<(Vec<Pr>, bool), String> {
+    let Some(r) = group.first() else { return Ok((Vec::new(), false)) };
+    // The signed-in account's MRs are the whole candidate set: with the
+    // account unknown there is no list, never an unfiltered one a
+    // stranger's MR could bind through.
+    let Some(viewer) = r.viewer.as_deref() else {
+        return Err("signed-in account unknown; glab api user did not answer".into());
+    };
+    let filter = format!(
+        "merge_requests?author_username={}&scope=all&state=all&order_by=updated_at&per_page={LIST_LIMIT}",
+        query_word(viewer)
+    );
+    if let [one] = group {
+        let out = one.api(&format!("projects/{}/{filter}", one.project()))?;
+        let found = forge::parse_glab(&one.remote.path, &out);
+        let cut = found.len() >= LIST_LIMIT;
+        return Ok((found, cut));
     }
+    let paths: Vec<String> = group.iter().map(|g| g.remote.path.clone()).collect();
+    let out = r.api(&filter)?;
+    let (found, held) = forge::parse_glab_host(&paths, &out);
+    Ok((found, held >= LIST_LIMIT))
 }
 
 /// One PR read by itself, any state (T-800): what a full list left out.

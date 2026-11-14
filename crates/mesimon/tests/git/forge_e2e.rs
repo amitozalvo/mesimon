@@ -1215,7 +1215,8 @@ fn a_lost_sign_in_is_said_and_asked_again_on_the_minute() {
 }
 
 /// The stub `glab`: `auth status` passes, `api … user` names the account,
-/// `mr list` prints the file the test writes, and `api …/pipelines?sha=X`
+/// an MR list (`api …merge_requests?…`, a project's or the account's across
+/// the host, T-1243) prints the file the test writes, and `api …/pipelines?sha=X`
 /// prints `<pipelines file>.X` where one exists, else no pipeline — so the
 /// merge commit's sha has a pipeline and the squash commit's has none,
 /// which is the lab's shape (T-754). A pipeline's jobs (T-772) are
@@ -1228,10 +1229,10 @@ const GLAB_STUB: &str = r#"#!/bin/sh
 [ -f "$MSMN_GLAB_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "mr list") cat "$MSMN_GLAB_MRS" 2>/dev/null || echo '[]' ;;
   "api --hostname")
     case "$4" in
       user) echo '{"username":"me"}' ;;
+      *merge_requests[?]*) cat "$MSMN_GLAB_MRS" 2>/dev/null || echo '[]' ;;
       *deployments?environment=*)
         env="${4#*environment=}"; env="${env%%&*}"
         cat "$MSMN_GLAB_DEPLOYS.$env" 2>/dev/null || echo '[]' ;;
@@ -1246,7 +1247,7 @@ case "$1 $2" in
 esac
 "#;
 
-/// One merged MR as `glab mr list --output json` prints it under GitLab's
+/// One merged MR as GitLab's MR list prints it under GitLab's
 /// default merge method: a squash lands as a merge commit whose second
 /// parent is the squash commit, so the MR carries both shas.
 fn merged_mr_json(branch: &str, tip: &str, merge_sha: &str, squash_sha: &str) -> String {
@@ -1477,15 +1478,28 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
-/// `GLAB_STUB` with `mr list` answered per repository: the file the test
-/// writes for the `--repo` URL's last segment (`<mrs file>.forge-lab-web`).
+/// `GLAB_STUB` with the MR list answered per repository: a project's list
+/// is the file the test writes for its path's last segment (`<mrs
+/// file>.forge-lab-web`), and the account's list across the host (T-1243)
+/// is every such file's MRs in one array.
 const GLAB_REPO_STUB: &str = r#"#!/bin/sh
+[ -n "$MSMN_GLAB_LOG" ] && echo "$*" >> "$MSMN_GLAB_LOG"
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "mr list") cat "$MSMN_GLAB_MRS.${4##*/}" 2>/dev/null || echo '[]' ;;
   "api --hostname")
     case "$4" in
       user) echo '{"username":"me"}' ;;
+      projects/*merge_requests[?]*)
+        p="${4%%/merge_requests*}"
+        cat "$MSMN_GLAB_MRS.${p##*%2F}" 2>/dev/null || echo '[]' ;;
+      merge_requests[?]*)
+        printf '['; sep=''
+        for f in "$MSMN_GLAB_MRS".*; do
+          [ -f "$f" ] || continue
+          body=$(sed -e '1s/^[[:space:]]*\[//' -e '$s/\][[:space:]]*$//' "$f")
+          [ -n "$body" ] && { printf '%s%s' "$sep" "$body"; sep=','; }
+        done
+        echo ']' ;;
       *pipelines?sha=*)
         sha="${4#*sha=}"; sha="${sha%%&*}"
         if [ -f "$MSMN_GLAB_PIPELINES.$sha" ]; then cat "$MSMN_GLAB_PIPELINES.$sha"; else echo '[]'; fi ;;
@@ -1496,7 +1510,7 @@ case "$1 $2" in
 esac
 "#;
 
-/// One MR of `repo` as `glab mr list --output json` prints it: open, or
+/// One MR of `repo` as GitLab's MR list prints it: open, or
 /// merged at `merge_sha`.
 fn mr_json(repo: &str, iid: u64, branch: &str, tip: &str, merge_sha: Option<&str>) -> String {
     let (state, merged, status) = match merge_sha {
@@ -1546,6 +1560,7 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
             ("PATH", &path_var),
             ("MSMN_GLAB_MRS", &mrs.display().to_string()),
             ("MSMN_GLAB_PIPELINES", &pipelines.display().to_string()),
+            ("MSMN_GLAB_LOG", &stub_dir.join("calls.log").display().to_string()),
         ],
     ) else {
         return;
@@ -1662,6 +1677,15 @@ fn a_two_repo_tickets_first_merge_and_its_wait_are_said() {
     let said = all();
     assert_eq!(said.matches("merged !2").count(), 1, "{said}");
     assert!(!said.contains("merged !8"), "the flags' wake carries !8: {said}");
+    // Two repositories on one host cost one list a pass (T-1243): the
+    // account's across the host, never a project's.
+    let calls = std::fs::read_to_string(stub_dir.join("calls.log")).unwrap_or_default();
+    let lists: Vec<&str> = calls.lines().filter(|l| is_mr_list(l)).collect();
+    assert!(!lists.is_empty(), "{calls}");
+    assert!(
+        lists.iter().all(|l| l.starts_with("api --hostname gitlab.example.com merge_requests?")),
+        "one list for the host: {lists:?}"
+    );
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
@@ -3721,7 +3745,7 @@ fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done
     let _ = std::fs::remove_dir_all(&stub_dir);
 }
 
-/// One MR merged by GitLab's fast-forward method, as `glab mr list` prints
+/// One MR merged by GitLab's fast-forward method, as GitLab's MR list prints
 /// it: no merge commit and no squash, so its head is what landed.
 fn ff_merged_mr_json(iid: u64, branch: &str, head: &str) -> String {
     format!(
@@ -3731,13 +3755,15 @@ fn ff_merged_mr_json(iid: u64, branch: &str, head: &str) -> String {
     )
 }
 
-/// How many `mr list` calls the stub has logged: one per pass here.
+/// How many MR lists the stub has logged: one per pass here.
 fn lists(log: &Path) -> usize {
-    std::fs::read_to_string(log)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.starts_with("mr list"))
-        .count()
+    std::fs::read_to_string(log).unwrap_or_default().lines().filter(|l| is_mr_list(l)).count()
+}
+
+/// Whether a logged glab call is an MR list (T-1243: `api`, a project's or
+/// the account's across the host), never one MR's read.
+fn is_mr_list(call: &str) -> bool {
+    call.starts_with("api ") && call.contains("merge_requests?")
 }
 
 /// T-796: under GitLab's fast-forward merge method a merged MR's head is
@@ -4079,7 +4105,7 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
     };
     let glab_calls = || std::fs::read_to_string(&glab_log).unwrap_or_default();
     let users = || glab_calls().lines().filter(|l| l.ends_with(" user")).count();
-    let mr_lists = || glab_calls().lines().filter(|l| l.starts_with("mr list")).count();
+    let mr_lists = || glab_calls().lines().filter(|l| is_mr_list(l)).count();
     let row = |c: &mut TestClient| match c.request(Command::Snapshot) {
         Response::Board { notices, forge, .. } => (
             notices.into_iter().find(|n| n.kind == "forge_unreachable").map(|n| n.text),
@@ -4168,9 +4194,12 @@ fn a_gitlab_account_that_did_not_answer_is_asked_again_and_its_mrs_listed() {
     assert_eq!(row(&mut c), (None, None), "the advisory row clears");
     assert!(prs_of(&mut c).iter().any(|p| p.ticket == id && p.number == 42), "and keeps GitHub's");
     let lists: Vec<String> =
-        glab_calls().lines().filter(|l| l.starts_with("mr list")).map(str::to_string).collect();
+        glab_calls().lines().filter(|l| is_mr_list(l)).map(str::to_string).collect();
     assert!(!lists.is_empty());
-    assert!(lists.iter().all(|l| l.contains("--author me")), "by the account alone: {lists:?}");
+    assert!(
+        lists.iter().all(|l| l.contains("author_username=me&")),
+        "by the account alone: {lists:?}"
+    );
     // A named account is believed: no ask on the minute's cadence.
     let named = users();
     std::thread::sleep(Duration::from_millis(4500));

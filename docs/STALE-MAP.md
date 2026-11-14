@@ -45148,3 +45148,38 @@ reads the ticket's column. Mesophon: `node --test state.test.js assets.test.js` 
 No golden changed (no golden draws an agy row). No rig run: nothing a Claude or Codex agent or
 the crown is told changed. The full workspace suite is owed once after the merge (a state file's
 schema stamp and `server.rs` changed).
+
+## GitLab is listed through `api`, one list a host (T-1243, 2026-11-14, the author: "on simbly, why? pull requests not read — gitlab.com/simbly/app-v2: glab did not finish within 20s")
+
+- **Cause, measured.** gitlab.com's free plan allows 100 API requests a minute per user
+  (`Ratelimit-Name: burst_traffic_per_user_free_plan`). The simbly board, a folder workspace of
+  ten GitLab repositories, spent about 65 of them: a `glab mr list` per repository each pass
+  (two requests each: `--author` resolves the account through `users?username=` first), plus
+  the pipeline, job and deployment reads. Anything else on the account at the same minute passes
+  100. On a 429, **`glab mr list` sleeps to `Ratelimit-Reset` and tries again** (measured against
+  a local server that answers every request 429: five tries 40 s apart), past `CALL_TIMEOUT`, so
+  the row read "did not finish within 20s"; **`glab api` fails at once** with
+  `glab: 429 Too Many Requests (HTTP 429)`, which `rate_limited` already reads (T-895's words
+  and `BACKOFF`). By hand every call took 1–2 s; a 150 s trace of the daemon's calls had no slow
+  one, so the timeout lived at the minute's peaks.
+- **What changed.** `forge::list_gitlab` replaces glab's half of `list`: one project is read as
+  `api projects/:id/merge_requests?author_username=<account>&scope=all&state=all&order_by=updated_at&per_page=100`,
+  and two or more on one host under one account as one `api merge_requests?…` across the
+  account, sorted to projects by `forge::parse_glab_host` (`references.full`, else `web_url`;
+  another project's MRs dropped). A host list that held 100 MRs marks every repository of it
+  `full`, so a held PR it cut is read by itself (T-800). Each repository keeps its own
+  `RepoReport`, so the backoff and the advisory row are unchanged. The simbly board's ten lists
+  a pass become one; `order_by=updated_at` keeps an old MR that moved inside the window.
+- **Refuted.** "Raise `CALL_TIMEOUT`": `mr list` would still sleep through the whole reset and
+  hold the pass, and the row would still not say rate limit. "A rate-limit probe after a
+  timeout": not needed once no list sleeps; every other GitLab read was `api` already.
+- **Not done.** The pipeline, job and deployment reads are still one call each; with the lists
+  cut, the board should sit near 30 requests a minute while busy (an estimate from the
+  trace, not measured after the change).
+- **Checks.** `cargo ut` (72 + 17 + 765 + 862 + 24 + 1,461 passed, 0 failed), new
+  `forge::tests::an_account_wide_glab_list_sorts_its_mrs_by_project`; `forge_e2e::` (42 passed,
+  no reruns) on stubs that now answer the `api` lists, and
+  `a_two_repo_tickets_first_merge_and_its_wait_are_said` asserts that every list it logged was
+  the host's. Live on gitlab.com with the author's glab 1.107.0: the host list returned 61 MRs
+  across 8 projects in 1.9 s, a project's 9 in 0.7 s. No full suite owed (no file on its list).
+  A running daemon reads the new lists only after `U`.

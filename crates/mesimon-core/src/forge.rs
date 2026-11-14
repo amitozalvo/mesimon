@@ -440,12 +440,41 @@ pub fn gh_rollup(rollup: Option<&Value>) -> Pipeline {
     fold
 }
 
-/// Read `glab mr list -F json`'s array. The list carries no pipeline: that
-/// is read by sha afterwards (`parse_gitlab_pipelines`) and stays `Unknown`
-/// here.
+/// Read a GitLab MR list's array (`projects/:id/merge_requests`). The list
+/// carries no pipeline: that is read by sha afterwards
+/// (`parse_gitlab_pipelines`) and stays `Unknown` here.
 pub fn parse_glab(repo: &str, json: &str) -> Vec<Pr> {
     let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return Vec::new() };
     items.iter().filter_map(|v| glab_mr(repo, v)).collect()
+}
+
+/// Read GitLab's account-wide list (`merge_requests?scope=all`, T-1243):
+/// the MRs of the projects in `paths`, each `repo` spelled as `paths`
+/// spells it; another project's are dropped. With the count of MRs the
+/// answer held, so a cut list is known as one whatever it kept.
+pub fn parse_glab_host(paths: &[String], json: &str) -> (Vec<Pr>, usize) {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else {
+        return (Vec::new(), 0);
+    };
+    let prs = items
+        .iter()
+        .filter_map(|v| {
+            let project = glab_project(v)?;
+            let path = paths.iter().find(|p| p.eq_ignore_ascii_case(&project))?;
+            glab_mr(path, v)
+        })
+        .collect();
+    (prs, items.len())
+}
+
+/// The project an MR object belongs to: `references.full` up to its `!`,
+/// else its `web_url`'s path.
+fn glab_project(v: &Value) -> Option<String> {
+    let full = v.pointer("/references/full").and_then(Value::as_str).unwrap_or_default();
+    match full.rsplit_once('!') {
+        Some((path, _)) if !path.is_empty() => Some(path.to_string()),
+        _ => repo_of_url(v.get("web_url")?.as_str()?).map(|r| r.path),
+    }
 }
 
 /// GitLab's read of one MR (`projects/:id/merge_requests/:iid`, T-784): the
@@ -2170,6 +2199,34 @@ mod tests {
         );
         assert_eq!(gh_commit_pipeline(Pipeline::Passed, Pipeline::Unknown), Pipeline::Unknown);
         assert_eq!(gh_commit_pipeline(Pipeline::Unknown, Pipeline::Passed), Pipeline::Unknown);
+    }
+
+    /// T-1243: one account-wide list serves every project of the host. An
+    /// MR is the project's that `references.full` names (its `web_url`
+    /// where that is absent), spelled as the board spells the project; an
+    /// MR of a project the board does not read is dropped and still counted.
+    #[test]
+    fn an_account_wide_glab_list_sorts_its_mrs_by_project() {
+        let json = r#"[
+          {"iid":16,"references":{"full":"Simbly/App-V2!16"},"web_url":"https://gitlab.com/Simbly/App-V2/-/merge_requests/16",
+           "state":"opened","source_branch":"a","sha":"h16","updated_at":"2026-11-14T10:00:00Z"},
+          {"iid":3,"web_url":"https://gitlab.com/simbly/backend/-/merge_requests/3",
+           "state":"merged","source_branch":"b","sha":"h3","updated_at":"2026-11-14T09:00:00Z"},
+          {"iid":5,"references":{"full":"group/sub/deep!5"},
+           "state":"opened","source_branch":"c","sha":"h5","updated_at":"2026-11-14T08:00:00Z"},
+          {"iid":9,"references":{"full":"someone/else!9"},
+           "state":"opened","source_branch":"d","sha":"h9","updated_at":"2026-11-14T07:00:00Z"}]"#;
+        let paths: Vec<String> =
+            ["simbly/app-v2", "simbly/backend", "group/sub/deep"].map(String::from).into();
+        let (prs, held) = parse_glab_host(&paths, json);
+        assert_eq!(held, 4, "the answer's own count, the dropped MR in it");
+        let got: Vec<(&str, u64)> = prs.iter().map(|p| (p.repo.as_str(), p.number)).collect();
+        assert_eq!(
+            got,
+            [("simbly/app-v2", 16), ("simbly/backend", 3), ("group/sub/deep", 5)],
+            "each by its project as the board spells it; someone/else's dropped"
+        );
+        assert_eq!(parse_glab_host(&paths, "not json"), (Vec::new(), 0));
     }
 
     #[test]
