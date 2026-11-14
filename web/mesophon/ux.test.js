@@ -1189,29 +1189,42 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#summary-card").count(), 0, "no Summary, no card");
     const plain = await page.evaluate(() => {
       const note = fixture.notes["ticket-0"][1];
-      const was = { ...note };
+      const was = fixture.notes["ticket-0"].map((n) => ({ ...n }));
       note.text += "\n\n## Summary\n- [x] Re-read the tip\n- [ ] Requeue it\n";
+      // Long words everywhere a row has them: nothing may push the page sideways.
+      note.name = "A note whose name runs far past the width of any phone that will ever show it";
+      fixture.notes["ticket-0"][0].text += "\n\n## Summary\n- [ ] " + "A box whose words run on past the width of the phone and wrap to a second line ".repeat(2) + "\n";
       note.rev += 1;
+      fixture.notes["ticket-0"][0].rev += 1;
       fixture.stampNotes();
       fixture.update();
       return was;
     });
     await page.locator("#summary-card").waitFor();
-    assert.equal(await page.locator(".summary-count").textContent(), "1/2");
-    assert.deepEqual(await page.locator(".summary-box").evaluateAll((all) => all.map((n) => [n.textContent.trim(), n.getAttribute("aria-checked")])),
+    await until(page, () => document.querySelector(".summary-count")?.textContent === "1/3");
+    assert.deepEqual(await page.locator(".summary-box").evaluateAll((all) => all.slice(-2).map((n) => [n.textContent.trim(), n.getAttribute("aria-checked")])),
       [["Re-read the tip", "true"], ["Requeue it", "false"]]);
+    // The list is as wide as the page: a long box wraps, a long name ends in
+    // an ellipsis, and no row lies over the next.
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "the page does not scroll sideways");
+    assert.deepEqual(await page.evaluate(() => {
+      const view = document.querySelector("#notes");
+      const wide = [...view.querySelectorAll("*")].filter((n) => n.getBoundingClientRect().right > view.getBoundingClientRect().right + 0.5).map((n) => n.className);
+      const texts = [...view.querySelectorAll(".summary-text")].map((n) => n.getBoundingClientRect());
+      const over = texts.filter((r, i) => i > 0 && r.top < texts[i - 1].bottom - 0.5).length;
+      return { sideways: view.scrollWidth > view.clientWidth, wide, over };
+    }), { sideways: false, wide: [], over: 0 });
     if (size === "phone")
       assert.deepEqual(await page.locator(".summary-box, .note-row, #list-add-note").evaluateAll((all) =>
         all.filter((n) => n.getBoundingClientRect().height < 44).map((n) => n.textContent)), []);
     await shot("notes-list");
-    await page.locator(".summary-box").nth(1).click();
+    await page.locator(".summary-box").nth(2).click();
     await until(page, () => /- \[x\] Requeue it/.test(fixture.notes["ticket-0"][1].text));
-    await until(page, () => document.querySelector(".summary-count")?.textContent === "2/2");
+    await until(page, () => document.querySelector(".summary-count")?.textContent === "2/3");
     const ticked = await page.evaluate(() => fixture.noteWrites.at(-1));
     assert.deepEqual([ticked.note, ticked.text.includes("- [x] Re-read the tip\n- [x] Requeue it\n")], ["plan-0", true]);
     await page.evaluate((was) => {
-      const note = fixture.notes["ticket-0"][1];
-      Object.assign(note, was);
+      fixture.notes["ticket-0"].forEach((note, i) => Object.assign(note, was[i]));
       fixture.noteWrites.length = 0;
       fixture.stampNotes();
       fixture.update();
@@ -2197,6 +2210,11 @@ async function editFlow(browser, engineName, size, viewport) {
       );
       assert.deepEqual(short, []);
     }
+    assert.deepEqual(await page.evaluate(() => {
+      const view = document.querySelector("#details");
+      return [view.scrollWidth <= view.clientWidth, document.documentElement.scrollWidth <= innerWidth,
+        [...view.querySelectorAll("*")].filter((n) => n.getBoundingClientRect().right > view.getBoundingClientRect().right + 0.5).length];
+    }), [true, true, 0], "Details is as wide as the page");
     await shot("details-tab");
     await page.locator("#tab-terminal, #tab-chat").first().click();
     await page.locator("#details-pane").waitFor({ state: "detached" });

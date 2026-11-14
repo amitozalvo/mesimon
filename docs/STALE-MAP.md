@@ -44748,3 +44748,16 @@ and Deny and say why, Start an agent now, the attach menu and the digest. No rer
 before it stopped on three tests whose `[data-column]` click now matched the phone Board's new
 row as well as the column tab; they name the tab now. Each new screen was looked at by screenshot
 at 390 px beside the prototype's. Not run: a real phone, its camera, its vibration.
+
+## The Notes list and Details are as wide as the page (T-1208, 2026-11-14, the author's phone: "details page overflows")
+
+On the shipped page the Notes list ran off the right edge and a Summary box of two lines lay over
+the next. Both were the second pass's own: `.notes-list`, `.summary-card`, `.note-rows` and
+`.note-row` were grids with no column, so their one `auto` track grew to the longest unbroken
+content (a note's `nowrap` name), and a box drew 44 px tall with a negative margin sized for one
+line. The grids are `minmax(0, 1fr)` now (Details and Settings' two pages with them), and a box's
+air is its own padding, so a wrapped one keeps it. The suite passed the first time because its
+notes were short; `notesFlow` now gives the list a long name and a box that wraps, and asserts
+that nothing passes the view's right edge, the page does not scroll sideways and no box lies over
+the next; `editFlow` asserts the same widths of Details. Checks: the UX suite on Chromium and
+WebKit at phone size, green.

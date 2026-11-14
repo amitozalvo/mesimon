@@ -5924,14 +5924,16 @@ input[type="checkbox"][role="switch"]:checked::before {
   font-size: 0.6875rem;
   font-weight: 400;
 }
-/* A box is a 44px press that takes a text line's room. */
+/* A box is a 44px press that takes a text line's room, and a box whose
+   words wrap keeps the same air above and under them. */
 .summary-box {
   min-height: 44px;
   margin-block: -6px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  padding: 0;
+  padding: 12px 0;
+  line-height: 20px;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -5948,6 +5950,7 @@ input[type="checkbox"][role="switch"]:checked::before {
   flex: none;
   width: 18px;
   height: 18px;
+  margin-top: 1px;
   display: grid;
   place-items: center;
   border: 1.5px solid var(--ink3);
@@ -6285,4 +6288,24 @@ a.set-row {
   color: var(--ink3);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+/* A list in a tab's view is as wide as the page and no wider (T-1208): its
+   grids are one column that gives way, so a long title, box or branch wraps
+   or ends in an ellipsis where it would have pushed the page sideways. */
+.notes-list,
+.summary-card,
+.note-rows,
+.note-row,
+.details-pane,
+.settings-home,
+.settings-theme {
+  grid-template-columns: minmax(0, 1fr);
+}
+.details-scroll {
+  overflow-x: hidden;
+}
+.summary-card h3 > span:first-child,
+.note-row-head b {
+  min-width: 0;
 }
