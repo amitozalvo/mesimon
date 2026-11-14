@@ -44888,3 +44888,9 @@ change reads no width).
   of claude show the actual tier of the ticket".
 - **Checks.** `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes`,
   `table_rows_name_their_tier`; the three table goldens reminted (the tier column).
+
+## The table's main tag is a half block (T-1240 follow-up, 2026-11-14, the author: "can the main tag be bigger than the secondary tag?")
+
+A table row's first tag is `▌` in the bar's cell, the second stays `▎` beside it, so the main tag
+reads first and the two stay apart (the half block's right half is the gap). Checks: `cargo ut`;
+`table_rows_wear_both_tags_as_thin_stripes` now asks for `▌` then `▎`.

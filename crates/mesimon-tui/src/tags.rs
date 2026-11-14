@@ -81,8 +81,9 @@ pub(crate) fn bar_spans(
 
 /// A table row's tag stripes (T-1240): rows stand with no blank row
 /// between them, so the stripe end's hang has nowhere to go. Each of the
-/// first two tags with a colour is a thin stripe, `▎`, in its own cell: the
-/// first in the bar's cell, the second in the pad beside it. `None` with no
+/// first two tags with a colour is a stripe in its own cell: the first a
+/// half block, `▌`, in the bar's cell, and the second a thinner `▎` in the
+/// pad beside it, so the first reads as the main one. `None` with no
 /// tag that has a colour, or no tints to draw them in; the caller keeps
 /// the card's own bar then.
 pub(crate) fn row_stripes(theme: &Theme, tags: &[Painted]) -> Option<(Span<'static>, Option<Span<'static>>)> {
@@ -90,9 +91,10 @@ pub(crate) fn row_stripes(theme: &Theme, tags: &[Painted]) -> Option<(Span<'stat
         return None;
     }
     let mut tints = blocks(tags);
-    let stripe = |n: u8| Span::styled("▎", Style::default().fg(theme.pip(n as usize)));
-    let first = stripe(tints.next()?);
-    Some((first, tints.next().map(stripe)))
+    let stripe =
+        |glyph: &'static str, n: u8| Span::styled(glyph, Style::default().fg(theme.pip(n as usize)));
+    let first = stripe("▌", tints.next()?);
+    Some((first, tints.next().map(|n| stripe("▎", n))))
 }
 
 /// Put `cell` in the line's cell `at` where that cell is a blank, splitting
