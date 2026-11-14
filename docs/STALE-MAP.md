@@ -44808,3 +44808,21 @@ tablet and desktop and on WebKit at phone, green. WebKit at tablet and desktop n
   and `askqueue::tests::an_agy_start_is_stamped_past_the_build_before_it`; the `tier_e2e`,
   `agy_e2e` and `ask_queue_e2e` files. The full workspace suite is owed once after the merge
   (a state file's schema changed).
+
+## Find lists tickets alone; Sent has no way in on a narrow screen (T-1208, 2026-11-14, the author's decision)
+
+The author: "remove the DO section of find (it doesn't belong there). the 'sent tickets' will be
+hidden right now we need to rethink it because it doesn't belong anywhere right now". **Refuted:
+the second pass's Find as "the few things to do that have no tab of their own"** (Sent tickets,
+New ticket, Theme). The three rows are gone; New ticket is the bar's plus and Theme is Settings'.
+Find's tab no longer carries the not-landed count and is not the open tab over Sent. On a phone
+and a tablet (the tab bar, 1100 px and under) Sent now has one way in, a ghost: a ticket still
+waiting in the browser or at the relay opens it, where it is taken back or edited. **What that
+leaves unreachable there, until Sent is given a place: a ticket the terminal refused or whose
+delivery is unknown (its toast says so once; its words, "Edit and send again" and "Discard" are
+in Sent alone), and the list of landed ones.** A desktop's sidebar keeps its Sent row: the
+decision was read as the phone design's, and said so to the author. Nothing in `sent.js` or the
+store changed. The suite still reads Sent at every size: on a narrow screen its `mode("sent")`
+presses the sidebar's own button, which such a screen does not draw. Checks: state and assets
+tests, the UX suite on Chromium at phone, tablet and desktop and on WebKit at phone, green,
+before the one-word change of Find's subtitle ("tickets"), which no test reads.

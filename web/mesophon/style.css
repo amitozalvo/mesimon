@@ -6147,10 +6147,6 @@ button.set-row:hover {
   padding-inline: 6px 10px;
 }
 
-/* Find (T-1208): the things to do are Settings' rows, inside the list's gutter. */
-.find-do .set-list {
-  margin: 0 16px;
-}
 #shell[data-mode="find"] #tickets .group-label {
   padding-bottom: 6px;
 }

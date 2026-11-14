@@ -559,30 +559,16 @@ function SentItem({ store, board, item }) {
   </article>`;
 }
 
-// Find (T-1208), a phone's fourth tab: the few things to do from here that
-// have no tab of their own, then the tickets the words match, or the last
-// few touched while there are none. The words narrow the things to do too.
+// Find (T-1208), a narrow screen's fourth tab: the tickets the words match,
+// or the last few touched while there are none. It lists tickets and
+// nothing else: the things to do it once held were taken out by the
+// person's decision, and Sent with them, which has no way in on a narrow
+// screen but a ticket still waiting to land (its ghost) until it is given
+// a place of its own.
 export function FindList({ store, board }) {
   const query = board.search.trim();
-  const q = query.toLocaleLowerCase();
   const hits = board.found();
-  const unsettled = store.sent.unsettled(store.active?.pin.board);
-  const acts = [
-    { id: "find-sent", mode: "sent", icon: "send", label: "Sent tickets", note: unsettled ? `${unsettled} not landed yet` : "", run: () => store.setMode("sent") },
-    { id: "find-new", icon: "plus", label: "New ticket", note: "", run: () => store.openComposer() },
-    { id: "find-theme", icon: "palette", label: "Theme", note: "", run: () => {
-      store.openSettings(true);
-      store.showSettingsPage("theme");
-    } },
-  ].filter((a) => !q || a.label.toLocaleLowerCase().includes(q));
   return html`
-    ${acts.length > 0 && html`<section class="group find-do">
-      <h3 class="group-label"><span>Do</span></h3>
-      <div class="set-list">${acts.map((a) => html`<button id=${a.id} type="button" class="set-row" key=${a.id} data-mode=${a.mode}
-        onClick=${a.run}><span class="set-icon"><${Icon} name=${a.icon} size=${16} /></span>
-        <span class="set-label">${a.label}</span>${a.note && html`<span class="set-value">${a.note}</span>`}
-        <${Icon} name="chevronRight" size=${16} cls="set-chev" /></button>`)}</div>
-    </section>`}
     ${hits.length > 0 && html`<${Group} label=${query ? "Tickets" : "Recent"} count=${hits.length}>
       <div class="cards">${hits.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} column=${true} />`)}</div>
     </${Group}>`}

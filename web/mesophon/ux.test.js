@@ -682,8 +682,10 @@ async function ticketFlow(browser, engineName, size, viewport) {
   // is not on screen.
   const mode = async (name) => {
     const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await press.click();
+    if (await press.count()) return press.click();
+    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+    // through the sidebar's own button, which such a screen does not draw.
+    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
   };
   const openSheet = () => page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
   const connected = () =>
@@ -895,6 +897,15 @@ async function ticketFlow(browser, engineName, size, viewport) {
     if (size === "phone") await page.locator('.column-tab[data-column="IN PROGRESS"]').click();
     assert.equal(await page.locator(".ticket.card.ghost").count(), 2);
     await shot("board-ghosts");
+    // A ghost is a narrow screen's one way into Sent (T-1208), where its
+    // ticket is taken back or edited; no tab is the open one over it.
+    if (size !== "desktop") {
+      await page.locator(".ticket.card.ghost").first().click();
+      await count("relay", 2);
+      assert.equal(await page.locator("#list-title").textContent(), "Sent");
+      assert.equal(await page.locator('#modes .mode[aria-pressed="true"]').count(), 0);
+      await mode("board");
+    }
     // A receipt the relay forges does not count: only the host's seal does.
     await page.evaluate(() => {
       const [id] = Object.keys(fixture.mail).filter((id) => !fixture.mail[id].answer);
@@ -1576,8 +1587,10 @@ async function startFlow(browser, engineName, size, viewport) {
   // is not on screen.
   const mode = async (name) => {
     const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await press.click();
+    if (await press.count()) return press.click();
+    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+    // through the sidebar's own button, which such a screen does not draw.
+    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
   };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
@@ -1956,8 +1969,10 @@ async function tierFlow(browser, engineName, size, viewport) {
   // is not on screen.
   const mode = async (name) => {
     const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await press.click();
+    if (await press.count()) return press.click();
+    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+    // through the sidebar's own button, which such a screen does not draw.
+    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
   };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
@@ -2111,8 +2126,10 @@ async function editFlow(browser, engineName, size, viewport) {
   // is not on screen.
   const mode = async (name) => {
     const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await press.click();
+    if (await press.count()) return press.click();
+    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+    // through the sidebar's own button, which such a screen does not draw.
+    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
   };
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
@@ -3065,8 +3082,10 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
   const view = async (name) => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
     const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await press.click();
+    if (await press.count()) return press.click();
+    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+    // through the sidebar's own button, which such a screen does not draw.
+    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
   };
   const sheet = page.locator("#away-sheet");
   const letter = page.locator("#letter-row");
@@ -4249,9 +4268,7 @@ async function keptFlow(browser, engineName) {
     await page.locator("#new-title").fill("Written on the kept page");
     await page.locator("#send-ticket").click();
     await sheet.waitFor({ state: "hidden" });
-    if (!(await page.locator('button[data-mode="sent"]').locator("visible=true").count()))
-      await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await page.locator('button[data-mode="sent"]').locator("visible=true").click();
+    await page.evaluate(() => document.querySelector('.side-nav button[data-mode="sent"]').click());
     await page.locator('.sent-item[data-status="local"]').waitFor();
     await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-page.png`) });
     await page.evaluate(() => localStorage.removeItem("fixture-relay-down"));
@@ -4262,9 +4279,7 @@ async function keptFlow(browser, engineName) {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.page), undefined);
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-0");
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
-    if (!(await page.locator('button[data-mode="sent"]').locator("visible=true").count()))
-      await page.locator('button[data-mode="find"]').locator("visible=true").click();
-    await page.locator('button[data-mode="sent"]').locator("visible=true").click();
+    await page.evaluate(() => document.querySelector('.side-nav button[data-mode="sent"]').click());
     await page.locator('.sent-item[data-status="landed"]').filter({ hasText: "Written on the kept page" }).waitFor();
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the kept page opens with no network and hands its ticket over passed`);
@@ -4317,8 +4332,10 @@ try {
         };
         const mode = async (name) => {
           const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-          if (!(await press.count())) await page.locator('button[data-mode="find"]').locator("visible=true").click();
-          await press.click();
+          if (await press.count()) return press.click();
+          // Sent has no way in on a narrow screen (T-1208): the suite reaches it
+          // through the sidebar's own button, which such a screen does not draw.
+          await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
         };
         // The delivery pill sits in the box's bar (T-1208).
         const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
@@ -4832,15 +4849,16 @@ try {
             assert.equal(await page.locator("#search").count(), 0, "no field over a phone's Inbox");
             await mode("find");
             assert.equal(await page.locator("#list-title").textContent(), "Find");
-            assert.deepEqual(await page.locator(".find-do .set-label").allTextContents(), ["Sent tickets", "New ticket", "Theme"]);
+            // Find lists tickets and nothing else (T-1208, the person's
+            // decision): no things to do, and no way into Sent from here.
+            assert.equal(await page.locator(".find-do, #find-sent, #find-new, #find-theme").count(), 0);
+            assert.equal(await page.locator('button[data-mode="sent"]').locator("visible=true").count(), 0, "Sent has no tab on a phone");
             assert(await page.locator(".ticket").count() > 0, "the last few touched, before any words");
           }
           await page.locator("#search").fill("nothing-matches");
           assert.equal(await page.locator(".ticket").count(), 0);
           if (size === "phone") {
             assert.match(await page.locator("#tickets").textContent(), /No tickets match your search/);
-            await page.locator("#search").fill("sent");
-            assert.deepEqual(await page.locator(".find-do .set-label").allTextContents(), ["Sent tickets"]);
             await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-find.png`) });
           }
           await page.locator("#search").fill("Agent task 3");

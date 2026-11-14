@@ -165,21 +165,20 @@ function ModeButtons({ store, board, ids = false }) {
 }
 
 // The phone's tab bar (T-1208): Inbox and Board, New ticket in the middle,
-// then Find and Settings. Sent is a row in Find, with what has not landed.
+// then Find and Settings. Sent has no tab here: a ticket still waiting to
+// land opens it, and over it no tab is the open one.
 function TabBar({ store, board }) {
   const mode = board?.mode || "agents";
   const needs = board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0;
-  const unsettled = store.sent.unsettled(store.active?.pin.board);
-  // Sent is opened from Find, so Find's tab stays the open one over it.
   const tab = (id, m, icon, label, extra) => html`<button id=${id} type="button" class="mode" data-mode=${m}
-      aria-pressed=${String(mode === m || (m === "find" && mode === "sent"))} onClick=${() => store.setMode(m)}>
+      aria-pressed=${String(mode === m)} onClick=${() => store.setMode(m)}>
       <${Icon} name=${icon} size=${22} width=${1.8} /><span>${label}</span>${extra}</button>`;
   return html`
     ${tab("agents-mode", "agents", "inbox", "Inbox", needs > 0 && html`<span class="badge">${needs}</span>`)}
     ${tab("board-mode", "board", "kanban", "Board", null)}
     <button id="new-ticket-fab" type="button" class="mode mode-new" disabled=${!board} aria-label="New ticket"
       onClick=${() => store.openComposer(mode === "board" ? board.column : undefined)}><span class="mode-disc"><${Icon} name="plus" size=${20} width=${2.4} /></span></button>
-    ${tab("find-mode", "find", "search", "Find", unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`)}
+    ${tab("find-mode", "find", "search", "Find", null)}
     <button id="settings-mode" type="button" class="mode" aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
       <${Icon} name="settings" size=${22} width=${1.8} /><span>Settings</span></button>`;
 }
@@ -497,7 +496,7 @@ function WorkList({ store, bp }) {
       : mode === "board"
         ? plural(board.visible().length, "ticket")
         : mode === "find"
-          ? "tickets and things to do"
+          ? "tickets"
           : `${sent.length} sent`;
   const loading = store.screen === "shell" && store.active && !board;
   const swipe = useSwipe(mode === "board" && bp === "phone" && !!board, (step) => store.stepColumn(step));
