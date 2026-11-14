@@ -45064,3 +45064,20 @@ in a scratch checkout, trusted by the session's own settings: the start's title,
 an Esc, an alt+m and a wake with words, each acked; the wake's agy recalled the first turn's
 answer. No rig run: agy has no rig yet, and what Claude, Codex or a crown is told did not change.
 The full workspace suite is owed once after the merge (`server.rs`).
+
+## `^R` steps a ticket's tier back (T-1242, 2026-11-14, the author: "^R (capital R) to cycle back tier")
+
+- **What changed.** `Verb::TierPrev` on `Key::Ctrl('R')` beside each of the four `^r` bindings
+  (board, ticket page, the one-line field, the editor): the same ring the other way round.
+  `Book::next_after` became `Book::step_from(ticket, from, back)`; `cycle_tier` and
+  `step_field_tier` take `back`. A full turn back still lands on `None`, the default stored as
+  inherit. Overlay-only (`prio: 0`, hint `tier back`); the ticket page's "`^r` next" clause and
+  the footer are unchanged, so no golden moved.
+- **Off the legacy floor on `^S`/`^K`'s clause.** Every `^R` binding is gated on `rich_keys`: a
+  terminal without the kitty tier sends the bare `^r`, which steps forward, so the press degrades
+  to the long way round, never to another verb. `Ctrl('R')` joins `OFF_FLOOR`.
+- **Refuted.** "Rebind `^r`/`^R` to a pair the legacy floor spells": T-1192 gave `^n ^p` to the
+  link walk, and the forward step has to stay on every terminal.
+- **Checks.** `cargo ut` (72 + 17 + 764 + 859 + 24 + 1,459 passed, 0 failed), new
+  `keymap::ctrl_shift_r_is_inert_without_rich_keys`, `app::ctrl_shift_r_steps_the_tier_back`, and
+  back-step asserts in `tier`'s ring test. No e2e names the changed functions; no full suite owed.

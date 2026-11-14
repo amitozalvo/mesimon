@@ -10204,7 +10204,8 @@ impl App {
             Verb::CrownTour => self.open_tour(),
             // `^r` on the board or the ticket page; the fields take theirs
             // in `key_input` and `key_editor`.
-            Verb::TierNext => self.cycle_tier()?,
+            Verb::TierNext => self.cycle_tier(false)?,
+            Verb::TierPrev => self.cycle_tier(true)?,
             Verb::TierModelName => self.type_tier_model(),
             Verb::CrownBudget => {
                 if !self.catch_up()? {
@@ -13839,14 +13840,17 @@ impl App {
             // `^r` (T-443): the tier the launch these words end in runs on,
             // riding the draft or the ask. The keymap offers it only where
             // the field's ring has somewhere to go.
-            Some(Verb::TierNext) => match &mut purpose {
-                InputPurpose::Create { tier, .. } => self.step_field_tier(None, tier),
-                InputPurpose::Prompt { target: AskTarget::Ticket(t), tier, .. } => {
-                    let t = *t;
-                    self.step_field_tier(Some(t), tier)
+            Some(v @ (Verb::TierNext | Verb::TierPrev)) => {
+                let back = v == Verb::TierPrev;
+                match &mut purpose {
+                    InputPurpose::Create { tier, .. } => self.step_field_tier(None, tier, back),
+                    InputPurpose::Prompt { target: AskTarget::Ticket(t), tier, .. } => {
+                        let t = *t;
+                        self.step_field_tier(Some(t), tier, back)
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             // The ask history, shell-style. `↑` from the ordinary field keeps
             // the draft and shows the newest ask; each further `↑` goes one
             // older and stops at the oldest. `↓` comes back the same way, and
@@ -14263,14 +14267,17 @@ impl App {
                 EditorPurpose::Note { .. } => {}
             },
             // The field's `^r` (T-443) in the room.
-            Some(Verb::TierNext) => match &mut ed.purpose {
-                EditorPurpose::Compose { tier, .. } => self.step_field_tier(None, tier),
-                EditorPurpose::Ask { target: AskTarget::Ticket(t), tier, .. } => {
-                    let t = *t;
-                    self.step_field_tier(Some(t), tier)
+            Some(v @ (Verb::TierNext | Verb::TierPrev)) => {
+                let back = v == Verb::TierPrev;
+                match &mut ed.purpose {
+                    EditorPurpose::Compose { tier, .. } => self.step_field_tier(None, tier, back),
+                    EditorPurpose::Ask { target: AskTarget::Ticket(t), tier, .. } => {
+                        let t = *t;
+                        self.step_field_tier(Some(t), tier, back)
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Some(Verb::EditorPaste) => self.read_clipboard_into(&ed),
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
@@ -19373,8 +19380,8 @@ mod tests {
         // The first press waits for the push's board; the second steps
         // from the first's laid pick (T-1131) and waits for none.
         release_late(&hold, LATE);
-        app.cycle_tier().unwrap();
-        app.cycle_tier().unwrap();
+        app.cycle_tier(false).unwrap();
+        app.cycle_tier(false).unwrap();
         assert_eq!(app.tiers().of_ticket(id).id, twice, "drawn at once");
         while !hold.borrow().replies.is_empty() {
             release(&hold);
@@ -23695,6 +23702,65 @@ mod tests {
             "{:?}",
             sent.borrow()
         );
+    }
+
+    /// `^R` (T-1242): `^r` the other way round the same ring, on the card
+    /// and in the composer — and nothing where the terminal cannot tell it
+    /// from `^r`.
+    #[test]
+    fn ctrl_shift_r_steps_the_tier_back() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        let mut board = board_three_columns();
+        for (id, name) in [("01QUICK", "quick"), ("01DEEP", "deep")] {
+            board.tiers.push(Tier {
+                id: id.into(),
+                name: name.into(),
+                provider: AgentProvider::ClaudeCode,
+                model: "sonnet".into(),
+                effort: Effort::High,
+                description: String::new(),
+            });
+        }
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        let ctrl_shift_r = |app: &mut App| {
+            app.handle_key(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                .unwrap()
+        };
+        let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
+        ctrl_shift_r(&mut app);
+        assert!(!sent_contains(&sent, "SetTicketTier"), "no kitty tier, no ^R");
+        app.rich_keys = true;
+        ctrl_shift_r(&mut app);
+        assert_eq!(pick(&app).as_deref(), Some("01DEEP"), "back from the default wraps");
+        ctrl_shift_r(&mut app);
+        assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
+        ctrl_shift_r(&mut app);
+        assert_eq!(pick(&app), None, "back to the default, stored as inherit");
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Create {
+                workspace: None,
+                tags: vec![],
+                description: None,
+                images: vec![],
+                plan: false,
+                tier: None,
+            },
+            buffer: EditBuffer::from_text("new work".into(), mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        ctrl_shift_r(&mut app);
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Create { tier: Some(t), .. }, .. }
+                    if t == "01DEEP"
+            ),
+            "{:?}",
+            app.mode
+        );
+        assert!(app.status.starts_with("deep"), "{}", app.status);
     }
 
     /// The tiers list makes a tier and its page edits it: a name typed in

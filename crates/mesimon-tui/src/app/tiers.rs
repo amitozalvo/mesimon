@@ -144,12 +144,13 @@ impl App {
     }
 
     /// `^r` on the board or the ticket page: the ticket's next tier, at
-    /// once. The status says what the press did to the seat.
+    /// once — or, `back` (`^R`, T-1242), the one before. The status says
+    /// what the press did to the seat.
     ///
     /// The step is laid on the card at once (T-1131), as a digit's tag is
     /// (T-911): the reveal read the board before its landing and flashed
     /// the tier the press was leaving.
-    pub(crate) fn cycle_tier(&mut self) -> Result<()> {
+    pub(crate) fn cycle_tier(&mut self, back: bool) -> Result<()> {
         // The tier as the daemon has it (T-812 review): a second press
         // before the first's board lands steps from the first's laid pick.
         let on = self.subject();
@@ -160,7 +161,7 @@ impl App {
         let Some(id) = self.subject() else { return Ok(()) };
         let book = self.tiers();
         let current = book.of_ticket(id).id;
-        let Some(next) = book.next_after(id, &current) else { return Ok(()) };
+        let Some(next) = book.step_from(id, &current, back) else { return Ok(()) };
         let stored = book.stored_pick(&next.id);
         let words = self.tier_press_words(id, &next);
         match self.req(Command::SetTicketTier { id, tier: Some(next.id.clone()) }) {
@@ -193,13 +194,15 @@ impl App {
         }
     }
 
-    /// `^r` in a text field: the pick steps along the field's ring, and
-    /// comes back to `None` on the tier the launch would run anyway — so a
-    /// full turn of the ring leaves the draft as it was.
+    /// `^r` in a text field: the pick steps along the field's ring (`^R`
+    /// back along it, T-1242), and comes back to `None` on the tier the
+    /// launch would run anyway — so a full turn of the ring leaves the draft
+    /// as it was.
     pub(super) fn step_field_tier(
         &mut self,
         ticket: Option<ulid::Ulid>,
         pick: &mut Option<String>,
+        back: bool,
     ) {
         let book = self.tiers();
         let (ring, base) = match ticket {
@@ -210,7 +213,13 @@ impl App {
             return;
         }
         let at = pick.clone().unwrap_or_else(|| base.clone());
-        let i = ring.iter().position(|t| t.id == at).map_or(0, |i| (i + 1) % ring.len());
+        let n = ring.len();
+        let i = match (ring.iter().position(|t| t.id == at), back) {
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+            (None, false) => 0,
+            (None, true) => n - 1,
+        };
         let next = ring[i].clone();
         *pick = (next.id != base).then(|| next.id.clone());
         self.status = format!("{} ∙ {}", next.name, next.summary());

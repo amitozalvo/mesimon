@@ -860,6 +860,10 @@ pub enum Verb {
     /// ticket page at once, in the composer and the ask field as a pick
     /// that rides the draft or the words, like `^p`.
     TierNext,
+    /// `^R` (T-1242): `TierNext` the other way round the ring, wherever
+    /// `^r` is — off the legacy floor, so only where the terminal tells
+    /// ctrl+shift+r from ctrl+r.
+    TierPrev,
     /// `i` on a tier page's Model row (T-951): a model name typed in place,
     /// for one the provider's list does not offer (an older model).
     TierModelName,
@@ -2888,8 +2892,8 @@ static BOARD: &[Binding] = &[
         // session"). A Ctrl-letter because the same key works inside the
         // ask field and the composer, which swallow every plain letter;
         // `^r` (T-1192: `^n ^p` are the link walk's, the pair every list
-        // takes), the only way it goes — Ctrl has no Shift twin on the
-        // legacy floor, so the ring wraps rather than reverses. Applies
+        // takes); `^R` below goes back (T-1242), where the terminal can
+        // spell it — on the legacy floor the ring only wraps. Applies
         // at once: an empty seat starts on it, a parked one wakes on it, a
         // live one switches at its next idle. Overlay-only on the board, the
         // crown's reason: the open card wears the tier, and the status line
@@ -2899,6 +2903,20 @@ static BOARD: &[Binding] = &[
         show: "^r",
         hint: |_| "tier",
         avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // `^r` the other way round the ring (T-1242). Off the legacy floor
+        // on `^S`'s clause: a terminal without the kitty tier sends the bare
+        // `^r`, which steps forward — the same ring, the long way.
+        keys: &[Key::Ctrl('R')],
+        verb: Verb::TierPrev,
+        show: "^R",
+        hint: |_| "tier back",
+        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -3650,6 +3668,20 @@ static TICKET: &[Binding] = &[
         show: "^r",
         hint: |_| "tier",
         avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // `^r` the other way round the ring (T-1242). Off the legacy floor
+        // on `^S`'s clause: a terminal without the kitty tier sends the bare
+        // `^r`, which steps forward — the same ring, the long way.
+        keys: &[Key::Ctrl('R')],
+        verb: Verb::TierPrev,
+        show: "^R",
+        hint: |_| "tier back",
+        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -8176,6 +8208,19 @@ static INPUT: &[Binding] = &[
         prio: 30,
     },
     Binding {
+        // The field's `^r` the other way round (T-1242); `^S`'s clause.
+        // Overlay-only: the footer's `^r` already says the pick is there.
+        keys: &[Key::Ctrl('R')],
+        verb: Verb::TierPrev,
+        show: "^R",
+        hint: |_| "tier back",
+        avail: |c| (c.composing || c.prompting) && c.tier_cycle && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // The composer grows: `Tab` opens the full editor with the title
         // carried over and the cursor in the description. The ask field
         // grows the same way (T-380, "tab on ask agent to show big composer
@@ -8715,6 +8760,20 @@ static EDITOR: &[Binding] = &[
         group: Group::Sessions,
         mutates: false,
         prio: 27,
+    },
+    Binding {
+        // The room's `^r` the other way round (T-1242); `^S`'s clause.
+        keys: &[Key::Ctrl('R')],
+        verb: Verb::TierPrev,
+        show: "^R",
+        hint: |_| "tier back",
+        avail: |c| {
+            c.editing && (c.editor_composing || c.editor_asking) && c.tier_cycle && c.rich_keys
+        },
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 0,
     },
     Binding {
         // Composing, the pick rides with the draft; on a ticket that exists
@@ -9617,6 +9676,36 @@ mod tests {
         assert_eq!(resolve(Scope::Links, Key::Char('c'), &Ctx::default()), Some(Verb::LinkCopy));
     }
 
+    /// `^R` is `^r` the other way round the ring (T-1242), wherever `^r` is;
+    /// on the legacy floor the press ARRIVES as `^r` and steps forward.
+    #[test]
+    fn ctrl_shift_r_is_inert_without_rich_keys() {
+        ambiguous_atoms_are_inert_without_rich_keys(Key::Ctrl('R'));
+        let tiers =
+            Ctx { has_ticket: true, tier_cycle: true, rich_keys: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Ctrl('R'), &tiers), Some(Verb::TierPrev), "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('r'), &tiers), Some(Verb::TierNext), "{scope:?}");
+            let legacy = Ctx { rich_keys: false, ..tiers.clone() };
+            assert_eq!(resolve(scope, Key::Ctrl('r'), &legacy), Some(Verb::TierNext), "{scope:?}");
+            let archived = Ctx { ticket_archived: true, ..tiers.clone() };
+            assert_eq!(resolve(scope, Key::Ctrl('R'), &archived), None, "{scope:?}");
+        }
+        let field =
+            Ctx { prompting: true, tier_cycle: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('R'), &field), Some(Verb::TierPrev));
+        let room = Ctx {
+            editing: true,
+            editor_composing: true,
+            tier_cycle: true,
+            rich_keys: true,
+            ..Default::default()
+        };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('R'), &room), Some(Verb::TierPrev));
+        let ringless = Ctx { tier_cycle: false, ..room };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('R'), &ringless), None);
+    }
+
     /// `^j` is the summary dialog (T-696) on both screens, gated on the
     /// cache holding a section — never on the terminal's tier, since the
     /// atom is a plain Ctrl chord on the legacy floor — and inside the
@@ -10146,6 +10235,8 @@ mod tests {
         Key::Ctrl('S'),
         // ctrl+shift+k: the same clause, `ctrl_shift_k_is_inert_without_rich_keys`.
         Key::Ctrl('K'),
+        // ctrl+shift+r: the same clause, `ctrl_shift_r_is_inert_without_rich_keys`.
+        Key::Ctrl('R'),
         Key::AltLeft,
         Key::AltRight,
         Key::AltUp,

@@ -442,18 +442,22 @@ impl<'a> Book<'a> {
         }
     }
 
-    /// The tier after `from` on the ticket's ring, wrapping; `None` when the
-    /// ring has nothing else to offer.
-    pub fn next_after(&self, ticket: ulid::Ulid, from: &str) -> Option<Tier> {
+    /// The tier after `from` on the ticket's ring, or before it where `back`
+    /// (`^R`, T-1242), wrapping; `None` when the ring has nothing else to
+    /// offer. A `from` off the ring steps onto its first tier, or its last.
+    pub fn step_from(&self, ticket: ulid::Ulid, from: &str, back: bool) -> Option<Tier> {
         let ring = self.ring(ticket);
-        if ring.len() < 2 {
+        let n = ring.len();
+        if n < 2 {
             return None;
         }
-        let at = ring.iter().position(|t| t.id == from);
-        let next = match at {
-            Some(i) => ring[(i + 1) % ring.len()].clone(),
-            None => ring[0].clone(),
+        let i = match (ring.iter().position(|t| t.id == from), back) {
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+            (None, false) => 0,
+            (None, true) => n - 1,
         };
+        let next = ring[i].clone();
         (next.id != from).then_some(next)
     }
 
@@ -997,6 +1001,10 @@ mod tests {
         // The built-ins are not in the cycle once a person made tiers — but
         // the default is, while it is one, so a pick can come back to it.
         assert_eq!(ring(&board), ["claude", "A", "C"], "an empty seat offers every provider");
+        let book = Book::new(&machine, &board);
+        assert_eq!(book.step_from(t, CLAUDE, true).unwrap().id, "C", "back wraps");
+        assert_eq!(book.step_from(t, "C", true).unwrap().id, "A", "back steps back");
+        assert_eq!(book.step_from(t, "gone", true).unwrap().id, "C", "off the ring: the last");
         board.sessions.push(SessionRecord::new(
             uuid::Uuid::new_v4(),
             SessionKind::Claude,
@@ -1007,8 +1015,8 @@ mod tests {
         ));
         assert_eq!(ring(&board), ["claude", "A"], "a parked claude keeps claude's tiers");
         let book = Book::new(&machine, &board);
-        assert_eq!(book.next_after(t, CLAUDE).unwrap().id, "A");
-        assert_eq!(book.next_after(t, "A").unwrap().id, CLAUDE, "wraps");
+        assert_eq!(book.step_from(t, CLAUDE, false).unwrap().id, "A");
+        assert_eq!(book.step_from(t, "A", false).unwrap().id, CLAUDE, "wraps");
         // A default of one's own leaves the built-ins out altogether, and the
         // cycle is the tiers list's order.
         let mut ours = machine.clone();
