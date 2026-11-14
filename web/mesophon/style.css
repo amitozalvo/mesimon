@@ -5747,10 +5747,10 @@ input[type="checkbox"][role="switch"]:checked::before {
 /* A sheet's choices (T-1208, the prototype's picks): a column or a tag is an
    outlined 32px chip in its 44px box, the picked one filled; the group's
    name a small mono word over its row. */
-dialog.compose .choices {
+:is(dialog.compose, .details-pane) .choices {
   gap: 4px;
 }
-dialog.compose .choices legend {
+:is(dialog.compose, .details-pane) .choices legend {
   margin-bottom: 0;
   color: var(--ink3);
   font-family: var(--mono);
@@ -5759,12 +5759,12 @@ dialog.compose .choices legend {
   letter-spacing: 0.06em;
   text-transform: lowercase;
 }
-dialog.compose .choice-row {
+:is(dialog.compose, .details-pane) .choice-row {
   gap: 0 6px;
   margin-block: -4px;
 }
-dialog.compose .choice span,
-dialog.compose .tag-chip {
+:is(dialog.compose, .details-pane) .choice span,
+:is(dialog.compose, .details-pane) .tag-chip {
   position: relative;
   z-index: 0;
   gap: 6px;
@@ -5773,8 +5773,8 @@ dialog.compose .tag-chip {
   background: transparent;
   font-size: 0.6875rem;
 }
-dialog.compose .choice span::before,
-dialog.compose .tag-chip::before {
+:is(dialog.compose, .details-pane) .choice span::before,
+:is(dialog.compose, .details-pane) .tag-chip::before {
   content: "";
   position: absolute;
   z-index: -1;
@@ -5783,32 +5783,32 @@ dialog.compose .tag-chip::before {
   border-radius: 9px;
 }
 /* The radio stays the press, over its drawn chip. */
-dialog.compose .choice input {
+:is(dialog.compose, .details-pane) .choice input {
   z-index: 1;
 }
-dialog.compose .choice input:checked + span {
+:is(dialog.compose, .details-pane) .choice input:checked + span {
   background: transparent;
   color: var(--pri-ink);
 }
-dialog.compose .choice input:checked + span::before {
+:is(dialog.compose, .details-pane) .choice input:checked + span::before {
   border-color: transparent;
   background: var(--pri);
 }
-dialog.compose .choice input:focus-visible + span {
+:is(dialog.compose, .details-pane) .choice input:focus-visible + span {
   outline: none;
 }
-dialog.compose .choice input:focus-visible + span::before {
+:is(dialog.compose, .details-pane) .choice input:focus-visible + span::before {
   outline: 2px solid var(--ink2);
   outline-offset: 2px;
 }
-dialog.compose .tag-chip[aria-pressed="true"] {
+:is(dialog.compose, .details-pane) .tag-chip[aria-pressed="true"] {
   background: transparent;
 }
-dialog.compose .tag-chip[aria-pressed="true"]::before {
+:is(dialog.compose, .details-pane) .tag-chip[aria-pressed="true"]::before {
   border-color: transparent;
   background: var(--tint, var(--s3));
 }
-dialog.compose .field-note {
+:is(dialog.compose, .details-pane) .field-note {
   font-size: 0.75rem;
 }
 /* New ticket: the fields say what they are in their own placeholders, the
@@ -5836,4 +5836,55 @@ dialog.compose .field-note {
 #new-ticket-sheet .compose-send {
   min-height: 44px;
   border-radius: 12px;
+}
+
+/* ---- the ticket page's Details tab and its actions press (T-1208) --------------- */
+/* The key leads the ticket's line, as the prototype's header reads: the key,
+   the tags, the column. The row's end is the sheet's press. */
+.ticket-line .selection-key {
+  flex: none;
+  font-size: 0.6875rem;
+}
+#ticket-more {
+  flex: none;
+  margin: -6px -8px 0 0;
+  color: var(--ink2);
+}
+.panes[hidden] {
+  display: none;
+}
+.details-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px calc(24px + var(--safe-bottom, 0px));
+}
+.details-pane {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  max-width: 640px;
+}
+.details-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--s1);
+  font-size: 0.8125rem;
+}
+.details-facts dt {
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  align-self: center;
+}
+.details-facts dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }

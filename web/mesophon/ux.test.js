@@ -2026,6 +2026,36 @@ async function editFlow(browser, engineName, size, viewport) {
     // takes it off.
     assert.equal(await page.locator("#card-line .chip-column").textContent(), "TODO");
     assert.equal(await page.locator("#card-line .add-tag").textContent(), "Tag");
+    // The Details tab (T-1208) holds the sheet's choices in the page: a press
+    // there moves the ticket as the sheet's does, and the tab before it is
+    // the page again. The row's end opens the sheet too.
+    assert.equal(await page.locator("#card-line .selection-key").textContent(), "T-3");
+    await page.locator("#tab-details").click();
+    await page.locator("#details-pane").waitFor();
+    assert.equal(await page.locator("#tab-details").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#prompt").count(), 0, "Details has no message box");
+    assert.match(await page.locator("#details-facts").textContent(), /agent/i);
+    assert(await page.locator('#details-pane input[name="details-column"][value="TODO"]').isChecked());
+    await page.locator('#details-pane input[name="details-column"][value="IN PROGRESS"]').check();
+    assert.deepEqual(await lastEdit(), { op: "move", ticket: "ticket-3", column: "IN PROGRESS" });
+    await page.locator('#details-pane input[name="details-column"][value="TODO"]').check();
+    assert.deepEqual(await lastEdit(), { op: "move", ticket: "ticket-3", column: "TODO" });
+    if (size === "phone") {
+      const short = await page.locator("#details-pane").evaluate((node) =>
+        [...node.querySelectorAll("button, input")]
+          .filter((n) => n.getClientRects().length && n.type !== "radio" && n.getBoundingClientRect().height < 44)
+          .map((n) => n.id || n.textContent),
+      );
+      assert.deepEqual(short, []);
+    }
+    await shot("details-tab");
+    await page.locator("#tab-terminal, #tab-chat").first().click();
+    await page.locator("#details-pane").waitFor({ state: "detached" });
+    await until(page, () => document.querySelector("#card-line .chip-column").textContent === "TODO");
+    await page.locator("#ticket-more").click();
+    await sheet.waitFor({ state: "visible" });
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
     await page.locator("#card-line").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator("#card-heading").textContent(), "T-3");
@@ -2072,7 +2102,8 @@ async function editFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => {
       fixture.editDisposition = "edited";
     });
-    assert.equal((await edits()).length, 7);
+    // Two of them the Details tab's moves, there and back.
+    assert.equal((await edits()).length, 9);
 
     // Where the columns sit side by side, a card drags to its place.
     if (size !== "desktop")

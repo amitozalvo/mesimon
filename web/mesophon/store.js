@@ -379,6 +379,7 @@ export class Store {
     if (this.board.selected !== id) this.renaming = undefined;
     this.reading = undefined;
     this.pane = undefined;
+    this.view = undefined;
     this.board.selected = id;
     this.active.selected = id;
     this.persist();
@@ -392,6 +393,7 @@ export class Store {
   back() {
     this.reading = undefined;
     this.pane = undefined;
+    this.view = undefined;
     if (history.state?.detail) history.back();
     else this.detail(false);
     this.focus = "row";
@@ -1061,11 +1063,16 @@ export class Store {
   }
   // The sheet that moves a ticket, sets its tags and, while it is open,
   // its workspace, opened from its line; it also archives it (T-737).
-  openCardSheet(id) {
-    const ticket = this.board?.tickets.find((t) => t.id === id);
+  // Whether a ticket's sheet has anything to offer: an edit this host takes,
+  // or a workspace still open.
+  opensCardSheet(ticket) {
     const workspace = this.canEdit("workspace") && !!ticket?.workspace?.open;
     const edits = ["move", "tag", "archive", "park", "crown"].some((op) => this.canEdit(op));
-    if (!ticket || !(edits || workspace)) return;
+    return !!ticket && (edits || workspace);
+  }
+  openCardSheet(id) {
+    const ticket = this.board?.tickets.find((t) => t.id === id);
+    if (!this.opensCardSheet(ticket)) return;
     this.cardSheet = id;
     this.editError = "";
     this.emit();
@@ -1629,12 +1636,25 @@ export class Store {
     const at = this.pane?.ticket === ticket.id ? this.pane.at : ticket.agent ? 0 : Math.min(1, n - 1);
     return Math.max(0, Math.min(n - 1, at));
   }
+  // A tab's own view over the panes (T-1208), for one ticket at a time:
+  // Details, the ticket's column, tags, agent and workspace in the page.
+  viewOf(ticket) {
+    return ticket && this.view?.ticket === ticket.id ? this.view.name : undefined;
+  }
+  showView(ticketId, name) {
+    if (!this.board?.tickets.some((t) => t.id === ticketId)) return;
+    this.view = { ticket: ticketId, name };
+    this.reading = undefined;
+    this.editError = "";
+    this.emit();
+  }
   showPane(ticketId, at) {
     const ticket = this.board?.tickets.find((t) => t.id === ticketId);
     if (!ticket) return;
     const panes = this.panesOf(ticket);
     at = Math.max(0, Math.min(panes.length - 1, at));
     this.pane = { ticket: ticketId, at };
+    this.view = undefined;
     const pane = panes[at];
     this.reading = pane.kind === "note" ? { ticket: ticketId, note: pane.row.id } : undefined;
     this.focus = at === 0 ? "selection" : "note";

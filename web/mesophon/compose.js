@@ -310,7 +310,7 @@ export function AwaySheet({ store }) {
 // Where a ticket's next agent works (T-642), the TUI's Shift+Tab: its own
 // worktree or the shared checkout, open until an agent stands in it or its
 // worktree is cut, and then said rather than offered.
-function WorkspaceChoice({ store, ticket }) {
+function WorkspaceChoice({ store, ticket, pre = "card" }) {
   const ws = ticket.workspace;
   if (!ws || !store.canEdit("workspace")) return null;
   const worktree = ws.kind === "worktree";
@@ -322,12 +322,12 @@ function WorkspaceChoice({ store, ticket }) {
       ? "Its worktree is cut, so this stays."
       : "Its agent is running there, so this stays.";
   const pick = (to) => store.setWorkspace(ticket.id, to);
-  return html`<fieldset id="card-workspace" class="choices" disabled=${!ws.open}>
+  return html`<fieldset id=${`${pre}-workspace`} class="choices" disabled=${!ws.open}>
     <legend>Workspace</legend>
     <div class="choice-row">
-      <label class="choice"><input type="radio" name="card-workspace" value="shared" checked=${!worktree}
+      <label class="choice"><input type="radio" name=${`${pre}-workspace`} value="shared" checked=${!worktree}
         onChange=${() => pick(false)} /><span>Shared checkout</span></label>
-      <label class="choice"><input type="radio" name="card-workspace" value="worktree" checked=${worktree}
+      <label class="choice"><input type="radio" name=${`${pre}-workspace`} value="worktree" checked=${worktree}
         onChange=${() => pick(true)} /><span>Own worktree</span></label>
     </div>
     <p class="field-note">${note}</p>
@@ -342,11 +342,11 @@ export const parksAgent = (store, ticket) => store.canEdit("park") && PARKS.incl
 
 // The crown (T-1182), the board's `^o`: on this ticket, or off it while it
 // wears it. One ticket wears it, so the note names the one it would leave.
-function CrownChoice({ store, ticket }) {
+function CrownChoice({ store, ticket, pre = "card" }) {
   if (!store.canEdit("crown")) return null;
   const holder = !ticket.crown && store.board.tickets.find((t) => t.crown);
   return html`<div class="card-crown">
-    <button id="card-crown" type="button" class="btn btn-quiet" disabled=${store.editWaiting(ticket, "crown")}
+    <button id=${`${pre}-crown`} type="button" class="btn btn-quiet" disabled=${store.editWaiting(ticket, "crown")}
       onClick=${() => store.crownTicket(ticket.id, !ticket.crown)}><${Icon} name="crown" size=${16} width=${2.2} /><span>${ticket.crown ? "Take the crown off" : "Wear the crown"}</span></button>
     ${holder && html`<p class="field-note">${holder.key} wears it now. This moves it here.</p>`}
   </div>`;
@@ -355,11 +355,11 @@ function CrownChoice({ store, ticket }) {
 // Park the agent (T-1090): its pane closes and its conversation is kept,
 // and the ticket page's start field wakes it. A working agent offers no
 // park; it waits for its turn to end, as at the desk.
-function ParkChoice({ store, ticket }) {
+function ParkChoice({ store, ticket, pre = "card" }) {
   if (!parksAgent(store, ticket)) return null;
   const waiting = store.editWaiting(ticket, "park");
   return html`<div class="card-archive">
-    <button id="card-park" type="button" class="btn btn-quiet" disabled=${waiting}
+    <button id=${`${pre}-park`} type="button" class="btn btn-quiet" disabled=${waiting}
       onClick=${() => store.parkAgent(ticket.id)}><${Icon} name="moon" size=${16} /><span>Park ${ticket.agent.provider}</span></button>
   </div>`;
 }
@@ -367,12 +367,12 @@ function ParkChoice({ store, ticket }) {
 // Into the archive (T-737), the board's `a a`: off the board until the
 // toast's Restore, or the desk's, brings it back. An awake agent holds it
 // on the board, as at the desk; an idle one is parked first (T-1090).
-function ArchiveChoice({ store, ticket }) {
+function ArchiveChoice({ store, ticket, pre = "card" }) {
   if (!store.canEdit("archive")) return null;
   const awake = !!ticket.agent && ticket.agent.state !== "sleeping";
   const why = parksAgent(store, ticket) ? "Its agent is awake. Park it first." : "Its agent is awake. Archive it once the agent sleeps.";
   return html`<div class="card-archive">
-    <button id="card-archive" type="button" class="btn btn-quiet" disabled=${awake}
+    <button id=${`${pre}-archive`} type="button" class="btn btn-quiet" disabled=${awake}
       onClick=${() => store.archiveTicket(ticket.id)}><${Icon} name="archive" size=${16} /><span>Archive</span></button>
     ${awake && html`<p class="field-note">${why}</p>`}
   </div>`;
@@ -382,16 +382,52 @@ function ArchiveChoice({ store, ticket }) {
 // page's branch row: the branch, then what it waits on or what is wrong.
 // Since T-701 it is in the sheet the ticket's line opens, under the line's
 // glyph.
-function WorkspaceLine({ ticket }) {
+function WorkspaceLine({ ticket, pre = "card" }) {
   const ws = ticket?.workspace;
   if (!ws?.branch) return null;
   const words = worktreeWords(ws);
   const tone = ["error", "conflict"].includes(ws.state) ? " wt-err" : ["ahead", "behind"].includes(ws.state) ? " wt-ready" : "";
-  return html`<p id="workspace-line" class="workspace-line">
+  return html`<p id=${pre === "card" ? "workspace-line" : `${pre}-workspace-line`} class="workspace-line">
     <${Icon} name="branch" size=${14} width=${2.2} />
     <span class="workspace-branch" title=${ws.branch}>${ws.branch}</span>
     ${words && html`<span class=${`workspace-state${tone}`}>${words}</span>`}
   </p>`;
+}
+
+// What a ticket's sheet and its Details tab both hold (T-1208): where its
+// code lives, its column, its tags, its workspace, the crown, park and
+// archive. `pre` names the controls, so the two never share a radio group
+// or an id while both are drawn (a desktop's sheet beside its ticket page).
+function CardBody({ store, ticket, pre = "card" }) {
+  const board = store.board;
+  const about = board.columnDescriptions[ticket.column];
+  return html`
+    <${WorkspaceLine} ticket=${ticket} pre=${pre} />
+    <fieldset class="choices" disabled=${!store.canEdit("move")}>
+      <legend>Column</legend>
+      <div class="choice-row">${board.columns.map((column) => html`<label class="choice" key=${column}>
+        <input type="radio" name=${`${pre}-column`} value=${column} checked=${column === ticket.column}
+          onChange=${() => store.moveTicket(ticket.id, column)} /><span>${column}</span></label>`)}</div>
+      ${about && html`<p class="field-note" dir="auto">${about}</p>`}
+    </fieldset>
+    <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
+      onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
+    <${WorkspaceChoice} store=${store} ticket=${ticket} pre=${pre} />
+    <${CrownChoice} store=${store} ticket=${ticket} pre=${pre} />
+    <${ParkChoice} store=${store} ticket=${ticket} pre=${pre} />
+    <${ArchiveChoice} store=${store} ticket=${ticket} pre=${pre} />`;
+}
+
+// The ticket page's Details tab (T-1208): the sheet's body in the page, under
+// what the agent is and since when. A form of its own, so its radios are
+// their own groups.
+export function DetailsPane({ store, ticket, facts }) {
+  return html`<form id="details-pane" class="details-pane" onSubmit=${(e) => e.preventDefault()}>
+    ${facts.length > 0 && html`<dl id="details-facts" class="details-facts">${facts.map(([name, value]) =>
+      html`<dt key=${name}>${name}</dt><dd dir="auto">${value}</dd>`)}</dl>`}
+    <${CardBody} store=${store} ticket=${ticket} pre="details" />
+    ${store.editError && html`<p class="compose-error" role="alert">${store.editError}</p>`}
+  </form>`;
 }
 
 // A ticket's column and tags (T-530), opened from the ticket page's line:
@@ -410,7 +446,6 @@ export function CardSheet({ store }) {
     if (!ticket && dialog.open) dialog.close();
   });
   if (!ticket) return html`<dialog id="card-sheet" class="compose" ref=${ref}></dialog>`;
-  const about = board.columnDescriptions[ticket.column];
   return html`<dialog id="card-sheet" class="compose" ref=${ref} aria-labelledby="card-heading"
       onCancel=${(e) => {
         e.preventDefault();
@@ -428,20 +463,7 @@ export function CardSheet({ store }) {
       </header>
       <div class="compose-body">
         <p class="start-title" dir="auto">${ticket.title}</p>
-        <${WorkspaceLine} ticket=${ticket} />
-        <fieldset class="choices" disabled=${!store.canEdit("move")}>
-          <legend>Column</legend>
-          <div class="choice-row">${board.columns.map((column) => html`<label class="choice" key=${column}>
-            <input type="radio" name="card-column" value=${column} checked=${column === ticket.column}
-              onChange=${() => store.moveTicket(ticket.id, column)} /><span>${column}</span></label>`)}</div>
-          ${about && html`<p class="field-note" dir="auto">${about}</p>`}
-        </fieldset>
-        <${TagChoices} allowed=${board.allowedTags} worn=${ticket.tags || []} disabled=${!store.canEdit("tag")}
-          onToggle=${(tag) => store.toggleTicketTag(ticket.id, tag)} />
-        <${WorkspaceChoice} store=${store} ticket=${ticket} />
-        <${CrownChoice} store=${store} ticket=${ticket} />
-        <${ParkChoice} store=${store} ticket=${ticket} />
-        <${ArchiveChoice} store=${store} ticket=${ticket} />
+        <${CardBody} store=${store} ticket=${ticket} />
       </div>
       ${store.editError && html`<footer class="compose-foot"><p class="compose-error" role="alert">${store.editError}</p></footer>`}
     </div>

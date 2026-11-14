@@ -12,6 +12,7 @@ import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
 import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
+import { DetailsPane } from "./compose.js";
 import { letterWords } from "./letters.js";
 import { KEYS_TEXT_MAX_BYTES } from "./store.js";
 import { swipePanes } from "./swipe.js";
@@ -44,6 +45,8 @@ function TicketTabs({ store, ticket, panes, at }) {
   const chat = store.chatShown;
   const notes = panes.length - 1;
   const screen = store.screenShown(ticket);
+  // Details (T-1208) is a view of its own over the panes.
+  const details = store.viewOf(ticket) === "details";
   const show = (view) => {
     store.showPane(ticket.id, 0);
     store.setOutputView(view);
@@ -51,10 +54,11 @@ function TicketTabs({ store, ticket, panes, at }) {
   const tab = (id, on, label, press, off = false, count = "") => html`<button id=${id} type="button" role="tab"
     aria-selected=${String(on)} class=${on ? "on" : ""} disabled=${off} onClick=${press}>${label}${count !== "" && html`<span class="tab-count">${count}</span>`}</button>`;
   return html`<nav id="ticket-tabs" class="ticket-tabs" role="tablist" aria-label="Ticket">
-    ${store.chatCapable && tab("tab-chat", at === 0 && chat, "Chat", () => show("chat"))}
-    ${tab("tab-terminal", at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
-    ${tab("tab-notes", at > 0, "Notes", () => (notes ? store.showPane(ticket.id, at > 0 ? at : 1) : store.editNote(ticket.id)),
+    ${store.chatCapable && tab("tab-chat", !details && at === 0 && chat, "Chat", () => show("chat"))}
+    ${tab("tab-terminal", !details && at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
+    ${tab("tab-notes", !details && at > 0, "Notes", () => (notes ? store.showPane(ticket.id, at > 0 ? at : 1) : store.editNote(ticket.id)),
       !notes && !store.canWriteNotes, notes || "")}
+    ${tab("tab-details", details, "Details", () => store.showView(ticket.id, "details"))}
   </nav>`;
 }
 
@@ -407,7 +411,6 @@ function Title({ store, ticket, open = false }) {
         ? html`<button id="rename" type="button" class="title-button clamp" aria-describedby="rename-hint"
             onClick=${() => store.startRename()}><${CrownMark} ticket=${ticket} size=${18} />${ticket.title}</button>`
         : html`<${CrownMark} ticket=${ticket} size=${18} />${ticket.title}`}</h2>
-    ${ticket && html`<span class="selection-key">${ticket.key}</span>`}
     ${renames && html`<span id="rename-hint" class="sr-only">Rename</span>`}
   </div>`;
 }
@@ -475,7 +478,7 @@ function TicketLine({ store, ticket, open, setOpen }) {
   const chooses = choosesWorkspace(store, ticket);
   const archives = store.canEdit("archive");
   const crowns = store.canEdit("crown");
-  const chips = html`<${LineTags} ticket=${ticket} all=${open} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
+  const chips = html`<span class="selection-key">${ticket.key}</span><${LineTags} ticket=${ticket} all=${open} />${add && html`<span class="chip chip-quiet add-tag"><${Icon} name="plus" size=${12} width=${2.4} /><span>Tag</span></span>`}<span class="chip chip-column">${ticket.column}${moves && html`<${Icon} name="chevronDown" size=${12} width=${2.4} />`}</span><${WorktreeMark} ticket=${ticket} count=${true} />`;
   if (!moves && !tags && !chooses && !archives && !crowns)
     return html`<button id="line-open" type="button" class="chips chips-edit" aria-expanded=${String(open)}
       aria-label=${open ? "Show less" : "Show the whole title and every tag"} onClick=${() => setOpen(!open)}>${chips}</button>`;
@@ -583,6 +586,17 @@ export function Detail({ store, bp }) {
     return swipePanes(node, (step) => store.showPane(ticket.id, at + step));
   }, [ticket?.id, at]);
   const anim = animOf(agent);
+  const details = store.viewOf(ticket) === "details";
+  // What Details says before its choices: who holds the seat and since
+  // when, its tier, and how the ticket came to be.
+  const tier = store.board?.tierNamed(agent?.tier || ticket?.tier)?.name;
+  const made = ticket && Number.isFinite(ticket.created) ? ageWords(store.board, ticket.created) : "";
+  const facts = !ticket ? [] : [
+    ["Agent", agent ? `${agent.provider} · ${store.stopped(ticket) ? exitWords(agent).toLowerCase() : agent.state}${since ? ` · ${since}` : ""}` : "none yet"],
+    tier && ["Tier", tier],
+    made && ["Filed", made === "now" ? "just now" : `${made} ago`],
+    ticket.notes > 0 && ["Notes", String(ticket.notes)],
+  ].filter(Boolean);
   // The header opened in place (T-1219), for one ticket at a time.
   const [opened, setOpened] = useState();
   const open = !!ticket && opened === ticket.id;
@@ -600,10 +614,15 @@ export function Detail({ store, bp }) {
           <${TicketLine} store=${store} ticket=${ticket} open=${open} setOpen=${(on) => setOpened(on ? ticket.id : undefined)} />
         </div>`}
       </div>
+      ${store.opensCardSheet(ticket) && html`<button id="ticket-more" type="button" class="icon-btn" aria-haspopup="dialog"
+        aria-label=${`Actions for ${ticket.key}`} onClick=${() => store.openCardSheet(ticket.id)}><${Icon} name="more" size=${22} width=${3} /></button>`}
     </header>
     ${ticket && html`<${TicketTabs} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
-    ${ticket && at > 0 && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
-    <div class="panes" ref=${track}>
+    ${ticket && at > 0 && !details && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
+    ${details && html`<section id="details" class="details-scroll" aria-label="Details">
+      <${DetailsPane} store=${store} ticket=${ticket} facts=${facts} />
+    </section>`}
+    <div class="panes" ref=${track} hidden=${details}>
       <div class="pane-track" style=${{ "--pane": at }}>
         <section class="pane pane-transcript" aria-label="Transcript" aria-hidden=${String(at !== 0)} inert=${at !== 0 || undefined}>
           <div class="detail-scroll">
@@ -628,8 +647,10 @@ export function Detail({ store, bp }) {
         </section>`)}
       </div>
     </div>
-    ${ticket && at === 0 && !store.chatShown && store.keysReach(ticket)
-      ? html`<${KeyBar} store=${store} ticket=${ticket} />`
-      : html`<${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />`}
+    ${details
+      ? null
+      : ticket && at === 0 && !store.chatShown && store.keysReach(ticket)
+        ? html`<${KeyBar} store=${store} ticket=${ticket} />`
+        : html`<${Composer} store=${store} ticket=${ticket} entry=${entry} live=${live} />`}
   </article>`;
 }
