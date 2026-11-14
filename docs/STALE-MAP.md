@@ -44826,3 +44826,22 @@ store changed. The suite still reads Sent at every size: on a narrow screen its 
 presses the sidebar's own button, which such a screen does not draw. Checks: state and assets
 tests, the UX suite on Chromium at phone, tablet and desktop and on WebKit at phone, green,
 before the one-word change of Find's subtitle ("tickets"), which no test reads.
+
+## The browser's bar wears the page's theme (T-1208, 2026-11-14, the author: "set statusbar background on the theme currently shown… keep in mind the foreground color")
+
+`index.html` held two fixed `theme-color` values, graphite for a dark device and chalk for a light
+one, so a picked or followed theme left the phone's status bar in the device's colour: a Latte
+page under a near-black bar. Both metas now carry the worn theme's background
+(`themes.js::barColours`, `paintBar`; at boot in `app.js`, then from `store.emit` when the worn
+theme changes), and with no theme worn they are the device's pair as before. **The foreground
+is the browser's, not the page's**: no web API sets the clock's and the icons' colour; the
+browser draws dark or light ones from the bar colour's brightness, which is why the colour set is
+the theme's own background in both appearances and never one keyed to the device. The fifteen
+`bg` values in `themes.js` were checked equal to the stylesheet's `--bg` for every theme, and
+`terminalFlow` asserts bar and page agree. **Not covered, and not testable here:** Safari on
+iOS 26 ignores `theme-color` in a tab and tints its bar from the page's background (already the
+theme's); what an installed page on iOS draws on the bar was not confirmed by any source read,
+and no device was tried. The manifest's `theme_color` stays graphite: it is what an installed
+page shows before it has loaded, and a manifest cannot follow a pick. Checks: state and assets
+tests, the UX suite on Chromium and WebKit at phone size, green; tablet and desktop not run (the
+change reads no width).

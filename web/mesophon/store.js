@@ -16,7 +16,7 @@ import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPic
 import { mergePage, tailAsk } from "./transcript.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { PromptMail } from "./letters.js";
-import { wornTheme } from "./themes.js";
+import { paintBar, wornTheme } from "./themes.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
 // How long away before the Inbox says what changed meanwhile (T-1208).
@@ -195,6 +195,8 @@ export class Store {
   emit() {
     const worn = this.worn;
     if (document.documentElement.dataset.theme !== worn) document.documentElement.dataset.theme = worn;
+    // The browser's bar wears it too (T-1208).
+    if (this.barWorn !== worn) paintBar(document, (this.barWorn = worn));
     const terminal = this.board?.terminalTheme;
     if (this.theme === "terminal" && terminal && terminal !== this.lastWorn) {
       this.lastWorn = terminal;

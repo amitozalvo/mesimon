@@ -5,6 +5,7 @@ import { openIdentity } from "./identity.js";
 import { Store } from "./store.js";
 import { html, render } from "./html.js";
 import { App } from "./shell.js";
+import { paintBar } from "./themes.js";
 import { followViewport } from "./viewport.js";
 
 const store = new Store(Browser);
@@ -22,6 +23,7 @@ try {
   /* System appearance remains usable when preferences are unavailable. */
 }
 document.documentElement.dataset.theme = store.worn;
+paintBar(document, (store.barWorn = store.worn));
 document.documentElement.dataset.density = store.density;
 // Opened from the service worker's kept copy (sw.js), not from the relay:
 // it shows what this browser remembers and talks to nothing until the

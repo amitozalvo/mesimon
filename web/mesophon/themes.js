@@ -29,3 +29,25 @@ export function wornTheme(choice, terminal) {
   if (choice === "terminal") return isTheme(terminal) ? terminal : "system";
   return choice === "system" || isTheme(choice) ? choice : "system";
 }
+
+// The browser's own bar over the page (T-1208): the status bar of an
+// installed page and Chrome's toolbar take `theme-color`, so it is the worn
+// theme's background, and the page runs to the screen's top in one colour.
+// The clock and the icons on it are the browser's to draw: it picks dark or
+// light ones from how bright this colour is, so a light theme on a phone in
+// dark mode gets dark icons on its light bar. With no theme worn the pair is
+// the device's own, graphite in the dark and chalk in the light.
+export function barColours(worn) {
+  const bg = (id) => THEMES.find((t) => t.id === id).bg;
+  return isTheme(worn) ? { dark: bg(worn), light: bg(worn) } : { dark: bg("graphite"), light: bg("chalk") };
+}
+
+// `index.html` holds one `theme-color` for each appearance; both are set,
+// so the device's appearance cannot pick the other theme's colour.
+export function paintBar(doc, worn) {
+  const bar = barColours(worn);
+  for (const meta of doc.querySelectorAll?.('meta[name="theme-color"]') || []) {
+    const colour = /light/.test(meta.getAttribute("media") || "") ? bar.light : bar.dark;
+    if (meta.getAttribute("content") !== colour) meta.setAttribute("content", colour);
+  }
+}

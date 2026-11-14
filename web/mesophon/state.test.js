@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Sessions, answerBusy, answerWords, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS, digestOf, digestWords, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
-import { THEMES, wornTheme } from "./themes.js";
+import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
@@ -495,6 +495,23 @@ test("the keys rest only while the page answers the dialog on a card (T-1218)", 
   assert.equal(cardAnswers({ answersWhole: false }, { dialog: question(2), card_answers: true }, now), true);
   assert.equal(cardAnswers(store, { card_answers: true }, now), false, "no dialog, no card");
   assert.equal(cardAnswers(store, { dialog_omitted: true, card_answers: false }, now), false, "an omitted dialog leaves the keys available");
+});
+
+test("the browser's bar is the worn theme's background, the device's pair with none (T-1208)", () => {
+  assert.deepEqual(barColours("nord"), { dark: "#2e3440", light: "#2e3440" });
+  assert.deepEqual(barColours("latte"), { dark: "#eff1f5", light: "#eff1f5" }, "a light theme's bar on a dark phone too");
+  assert.deepEqual(barColours("system"), { dark: "#131417", light: "#faf8f4" });
+  const meta = (media, content) => {
+    const attrs = { media, content };
+    return { attrs, getAttribute: (k) => attrs[k], setAttribute: (k, v) => (attrs[k] = v) };
+  };
+  const metas = [meta("(prefers-color-scheme: dark)", "#131417"), meta("(prefers-color-scheme: light)", "#faf8f4")];
+  const doc = { querySelectorAll: () => metas };
+  paintBar(doc, "blue");
+  assert.deepEqual(metas.map((m) => m.attrs.content), ["#000087", "#000087"]);
+  paintBar(doc, "system");
+  assert.deepEqual(metas.map((m) => m.attrs.content), ["#131417", "#faf8f4"]);
+  paintBar({}, "nord");
 });
 
 test("the page wears the terminal's theme while it follows it, else the pick (T-1208)", () => {

@@ -3414,7 +3414,20 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
 
     // The page follows the terminal's theme by default, and a pick wins.
+    // The browser's bar (T-1208) is the worn theme's own background in
+    // either appearance, as the page under it is drawn.
+    const bar = () => page.evaluate(() => ({
+      bar: [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => m.content),
+      page: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(),
+    }));
     await until(page, () => document.documentElement.dataset.theme === "nord");
+    assert.deepEqual(await bar(), { bar: ["#2e3440", "#2e3440"], page: "#2e3440" });
+    await page.evaluate(() => document.querySelector('.theme-tile[data-theme-id="latte"]').click());
+    await until(page, () => document.documentElement.dataset.theme === "latte");
+    assert.deepEqual(await bar(), { bar: ["#eff1f5", "#eff1f5"], page: "#eff1f5" });
+    await page.evaluate(() => document.querySelector('.theme-tile[data-theme-id="system"]').click());
+    await until(page, () => document.documentElement.dataset.theme === "system");
+    assert.deepEqual((await bar()).bar, ["#131417", "#faf8f4"], "with no theme worn, the device's pair");
     await page.evaluate(() => document.querySelector('.theme-tile[data-theme-id="latte"]').click());
     await until(page, () => document.documentElement.dataset.theme === "latte");
     assert.equal(await page.evaluate(() => localStorage.getItem("mesophon-theme")), "latte");
