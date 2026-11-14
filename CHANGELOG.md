@@ -10,6 +10,68 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.19 — 2026-11-14
+
+A table view of the board, and Remote Control built out to its approved
+design. Nothing changes a state file's format.
+
+### Added
+
+- **`b` turns the board into a table.** Each column becomes a group of
+  full-width rows: the whole title, both tags, the ticket's tier and its
+  checklist as a progress bar. `j k` carry on over a column's edge and `J K`
+  move a ticket across it. The choice is kept for each board, and Settings ›
+  Appearance › Board view sets it too.
+- **`^R` steps a ticket's tier back**, the other way round the ring from `^r`.
+- **The ticket page before its agent shows an egg.** It rocks while the
+  worktree and init script are made ready, and hatches the mascot as the agent
+  starts.
+- **Remote Control's Find tab** searches every ticket and holds Sent, New
+  ticket and Theme. On a wider screen the search field stays over the lists.
+- **Remote Control's ticket page has Notes and Details tabs.** Notes lists the
+  Summary's boxes, which you can tick, then a row for each note. Details shows
+  the agent, its tier and when the ticket was filed, with the column, tags,
+  workspace, crown, park and archive choices.
+- **The Inbox says what changed while you were away**, for example "Since
+  13:40: 2 finished, 1 new question, 3 still working".
+- **New ticket can start the agent once the ticket lands**, behind a switch
+  that is off until you turn it on.
+- **A phone's Board says what each column is for** and ends in a row that
+  files a ticket into it.
+- **The plus in the message box opens an attach menu**: a photo, a picture
+  from the library, one of this ticket's notes or another ticket.
+- **A permission request counts its time down** and offers "Deny and say why",
+  which denies and puts the cursor in the message box.
+
+### Changed
+
+- **`^n` walks links from the bottom up and `^p` from the top down**, on the
+  ticket page and in the transcript, so the first `^n` lands beside the newest
+  words. The reader keeps its order.
+- **Remote Control's chat folds two or more tool steps into one line** that
+  says what they did, such as "Read 2 files, searched once". Press it to open
+  the steps.
+- **News about the ticket you are reading in Remote Control is a line in its
+  conversation**, with its time, instead of a banner over it.
+- Remote Control's Settings is a list of rows, with Theme on its own page and a
+  switch for haptics, and ends with a link to the release notes.
+- Remote Control's Inbox is a list of rows, and the message box is one field
+  over a bar of small buttons.
+- On a new board, an agent started on a ticket in DONE moves it to IN PROGRESS.
+  An existing board keeps its own column settings.
+
+### Fixed
+
+- **GitLab merge requests no longer time out under a rate limit**, and two or
+  more repositories on one GitLab host are read in one request.
+- A ticket whose branch had just been rebased is no longer asked to rebase
+  again after another branch merges ahead of it.
+- The turn an agent takes after its merge notice no longer moves its card out
+  of DONE.
+- On a phone, the Notes list and Details tab fit the screen, and a Summary box
+  that wraps no longer covers the next one.
+- `mesimon doctor` names `^r` for the default tier.
+
 ## v0.1.0-beta.18 — 2026-11-13
 
 Everything from the two unstable builds since beta.17, a redesigned Remote
