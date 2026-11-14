@@ -2489,6 +2489,15 @@ export class Store {
     this.focus = "prompt";
     this.sync();
   }
+  // Deny and say why (T-1208), the desk's "No, and tell it what to do
+  // differently": the deny goes as any other, and the message box takes the
+  // cursor for the words, which go to the agent as a prompt does.
+  sayWhy() {
+    if (!this.entry) return;
+    this.entry.why = true;
+    this.focus = "prompt";
+    this.emit();
+  }
   setDelivery(mode) {
     if (!this.entry) return;
     this.entry.mode = mode;
@@ -2536,6 +2545,7 @@ export class Store {
   }
   submitPrompt() {
     const entry = this.entry;
+    if (entry) entry.why = false;
     const agent = this.board?.current?.agent;
     // A picture still being read would be left out of the words (T-1219).
     if (!entry?.draft.trim() || entry.sending || entry.reading > 0) return;

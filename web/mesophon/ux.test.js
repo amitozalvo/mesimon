@@ -4986,6 +4986,20 @@ try {
           await attention("Approve once").click();
           assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
             { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
+          // The card counts the request's time down, and Deny and say why
+          // (T-1208) is a deny as any other, after which the message box
+          // takes the cursor for the words.
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.permission = { request: "permission-why", tool: "Bash", input: { command: "rm -r build" }, expires_at: Date.now() + 601000 };
+            fixture.update();
+          });
+          await until(page, () => /^(10:0\d|9:5\d) left$/.test(document.querySelector("#attention .time-left")?.textContent || ""));
+          await until(page, () => !document.querySelector("#deny-why").disabled);
+          await page.locator("#deny-why").click();
+          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
+            { op: "permission", request: "permission-why", decision: "deny", ticket: "m2", session: "m2-session" });
+          await until(page, () => document.activeElement?.id === "prompt");
+          assert.equal(await page.locator("#prompt").getAttribute("placeholder"), "Say what to do differently…");
           // T-1219 round 2: a permission with fields past its description is
           // answered on its ticket page, where each is drawn; its Inbox card
           // names how many and offers no Approve once.

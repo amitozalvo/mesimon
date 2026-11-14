@@ -1,6 +1,6 @@
 // Structured host dialogs. Payloads come from the daemon and render as text
 // nodes, never HTML. Native outcomes remain the host's to observe.
-import { html, useLayoutEffect, useRef, useState } from "./html.js";
+import { html, useEffect, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon } from "./icons.js";
 import { Markdown } from "./markdown.js";
 import { answerBusy } from "./sessions.js";
@@ -105,6 +105,20 @@ export function cardAnswers(store, agent, now = Date.now()) {
   return answerable(dialog) || (measured(dialog) && store.answersWhole);
 }
 
+// How long a permission still waits here (T-1208), counted down by the
+// second: `9:41 left`, and nothing once it is over (the note says that).
+function TimeLeft({ at }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [at]);
+  const left = Math.floor((at - Date.now()) / 1000);
+  if (!Number.isFinite(left) || left <= 0) return null;
+  const m = Math.floor(left / 60);
+  return html`<span class="time-left">${m > 99 ? `${Math.floor(m / 60)}h` : `${m}:${String(left % 60).padStart(2, "0")}`} left</span>`;
+}
+
 export function Attention({ store, ticket, entry, live }) {
   const permission = ticket?.agent?.permission;
   const dialog = ticket?.agent?.dialog;
@@ -120,7 +134,8 @@ export function Attention({ store, ticket, entry, live }) {
   if (permission) {
     const expired = Date.now() >= permission.expires_at;
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
-      <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Permission · ${permission.tool}</span></h3>
+      <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Permission · ${permission.tool}</span>
+        <${TimeLeft} at=${permission.expires_at} /></h3>
       <${RequestFields} permission=${permission} cls="attention-code" />
       <p class="attention-note">${expired
         ? "This request expired here: answer it at your terminal."
@@ -128,6 +143,11 @@ export function Attention({ store, ticket, entry, live }) {
       <div class="attention-actions">
         <button type="button" class="btn" disabled=${off || expired}
           onClick=${() => send({ op: "permission", request: permission.request, decision: "deny" })}>Deny</button>
+        <button id="deny-why" type="button" class="link-press" disabled=${off || expired}
+          onClick=${() => {
+            send({ op: "permission", request: permission.request, decision: "deny" });
+            store.sayWhy();
+          }}>Deny and say why</button>
         <button type="button" class="btn btn-attn" disabled=${off || expired}
           onClick=${() => send({ op: "permission", request: permission.request, decision: "allow" })}>Approve once</button>
       </div>
