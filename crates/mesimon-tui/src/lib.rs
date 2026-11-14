@@ -297,11 +297,14 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.clock = localtime::at;
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
+    // agy's place in the tier lists (T-1234) — same rule.
+    app.agy_switch = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1");
     // Where the tier page reads each provider's model list (T-951) — same
     // rule: a test app reads none.
     app.model_homes = Some(app::ModelHomes {
         claude: mesimon_daemon::census::claude_home(),
         codex: mesimon_daemon::agents::codex::discovery::codex_home(),
+        agy: mesimon_daemon::agents::agy::models_file(),
     });
     // How long the board waits for a key before its snake comes out
     // (T-870): an hour, or `MESIMON_IDLE_SNAKE_MS` for whoever wants to

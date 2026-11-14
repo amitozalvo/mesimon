@@ -475,15 +475,19 @@ fn first_error(out: &Output) -> String {
     line.chars().take(200).collect()
 }
 
-struct Output {
-    code: Option<i32>,
-    stdout: String,
+pub(crate) struct Output {
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: String,
     stderr: String,
 }
 
 /// A child in a process group of its own, read whole, killed whole at the
 /// deadline.
-fn run_bounded(argv: &[String], cwd: &Path, timeout: Duration) -> Result<Output, String> {
+pub(crate) fn run_bounded(
+    argv: &[String],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<Output, String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let (bin, args) = argv.split_first().ok_or("no command")?;

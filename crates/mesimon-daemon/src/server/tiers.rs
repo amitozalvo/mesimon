@@ -80,9 +80,50 @@ impl<T: store::MachineFile> MachineFileCache<T> {
 }
 
 impl Daemon {
-    /// The two layers, for one question.
+    /// The two layers, for one question. agy's built-in is listed where
+    /// this daemon runs with its switch (T-1234).
     pub(super) fn tier_book(&self) -> Book<'_> {
-        Book::new(&self.machine_tiers.value, &self.board)
+        Book::new(&self.machine_tiers.value, &self.board).with_agy(crate::agents::agy::enabled())
+    }
+
+    /// Read `agy models` for the tier page's Model row (T-1234), once the
+    /// shell environment has landed (the launcher's `PATH` finds agy), on a
+    /// thread of its own: it is a network call. Only behind agy's switch,
+    /// only where the file is missing or older than its TTL, one at a time.
+    /// A read that lists nothing leaves the last good file in place.
+    pub(super) fn warm_agy_models(&mut self) {
+        use crate::agents::agy;
+        let file = agy::models_file();
+        if !agy::enabled() || self.agy_models_reading || !agy::models_due(&file, now_ms()) {
+            return;
+        }
+        let bin = std::env::var("MESIMON_AGY_BIN").unwrap_or_else(|_| "agy".into());
+        let argv = self.launch(&[bin, "models".into()], &[]);
+        let cwd = self.paths.state_dir.clone();
+        let tx = self.tx.clone();
+        self.agy_models_reading = true;
+        std::thread::spawn(move || {
+            let read = crate::modroad::run_bounded(&argv, &cwd, agy::MODELS_TIMEOUT)
+                .and_then(|out| match (out.code, agy::models_text(&out.stdout)) {
+                    (Some(0), Some(text)) => Ok(text),
+                    (Some(0), None) => Err("agy models listed no model".to_string()),
+                    (code, _) => Err(format!("agy models exited {code:?}")),
+                })
+                .and_then(|text| {
+                    store::write_atomic(&file, &text, store::SHARED)
+                        .map_err(|e| format!("{}: {e:#}", file.display()))?;
+                    Ok(text.lines().count())
+                });
+            let _ = tx.send(Msg::AgyModelsRead(read));
+        });
+    }
+
+    pub(super) fn on_agy_models_read(&mut self, read: Result<usize, String>) {
+        self.agy_models_reading = false;
+        match read {
+            Ok(n) => self.journal.line(&format!("agy models: {n} listed")),
+            Err(e) => self.journal.line(&format!("agy models not read: {e}")),
+        }
     }
 
     /// Pick up another board's edit of `tiers.toml`: one `stat`, on every

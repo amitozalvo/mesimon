@@ -45088,3 +45088,63 @@ The full workspace suite is owed once after the merge (`server.rs`).
 bar. Under `CardCtx::row` it takes the rows' shapes: the main tag's `▋`, the second's `▎` beside it,
 an untagged bar through `tags::thin_bar`. Checks: `cargo ut`;
 `a_table_row_being_typed_wears_the_thin_bar` (a rename untagged and tagged, a new ticket).
+
+## agy in Settings and tiers: its built-in, a column's agy mode, its model list, its mark (T-1234, 2026-11-14, ticket 4 of 8 of T-1225's plan)
+
+**What changed.**
+- `tier::Book::with_agy(on)` lists agy's built-in in `Book::builtins`, `Book::all` and the
+  Default tier row's ring; the TUI reads `MESIMON_AGY` into `App::agy_switch` in `lib.rs::run`
+  (a test app reads none), the daemon `agents::agy::enabled()` in `tier_book`. Off, the built-in
+  still resolves by id and is never offered. The provider ring already stepped onto agy behind
+  the switch (T-1225).
+- A column's `agy_mode` (`board::AgyMode`: inherit, default, accept-edits, auto, plan), its own
+  row in the column dialog's LAUNCH section where a tier uses agy (`Ctx::agy_in_use`), the door
+  word on an agy-only board, `agy: <word>` in doctor's column summary, `agy <word> mode` on the
+  ticket page. Inherit passes nothing: the person's own agy default. **Never read from
+  `claude_mode`**; `--dangerously-skip-permissions` is no value (D10).
+- `agy.rs::launch`: plan for the launch (T-434) outranks the column, which outranks the person's
+  default. accept-edits, auto and plan ride `--mode`; **Default rides the session's settings as
+  `"agentMode": ""`**, because `--mode` has no word for it.
+- A column whose `agy_mode` is set makes `columns.toml` a file that names agy
+  (`COLUMNS_SCHEMA_AGY`), so no released build drops the word and starts agy in the person's Auto
+  where a column said plan. A daemon on T-1225's build (unreleased, the author's machine only)
+  reads 10 and drops it; `U` ends that.
+- `agy models` is read by the daemon on a thread of its own (`warm_agy_models`, `Msg::AgyModelsRead`)
+  once the shell environment lands, behind the switch, when `~/.local/state/mesimon/agy-models.tsv`
+  is missing or older than 6 h. A read that lists nothing keeps the last good file. The tier page
+  reads that file beside Claude's and Codex's caches (`tier::agy_models`, `ModelLists::agy`); the
+  Effort row's words name `agy --effort`.
+- The kind mark is `ᐱ` (U+1431, Neutral width, one cell), `^` in the ASCII tier: the author's pick
+  among ⌃, ✦, ^ and ᐱ.
+- doctor's provider rows are labelled by `tier::builtin_id`; agy's rows appear behind the switch
+  or on a board whose default is agy. The phone names the harness `Antigravity` on the trust card
+  (`queue.js::harnessName`), where it said Claude Code.
+
+**Measured on agy 1.5.9, on this machine.**
+- `--mode` takes `accept-edits`, `auto`, `plan`; `--mode default` prints `unrecognized --mode
+  value "default"` and is ignored (the person's mode stands).
+- Under `-p`, a file write: no flag (the person's Auto) wrote it; `--mode accept-edits` and
+  `--settings '{"agentMode":"accept-edits"}'` wrote it; `--settings '{"agentMode":""}'` and
+  `--mode plan` were refused. So the session settings' `agentMode` is read, and `--mode` beats it
+  (`--mode accept-edits` with `agentMode: ""` wrote).
+- `agy models` prints `Fetching available models...` and then `id<TAB>label` lines on stdout:
+  three Gemini 3.8 Flash levels and three third-party models (to leave the plan on 2026-11-18).
+
+**Refuted.**
+- "`--mode default` for Default": ignored with a warning (above).
+- "Run `agy models` from the tier page": a network call on the TUI's thread, every time a page
+  opens. "Ask the daemon per page": a wire command for a list that changes once a week.
+- "Steer off for agy on the phone": built first, then dropped at the rebase onto T-1233, whose
+  alt+m puts words into agy's running turn, so "Goes in now, mid-turn." is true for agy too.
+
+**The switch can go** when the last of T-1235 to T-1238 has landed (approvals, the transcript,
+cost; T-1232's brief and tools and T-1233's words are in). Nothing here needs it kept.
+
+**Checks.** `cargo ut` (72 + 17 + 766 + 859 + 24 + 1,459 passed, 0 failed); `--test agents
+agy_e2e:: tier_e2e::` (3 passed: the wake now carries the column's `--mode accept-edits` and
+not Claude's plan, and the models file holds the stand-in's two lines after one read). One red on
+the way, not a flake: the e2e set the mode on TODO while automove had moved the ticket on; it now
+reads the ticket's column. Mesophon: `node --test state.test.js assets.test.js` and the UX suite.
+No golden changed (no golden draws an agy row). No rig run: nothing a Claude or Codex agent or
+the crown is told changed. The full workspace suite is owed once after the merge (a state file's
+schema stamp and `server.rs` changed).

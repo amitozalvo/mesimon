@@ -1286,6 +1286,60 @@ impl ClaudeMode {
     }
 }
 
+/// The mode an agy started on a ticket in this column runs in (T-1234):
+/// agy's own four, and `Inherit`, the person's own agy default (Auto since
+/// agy 1.3.5), which passes nothing. Its own setting, never read from
+/// [`ClaudeMode`]: one provider's mode is never turned into another's
+/// privileges. No `--dangerously-skip-permissions`, on D10's reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgyMode {
+    #[default]
+    Inherit,
+    /// agy's Default: edits and commands ask. `--mode` does not take the
+    /// word (1.5.9 warns and ignores it), so the launch says it in the
+    /// session's settings, `"agentMode": ""`.
+    Default,
+    AcceptEdits,
+    Auto,
+    Plan,
+}
+
+impl AgyMode {
+    /// The word `agy --mode` takes (1.5.9: `accept-edits`, `auto`, `plan`);
+    /// `None` for inherit and for Default, which `--mode` has no word for.
+    pub fn flag_word(self) -> Option<&'static str> {
+        match self {
+            Self::Inherit | Self::Default => None,
+            Self::AcceptEdits => Some("accept-edits"),
+            Self::Auto => Some("auto"),
+            Self::Plan => Some("plan"),
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Default => "default",
+            mode => mode.flag_word().unwrap_or("inherit"),
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Inherit => Self::Default,
+            Self::Default => Self::AcceptEdits,
+            Self::AcceptEdits => Self::Auto,
+            Self::Auto => Self::Plan,
+            Self::Plan => Self::Inherit,
+        }
+    }
+
+    pub fn is_inherit(&self) -> bool {
+        *self == Self::Inherit
+    }
+}
+
 /// Which of mesimon's own MCP tools a claude on a ticket in this column may
 /// call (T-117): board authority, tiered. Ordered — `Off < Read < Annotate <
 /// Full` — and `mcp::AgentTools::needed_by` is the table that says which
@@ -1672,6 +1726,11 @@ pub struct ColumnSettings {
     pub codex_sandbox: CodexSandbox,
     #[serde(default, skip_serializing_if = "CodexApproval::is_inherit")]
     pub codex_approval: CodexApproval,
+    /// agy's mode here (T-1234). A file that sets it is stamped as one that
+    /// names agy (`store::COLUMNS_SCHEMA_AGY`), so no released build drops
+    /// a plan column's word and starts agy in the person's Auto.
+    #[serde(default, skip_serializing_if = "AgyMode::is_inherit")]
+    pub agy_mode: AgyMode,
     #[serde(default, skip_serializing_if = "AgentTools::is_full")]
     pub agent_tools: AgentTools,
     /// The column a ticket moves to when its claude starts working
@@ -1860,6 +1919,9 @@ impl ColumnSettings {
         }
         if self.codex_approval != CodexApproval::Inherit {
             out.push(format!("codex approvals: {}", self.codex_approval.word()));
+        }
+        if !self.agy_mode.is_inherit() {
+            out.push(format!("agy: {}", self.agy_mode.word()));
         }
         if self.agent_tools != AgentTools::Full {
             out.push(format!("agent tools: {}", self.agent_tools.word()));
@@ -6104,6 +6166,33 @@ mod tests {
         let empty = serde_json::to_value(ColumnSettings::default()).unwrap();
         assert!(empty.get("codex_sandbox").is_none());
         assert!(empty.get("codex_approval").is_none());
+    }
+
+    /// T-1234: agy's mode is its own setting. A column that says plan for
+    /// Claude says nothing for agy, the ring is agy's four and inherit, and
+    /// only the three words `agy --mode` takes ever reach the flag.
+    #[test]
+    fn agy_mode_is_its_own_and_spells_only_agy_s_flag_words() {
+        let legacy: ColumnSettings = serde_json::from_str(r#"{"claude_mode":"plan"}"#).unwrap();
+        assert_eq!(legacy.agy_mode, AgyMode::Inherit);
+        assert!(serde_json::to_value(&legacy).unwrap().get("agy_mode").is_none());
+        let mut seen = Vec::new();
+        let mut m = AgyMode::Inherit;
+        for _ in 0..5 {
+            seen.push(m.word());
+            if let Some(w) = m.flag_word() {
+                assert!(["accept-edits", "auto", "plan"].contains(&w), "{w}");
+            }
+            m = m.next();
+        }
+        assert_eq!(m, AgyMode::Inherit);
+        assert_eq!(seen, ["inherit", "default", "accept-edits", "auto", "plan"]);
+        assert_eq!(AgyMode::Default.flag_word(), None, "--mode refuses `default`");
+        let set = ColumnSettings { agy_mode: AgyMode::AcceptEdits, ..legacy };
+        let wire = serde_json::to_string(&set).unwrap();
+        assert!(wire.contains(r#""agy_mode":"accept_edits""#), "{wire}");
+        assert_eq!(serde_json::from_str::<ColumnSettings>(&wire).unwrap(), set);
+        assert!(set.summary().contains(&"agy: accept-edits".to_string()));
     }
 
     #[test]

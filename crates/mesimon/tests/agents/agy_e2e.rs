@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mesimon_core::board::{
-    AgentProvider, Reason, SessionKind, SessionRecord, SessionState, StopReason, WorkspaceStrategy,
+    AgentProvider, AgyMode, Reason, SessionKind, SessionRecord, SessionState, StopReason,
+    WorkspaceStrategy,
 };
 use mesimon_core::command::{Command, Response};
 
@@ -170,6 +171,8 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
         response => panic!("start: {response:?}"),
     };
     bed.await_prompt(0, "turn", title);
+    // No column says a mode: the person's own agy default, no flag (T-1234).
+    assert!(pair(&bed.launches()[0], "--mode").is_empty(), "{:?}", bed.launches());
     c.await_state(id, "agy working", |s| *s == SessionState::Running);
     wait_until(Duration::from_secs(5), "the conversation id", || {
         session(&mut c, id).agy_conversation_id.as_deref() == Some(MINTED)
@@ -257,6 +260,19 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
         *s == (SessionState::Idle { stop_reason: StopReason::Interrupted })
     });
 
+    // The column's agy mode (T-1234) reaches the wake's argv; a column
+    // Claude mode is not agy's. The ticket's column as it stands now:
+    // automove may have moved it.
+    let board = c.board();
+    let column = board.ticket(t).unwrap().column.clone();
+    let mut settings = board.column(&column).unwrap().settings.clone();
+    settings.agy_mode = AgyMode::AcceptEdits;
+    settings.claude_mode = mesimon_core::board::ClaudeMode::Plan;
+    assert!(matches!(
+        c.request(Command::SetColumnSettings { name: column, settings }),
+        Response::Ok
+    ));
+
     // Park, and wake with words: agy's own conversation, the words by the box.
     assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
     c.await_state(id, "parked", |s| matches!(s, SessionState::Sleeping));
@@ -265,6 +281,7 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     let woke = &bed.launches()[1];
     assert_eq!(pair(woke, "--conversation"), [MINTED]);
     assert_eq!(pair(woke, "--add-dir"), [folder.to_str().unwrap()]);
+    assert_eq!(pair(woke, "--mode"), ["accept-edits"], "{woke:?}");
     bed.await_prompt(4, "turn", "wake up and go");
     c.await_state(id, "agy on the wake's turn", |s| *s == SessionState::Running);
 
@@ -288,6 +305,18 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(home, ["settings.json"], "agy's own folder holds the person's file alone");
+
+    // `agy models` was read off the writer, once, into the machine's file
+    // the tier page reads (T-1234), in agy's words.
+    let models = bed.paths.state_dir.parent().unwrap().join("agy-models.tsv");
+    wait_until(Duration::from_secs(10), "the models file", || models.exists());
+    assert_eq!(
+        std::fs::read_to_string(&models).unwrap(),
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
+         gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+    );
+    let calls = std::fs::read_to_string(bed.owner.dir.join("agy-models.log")).unwrap();
+    assert_eq!(calls.lines().count(), 1, "one read for a daemon whose file is fresh");
 }
 
 /// A folder the person never trusted gets agy's own dialog: the seat reads
@@ -333,4 +362,5 @@ fn agy_starts_nowhere_without_its_switch() {
     err_containing(start(&mut c, t, false), "switched off");
     assert!(c.board().sessions.is_empty());
     assert!(bed.launches().is_empty());
+    assert!(!bed.owner.dir.join("agy-models.log").exists(), "no `agy models` either");
 }

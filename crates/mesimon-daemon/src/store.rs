@@ -1036,7 +1036,11 @@ pub fn save_columns_if_changed(paths: &Paths, board: &Board, written: &mut Strin
 
 /// `columns.toml` as `save_columns` would write it.
 fn columns_text(board: &Board) -> Result<String> {
-    let names_agy = provider_is_agy(board.agent_provider) || tiers_name_agy(&board.tiers);
+    // A column's agy mode counts (T-1234): a build that drops it would start
+    // agy in the person's own mode where the column said plan.
+    let names_agy = provider_is_agy(board.agent_provider)
+        || tiers_name_agy(&board.tiers)
+        || board.columns.iter().any(|c| !c.settings.agy_mode.is_inherit());
     let cf = ColumnsFile {
         schema_version: if names_agy { COLUMNS_SCHEMA_AGY } else { COLUMNS_SCHEMA },
         next_key: board.next_key,
@@ -2025,6 +2029,13 @@ mod tests {
         save_columns(&paths, &board).unwrap();
         assert!(refused_before(stamp_toml(&columns), COLUMNS_SCHEMA), "a board's agy tier");
         board.tiers.clear();
+        // T-1234: a column's agy mode, on a board that names agy nowhere else.
+        board.columns[0].settings.agy_mode = mesimon_core::board::AgyMode::Plan;
+        save_columns(&paths, &board).unwrap();
+        assert!(refused_before(stamp_toml(&columns), COLUMNS_SCHEMA), "a column's agy mode");
+        board.columns[0].settings.agy_mode = mesimon_core::board::AgyMode::Inherit;
+        save_columns(&paths, &board).unwrap();
+        assert_eq!(stamp_toml(&columns), COLUMNS_SCHEMA);
         board.agent_provider = AgentProvider::Agy;
         save_columns(&paths, &board).unwrap();
         assert!(refused_before(stamp_toml(&columns), COLUMNS_SCHEMA), "a board on agy");
@@ -2812,6 +2823,7 @@ order = "a0"
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,
                     codex_sandbox: mesimon_core::board::CodexSandbox::Inherit,
                     codex_approval: mesimon_core::board::CodexApproval::Inherit,
+                    agy_mode: mesimon_core::board::AgyMode::Inherit,
                     agent_tools: mesimon_core::board::AgentTools::Read,
                     on_working: Some("QA".into()),
                     on_done: None,

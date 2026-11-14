@@ -9,6 +9,11 @@
 export const waitsOnYou = (agent) =>
   !!agent && (!!agent.dialog || !!agent.permission || agent.state === "needs attention");
 
+// The name a harness goes by (T-1234): the daemon's provider word, as the
+// person knows the program.
+export const harnessName = (provider) =>
+  ({ claude: "Claude Code", codex: "Codex", agy: "Antigravity" })[provider] || "the agent";
+
 // What each delivery does, under the Queue / Steer row. Codex reads a
 // steer at the turn's next step, a running command left to finish (T-845,
 // measured on 0.163): it says so rather than claim "now".

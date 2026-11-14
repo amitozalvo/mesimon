@@ -507,6 +507,9 @@ enum Msg {
     /// A shell-environment capture finished. Off-thread because it forks the
     /// user's login shell and runs their rc files (`crate::shellenv`).
     ShellEnvCaptured(std::result::Result<crate::shellenv::ShellEnv, String>),
+    /// `agy models` came back (T-1234): how many models the file now
+    /// lists, or why it was left as it was. Off-thread: a network call.
+    AgyModelsRead(std::result::Result<usize, String>),
     /// The external census landed (T-437): every foreign transcript under
     /// the board's roots, not yet filtered against the sessions the board
     /// learned while the walk ran.
@@ -1205,6 +1208,8 @@ pub struct Daemon {
     /// A capture is in flight. One at a time: it forks a shell, and a second
     /// one racing the first would only decide which stale answer wins.
     shell_env_capturing: bool,
+    /// An `agy models` read is out (T-1234): one at a time.
+    agy_models_reading: bool,
     /// When the capture in flight was asked, for the journal's line.
     shell_env_asked_at: u64,
     /// Why the last capture failed, if it did. The previous environment stays
@@ -1764,6 +1769,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ProvisionInit(..) => "provision init".into(),
             Msg::ProvisionProgress(..) => "provision progress".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
+            Msg::AgyModelsRead(_) => "agy models read".into(),
             Msg::ExternalScanned(_) => "external scanned".into(),
             Msg::TreesSized(_) => "trees sized".into(),
             Msg::UsageRead(p, _) => format!("usage read {}", p.word()).into(),
@@ -1814,6 +1820,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 d.on_provision_progress(ticket, done, total)
             }
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
+            Msg::AgyModelsRead(result) => d.on_agy_models_read(result),
             Msg::ExternalScanned(items) => d.on_external_scanned(items),
             Msg::TreesSized(sized) => d.on_trees_sized(sized),
             Msg::UsageRead(p, outcome) => d.on_usage_read(p, outcome),
@@ -2197,6 +2204,7 @@ impl Daemon {
             tier_set_at: HashMap::new(),
             shell_env: crate::shellenv::ShellEnv::default(),
             shell_env_capturing: false,
+            agy_models_reading: false,
             shell_env_asked_at: 0,
             shell_env_error: None,
             shell: crate::shellenv::inherited(),
@@ -2414,6 +2422,7 @@ impl Daemon {
                     self.shell_env_error = Some(format!("writing the environment file: {e}"));
                 }
                 self.warm_road_probe();
+                self.warm_agy_models();
             }
             // The previous environment stands. A broken rc file must not be
             // able to empty the environment every future pane gets.

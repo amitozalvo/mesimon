@@ -25,7 +25,11 @@
 //! (T-1233): bracketed paste into agy's box (`claude::composer::AGY`), then
 //! a separate Enter, acked by the first `PreInvocation`.
 //!
-//! Not built yet, each its own ticket: approvals and plan mode from the
+//! The column's `agy mode` (T-1234) rides the launch: `--mode` for agy's
+//! three words, and Default in the session's settings, which `--mode` has
+//! no word for.
+//!
+//! Not built yet, each its own ticket: approvals from the
 //! board, the transcript reader, cost and quota.
 
 use std::path::{Path, PathBuf};
@@ -96,6 +100,39 @@ fn trusted_by_person(home: &Path) -> Vec<String> {
 fn same_folder(a: &Path, b: &Path) -> bool {
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     real(a) == real(b)
+}
+
+/// `agy models`, as the daemon last read it (T-1234): one file beside
+/// `tiers.toml` that every board's daemon writes and the tier page reads,
+/// `<model>\t<label>` lines. A network call, so it is never run where a
+/// page waits for it.
+pub fn models_file() -> PathBuf {
+    crate::paths::state_root().unwrap_or_else(|_| std::env::temp_dir()).join("agy-models.tsv")
+}
+
+/// How old the models file may be before a daemon reads `agy models` again.
+pub const MODELS_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// `agy models` takes a second or two on this machine; past this it is not
+/// answering.
+pub const MODELS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether the models file is missing or older than [`MODELS_TTL_MS`].
+pub fn models_due(file: &Path, now_ms: u64) -> bool {
+    let modified = std::fs::metadata(file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(mesimon_core::clock::epoch_ms);
+    modified.is_none_or(|at| now_ms.saturating_sub(at) >= MODELS_TTL_MS)
+}
+
+/// The models file's text for what `agy models` printed: the lines
+/// [`mesimon_core::tier::agy_models`] reads, written back in its words, so
+/// the file holds nothing agy said beyond them. `None` when it listed no
+/// model, which leaves the last good file in place.
+pub fn models_text(printed: &str) -> Option<String> {
+    let list = mesimon_core::tier::agy_models(printed)?;
+    Some(list.iter().map(|m| format!("{}\t{}\n", m.model, m.name)).collect())
 }
 
 /// The session's folder, handed to agy with `--add-dir`: it holds
@@ -199,6 +236,11 @@ fn render_settings(
     if context.tools != AgentTools::Off {
         settings["permissions"] = json!({ "allow": [allow_rule()] });
     }
+    // agy's Default mode (T-1234): `--mode` refuses the word, and the
+    // settings' empty `agentMode` is how agy itself saves Default.
+    if !context.plan && context.column.agy_mode == mesimon_core::board::AgyMode::Default {
+        settings["agentMode"] = json!("");
+    }
     settings
 }
 
@@ -272,10 +314,12 @@ fn launch_with(
         "--settings".into(),
         settings.display().to_string(),
     ];
-    // Plan mode for this launch (T-434). No column word is read yet: without
-    // the flag agy starts in the person's own default mode.
-    if context.plan {
-        argv.extend(["--mode".into(), "plan".into()]);
+    // Plan mode for this launch (T-434) outranks the column's word
+    // (T-1234), which outranks the person's own default: no flag at all.
+    // Default rides the settings file instead (`render_settings`).
+    let mode = if context.plan { Some("plan") } else { context.column.agy_mode.flag_word() };
+    if let Some(mode) = mode {
+        argv.extend(["--mode".into(), mode.into()]);
     }
     if context.tier.provider == AgentProvider::Agy {
         if let Some(model) = context.tier.model_arg() {
@@ -784,6 +828,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// T-1234: the column's agy mode rides `--mode` for agy's three words;
+    /// Default, which `--mode` refuses, rides the session's settings as
+    /// agy saves it; inherit passes nothing; a launch in plan mode outranks
+    /// the column. Claude's mode is never read.
+    #[test]
+    fn the_columns_agy_mode_rides_the_flag_or_the_settings() {
+        use mesimon_core::board::{AgyMode, ClaudeMode};
+        let root = std::env::temp_dir().join(format!("msmn-agy-mode-{}", uuid::Uuid::new_v4()));
+        let (repo, tree) = (root.join("repo"), root.join("tree"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        let paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        let launched = |agy_mode: AgyMode, plan: bool| {
+            let column =
+                ColumnSettings { agy_mode, claude_mode: ClaudeMode::Plan, ..Default::default() };
+            let ctx = LaunchContext {
+                column,
+                plan,
+                ..context(&paths, &tree, Tier::builtin(AgentProvider::Agy))
+            };
+            let argv = launch_with(&ctx, None, &[]).unwrap();
+            let file: Value = serde_json::from_str(
+                &std::fs::read_to_string(settings_file(&paths, ctx.session)).unwrap(),
+            )
+            .unwrap();
+            let mode: Vec<String> = pair(&argv, "--mode").into_iter().map(str::to_string).collect();
+            (mode, file.get("agentMode").cloned())
+        };
+        assert_eq!(launched(AgyMode::Inherit, false), (vec![], None), "Claude's plan is not agy's");
+        assert_eq!(launched(AgyMode::Default, false), (vec![], Some(json!(""))));
+        assert_eq!(launched(AgyMode::AcceptEdits, false), (vec!["accept-edits".into()], None));
+        assert_eq!(launched(AgyMode::Auto, false), (vec!["auto".into()], None));
+        assert_eq!(launched(AgyMode::Plan, false), (vec!["plan".into()], None));
+        assert_eq!(launched(AgyMode::Default, true), (vec!["plan".into()], None));
+        assert_eq!(launched(AgyMode::Auto, true), (vec!["plan".into()], None));
+        let _ = std::fs::remove_dir_all(&paths.state_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// What the brief's hook prints is agy's `SessionStart` answer, the
     /// brief verbatim as one system message, and never an empty object.
     #[test]
@@ -799,6 +882,26 @@ mod tests {
 
     fn pair_of(args: &[&str], flag: &str) -> String {
         args.windows(2).find(|w| w[0] == flag).map(|w| w[1].to_string()).unwrap()
+    }
+
+    /// T-1234: the models file keeps the lines agy listed, in its words, and
+    /// is due when missing or past its TTL.
+    #[test]
+    fn the_models_file_is_agys_list_and_comes_due() {
+        let printed =
+            "Fetching available models...\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n";
+        assert_eq!(
+            models_text(printed).as_deref(),
+            Some("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n")
+        );
+        assert_eq!(models_text("Fetching available models...\n"), None);
+        let file = std::env::temp_dir().join(format!("msmn-agy-models-{}", uuid::Uuid::new_v4()));
+        let now = mesimon_core::clock::epoch_ms(std::time::SystemTime::now()).unwrap();
+        assert!(models_due(&file, now), "missing");
+        std::fs::write(&file, "x\ty\n").unwrap();
+        assert!(!models_due(&file, now));
+        assert!(models_due(&file, now + MODELS_TTL_MS + 60_000), "the write is after `now`");
+        let _ = std::fs::remove_file(&file);
     }
 
     /// Decision 3: a ticket's worktree is passed as trusted only where the

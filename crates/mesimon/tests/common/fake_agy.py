@@ -3,7 +3,10 @@
 keys, and runs the hooks and the title command a mesimon launch registered,
 in the shapes agy 1.5.9 draws and sends.
 
-It reads `--add-dir <folder>` and `--settings <file>` off its argv, as agy
+`agy models` (T-1234) prints what 1.5.9 prints, a progress line and then
+`id<TAB>label` lines, counts the call in `agy-models.log` and exits.
+
+Otherwise it reads `--add-dir <folder>` and `--settings <file>` off its argv, as agy
 does, and appends that argv to `agy-argv.jsonl` beside itself. A folder
 the settings' `trustedWorkspaces` does not name exactly gets the trust
 dialog first (`Do you trust the contents of this project?`, the cursor `>`
@@ -91,7 +94,16 @@ def log(name, record):
         out.write(json.dumps(record) + "\n")
 
 
+def models():
+    log("agy-models.log", "models")
+    print("Fetching available models...")
+    print("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
+    print("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)")
+
+
 def main():
+    if sys.argv[1:] == ["models"]:
+        return models()
     os.makedirs(CUES, exist_ok=True)
     log("agy-argv.jsonl", sys.argv[1:])
     folder, settings_path = value("--add-dir"), value("--settings")

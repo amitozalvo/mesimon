@@ -2493,6 +2493,10 @@ pub struct App {
     /// developer's environment. False shuts the two doors and nothing else:
     /// a shell already on a ticket is listed, previewed and slept as before.
     pub ticket_shells: bool,
+    /// `MESIMON_AGY=1` (T-1234): agy's built-in in the tier lists and agy
+    /// on the provider ring. Set by `lib.rs::run`, never `App::new`, the
+    /// `ticket_shells` rule.
+    pub agy_switch: bool,
     /// The OS appearance watch (T-485): a thread asking the OS, never the
     /// terminal. Armed by `arm_appearance` exactly while the two theme
     /// slots differ (`Prefs::follows_os`), nothing is pinned and a probe
@@ -2797,6 +2801,7 @@ impl App {
             terminal: crate::title::Terminal::Other,
             icons: None,
             ticket_shells: false,
+            agy_switch: false,
             appearance: None,
             appearance_probe: None,
             appearance_barred: false,
@@ -8781,6 +8786,7 @@ impl App {
             col_claude_mode_word: cs.claude_mode.word(),
             col_codex_sandbox_word: cs.codex_sandbox.word(),
             col_codex_approval_word: cs.codex_approval.word(),
+            col_agy_mode_word: cs.agy_mode.word(),
             col_inherit_mode: self.claude_default_mode.clone().unwrap_or_default(),
             col_tools_word: match cs.agent_tools {
                 mesimon_core::board::AgentTools::Full => "full",
@@ -9196,6 +9202,7 @@ impl App {
             tier_names: String::new(),
             claude_unused: false,
             codex_in_use: false,
+            agy_in_use: false,
             tiers_enter_word: "",
             tier_edit_enter_word: "",
             crown_links: String::new(),
@@ -11233,6 +11240,7 @@ impl App {
             Verb::ColumnClaudeMode => self.set_column(|s| s.claude_mode = s.claude_mode.next())?,
             Verb::ColumnCodexSandbox => self.set_column(|s| s.codex_sandbox = s.codex_sandbox.next())?,
             Verb::ColumnCodexApproval => self.set_column(|s| s.codex_approval = s.codex_approval.next())?,
+            Verb::ColumnAgyMode => self.set_column(|s| s.agy_mode = s.agy_mode.next())?,
             Verb::ColumnTools => self.set_column(|s| s.agent_tools = s.agent_tools.next())?,
             // The next value is computed off the board (T-812 re-review):
             // caught up first, not only inside `set_column`.
@@ -23726,8 +23734,7 @@ mod tests {
         app.cursor_col = 0;
         app.cursor_row = Some(0);
         let ctrl_shift_r = |app: &mut App| {
-            app.handle_key(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
-                .unwrap()
+            app.handle_key(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap()
         };
         let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
         ctrl_shift_r(&mut app);
@@ -23797,6 +23804,7 @@ mod tests {
         app.tier_models = mesimon_core::tier::ModelLists {
             claude: Some(vec![choice("opus", "Opus 5.5"), choice("sonnet", "Sonnet 5.5")]),
             codex: None,
+            agy: None,
         };
         let model = |app: &App| app.tier_field_words(TierField::Model, false);
         press(&mut app, 'k');
@@ -23889,14 +23897,29 @@ mod tests {
             r#"{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list"}]}"#,
         )
         .unwrap();
-        let homes = ModelHomes { claude: root.join("claude"), codex: root.join("codex") };
+        // agy's, as the daemon writes it (T-1234).
+        std::fs::write(
+            root.join("agy-models.tsv"),
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n",
+        )
+        .unwrap();
+        let homes = ModelHomes {
+            claude: root.join("claude"),
+            codex: root.join("codex"),
+            agy: root.join("agy-models.tsv"),
+        };
         let lists = homes.read();
         let words = |l: &Option<Vec<mesimon_core::tier::ModelChoice>>| {
             l.as_ref().map(|l| l.iter().map(|m| m.model.clone()).collect::<Vec<_>>())
         };
         assert_eq!(words(&lists.claude), Some(vec!["opus".to_string()]), "not the published one");
         assert_eq!(words(&lists.codex), Some(vec!["gpt-6-astra".to_string()]));
-        let gone = ModelHomes { claude: root.join("none"), codex: root.join("none") };
+        assert_eq!(words(&lists.agy), Some(vec!["gemini-3.8-flash-high".to_string()]));
+        let gone = ModelHomes {
+            claude: root.join("none"),
+            codex: root.join("none"),
+            agy: root.join("none"),
+        };
         assert_eq!(gone.read(), mesimon_core::tier::ModelLists::default());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -24083,6 +24106,37 @@ mod tests {
         assert_eq!(settings.codex_approval, CodexApproval::OnRequest);
         assert_eq!(settings.claude_mode, ClaudeMode::Plan);
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 2);
+    }
+
+    /// T-1234: an agy board's column has an agy mode row of its own, which
+    /// steps agy's mode and leaves Claude's; and agy's built-in joins the
+    /// Default tier row's ring only behind its switch.
+    #[test]
+    fn an_agy_board_steps_its_own_mode_and_lists_its_built_in_behind_the_switch() {
+        use mesimon_core::board::{AgentProvider, AgyMode, ClaudeMode};
+        let mut board = board_three_columns();
+        board.agent_provider = AgentProvider::Agy;
+        board.columns[0].settings.claude_mode = ClaudeMode::Plan;
+        let (mut app, _sent) = App::for_test_logged(board, theme(), false);
+        let ids = |app: &App| {
+            app.default_ring().0.into_iter().flatten().map(|t| t.id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&app), ["claude", "codex"], "switched off");
+        app.agy_switch = true;
+        assert_eq!(ids(&app), ["claude", "codex", "agy"]);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.column_agents = true;
+        let rows = keymap::column_items(&app.ctx());
+        assert!(!rows.iter().any(|m| m.verb == Verb::ColumnClaudeMode));
+        let row = rows.iter().position(|m| m.verb == Verb::ColumnAgyMode).unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = row;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let settings = &app.board.column("todo").unwrap().settings;
+        assert_eq!(settings.agy_mode, AgyMode::Default);
+        assert_eq!(settings.claude_mode, ClaudeMode::Plan);
     }
 
     #[test]

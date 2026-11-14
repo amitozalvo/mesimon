@@ -605,10 +605,14 @@ fn heading_word(app: &App, ed: &Editor) -> &'static str {
         EditorPurpose::Compose { .. } => "NEW TICKET",
         // Who the words reach — the one-line field's own hint, in capitals.
         // A shell line (T-1211) is a command the agents' boxes run.
-        EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } if App::shell_line(ed.body.as_str()) => {
+        EditorPurpose::Ask { target: AskTarget::Ticket(_), .. }
+            if App::shell_line(ed.body.as_str()) =>
+        {
             "SHELL COMMAND"
         }
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } if App::shell_line(ed.body.as_str()) => {
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. }
+            if App::shell_line(ed.body.as_str()) =>
+        {
             "SHELL COMMAND FOR EVERY AGENT"
         }
         EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => "ASK AGENT",

@@ -768,9 +768,10 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
 }
 
 /// The session-kind mark: `✻` is the mark Claude Code itself uses (U+273B,
-/// Emoji=No, Neutral width — one cell), `>` for Codex, `$` for a shell, `^`
-/// for agy (T-1225: a stand-in until its mark is chosen).
-/// Ascii tier spells Claude's mark `*`; all marks remain one cell.
+/// Emoji=No, Neutral width — one cell), `>` for Codex, `$` for a shell, `ᐱ`
+/// for agy (U+1431, Neutral width; the person's pick, T-1234: an arch, like
+/// Antigravity's own). Ascii tier spells Claude's mark `*` and agy's `^`;
+/// all marks remain one cell.
 pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> char {
     use mesimon_core::board::SessionKind;
     match (kind, tier) {
@@ -778,7 +779,8 @@ pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> c
         (SessionKind::Claude, Tier::Ascii) => '*',
         (SessionKind::Bash, _) => '$',
         (SessionKind::Codex, _) => '>',
-        (SessionKind::Agy, _) => '^',
+        (SessionKind::Agy, Tier::Unicode) => 'ᐱ',
+        (SessionKind::Agy, Tier::Ascii) => '^',
     }
 }
 
@@ -849,6 +851,21 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T-1234: agy's mark is one cell in both tiers, and plain ASCII where
+    /// the terminal draws only that.
+    #[test]
+    fn agys_mark_is_one_cell_and_ascii_where_asked() {
+        use unicode_width::UnicodeWidthChar;
+        let kind = mesimon_core::board::SessionKind::Agy;
+        assert_eq!(kind_mark(kind, Tier::Unicode), '\u{1431}');
+        assert_eq!(kind_mark(kind, Tier::Ascii), '^');
+        for tier in [Tier::Ascii, Tier::Unicode] {
+            let mark = kind_mark(kind, tier);
+            assert_eq!(mark.width(), Some(1));
+            assert_eq!(mark.width_cjk(), Some(1), "no ambiguous width");
+        }
+    }
 
     #[test]
     fn codex_mark_and_activity_obey_common_geometry() {

@@ -32,8 +32,7 @@ const MAX_COLUMN_DELAY_MS: u64 = 220;
 /// The row stagger counts this many cards, the rest leave with the last.
 const MAX_ROW_STAGGER: u64 = 8;
 /// The whole switch, start to every card landed.
-pub(crate) const SHIFT_MS: u64 =
-    MAX_COLUMN_DELAY_MS + MAX_ROW_STAGGER * ROW_STAGGER_MS + EACH_MS;
+pub(crate) const SHIFT_MS: u64 = MAX_COLUMN_DELAY_MS + MAX_ROW_STAGGER * ROW_STAGGER_MS + EACH_MS;
 
 /// Where every card's title row and every column's header row stood on the
 /// frame before the switch, and when the switch started.
@@ -84,7 +83,12 @@ pub(crate) fn progress(elapsed: u64, delay: u64) -> f32 {
 /// The rectangle between `from` and `to` at `p`, a row tall.
 pub(crate) fn between(from: Rect, to: Rect, p: f32) -> Rect {
     let lerp = |a: u16, b: u16| (f32::from(a) + (f32::from(b) - f32::from(a)) * p).round() as u16;
-    Rect { x: lerp(from.x, to.x), y: lerp(from.y, to.y), width: lerp(from.width, to.width), height: 1 }
+    Rect {
+        x: lerp(from.x, to.x),
+        y: lerp(from.y, to.y),
+        width: lerp(from.width, to.width),
+        height: 1,
+    }
 }
 
 /// Over the view just drawn in `area`, the switch's frame: every row the

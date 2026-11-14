@@ -7,10 +7,11 @@
 //! overrides it in place; a board entry with an id of its own is appended.
 //! The default tier resolves board → machine → the `claude` built-in.
 //!
-//! Two built-ins, `claude` and `codex`, are never stored: each is "that
-//! provider at the CLI's own defaults" — no `--model`, no `--effort` — which
-//! is what every launch was before tiers existed. The cycle always offers
-//! them; the editor never lists them.
+//! Three built-ins, `claude`, `codex` and `agy`, are never stored: each is
+//! "that provider at the CLI's own defaults" — no `--model`, no `--effort` —
+//! which is what every launch was before tiers existed. The cycle offers
+//! them (agy's only where [`Book::agy`] says the switch is on); the editor
+//! never lists them.
 //!
 //! A ticket names its tier by ID, never by name, so renaming a machine tier
 //! does not orphan another board's tickets. An id that no longer resolves (a
@@ -27,7 +28,8 @@ use crate::board::{AgentProvider, Board, SessionKind};
 pub const CLAUDE: &str = "claude";
 pub const CODEX: &str = "codex";
 /// agy's built-in (T-1225): resolved by id, and by a board whose provider is
-/// agy; listed among a ticket's choices by no page yet.
+/// agy; listed beside the other two only where the switch is on (T-1234,
+/// [`Book::with_agy`]).
 pub const AGY: &str = "agy";
 
 /// A tier name is a word on a card: short, one token, no spaces.
@@ -237,11 +239,31 @@ impl Source {
 pub struct Book<'a> {
     pub machine: &'a MachineTiers,
     pub board: &'a Board,
+    /// Whether agy's built-in is listed (T-1234): the caller's read of
+    /// `board::AGY_SWITCH`, since this crate reads no environment. Off, agy's
+    /// built-in still resolves by id; it is only never offered.
+    pub agy: bool,
 }
 
 impl<'a> Book<'a> {
     pub fn new(machine: &'a MachineTiers, board: &'a Board) -> Self {
-        Self { machine, board }
+        Self { machine, board, agy: false }
+    }
+
+    /// The same book with agy's built-in listed where `on`.
+    pub fn with_agy(self, on: bool) -> Self {
+        Self { agy: on, ..self }
+    }
+
+    /// The built-ins a list offers, in the provider ring's order: Claude
+    /// Code, Codex, and agy where [`Self::agy`].
+    pub fn builtins(&self) -> Vec<Tier> {
+        let mut out =
+            vec![Tier::builtin(AgentProvider::ClaudeCode), Tier::builtin(AgentProvider::Codex)];
+        if self.agy {
+            out.push(Tier::builtin(AgentProvider::Agy));
+        }
+        out
     }
 
     /// The tiers a person made, resolved: machine tiers in their order (a
@@ -265,10 +287,9 @@ impl<'a> Book<'a> {
         out
     }
 
-    /// Every tier a ticket may name: the two built-ins, then [`Self::custom`].
+    /// Every tier a ticket may name: [`Self::builtins`], then [`Self::custom`].
     pub fn all(&self) -> Vec<Tier> {
-        let mut out =
-            vec![Tier::builtin(AgentProvider::ClaudeCode), Tier::builtin(AgentProvider::Codex)];
+        let mut out = self.builtins();
         out.extend(self.custom().into_iter().map(|(t, _)| t));
         out
     }
@@ -572,12 +593,14 @@ pub struct ModelChoice {
     pub about: String,
 }
 
-/// The two providers' lists as the tier page read them when it opened;
-/// `None` where the provider left none to read.
+/// The providers' lists as the tier page read them when it opened; `None`
+/// where the provider left none to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelLists {
     pub claude: Option<Vec<ModelChoice>>,
     pub codex: Option<Vec<ModelChoice>>,
+    /// `agy models` as the daemon last read it (T-1234), from its cache.
+    pub agy: Option<Vec<ModelChoice>>,
 }
 
 impl ModelLists {
@@ -585,8 +608,7 @@ impl ModelLists {
         match provider {
             AgentProvider::ClaudeCode => self.claude.as_deref(),
             AgentProvider::Codex => self.codex.as_deref(),
-            // No list is read for agy yet: its models come from `agy models`.
-            AgentProvider::Agy => None,
+            AgentProvider::Agy => self.agy.as_deref(),
         }
     }
 }
@@ -689,6 +711,26 @@ pub fn codex_models(cache: &str) -> Option<Vec<ModelChoice>> {
             name: model_words(&m.display_name),
             about: model_words(&m.description),
             model: m.slug,
+        })
+        .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// `agy models` (1.5.9): one `id<TAB>label` line per model the account
+/// may pick, in agy's order, after a `Fetching available models...` line on
+/// the same output. A line without a tab is not a model; an id
+/// [`check_model`] refuses is left out, so the list can only hold words
+/// `--model` may carry. `None` when no line is a model.
+pub fn agy_models(text: &str) -> Option<Vec<ModelChoice>> {
+    let list: Vec<ModelChoice> = text
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(id, label)| (id.trim(), label))
+        .filter(|(id, _)| !id.is_empty() && check_model(id).is_ok())
+        .map(|(id, label)| ModelChoice {
+            model: id.to_string(),
+            name: model_words(label),
+            about: String::new(),
         })
         .collect();
     (!list.is_empty()).then_some(list)
@@ -1151,6 +1193,44 @@ mod tests {
         assert_eq!(list[1].about, "Frontier.");
         assert_eq!(codex_models(""), None);
         assert_eq!(codex_models(r#"{"models":[]}"#), None);
+    }
+
+    /// T-1234: `agy models` as 1.5.9 prints it, its progress line included.
+    #[test]
+    fn agys_list_is_its_tab_separated_lines_in_order() {
+        let text = "Fetching available models...\n\
+                    gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
+                    gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n\
+                    --model\tA flag\n\
+                    claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n";
+        let list = agy_models(text).unwrap();
+        assert_eq!(
+            words(&list),
+            ["gemini-3.8-flash-high", "gemini-3.8-flash-low", "claude-sonnet-4-6"],
+            "a word --model could not carry is left out"
+        );
+        assert_eq!(list[0].name, "Gemini 3.8 Flash (High)");
+        assert_eq!(list[0].about, "");
+        assert_eq!(agy_models("Fetching available models...\n"), None);
+        assert_eq!(agy_models(""), None);
+        let lists = ModelLists { agy: Some(list), ..ModelLists::default() };
+        assert_eq!(lists.of(AgentProvider::Agy).map(<[_]>::len), Some(3));
+    }
+
+    /// T-1234: agy's built-in is listed only where the caller says the
+    /// switch is on, and resolves by id either way.
+    #[test]
+    fn agys_built_in_is_listed_only_behind_the_switch() {
+        let (machine, board) = (MachineTiers::default(), Board::default());
+        let ids = |book: Book<'_>| book.all().into_iter().map(|t| t.id).collect::<Vec<_>>();
+        let off = Book::new(&machine, &board);
+        assert_eq!(ids(off), [CLAUDE, CODEX]);
+        assert_eq!(off.get(AGY).map(|t| t.provider), Some(AgentProvider::Agy));
+        let on = off.with_agy(true);
+        assert_eq!(ids(on), [CLAUDE, CODEX, AGY]);
+        let cycle: Vec<String> = on.cycle(None).into_iter().map(|t| t.id).collect();
+        assert_eq!(cycle, [CLAUDE, CODEX, AGY], "nobody made a tier: every built-in");
+        assert_eq!(on.offered().len(), 1, "and only the default is offered to an agent");
     }
 
     #[test]

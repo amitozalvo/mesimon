@@ -618,6 +618,7 @@ pub enum Verb {
     ColumnClaudeMode,
     ColumnCodexSandbox,
     ColumnCodexApproval,
+    ColumnAgyMode,
     ColumnTools,
     ColumnOnWorking,
     ColumnOnDone,
@@ -1743,6 +1744,9 @@ pub struct Ctx {
     /// only where something does, which is what a bare `Ctx` reads as.
     pub claude_unused: bool,
     pub codex_in_use: bool,
+    /// agy's rows, as Codex's: only where a tier the board can start uses
+    /// it (T-1234).
+    pub agy_in_use: bool,
     /// The tiers list's Enter word for the row under the cursor, and the
     /// tier page's; empty is inert. `tier_on_step` is the page's cursor on
     /// a row `h`/`l` steps (provider, effort, a model ring of more than one
@@ -1978,6 +1982,7 @@ pub struct Ctx {
     pub col_claude_mode_word: &'static str,
     pub col_codex_sandbox_word: &'static str,
     pub col_codex_approval_word: &'static str,
+    pub col_agy_mode_word: &'static str,
     /// What `inherit` resolves to — the user's own default mode, off the
     /// snapshot. Empty when unknown.
     pub col_inherit_mode: String,
@@ -7191,6 +7196,21 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ColumnAgyMode,
+        label: |_| "agy mode".into(),
+        detail: |c| match c.col_agy_mode_word {
+            "" | "inherit" => {
+                "agy --mode for an agent started here ∙ inherit keeps your agy default".into()
+            }
+            "default" => "edits and commands ask ∙ applies on launch/wake".into(),
+            "accept-edits" => "edits go ahead, commands ask ∙ applies on launch/wake".into(),
+            "auto" => "edits and sandboxed commands go ahead ∙ applies on launch/wake".into(),
+            _ => "agy plans and changes nothing ∙ applies on launch/wake".into(),
+        },
+        avail: |c| !c.col_new && c.agy_in_use,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ColumnTools,
         label: |_| "Tools".into(),
         detail: |c| {
@@ -7240,6 +7260,7 @@ pub fn column_group(verb: Verb) -> Option<&'static str> {
         Verb::ColumnClaudeMode
         | Verb::ColumnCodexSandbox
         | Verb::ColumnCodexApproval
+        | Verb::ColumnAgyMode
         | Verb::ColumnTools => "LAUNCH",
         Verb::ColumnSleepAfter => "IDLE",
         _ => return None,
@@ -7307,7 +7328,9 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
                 0 => "sleep off".to_string(),
                 m => format!("sleep {m} min"),
             };
-            Value::Door(if c.claude_unused {
+            Value::Door(if c.claude_unused && !c.codex_in_use && c.agy_in_use {
+                format!("agy {} ∙ {tools} ∙ {sleep}", or(c.col_agy_mode_word, "inherit"))
+            } else if c.claude_unused {
                 format!("sandbox {} ∙ {tools} ∙ {sleep}", or(c.col_codex_sandbox_word, "inherit"))
             } else {
                 let mode = match c.col_claude_mode_word {
@@ -7320,6 +7343,7 @@ fn column_value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::ColumnClaudeMode => Value::Word(mode()),
         Verb::ColumnCodexSandbox => Value::Word(or(c.col_codex_sandbox_word, "inherit").into()),
         Verb::ColumnCodexApproval => Value::Word(or(c.col_codex_approval_word, "inherit").into()),
+        Verb::ColumnAgyMode => Value::Word(or(c.col_agy_mode_word, "inherit").into()),
         Verb::ColumnTools => {
             choice(&["full", "notes + tags", "read only", "off"], or(c.col_tools_word, "full"))
         }
@@ -7341,6 +7365,7 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
                 Verb::ColumnClaudeMode
                     | Verb::ColumnCodexSandbox
                     | Verb::ColumnCodexApproval
+                    | Verb::ColumnAgyMode
                     | Verb::ColumnTools
                     | Verb::ColumnSleepAfter
             );
@@ -11127,6 +11152,24 @@ mod tests {
         assert!(
             matches!(value(Verb::ColumnAgentBehaviour, &door), Some(Value::Door(d)) if d.ends_with("sleep 30 min"))
         );
+        // agy's row stands only where a tier uses agy (T-1234), and an
+        // agy-only board's door names its mode.
+        assert!(!column_items(&agents).iter().any(|m| m.verb == Verb::ColumnAgyMode));
+        let agy = Ctx {
+            column_agents: true,
+            claude_unused: true,
+            agy_in_use: true,
+            col_agy_mode_word: "plan",
+            ..Default::default()
+        };
+        assert_eq!(
+            column_items(&agy).iter().map(|m| m.verb).collect::<Vec<_>>(),
+            [Verb::ColumnAgyMode, Verb::ColumnTools, Verb::ColumnSleepAfter]
+        );
+        let door = Ctx { column_agents: false, ..agy };
+        assert!(
+            matches!(value(Verb::ColumnAgentBehaviour, &door), Some(Value::Door(d)) if d.starts_with("agy plan ∙ "))
+        );
     }
 
     /// The column dialog reads as a Settings page (T-806): every row past
@@ -11135,7 +11178,7 @@ mod tests {
     /// list left would come back as a second heading of the same name.
     #[test]
     fn every_column_row_has_a_value_and_one_section() {
-        let all = Ctx { codex_in_use: true, ..Default::default() };
+        let all = Ctx { codex_in_use: true, agy_in_use: true, ..Default::default() };
         for agents in [false, true] {
             let ctx = Ctx { column_agents: agents, ..all.clone() };
             let rows = column_items(&ctx);

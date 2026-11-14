@@ -584,7 +584,7 @@ fn provider_installation(
     version: Option<&str>,
     verbose: bool,
 ) -> Vec<Record> {
-    let label = if provider == AgentProvider::Codex { "codex" } else { "claude" };
+    let label = mesimon_core::tier::builtin_id(provider);
     let Some(path) = path else {
         return vec![rec(if provider == selected { Level::Fail } else { Level::Warn }, label,
             format!("{} not found; {}", redact(binary, verbose), if provider == selected { "selected for new sessions" } else { "optional provider unavailable" }))
@@ -656,10 +656,19 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     if let Some(line) = tiers_line(&book) {
         records.push(rec(Level::Note, "tiers", line));
     }
+    // agy's rows (T-1234) only where something could start it: behind its
+    // switch, or a board that already names it, so nobody else reads an
+    // "optional provider unavailable" for a CLI they never chose.
+    let agy = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1")
+        || selected == AgentProvider::Agy;
     for (provider, name, override_key) in [
         (AgentProvider::ClaudeCode, "claude", "MESIMON_CLAUDE_BIN"),
         (AgentProvider::Codex, "codex", "MESIMON_CODEX_BIN"),
+        (AgentProvider::Agy, "agy", "MESIMON_AGY_BIN"),
     ] {
+        if provider == AgentProvider::Agy && !agy {
+            continue;
+        }
         let binary = std::env::var(override_key).unwrap_or_else(|_| name.into());
         let path = which(&binary);
         let version = path.as_deref().and_then(|path| tool_version(path, &["--version"]));
@@ -1978,6 +1987,17 @@ mod tests {
         );
         assert!(other[0].level == Level::Warn);
         assert!(other[0].value.contains("optional provider"));
+        // agy's rows say agy (T-1234), never another provider's word.
+        let agy = provider_installation(
+            AgentProvider::Agy,
+            AgentProvider::ClaudeCode,
+            "agy",
+            Some("/fixture/agy"),
+            Some("1.5.9"),
+            false,
+        );
+        let labels: Vec<&str> = agy.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["agy", "agy version"]);
     }
 
     #[test]

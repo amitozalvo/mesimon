@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, answerWords, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
-import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { afterWords, harnessName, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS, digestOf, digestWords, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
 import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
@@ -323,6 +323,12 @@ test("the help line says when each delivery reaches the agent, Codex's steer at 
   assert.equal(modeHelp("steer", { provider: "codex" }), "Goes into this turn at its next step.");
   assert.equal(modeHelp("steer", { provider: "claude" }), "Goes in now, mid-turn.");
   assert.equal(modeHelp("queue", { provider: "claude" }), "Waits for the turn to end.");
+  // agy (T-1234): named as itself; its alt+m puts a steer into the turn
+  // (T-1233).
+  assert.equal(harnessName("agy"), "Antigravity");
+  assert.equal(harnessName("codex"), "Codex");
+  assert.equal(harnessName("claude"), "Claude Code");
+  assert.equal(modeHelp("steer", { provider: "agy" }), "Goes in now, mid-turn.");
 });
 
 test("Steer and Send now wait while the agent waits on you; Queue does not (T-568)", () => {

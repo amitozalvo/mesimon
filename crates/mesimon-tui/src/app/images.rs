@@ -169,7 +169,8 @@ impl App {
                 if let InputPurpose::Prompt { images: held, .. } = &mut purpose {
                     *held = images;
                 }
-                self.mode = Mode::Input { purpose, buffer: history_field(&text, self.board_field()) };
+                self.mode =
+                    Mode::Input { purpose, buffer: history_field(&text, self.board_field()) };
                 Ok(())
             }
         }

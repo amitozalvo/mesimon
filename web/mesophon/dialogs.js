@@ -3,6 +3,7 @@
 import { html, useEffect, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon } from "./icons.js";
 import { Markdown } from "./markdown.js";
+import { harnessName } from "./queue.js";
 import { answerBusy } from "./sessions.js";
 
 export const DIALOG_OMITTED = "This dialog is too large to show here. Use the ticket’s Terminal tab to answer.";
@@ -219,7 +220,7 @@ export function Attention({ store, ticket, entry, live }) {
 // read before every key, as the person would at the keyboard; the brief
 // then goes in by itself. "No, exit" ends the agent and stays the pane's.
 function TrustCard({ ticket, trust, off, send }) {
-  const harness = ticket.agent.provider === "codex" ? "Codex" : "Claude Code";
+  const harness = harnessName(ticket.agent.provider);
   return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
     <h3 class="attention-head"><${Icon} name="shield" size=${18} cls="attn-ink" /><span>Trust this folder</span></h3>
     ${trust.folder && html`<${CodeBox} key=${trust.request} cls="attention-code" text=${trust.folder} what="folder" />`}

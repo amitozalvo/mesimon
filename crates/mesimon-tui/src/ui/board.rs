@@ -112,13 +112,7 @@ struct Group {
 /// ghost, the crown's trails and burns and the composer's phantom card among
 /// them, and the column's count. `row` draws each card as a table row
 /// (T-1240).
-fn column_groups(
-    app: &App,
-    ci: usize,
-    name: &str,
-    width: u16,
-    row: bool,
-) -> (Vec<Group>, usize) {
+fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Vec<Group>, usize) {
     let theme = &app.theme;
     let tickets = app.board.column_tickets(name);
     let is_cursor_col = app.cursor_col == ci;
@@ -140,14 +134,8 @@ fn column_groups(
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx {
-        theme,
-        width,
-        now_ms: now_ms(),
-        spin: app.spin_frame(),
-        names_key: true,
-        row,
-    };
+    let ctx =
+        CardCtx { theme, width, now_ms: now_ms(), spin: app.spin_frame(), names_key: true, row };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -1149,7 +1137,8 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
     for &(ci, start, end) in &lanes {
         let (lo, hi) = (start.max(scroll), end.min(end_vis));
         if lo < hi {
-            let rect = Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
+            let rect =
+                Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
             hits.record(rect, crate::mouse::Target::Lane(ci));
         }
     }
@@ -1173,7 +1162,8 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
             });
         }
         if !p.trail && lo < hi {
-            let rect = Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
+            let rect =
+                Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
             hits.record(rect, crate::mouse::Target::Card(p.id));
             if let Some((line, (x, w))) = p.prs_at.filter(|(line, _)| shown(*line)) {
                 let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };

@@ -138,9 +138,8 @@ fn summary_bar(
     let on_done = Style::default().bg(theme.calm).fg(theme.tag_ink());
     let on_track = Style::default().bg(ramp.dim3).fg(ramp.base);
     let left = (ROW_BAR - words.width()) / 2;
-    let cells: Vec<char> = format!("{}{words:<w$}", " ".repeat(left), w = ROW_BAR - left)
-        .chars()
-        .collect();
+    let cells: Vec<char> =
+        format!("{}{words:<w$}", " ".repeat(left), w = ROW_BAR - left).chars().collect();
     // One span per run of cells on the same ground.
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (ground, range) in [(on_done, 0..done), (on_track, done..ROW_BAR)] {
@@ -150,7 +149,6 @@ fn summary_bar(
     }
     spans
 }
-
 
 /// Render the in-place title editor as a card line (create + rename share it).
 /// Returns the line and the cursor x-offset within the column rect.
@@ -905,7 +903,8 @@ pub(super) fn render(
         Vec::new()
     };
     let fields_cells = if fields.is_empty() { 0 } else { super::spans_width(&fields) + 1 };
-    let wt_pad = if ctx.row && !fields.is_empty() { (ROW_WT + 1).saturating_sub(wt_cells) } else { 0 };
+    let wt_pad =
+        if ctx.row && !fields.is_empty() { (ROW_WT + 1).saturating_sub(wt_cells) } else { 0 };
     let title_budget = t_cells.saturating_sub(
         glyph_cells
             + holder_cells
@@ -1791,8 +1790,11 @@ mod row_tests {
     fn the_bar_holds_its_count_centred_and_is_never_empty_or_full_when_it_is_not() {
         use mesimon_core::summary::Count;
         let theme = Theme::new(crate::theme::Flavor::Graphite, crate::theme::Profile::TrueColor);
-        let bar = |done, total| summary_bar(&theme, Some(Count { done, total }), false, theme.dim2());
-        let text = |spans: &[Span<'static>]| spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let bar =
+            |done, total| summary_bar(&theme, Some(Count { done, total }), false, theme.dim2());
+        let text = |spans: &[Span<'static>]| {
+            spans.iter().map(|s| s.content.to_string()).collect::<String>()
+        };
         let filled = |done, total| {
             let spans = bar(done, total);
             let calm = spans.iter().filter(|s| s.style.bg == Some(theme.calm));
@@ -1805,7 +1807,8 @@ mod row_tests {
         assert_eq!(text(&bar(2, 5)), "   2/5   ", "centred");
         assert_eq!(text(&bar(12, 12)), "  12/12  ");
         for s in bar(2, 5) {
-            let ink = if s.style.bg == Some(theme.calm) { theme.tag_ink() } else { theme.rest.base };
+            let ink =
+                if s.style.bg == Some(theme.calm) { theme.tag_ink() } else { theme.rest.base };
             assert_eq!(s.style.fg, Some(ink), "each ground its own ink: {s:?}");
         }
         let blank = summary_bar(&theme, None, false, theme.dim2());

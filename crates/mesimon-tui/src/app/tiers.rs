@@ -38,11 +38,14 @@ pub enum TierField {
 
 /// Where Claude Code and Codex keep the model lists their pickers show
 /// (T-951): Claude Code's home (`census::claude_home`) and Codex's
-/// (`codex_home`). Read when a tier page opens, never in `App::new`.
+/// (`codex_home`), and the file the daemon keeps `agy models` in
+/// (`agents::agy::models_file`, T-1234). Read when a tier page opens, never
+/// in `App::new`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelHomes {
     pub claude: PathBuf,
     pub codex: PathBuf,
+    pub agy: PathBuf,
 }
 
 /// Codex's cache is ~400 KB; a file past this is not a list we read.
@@ -57,9 +60,10 @@ fn read_capped(path: &std::path::Path) -> Option<String> {
 }
 
 impl ModelHomes {
-    /// Both lists as the providers left them: Claude Code's account
-    /// catalogs (`cache/model-catalog/*-cc.json`, 2.1.310) and Codex's
-    /// `models_cache.json`. A missing or unreadable file is no list.
+    /// The lists as the providers left them: Claude Code's account
+    /// catalogs (`cache/model-catalog/*-cc.json`, 2.1.310), Codex's
+    /// `models_cache.json`, and agy's as the daemon last read it. A missing
+    /// or unreadable file is no list.
     pub fn read(&self) -> ModelLists {
         let dir = self.claude.join("cache").join("model-catalog");
         let catalogs: Vec<String> = std::fs::read_dir(dir)
@@ -75,6 +79,7 @@ impl ModelHomes {
             claude: tier::claude_models(&catalogs),
             codex: read_capped(&self.codex.join("models_cache.json"))
                 .and_then(|t| tier::codex_models(&t)),
+            agy: read_capped(&self.agy).and_then(|t| tier::agy_models(&t)),
         }
     }
 }
@@ -97,7 +102,7 @@ fn between_turns(rec: &SessionRecord) -> bool {
 impl App {
     /// The two layers, for one question.
     pub(crate) fn tiers(&self) -> Book<'_> {
-        Book::new(&self.machine_tiers, &self.board)
+        Book::new(&self.machine_tiers, &self.board).with_agy(self.agy_switch)
     }
 
     /// The layer the Settings dialogs write: `b` flips it.
@@ -323,10 +328,9 @@ impl App {
 
     /// The Default tier row's ring in the dialog's scope: the machine's is
     /// the built-ins and its own tiers; a board's starts with `inherit`.
-    fn default_ring(&self) -> (Vec<Option<Tier>>, Option<String>) {
+    pub(crate) fn default_ring(&self) -> (Vec<Option<Tier>>, Option<String>) {
         let book = self.tiers();
-        let builtins =
-            [Tier::builtin(AgentProvider::ClaudeCode), Tier::builtin(AgentProvider::Codex)];
+        let builtins = book.builtins();
         if self.settings_board_scope {
             let mut ring: Vec<Option<Tier>> = vec![None];
             ring.extend(builtins.into_iter().map(Some));
@@ -393,6 +397,8 @@ impl App {
             && !customs.iter().any(|(t, _)| t.provider == AgentProvider::ClaudeCode);
         c.codex_in_use = default.provider == AgentProvider::Codex
             || customs.iter().any(|(t, _)| t.provider == AgentProvider::Codex);
+        c.agy_in_use = default.provider == AgentProvider::Agy
+            || customs.iter().any(|(t, _)| t.provider == AgentProvider::Agy);
         c.tier_cycle = self.tier_cycle_ctx();
         // What runs on this board, in either scope (T-751): the scope says
         // what Enter edits, and the detail carries the other layer.
@@ -719,7 +725,6 @@ impl App {
     /// A page row's label and detail.
     pub(crate) fn tier_field_words(&self, field: TierField, armed: bool) -> (String, String) {
         let Some((t, source)) = self.edited_tier() else { return (String::new(), String::new()) };
-        let claude = t.provider == AgentProvider::ClaudeCode;
         match field {
             TierField::Name => (
                 format!("Name: {}", t.name),
@@ -732,10 +737,17 @@ impl App {
             TierField::Model => self.model_words(&t),
             TierField::Effort => (
                 format!("Effort: {}", t.effort.word()),
-                if claude {
-                    "claude --effort ∙ h l steps ∙ default leaves Claude Code's own".into()
-                } else {
-                    "codex model_reasoning_effort ∙ h l steps ∙ default leaves Codex's own".into()
+                match t.provider {
+                    AgentProvider::ClaudeCode => {
+                        "claude --effort ∙ h l steps ∙ default leaves Claude Code's own".into()
+                    }
+                    AgentProvider::Codex => {
+                        "codex model_reasoning_effort ∙ h l steps ∙ default leaves Codex's own"
+                            .into()
+                    }
+                    AgentProvider::Agy => {
+                        "agy --effort ∙ h l steps ∙ default leaves agy's own".into()
+                    }
                 },
             ),
             TierField::Description => (
@@ -867,8 +879,7 @@ impl App {
         match self.tier_fields().get(idx) {
             Some(TierField::Provider) => {
                 // agy rides the ring only behind its switch (T-1225).
-                let agy = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1");
-                t.provider = t.provider.next(agy);
+                t.provider = t.provider.next(self.agy_switch);
                 t.model.clear();
                 self.tier_kept_model.clear();
                 if !Effort::ring(t.provider).contains(&t.effort) {

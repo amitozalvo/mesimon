@@ -2828,9 +2828,14 @@ fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
         clauses.insert(0, on);
     }
     let settings = app.board.column(&ticket.column).map(|c| &c.settings);
-    if app.tiers().start_provider(ticket.id) == mesimon_core::board::AgentProvider::ClaudeCode {
+    let provider = app.tiers().start_provider(ticket.id);
+    if provider == mesimon_core::board::AgentProvider::ClaudeCode {
         if let Some(m) = settings.map(|s| s.claude_mode).filter(|m| *m != ClaudeMode::Inherit) {
             clauses.push(format!("{} mode", m.word()));
+        }
+    } else if provider == mesimon_core::board::AgentProvider::Agy {
+        if let Some(m) = settings.map(|s| s.agy_mode).filter(|m| !m.is_inherit()) {
+            clauses.push(format!("agy {} mode", m.word()));
         }
     } else if let Some(settings) = settings {
         if !settings.codex_sandbox.is_inherit() {

@@ -4124,7 +4124,14 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
         for width in [12, 29, 48] {
             let bar = crate::tags::BAR;
-            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true, row: false };
+            let ctx = card::CardCtx {
+                theme: &theme,
+                width,
+                now_ms: 0,
+                spin: 0,
+                names_key: true,
+                row: false,
+            };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> = (0..n)
@@ -6715,10 +6722,9 @@ fn table_rows_wear_both_tags_as_thin_stripes() {
         app.cursor_col = if selected { 1 } else { 0 };
         app.cursor_row = Some(0);
         let at = |group, name| {
-            app.theme.pip(
-                app.board.tag_def(group, name).expect("registered").tint().expect("a colour")
-                    as usize,
-            )
+            app.theme
+                .pip(app.board.tag_def(group, name).expect("registered").tint().expect("a colour")
+                    as usize)
         };
         let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
         let lines = render(&app, 120, 30);
@@ -13297,6 +13303,7 @@ fn tier_app() -> App {
                 "Frontier intelligence for the most demanding work.",
             ),
         ]),
+        agy: None,
     };
     app
 }

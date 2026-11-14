@@ -87,13 +87,17 @@ pub(crate) fn bar_spans(
 /// between them. `None` with no
 /// tag that has a colour, or no tints to draw them in; the caller keeps
 /// the card's own bar then.
-pub(crate) fn row_stripes(theme: &Theme, tags: &[Painted]) -> Option<(Span<'static>, Option<Span<'static>>)> {
+pub(crate) fn row_stripes(
+    theme: &Theme,
+    tags: &[Painted],
+) -> Option<(Span<'static>, Option<Span<'static>>)> {
     if !theme.paints_tags() {
         return None;
     }
     let mut tints = blocks(tags);
-    let stripe =
-        |glyph: &'static str, n: u8| Span::styled(glyph, Style::default().fg(theme.pip(n as usize)));
+    let stripe = |glyph: &'static str, n: u8| {
+        Span::styled(glyph, Style::default().fg(theme.pip(n as usize)))
+    };
     let first = stripe("▋", tints.next()?);
     Some((first, tints.next().map(|n| stripe("▎", n))))
 }
