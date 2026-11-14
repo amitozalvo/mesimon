@@ -231,6 +231,32 @@ export class BoardState {
   }
 }
 
+// What happened while this page was not looked at (T-1208): turns that
+// finished, agents newly waiting on you, and how many still work, from the
+// agents' states then and now. Nothing when nothing finished or asked.
+export function digestOf(was, now) {
+  const before = new Map((was || []).map((t) => [t.id, t.agent?.state]));
+  let finished = 0;
+  let asked = 0;
+  let working = 0;
+  for (const t of now || []) {
+    const state = t.agent?.state;
+    const old = before.get(t.id);
+    if (["working", "starting"].includes(state)) working++;
+    if (state === "needs attention" && old !== "needs attention") asked++;
+    if (state === "idle" && ["working", "starting", "needs attention"].includes(old)) finished++;
+  }
+  return finished + asked > 0 ? { finished, asked, working } : undefined;
+}
+export function digestWords({ finished, asked, working }) {
+  const parts = [
+    finished && `${finished} finished`,
+    asked && `${asked} new ${asked === 1 ? "question" : "questions"}`,
+    working && `${working} still working`,
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
 // The line under a board the host sent without its last tickets (T-1008).
 export function omittedWords(omitted) {
   if (!(omitted > 0)) return "";

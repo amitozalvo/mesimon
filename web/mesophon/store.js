@@ -2,7 +2,7 @@
 // re-renders on `emit`; nothing here touches the DOM except history, focus
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
-import { BoardState, refusedBoardWords } from "./board.js";
+import { BoardState, digestOf, refusedBoardWords } from "./board.js";
 import { Sessions, answerBusy, answerWords, dropPictures, landed } from "./sessions.js";
 import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
@@ -19,6 +19,8 @@ import { PromptMail } from "./letters.js";
 import { wornTheme } from "./themes.js";
 
 const narrow = () => matchMedia("(max-width: 700px)").matches;
+// How long away before the Inbox says what changed meanwhile (T-1208).
+const DIGEST_AFTER_MS = 5 * 60000;
 const receiptOps = ["prompt", "send_now", "take_back", "permission", "dialog", "status"];
 // A filed ticket's description is its first note: the host's note limit.
 export const DESCRIPTION_MAX_BYTES = 32 * 1024;
@@ -2392,7 +2394,22 @@ export class Store {
         this.board = new BoardState(this.active.selected);
         this.boards.set(this.active.pin.board, this.board);
       }
+      // What the page last showed before it was left (T-1208): the board
+      // remembered from the visit before, or the one on screen when the
+      // page was hidden. The first board read on coming back says what
+      // changed, when that was more than a few minutes ago.
+      const here = this.active.pin.board;
+      const left = this.left?.board === here
+        ? this.left
+        : this.board.cached && !this.board.shelved && this.board.receivedAt
+          ? { board: here, at: this.board.receivedAt, tickets: this.board.tickets }
+          : undefined;
       this.board.update({ ...reply, tickets: this.edits.wear(this.active.pin.board, reply.tickets) });
+      if (left && !document.hidden) {
+        this.left = undefined;
+        const digest = Date.now() - left.at > DIGEST_AFTER_MS ? digestOf(left.tickets, this.board.tickets) : undefined;
+        if (digest) this.board.digest = { ...digest, since: left.at };
+      }
       this.notePickups(reply.tickets);
       this.startLanded(reply.tickets);
       if (this.active.title !== reply.title || this.active.selected !== this.board.selected) {
@@ -2891,7 +2908,15 @@ export class Store {
   }
 
   // ---- lifecycle -------------------------------------------------------------
+  dismissDigest() {
+    if (!this.board?.digest) return;
+    this.board.digest = undefined;
+    this.emit();
+  }
   visibility() {
+    // Left: what was on screen, for the line that says what changed since.
+    if (document.hidden && this.board && this.live && this.active)
+      this.left = { board: this.active.pin.board, at: Date.now(), tickets: this.board.tickets };
     this.foreground();
     if (!document.hidden && this.connection) {
       this.live = false;

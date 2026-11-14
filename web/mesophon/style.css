@@ -6187,3 +6187,23 @@ button.set-row:hover {
 .link-press:disabled {
   opacity: 0.45;
 }
+
+/* Since you left (T-1208): one line over the Inbox, dismissed by its x. */
+.digest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 0 12px;
+  border-radius: 12px;
+  background: var(--s1);
+  color: var(--ink2);
+  font-size: 0.8125rem;
+}
+.digest > span {
+  flex: 1;
+  min-width: 0;
+}
+.digest .icon {
+  flex: none;
+  color: var(--ink3);
+}

@@ -1604,6 +1604,31 @@ async function startFlow(browser, engineName, size, viewport) {
     await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
     await page.getByRole("button", { name: "Connect", exact: true }).click();
     await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    // Since you left (T-1208): the page hidden for more than a few minutes
+    // comes back to one line over the Inbox that says what changed, from
+    // the agents' states then and now; its x takes it away.
+    assert.equal(await page.locator("#digest").count(), 0);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.realNow = Date.now;
+      Date.now = () => window.realNow.call(Date) + 6 * 60000;
+      const done = fixture.tickets.find((t) => t.agent?.state === "working");
+      window.digestTicket = done.id;
+      done.agent.state = "idle";
+      delete document.hidden;
+      document.dispatchEvent(new Event("visibilitychange"));
+      fixture.update();
+    });
+    await page.locator("#digest").waitFor();
+    assert.match(await page.locator("#digest").textContent(), /^\s*Since \d[^:]*:\d\d[^:]*: 1 finished, \d+ still working\.\s*$/);
+    await page.locator("#digest-x").click();
+    await page.locator("#digest").waitFor({ state: "detached" });
+    await page.evaluate(() => {
+      Date.now = window.realNow;
+      fixture.tickets.find((t) => t.id === window.digestTicket).agent.state = "working";
+      fixture.update();
+    });
     await mode("board");
     if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
 

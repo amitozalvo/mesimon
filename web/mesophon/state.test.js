@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, answerWords, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
 import { afterWords, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
-import { BoardState, RECENT_MS, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
+import { BoardState, RECENT_MS, digestOf, digestWords, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
 import { THEMES, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
@@ -1344,4 +1344,18 @@ test("a note's Summary boxes are read and flipped as the desk reads them", async
   assert.equal(toggle(body, 99), undefined);
   assert.equal(toggle("## Summary\r\n  - [ ] kept\r\n", 1), "## Summary\r\n  - [x] kept\r\n", "every other byte stays");
   assert.equal(toggle(toggle(body, 6), 6), body);
+});
+
+// Since you left (T-1208): what the Inbox says changed while the page was
+// away, from the agents' states then and now.
+test("the digest counts turns that finished, new questions and who still works", () => {
+  const t = (id, state) => ({ id, agent: state ? { state } : null });
+  const was = [t("a", "working"), t("b", "working"), t("c", "idle"), t("d", "needs attention"), t("e", "starting"), t("f")];
+  const now = [t("a", "idle"), t("b", "needs attention"), t("c", "idle"), t("d", "needs attention"), t("e", "working"), t("f", "working"), t("g", "needs attention")];
+  assert.deepEqual(digestOf(was, now), { finished: 1, asked: 2, working: 2 });
+  assert.equal(digestWords(digestOf(was, now)), "1 finished, 2 new questions, 2 still working");
+  assert.equal(digestWords({ finished: 0, asked: 1, working: 0 }), "1 new question");
+  assert.equal(digestOf(was, was), undefined, "nothing finished or asked is no line");
+  assert.equal(digestOf([t("a", "working")], [t("a", "working"), t("b", "working")]), undefined);
+  assert.deepEqual(digestOf([t("a", "needs attention")], [t("a", "idle")]), { finished: 1, asked: 0, working: 0 });
 });

@@ -9,7 +9,7 @@ import { Shin } from "./shin.js";
 import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, pickedOption, requestFields } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
-import { RECENT_MS, omittedWords } from "./board.js";
+import { RECENT_MS, omittedWords, digestWords } from "./board.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 export const lastSeen = (board) => (board?.receivedAt ? clock(board.receivedAt) : "");
@@ -381,6 +381,11 @@ export function NowList({ store, board, live }) {
   const empty = !needs.length && !stopped.length && !working.length && !idle.length && !created.length;
   return html`
     <${Asleep} store=${store} />
+    ${board.digest && html`<div id="digest" class="digest" role="status">
+      <${Icon} name="hourglass" size=${15} />
+      <span>Since ${clock(board.digest.since)}: ${digestWords(board.digest)}.</span>
+      <button id="digest-x" type="button" class="icon-btn" aria-label="Dismiss" onClick=${() => store.dismissDigest()}><${Icon} name="x" size=${15} /></button>
+    </div>`}
     <${Waiting} store=${store} />
     ${needs.length > 0 && html`<${Group} label="Needs you" count=${needs.length} attn=${true}>
       <div class="needs">${needs.map((t) => html`<${NeedCard} key=${t.id} store=${store} ticket=${t} board=${board} live=${live} />`)}</div>
