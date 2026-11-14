@@ -495,6 +495,8 @@ pub(crate) struct Prefs {
     pub usage_resets: UsageResets,
     pub usage_claude: bool,
     pub usage_codex: bool,
+    /// agy's windows on the line (T-1237): its sessions' own reports.
+    pub usage_agy: bool,
     /// What the cards' corner says: age by default, cost on `$` (T-327).
     pub card_corner: CardCorner,
     /// The release channel the update check follows (T-946), `None` while
@@ -567,6 +569,7 @@ impl Default for Prefs {
             usage_resets: UsageResets::Near,
             usage_claude: true,
             usage_codex: true,
+            usage_agy: true,
             card_corner: CardCorner::Age,
             release_channel: None,
             summary: SummaryShow::Full,
@@ -624,6 +627,7 @@ const USAGE_MODEL_KEY: &str = PrefKey::UsageModel.name();
 const USAGE_RESETS_KEY: &str = PrefKey::UsageResets.name();
 const USAGE_CLAUDE_KEY: &str = PrefKey::UsageClaude.name();
 const USAGE_CODEX_KEY: &str = PrefKey::UsageCodex.name();
+const USAGE_AGY_KEY: &str = PrefKey::UsageAgy.name();
 const CARD_CORNER_KEY: &str = PrefKey::CardCorner.name();
 const SUMMARY_KEY: &str = PrefKey::Summary.name();
 const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
@@ -872,6 +876,7 @@ impl Prefs {
             PrefKey::UsageResets => self.usage_resets.key(),
             PrefKey::UsageClaude => onoff(self.usage_claude),
             PrefKey::UsageCodex => onoff(self.usage_codex),
+            PrefKey::UsageAgy => onoff(self.usage_agy),
             PrefKey::CardCorner => self.card_corner.key(),
             PrefKey::Summary => self.summary.key(),
             PrefKey::FetchEvery => self.fetch_every.key(),
@@ -950,6 +955,7 @@ impl Prefs {
             (USAGE_MODEL_KEY, self.usage_model),
             (USAGE_CLAUDE_KEY, self.usage_claude),
             (USAGE_CODEX_KEY, self.usage_codex),
+            (USAGE_AGY_KEY, self.usage_agy),
         ] {
             doc.insert(key.into(), Value::from(v));
         }
@@ -1163,6 +1169,7 @@ impl BoardPrefs {
             | PrefKey::UsageResets
             | PrefKey::UsageClaude
             | PrefKey::UsageCodex
+            | PrefKey::UsageAgy
             | PrefKey::CardCorner
             | PrefKey::Summary
             | PrefKey::CardPrs
@@ -1493,6 +1500,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let usage_model = flag(USAGE_MODEL_KEY, true);
     let usage_claude = flag(USAGE_CLAUDE_KEY, true);
     let usage_codex = flag(USAGE_CODEX_KEY, true);
+    let usage_agy = flag(USAGE_AGY_KEY, true);
     let notify_via = doc
         .get(NOTIFY_VIA_KEY)
         .and_then(Value::as_str)
@@ -1570,6 +1578,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         usage_resets,
         usage_claude,
         usage_codex,
+        usage_agy,
         card_corner,
         release_channel,
         summary,
@@ -1768,6 +1777,7 @@ pub fn usage_doctor_line() -> String {
     for (p, on) in [
         (mesimon_core::usage::Provider::Claude, prefs.usage_claude),
         (mesimon_core::usage::Provider::Codex, prefs.usage_codex),
+        (mesimon_core::usage::Provider::Agy, prefs.usage_agy),
     ] {
         let account = usage.get(p);
         let said = if !on {
@@ -2157,6 +2167,21 @@ mod tests {
         assert_eq!(v["merge_train"], false);
         assert_eq!(v["merge_train_notice"], false);
         assert_eq!(v["dark"], "amber");
+    }
+
+    /// agy's place on the usage line (T-1237): absent is on, an off is kept.
+    #[test]
+    fn agys_usage_defaults_on_and_round_trips() {
+        let p = scratch("usage-agy");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.usage_agy, "absent is the default: on");
+        l.prefs.usage_agy = false;
+        save(&p, &l.prefs).unwrap();
+        assert!(!load(&p).prefs.usage_agy, "an off is kept");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["usage_agy"], false);
     }
 
     /// The crown's lightning (T-544): absent is on, an off round-trips, and

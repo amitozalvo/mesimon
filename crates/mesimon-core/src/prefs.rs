@@ -104,6 +104,8 @@ pub enum PrefKey {
     UsageResets,
     UsageClaude,
     UsageCodex,
+    /// agy's windows on the usage line (T-1237), as its sessions report them.
+    UsageAgy,
     /// What a card's corner says (T-327): its `age` (the default) or its
     /// ticket's estimated `cost` — `$` on the board flips it.
     CardCorner,
@@ -145,7 +147,7 @@ pub enum PrefKey {
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 50] = [
+    pub const ALL: [PrefKey; 51] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -187,6 +189,7 @@ impl PrefKey {
         PrefKey::UsageResets,
         PrefKey::UsageClaude,
         PrefKey::UsageCodex,
+        PrefKey::UsageAgy,
         PrefKey::CardCorner,
         PrefKey::Summary,
         PrefKey::NewReplies,
@@ -242,6 +245,7 @@ impl PrefKey {
             PrefKey::UsageResets => "usage_resets",
             PrefKey::UsageClaude => "usage_claude",
             PrefKey::UsageCodex => "usage_codex",
+            PrefKey::UsageAgy => "usage_agy",
             PrefKey::CardCorner => "card_corner",
             PrefKey::Summary => "summary",
             PrefKey::NewReplies => "new_replies",
@@ -296,6 +300,7 @@ impl PrefKey {
                 | PrefKey::UsageResets
                 | PrefKey::UsageClaude
                 | PrefKey::UsageCodex
+                | PrefKey::UsageAgy
                 | PrefKey::CardCorner
                 | PrefKey::Summary
                 | PrefKey::NewReplies
@@ -354,6 +359,7 @@ impl PrefKey {
             PrefKey::UsageResets => "usage line's reset times",
             PrefKey::UsageClaude => "usage line's claude",
             PrefKey::UsageCodex => "usage line's codex",
+            PrefKey::UsageAgy => "usage line's agy",
             PrefKey::CardCorner => "card corner",
             PrefKey::Mouse => "mouse",
             PrefKey::FetchEvery => "fetch from the remote",
@@ -437,6 +443,7 @@ mod tests {
                 PrefKey::UsageResets,
                 PrefKey::UsageClaude,
                 PrefKey::UsageCodex,
+                PrefKey::UsageAgy,
                 PrefKey::CardCorner,
                 PrefKey::Summary,
                 PrefKey::NewReplies,

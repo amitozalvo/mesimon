@@ -9077,6 +9077,8 @@ impl App {
             usage_resets_word: self.prefs.usage_resets.name(),
             usage_claude: self.prefs.usage_claude,
             usage_codex: self.prefs.usage_codex,
+            usage_agy: self.prefs.usage_agy,
+            agy: self.agy_switch,
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
             board_table: self.table_view(),
@@ -9731,6 +9733,11 @@ impl App {
                 let on = !self.prefs.usage_codex;
                 let word = if on { "codex's quota is read" } else { "codex's quota is not read" };
                 self.set_pref(word, |p| p.usage_codex = on);
+            }
+            Verb::UsageAgy => {
+                let on = !self.prefs.usage_agy;
+                let word = if on { "agy's quota is shown" } else { "agy's quota is not shown" };
+                self.set_pref(word, |p| p.usage_agy = on);
             }
             Verb::ColumnAgentBehaviour => {
                 self.column_agents = true;

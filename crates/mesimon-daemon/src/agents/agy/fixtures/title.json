@@ -1,0 +1,60 @@
+{
+ "cwd": "/tmp/rec/work",
+ "session_id": "10a19568-c63e-4e90-a8b0-c7ef8ae2e121",
+ "conversation_id": "10a19568-c63e-4e90-a8b0-c7ef8ae2e121",
+ "transcript_path": "/Users/u/.gemini/antigravity/brain/10a19568-c63e-4e90-a8b0-c7ef8ae2e121/.system_generated/logs/transcript.jsonl",
+ "model": {
+  "id": "Gemini 3.8 Flash (High)",
+  "display_name": "Gemini 3.8 Flash (High)",
+  "effort": "high"
+ },
+ "workspace": {
+  "current_dir": "/tmp/rec/work",
+  "project_dir": "/tmp/rec/work"
+ },
+ "version": "1.5.9",
+ "context_window": {
+  "total_input_tokens": 19627,
+  "total_output_tokens": 158,
+  "context_window_size": 1048576,
+  "used_percentage": 1.8717765808105469,
+  "remaining_percentage": 98.12822341918945,
+  "current_usage": {
+   "input_tokens": 2260,
+   "output_tokens": 34,
+   "cache_creation_input_tokens": 0,
+   "cache_read_input_tokens": 12115
+  }
+ },
+ "exceeds_200k_tokens": false,
+ "product": "antigravity",
+ "quota": {
+  "3p-5h": {
+   "remaining_fraction": 1,
+   "reset_time": "2026-11-14T19:33:24Z",
+   "reset_in_seconds": 17982
+  },
+  "3p-weekly": {
+   "remaining_fraction": 1,
+   "reset_time": "2026-11-21T14:33:24Z",
+   "reset_in_seconds": 604782
+  },
+  "gemini-5h": {
+   "remaining_fraction": 0.9903057,
+   "reset_time": "2026-11-14T18:42:35Z",
+   "reset_in_seconds": 14933
+  },
+  "gemini-weekly": {
+   "remaining_fraction": 0.9969996,
+   "reset_time": "2026-11-20T23:15:08Z",
+   "reset_in_seconds": 549686
+  }
+ },
+ "agent_state": "idle",
+ "cycle_mode": "auto",
+ "sandbox": {
+  "enabled": false
+ },
+ "plan_tier": "Google AI Pro",
+ "terminal_width": 160
+}

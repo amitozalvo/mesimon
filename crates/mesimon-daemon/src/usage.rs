@@ -18,6 +18,9 @@
 //!   A Codex session mesimon runs reports the same snapshot after every turn
 //!   (`account/rateLimits/updated`, carried in its runtime's observation
 //!   snapshot), which spares the probe while one is working.
+//! - agy (T-1237): no probe. Its sessions' title feed carries the plan's
+//!   quota on every report, taken when it is news (`agy_feed`), so the
+//!   reading is as old as the last agy session that ran.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -88,6 +91,8 @@ struct FileBody {
     claude: ProviderUsage,
     #[serde(default)]
     codex: ProviderUsage,
+    #[serde(default)]
+    agy: ProviderUsage,
 }
 
 /// The writer's account: the view the snapshot carries, each provider's
@@ -96,11 +101,13 @@ pub struct UsageState {
     view: Usage,
     claude: Cadence,
     codex: Cadence,
-    in_flight: [bool; 2],
+    /// Never due: agy has no probe, and its `wants` is never set.
+    agy: Cadence,
+    in_flight: [bool; 3],
     /// Unix ms of this daemon's last probe that read: a mod's merged windows
     /// (T-581) refresh the reading's age but not the probe's, which alone
     /// sees a model's week.
-    probed_at: [Option<u64>; 2],
+    probed_at: [Option<u64>; 3],
     wants_by: HashMap<usize, Wants>,
     file: Option<PathBuf>,
     /// The file's (mtime, len) as last read or written: a change means another
@@ -115,6 +122,7 @@ fn slot(p: Provider) -> usize {
     match p {
         Provider::Claude => 0,
         Provider::Codex => 1,
+        Provider::Agy => 2,
     }
 }
 
@@ -126,8 +134,9 @@ impl UsageState {
             view: Usage::default(),
             claude: Cadence::default(),
             codex: Cadence::default(),
-            in_flight: [false; 2],
-            probed_at: [None; 2],
+            agy: Cadence::default(),
+            in_flight: [false; 3],
+            probed_at: [None; 3],
             wants_by: HashMap::new(),
             file,
             seen: None,
@@ -142,6 +151,7 @@ impl UsageState {
         match p {
             Provider::Claude => &mut self.claude,
             Provider::Codex => &mut self.codex,
+            Provider::Agy => &mut self.agy,
         }
     }
 
@@ -194,7 +204,7 @@ impl UsageState {
     /// [`UsageState::landed`] must follow.
     pub fn due(&mut self, now_ms: u64) -> Vec<Provider> {
         let mut out = Vec::new();
-        for p in Provider::ALL {
+        for p in Provider::PROBED {
             let wanted = self.view.wants.get(p);
             let usage = self.view.get(p);
             let read_at = self.probed_at[slot(p)].or(usage.reading.as_ref().map(|r| r.read_at_ms));
@@ -267,6 +277,24 @@ impl UsageState {
         true
     }
 
+    /// An agy seat's title feed (T-1237): taken where it says something the
+    /// held reading does not, or the held one is a minute old, so a feed
+    /// that reports many times a second writes the shared file rarely. True
+    /// when the view changed.
+    pub fn agy_feed(&mut self, reading: Reading) -> bool {
+        if let Some(held) = self.view.agy.reading.as_ref() {
+            let fresh = reading.read_at_ms.saturating_sub(held.read_at_ms) < 60_000;
+            if reading.read_at_ms <= held.read_at_ms
+                || (fresh && mesimon_core::usage::same_news(held, &reading))
+            {
+                return false;
+            }
+        }
+        self.view.agy.read(reading);
+        self.save();
+        true
+    }
+
     /// Pick up another daemon's answer, at most every [`FILE_POLL_MS`]. True
     /// when the view changed.
     pub fn poll_file(&mut self, now_ms: u64) -> bool {
@@ -274,9 +302,9 @@ impl UsageState {
             return false;
         }
         self.polled_at_ms = now_ms;
-        let before = (self.view.claude.clone(), self.view.codex.clone());
+        let before = (self.view.claude.clone(), self.view.codex.clone(), self.view.agy.clone());
         self.reload();
-        before != (self.view.claude.clone(), self.view.codex.clone())
+        before != (self.view.claude.clone(), self.view.codex.clone(), self.view.agy.clone())
     }
 
     fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
@@ -305,6 +333,7 @@ impl UsageState {
         }
         self.view.claude = std::mem::take(&mut self.view.claude).newer(body.claude);
         self.view.codex = std::mem::take(&mut self.view.codex).newer(body.codex);
+        self.view.agy = std::mem::take(&mut self.view.agy).newer(body.agy);
     }
 
     /// Write both accounts, merged with what another daemon may have written
@@ -323,6 +352,7 @@ impl UsageState {
             schema_version: USAGE_SCHEMA,
             claude: self.view.claude.clone(),
             codex: self.view.codex.clone(),
+            agy: self.view.agy.clone(),
         };
         let Ok(text) = serde_json::to_string(&body) else { return };
         if let Some(dir) = path.parent() {
@@ -363,6 +393,8 @@ pub fn probe(
     match p {
         Provider::Claude => claude(argv, cwd, now_ms),
         Provider::Codex => codex(argv, cwd, now_ms),
+        // Never due (`Provider::PROBED`): agy's quota is its feed's.
+        Provider::Agy => Outcome::Problem(Problem::Unsupported),
     }
 }
 

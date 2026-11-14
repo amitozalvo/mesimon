@@ -1966,7 +1966,15 @@ pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, 
         SessionState::Sleeping if rec.kind == SessionKind::Codex => {
             (word, vec!["wake resumes this Codex conversation".into()])
         }
-        SessionState::Sleeping if rec.transcript_path.is_none() => {
+        // agy resumes by its conversation id, which a hook may name before
+        // the transcript's path (T-1237).
+        SessionState::Sleeping
+            if if rec.kind == SessionKind::Agy {
+                rec.agy_conversation_id.is_none()
+            } else {
+                rec.transcript_path.is_none()
+            } =>
+        {
             (word, vec!["no conversation to resume ∙ waking it starts a fresh one".into()])
         }
         SessionState::Unknown { .. } => {

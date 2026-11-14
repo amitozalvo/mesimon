@@ -18,7 +18,11 @@
 //! it, into the ticket's `check` and never its hours, so the two counts stand
 //! side by side (`Ledger::disagreements`, doctor's `costs` line) and neither
 //! is added twice. The tail stays the count for the hook set's sessions,
-//! Codex, and whatever a conversation held before its fence.
+//! Codex, agy, and whatever a conversation held before its fence.
+//!
+//! An agy transcript (T-1237) is one line per step, and a model step
+//! carries its own request's counts: each is counted once, by its place and
+//! time.
 //!
 //! The reading runs on a worker (`scan`): a transcript is megabytes, and the
 //! writer only folds the counts back in. The file follows the other state
@@ -33,7 +37,7 @@ use anyhow::Result;
 use mesimon_core::command::Notice;
 use mesimon_core::context::Fill;
 use mesimon_core::cost::{
-    claude_compacted, claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens, FAST,
+    agy_step, claude_compacted, claude_turn, codex_line, delta, CodexLine, TicketCost, Tokens, FAST,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,9 +56,13 @@ pub struct Cursor {
     /// A Codex rollout, rather than a Claude transcript.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex: bool,
+    /// An agy transcript (T-1237). A build before it reads the file as
+    /// Claude's and finds nothing in it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agy: bool,
     #[serde(default)]
     pub offset: u64,
-    /// The last Claude message ids counted.
+    /// The last Claude message ids counted, or agy steps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<String>,
     /// Codex: the running totals last read, and the model the turns run on.
@@ -225,7 +233,7 @@ impl Ledger {
     /// A transcript a ticket's session points at. True when it is new. A
     /// session that no longer reports through a mod (`by_mod` false: a wake
     /// on an older Claude Code) hands its conversation back to the tail.
-    pub fn learn(&mut self, ticket: ulid::Ulid, path: &str, codex: bool, by_mod: bool) -> bool {
+    pub fn learn(&mut self, ticket: ulid::Ulid, path: &str, reader: Reader, by_mod: bool) -> bool {
         let t = self.tickets.entry(ticket).or_default();
         if let Some(c) = t.conversations.get_mut(path) {
             if !by_mod {
@@ -234,7 +242,13 @@ impl Ledger {
             return false;
         }
         // Read from its start, so every `pr create` in it is seen (T-810).
-        let cursor = Cursor { codex, backfilled: true, fill_seen: true, ..Cursor::default() };
+        let cursor = Cursor {
+            codex: reader == Reader::Codex,
+            agy: reader == Reader::Agy,
+            backfilled: true,
+            fill_seen: true,
+            ..Cursor::default()
+        };
         t.conversations.insert(path.to_string(), cursor);
         true
     }
@@ -389,7 +403,7 @@ impl Ledger {
                 if tokens.is_empty() {
                     continue;
                 }
-                if !cursor.codex {
+                if !cursor.codex && !cursor.agy {
                     if tokens.write_1h > 0 {
                         t.hint.writes_1h = Some(true);
                     } else if tokens.write_5m > 0 {
@@ -500,18 +514,22 @@ impl Ledger {
 
     /// Each ticket's account as of `now_ms`, for the snapshot. A model's
     /// price is looked up once per view (T-688): every snapshot folds every
-    /// (ticket, hour, model) bucket, and the lookup is a scan.
+    /// (ticket, hour, model) bucket, and the lookup is a scan. A Gemini
+    /// model's rates moved on a date (T-1237), so the lookup is by the model
+    /// and which side of that date the hour is.
     pub fn view(&self, now_ms: u64) -> Vec<TicketCost> {
-        let mut prices: HashMap<&str, Option<mesimon_core::cost::Price>> = HashMap::new();
+        let mut prices: HashMap<(&str, bool), Option<mesimon_core::cost::Price>> = HashMap::new();
         self.tickets
             .iter()
             .filter_map(|(ticket, t)| {
                 let mut c = TicketCost { ticket: *ticket, ..TicketCost::default() };
                 for (hour, models) in &t.hours {
                     for (model, tokens) in models {
+                        let at_ms = hour.saturating_mul(3_600_000);
+                        let later = mesimon_core::cost::rate_epoch(model, at_ms);
                         let price = prices
-                            .entry(model.as_str())
-                            .or_insert_with(|| mesimon_core::cost::price(model));
+                            .entry((model.as_str(), later))
+                            .or_insert_with(|| mesimon_core::cost::price_at(model, at_ms));
                         c.fold_at(price.as_ref(), tokens, *hour, now_ms);
                     }
                 }
@@ -548,7 +566,7 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
     let mut all = jobs;
     let found: Vec<Job> = all
         .iter()
-        .filter(|j| !j.cursor.codex)
+        .filter(|j| !j.cursor.codex && !j.cursor.agy)
         .flat_map(|j| {
             subagents(&j.path).into_iter().map(|path| Job {
                 ticket: j.ticket,
@@ -578,15 +596,20 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     if searched {
         cursor.fill_seen = true;
         if own && cursor.offset > 0 {
-            cursor.fill = last_reading(&job.path, cursor.offset, cursor.codex, &cursor.model);
+            cursor.fill = last_reading(&job.path, cursor.offset, &cursor);
         }
     }
     if len == cursor.offset && !new && !searched {
         return None;
     }
     if len < cursor.offset {
-        cursor =
-            Cursor { codex: cursor.codex, backfilled: true, fill_seen: true, ..Cursor::default() };
+        cursor = Cursor {
+            codex: cursor.codex,
+            agy: cursor.agy,
+            backfilled: true,
+            fill_seen: true,
+            ..Cursor::default()
+        };
     }
     let mut file = std::fs::File::open(&job.path).ok()?;
     file.seek(SeekFrom::Start(cursor.offset)).ok()?;
@@ -627,6 +650,19 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
                 Some(CodexLine::Compacted) => compacted(&mut cursor.fill),
                 None => {}
             }
+        } else if cursor.agy {
+            let Some(step) = agy_step(line) else { continue };
+            if let Some(f) = agy_reading(&step).filter(|_| own) {
+                cursor.fill = Some(f);
+            }
+            if cursor.recent.contains(&step.id) {
+                continue;
+            }
+            cursor.recent.push(step.id);
+            if cursor.recent.len() > RECENT {
+                cursor.recent.remove(0);
+            }
+            added.push((stamp(step.at_ms, now_ms), step.model, step.tokens));
         } else if own && claude_compacted(line) {
             compacted(&mut cursor.fill);
         } else if let Some(turn) = claude_turn(line) {
@@ -679,6 +715,18 @@ fn codex_reading(model: &str, last_input: u64, window: Option<u64>) -> Option<Fi
     })
 }
 
+/// An agy step's reading (T-1237): its uncached and cached input are the
+/// prompt the model read. The window is the title feed's, never the file's.
+fn agy_reading(step: &mesimon_core::cost::AgyStep) -> Option<Fill> {
+    let input = step.tokens.input + step.tokens.read;
+    (input > 0).then(|| Fill {
+        tokens: input,
+        model: step.model.clone(),
+        window: None,
+        compacted: false,
+    })
+}
+
 /// A compaction came after the last reading (T-969).
 fn compacted(fill: &mut Option<Fill>) {
     fill.get_or_insert_with(Fill::default).compacted = true;
@@ -687,14 +735,18 @@ fn compacted(fill: &mut Option<Fill>) {
 /// The reading `path`'s lines before `end` leave (T-969, round 1), for a
 /// cursor that passed them before readings were kept: the last
 /// `FILL_TAIL` bytes, whole lines only, by the same rules as a pass, and
-/// nothing counted. `model` is the Codex model the cursor last read, which
-/// a `turn_context` in the searched lines replaces.
-fn last_reading(path: &str, end: u64, codex: bool, model: &Option<String>) -> Option<Fill> {
+/// nothing counted. The cursor's model is the Codex model it last read,
+/// which a `turn_context` in the searched lines replaces.
+fn last_reading(path: &str, end: u64, cursor: &Cursor) -> Option<Fill> {
     let text = crate::tail::window_text(Path::new(path), end, FILL_TAIL)?;
-    let mut model = model.clone().unwrap_or_else(|| "codex".into());
+    let mut model = cursor.model.clone().unwrap_or_else(|| "codex".into());
     let mut fill = None;
     for line in text.lines() {
-        if codex {
+        if cursor.agy {
+            if let Some(f) = agy_step(line).as_ref().and_then(agy_reading) {
+                fill = Some(f);
+            }
+        } else if cursor.codex {
             match codex_line(line) {
                 Some(CodexLine::Model(m)) => model = m,
                 Some(CodexLine::Totals { last_input, window, .. }) => {
@@ -890,15 +942,24 @@ pub fn save(paths: &Paths, ledger: &Ledger) -> Result<()> {
     )
 }
 
-/// Where a session's transcript is, if it is one this ledger reads.
-pub fn transcript_of(record: &mesimon_core::board::SessionRecord) -> Option<(PathBuf, bool)> {
+/// Whose format a transcript is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reader {
+    Claude,
+    Codex,
+    Agy,
+}
+
+/// Where a session's transcript is, if it is one this ledger reads, and in
+/// whose format.
+pub fn transcript_of(record: &mesimon_core::board::SessionRecord) -> Option<(PathBuf, Reader)> {
     use mesimon_core::board::SessionKind;
     let path = PathBuf::from(record.transcript_path.as_ref()?);
     match record.kind {
-        SessionKind::Claude => Some((path, false)),
-        SessionKind::Codex => Some((path, true)),
-        // No agy reader yet (T-1225): its transcript is counted by nothing.
-        SessionKind::Bash | SessionKind::Agy => None,
+        SessionKind::Claude => Some((path, Reader::Claude)),
+        SessionKind::Codex => Some((path, Reader::Codex)),
+        SessionKind::Agy => Some((path, Reader::Agy)),
+        SessionKind::Bash => None,
     }
 }
 
@@ -935,7 +996,7 @@ mod tests {
         std::fs::write(&main, format!("{}\n", line_at("m1", 100, "16:00:00"))).unwrap();
         let t = ulid::Ulid::new();
         let mut ledger = Ledger::default();
-        ledger.learn(t, &path, false, true);
+        ledger.learn(t, &path, Reader::Claude, true);
         ledger.apply(scan(ledger.jobs(), NOW));
         assert_eq!(ledger.view(NOW)[0].tokens, 111, "before any report the tail counts");
         let turn = Tokens { input: 1, output: 100, write_5m: 10, ..Tokens::default() };
@@ -977,7 +1038,7 @@ mod tests {
         assert_eq!(ledger.disagreements(), vec![(t, 127, 127 + 5_011)]);
         assert_eq!(ledger.by_mod(), 1);
         // A wake on an older Claude Code hands the conversation back.
-        ledger.learn(t, &path, false, false);
+        ledger.learn(t, &path, Reader::Claude, false);
         writeln!(f, "{}", line_at("m4", 100, "16:00:08")).unwrap();
         ledger.apply(scan(ledger.jobs(), NOW));
         assert_eq!(ledger.view(NOW)[0].tokens, 111 + 127 + 111);
@@ -1001,8 +1062,8 @@ mod tests {
         );
         std::fs::write(&path, &body).unwrap();
         let mut ledger = Ledger::default();
-        assert!(ledger.learn(t, &path.display().to_string(), false, false));
-        assert!(!ledger.learn(t, &path.display().to_string(), false, false));
+        assert!(ledger.learn(t, &path.display().to_string(), Reader::Claude, false));
+        assert!(!ledger.learn(t, &path.display().to_string(), Reader::Claude, false));
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
         let c = &ledger.view(NOW)[0];
         assert_eq!(c.tokens, 152, "m1 once, m2 once");
@@ -1016,6 +1077,40 @@ mod tests {
         writeln!(f, "{}", line("m3", 10)).unwrap();
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
         assert_eq!(ledger.view(NOW)[0].tokens, 163);
+    }
+
+    /// T-1237: an agy transcript, recorded on 1.5.9, is counted a model step
+    /// at a time, a step written again is the same step, and its last step
+    /// is the context reading. Nothing is looked for beside it.
+    #[test]
+    fn an_agy_transcript_is_counted_by_its_model_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript_full.jsonl");
+        let shell = include_str!("agents/agy/fixtures/transcript-shell.jsonl");
+        let last = shell.lines().last().unwrap();
+        std::fs::write(&path, format!("{shell}{last}\n")).unwrap();
+        let t = ulid::Ulid::new();
+        let mut ledger = Ledger::default();
+        let p = path.display().to_string();
+        assert!(ledger.learn(t, &p, Reader::Agy, false));
+        assert!(ledger.apply(scan(ledger.jobs(), NOW)));
+        let (c, kinds) = ledger.account(t, NOW).unwrap();
+        // Two model steps: 14164 in + 124 out, then 2260 in, 12115 cached, 34 out.
+        assert_eq!(
+            kinds,
+            Tokens { input: 16_424, read: 12_115, output: 158, ..Tokens::default() },
+            "the step written twice is counted once"
+        );
+        let usd = (16_424.0 * 0.75 + 12_115.0 * 0.075 + 158.0 * 3.75) / 1e6;
+        assert!((c.usd - usd).abs() < 1e-12, "{} != {usd}", c.usd);
+        assert_eq!(c.unpriced, 0);
+        let fill = ledger.fill(t, &p).unwrap();
+        assert_eq!((fill.tokens, fill.model.as_str()), (14_375, "gemini-3.8-flash-high"));
+        assert_eq!(
+            mesimon_core::context::agy_view(fill, Some(1_048_576)).unwrap().pct,
+            Some(1),
+            "the title feed's window"
+        );
     }
 
     /// The `opened here` fact (T-739): a `pr create` and its result, read
@@ -1035,7 +1130,7 @@ mod tests {
         )
         .unwrap();
         let mut ledger = Ledger::default();
-        ledger.learn(t, &path.display().to_string(), false, false);
+        ledger.learn(t, &path.display().to_string(), Reader::Claude, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         assert!(ledger.opened_urls(t).is_empty(), "the result has not come");
         assert_eq!(
@@ -1075,7 +1170,7 @@ mod tests {
         let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_7","name":"Bash","input":{"command":"gh pr review 43 --approve"}}]}}"#;
         std::fs::write(&path, format!("{call}\n")).unwrap();
         let mut ledger = Ledger::default();
-        ledger.learn(t, &path.display().to_string(), false, false);
+        ledger.learn(t, &path.display().to_string(), Reader::Claude, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         assert!(ledger.acted_entries(t).is_empty(), "the result has not come");
         assert_eq!(
@@ -1129,7 +1224,12 @@ mod tests {
         mine.conversations.insert(x.clone(), passed(true));
         mine.pr_urls.push("https://github.com/o/r/pull/99".into());
         let other = ulid::Ulid::new();
-        ledger.learn(other, &dir.path().join("new.jsonl").display().to_string(), false, false);
+        ledger.learn(
+            other,
+            &dir.path().join("new.jsonl").display().to_string(),
+            Reader::Claude,
+            false,
+        );
         let jobs = ledger.backfill_jobs(&HashSet::from([t, other]));
         assert_eq!(jobs.len(), 2, "a transcript learned now is born read: {jobs:?}");
         let found = backfill(jobs);
@@ -1193,7 +1293,7 @@ mod tests {
             Some(false),
             "a live one read whole"
         );
-        ledger.learn(t, &p, false, false);
+        ledger.learn(t, &p, Reader::Claude, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         use std::io::Write;
@@ -1215,7 +1315,7 @@ mod tests {
         assert_eq!(ledger.opened_unread(t, &[], owed), Some(true));
         // A transcript that is gone has nothing new.
         let u = ulid::Ulid::new();
-        ledger.learn(u, &p, false, false);
+        ledger.learn(u, &p, Reader::Claude, false);
         assert_eq!(ledger.opened_unread(u, &[], owed), Some(false));
     }
 
@@ -1245,8 +1345,8 @@ mod tests {
         .unwrap();
         let (a, b) = (ulid::Ulid::new(), ulid::Ulid::new());
         let mut ledger = Ledger::default();
-        ledger.learn(a, &main.display().to_string(), false, false);
-        ledger.learn(b, &rollout.display().to_string(), true, false);
+        ledger.learn(a, &main.display().to_string(), Reader::Claude, false);
+        ledger.learn(b, &rollout.display().to_string(), Reader::Codex, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         let view = ledger.view(NOW);
         let of = |t| view.iter().find(|c| c.ticket == t).unwrap();
@@ -1325,7 +1425,7 @@ mod tests {
         let t = ulid::Ulid::new();
         let path = main.display().to_string();
         let mut ledger = Ledger::default();
-        ledger.learn(t, &path, false, false);
+        ledger.learn(t, &path, Reader::Claude, false);
         assert!(ledger.fill(t, &path).is_none(), "nothing read yet");
         ledger.apply(scan(ledger.jobs(), NOW));
         let fill = ledger.fill(t, &path).unwrap();
@@ -1361,7 +1461,7 @@ mod tests {
         .unwrap();
         let x = ulid::Ulid::new();
         let rpath = rollout.display().to_string();
-        ledger.learn(x, &rpath, true, false);
+        ledger.learn(x, &rpath, Reader::Codex, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         let fill = ledger.fill(x, &rpath).unwrap();
         assert_eq!(
@@ -1438,9 +1538,9 @@ mod tests {
         let t = ulid::Ulid::new();
         let mut ledger = Ledger::default();
         for p in [&idle, &compacted] {
-            ledger.learn(t, &p.display().to_string(), false, false);
+            ledger.learn(t, &p.display().to_string(), Reader::Claude, false);
         }
-        ledger.learn(t, &rollout.display().to_string(), true, false);
+        ledger.learn(t, &rollout.display().to_string(), Reader::Codex, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         // As a build before T-969 left them: read to the end, no reading.
         for c in ledger.tickets.get_mut(&t).unwrap().conversations.values_mut() {

@@ -29,8 +29,15 @@
 //! three words, and Default in the session's settings, which `--mode` has
 //! no word for.
 //!
-//! Not built yet, each its own ticket: approvals from the
-//! board, the transcript reader, cost and quota.
+//! The transcript (T-1237) is the hooks' `transcriptPath`, read by
+//! [`history`]; the title feed's own `transcript_path` names a folder the
+//! CLI never writes, so it is never kept. The title feed also carries the
+//! context window ([`context_window`]) and the plan's quota
+//! (`usage::parse_agy`), and its `email`, which nothing reads.
+//!
+//! Not built yet, its own ticket: approvals from the board.
+
+mod history;
 
 use std::path::{Path, PathBuf};
 
@@ -294,6 +301,22 @@ fn conversation_id(word: &str) -> Option<&str> {
     .then_some(word)
 }
 
+/// The context window a title report names for its model
+/// (`context_window.context_window_size`): 0 until the model is known.
+pub fn context_window(feed: &Value) -> Option<u64> {
+    feed.get("context_window")?.get("context_window_size")?.as_u64().filter(|w| *w > 0)
+}
+
+/// A transcript path as a hook names it: absolute, a JSONL file, one line
+/// of no control characters. A frame is any same-uid process's to send, and
+/// the path is only ever read.
+fn transcript_path(word: &str) -> bool {
+    word.len() <= 4096
+        && word.starts_with('/')
+        && word.ends_with(".jsonl")
+        && !word.chars().any(char::is_control)
+}
+
 fn launch(context: &LaunchContext<'_>, conversation: Option<&str>) -> Result<Vec<String>, String> {
     launch_with(context, conversation, &trusted_by_person(&home()))
 }
@@ -417,6 +440,15 @@ impl AgentAdapter for Agy {
                 result.metadata_changed = true;
             }
         }
+        // The transcript from a hook alone: the title feed's path is wrong.
+        if frame.event != TITLE {
+            if let Some(path) = payload.get("transcriptPath").and_then(Value::as_str) {
+                if transcript_path(path) && record.transcript_path.as_deref() != Some(path) {
+                    record.transcript_path = Some(path.to_string());
+                    result.metadata_changed = true;
+                }
+            }
+        }
         match frame.event.as_str() {
             // The first model call of a turn is its prompt taken; a later
             // one is the same turn going on.
@@ -450,13 +482,12 @@ impl AgentAdapter for Agy {
         result
     }
 
-    /// No transcript reader yet: a card shows the state and no words.
-    fn preview(&self, _path: &Path) -> Option<AgentPreview> {
-        None
+    fn preview(&self, path: &Path) -> Option<AgentPreview> {
+        history::preview(path)
     }
 
-    fn rows(&self, _at: u64, _record: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
-        Vec::new()
+    fn rows(&self, at: u64, record: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
+        history::rows(at, record)
     }
 
     fn conversation_key(&self, record: &SessionRecord) -> Option<String> {
@@ -664,6 +695,76 @@ mod tests {
         assert_eq!(named.detail.as_deref(), Some("MAX_INVOCATIONS"));
         // Background tasks still run: the seat is working until their stop.
         assert_eq!(Agy.parse_hook(&stop("NO_TOOL_CALL", false, ""), &mut rec).signal, None);
+    }
+
+    /// T-1237: the transcript is the hooks' path, recorded on 1.5.9; the
+    /// title feed's names a folder the CLI never writes and is never kept.
+    #[test]
+    fn the_transcript_is_the_hooks_path_and_never_the_title_feeds() {
+        let start: Value =
+            serde_json::from_str(include_str!("agy/fixtures/sessionstart.json")).unwrap();
+        let title: Value = serde_json::from_str(include_str!("agy/fixtures/title.json")).unwrap();
+        let mut rec = record(SessionState::Spawning);
+        let seen = Agy.parse_hook(&frame(TITLE, title.clone()), &mut rec);
+        assert_eq!(rec.transcript_path, None, "the feed's path is wrong for the CLI");
+        assert!(seen.metadata_changed, "its conversation id is learned");
+        let seen = Agy.parse_hook(&frame(SESSION_START, start.clone()), &mut rec);
+        let want = start["transcriptPath"].as_str().unwrap().to_string();
+        let want = want.as_str();
+        assert!(want.ends_with("/.system_generated/logs/transcript_full.jsonl"));
+        assert_eq!(rec.transcript_path.as_deref(), Some(want));
+        assert!(seen.metadata_changed);
+        // The same path again changes nothing; a later title report leaves it.
+        let again = Agy.parse_hook(&frame(SESSION_START, start), &mut rec);
+        assert!(!again.metadata_changed);
+        let _ = Agy.parse_hook(&frame(TITLE, title), &mut rec);
+        assert_eq!(rec.transcript_path.as_deref(), Some(want));
+        // A path that is not an absolute JSONL file is never kept.
+        for bad in ["relative/t.jsonl", "/tmp/t.json", "/tmp/a\nb.jsonl"] {
+            let mut fresh = record(SessionState::Spawning);
+            let _ = Agy.parse_hook(&frame(STOP, json!({"transcriptPath": bad})), &mut fresh);
+            assert_eq!(fresh.transcript_path, None, "{bad}");
+        }
+    }
+
+    /// T-1237: the title feed, recorded on 1.5.9 and scrubbed, names the
+    /// window and carries the plan's quota as shares used; a report before
+    /// the model is known names no window and no quota.
+    #[test]
+    fn the_title_feed_names_the_window_and_the_plans_quota() {
+        use mesimon_core::usage::{parse_agy, Severity, WindowKind};
+        let title: Value = serde_json::from_str(include_str!("agy/fixtures/title.json")).unwrap();
+        assert!(title.get("email").is_none(), "the fixture holds no sign-in");
+        assert_eq!(context_window(&title), Some(1_048_576));
+        let now = mesimon_core::usage::rfc3339_ms("2026-11-14T14:33:42Z").unwrap();
+        let r = parse_agy(&title, now).unwrap();
+        assert_eq!(r.plan.as_deref(), Some("Google AI Pro"));
+        let got: Vec<(WindowKind, &str, String)> =
+            r.windows.iter().map(|w| (w.kind, w.label.as_str(), w.percent_word())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (WindowKind::Session, "5h", "1%".to_string()),
+                (WindowKind::Weekly, "week", "0%".to_string()),
+                (WindowKind::Model, "3p 5h", "0%".to_string()),
+                (WindowKind::Model, "3p", "0%".to_string()),
+            ]
+        );
+        assert!(r.windows[0].headline, "the fullest is the headline");
+        assert_eq!(
+            r.windows[0].resets_at_ms,
+            mesimon_core::usage::rfc3339_ms("2026-11-14T18:42:35Z")
+        );
+        assert!(r.windows.iter().all(|w| w.severity == Severity::Normal));
+        let mut full = title.clone();
+        full["quota"]["gemini-5h"]["remaining_fraction"] = json!(0.03);
+        let hot = parse_agy(&full, now).unwrap();
+        assert_eq!(hot.windows[0].severity, Severity::Critical);
+
+        let early: Value =
+            serde_json::from_str(include_str!("agy/fixtures/title-signing-in.json")).unwrap();
+        assert_eq!(context_window(&early), None);
+        assert_eq!(parse_agy(&early, now), None);
     }
 
     /// After a daemon restart the title feed re-derives the seat, and a

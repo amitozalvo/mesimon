@@ -18,6 +18,11 @@
 //! `compacted` line at a compaction, after which one `token_count` reads no
 //! input.
 //!
+//! agy writes each model step's `input_tokens` (uncached) and
+//! `cache_read_tokens` (T-1237, 1.5.9), whose sum is the prompt the model
+//! read, and its title feed names the window (`context_window_size`) while
+//! its session runs.
+//!
 //! The window is Claude Code's own table for the model id, read out of
 //! 2.1.310: the five, the Opus 4.7 and 4.8 and the Sonnet 5 lines are 1M
 //! natively, the older lines 200k, and those of them whose table names a
@@ -110,6 +115,23 @@ pub fn claude_view(fill: &Fill, model_arg: Option<&str>) -> Option<AgentContextV
     view(fill, claude_window(&fill.model, one_m)?)
 }
 
+/// agy's windows by model id, as its title feed named them on 1.5.9: what
+/// a seat's reading falls back to before its feed has spoken since the
+/// daemon started.
+const AGY_WINDOWS: &[(&str, u64)] = &[("gemini-3.8-flash", 1_048_576)];
+
+/// An agy session's reading (T-1237): against the window its title feed
+/// last named, else the window agy named for the model.
+pub fn agy_view(fill: &Fill, feed_window: Option<u64>) -> Option<AgentContextView> {
+    let known = || {
+        AGY_WINDOWS
+            .iter()
+            .find(|(id, _)| crate::cost::matches_id(&fill.model, id))
+            .map(|&(_, window)| window)
+    };
+    view(fill, feed_window.filter(|w| *w > 0).or_else(known)?)
+}
+
 /// A Codex session's reading: the window its own rollout named.
 pub fn codex_view(fill: &Fill) -> Option<AgentContextView> {
     view(fill, fill.window?)
@@ -121,6 +143,17 @@ mod tests {
 
     fn fill(tokens: u64, model: &str) -> Fill {
         Fill { tokens, model: model.into(), ..Fill::default() }
+    }
+
+    #[test]
+    fn an_agy_reading_is_against_its_feeds_window_else_the_models() {
+        let f = fill(14_375, "gemini-3.8-flash-high");
+        let v = agy_view(&f, Some(1_048_576)).unwrap();
+        assert_eq!((v.tokens, v.window, v.pct), (Some(14_375), 1_048_576, Some(1)));
+        assert_eq!(agy_view(&f, Some(200_000)).unwrap().pct, Some(7), "the feed's window wins");
+        assert_eq!(agy_view(&f, None).unwrap().window, 1_048_576);
+        assert_eq!(agy_view(&f, Some(0)).unwrap().window, 1_048_576, "an empty feed names none");
+        assert_eq!(agy_view(&fill(10, "gpt-oss-120b-medium"), None), None);
     }
 
     #[test]

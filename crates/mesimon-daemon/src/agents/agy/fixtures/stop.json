@@ -1,0 +1,18 @@
+{
+ "artifactDirectoryPath": "/Users/u/.gemini/antigravity-cli/brain/10a19568-c63e-4e90-a8b0-c7ef8ae2e121",
+ "continuationActive": false,
+ "conversationId": "10a19568-c63e-4e90-a8b0-c7ef8ae2e121",
+ "cwd": "/tmp/rec/hooks",
+ "error": "",
+ "executionNum": 0,
+ "fullyIdle": true,
+ "hookEventName": "Stop",
+ "lastUserInput": "Run the shell command: echo hi. Then say only DONE.",
+ "modelName": "gemini-3.8-flash-high",
+ "terminationReason": "NO_TOOL_CALL",
+ "transcriptPath": "/Users/u/.gemini/antigravity-cli/brain/10a19568-c63e-4e90-a8b0-c7ef8ae2e121/.system_generated/logs/transcript_full.jsonl",
+ "workspacePaths": [
+  "/tmp/rec/hooks",
+  "/tmp/rec/work"
+ ]
+}

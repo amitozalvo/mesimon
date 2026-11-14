@@ -32,6 +32,14 @@ when it first lists its servers, and sends what agy 1.5.9 sends:
 `server/discover` (protocol 2026-07-28), then `initialize` (2025-11-25),
 `notifications/initialized` and `tools/list`. The replies go to
 `agy-mcp.json`.
+
+Its conversation is a transcript in agy 1.5.9's shape (T-1237), under
+`agy-brain/<conversation>/.system_generated/logs/transcript_full.jsonl`
+beside itself, named by every hook's `transcriptPath`: a `USER_INPUT` step
+per prompt, wrapped in `<USER_REQUEST>`, and a model step with its tokens
+and the reply `done: <words>` at each `Stop`. The title feed names a
+transcript path under `antigravity/` that does not exist, as agy's does,
+and carries the context window, the plan's quota and an `email`.
 """
 import json
 import os
@@ -89,6 +97,22 @@ def mcp(folder):
         json.dump(replies, out)
 
 
+EMAIL = "person@example.invalid"
+
+
+def transcript(conversation):
+    return os.path.join(HERE, "agy-brain", conversation, ".system_generated", "logs",
+                        "transcript_full.jsonl")
+
+
+def step(conversation, record):
+    path = transcript(conversation)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with open(path, "a") as out:
+        out.write(json.dumps({"status": "DONE", "created_at": at, **record}) + "\n")
+
+
 def log(name, record):
     with open(os.path.join(HERE, name), "a") as out:
         out.write(json.dumps(record) + "\n")
@@ -122,6 +146,8 @@ def main():
         "history": [],
         "footer": "? for shortcuts",
         "ctrl_c": False,
+        "steps": 0,
+        "words": "",
     }
 
     def run(command, payload):
@@ -145,6 +171,8 @@ def main():
             "hookEventName": event,
             "cwd": os.getcwd(),
         }
+        if st["conversation"]:
+            payload["transcriptPath"] = transcript(st["conversation"])
         payload.update(extra)
         for handler in hooks.get(event, []):
             run(handler["command"], payload)
@@ -154,6 +182,17 @@ def main():
             "agent_state": agent_state,
             "conversation_id": st["conversation"] or "",
             "version": "fake",
+            # agy's own wrong path: the CLI writes nothing under it.
+            "transcript_path": os.path.join(HERE, "antigravity", "brain", "transcript.jsonl"),
+            "context_window": {"context_window_size": 1048576 if st["steps"] else 0,
+                               "current_usage": None},
+            "quota": {"gemini-5h": {"remaining_fraction": 0.75, "reset_time": "2099-01-01T00:00:00Z",
+                                    "reset_in_seconds": 3600},
+                      "gemini-weekly": {"remaining_fraction": 0.9,
+                                        "reset_time": "2099-01-07T00:00:00Z",
+                                        "reset_in_seconds": 86400}},
+            "plan_tier": "Google AI Pro",
+            "email": EMAIL,
         }
         if pending:
             payload["tool_confirmation_pending"] = True
@@ -213,6 +252,12 @@ def main():
         st["footer"] = "esc to cancel"
         st["history"].append("> " + words.replace("\n", " "))
         log("agy-prompts.jsonl", {"how": how, "text": words})
+        step(st["conversation"], {"step_index": st["steps"], "source": "USER_EXPLICIT",
+                                  "type": "USER_INPUT",
+                                  "content": "<USER_REQUEST>\n" + words + "\n</USER_REQUEST>\n"
+                                  "<ADDITIONAL_METADATA>\nfake\n</ADDITIONAL_METADATA>"})
+        st["steps"] += 1
+        st["words"] = words
         hook("PreInvocation", {"invocationNum": 0, "initialNumSteps": 1, "lastUserInput": words})
         report("working")
 
@@ -232,6 +277,11 @@ def main():
             return
         st["working"] = False
         st["footer"] = "? for shortcuts"
+        step(st["conversation"], {"step_index": st["steps"], "source": "MODEL",
+                                  "type": "PLANNER_RESPONSE", "model": "gemini-3.8-flash-high",
+                                  "input_tokens": 2000, "cache_read_tokens": 12000,
+                                  "output_tokens": 30, "content": "done: " + st["words"]})
+        st["steps"] += 1
         hook("Stop", {"terminationReason": "NO_TOOL_CALL", "fullyIdle": True, "error": ""})
         report("idle")
         if st["queued"]:

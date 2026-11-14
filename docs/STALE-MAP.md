@@ -45183,3 +45183,85 @@ schema stamp and `server.rs` changed).
   the host's. Live on gitlab.com with the author's glab 1.107.0: the host list returned 61 MRs
   across 8 projects in 1.9 s, a project's 9 in 0.7 s. No full suite owed (no file on its list).
   A running daemon reads the new lists only after `U`.
+
+## agy's words, cost, context and quota reach the board, behind `MESIMON_AGY=1` (T-1237, 2026-11-14, ticket 7 of T-1225's plan)
+
+**What changed.**
+- `Agy::parse_hook` keeps a hook's `transcriptPath` (absolute, `.jsonl`, no controls) as
+  `SessionRecord::transcript_path`; the title feed's `transcript_path` is never read.
+- `agents/agy/history.rs`: the card's preview and the phone's rows. A `USER_INPUT` step is the
+  person's words inside `<USER_REQUEST>`, without agy's metadata. A `PLANNER_RESPONSE`'s `content`
+  is a reply, and each of its `tool_calls` is one step line: the model's `toolSummary`, else a
+  board tool's own name through `call_mcp_tool` (`raise_hand` reads as Claude's), else the tool
+  and its target. Tool output (`GENERIC`), injected `SYSTEM_MESSAGE`s and `thinking` are not
+  rows. The preview re-reads the tail (64 KiB, then 1 MiB) with no resume cursor.
+- Readers checked first: every Claude-format reader of `transcript_path` (bridge, mesophon
+  dialogs, crownledger, crownsample, `never_prompted`, recovery) is gated to `SessionKind::Claude`
+  already; the TUI's peek and transcript read by the record's kind. The ticket page's "no
+  conversation to resume" reads `agy_conversation_id` for agy.
+- Cost: `cost::agy_step` reads a model step's `input_tokens`, `cache_read_tokens` and
+  `output_tokens`. `daemon/src/cost.rs` gains `Cursor::agy` (`#[serde(default)]`) and
+  `transcript_of` returns a `Reader` (Claude, Codex, Agy). A step is counted once by `step_index`
+  and `created_at`, and an agy `Stop` asks the pass. Gemini's API rates are
+  `core/src/cost.rs::GEMINI_PRICES`, read 2026-11-14. Flash is $0.75 in, $0.075 cached and $3.75
+  out until 2026-12-31, then double (`GEMINI_RISE_MS`), so a token is priced at the rate of its
+  hour (`price_at`; the view caches by model and side of that date). The Claude models agy
+  offers price by Claude's table; `gpt-oss-120b-medium` stays unpriced. The figure is what the
+  work would cost on the API. Spend on these plans is quota, which the Usage dialog shows.
+- Context: the reading's tokens are the last model step's input plus cached input. The window is
+  the one the title feed last named (`context_window.context_window_size`, held per seat in
+  memory), else 1,048,576 for `gemini-3.8-flash` (`context::agy_view`).
+- Quota: `usage::Provider::Agy` (`ALL` has three, `PROBED` two), an `agy` key in `usage.json`
+  and the snapshot's `Usage` (`#[serde(default)]`), and `usage::parse_agy`. `gemini-5h` maps to
+  `5h`, `gemini-weekly` to `week`, and `3p-5h`/`3p-weekly` to model windows `3p 5h`/`3p`. A share
+  used is `1 - remaining_fraction`, graded by `grade`, with `plan_tier` as the plan word.
+  `UsageState::agy_feed` takes a report only when it is news (`same_news`: same windows, shares
+  and resets within a minute) or the held one is a minute old. A title feed fires many times a
+  second, and each take writes the shared file. `email` is read by nothing.
+- Settings › Usage gets an `agy` row (`usage_agy`, a machine pref, default on), listed only where
+  `MESIMON_AGY=1` (`Ctx::agy`, from T-1234's `App::agy_switch`). The readout and the dialog
+  list agy only there as well. With no
+  reading, agy says "known while an agy session runs": `r` cannot read it.
+
+**Measured on agy 1.5.9, this machine** (fixtures in `agents/agy/fixtures/`, scrubbed: home paths
+replaced, no `email`, tool output cut to 160 characters).
+- The hooks' `transcriptPath` is `brain/<id>/.system_generated/logs/transcript_full.jsonl`; the
+  title feed's names `~/.gemini/antigravity/brain/<id>/…/transcript.jsonl`, which does not exist.
+- A model step's `input_tokens` is the uncached part: the second step read 2,260 in and 12,115
+  cached, and the title feed's `current_usage` said the same numbers
+  (`input_tokens`, `cache_read_input_tokens`). Its `total_input_tokens` (19,627) and
+  `used_percentage` (1.87) are not the conversation's size (14,375), so neither is read.
+- `context_window_size` is 0 until the model is known, then 1,048,576 for Gemini 3.8 Flash. The
+  first `quota` arrives about a second after launch, before any prompt.
+- `agy models` lists `gemini-3.8-flash-{high,medium,low}`, `claude-sonnet-4-6`,
+  `claude-opus-4-6-thinking` and `gpt-oss-120b-medium`. A transcript's `model` is that id.
+- An unused bucket's `reset_time` is a moving `now` plus its length (it moved a second between
+  reports). That is why news is compared within a minute.
+
+**Refuted.**
+- "Context % from the feed's `used_percentage`": it reads a cumulative total, not the last
+  request's prompt.
+- "Tokens from the feed": the transcript holds the same numbers, survives a daemon restart, and is
+  what the ledger reads.
+- "A quota probe": none free was found (T-1225). The reading is as old as the last agy session.
+
+**Known gaps.** The Usage dialog's dollars for an agy ticket stay an API-rate estimate. A
+`gh pr create` agy ran is not looked for (its `run_command` shape is not the forge reader's). A
+seat's window is forgotten at a daemon restart until its feed speaks, and the model table stands
+in until then.
+
+**Checks.** `cargo ut` (72 + 17 + 766 + 870 + 24 + 1,462 passed, 0 failed), after one rerun:
+`resources::tests::tree_bytes_counts_what_removing_the_tree_frees` failed once under a cold
+rebuild and passed alone and in the rerun (it measures disk, which this diff does not touch). The
+e2es ran under `ci/test-run.py`: `--test agents agy_e2e:: usage_e2e:: provider_e2e::` (38 passed,
+first run). The new
+`agy_e2e::an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board` runs a turn through the
+stand-in. It checks that the hooks' path is kept and the feed's is not, the card's words mid-turn
+and after, the phone's two rows, the ticket's 14,030 tokens priced, `context_pct` 1 against the
+feed's window, the 5h and week readings, and that no snapshot holds the sign-in. The Remote
+Control transcript unit tests are in `cargo ut`. A live agy session recorded the fixtures. No rig
+run: nothing an agent or the crown is told changed. The full workspace suite is owed once after
+the merge (`server.rs`, and `usage.json`'s and `costs.json`'s shapes).
+Rebased onto main past T-1234: `agy.rs`'s module doc conflicted (both kept), and the switch is
+read from T-1234's `App::agy_switch` instead of the environment. `cargo ut` (72 + 17 + 770 + 872
++ 24 + 1,465 passed, 0 failed) and the same 38 agents e2es, first run, no reruns.

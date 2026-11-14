@@ -1,11 +1,15 @@
 //! Subscription quota (T-327): how much of each plan is left, in the
 //! provider's own numbers.
 //!
-//! Two providers report it, each in its own shape, and this module turns both
-//! into one [`Reading`]: Claude Code's `get_usage` control request (the rows
-//! its `/usage` screen draws) and Codex's rate-limit snapshot (an app-server
-//! `account/rateLimits/*` answer, or a rollout's `token_count` event). Every
-//! percentage here is the provider's; mesimon estimates none of them.
+//! Three providers report it, each in its own shape, and this module turns
+//! them into one [`Reading`]: Claude Code's `get_usage` control request (the
+//! rows its `/usage` screen draws), Codex's rate-limit snapshot (an
+//! app-server `account/rateLimits/*` answer, or a rollout's `token_count`
+//! event), and agy's title feed (T-1237), which carries the plan's quota on
+//! every report while an agy session runs. Every percentage here is the
+//! provider's; mesimon estimates none of them. agy has no probe: no free
+//! standalone read of its quota was found, so it is known only while one of
+//! its sessions reports.
 //!
 //! Claude grades its own rows (`severity`) and names its own headline
 //! (`is_active`), and its schema tells a client never to grade a row itself,
@@ -26,16 +30,21 @@ use serde_json::Value;
 pub enum Provider {
     Claude,
     Codex,
+    /// agy (T-1237): read off its sessions' title feed, never probed.
+    Agy,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::Codex];
+    pub const ALL: [Provider; 3] = [Provider::Claude, Provider::Codex, Provider::Agy];
+    /// The providers a probe reads.
+    pub const PROBED: [Provider; 2] = [Provider::Claude, Provider::Codex];
 
     /// The word the line and the dialog lead a provider's group with.
     pub fn word(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
+            Provider::Agy => "agy",
         }
     }
 }
@@ -164,6 +173,7 @@ impl Problem {
             (Problem::SignedOut, Provider::Codex) => {
                 "sign-in expired ∙ run codex login in a shell, then r".into()
             }
+            (Problem::SignedOut, Provider::Agy) => "signed out ∙ run agy and sign in".into(),
             (Problem::Missing, _) => format!("{} is not installed on this PATH", p.word()),
             (Problem::Unsupported, _) => {
                 format!("this {} cannot report usage ∙ update it", p.word())
@@ -244,10 +254,12 @@ pub struct Wants {
 }
 
 impl Wants {
+    /// agy is never probed, so nothing is read for it on request.
     pub fn get(self, p: Provider) -> bool {
         match p {
             Provider::Claude => self.claude,
             Provider::Codex => self.codex,
+            Provider::Agy => false,
         }
     }
 
@@ -260,13 +272,16 @@ impl Wants {
     }
 }
 
-/// The snapshot's account of both providers.
+/// The snapshot's account of every provider.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub claude: ProviderUsage,
     #[serde(default)]
     pub codex: ProviderUsage,
+    /// What agy's sessions last reported (T-1237). An older build drops it.
+    #[serde(default)]
+    pub agy: ProviderUsage,
     /// What the daemon reads for, as the attached boards asked — the TUI
     /// pushes its preference when this disagrees (a restarted daemon wants
     /// nothing until told).
@@ -282,6 +297,7 @@ impl Usage {
         match p {
             Provider::Claude => &self.claude,
             Provider::Codex => &self.codex,
+            Provider::Agy => &self.agy,
         }
     }
 
@@ -289,6 +305,7 @@ impl Usage {
         match p {
             Provider::Claude => &mut self.claude,
             Provider::Codex => &mut self.codex,
+            Provider::Agy => &mut self.agy,
         }
     }
 }
@@ -486,6 +503,83 @@ pub fn merge_mod(held: Option<&Reading>, limits: &Value, now_ms: u64) -> Option<
     }
     out.read_at_ms = now_ms;
     Some(out)
+}
+
+/// agy's quota as its title feed carries it (T-1237, measured on 1.5.9):
+/// `quota` is a map of buckets, each `{remaining_fraction, reset_time,
+/// reset_in_seconds}`, and `plan_tier` names the plan (`Google AI Pro`).
+/// The Gemini buckets are the plan's own 5-hour and week; the `3p-` ones
+/// are its third-party models', which a plan may lose. A fraction left
+/// becomes the share used. agy grades nothing, so [`grade`] does, and the
+/// fullest window is the headline. `None` when the feed holds no bucket.
+pub fn parse_agy(feed: &Value, now_ms: u64) -> Option<Reading> {
+    let quota = feed.get("quota")?.as_object()?;
+    let mut keys: Vec<&String> = quota.keys().collect();
+    // The plan's own buckets first, then the rest by name.
+    keys.sort_by_key(|k| (!k.starts_with("gemini-"), k.to_string()));
+    let mut windows = Vec::new();
+    for key in keys {
+        let b = &quota[key.as_str()];
+        let Some(left) = b.get("remaining_fraction").and_then(Value::as_f64) else { continue };
+        if !left.is_finite() {
+            continue;
+        }
+        let percent = ((1.0 - left) * 100.0).clamp(0.0, 100.0);
+        let resets_at_ms =
+            b.get("reset_time").and_then(Value::as_str).and_then(rfc3339_ms).or_else(|| {
+                b.get("reset_in_seconds")
+                    .and_then(Value::as_u64)
+                    .map(|s| now_ms.saturating_add(s.saturating_mul(1000)))
+            });
+        let (kind, label, long, length_mins) = match key.as_str() {
+            "gemini-5h" => (WindowKind::Session, "5h".into(), "5-hour".into(), Some(300)),
+            "gemini-weekly" => (WindowKind::Weekly, "week".into(), "week".into(), Some(10_080)),
+            "3p-5h" => {
+                (WindowKind::Model, "3p 5h".into(), "5-hour, third-party models".into(), Some(300))
+            }
+            "3p-weekly" => {
+                (WindowKind::Model, "3p".into(), "week, third-party models".into(), Some(10_080))
+            }
+            other => {
+                let name = bounded(&other.replace(['-', '_'], " "));
+                (WindowKind::Other, name.clone(), name, None)
+            }
+        };
+        windows.push(Window {
+            kind,
+            label,
+            long,
+            percent,
+            resets_at_ms,
+            severity: grade(percent),
+            headline: false,
+            length_mins,
+        });
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    mark_fullest(&mut windows);
+    let plan = feed.get("plan_tier").and_then(Value::as_str).filter(|p| !p.is_empty()).map(bounded);
+    Some(Reading { read_at_ms: now_ms, plan, windows })
+}
+
+/// Whether two readings say the same thing to a person: the same windows at
+/// the same share, starting over within a minute of each other (agy names a
+/// fresh bucket's reset as a moving `now` plus its length), and the same
+/// plan. A title feed reports many times a second; only news is kept.
+pub fn same_news(a: &Reading, b: &Reading) -> bool {
+    let near = |x: Option<u64>, y: Option<u64>| match (x, y) {
+        (Some(x), Some(y)) => x.abs_diff(y) <= 60_000,
+        (x, y) => x == y,
+    };
+    a.plan == b.plan
+        && a.windows.len() == b.windows.len()
+        && a.windows.iter().zip(&b.windows).all(|(x, y)| {
+            x.label == y.label
+                && (x.percent - y.percent).abs() < 0.01
+                && near(x.resets_at_ms, y.resets_at_ms)
+        })
 }
 
 /// A field under either spelling: the app-server's camelCase or the

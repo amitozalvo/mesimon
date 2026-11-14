@@ -762,6 +762,9 @@ pub enum Verb {
     UsageResets,
     UsageClaude,
     UsageCodex,
+    /// agy's windows on the line (T-1237); listed only where agy is
+    /// switched on (`MESIMON_AGY=1`).
+    UsageAgy,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
@@ -1275,7 +1278,8 @@ impl SettingsSection {
             | Verb::UsageModel
             | Verb::UsageResets
             | Verb::UsageClaude
-            | Verb::UsageCodex => Self::Usage,
+            | Verb::UsageCodex
+            | Verb::UsageAgy => Self::Usage,
             Verb::MergeTrain
             | Verb::MergeTrainNotice
             | Verb::FetchEvery
@@ -1825,6 +1829,9 @@ pub struct Ctx {
     pub usage_resets_word: &'static str,
     pub usage_claude: bool,
     pub usage_codex: bool,
+    pub usage_agy: bool,
+    /// agy is switched on for this process (`MESIMON_AGY=1`, T-1225).
+    pub agy: bool,
     /// A read is in flight: `r` would only start a second.
     pub usage_reading: bool,
     /// The cards' corner shows each ticket's cost, not its age (`$`).
@@ -5750,6 +5757,13 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    MenuItem {
+        verb: Verb::UsageAgy,
+        label: |_| "agy".into(),
+        detail: |_| "its sessions' own reports ∙ none while no agy runs".into(),
+        avail: |c| c.agy,
+        key: "",
+    },
     // Where the README is (T-850): what mesimon does, the agent brief word
     // for word, and where to report a problem. Setup sends a person here
     // rather than reading them any of it.
@@ -6678,6 +6692,7 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
             Verb::UsageResets,
             Verb::UsageClaude,
             Verb::UsageCodex,
+            Verb::UsageAgy,
         ],
         SettingsSection::About => &[Verb::ProjectPage, Verb::ReleaseChannel],
     }
@@ -6838,6 +6853,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         }
         Verb::UsageClaude => Value::Switch(c.usage_claude),
         Verb::UsageCodex => Value::Switch(c.usage_codex),
+        Verb::UsageAgy => Value::Switch(c.usage_agy),
         _ => return column_value(verb, c),
     })
 }
@@ -6900,6 +6916,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::UsageResets => PrefKey::UsageResets,
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
+        Verb::UsageAgy => PrefKey::UsageAgy,
         Verb::CardCorner => PrefKey::CardCorner,
         Verb::BoardView => PrefKey::BoardView,
         Verb::Peek => PrefKey::Peek,
@@ -11722,6 +11739,10 @@ mod tests {
         assert!(!verbs.contains(&Verb::Usage));
         let usage = Ctx { settings_section: SettingsSection::Usage, ..ctx.clone() };
         assert_eq!(settings_items(&usage).first().map(|m| m.verb), Some(Verb::Usage));
+        // agy's row is listed only where agy is switched on (T-1237).
+        let rows = |c: &Ctx| settings_items(c).iter().map(|m| m.verb).collect::<Vec<_>>();
+        assert!(!rows(&usage).contains(&Verb::UsageAgy));
+        assert!(rows(&Ctx { agy: true, ..usage.clone() }).contains(&Verb::UsageAgy));
         assert_eq!(resolve(Scope::Board, Key::Char(','), &ctx), Some(Verb::Settings));
         // The preferences are one level down, in the Settings dialog's
         // sections, and not in the menu proper: a menu row is an action or a
@@ -12680,6 +12701,7 @@ mod tests {
             Verb::UsageResets,
             Verb::UsageClaude,
             Verb::UsageCodex,
+            Verb::UsageAgy,
             Verb::CardCorner,
             Verb::Mouse,
             Verb::EditorChoice,

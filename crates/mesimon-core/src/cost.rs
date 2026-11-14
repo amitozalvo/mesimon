@@ -6,7 +6,10 @@
 //! running `token_count` totals. The dollars are arithmetic: those tokens at
 //! the model's published API list price, fetched from Anthropic's pricing
 //! page on 2026-10-01 and OpenAI's standard short-context rates verified
-//! on 2026-10-16. A plan subscriber pays a flat fee, so for them the
+//! on 2026-10-16, and Google's Gemini API rates read 2026-11-14 (T-1237: agy,
+//! whose sessions run on a Google plan and spend its quota, so the figure
+//! is what the work would have cost on the API, never what the plan
+//! charged). A plan subscriber pays a flat fee, so for them the
 //! figure says what the work would have cost on the API — the words beside
 //! it say so. A model this table does not know is counted and left unpriced
 //! rather than guessed. OpenAI estimates do not reconstruct per-request
@@ -102,19 +105,60 @@ const OPENAI_PRICES: &[(&str, f64, f64, f64)] = &[
     ("gpt-5.6-luna", 0.20, 0.02, 1.20),
 ];
 
+/// Google's Gemini API rates (ai.google.dev/gemini-api/docs/pricing, read
+/// 2026-11-14), standard tier, USD per million: input, cached input,
+/// output (thinking included). The Flash rates double from
+/// [`GEMINI_RISE_MS`], as the page says; a token is priced at the rate of
+/// the hour it was spent. Gemini 3.1 Pro's rates are its prompts up to 200k
+/// tokens: a longer prompt's surcharge is not reconstructed from hourly
+/// totals. agy names a model with its effort after it
+/// (`gemini-3.8-flash-high`), which the prefix match reads through.
+type Rates = (f64, f64, f64);
+const GEMINI_PRICES: &[(&str, Rates, Option<Rates>)] = &[
+    ("gemini-3.8-flash", (0.75, 0.075, 3.75), Some((1.50, 0.15, 7.50))),
+    ("gemini-3.6-flash", (0.75, 0.075, 3.75), Some((1.50, 0.15, 7.50))),
+    ("gemini-3.5-flash-lite", (0.30, 0.03, 2.50), None),
+    ("gemini-3.1-flash-lite", (0.25, 0.025, 1.50), None),
+    ("gemini-3.1-pro-preview", (2.00, 0.20, 12.00), None),
+    ("gemini-3-flash-preview", (0.50, 0.05, 3.00), None),
+];
+
+/// 2027-01-01T00:00:00Z: from here the Gemini Flash rates are the later
+/// ones.
+pub const GEMINI_RISE_MS: u64 = 1_798_761_600_000;
+
 /// The fast-mode suffix a model key wears: fast mode bills every token class
 /// at twice the standard rate.
 pub const FAST: &str = ":fast";
 
-/// A model's price, or `None` where this build has none. `anthropic.` (a
-/// Bedrock id) and an `@date` (a Vertex id) are read through; their
-/// platforms bill at their own prices, and the figure stays an estimate.
+/// A model's price before any dated change, or `None` where this build
+/// has none: [`price_at`] for a token spent at a known moment.
 pub fn price(model: &str) -> Option<Price> {
+    price_at(model, 0)
+}
+
+/// Whether a token spent at `at_ms` on `model` is priced at a later rate
+/// than one spent at unix 0: what a reader that caches prices keys by.
+pub fn rate_epoch(model: &str, at_ms: u64) -> bool {
+    at_ms >= GEMINI_RISE_MS && model.starts_with("gemini-")
+}
+
+/// A model's price for a token spent at `at_ms`, or `None` where this build
+/// has none. `anthropic.` (a Bedrock id) and an `@date` (a Vertex id) are
+/// read through; their platforms bill at their own prices, and the figure
+/// stays an estimate.
+pub fn price_at(model: &str, at_ms: u64) -> Option<Price> {
     let (base, fast) = match model.strip_suffix(FAST) {
         Some(b) => (b, true),
         None => (model, false),
     };
-    let p = if let Some(&(_, input, read, output)) =
+    let p = if let Some(&(_, early, later)) =
+        GEMINI_PRICES.iter().find(|(id, ..)| matches_id(base, id))
+    {
+        let (input, read, output) = later.filter(|_| at_ms >= GEMINI_RISE_MS).unwrap_or(early);
+        // Implicit caching only: nothing is written, so a write is input.
+        Price { input, read, output, write_5m: input, write_1h: input }
+    } else if let Some(&(_, input, read, output)) =
         OPENAI_PRICES.iter().find(|(id, ..)| matches_openai_id(base, id))
     {
         Price { input, read, output, write_5m: input * 1.25, write_1h: input * 1.25 }
@@ -268,6 +312,45 @@ pub fn mod_turn(usage: &Value) -> Option<(String, Tokens)> {
     Some((model.to_string(), tokens))
 }
 
+/// One model step out of an agy transcript (T-1237): a `PLANNER_RESPONSE`
+/// line carries its own request's `input_tokens` (uncached),
+/// `cache_read_tokens` and `output_tokens`, written once per step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgyStep {
+    /// The step's place and time: a line written again is the same step.
+    pub id: String,
+    pub model: String,
+    pub at_ms: u64,
+    pub tokens: Tokens,
+}
+
+/// One agy transcript line, read as a model step's tokens: `None` for
+/// anything else (the person's words, tool output, injected messages).
+pub fn agy_step(line: &str) -> Option<AgyStep> {
+    if !line.contains("\"PLANNER_RESPONSE\"") || !line.contains("\"output_tokens\"") {
+        return None;
+    }
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "PLANNER_RESPONSE" {
+        return None;
+    }
+    let model = v.get("model")?.as_str()?;
+    if model.is_empty() || model.len() > 128 || model.starts_with('<') {
+        return None;
+    }
+    let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let tokens = Tokens {
+        input: n("input_tokens"),
+        output: n("output_tokens"),
+        read: n("cache_read_tokens"),
+        ..Tokens::default()
+    };
+    let created = v.get("created_at").and_then(Value::as_str).unwrap_or("");
+    let id = format!("agy|{}|{created}", n("step_index"));
+    let at_ms = crate::usage::rfc3339_ms(created).unwrap_or(0);
+    Some(AgyStep { id, model: model.to_string(), at_ms, tokens })
+}
+
 /// What one Codex rollout line says about tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexLine {
@@ -375,7 +458,7 @@ impl TicketCost {
     /// Fold one bucket of `model`'s tokens, from the hour `hour` (unix
     /// hours), into the account as of `now_ms`.
     pub fn fold(&mut self, model: &str, t: &Tokens, hour: u64, now_ms: u64) {
-        self.fold_at(price(model).as_ref(), t, hour, now_ms);
+        self.fold_at(price_at(model, hour.saturating_mul(3_600_000)).as_ref(), t, hour, now_ms);
     }
 
     /// `fold` with the model's price looked up once by the caller (T-688),
@@ -477,6 +560,41 @@ mod tests {
         assert!(mod_turn(&serde_json::json!({"input_tokens": 3})).is_none());
         assert!(mod_turn(&serde_json::json!({"model": "<synthetic>"})).is_none());
         assert!(mod_turn(&serde_json::json!(null)).is_none());
+    }
+
+    /// T-1237: agy's Gemini model at Google's rate of the hour it was
+    /// spent, read through the effort agy names after it; a step is one
+    /// line's own counts.
+    #[test]
+    fn gemini_is_priced_at_the_rate_of_its_hour_and_a_step_is_its_own_counts() {
+        let now = price_at("gemini-3.8-flash-high", GEMINI_RISE_MS - 1).unwrap();
+        assert_eq!((now.input, now.read, now.output), (0.75, 0.075, 3.75));
+        let later = price_at("gemini-3.8-flash-low", GEMINI_RISE_MS).unwrap();
+        assert_eq!((later.input, later.read, later.output), (1.50, 0.15, 7.50));
+        assert_eq!(price_at("gemini-3.1-pro-preview", GEMINI_RISE_MS).unwrap().input, 2.0);
+        assert!(price("gemini-3.8-flashy").is_none(), "a prefix is not an id");
+        assert!(price("gpt-oss-120b-medium").is_none(), "unpriced, never guessed");
+        assert_eq!(price("claude-opus-4-6-thinking").unwrap().input, 5.0, "a Claude model in agy");
+        assert!(rate_epoch("gemini-3.8-flash-high", GEMINI_RISE_MS));
+        assert!(!rate_epoch("claude-opus-5-5", GEMINI_RISE_MS));
+        let mut c = TicketCost::default();
+        let t = Tokens { input: 1_000_000, ..Tokens::default() };
+        c.fold("gemini-3.8-flash-high", &t, GEMINI_RISE_MS / 3_600_000 - 1, GEMINI_RISE_MS);
+        c.fold("gemini-3.8-flash-high", &t, GEMINI_RISE_MS / 3_600_000, GEMINI_RISE_MS);
+        assert!((c.usd - 2.25).abs() < 1e-9, "{}", c.usd);
+
+        let line = r#"{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-14T14:33:39Z","model":"gemini-3.8-flash-high","input_tokens":2260,"cache_read_tokens":12115,"output_tokens":34,"content":"DONE"}"#;
+        let step = agy_step(line).unwrap();
+        assert_eq!(step.model, "gemini-3.8-flash-high");
+        assert_eq!(
+            step.tokens,
+            Tokens { input: 2260, read: 12115, output: 34, ..Tokens::default() }
+        );
+        assert_eq!(step.at_ms, crate::usage::rfc3339_ms("2026-11-14T14:33:39Z").unwrap());
+        assert_eq!(step.id, "agy|3|2026-11-14T14:33:39Z");
+        let output =
+            r#"{"step_index":2,"source":"MODEL","type":"GENERIC","content":"output_tokens"}"#;
+        assert_eq!(agy_step(output), None, "tool output is no step");
     }
 
     #[test]

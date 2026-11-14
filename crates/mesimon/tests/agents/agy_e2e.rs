@@ -322,6 +322,85 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
 /// A folder the person never trusted gets agy's own dialog: the seat reads
 /// TRUST, the board's accept walks it (Enter on its `> Yes` row), and a
 /// plain start's title is typed into the box once it draws, never sent.
+/// T-1237: an agy seat's transcript is the hooks' path, never the title
+/// feed's; its card and the phone read its words off it, its ticket is
+/// counted from its model steps with a context reading against the feed's
+/// window, and the plan's quota is the machine's agy reading, with no
+/// sign-in kept anywhere the board shows.
+#[test]
+fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
+    let Some(bed) = Bed::boot("agy-words", true, true) else { return };
+    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    agy_board(&mut c);
+    let title = "Count the parser's words";
+    let t = ticket(&mut c, title);
+    let id = match start(&mut c, t, true) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("start: {response:?}"),
+    };
+    bed.await_prompt(0, "turn", title);
+    c.await_state(id, "agy working", |s| *s == SessionState::Running);
+    let want = bed
+        .owner
+        .dir
+        .join("agy-brain")
+        .join(MINTED)
+        .join(".system_generated/logs/transcript_full.jsonl");
+    wait_until(Duration::from_secs(5), "the hooks' transcript path", || {
+        session(&mut c, id).transcript_path.as_deref() == want.to_str()
+    });
+    // Mid-turn the card reads the person's words and the agent thinking.
+    let peek = |path: &Path| {
+        mesimon_daemon::agents::read_preview(SessionKind::Agy, path).expect("a preview")
+    };
+    let mid = peek(&want);
+    assert_eq!(mid.text, Some(format!("> {title}")));
+    assert_eq!(mid.activity, Some(mesimon_daemon::agents::AgentActivity::Thinking));
+
+    bed.cue("stop");
+    c.await_state(id, "agy's turn ended", |s| matches!(s, SessionState::Idle { .. }));
+    let path = session(&mut c, id).transcript_path.expect("the path stands");
+    assert_eq!(Path::new(&path), want, "the title feed's path never replaced it");
+    let done = format!("done: {title}");
+    assert_eq!(peek(&want).text.as_deref(), Some(done.as_str()));
+    let page = mesimon_daemon::agents::read_transcript(
+        SessionKind::Agy,
+        &want,
+        mesimon_daemon::agents::transcript::Ask::default(),
+    )
+    .expect("a page");
+    let rows: Vec<&str> = page.rows.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(rows, [title, done.as_str()], "the phone's rows, no metadata");
+
+    // The Stop asks the cost pass; the quota came with the title reports.
+    let read = |c: &mut TestClient| match c.request(Command::Snapshot) {
+        Response::Board { usage, costs, .. } => (usage, costs),
+        other => panic!("snapshot: {other:?}"),
+    };
+    let mut seen = None;
+    wait_until(Duration::from_secs(20), "the ticket's agy count", || {
+        let (usage, costs) = read(&mut c);
+        let cost = costs.into_iter().find(|x| x.ticket == t);
+        let ready = cost.as_ref().is_some_and(|x| x.tokens > 0) && usage.agy.reading.is_some();
+        seen = Some((usage, cost));
+        ready
+    });
+    let (usage, cost) = seen.unwrap();
+    let cost = cost.unwrap();
+    assert_eq!(cost.tokens, 14_030, "one model step: 2000 in, 12000 cached, 30 out");
+    assert_eq!(cost.unpriced, 0, "Gemini is priced");
+    assert!(cost.usd > 0.0);
+    assert_eq!(cost.context_pct, Some(1), "14,000 of the feed's 1,048,576");
+    let reading = usage.agy.reading.expect("agy's quota");
+    assert_eq!(reading.plan.as_deref(), Some("Google AI Pro"));
+    let windows: Vec<(String, String)> =
+        reading.windows.iter().map(|w| (w.label.clone(), w.percent_word())).collect();
+    assert_eq!(windows, [("5h".into(), "25%".into()), ("week".into(), "10%".into())]);
+    let shown = serde_json::to_string(&c.request(Command::Snapshot)).unwrap();
+    assert!(!shown.contains("example.invalid"), "the sign-in is never kept");
+    let _ = c.request(Command::SleepSession { id });
+}
+
 #[test]
 fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
     let Some(bed) = Bed::boot("agy-trust", true, false) else { return };

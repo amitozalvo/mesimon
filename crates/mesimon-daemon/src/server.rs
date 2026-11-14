@@ -924,6 +924,9 @@ pub struct Daemon {
     /// The Codex observer, spawned at the first live runtime (T-688).
     codex_observer: Option<Sender<Vec<(uuid::Uuid, std::path::PathBuf)>>>,
     codex_ready: std::collections::HashSet<uuid::Uuid>,
+    /// The context window each agy seat's title feed last named (T-1237):
+    /// the reading's denominator, while the daemon lives.
+    agy_windows: HashMap<uuid::Uuid, u64>,
     /// Native startup UI is checked until its composer is seen once per
     /// generation. Idle sessions then need no repeated terminal subprocess.
     codex_native_ready: HashMap<uuid::Uuid, Option<u64>>,
@@ -2134,6 +2137,7 @@ impl Daemon {
             codex_polling: false,
             codex_observer: None,
             codex_ready: std::collections::HashSet::new(),
+            agy_windows: HashMap::new(),
             codex_native_ready: HashMap::new(),
             codex_input_due: HashMap::new(),
             codex_steers: HashMap::new(),
@@ -5967,6 +5971,7 @@ impl Daemon {
             None => {}
         }
         let mut dirty = observation.metadata_changed;
+        let quota_moved = self.on_agy_report(id, &frame, now);
         let signal = observation.signal;
         if let Some(sig) = signal {
             let held = self.async_stop_pending(id);
@@ -6120,6 +6125,33 @@ impl Daemon {
         if dirty {
             self.persist_sessions();
             self.broadcast();
+        } else if quota_moved {
+            self.broadcast();
+        }
+    }
+
+    /// What an agy seat's report says beside its signal (T-1237): a title
+    /// report names the context window and carries the plan's quota, which
+    /// goes into the machine's reading when it is news; a `Stop` is a turn's
+    /// tokens written, for the cost pass. True when the quota moved.
+    fn on_agy_report(&mut self, id: uuid::Uuid, frame: &HookFrame, now: u64) -> bool {
+        use crate::agents::agy;
+        if self.session_kind(id) != SessionKind::Agy {
+            return false;
+        }
+        match frame.event.as_str() {
+            agy::STOP => {
+                self.cost_due = true;
+                false
+            }
+            agy::TITLE => {
+                if let Some(window) = agy::context_window(&frame.payload) {
+                    self.agy_windows.insert(id, window);
+                }
+                mesimon_core::usage::parse_agy(&frame.payload, now)
+                    .is_some_and(|reading| self.usage.agy_feed(reading))
+            }
+            _ => false,
         }
     }
 
@@ -12013,10 +12045,15 @@ impl Daemon {
     /// the session's `--model` names `[1m]`, or the window Codex names.
     fn agent_context_view(&self, ticket: ulid::Ulid) -> Option<AgentContextView> {
         let rec = self.board.live_agent(ticket)?;
-        let (path, codex) = crate::cost::transcript_of(rec)?;
+        let (path, reader) = crate::cost::transcript_of(rec)?;
         let fill = self.costs.fill(ticket, &path.display().to_string())?;
-        if codex {
-            return mesimon_core::context::codex_view(fill);
+        match reader {
+            crate::cost::Reader::Codex => return mesimon_core::context::codex_view(fill),
+            crate::cost::Reader::Agy => {
+                let window = self.agy_windows.get(&rec.id).copied();
+                return mesimon_core::context::agy_view(fill, window);
+            }
+            crate::cost::Reader::Claude => {}
         }
         let model = rec.argv.windows(2).find(|w| w[0] == "--model").map(|w| w[1].as_str());
         mesimon_core::context::claude_view(fill, model)
@@ -12707,6 +12744,8 @@ impl Daemon {
                     std::env::var("MESIMON_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
                     crate::usage::codex_args(),
                 ),
+                // Never due: agy's quota is its sessions' title feed.
+                Provider::Agy => continue,
             };
             let mut argv = vec![bin];
             argv.extend(args);
@@ -13151,11 +13190,11 @@ impl Daemon {
             .iter()
             .filter_map(|r| {
                 crate::cost::transcript_of(r)
-                    .map(|(p, codex)| (r.ticket, p, codex, r.frames_by_mod()))
+                    .map(|(p, reader)| (r.ticket, p, reader, r.frames_by_mod()))
             })
             .collect();
-        for (ticket, path, codex, by_mod) in learned {
-            self.costs.learn(ticket, &path.display().to_string(), codex, by_mod);
+        for (ticket, path, reader, by_mod) in learned {
+            self.costs.learn(ticket, &path.display().to_string(), reader, by_mod);
         }
         let jobs = self.costs.jobs();
         if jobs.is_empty() {

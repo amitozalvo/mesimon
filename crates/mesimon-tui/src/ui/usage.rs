@@ -47,6 +47,23 @@ fn enabled(p: &Prefs, provider: Provider) -> bool {
     match provider {
         Provider::Claude => p.usage_claude,
         Provider::Codex => p.usage_codex,
+        Provider::Agy => p.usage_agy,
+    }
+}
+
+/// Whether a provider has a place on the page at all: agy only where it
+/// is switched on (`App::agy_switch`, T-1225), as its Settings row is.
+fn listed(app: &App, provider: Provider) -> bool {
+    provider != Provider::Agy || app.agy_switch
+}
+
+/// What a provider with no reading yet says: agy is never asked (T-1237),
+/// only heard while one of its sessions runs.
+fn unread(provider: Provider) -> &'static str {
+    if provider == Provider::Agy {
+        "known while an agy session runs"
+    } else {
+        "not read yet ∙ r reads it"
     }
 }
 
@@ -262,7 +279,7 @@ pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
     let name_w = 12;
     let head = |word: &str| Span::styled(format!("{word:<name_w$}"), theme.base());
     for provider in Provider::ALL {
-        if !enabled(&app.prefs, provider) {
+        if !enabled(&app.prefs, provider) || !listed(app, provider) {
             continue;
         }
         let u = app.usage.get(provider);
@@ -294,7 +311,7 @@ pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
                 theme.dim3(),
             ));
         } else {
-            spans.push(Span::styled("not read yet ∙ r reads it", theme.dim2()));
+            spans.push(Span::styled(unread(provider), theme.dim2()));
         }
         lines.push(fit_line(spans, width));
     }
@@ -367,7 +384,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         }
         Line::from(spans)
     };
-    for (i, provider) in Provider::ALL.into_iter().enumerate() {
+    for (i, provider) in Provider::ALL.into_iter().filter(|p| listed(app, *p)).enumerate() {
         if i > 0 {
             lines.push(Line::default());
         }
@@ -402,8 +419,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         }
         let Some(r) = &u.reading else {
             if u.problem.is_none() {
-                let words =
-                    if reading_now { "asking it now" } else { "not read yet ∙ r reads it" };
+                let words = if reading_now { "asking it now" } else { unread(provider) };
                 lines.push(Line::from(Span::styled(format!("     {words}"), theme.dim2())));
             }
             continue;
