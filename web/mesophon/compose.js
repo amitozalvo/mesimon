@@ -1,5 +1,6 @@
 // Writing a ticket: the New ticket sheet and Sent's one-line bar share one
-// draft in the store. A ticket lands quietly: nothing here starts an agent.
+// draft in the store. A ticket lands quietly, and starts an agent only when
+// the sheet's own switch asks for it (T-1208).
 import { html, useLayoutEffect, useRef } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { PictureBar, pastePictures } from "./notepad.js";
@@ -136,6 +137,11 @@ export function NewTicket({ store }) {
           ${about && html`<p class="field-note" dir="auto">${about}</p>`}
         </fieldset>
         <${TagChoices} allowed=${board.allowedTags} worn=${draft.tags} onToggle=${(tag) => store.toggleTag(tag)} />
+        ${store.canStart && !draft.replaces && html`<div class="set-list"><label class="set-row">
+          <span class="set-icon"><${Icon} name="play" size=${15} /></span>
+          <span class="set-label">Start an agent now<small>It starts on the ticket once it lands.</small></span>
+          <input id="new-start" type="checkbox" role="switch" checked=${!!draft.start}
+            onChange=${(e) => store.setComposerStart(e.currentTarget.checked)} /></label></div>`}
       </div>
       <footer class="compose-foot">
         ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}

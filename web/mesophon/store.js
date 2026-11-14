@@ -1218,6 +1218,7 @@ export class Store {
   // links: the host lets a refused ticket's pictures go.
   fileTicket(board, draft, ticket, description = ticket.description, uploads = []) {
     const item = this.sent.add(board, ticket);
+    this.startWhenLanded(draft, item);
     const c = this.connection;
     const id = c.request(
       { op: "create", ...ticket, description, tags: ticket.tags.map(({ group, name }) => ({ group, name })),
@@ -1235,9 +1236,37 @@ export class Store {
     if (draft.replaces) this.sent.remove(draft.replaces);
     // The column stays for the next one; a run of tickets often shares it.
     dropThumbs(draft);
-    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [], start: false });
     this.persistSent(board);
     this.sayOfSent("Sending to your board…", "clock");
+    this.emit();
+  }
+  // Start an agent now (T-1208), the New ticket sheet's switch: filing a
+  // ticket starts nothing, so the page asks for the start itself once the
+  // ticket is on the board, with the same `start` any ticket takes. The
+  // wish is this page's alone, kept in memory, and good for two minutes: a
+  // ticket that lands tomorrow starts nothing.
+  startWhenLanded(draft, item) {
+    if (!draft.start || !this.canStart) return;
+    (this.startsOnLanding ||= new Map()).set(item.id, Date.now());
+  }
+  startLanded(tickets) {
+    if (!this.startsOnLanding?.size) return;
+    const items = this.sent.forBoard(this.active?.pin.board);
+    for (const [id, at] of [...this.startsOnLanding]) {
+      const item = items.find((i) => i.id === id);
+      if (!item || Date.now() - at > 120000 || !["sending", "local", "relay", "sent", "landed"].includes(item.status)) {
+        this.startsOnLanding.delete(id);
+        continue;
+      }
+      if (item.status !== "landed" || !item.ticket || !tickets.some((t) => t.id === item.ticket)) continue;
+      this.startsOnLanding.delete(id);
+      this.startAgent(item.ticket);
+    }
+  }
+  setComposerStart(on) {
+    const draft = this.draft();
+    draft.start = !!on;
     this.emit();
   }
   onSentReply(id, reply) {
@@ -1289,9 +1318,10 @@ export class Store {
       return;
     }
     const item = this.sent.add(board, ticket, Date.now(), envelope);
+    this.startWhenLanded(draft, item);
     if (draft.replaces) this.sent.remove(draft.replaces);
     dropThumbs(draft);
-    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [] });
+    Object.assign(draft, { open: false, title: "", description: "", tags: [], error: "", replaces: undefined, pictures: [], start: false });
     this.persistSent(board);
     if (!this.deposit(item))
       this.sayOfSent(
@@ -2364,6 +2394,7 @@ export class Store {
       }
       this.board.update({ ...reply, tickets: this.edits.wear(this.active.pin.board, reply.tickets) });
       this.notePickups(reply.tickets);
+      this.startLanded(reply.tickets);
       if (this.active.title !== reply.title || this.active.selected !== this.board.selected) {
         this.active.title = reply.title;
         this.active.selected = this.board.selected;

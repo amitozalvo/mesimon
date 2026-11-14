@@ -1607,6 +1607,34 @@ async function startFlow(browser, engineName, size, viewport) {
     await mode("board");
     if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
 
+    // Start an agent now (T-1208): the New ticket sheet's switch, off until
+    // asked. The ticket is filed as any other, and once it is on the board
+    // the page asks for a plain start on it; the switch is off again after.
+    await page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
+    await page.locator("#new-ticket-sheet").waitFor({ state: "visible" });
+    await page.locator("#new-title").fill("Started from the sheet");
+    assert(!(await page.locator("#new-start").isChecked()), "a ticket starts nothing unasked");
+    await page.locator("#new-start").check();
+    await shot("new-ticket-start");
+    await page.locator("#send-ticket").click();
+    await page.locator("#new-ticket-sheet").waitFor({ state: "hidden" });
+    await until(page, () => {
+      const made = fixture.tickets.find((t) => t.title === "Started from the sheet");
+      return !!made && fixture.starts.some((r) => r.ticket === made.id);
+    });
+    assert.deepEqual(await page.evaluate(() => Object.keys(fixture.starts.at(-1)).sort()), ["op", "ticket"]);
+    assert.equal(await page.evaluate(() => fixture.starts.length), 1, "one start, once");
+    await page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
+    await page.locator("#new-ticket-sheet").waitFor({ state: "visible" });
+    assert(!(await page.locator("#new-start").isChecked()), "the switch is off again");
+    await page.keyboard.press("Escape");
+    await page.locator("#new-ticket-sheet").waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      fixture.tickets = fixture.tickets.filter((t) => t.title !== "Started from the sheet");
+      fixture.starts.length = 0;
+      fixture.startCommands.length = 0;
+      fixture.update();
+    });
     // No card offers a start (T-510): the ticket page does, over an empty
     // seat or a parked agent.
     await page.locator('.ticket[data-id="ticket-3"]').waitFor();
