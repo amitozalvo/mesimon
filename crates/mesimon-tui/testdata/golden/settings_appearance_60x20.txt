@@ -1,6 +1,7 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ APPEARANCE ∙ MACHINE ────────────────────╮
   │                                                      │
+  │  Board view               ● columns     ○ table      │
   │  Status line              ○ top         ● bottom     │
   │  Crown's actions          ● lightning   ○ still      │
   │  Card moves               ● animated    ○ instant    │
@@ -14,7 +15,6 @@
   │                                                      │
   │                                                      │
   │                                                      │
-  │                                                      │
-  │ tmux's bar over an agent's pane                      │
+  │ the columns side by side ∙ b on the board            │
   ╰──────────── jk select ∙ enter change ∙ b this board ─╯
  SETTINGS                                            ? keys

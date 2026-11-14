@@ -9,22 +9,22 @@
       │  Notifications        [✓] read the reply                                     ╰─────────────────────────╯ │
       │                                                                                                          │
       │  Behaviour                                                                                               │
-      │                      Status line              ○ top         ● bottom                                     │
-      │  Agents              Crown's actions          ● lightning   ○ still                                      │
-      │                      Card moves               ● animated    ○ instant                                    │
-      │  Crown               Replies on cards         ● cursor      ○ all       ○ off                            │
-      │                      Column widths            ○ off                                                      │
-      │  Terminal            Summary on cards         ● full        ○ hover     ○ none                           │
-      │                      New replies              ● on                                                       │
-      │  Usage               Pull requests on cards   ● always      ○ news      ○ off                            │
-      │                      Card corner              ● age         ○ cost                                       │
-      │  About                                                                                                   │
+      │                      Board view               ● columns     ○ table                                      │
+      │  Agents              Status line              ○ top         ● bottom                                     │
+      │                      Crown's actions          ● lightning   ○ still                                      │
+      │  Crown               Card moves               ● animated    ○ instant                                    │
+      │                      Replies on cards         ● cursor      ○ all       ○ off                            │
+      │  Terminal            Column widths            ○ off                                                      │
+      │                      Summary on cards         ● full        ○ hover     ○ none                           │
+      │  Usage               New replies              ● on                                                       │
+      │                      Pull requests on cards   ● always      ○ news      ○ off                            │
+      │  About               Card corner              ● age         ○ cost                                       │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
       │                                                                                                          │
-      │                     tmux's bar over an agent's pane                                                      │
+      │                     the columns side by side ∙ b on the board                                            │
       ╰───────────────────────────────────────────────── jk select ∙ enter change ∙ b this board ∙ esc sections ─╯
 
  SETTINGS                                                                                                        ? keys

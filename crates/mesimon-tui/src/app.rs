@@ -1926,6 +1926,12 @@ pub struct App {
     /// column's header, for the bolts to join (T-544). Draw-side, like
     /// `cursor_card`; `ui::draw` clears it.
     pub spots: std::cell::RefCell<crate::strike::Spots>,
+    /// The board turning into its table or back (T-1240), while it plays:
+    /// where everything stood before the switch.
+    pub view_shift: std::cell::RefCell<Option<crate::viewshift::ViewShift>>,
+    /// The row the cursor last stood on in each column, in the table
+    /// (T-1240): `h`/`l` come back to it.
+    table_rows: std::collections::HashMap<String, Option<usize>>,
     /// Standing advisories from the daemon — a quarantined state file, a file
     /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
     /// that is cleared by the next keypress, and these stay true until fixed.
@@ -2728,6 +2734,8 @@ impl App {
             unseen_moves: std::collections::HashMap::new(),
             own_moves: std::collections::HashMap::new(),
             spots: std::cell::RefCell::new(crate::strike::Spots::default()),
+            view_shift: std::cell::RefCell::new(None),
+            table_rows: std::collections::HashMap::new(),
             spoke: std::collections::HashMap::new(),
             crown_said: std::collections::HashMap::new(),
             crown_said_seen: std::collections::HashMap::new(),
@@ -3116,6 +3124,7 @@ impl App {
             || self.link_striking()
             || self.link_ack_ms().is_some()
             || self.gliding()
+            || self.view_shifting()
             || self.summary_pulsing()
             || self.settings_striking()
             || self.reply_revealing()
@@ -4677,6 +4686,26 @@ impl App {
     /// narrower question of where the cursor itself is.
     pub fn at_column_header(&self) -> bool {
         (self.header_focus && matches!(self.screen, Screen::Board)) || self.on_column_header()
+    }
+
+    /// `h`/`l` (T-1240): the cursor to column `to`. In the table each
+    /// column keeps the row the cursor left it on, and `h`/`l` come back to
+    /// it; on the board the row is the one the cursor had.
+    fn step_column(&mut self, to: usize) {
+        let (was, row) = (self.cursor_col, self.cursor_row);
+        self.cursor_col = to;
+        self.clamp_cursor();
+        if !self.table_view() || self.cursor_col == was {
+            return;
+        }
+        let cols = self.columns().to_vec();
+        if let Some(name) = cols.get(was) {
+            self.table_rows.insert(name.clone(), row);
+        }
+        if let Some(r) = cols.get(self.cursor_col).and_then(|c| self.table_rows.get(c)) {
+            self.cursor_row = *r;
+            self.clamp_cursor();
+        }
     }
 
     fn clamp_cursor(&mut self) {
@@ -6946,6 +6975,27 @@ impl App {
                     }),
                 }
             }
+            // The board's view (T-1240), the same ring as the fetch's.
+            PrefKey::BoardView => {
+                use crate::prefs::BoardView;
+                let next = match self.board_prefs.word(key).and_then(BoardView::from_key) {
+                    None => Some(BoardView::ALL[0]),
+                    Some(v) => {
+                        let i = BoardView::ALL.iter().position(|x| *x == v).unwrap_or(0);
+                        BoardView::ALL.get(i + 1).copied()
+                    }
+                };
+                let was = self.prefs.board_view;
+                match next {
+                    Some(v) => self.set_board_pref(&format!("{label}: {}", v.key()), |b| {
+                        b.set_word(key, v.key())
+                    }),
+                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
+                        b.clear(key)
+                    }),
+                }
+                self.view_switched(was);
+            }
             // A named value (T-739): `inherit → each word → inherit`.
             PrefKey::FetchEvery => {
                 use crate::prefs::FetchEvery;
@@ -9023,6 +9073,7 @@ impl App {
             usage_codex: self.prefs.usage_codex,
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
+            board_table: self.table_view(),
             summary_word: self.prefs.summary.key(),
             usage_tickets: self.costs.iter().any(|c| self.board.ticket(c.ticket).is_some()),
             iterm2: matches!(self.terminal, crate::title::Terminal::ITerm2 { .. }),
@@ -9597,6 +9648,23 @@ impl App {
             Verb::Usage => {
                 self.mode = Mode::Usage { idx: 0 };
                 self.refresh_usage(true);
+            }
+            // `b` on the board (T-1240) flips this board's view and saves it
+            // in this board's file; the Appearance row's Enter, which comes
+            // here as Enter, sets the machine's.
+            Verb::BoardView => {
+                let was = self.prefs.board_view;
+                let v = was.next();
+                let word = match v {
+                    crate::prefs::BoardView::Table => "the board is a table",
+                    crate::prefs::BoardView::Columns => "the board is its columns",
+                };
+                if key == Key::Enter {
+                    self.set_pref(word, |p| p.board_view = v);
+                } else {
+                    self.set_board_pref(word, |b| b.set_word(PrefKey::BoardView, v.key()));
+                }
+                self.view_switched(was);
             }
             Verb::CardCorner => {
                 let v = self.prefs.card_corner.next();
@@ -11379,14 +11447,8 @@ impl App {
         let up = verb == Verb::CursorUp;
         match scope {
             Scope::Board => match verb {
-                Verb::CursorLeft => {
-                    self.cursor_col = self.cursor_col.saturating_sub(1);
-                    self.clamp_cursor();
-                }
-                Verb::CursorRight => {
-                    self.cursor_col += 1;
-                    self.clamp_cursor();
-                }
+                Verb::CursorLeft => self.step_column(self.cursor_col.saturating_sub(1)),
+                Verb::CursorRight => self.step_column(self.cursor_col + 1),
                 // `k` off the top card lands on the column header (T-117),
                 // and off the column header on the board's own top row
                 // (T-305) — but only where that row has a section to stand
@@ -11404,6 +11466,16 @@ impl App {
                         return;
                     }
                     self.last_ticket_up = self.cursor_row.filter(|r| *r > 0).map(|_| now);
+                    // In the table (T-1240) a column's header is a row like
+                    // its cards: `k` off it is the last card of the column
+                    // above, and only the first column's leads to the top row.
+                    if self.table_view() && self.on_column_header() && self.cursor_col > 0 {
+                        self.cursor_col -= 1;
+                        let n = self.board.column_tickets(&self.columns()[self.cursor_col]).len();
+                        self.cursor_row = n.checked_sub(1);
+                        self.last_ticket_up = None;
+                        return;
+                    }
                     if self.on_column_header() {
                         // The leftmost chip drawn: the git clause when there
                         // is one, so `k` then Enter is still the diff.
@@ -11419,6 +11491,20 @@ impl App {
                     }
                 }
                 _ => {
+                    // In the table (T-1240) `j` off a column's last card, or
+                    // off an empty column, is the next column's first row.
+                    let cols = self.columns().len();
+                    let n = self
+                        .columns()
+                        .get(self.cursor_col)
+                        .map_or(0, |c| self.board.column_tickets(c).len());
+                    let last = n == 0 || self.cursor_row == Some(n - 1);
+                    if self.table_view() && last && self.cursor_col + 1 < cols {
+                        self.cursor_col += 1;
+                        let n = self.board.column_tickets(&self.columns()[self.cursor_col]).len();
+                        self.cursor_row = (n > 0).then_some(0);
+                        return;
+                    }
                     self.cursor_row = Some(self.cursor_row.map_or(0, |r| r + 1));
                     self.clamp_cursor();
                 }
@@ -12391,6 +12477,35 @@ impl App {
     }
 
     /// Where a ticket sits on the board: (column index, row).
+    /// The column and row a ticket stands at (T-1240's flights).
+    pub(crate) fn locate_card(&self, id: ulid::Ulid) -> Option<(usize, usize)> {
+        self.locate(id)
+    }
+
+    /// Is the board drawn as a table (T-1240)?
+    pub(crate) fn table_view(&self) -> bool {
+        self.prefs.board_view == crate::prefs::BoardView::Table
+    }
+
+    /// The switch between the columns and the table is playing (T-1240).
+    pub(crate) fn view_shifting(&self) -> bool {
+        self.view_shift.borrow().as_ref().is_some_and(|s| s.playing((self.now)()))
+    }
+
+    /// The board's view changed from `was` (T-1240): the scroll starts over
+    /// in the new shape, and the switch plays from where the last frame put
+    /// every card, unless card moves are off.
+    fn view_switched(&mut self, was: crate::prefs::BoardView) {
+        if self.prefs.board_view == was {
+            return;
+        }
+        self.scroll_row.set(0);
+        self.table_rows.clear();
+        let shift = (self.prefs.card_moves && matches!(self.screen, Screen::Board))
+            .then(|| crate::viewshift::ViewShift::from_spots(&self.spots.borrow(), (self.now)()));
+        *self.view_shift.borrow_mut() = shift;
+    }
+
     fn locate(&self, id: ulid::Ulid) -> Option<(usize, usize)> {
         self.columns().iter().enumerate().find_map(|(c, name)| {
             self.board.column_tickets(name).iter().position(|t| t.id == id).map(|r| (c, r))
@@ -13317,8 +13432,13 @@ impl App {
     fn reorder_column(&mut self, key: Key) -> Result<()> {
         let cols = self.columns().to_vec();
         let Some(name) = cols.get(self.cursor_col).cloned() else { return Ok(()) };
-        let right = matches!(key, Key::Char('L') | Key::AltRight);
-        let left = matches!(key, Key::Char('H') | Key::AltLeft);
+        // In the table (T-1240) the columns stand one under another, so
+        // `J`/`K` move one down or up as `L`/`H` do.
+        let table = self.table_view();
+        let right = matches!(key, Key::Char('L') | Key::AltRight)
+            || (table && matches!(key, Key::Char('J') | Key::AltDown));
+        let left = matches!(key, Key::Char('H') | Key::AltLeft)
+            || (table && matches!(key, Key::Char('K') | Key::AltUp));
         if !right && !left {
             return Ok(());
         }
@@ -13335,7 +13455,13 @@ impl App {
         let before = if right { cols.get(to + 1).cloned() } else { cols.get(to).cloned() };
         self.send_now(Command::ReorderColumn { name: name.clone(), before })?;
         self.cursor_col = to;
-        self.status = format!("moved {name} {}", if right { "right" } else { "left" });
+        let way = match (table, right) {
+            (true, true) => "down",
+            (true, false) => "up",
+            (false, true) => "right",
+            (false, false) => "left",
+        };
+        self.status = format!("moved {name} {way}");
         Ok(())
     }
 
@@ -13386,9 +13512,24 @@ impl App {
                     row.saturating_sub(1)
                 };
                 if to == row || to > n {
-                    return Ok(());
+                    // In the table (T-1240) the card goes over the column's
+                    // edge, as `j`/`k` do: to the top of the next column, or
+                    // the foot of the one above.
+                    let down = matches!(key, Key::Char('J') | Key::AltDown);
+                    if !self.table_view() {
+                        return Ok(());
+                    }
+                    if down && self.cursor_col + 1 < cols.len() {
+                        (self.cursor_col + 1, 0)
+                    } else if !down && row == 0 && self.cursor_col > 0 {
+                        let above = self.cursor_col - 1;
+                        (above, self.board.column_tickets(&cols[above]).len())
+                    } else {
+                        return Ok(());
+                    }
+                } else {
+                    (self.cursor_col, to)
                 }
-                (self.cursor_col, to)
             }
             _ => return Ok(()),
         };
@@ -31796,5 +31937,104 @@ mod tests {
             app.pending_open,
             Some(vec!["open".into(), "https://github.com/amitozalvo/mesimon".into()])
         );
+    }
+
+    // ---- the board as a table (T-1240) ------------------------------------
+
+    fn table_app(b: Board) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        let (mut app, sent) = App::for_test_logged(b, theme(), false);
+        app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+        (app, sent)
+    }
+
+    /// `b` turns the board into its table and back, saved for this board
+    /// alone: the machine's view stays the columns.
+    #[test]
+    fn b_turns_the_board_into_a_table_for_this_board() {
+        let mut app = app_three_columns();
+        assert!(!app.table_view(), "the columns by default");
+        press(&mut app, 'b');
+        assert!(app.table_view());
+        assert_eq!(app.board_prefs.word(PrefKey::BoardView), Some("table"), "this board's file");
+        assert_eq!(app.machine_prefs.board_view, crate::prefs::BoardView::Columns);
+        assert!(app.status.starts_with("the board is a table"), "{}", app.status);
+        assert!(app.view_shifting(), "the switch plays");
+        press(&mut app, 'b');
+        assert!(!app.table_view());
+        assert_eq!(app.board_prefs.word(PrefKey::BoardView), Some("columns"));
+    }
+
+    /// The switch holds still with card moves off.
+    #[test]
+    fn the_switch_holds_still_without_card_moves() {
+        let mut app = app_three_columns();
+        app.seed_pref(|p| p.card_moves = false);
+        press(&mut app, 'b');
+        assert!(app.table_view());
+        assert!(!app.view_shifting());
+    }
+
+    /// In the table `j` off a column's last card is the next column's first,
+    /// `k` off a header the last card of the column above, and an empty
+    /// column is a stop on the way; on the board `j` stays in its column.
+    #[test]
+    fn table_j_and_k_go_over_a_columns_edge() {
+        let (mut app, _) = table_app(board_three_columns());
+        // todo: 1, 2 ∙ doing: none ∙ done: 3
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
+        press(&mut app, 'j');
+        assert_eq!(app.cursor_col, 1, "into the empty column");
+        assert!(app.on_column_header());
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)), "the last card stays");
+        press(&mut app, 'k');
+        assert_eq!((app.cursor_col, app.cursor_row), (2, None), "its header");
+        press(&mut app, 'k');
+        assert_eq!(app.cursor_col, 1, "the empty column above");
+        press(&mut app, 'k');
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)), "the last card above");
+
+        let mut board = app_three_columns();
+        press(&mut board, 'j');
+        press(&mut board, 'j');
+        assert_eq!((board.cursor_col, board.cursor_row), (0, Some(1)), "the board stays put");
+    }
+
+    /// `h`/`l` in the table come back to the row the cursor left a column on.
+    #[test]
+    fn table_h_and_l_come_back_to_the_row_left() {
+        let mut b = board_three_columns();
+        b.tickets.push(ticket(4, "done", "b"));
+        let (mut app, _) = table_app(b);
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
+        press(&mut app, 'l');
+        press(&mut app, 'l');
+        assert_eq!(app.cursor_col, 2);
+        press(&mut app, 'h');
+        press(&mut app, 'h');
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)), "back on the second card");
+    }
+
+    /// `J` carries a column's last card to the top of the next column in the
+    /// table, and `K` its first to the foot of the column above.
+    #[test]
+    fn table_j_and_k_carry_a_card_over_the_edge() {
+        let (mut app, sent) = table_app(board_three_columns());
+        press(&mut app, 'j');
+        press(&mut app, 'J');
+        let at = drawn_at(&app, ulid::Ulid(2));
+        assert_eq!(at, ("doing".into(), 0), "over the edge into the next column");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)), "the cursor rides it");
+        assert_eq!(sent.borrow().iter().filter(|c| c.starts_with("MoveTicket")).count(), 1);
+
+        let (mut board, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut board, 'j');
+        press(&mut board, 'J');
+        assert_eq!(drawn_at(&board, ulid::Ulid(2)), ("todo".into(), 1), "the board stops");
+        assert_eq!(sent.borrow().iter().filter(|c| c.starts_with("MoveTicket")).count(), 0);
     }
 }

@@ -198,6 +198,9 @@ pub(crate) struct Spots {
     /// The card a board dialog is about, whole on screen (T-817): what
     /// the dialog hangs from.
     pub about: Option<Rect>,
+    /// Each drawn column's header row, whole (T-1240): where it flies from
+    /// and lands when the board turns into its table and back.
+    pub head_rows: Vec<(String, Rect)>,
 }
 
 /// One card's title row on screen.

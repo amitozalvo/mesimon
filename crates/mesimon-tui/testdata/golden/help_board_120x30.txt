@@ -12,16 +12,16 @@
    │   enter     agent                 HJKL      move card                               !         terminal         │
    │   space     ticket                O         new column                              P         show every reply │
    │   /         search                r         rename                                  $         show costs       │
-   │                                   ^o        crown                                                              │
-   │                                   tab       description                           APP                          │
-   │                                   n         note                                    ,         settings         │
-   │                                   ^t        tags                                    esc       menu             │
-   │                                   a         archive                                 q         quit             │
-   │                                   z         snooze                                  ?         keys             │
-   │                                   d         delete                                  ^L        redraw           │
+   │                                   ^o        crown                                   b         table            │
+   │                                   tab       description                                                        │
+   │                                   n         note                                  APP                          │
+   │                                   ^t        tags                                    ,         settings         │
+   │                                   a         archive                                 esc       menu             │
+   │                                   z         snooze                                  q         quit             │
+   │                                   d         delete                                  ?         keys             │
+   │                                                                                     ^L        redraw           │
    │                                                                                     ^Z        suspend mesimon  │
    ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

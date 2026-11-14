@@ -36,6 +36,71 @@ pub(super) struct CardCtx<'a> {
     /// (T-410)? True on the board, where nothing else names it; false where
     /// the frame around the card already does (the search preview).
     pub names_key: bool,
+    /// The card is a row of the board's table (T-1240): as wide as the
+    /// screen, its tags and agent named on the title line, and at most one
+    /// line under it, never the accordion.
+    pub row: bool,
+}
+
+/// A table row's tag names (T-1240): the cells they get on the title line.
+const ROW_TAGS: usize = 18;
+/// Its agent's name: `claude`, the widest.
+const ROW_AGENT: usize = 6;
+/// Its summary's count, `12/12`.
+const ROW_BOXES: usize = 5;
+/// The worktree mark's slot, kept on every row so the fields line up.
+const ROW_WT: usize = 3;
+/// A row this narrow keeps its agent and its count, not its tags.
+const ROW_TAGS_FROM: usize = 90;
+/// And this narrow, nothing but the card's own line.
+const ROW_FIELDS_FROM: usize = 60;
+
+/// The fields a table row names between its title and its marks (T-1240):
+/// its tags, each in its own tint, the agent at work on it, and how many of
+/// its summary's boxes are ticked — each in a slot of its own width, so the
+/// rows read as columns. Empty below `ROW_FIELDS_FROM`.
+fn row_fields(
+    theme: &Theme,
+    t_cells: usize,
+    tags: &[crate::tags::Painted],
+    sessions: &[&SessionRecord],
+    summary: Option<&crate::app::TicketSummary>,
+    quiet: Style,
+) -> Vec<Span<'static>> {
+    if t_cells < ROW_FIELDS_FROM {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    if t_cells >= ROW_TAGS_FROM {
+        let mut room = ROW_TAGS;
+        for t in tags {
+            let name = truncate(&t.name.to_lowercase(), room);
+            if name.is_empty() {
+                break;
+            }
+            room -= name.width();
+            let style = match t.tint {
+                Some(n) if theme.paints_tags() => Style::default().fg(theme.pip(n as usize)),
+                _ => quiet,
+            };
+            spans.push(Span::styled(name, style));
+            if room < 2 {
+                break;
+            }
+            spans.push(Span::raw(" "));
+            room -= 1;
+        }
+        let used = super::spans_width(&spans);
+        spans.push(Span::raw(" ".repeat(ROW_TAGS + 1 - used.min(ROW_TAGS))));
+    }
+    let agent = sessions.iter().find(|s| s.kind.is_agent()).map_or("", |s| s.kind.word());
+    spans.push(Span::styled(format!("{:<w$} ", truncate(agent, ROW_AGENT), w = ROW_AGENT), quiet));
+    let boxes = summary
+        .filter(|s| s.count.total > 0)
+        .map(|s| format!("{}/{}", s.count.done, s.count.total))
+        .unwrap_or_default();
+    spans.push(Span::styled(format!("{:>w$}", truncate(&boxes, ROW_BOXES), w = ROW_BOXES), quiet));
+    spans
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -592,6 +657,9 @@ pub(super) fn render(
     // The `z` chord is armed on this card: it opens and names the preset on
     // a row of its own, the way a quick tag opens the card it tagged.
     let open = open || snooze.is_some();
+    // A table row opens one line, never the accordion (T-1240): `open` is
+    // what it asks for, and the card is drawn closed under it.
+    let (open, row_open) = if ctx.row { (false, open) } else { (open, open) };
     // The `d` chord is armed on this card: it flashes as a deletion — the
     // diff's del tint under an `err` title — until the second `d` or the
     // cancel, on the MOVE ghost's cadence (`Theme::delete_lit`).
@@ -752,8 +820,25 @@ pub(super) fn render(
     // machine changes the ticket again.
     let editor_cells = editor.map(|e| e.width() + 1).unwrap_or(0);
     // The fixed bar budget is independent of how many tags the ticket wears.
+    // A table row's fields, and its worktree slot kept whether or not it
+    // has a mark, so every row's fields stand in the same cells.
+    let row_quiet = if cursorish { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
+    let fields = if ctx.row {
+        row_fields(theme, t_cells, tags, sessions, summary, row_quiet)
+    } else {
+        Vec::new()
+    };
+    let fields_cells = if fields.is_empty() { 0 } else { super::spans_width(&fields) + 1 };
+    let wt_pad = if ctx.row && !fields.is_empty() { (ROW_WT + 1).saturating_sub(wt_cells) } else { 0 };
     let title_budget = t_cells.saturating_sub(
-        glyph_cells + holder_cells + residue_cells + age_cells + wt_cells + editor_cells,
+        glyph_cells
+            + holder_cells
+            + residue_cells
+            + age_cells
+            + wt_cells
+            + editor_cells
+            + fields_cells
+            + wt_pad,
     );
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
@@ -942,6 +1027,16 @@ pub(super) fn render(
     if matches!(crown, CrownMark::Residue) {
         spans.push(Span::styled(format!(" {crown_glyph}"), quiet_style));
     }
+    if !fields.is_empty() {
+        let fields = if attn_card || trail {
+            fields.into_iter().map(|s| Span::styled(s.content, quiet_style)).collect()
+        } else {
+            fields
+        };
+        spans.push(Span::raw(" "));
+        spans.extend(fields);
+        spans.push(Span::raw(" ".repeat(wt_pad)));
+    }
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.
         let style = match tone {
@@ -1118,6 +1213,40 @@ pub(super) fn render(
     }
     if !drew_line2 && brief_w > 0 {
         lines.push(brief_row(brief.clone()));
+    }
+
+    // A table row (T-1240) asked open takes one line under its title, never
+    // the accordion: what the next key does to it (the armed snooze), what
+    // mesimon owes it, else what its agent said last, else its worktree's
+    // news — with its pull requests beside, where a closed card has them.
+    // A raised hand's line already says the most, and stays.
+    if ctx.row {
+        if row_open && !held && raised.is_none() {
+            let ramp = if cursorish { &theme.sel } else { &theme.rest };
+            let (dim, faint) = (Style::default().fg(ramp.dim1), Style::default().fg(ramp.dim3));
+            let flat = |w: &str| w.split_whitespace().collect::<Vec<_>>().join(" ");
+            let words = snooze
+                .filter(|_| selected)
+                .map(|w| (flat(w), faint))
+                .or_else(|| owed_row.filter(|_| selected).map(|w| (flat(w), faint)))
+                .or_else(|| peek.and_then(|pk| pk.card.as_deref()).map(|w| (flat(w), dim)))
+                .or_else(|| wt.and_then(|w| w.detail.as_deref()).map(|w| (flat(w), dim)));
+            if let Some((words, style)) = words {
+                let words = truncate(&words, t_cells.saturating_sub(glyph_cells + brief_room));
+                let mut row = bar_spans();
+                row.push(Span::raw(" ".repeat(1 + glyph_cells)));
+                row.push(Span::styled(words, style));
+                let used = super::spans_width(&row);
+                row.push(Span::raw(
+                    " ".repeat((ctx.width as usize).saturating_sub(used + brief_w + 1)),
+                ));
+                row.extend(brief.iter().cloned());
+                row.push(Span::raw(" "));
+                lines.truncate(1);
+                lines.push(Line::from(row).style(acc_style));
+            }
+        }
+        return (lines, end);
     }
 
     if held {

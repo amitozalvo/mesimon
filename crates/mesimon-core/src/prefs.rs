@@ -137,10 +137,15 @@ pub enum PrefKey {
     /// Which release channel the update check follows (T-946): `stable` or
     /// `unstable`. About the machine's install, so per machine.
     ReleaseChannel,
+    /// How the board lays its tickets out (T-1240): `columns` (the
+    /// default) or a `table`, one row per ticket under its column's
+    /// header. `b` on the board flips it for that board alone, so a board
+    /// may set its own.
+    BoardView,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 49] = [
+    pub const ALL: [PrefKey; 50] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::Theme,
@@ -190,6 +195,7 @@ impl PrefKey {
         PrefKey::CardPrs,
         PrefKey::Editor,
         PrefKey::ReleaseChannel,
+        PrefKey::BoardView,
     ];
 
     /// The JSON key in both files.
@@ -244,6 +250,7 @@ impl PrefKey {
             PrefKey::CardPrs => "card_prs",
             PrefKey::Editor => "editor",
             PrefKey::ReleaseChannel => "release_channel",
+            PrefKey::BoardView => "board_view",
         }
     }
 
@@ -353,6 +360,7 @@ impl PrefKey {
             PrefKey::CardPrs => "pull requests on cards",
             PrefKey::Editor => "editor",
             PrefKey::ReleaseChannel => "Release channel",
+            PrefKey::BoardView => "board view",
         }
     }
 
@@ -378,6 +386,7 @@ impl PrefKey {
                 | PrefKey::CardPrs
                 | PrefKey::Editor
                 | PrefKey::ReleaseChannel
+                | PrefKey::BoardView
         )
     }
 }

@@ -51,6 +51,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 hits.record(Rect { height: 1, ..rect }, crate::mouse::Target::Column(ci));
                 drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, width));
+                app.spots.borrow_mut().head_rows.push((name.clone(), Rect { height: 1, ..rect }));
                 app.spots.borrow_mut().heads.push((
                     name.clone(),
                     rect.x + crate::tags::BAR as u16 + 1,
@@ -69,6 +70,7 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 hits.record(Rect { height: title, ..rect }, crate::mouse::Target::Column(ci));
                 drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, 1));
+                app.spots.borrow_mut().head_rows.push((name.clone(), Rect { height: 1, ..rect }));
                 app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
             }
         }
@@ -79,7 +81,44 @@ fn ticket_sessions(app: &App, ticket: ulid::Ulid) -> Vec<&SessionRecord> {
     app.board.sessions.iter().filter(|s| s.ticket == ticket && s.state.is_live()).collect()
 }
 
-fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
+/// One card's rows, in display order, and what the column needs to know
+/// about them.
+struct Group {
+    lines: Vec<Line<'static>>,
+    /// The cursor card (any height): scroll keeps it visible.
+    cursor: bool,
+    waiting: bool,
+    /// Line offset (within the group) and x-offset of a live edit cursor.
+    /// The offset is not always 0: a rename edits the card's first line,
+    /// a prompt edits a row appended under the whole card.
+    edit_cursor: Option<(usize, u16)>,
+    /// The refusal shake's offset this frame (T-423): the whole card is
+    /// drawn this many cells off its place, bar and all. 0 at rest.
+    shake: i16,
+    /// The ticket drawn, for the bolts' spots (T-544); `None` for the
+    /// composer's phantom card.
+    id: Option<ulid::Ulid>,
+    /// A moved card's trail where it stood (T-544), not the card.
+    trail: bool,
+    /// Where the pull-request brief sits (T-759): its row in the card
+    /// (the second, or an open card's last, T-789), x offset and
+    /// width, for its click.
+    prs_at: Option<(usize, (u16, u16))>,
+    /// A second tag, hung in the blank row under the card (T-1159).
+    hang: Option<crate::tags::StripeEnd>,
+}
+
+/// Every card of column `ci`, drawn `width` cells wide, with the move's
+/// ghost, the crown's trails and burns and the composer's phantom card among
+/// them, and the column's count. `row` draws each card as a table row
+/// (T-1240).
+fn column_groups(
+    app: &App,
+    ci: usize,
+    name: &str,
+    width: u16,
+    row: bool,
+) -> (Vec<Group>, usize) {
     let theme = &app.theme;
     let tickets = app.board.column_tickets(name);
     let is_cursor_col = app.cursor_col == ci;
@@ -103,10 +142,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     let ctx = CardCtx {
         theme,
-        width: area.width,
+        width,
         now_ms: now_ms(),
         spin: app.spin_frame(),
         names_key: true,
+        row,
     };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
@@ -157,31 +197,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         }
     };
 
-    // Build card line-groups in display order.
-    struct Group {
-        lines: Vec<Line<'static>>,
-        /// The cursor card (any height): scroll keeps it visible.
-        cursor: bool,
-        waiting: bool,
-        /// Line offset (within the group) and x-offset of a live edit cursor.
-        /// The offset is not always 0: a rename edits the card's first line,
-        /// a prompt edits a row appended under the whole card.
-        edit_cursor: Option<(usize, u16)>,
-        /// The refusal shake's offset this frame (T-423): the whole card is
-        /// drawn this many cells off its place, bar and all. 0 at rest.
-        shake: i16,
-        /// The ticket drawn, for the bolts' spots (T-544); `None` for the
-        /// composer's phantom card.
-        id: Option<ulid::Ulid>,
-        /// A moved card's trail where it stood (T-544), not the card.
-        trail: bool,
-        /// Where the pull-request brief sits (T-759): its row in the card
-        /// (the second, or an open card's last, T-789), x offset and
-        /// width, for its click.
-        prs_at: Option<(usize, (u16, u16))>,
-        /// A second tag, hung in the blank row under the card (T-1159).
-        hang: Option<crate::tags::StripeEnd>,
-    }
     let mut groups: Vec<Group> = Vec::new();
     // `left`: this is the trail a card the crown moved out left behind
     // (T-544), drawn in the move trail's look and with no crown mark.
@@ -453,7 +468,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 .into_iter()
                 .map(|b| (b, b.order.as_str(), Place::Burning))
                 .chain(app.leaving(name).into_iter().map(|(t, o)| (t, o, Place::Trail)))
-                .chain(app.gliding_out(name).into_iter().map(|(t, o)| (t, o, Place::Glide)));
+                // A card another mover took plays its move on the columns
+                // alone (T-817): the table has no gutters to run it through.
+                .chain(
+                    app.gliding_out(name)
+                        .into_iter()
+                        .filter(|_| !row)
+                        .map(|(t, o)| (t, o, Place::Glide)),
+                );
             for (g, order, place) in ghosts {
                 let at = merged.partition_point(|(t, o, _)| (*o, t.id) < (order, g.id));
                 merged.insert(at, (g, order, place));
@@ -512,6 +534,26 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             });
         }
     }
+
+    (groups, count)
+}
+
+fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
+    let theme = &app.theme;
+    let is_cursor_col = app.cursor_col == ci;
+    let editing: Option<(&InputPurpose, &EditBuffer)> = match &app.mode {
+        Mode::Input { purpose, buffer } => Some((purpose, buffer)),
+        _ => None,
+    };
+    let ctx = CardCtx {
+        theme,
+        width: area.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+        names_key: true,
+        row: false,
+    };
+    let (groups, count) = column_groups(app, ci, name, area.width, false);
 
     // Flatten with rhythm: one blank row between cards. Track the cursor
     // card's line range and each card's, for scroll + badges.
@@ -947,6 +989,333 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         f.set_cursor_position(at);
         super::field_spot(app, area, at);
     }
+}
+
+/// The board as a table (T-1240): every column a group, one under another,
+/// its header a row and each of its cards a row as wide as the screen —
+/// the title whole where the screen allows, its tags, agent and boxes named
+/// beside it — with at most one line under it. One scroll for the whole
+/// table keeps the cursor's row in view. A column folded on the board is its
+/// header alone here until the cursor enters it, as a spine opens. Every key
+/// is the board's: the cursor is the same column and row.
+pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
+    let cols = app.columns();
+    if cols.is_empty() {
+        return;
+    }
+    let theme = &app.theme;
+    let pinned = app.pinned_columns();
+    let ctx = CardCtx {
+        theme,
+        width: area.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+        names_key: true,
+        row: true,
+    };
+    let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
+    struct Placed {
+        start: usize,
+        end: usize,
+        id: ulid::Ulid,
+        trail: bool,
+        prs_at: Option<(usize, (u16, u16))>,
+        mark: Option<u16>,
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut heads: Vec<(usize, usize)> = Vec::new();
+    let mut lanes: Vec<(usize, usize, usize)> = Vec::new();
+    let mut placed: Vec<Placed> = Vec::new();
+    let mut cursor_range: Option<(usize, usize)> = None;
+    let mut card_range: Option<(usize, usize)> = None;
+    let mut edit_at: Option<(usize, u16)> = None;
+    for (ci, name) in cols.iter().enumerate() {
+        if ci > 0 {
+            lines.push(Line::default());
+        }
+        let lane = lines.len();
+        let is_cursor_col = app.cursor_col == ci;
+        let folded = pinned.get(ci).copied().unwrap_or(false)
+            && !is_cursor_col
+            && app.move_target() != Some(ci);
+        let (groups, count) = if folded {
+            (Vec::new(), app.board.column_tickets(name).len())
+        } else {
+            column_groups(app, ci, name, area.width, true)
+        };
+        // A folded group hides its cards, so it says when one needs you.
+        let waiting = if folded {
+            app.board
+                .column_tickets(name)
+                .iter()
+                .filter(|t| card::needs_you(t, &ticket_sessions(app, t.id)))
+                .count()
+        } else {
+            0
+        };
+        let (head, head_cursor) = table_head(app, &ctx, ci, name, count, waiting);
+        let at = lines.len();
+        heads.push((ci, at));
+        if is_cursor_col && app.on_column_header() {
+            cursor_range = Some((at, at + head.len()));
+        }
+        if let Some((row, x)) = head_cursor {
+            edit_at = Some((at + row, x));
+        }
+        lines.extend(head);
+        if groups.is_empty() && is_cursor_col && !folded {
+            // An empty column's one position is its header; the hint shows
+            // under the cursor, as on the board.
+            let nudge =
+                keymap::hint_for(keymap::Scope::Board, keymap::Verb::OpenTicket, &app.frame_ctx())
+                    .map(|(show, hint)| format!("  {show}  {hint}"))
+                    .unwrap_or_default();
+            lines.push(Line::from(Span::styled(nudge, theme.dim3())));
+        }
+        for g in groups {
+            let start = lines.len();
+            lines.extend(g.lines);
+            let end = lines.len();
+            if g.cursor {
+                cursor_range = Some((start, end));
+                card_range = Some((start, end));
+            }
+            if let Some((off, x)) = g.edit_cursor {
+                edit_at = Some((start + off, x));
+            }
+            if let Some(id) = g.id {
+                let mark = if app.board.is_crowned(id) {
+                    lines.get(start).and_then(|l| cell_of(l, crown_glyph))
+                } else {
+                    None
+                };
+                placed.push(Placed {
+                    start,
+                    end,
+                    id,
+                    trail: g.trail,
+                    prs_at: g.prs_at.map(|(row, at)| (start + row, at)),
+                    mark,
+                });
+            }
+        }
+        lanes.push((ci, lane, lines.len()));
+    }
+
+    // One scroll: the cursor's rows in view with a row of margin, the field
+    // being typed in where they are taller than the screen.
+    let body_h = usize::from(area.height.saturating_sub(1)).max(1);
+    let total = lines.len();
+    let mut scroll = app.scroll_row.get().min(total.saturating_sub(1));
+    if app.header_focus && app.cursor_col == 0 {
+        scroll = 0;
+    }
+    if let Some((cs, ce)) = cursor_range {
+        let lo = cs.saturating_sub(1);
+        let hi = (ce + 1).min(total);
+        if hi > scroll + body_h {
+            scroll = hi - body_h;
+        }
+        if lo < scroll {
+            scroll = lo;
+        }
+        if ce - cs <= body_h {
+            scroll = scroll.clamp(ce.saturating_sub(body_h), cs);
+        } else {
+            let focus = edit_at.map(|(line, _)| line).unwrap_or(cs);
+            scroll = focus.saturating_sub(body_h.saturating_sub(1)).max(cs);
+        }
+    }
+    if total <= body_h {
+        scroll = 0;
+    }
+    app.scroll_row.set(scroll);
+    let end_vis = (scroll + body_h).min(total);
+    f.render_widget(Paragraph::new(lines[scroll..end_vis].to_vec()), area);
+
+    let row_of = |line: usize| area.y + (line - scroll) as u16;
+    let shown = |line: usize| line >= scroll && line < end_vis;
+    let mut spots = app.spots.borrow_mut();
+    let mut hits = app.hits.borrow_mut();
+    // The wheel turns the group under it; the header is its column's spot,
+    // and the cards land on top (T-716).
+    for &(ci, start, end) in &lanes {
+        let (lo, hi) = (start.max(scroll), end.min(end_vis));
+        if lo < hi {
+            let rect = Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
+            hits.record(rect, crate::mouse::Target::Lane(ci));
+        }
+    }
+    for &(ci, line) in &heads {
+        if !shown(line) {
+            continue;
+        }
+        let rect = Rect { x: area.x, y: row_of(line), width: area.width, height: 1 };
+        hits.record(rect, crate::mouse::Target::Column(ci));
+        spots.heads.push((cols[ci].clone(), area.x + crate::tags::BAR as u16 + 1, rect.y));
+        spots.head_rows.push((cols[ci].clone(), rect));
+    }
+    for p in &placed {
+        let (lo, hi) = (p.start.max(scroll), p.end.min(end_vis));
+        if !p.trail && p.start >= scroll && p.end <= end_vis && app.dialog_card() == Some(p.id) {
+            spots.about = Some(Rect {
+                x: area.x,
+                y: row_of(p.start),
+                width: area.width,
+                height: (p.end - p.start) as u16,
+            });
+        }
+        if !p.trail && lo < hi {
+            let rect = Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
+            hits.record(rect, crate::mouse::Target::Card(p.id));
+            if let Some((line, (x, w))) = p.prs_at.filter(|(line, _)| shown(*line)) {
+                let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };
+                hits.record(rect.intersection(area), crate::mouse::Target::Prs(p.id));
+            }
+        }
+        if shown(p.start) {
+            let spot = crate::strike::CardSpot {
+                id: p.id,
+                x: area.x,
+                y: row_of(p.start),
+                width: area.width,
+                rows: (p.end.min(end_vis) - p.start) as u16,
+                mark: p.mark.map(|m| area.x + m),
+            };
+            if p.trail {
+                spots.trails.push(spot);
+            } else {
+                spots.cards.push(spot);
+            }
+        }
+    }
+    drop((spots, hits));
+    if let Some((line, x)) = edit_at.filter(|(line, _)| shown(*line)) {
+        let at = (area.x + x.min(area.width.saturating_sub(1)), row_of(line));
+        f.set_cursor_position(at);
+        super::field_spot(app, area, at);
+    }
+    // The cursor card, whole on screen, is what Tab's dialog grows out of.
+    match card_range {
+        Some((cs, ce)) => app.cursor_card.set((cs >= scroll && ce <= end_vis).then(|| Rect {
+            x: area.x,
+            y: row_of(cs),
+            width: area.width,
+            height: (ce - cs) as u16,
+        })),
+        None if app.at_column_header() => app.cursor_card.set(None),
+        None => {}
+    }
+}
+
+/// A group's header in the table (T-1240): the column's name and count, the
+/// cursor's bar on it when the cursor is, the column's automation mark, and
+/// for a folded group how many of its hidden cards need you. The column's
+/// rename edits it in place, its first `d` flashes it, and its ask field
+/// hangs under it, as on the board. Returns its rows and, while a field is
+/// open on it, the row and x of the field's cursor.
+fn table_head(
+    app: &App,
+    ctx: &CardCtx,
+    ci: usize,
+    name: &str,
+    count: usize,
+    waiting: usize,
+) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
+    let theme = &app.theme;
+    let width = usize::from(ctx.width);
+    let is_cursor_col = app.cursor_col == ci;
+    let on_head = is_cursor_col
+        && app.on_column_header()
+        && !matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. });
+    let editing: Option<(&InputPurpose, &EditBuffer)> = match &app.mode {
+        Mode::Input { purpose, buffer } => Some((purpose, buffer)),
+        _ => None,
+    };
+    let header_edit: Option<&EditBuffer> = match editing {
+        Some((InputPurpose::RenameColumn { name: n }, buf)) if n == name => Some(buf),
+        _ => None,
+    };
+    let doomed =
+        header_edit.is_none() && app.column_doomed(name) && theme.delete_lit(app.spin_frame());
+    let quiet = if is_cursor_col { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
+    let mut head: Vec<Span<'static>> = Vec::new();
+    let mut cursor: Option<(usize, u16)> = None;
+    if on_head || header_edit.is_some() {
+        let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
+        head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR), bar_style));
+        head.push(Span::raw(" "));
+    } else {
+        head.push(Span::raw(" ".repeat(crate::tags::BAR + 1)));
+    }
+    if let Some(buf) = header_edit {
+        let budget = width.saturating_sub(crate::tags::BAR + 2);
+        let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+        cursor = Some((0, crate::tags::BAR as u16 + 1 + cx));
+        head.push(Span::styled(
+            shown,
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        let style = if doomed {
+            theme.err_text().add_modifier(Modifier::BOLD)
+        } else if is_cursor_col {
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.dim1().add_modifier(Modifier::BOLD)
+        };
+        head.push(Span::styled(name.to_uppercase(), style));
+        head.push(Span::styled(format!("  {count}"), quiet));
+        if waiting > 0 {
+            head.push(Span::styled(format!("  !{waiting}"), theme.attn_text()));
+        }
+        if app.board.column(name).is_some_and(|c| c.settings.automated()) {
+            head.push(Span::styled(
+                format!("  {}", crate::glyphs::auto_mark(theme.glyph_tier())),
+                quiet,
+            ));
+        }
+    }
+    let used = super::spans_width(&head);
+    head.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+    let head_line = if doomed {
+        Line::from(head).style(theme.delete_row())
+    } else if is_cursor_col {
+        Line::from(head).style(theme.selected_row())
+    } else {
+        Line::from(head)
+    };
+    let mut out = vec![head_line];
+    // The column's ask field (T-378) hangs under its header, as on the board.
+    if let Some((
+        InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. },
+        buf,
+    )) = editing
+    {
+        if n == name {
+            let placeholder = if *accept_plan {
+                "enter accepts the plans"
+            } else if app.column_starts(name) {
+                "start on the titles"
+            } else {
+                "ask every agent"
+            };
+            let (line, x_off) = card::render_prompt(ctx, buf, placeholder);
+            out.push(line);
+            cursor = Some((1, x_off));
+            if app.column_ask_queueable(name) {
+                out.push(card::render_ask_mode(
+                    ctx,
+                    crate::app::App::ask_mode_word(*accept_plan, *queued, false, false),
+                    true,
+                    None,
+                    false,
+                    crate::app::App::shell_line(buf.as_str()),
+                ));
+            }
+        }
+    }
+    (out, cursor)
 }
 
 /// One phase of a linked card's flash, in spinner frames: the MOVE

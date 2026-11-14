@@ -572,6 +572,7 @@ fn sample_card(
         now_ms: (app.now)(),
         spin: app.spin_frame(),
         names_key: false,
+        row: false,
     };
     super::card::render(
         &ctx,

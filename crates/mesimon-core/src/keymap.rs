@@ -739,6 +739,10 @@ pub enum Verb {
     /// `$` on the board, and the Usage settings' last row: a card's corner
     /// shows the ticket's estimated cost rather than its age.
     CardCorner,
+    /// `b` on the board, and the Appearance row (T-1240): the board's
+    /// columns side by side, or a table, one row per ticket under its
+    /// column's header. The key sets it for this board alone.
+    BoardView,
     /// The Appearance row for a ticket's summary on its card (T-696): the
     /// underline and the rows, the rows alone, or nothing. `prefs.json`,
     /// per machine.
@@ -1239,7 +1243,8 @@ impl SettingsSection {
             | Verb::SummaryShow
             | Verb::NewReplies
             | Verb::CardPrs
-            | Verb::CardCorner => Self::Appearance,
+            | Verb::CardCorner
+            | Verb::BoardView => Self::Appearance,
             Verb::NotifyToggle
             | Verb::NotifyVia
             | Verb::NotifyDone
@@ -1816,6 +1821,8 @@ pub struct Ctx {
     pub usage_reading: bool,
     /// The cards' corner shows each ticket's cost, not its age (`$`).
     pub card_cost: bool,
+    /// The board is drawn as a table (T-1240, `b`).
+    pub board_table: bool,
     /// How a ticket's summary shows on its card (T-696): `full`, `hover`
     /// or `none` — the row's word.
     pub summary_word: &'static str,
@@ -3218,6 +3225,21 @@ static BOARD: &[Binding] = &[
         verb: Verb::CardCorner,
         show: "$",
         hint: |c| if c.card_cost { "show ages" } else { "show costs" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // The board as a table and back (T-1240): every ticket a row under
+        // its column's header, as wide as the screen, so a long title reads
+        // whole. Overlay-only like `$`: a view of the same board, saved for
+        // this board alone, and the board shows which one it is in.
+        keys: &[Key::Char('b')],
+        verb: Verb::BoardView,
+        show: "b",
+        hint: |c| if c.board_table { "columns" } else { "table" },
         avail: always,
         class: Class::Plain,
         group: Group::View,
@@ -5780,6 +5802,19 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::BoardView,
+        label: |_| "Board view".into(),
+        detail: |c| {
+            if c.board_table {
+                "a row per ticket under its column ∙ b on the board".into()
+            } else {
+                "the columns side by side ∙ b on the board".into()
+            }
+        },
+        avail: always,
+        key: "b",
+    },
+    MenuItem {
         verb: Verb::CardCorner,
         label: |_| "Card corner".into(),
         detail: |c| {
@@ -6520,6 +6555,7 @@ fn section_verbs(section: SettingsSection) -> &'static [Verb] {
     match section {
         SettingsSection::Theme => &[],
         SettingsSection::Appearance => &[
+            Verb::BoardView,
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::CardMoves,
@@ -6681,6 +6717,7 @@ pub fn value(verb: Verb, c: &Ctx) -> Option<Value> {
         Verb::NewReplies => Value::Switch(c.new_replies),
         Verb::CardPrs => choice(&["always", "news", "off"], or(c.card_prs_word, "always")),
         Verb::CardCorner => pick(&["age", "cost"], c.card_cost),
+        Verb::BoardView => pick(&["columns", "table"], c.board_table),
         Verb::ReleaseChannel => pick(&["stable", "unstable"], c.release_unstable),
         Verb::NotifyToggle => Value::Switch(c.notify),
         Verb::NotifyVia => pick(&["mesimon", "your terminal"], c.notify_via_terminal),
@@ -6827,6 +6864,7 @@ pub fn pref_key(verb: Verb) -> Option<PrefKey> {
         Verb::UsageClaude => PrefKey::UsageClaude,
         Verb::UsageCodex => PrefKey::UsageCodex,
         Verb::CardCorner => PrefKey::CardCorner,
+        Verb::BoardView => PrefKey::BoardView,
         Verb::Peek => PrefKey::Peek,
         Verb::SummaryShow => PrefKey::Summary,
         Verb::NewReplies => PrefKey::NewReplies,
@@ -11560,6 +11598,7 @@ mod tests {
             (
                 SettingsSection::Appearance,
                 vec![
+                    Verb::BoardView,
                     Verb::StatusLine,
                     Verb::CrownLightning,
                     Verb::CardMoves,
@@ -12449,7 +12488,8 @@ mod tests {
         assert_eq!(board.count(), 5, "Theme, Appearance, Notifications, Behaviour, Agents");
         assert_eq!(resolve(Scope::Settings, Key::Char('b'), &not), None);
         assert_eq!(resolve(Scope::Prompts, Key::Char('b'), &not), None);
-        assert_eq!(resolve(Scope::Board, Key::Char('b'), &offered), None);
+        // On the board `b` is the board's own view (T-1240), never the scope.
+        assert_eq!(resolve(Scope::Board, Key::Char('b'), &offered), Some(Verb::BoardView));
         assert_eq!(hint_for(Scope::Settings, Verb::PrefScope, &offered), Some(("b", "this board")));
         let on = Ctx { pref_scope_board: true, ..offered };
         assert_eq!(hint_for(Scope::Settings, Verb::PrefScope, &on), Some(("b", "machine")));
@@ -12473,6 +12513,7 @@ mod tests {
     #[test]
     fn every_preference_row_has_a_pref_key() {
         let prefs = [
+            Verb::BoardView,
             Verb::StatusLine,
             Verb::CrownLightning,
             Verb::CardMoves,

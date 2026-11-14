@@ -4124,7 +4124,7 @@ fn test_tag_count_keeps_the_title_editor_aligned() {
         let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
         for width in [12, 29, 48] {
             let bar = crate::tags::BAR;
-            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true };
+            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0, names_key: true, row: false };
             let mut previous = None;
             for n in 0..=2 {
                 let worn: Vec<_> = (0..n)
@@ -6652,6 +6652,71 @@ fn thinking_replaces_the_state_word_when_the_prompt_is_newer() {
         "and `thinking` replaces `working`: it has the prompt and nothing to show yet"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The board as a table (T-1240): each column a group under its header,
+/// each card a row as wide as the screen with its tags, agent and boxes
+/// named, and the cursor's row opening its one line, the agent's reply.
+fn table_board(tag: &str) -> App {
+    // A directory per test: the goldens run side by side.
+    let dir = std::env::temp_dir().join(format!("msmn-table-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("table dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(
+        &path,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
+    )
+    .expect("table transcript");
+    let mut b = fixture(false);
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
+    let mut app = app_graphite(b);
+    app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    app
+}
+
+#[test]
+fn golden_table_board_120() {
+    let app = table_board("golden_table_board_120");
+    golden("board_table_120x30", &render(&app, 120, 30));
+}
+
+/// Narrow, the row keeps its agent and boxes and gives up the tag names.
+#[test]
+fn golden_table_board_80() {
+    let app = table_board("golden_table_board_80");
+    golden("board_table_80x24", &render(&app, 80, 24));
+}
+
+/// `P` opens every row's line, never more than one.
+#[test]
+fn table_rows_open_one_line_at_most() {
+    let mut app = table_board("table_rows_open_one_line_at_most");
+    app.peek_all = true;
+    let lines = render(&app, 120, 30);
+    let at = lines.iter().position(|l| l.contains("Fix OSC-11 detection")).expect("the row");
+    assert!(lines[at + 1].contains("Fixed the OSC-11 race"), "{}", lines[at + 1]);
+    assert!(!lines[at + 2].contains("goldens updated"), "one line, never a wrap");
+}
+
+/// The switch, part way (T-1240): the columns' cards on their way to their
+/// rows, nothing else under the board's top row while they travel.
+#[test]
+fn golden_table_switch_mid_flight() {
+    let mut app = table_board("golden_table_switch_mid_flight");
+    app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Columns);
+    app.now = || 1_000_000;
+    let _ = render(&app, 120, 30);
+    press(&mut app, 'b');
+    assert!(app.table_view());
+    let shift = app.view_shift.borrow().clone().expect("the switch plays");
+    *app.view_shift.borrow_mut() =
+        Some(crate::viewshift::ViewShift { at: 1_000_000 - 180, ..shift });
+    golden("board_table_switch_120x30", &render(&app, 120, 30));
 }
 
 #[test]

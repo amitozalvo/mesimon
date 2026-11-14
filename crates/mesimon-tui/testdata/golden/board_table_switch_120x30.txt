@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+  TODO  2                                                   REVIEW  2                        DONE  1
+  Decay treatments      IN PROGRESS  2
+                                                              ✓ Grapheme truncation          z Painted accent bar
+   Keymap validator        ⠋ Fix OSC-11 detection
+                                                               x Flaky e2e on runner
+
+
+
+                             ⠋ Adopt drawer import
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ T-3 Fix OSC-11 detection ∙ created >1y ago
+ the board is a table for this session

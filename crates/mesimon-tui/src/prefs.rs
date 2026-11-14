@@ -219,6 +219,25 @@ pref_words!(ring SummaryShow {
     None => "none",
 });
 
+/// How the board lays its tickets out (T-1240): its columns side by side,
+/// or a table, one row per ticket under its column's header. `b` on the
+/// board flips it for that board alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoardView {
+    #[default]
+    Columns,
+    Table,
+}
+
+pref_words!(ring BoardView {
+    Columns => "columns",
+    Table => "table",
+});
+
+impl BoardView {
+    pub const ALL: [BoardView; 2] = [BoardView::Columns, BoardView::Table];
+}
+
 /// A card's second line names the ticket's pull requests (T-739): always,
 /// only as news until the cursor rests on the card (the new reply's decay),
 /// or never — the ticket page lists them either way.
@@ -494,6 +513,8 @@ pub(crate) struct Prefs {
     /// A card's second line names its pull requests (T-739); always, by
     /// default.
     pub card_prs: CardPrs,
+    /// The board's columns or its table (T-1240); a board may set its own.
+    pub board_view: BoardView,
     /// The editor `^g` opens (T-864): one by name, or `None` for `auto`,
     /// the ladder `external::Editors` reads. Per machine.
     pub editor: Option<&'static str>,
@@ -552,6 +573,7 @@ impl Default for Prefs {
             new_replies: true,
             fetch_every: FetchEvery::Off,
             card_prs: CardPrs::Always,
+            board_view: BoardView::Columns,
             editor: None,
             doc: Map::new(),
         }
@@ -607,6 +629,7 @@ const SUMMARY_KEY: &str = PrefKey::Summary.name();
 const NEW_REPLIES_KEY: &str = PrefKey::NewReplies.name();
 const FETCH_EVERY_KEY: &str = PrefKey::FetchEvery.name();
 const CARD_PRS_KEY: &str = PrefKey::CardPrs.name();
+const BOARD_VIEW_KEY: &str = PrefKey::BoardView.name();
 const EDITOR_KEY: &str = PrefKey::Editor.name();
 const RELEASE_CHANNEL_KEY: &str = PrefKey::ReleaseChannel.name();
 
@@ -788,6 +811,9 @@ impl Prefs {
         if let Some(v) = board.word(PrefKey::FetchEvery).and_then(FetchEvery::from_key) {
             p.fetch_every = v;
         }
+        if let Some(v) = board.word(PrefKey::BoardView).and_then(BoardView::from_key) {
+            p.board_view = v;
+        }
         p
     }
 
@@ -850,6 +876,7 @@ impl Prefs {
             PrefKey::Summary => self.summary.key(),
             PrefKey::FetchEvery => self.fetch_every.key(),
             PrefKey::CardPrs => self.card_prs.key(),
+            PrefKey::BoardView => self.board_view.key(),
             PrefKey::Editor => self.editor.unwrap_or(AUTO),
             PrefKey::ReleaseChannel => self.release_channel().word(),
         }
@@ -986,6 +1013,13 @@ impl Prefs {
             .is_some_and(|v| CardPrs::from_key(v).is_none())
         {
             doc.insert(CARD_PRS_KEY.into(), Value::from(self.card_prs.key()));
+        }
+        if !doc
+            .get(BOARD_VIEW_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|v| BoardView::from_key(v).is_none())
+        {
+            doc.insert(BOARD_VIEW_KEY.into(), Value::from(self.board_view.key()));
         }
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
@@ -1134,6 +1168,7 @@ impl BoardPrefs {
             | PrefKey::CardPrs
             | PrefKey::ReleaseChannel => false,
             PrefKey::FetchEvery => self.word(key).and_then(FetchEvery::from_key).is_some(),
+            PrefKey::BoardView => self.word(key).and_then(BoardView::from_key).is_some(),
             _ => self.bool(key).is_some(),
         }
     }
@@ -1485,6 +1520,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(CardPrs::from_key)
         .unwrap_or_default();
+    let board_view = doc
+        .get(BOARD_VIEW_KEY)
+        .and_then(Value::as_str)
+        .and_then(BoardView::from_key)
+        .unwrap_or_default();
     let editor = doc.get(EDITOR_KEY).and_then(Value::as_str).and_then(crate::external::known_word);
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
@@ -1535,6 +1575,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         summary,
         fetch_every,
         card_prs,
+        board_view,
         editor,
         doc,
     };
@@ -2446,6 +2487,28 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["peek"], "cursor");
         assert_eq!(load(&p).prefs.word(PrefKey::Peek), "cursor");
+    }
+
+    /// T-1240: the board's view is the columns by default, a board's own
+    /// file sets it over the machine's, and a word a newer build wrote
+    /// inherits.
+    #[test]
+    fn board_view_round_trips_and_a_board_sets_its_own() {
+        let p = scratch("board-view");
+        let l = load(&p);
+        assert_eq!(l.prefs.board_view, BoardView::Columns, "absent is the columns");
+        let mut machine = l.prefs;
+        machine.board_view = BoardView::Table;
+        save(&p, &machine).unwrap();
+        assert_eq!(load(&p).prefs.board_view, BoardView::Table);
+        assert_eq!(load(&p).prefs.word(PrefKey::BoardView), "table");
+        let mut board = BoardPrefs::default();
+        board.set_word(PrefKey::BoardView, "columns");
+        assert!(board.is_set(PrefKey::BoardView));
+        assert_eq!(machine.overlay(&board).board_view, BoardView::Columns, "the board's own");
+        board.set_word(PrefKey::BoardView, "grid");
+        assert!(!board.is_set(PrefKey::BoardView), "a foreign word is no override");
+        assert_eq!(machine.overlay(&board).board_view, BoardView::Table, "and inherits");
     }
 
     #[test]

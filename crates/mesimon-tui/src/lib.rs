@@ -54,6 +54,7 @@ mod transcript;
 mod ui;
 mod underline;
 mod update;
+mod viewshift;
 
 use std::path::Path;
 

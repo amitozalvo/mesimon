@@ -378,6 +378,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         now_ms: now_ms(),
         spin: app.spin_frame(),
         names_key: false,
+        row: false,
     };
     let sessions: Vec<&SessionRecord> =
         app.board.sessions.iter().filter(|r| r.ticket == ticket.id && r.state.is_live()).collect();

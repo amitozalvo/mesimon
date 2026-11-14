@@ -44845,3 +44845,31 @@ and no device was tried. The manifest's `theme_color` stays graphite: it is what
 page shows before it has loaded, and a manifest cannot follow a pick. Checks: state and assets
 tests, the UX suite on Chromium and WebKit at phone size, green; tablet and desktop not run (the
 change reads no width).
+
+## `b` turns the board into a table (T-1240, 2026-11-14, the author: "will allow to read long titles easily")
+
+- **What changed.** `b` on the board flips it between its columns and a table, saved in this
+  board's `prefs.json` (`board_view`, a board-overridable named value; Settings › Appearance ›
+  Board view sets the machine's). The table stacks the columns as groups: a header row (name,
+  count, automation mark, `!N` for a folded group's hidden needs-you), then each card as a row
+  as wide as the screen. A row is `card::render` with `CardCtx::row`: the card's own line 1 with
+  its tag names, agent and box count in fixed slots before the worktree mark, and at most one
+  line under it — the closed card's line 2, or, opened (the cursor, or `P`), the armed snooze,
+  the owed row, the reply or the worktree's news, the PR marks beside. Never the accordion.
+  `board::column_groups` is the board's per-card code, shared by both views.
+- **Keys.** In the table `j` off a column's last card is the next column's first row, `k` off a
+  header the last card above, an empty column a stop; `h`/`l` return to the row the cursor left
+  a column on. `J`/`K` carry a card over a column's edge; on a header they move the column, as
+  `H`/`L`. Every other key is the board's: the cursor is the same column and row.
+- **The switch plays** (`viewshift.rs`): each card's and header's row slides from its last-frame
+  spot to its new one, a column 55 ms after the one before and a card 16 ms after the one above,
+  in at most 652 ms; the rest of the board appears on landing. Off with card moves.
+- **Refuted: a rule line on the group header**, which the prototype drew: `test_no_drawn_structure`
+  allows a box glyph on a dialog frame's perimeter alone. **Not in the table:** another mover's
+  glide (it runs its trail through column gutters), a refused card's shake, the second tag's
+  hang, overflow cues (one scroll keeps the cursor's rows in view).
+- **Decision changed a test:** `b_flips_the_settings_scope_only_where_a_row_can_be_overridden`
+  asserted `b` unbound on the board; it is the view now.
+- **Checks.** `cargo ut`, `cargo build --workspace`; goldens `board_table_120x30`,
+  `board_table_80x24`, `board_table_switch_120x30`, and the reminted help and Appearance
+  goldens (the `b table` key and the Board view row, reviewed by eye). No e2e names the code.

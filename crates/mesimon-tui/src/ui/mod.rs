@@ -248,12 +248,22 @@ fn draw_screen(f: &mut Frame, app: &App) {
         .split(f.area());
 
     chrome::draw_header(f, outer[0], app, None);
-    board::draw_columns(f, outer[2], app);
+    // The board's columns, or its table (T-1240), and the switch between
+    // them while it plays.
+    if app.table_view() {
+        board::draw_table(f, outer[2], app);
+    } else {
+        board::draw_columns(f, outer[2], app);
+    }
+    crate::viewshift::draw(f, app, outer[2]);
     crate::arcade::draw(f, app, outer[2], outer[1]);
     // The crown's bolts (T-544), over the cards and under every dialog.
     crate::strike::draw(f, app, outer[0], outer[2]);
-    // A card another mover took plays its move (T-817).
-    crate::glide::draw(f, app, outer[2]);
+    // A card another mover took plays its move (T-817), on the columns: the
+    // table has no gutters for its trail.
+    if !app.table_view() {
+        crate::glide::draw(f, app, outer[2]);
+    }
     // Behind a card's dialog the rest of the board recedes (T-817).
     board::recede(f, app, outer[2]);
     if !hand.is_empty() {
