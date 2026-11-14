@@ -45279,3 +45279,24 @@ URLs under that reason and indexes the targets, so the notice asks nothing of th
 **Changed.** The one slashless link the product itself handed out, `team::CHECKOUT_URL`, now ends
 in `/relay/`, so `Get a license key` lands without the hop. The words drawn beside it stay
 `mesimon.dev/relay`.
+
+## The ticket page reads agy's box: the ask field on its `>` row, the box closes and opens (T-1250, 2026-11-14)
+
+**Cause.** The live window (`tui/src/live.rs`) found a composer by Claude Code's `❯` or Codex's
+`›` alone. agy's box (a rule, the `> ` row, indented wrapped rows, a rule of the same length) was
+no box to it: the seam fell back to the screen's last eight rows, the ask field was typed at the
+zone's foot (`bare`, no prompt row), and with no `box_rows` there was nothing to close or open.
+
+**Changed.** `Shot::boxed_prompt` also takes a `>` row under a rule, read exactly as the
+daemon's `composer::AGY` reads it: the bottom rule as long as the top one and only blank or
+indented rows between. agy's history echoes each prompt as a `>` row under a shorter rule, which
+this keeps from reading as the box (with the live box gone too). `is_prompt` and `is_marker`
+were left alone: a `>` in them would make a Claude Code screen's quoted line a prompt or a
+dialog's pointer.
+
+**Not done.** agy's own dialogs (its trust dialog's `> Yes, I trust this folder`, a permission
+ask) are still read by the fallback seam; no capture of agy's question dialog exists yet.
+
+Test: `live::tests::agy_s_box_is_found_and_its_echoes_are_not` (agy 1.5.9's screens from
+T-1233's captures). `cargo ut`. No e2e reaches the change (a private reader of the TUI); no golden
+draws an agy pane.

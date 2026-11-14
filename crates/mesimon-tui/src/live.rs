@@ -308,15 +308,32 @@ impl Shot {
     /// Claude Code's composer: a prompt row under a rule, with a rule
     /// below it (the box's bottom, under any wrapped words). A question's
     /// `❯ 4. Chat about this` sits under a rule with none below it, and
-    /// is a numbered option besides.
+    /// is a numbered option besides. agy's (T-1250) is the same shape round
+    /// a `>` row, read exactly, as the daemon's `composer::AGY` reads it:
+    /// its two rules the same length and only indented rows between them,
+    /// since agy echoes each prompt as a `>` row under a shorter rule.
     fn boxed_prompt(&self) -> Option<usize> {
         let n = self.rows.len();
         (1..n).rev().find(|&i| {
             let t = &self.rows[i].text;
-            is_prompt(t)
-                && !is_option(t)
-                && is_rule(&self.rows[i - 1].text)
-                && (i + 1..(i + BOX_REACH).min(n)).any(|j| is_rule(&self.rows[j].text))
+            if !is_rule(&self.rows[i - 1].text) {
+                return false;
+            }
+            if is_prompt(t) && !is_option(t) {
+                return (i + 1..(i + BOX_REACH).min(n)).any(|j| is_rule(&self.rows[j].text));
+            }
+            if !t.starts_with('>') {
+                return false;
+            }
+            let Some(bottom) =
+                (i + 1..(i + BOX_REACH).min(n)).find(|&j| is_rule(&self.rows[j].text))
+            else {
+                return false;
+            };
+            let width = |j: usize| self.rows[j].text.trim().chars().count();
+            width(i - 1) == width(bottom)
+                && (i + 1..bottom)
+                    .all(|j| self.rows[j].blank() || self.rows[j].text.starts_with("  "))
         })
     }
 
@@ -1570,6 +1587,53 @@ mod tests {
         assert_eq!(view.len() - from, 17, "27 rows less the padding's nine");
     }
 
+    /// agy's box (T-1250): the ask field types on its `>` row and the box
+    /// closes and opens, as Claude Code's does.
+    #[test]
+    fn agy_s_box_is_found_and_its_echoes_are_not() {
+        // agy 1.5.9 at 120 columns (T-1233's captures): a turn's prompt
+        // echoed under a shorter rule, the reply, then the box at rest with
+        // its mode's placeholder and the cursor parked before it.
+        let rule = "─".repeat(120);
+        let short = "─".repeat(60);
+        let footer = format!("? for shortcuts{}auto · Gemini 3.8 Flash · high", " ".repeat(75));
+        let rest = [
+            short.as_str(),
+            "> Say only PONG.",
+            "▸ Thought for 5s",
+            "  PONG",
+            "",
+            &rule,
+            "> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)",
+            &rule,
+            &footer,
+        ];
+        let mut s = screen(&rest, 12);
+        s.cols = 120;
+        s.cursor = Some((2, 6));
+        assert_eq!(s.prompt_row(), Some(6), "the box's row, not the echo's");
+        assert_eq!(s.anchor(), 4, "the row over the box's top rule");
+        assert_eq!(s.box_rows(), Some((5, 7)));
+        assert_eq!(s.for_page().page_box(), Some((5, 6, 7)), "it closes and opens");
+        assert_eq!(s.box_holds(), Some(false), "the placeholder is nothing typed");
+        // Words wrapped inside the box, indented two, are the box's.
+        let mut held = screen(
+            &[&rule, "> Say only the word PONG.", "  Second line of the brief.", &rule, &footer],
+            8,
+        );
+        held.cursor = Some((27, 2));
+        assert_eq!(held.box_rows(), Some((0, 3)));
+        assert_eq!(
+            held.box_text().as_deref(),
+            Some("Say only the word PONG. Second line of the brief.")
+        );
+        // With the box gone, an echo over the full rule is no box.
+        let echo = screen(&[&short, "> hi", "  PONG", &rule], 8);
+        assert_eq!(echo.prompt_row(), None);
+        assert_eq!(echo.box_rows(), None);
+    }
+
+    #[test]
     /// Codex's trust and hook prompts are no box: no rule, no mark over
     /// them. The window starts at the prompt's first words.
     #[test]
