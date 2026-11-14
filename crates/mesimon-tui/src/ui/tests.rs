@@ -6759,6 +6759,22 @@ fn an_untagged_row_wears_the_main_tags_shape() {
     }
 }
 
+/// A group header under the cursor wears the cursor's bar in the main
+/// tag's shape too (T-1240, the author: "the column block should be the
+/// smaller version … match the tickets tag main block size").
+#[test]
+fn a_table_header_under_the_cursor_wears_the_thin_bar() {
+    let mut app = app_graphite(fixture(false));
+    app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    assert!(app.on_column_header());
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("IN PROGRESS")).expect("the header") as u16;
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(0, y)].symbol(), "▋", "{:?}", lines[y as usize]);
+}
+
 /// A table row names the tier its ticket runs on, the default's name too,
 /// never the provider (T-1240, the author: "instead of claude show the
 /// actual tier of the ticket").

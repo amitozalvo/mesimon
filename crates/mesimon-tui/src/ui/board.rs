@@ -1249,8 +1249,12 @@ fn table_head(
     let mut head: Vec<Span<'static>> = Vec::new();
     let mut cursor: Option<(usize, u16)> = None;
     if on_head || header_edit.is_some() {
+        // The cursor's bar in the main tag's shape, as the rows wear it.
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
-        head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR), bar_style));
+        head.push(crate::tags::thin_bar(Span::styled(
+            bar_ch.to_string().repeat(crate::tags::BAR),
+            bar_style,
+        )));
         head.push(Span::raw(" "));
     } else {
         head.push(Span::raw(" ".repeat(crate::tags::BAR + 1)));

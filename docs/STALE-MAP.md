@@ -44986,3 +44986,9 @@ tagged rows' `▋`. In the table that bar is `▋` in the same grey (`tags::thin
 as a ground becomes that ground's ink); a bar with no ground (below TrueColor's paint) stays as
 the card draws it. Checks: `cargo ut`; `an_untagged_row_wears_the_main_tags_shape` (at rest and
 under the cursor); the three table goldens reminted (the `▋` in the first cell).
+
+## The table's header bar is the main tag's shape (T-1240 follow-up, 2026-11-14, the author: "the column block should be the smaller version … match the tickets tag main block size")
+
+A group header under the cursor (or under its rename) wore the cursor's bar as a whole painted
+cell; it goes through `tags::thin_bar` as the rows' bars do, `▋` in the cursor bar's colour.
+Checks: `cargo ut`; `a_table_header_under_the_cursor_wears_the_thin_bar`.
