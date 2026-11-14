@@ -45344,3 +45344,68 @@ a DONE ticket's session only to get it idle, and that turn now takes the ticket 
 automove out of DONE only if explicitly configured" was T-1037's premise). Both now go idle with
 no `UserPromptSubmit` (`SessionStart` + `Stop`; `end_turn`). Verified: `--test git archive_e2e::
 column_reclaim_e2e::`, 4/4.
+
+## A rebase ask is paid only at the base it was asked onto, and the pass waits for the look at a rebase turn's end (T-1246, 2026-11-14, follow-up to T-1183 and T-435)
+
+**Seen (2026-11-14, this board's feed).** T-1233 was asked to rebase at 16:14:00, resolved
+conflicts in code, ran its checks and ended its turn at 16:18:19. T-1240, merged six times that
+afternoon, had ended a follow-up turn at 16:17:44 and waited for T-1233's rebase turn. At
+16:18:25 the train merged T-1240, and at 16:18:33 asked T-1233 to rebase again. Main's reflog
+has the base at `dcd467ee` from 16:03:10 to 16:18:23: both branches were ready on it.
+
+**Cause.** `train::paid_first` (T-1183) put a branch with an ask on the train's memo before one
+never asked, the oldest ask first, and the memo outlives a merge (T-770). T-1240's last ask was
+at 14:35:34 onto `8abf01ee`, seven merges back, so every later delivery of that branch read as
+the longest-waiting paid rebase. T-1183's block called it "rare, and one place up". The week of
+feed on this board (2026-11-07 to 11-14, 42 train asks, 80 train merges) has four asks repeated
+with no merge of the ticket between, and all four are this: a branch merged before, on an ask
+older than its own last merge, taken over the branch whose rebase turn had just ended (T-1240
+by T-1208's, T-1233 and T-1234 by T-1240's, one more on 2026-11-13).
+
+**Changed (1): what counts as paid.** `paid_first` takes `Input`'s `asked` and `base_tip` beside
+`asked_at`, and an ask is paid only while the tip it was asked onto is the ticket's base tip
+now: the test `lane` already makes before a second ask, and `automation_status`'s
+`TrainAsk::current`. A merge leaves the base at the branch's own tip, so an ask from before it
+never reads paid again; nothing is recorded at the merge and the T-770 memo is whole. An ask at
+an older tip reads as no ask: board order. The count of rebase turns is the same as before in
+any order; the one that pays is now the branch that had not rebased for this base. **Refuted:
+stamping the merge on the ask and comparing times** (the ticket's own wording): a new persisted
+field, a hook in every merge road, and blind to a merge made with git outside the board, for a
+fact the kept `base_oid` already states. **Known and left:** a base that moves inside a rebase
+turn, with the agent rebasing onto the newer tip, leaves the ask at the older one, so the branch
+reads unpaid and goes by board order, which has it on top of REVIEW from its turn's end.
+
+**Changed (2): the pass waits for a rebase turn's look.** Found reading the pass for the same
+symptom by another door; no case of it is in the week's feed. The ask settles at the turn's end
+(T-435) and the hold goes with it, while the flags on hand are from before the turn's last
+commit until the ticket's own look lands (T-678, about a second here). A rebase made in a
+turn's last bucket still reads behind the tip it was asked at, which is on neither list, and a
+pass in that window (the board's sample, another ticket's look) would merge the next ready
+branch over it, or ask the next branch behind onto a tip about to move: T-435's wasted turn.
+`Daemon::rebase_look_out` (`trainhold.rs`) is true while a ticket with an ask at its current
+base tip has a turn's look out, and `train_pass` returns on it; the look's landing runs the
+pass, and `LOOK_MS` bounds one that never lands. `train_busy` is unchanged, so `get_ticket`'s
+merge words and the cards' `waits on` name the same holders as before: the wait is the look's.
+
+**Not built.** A feed line or a card mark for "the train sent this branch round twice". The
+check that found the four cases is a read of the feed: an ask of a ticket after an earlier ask
+with no `merge_train_merged` of it between, and what merged in that gap.
+
+**Tests.** `train::tests::an_ask_from_before_the_branchs_own_merge_is_no_rebase_paid` (core:
+the ticket's case, every mix of three tickets never asked, asked at an older tip or at this
+one, and a ticket whose own base stands where it was asked);
+`train_tests::the_pass_waits_for_the_look_at_a_branch_just_off_its_rebase_turn` (daemon: a
+ready branch is not tried while the look is out, an ask at a moved base holds nothing, the pass
+acts when the look is in); `merge_train_e2e::a_later_delivery_of_a_merged_branch_waits_behind_a_fresh_rebase`
+(real git: B asked and merged, C in its rebase turn, B delivers again, C merges first on one
+ask and B is asked the once more; on the old order C's second ask never merges and the test
+times out).
+
+**Verified.** `cargo ut`; the `git` binary's `merge_train_e2e::` file. The new e2e was also run
+once against the old order and timed out at "C to be merged on its one rebase".
+**Found on the way, fixed by T-1247 before this merged:**
+`merge_train_e2e::the_train_merges_asks_to_rebase_once_and_stops_with_its_board` failed at
+"DONE drags no turn back" on the base this was built on, alone and with both changes above
+switched off: T-1239's `on_working` on a fresh board's DONE took a merged ticket back to
+REVIEW through its notice turn. T-1247 landed while this was in test; after the rebase onto it
+the file is 10 of 10.

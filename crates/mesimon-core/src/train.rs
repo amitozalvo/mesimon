@@ -263,10 +263,25 @@ pub fn plan(input: &Input) -> Plan {
 /// first, moved the base, and the branch that had waited rebased again:
 /// three times in twelve minutes on the board that reported it. The count
 /// of rebase turns is the same in any order; this spreads them, so no
-/// branch pays for every merge above it. `asked_at` is each ticket's last
-/// ask, in ms.
-pub fn paid_first(merge: &mut [ulid::Ulid], asked_at: &HashMap<ulid::Ulid, u64>) {
-    merge.sort_by_key(|t| asked_at.get(t).map_or((1, 0), |at| (0, *at)));
+/// branch pays for every merge above it.
+///
+/// An ask is paid only at the base tip it was asked onto (T-1246): `asked`
+/// and `base_tip` are `Input`'s, the test `lane` asks before a second ask,
+/// and `asked_at` is each ticket's last ask, in ms. The memo outlives a
+/// merge (T-770), and a merge leaves the base at the branch's own tip, so
+/// an ask from before it never reads paid again: a later delivery of a
+/// merged branch waits behind a branch that rebased for the base as it
+/// stands, where it used to merge first and send that branch round again.
+pub fn paid_first(
+    merge: &mut [ulid::Ulid],
+    asked: &HashMap<ulid::Ulid, String>,
+    asked_at: &HashMap<ulid::Ulid, u64>,
+    base_tip: &HashMap<ulid::Ulid, String>,
+) {
+    merge.sort_by_key(|t| {
+        let paid = asked.get(t).is_some_and(|at| base_tip.get(t) == Some(at));
+        asked_at.get(t).filter(|_| paid).map_or((1, 0), |at| (0, *at))
+    });
 }
 
 /// The train's reach in the column `t`'s turn in flight delivers in
@@ -316,13 +331,59 @@ mod tests {
         let id = ulid::Ulid;
         // Board order: 1 (the newest delivery, never asked), 2, 3, 4.
         let mut merge = vec![id(1), id(2), id(3), id(4)];
+        let asked = HashMap::from([(id(4), "tip1".to_string()), (id(2), "tip1".to_string())]);
         let asked_at = HashMap::from([(id(4), 100), (id(2), 300)]);
-        paid_first(&mut merge, &asked_at);
+        paid_first(&mut merge, &asked, &asked_at, &tips("tip1"));
         assert_eq!(merge, [id(4), id(2), id(1), id(3)]);
         // Nothing asked: the board's order, untouched.
         let mut merge = vec![id(3), id(1), id(2)];
-        paid_first(&mut merge, &HashMap::new());
+        paid_first(&mut merge, &HashMap::new(), &HashMap::new(), &tips("tip1"));
         assert_eq!(merge, [id(3), id(1), id(2)]);
+    }
+
+    /// T-1246: an ask is paid at the base tip it was asked onto and nowhere
+    /// else. Ticket 1 was asked at t0 onto `tip0`, rebased and merged, and
+    /// delivers again, on top of REVIEW as automove leaves it; ticket 2 was
+    /// asked later onto `tip1`, the base as it stands, and has rebased. On
+    /// its old ask 1 merged first, the base moved, and 2 rebased a second
+    /// time within five minutes of its first.
+    #[test]
+    fn an_ask_from_before_the_branchs_own_merge_is_no_rebase_paid() {
+        let id = ulid::Ulid;
+        let mut merge = vec![id(1), id(2)];
+        let asked = HashMap::from([(id(1), "tip0".to_string()), (id(2), "tip1".to_string())]);
+        let asked_at = HashMap::from([(id(1), 100), (id(2), 300)]);
+        paid_first(&mut merge, &asked, &asked_at, &tips("tip1"));
+        assert_eq!(merge, [id(2), id(1)], "the branch that rebased for this base goes first");
+        // Every mix of three tickets, each never asked, asked at an older
+        // tip, or asked at this one, a lower row asked earlier: those asked
+        // at this tip, the earliest ask first, then the rest as the board
+        // has them. An ask at an older tip reads as no ask at all.
+        for mix in 0..27u32 {
+            let state = |n: u128| mix / 3u32.pow(n as u32 - 1) % 3;
+            let mut asked = HashMap::new();
+            let mut asked_at = HashMap::new();
+            for n in 1..=3u128 {
+                if state(n) > 0 {
+                    asked.insert(id(n), if state(n) == 2 { "tip1" } else { "tip0" }.to_string());
+                    asked_at.insert(id(n), 1000 - n as u64);
+                }
+            }
+            let mut merge = vec![id(1), id(2), id(3)];
+            paid_first(&mut merge, &asked, &asked_at, &tips("tip1"));
+            let paid = (1..=3u128).rev().filter(|n| state(*n) == 2);
+            let rest = (1..=3u128).filter(|n| state(*n) != 2);
+            let want: Vec<ulid::Ulid> = paid.chain(rest).map(id).collect();
+            assert_eq!(merge, want, "mix {mix}");
+        }
+        // The tip is the ticket's own (T-368): 1's base still stands where
+        // it was asked, whatever 2's did.
+        let mut merge = vec![id(2), id(1)];
+        let mut per_ticket = tips("tip1");
+        per_ticket.insert(id(1), "tip0".into());
+        let asked = HashMap::from([(id(1), "tip0".to_string()), (id(2), "tip0".to_string())]);
+        paid_first(&mut merge, &asked, &HashMap::from([(id(1), 100), (id(2), 50)]), &per_ticket);
+        assert_eq!(merge, [id(1), id(2)]);
     }
 
     /// The template board, its columns carrying the template's reach: the

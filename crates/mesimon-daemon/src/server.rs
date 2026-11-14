@@ -15478,12 +15478,12 @@ impl Daemon {
             fused: &fused,
             owed: &owed,
         });
-        // A branch that already rebased for the train goes first (T-1183).
-        // The memo outlives a merge (T-770), so a later commit on a branch
-        // merged before goes first on its old ask: rare, and one place up.
+        // A branch that rebased for the train onto the base as it stands
+        // goes first (T-1183, T-1246): an ask at an older tip, one from
+        // before the branch's own merge included, is no rebase paid.
         let asked_at: HashMap<ulid::Ulid, u64> =
             self.train.asked().iter().map(|(t, r)| (*t, r.at_ms)).collect();
-        mesimon_core::train::paid_first(&mut plan.merge, &asked_at);
+        mesimon_core::train::paid_first(&mut plan.merge, &asked, &asked_at, &base_tip);
         plan
     }
 
@@ -15508,7 +15508,9 @@ impl Daemon {
         {
             return false;
         }
-        if !self.train_busy().is_empty() {
+        // And not on flags older than a rebase turn that just ended
+        // (T-1246, `rebase_look_out`): the look's landing runs the pass.
+        if !self.train_busy().is_empty() || self.rebase_look_out() {
             return false;
         }
         let plan = self.train_plan();

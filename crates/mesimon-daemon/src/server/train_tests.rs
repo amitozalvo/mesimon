@@ -90,3 +90,64 @@ fn a_merge_refusal_reaches_the_feed_and_ticket_only_while_current() {
     drop(d);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// T-1246: the train's hold for a rebase turn lasts until the look at what
+/// that turn left has landed. The ask settles at the turn's end, and the
+/// flags on hand are from before it; a pass on them would take the next
+/// branch over the one that had just rebased. Here the flags read ready,
+/// so only the hold stands between the pass and a merge it would try.
+#[test]
+fn the_pass_waits_for_the_look_at_a_branch_just_off_its_rebase_turn() {
+    let dir = std::env::temp_dir().join(format!("msmn-t1246-{}", std::process::id()));
+    let (mut d, _, _rx) = queued_person_push_tests::daemon(&dir);
+    let id = d.board.sessions[0].ticket;
+    d.board.sessions[0].confidence = Confidence::High;
+    d.board.merge_into = MergeInto::Main;
+    d.board.tickets.push(queued_person_push_tests::worker_ticket(id, "REVIEW", "0"));
+    d.base_branch = Some("main".into());
+    d.worktrees.insert(
+        id,
+        Binding::new(
+            dir.join("worker"),
+            "msmn/worker".into(),
+            "base".into(),
+            "tip".into(),
+            BindingStatus::Attached,
+        ),
+    );
+    d.wt_agg.insert(
+        id,
+        worktree::Aggregate {
+            ahead: 1,
+            tip: "tip".into(),
+            base_tip: "base".into(),
+            ..Default::default()
+        },
+    );
+    let (socket, _peer) = UnixStream::pair().unwrap();
+    let client = Arc::new(Mutex::new(socket));
+    d.train.arm(&client, false);
+    assert_eq!(d.train_plan().merge, vec![id], "ready, by the flags on hand");
+
+    // Asked at this base tip, and the turn the ask began has ended.
+    d.train.record_ask(id, "base".into(), false, 1, false, Instant::now());
+    d.train.settle(id);
+    assert!(!d.rebase_look_out(), "no look is out");
+    let need = d.wt_seq.wrapping_add(1);
+    d.look_after_turn(id);
+    assert!(d.rebase_look_out(), "the turn's look is out");
+    assert!(!d.train_pass(), "the pass waits for it");
+    assert!(d.train.refusal(id, "tip", "base").is_none(), "and tried nothing");
+
+    // An ask at a base that has moved since is no rebase turn to wait on.
+    d.wt_agg.get_mut(&id).unwrap().base_tip = "moved".into();
+    assert!(!d.rebase_look_out());
+    d.wt_agg.get_mut(&id).unwrap().base_tip = "base".into();
+
+    // The look lands: the pass goes on, to a merge this checkout refuses.
+    d.wt_fresh.insert(id, need);
+    assert!(!d.rebase_look_out());
+    assert!(d.train_pass(), "the pass acts once the look is in");
+    drop(d);
+    let _ = std::fs::remove_dir_all(dir);
+}

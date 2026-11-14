@@ -41,6 +41,14 @@ pub(super) struct AwaitingLook {
     since_ms: u64,
 }
 
+impl AwaitingLook {
+    /// Still out: no sample that began after the turn has read the ticket
+    /// (`fresh`, its `wt_fresh`), and `LOOK_MS` has not run.
+    fn out(&self, fresh: Option<&u64>, now: u64) -> bool {
+        fresh.is_none_or(|f| *f < self.need) && now.saturating_sub(self.since_ms) < LOOK_MS
+    }
+}
+
 impl Daemon {
     /// A turn ended on `ticket`'s agent: on a branch the armed train could
     /// take, the person's banner waits for a sample started from here, and
@@ -222,10 +230,26 @@ impl Daemon {
         let now = now_ms();
         let before = self.awaiting_looks.len();
         let fresh = &self.wt_fresh;
-        self.awaiting_looks.retain(|t, a| {
-            fresh.get(t).is_none_or(|f| *f < a.need) && now.saturating_sub(a.since_ms) < LOOK_MS
-        });
+        self.awaiting_looks.retain(|t, a| a.out(fresh.get(t), now));
         self.awaiting_looks.len() != before
+    }
+
+    /// A ticket is off the rebase turn the train asked for at this base tip
+    /// and the look at what that turn left is still out (T-1246). The ask
+    /// settles at the turn's end, and until the look lands the flags are
+    /// from before it: a rebase made in the turn's last seconds still reads
+    /// behind the tip it was asked at, which puts the ticket on neither
+    /// list. A pass in that window would merge the next branch over the one
+    /// that had just rebased, or ask the next one behind onto a tip about
+    /// to move (T-435's wasted turn, by another door); read off the code,
+    /// never seen in a feed. The pass waits; the look's landing runs one,
+    /// and `LOOK_MS` bounds a look that never lands.
+    pub(super) fn rebase_look_out(&self) -> bool {
+        let now = now_ms();
+        self.awaiting_looks.iter().any(|(t, a)| {
+            a.out(self.wt_fresh.get(t), now)
+                && self.train.asked().get(t).is_some_and(|r| r.base_oid == self.base_tip_of(*t))
+        })
     }
 
     /// The tickets the train has yet to finish (T-678), for the snapshot:
