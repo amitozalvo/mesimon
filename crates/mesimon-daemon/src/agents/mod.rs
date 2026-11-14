@@ -104,6 +104,38 @@ pub fn adapter(kind: SessionKind) -> Option<&'static dyn AgentAdapter> {
     }
 }
 
+/// Whether a session's words take the paste road with its box read off the
+/// screen (T-1233): a Claude pane's and an agy pane's. Codex has its own
+/// road (`drive_codex_inputs`), and a shell has no box.
+pub fn pastes(kind: SessionKind) -> bool {
+    matches!(kind, SessionKind::Claude | SessionKind::Agy)
+}
+
+/// The box shape a pasting kind draws (`claude::composer::read_as`).
+pub fn box_shape(kind: SessionKind) -> claude::composer::Shape {
+    match kind {
+        SessionKind::Agy => claude::composer::AGY,
+        _ => claude::composer::CLAUDE,
+    }
+}
+
+/// A pane's box, read by its kind's shape.
+pub fn read_box(
+    kind: SessionKind,
+    screen: &mesimon_backend_tmux::InputScreen,
+) -> claude::composer::Composer {
+    claude::composer::read_as(box_shape(kind), screen)
+}
+
+/// Whether a pane's box holds `words` and nothing else, by its kind's shape.
+pub fn box_holds_only(
+    kind: SessionKind,
+    screen: &mesimon_backend_tmux::InputScreen,
+    words: &str,
+) -> bool {
+    claude::composer::holds_only_as(box_shape(kind), screen, words)
+}
+
 /// Native history formats are interpreted only by their owning adapter.
 pub fn read_preview(provider: SessionKind, path: &Path) -> Option<AgentPreview> {
     adapter(provider)?.preview(path)

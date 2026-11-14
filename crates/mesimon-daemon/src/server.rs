@@ -267,10 +267,6 @@ const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
 /// Why an agy start or wake is refused where its switch is off (T-1225).
 const AGY_SWITCHED_OFF: &str =
     "agy sessions are switched off in this build ∙ MESIMON_AGY=1 in the daemon's environment turns them on";
-/// Why words for an agy seat are refused (T-1225): the board has no road into
-/// agy's prompt box yet, on a start, a wake or a live pane.
-const AGY_TAKES_NO_WORDS: &str =
-    "an agy session takes no words from the board yet ∙ start or wake it without them and type in its pane";
 /// How long a write to a subscriber's socket may block the writer thread
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -651,6 +647,11 @@ pub struct Daemon {
     /// (`quiet::working_tickets`), which is what keeps a second paste out of
     /// the same checkout in the same pass.
     owed: HashMap<uuid::Uuid, Owed>,
+    /// A plain agy start's title, waiting for its box (T-1233): typed, never
+    /// submitted, once the pane's box reads empty on a screen sampled after
+    /// the epoch ms beside it (`prefill_agy_titles`). In memory only: a
+    /// restart leaves the box as it is.
+    agy_prefills: HashMap<uuid::Uuid, (String, u64)>,
     /// Asks parked until the ticket's CHECKOUT is quiet (2026-09-04, after
     /// five claudes in one checkout committed at once): the board's
     /// Shift+Enter with the field's toggle at `queued`. One entry per
@@ -2039,6 +2040,7 @@ impl Daemon {
             machines,
             async_hooks: Default::default(),
             owed: HashMap::new(),
+            agy_prefills: HashMap::new(),
             queued,
             plan_accept: HashMap::new(),
             plan_accept_tries: HashMap::new(),
@@ -4073,6 +4075,7 @@ impl Daemon {
             changed |= stage!(self, "rescue_silent_mods", self.rescue_silent_mods(now));
             self.want_owed_screens(now);
             changed |= stage!(self, "settle_owed", self.settle_owed(now));
+            changed |= stage!(self, "prefill_agy_titles", self.prefill_agy_titles(now));
             changed |= stage!(self, "settle_crown_asks", self.settle_crown_asks());
             self.want_compaction_screens();
             changed |= stage!(self, "settle_compactions", self.settle_compactions(now));
@@ -5339,16 +5342,16 @@ impl Daemon {
         screens: &HashMap<String, mesimon_backend_tmux::InputScreen>,
         now: u64,
     ) -> bool {
-        use crate::agents::claude::composer::{self, Composer};
+        use crate::agents::claude::composer::Composer;
         let candidates: Vec<_> = self
             .board
             .sessions
             .iter()
             .filter(|s| claude_startup_candidate(s))
-            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone()))
+            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone(), s.kind))
             .collect();
         let mut dirty = false;
-        for (id, sid, state, cwd) in candidates {
+        for (id, sid, state, cwd, kind) in candidates {
             let principal = Principal::Automation { rule: "claude_startup".into() };
             if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
                 continue;
@@ -5366,7 +5369,7 @@ impl Daemon {
                 // The dialog went and the composer paints: the seat is up. A
                 // projection nothing walks goes with it; one a delivery is
                 // still walking settles the delivery first (`trust_taken`).
-                None if at_trust && composer::read(screen) != Composer::Absent => {
+                None if at_trust && crate::agents::read_box(kind, screen) != Composer::Absent => {
                     if !self.control_trust_walking(id) {
                         dirty |= self.control_drop_trust(id);
                     }
@@ -5381,8 +5384,9 @@ impl Daemon {
             };
             if let Some(machine) = self.machines.get_mut(&id) {
                 if let Some(change) = machine.apply(&signal, now) {
+                    let who = if kind == SessionKind::Agy { "agy" } else { "Claude Code" };
                     let detail = matches!(signal, Signal::Attention { .. })
-                        .then(|| "Claude Code asks to trust this folder".to_string());
+                        .then(|| format!("{who} asks to trust this folder"));
                     dirty |= self.apply_change(id, &change, detail, Some("claude_startup"));
                 }
             }
@@ -6164,6 +6168,14 @@ impl Daemon {
     fn park(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, parked: Parked, ack: Ack) {
         let mut owed = Owed::launch(ticket, parked, ack);
         owed.mod_road = self.on_mod_road(id);
+        // agy's `SessionStart` waits for the first prompt (T-1233): no edge
+        // would arm these words, so they are armed now, on the composer's
+        // wait, as a resend's are.
+        if self.session_kind(id) == SessionKind::Agy {
+            let now = now_ms();
+            owed.next_press = Some(now + SUBMIT_RETRY_MS);
+            owed.ready_by = Some(now + composer_wait_ms());
+        }
         self.owed.insert(id, owed);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
@@ -6345,9 +6357,6 @@ impl Daemon {
         parked: Parked,
         word: &'static str,
     ) -> Response {
-        if self.session_kind(id) == SessionKind::Agy {
-            return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
-        }
         let now = now_ms();
         // A session whose mod is up takes the words by its `submit` (T-575):
         // nothing is typed, so there is no stray text to clear first, and
@@ -7040,7 +7049,7 @@ impl Daemon {
         // a person's, typed ahead of them, and it supersedes the words still
         // waiting, as it does a launch's (T-570). The entry goes and the ask
         // is dropped by the person: no ack, no mark, nothing kept to resend.
-        let ahead = (rec.kind == SessionKind::Claude)
+        let ahead = crate::agents::pastes(rec.kind)
             .then(|| self.owed.get(&id).filter(|o| o.parked.is_some()).and_then(|o| o.ask))
             .flatten();
         // Words a launch could not deliver (T-570) are moot once the agent
@@ -7058,7 +7067,7 @@ impl Daemon {
         // takes one of these branches, never two.
         let ahead_of_launch = self.owed.get(&id).is_some_and(|o| {
             o.parked.is_some() && o.next_press.is_some() && o.ack.word != Ack::CROWN_WAKE.word
-        }) && self.session_kind(id) == SessionKind::Claude;
+        }) && crate::agents::pastes(self.session_kind(id));
         if !command {
             self.receipt_prompt(id, ahead.is_some() || ahead_of_launch);
         }
@@ -7235,10 +7244,68 @@ impl Daemon {
                     && (!o.mod_road || o.bridge_by.is_some_and(|by| by <= now + 1_000))
             })
             .filter_map(|(id, _)| self.board.session(*id))
-            .filter(|r| r.kind == SessionKind::Claude && r.state.has_pane());
+            .chain(self.agy_prefills.keys().filter_map(|id| self.board.session(*id)))
+            .filter(|r| crate::agents::pastes(r.kind) && r.state.has_pane());
         for r in due {
             self.pane_due.screen(&r.sid16());
         }
+    }
+
+    /// A plain agy start's title into its box (T-1233), the prefill a Claude
+    /// start types at its spawn: agy is typed nothing before its box is
+    /// drawn, so the title waits for a sample that shows the box empty, and
+    /// goes in then with no Enter, as the person's to edit. A box holding
+    /// words is a person's, and the title is dropped; so is one that never
+    /// drew in the composer's wait (its folder trust dialog holds the clock).
+    fn prefill_agy_titles(&mut self, now: u64) -> bool {
+        use crate::agents::claude::composer::Composer;
+        if self.agy_prefills.is_empty() {
+            return false;
+        }
+        let ids: Vec<uuid::Uuid> = self.agy_prefills.keys().copied().collect();
+        let mut changed = false;
+        for id in ids {
+            let Some(rec) = self.board.session(id).filter(|r| r.state.has_pane()) else {
+                self.agy_prefills.remove(&id);
+                continue;
+            };
+            let (sid, trust) = (
+                rec.sid16(),
+                rec.state == (SessionState::RequiresAction { reason: Reason::Trust }),
+            );
+            let Some((title, since)) = self.agy_prefills.get(&id).cloned() else { continue };
+            if trust {
+                self.agy_prefills.insert(id, (title, now));
+                continue;
+            }
+            match self.screen_since(&sid, since).map(|s| crate::agents::read_box(rec.kind, s)) {
+                Some(Composer::Empty) => {
+                    self.agy_prefills.remove(&id);
+                    if self.backend.send_text(&sid, &format!("{title} ")).is_ok() {
+                        self.title_typed(id, &title);
+                        changed = true;
+                    }
+                }
+                Some(Composer::Holding) => {
+                    self.agy_prefills.remove(&id);
+                }
+                _ if now.saturating_sub(since) > composer_wait_ms() => {
+                    self.agy_prefills.remove(&id);
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
+    /// One clear of a pane's box (T-570): Claude Code clears on Ctrl+C, agy
+    /// on Ctrl+U, and reads a Ctrl+C as the first of the two that exit it
+    /// ("press ctrl+c again to exit", 1.5.9, T-1233).
+    fn clear_box(&self, kind: SessionKind, sid: &str) {
+        let _ = match kind {
+            SessionKind::Agy => self.backend.press_key(sid, "C-u"),
+            _ => self.backend.clear_input(sid),
+        };
     }
 
     /// A compacting Claude pane's screen is wanted every tick (T-894): the
@@ -7374,21 +7441,21 @@ impl Daemon {
         // the box reads empty on a sample from after its Enter had time to
         // paint. The sampler is asked for the next screen each time, as the
         // composer wait is.
-        let shells: Vec<(uuid::Uuid, String, u64)> = self
+        let shells: Vec<(uuid::Uuid, String, u64, SessionKind)> = self
             .owed
             .iter()
             .filter(|(_, o)| o.screen_acked && o.parked.is_none())
             .filter_map(|(id, o)| {
                 let rec = self.board.session(*id)?;
-                Some((*id, rec.sid16(), o.screen_after + SHELL_RENDER_MS))
+                Some((*id, rec.sid16(), o.screen_after + SHELL_RENDER_MS, rec.kind))
             })
             .collect();
-        for (id, sid16, after) in shells {
-            use crate::agents::claude::composer::{self, Composer};
+        for (id, sid16, after, kind) in shells {
+            use crate::agents::claude::composer::Composer;
             self.pane_due.screen(&sid16);
             let taken = self
                 .screen_since(&sid16, after)
-                .is_some_and(|screen| composer::read(screen) == Composer::Empty);
+                .is_some_and(|screen| crate::agents::read_box(kind, screen) == Composer::Empty);
             if taken {
                 changed |= self.ack_owed(id);
             }
@@ -7414,7 +7481,7 @@ impl Daemon {
             // the pane, from the board or from a phone — and then go in as
             // any launch's do. A startup modal this did not recognise still
             // reads SETUP, below, and the words go unsent as before.
-            if rec.kind == SessionKind::Claude
+            if crate::agents::pastes(rec.kind)
                 && rec.state == (SessionState::RequiresAction { reason: Reason::Trust })
                 && self.owed.get(&id).is_some_and(|o| o.parked.is_some())
             {
@@ -7432,7 +7499,7 @@ impl Daemon {
             // and mesimon does not answer dialogs on the user's behalf.
             if !rec.pressable() {
                 let ticket = rec.ticket;
-                let claude = rec.kind == SessionKind::Claude;
+                let claude = crate::agents::pastes(rec.kind);
                 let owed = self.drop_owed(id);
                 let pasted_command =
                     owed.as_ref().is_some_and(|o| o.screen_acked && o.parked.is_none());
@@ -7452,7 +7519,10 @@ impl Daemon {
             }
             let sid16 = rec.sid16();
             let ticket = rec.ticket;
-            let claude = rec.kind == SessionKind::Claude;
+            let kind = rec.kind;
+            // A pane whose box is read before its words go (T-570): Claude's
+            // and agy's (T-1233).
+            let claude = crate::agents::pastes(kind);
             let parked = self.owed.get(&id).is_some_and(|o| o.parked.is_some());
             // Words for a mod session wait for its bridge (T-575), which
             // takes them as a `submit` the moment it first polls
@@ -7482,7 +7552,7 @@ impl Daemon {
                 }
             }
             if claude && parked {
-                use crate::agents::claude::composer::{self, Composer};
+                use crate::agents::claude::composer::Composer;
                 // The composer is read off the sampler's newest screen of
                 // this pane (T-857), never a fork here, and the next sample
                 // is asked for another so the next cadence reads fresh. A
@@ -7491,12 +7561,15 @@ impl Daemon {
                 self.pane_due.screen(&sid16);
                 let Some(after) = self.owed.get(&id).map(|o| o.screen_after) else { continue };
                 let screen = self.screen_since(&sid16, after);
-                let composer = screen.map_or(Composer::Absent, composer::read);
+                let composer =
+                    screen.map_or(Composer::Absent, |s| crate::agents::read_box(kind, s));
                 // The composed spawn's box holds the title it typed; a box
                 // holding anything else holds a person's draft (T-987).
                 let typed = self.owed.get(&id).and_then(|o| o.typed.clone());
-                let ours =
-                    typed.as_deref().zip(screen).is_some_and(|(t, s)| composer::holds_only(s, t));
+                let ours = typed
+                    .as_deref()
+                    .zip(screen)
+                    .is_some_and(|(t, s)| crate::agents::box_holds_only(kind, s, t));
                 // A crown wake parked on this launch (T-936) is never pasted
                 // from here: this screen may be older than a person's draft.
                 // Once the pane draws a box, the wake goes back to owed, and
@@ -7551,7 +7624,7 @@ impl Daemon {
                     (self.clients_at_pane(&sid16) == PaneClients::Here).then_some(A_PERSON_ATTACHED)
                 } else if clear {
                     launch_barrier();
-                    match self.recovery_clear(&sid16, typed.as_deref()) {
+                    match self.recovery_clear(kind, &sid16, typed.as_deref()) {
                         Ok(title) => {
                             skip = !title;
                             None
@@ -7560,7 +7633,7 @@ impl Daemon {
                     }
                 } else {
                     launch_barrier();
-                    self.launch_refusal(&sid16, typed.as_deref(), as_is)
+                    self.launch_refusal(kind, &sid16, typed.as_deref(), as_is)
                 };
                 let Some(owed) = self.owed.get_mut(&id) else { continue };
                 match held {
@@ -7591,8 +7664,9 @@ impl Daemon {
                     None if clear && skip => owed.cleared = true,
                     None if clear => {
                         owed.cleared = true;
-                        let _ = self.backend.clear_input(&sid16);
                         owed.screen_after = now;
+                        self.clear_box(kind, &sid16);
+                        let Some(owed) = self.owed.get_mut(&id) else { continue };
                         owed.next_press = Some(now + SUBMIT_RETRY_MS);
                         continue;
                     }
@@ -10223,10 +10297,16 @@ impl Daemon {
     /// a box holding exactly the title the board typed (`typed`) or, after a
     /// person's resend spent its clear, whatever it holds (`as_is`, T-570).
     /// Anything else, a screen unread included, holds them. `None` to type.
-    fn launch_refusal(&self, sid: &str, typed: Option<&str>, as_is: bool) -> Option<&'static str> {
+    fn launch_refusal(
+        &self,
+        kind: SessionKind,
+        sid: &str,
+        typed: Option<&str>,
+        as_is: bool,
+    ) -> Option<&'static str> {
         // The recovery's read of the same edge; only other text in the box
         // is taken as it is.
-        match self.recovery_clear(sid, typed) {
+        match self.recovery_clear(kind, sid, typed) {
             Ok(_) => None,
             Err(COMPOSER_NOT_OURS) if as_is => None,
             Err(why) => Some(why),
@@ -10238,17 +10318,24 @@ impl Daemon {
     /// typed (`typed`), the only text a recovery clears; `Ok(false)` when it
     /// is empty, so the words go with no clear. Anything else holds them: a
     /// person at the pane, other text, no box, a screen unread.
-    fn recovery_clear(&self, sid: &str, typed: Option<&str>) -> Result<bool, &'static str> {
-        use crate::agents::claude::composer::{self, Composer};
+    fn recovery_clear(
+        &self,
+        kind: SessionKind,
+        sid: &str,
+        typed: Option<&str>,
+    ) -> Result<bool, &'static str> {
+        use crate::agents::claude::composer::Composer;
         if self.clients_at_pane(sid) == PaneClients::Here {
             return Err(A_PERSON_ATTACHED);
         }
         let Ok(screen) = self.backend.capture_input_screen(sid) else {
             return Err(COMPOSER_UNREAD);
         };
-        match composer::read(&screen) {
+        match crate::agents::read_box(kind, &screen) {
             Composer::Empty => Ok(false),
-            Composer::Holding if typed.is_some_and(|t| composer::holds_only(&screen, t)) => {
+            Composer::Holding
+                if typed.is_some_and(|t| crate::agents::box_holds_only(kind, &screen, t)) =>
+            {
                 Ok(true)
             }
             Composer::Holding => Err(COMPOSER_NOT_OURS),
@@ -10277,9 +10364,9 @@ impl Daemon {
             return Some(PersonHold::Client(*hold));
         }
         let draft = self.screens.get(&sid).is_some_and(|(_, screen)| match rec.kind {
-            SessionKind::Claude => {
-                use crate::agents::claude::composer::{self, Composer};
-                composer::read(screen) == Composer::Holding
+            SessionKind::Claude | SessionKind::Agy => {
+                use crate::agents::claude::composer::Composer;
+                crate::agents::read_box(rec.kind, screen) == Composer::Holding
             }
             // The crown's own wake, pasted and waiting for its Enter, is
             // not a draft: the box is mesimon's until it is changed.
@@ -10493,12 +10580,12 @@ impl Daemon {
             // shows empty (T-936), however it reached this road: a box that
             // holds words or reads as no composer at all waits for the next
             // sample. Codex keeps its own box checks.
-            if self.session_kind(id) == SessionKind::Claude {
-                use crate::agents::claude::composer::{self, Composer};
-                let empty = self
-                    .screens
-                    .get(&sid)
-                    .is_some_and(|(_, screen)| composer::read(screen) == Composer::Empty);
+            let kind = self.session_kind(id);
+            if crate::agents::pastes(kind) {
+                use crate::agents::claude::composer::Composer;
+                let empty = self.screens.get(&sid).is_some_and(|(_, screen)| {
+                    crate::agents::read_box(kind, screen) == Composer::Empty
+                });
                 if !empty {
                     self.want_person(&sid);
                     return false;
@@ -10651,7 +10738,7 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .find(|s| s.id == id && s.kind == SessionKind::Claude)
+            .find(|s| s.id == id && crate::agents::pastes(s.kind))
             .map(|s| (s.state.has_pane(), s.pane_key.clone()));
         if let Some((paned, pane)) = claude {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
@@ -14797,9 +14884,7 @@ impl Daemon {
         if rec.kind == SessionKind::Codex {
             return self.codex_park(id, ticket, text, ack, false);
         }
-        if rec.kind == SessionKind::Agy {
-            return Err(AGY_TAKES_NO_WORDS.into());
-        }
+        let kind = rec.kind;
         // One owed entry per seat (T-961): words still parked for this pane,
         // a launch's or an early prompt's, are never replaced, by a paste, a
         // fill or a submit. Refused before any key, as for a person at the
@@ -14822,9 +14907,13 @@ impl Daemon {
         // that draws may hold the start's title, and the line would be text.
         let command = road::is_command(text);
         if command {
-            use crate::agents::claude::composer::{self, Composer};
+            use crate::agents::claude::composer::Composer;
             let what = if road::is_shell(text) { "a `!` line" } else { "a `/` command" };
-            let read = self.backend.capture_input_screen(&sid).ok().map(|s| composer::read(&s));
+            let read = self
+                .backend
+                .capture_input_screen(&sid)
+                .ok()
+                .map(|s| crate::agents::read_box(kind, &s));
             match read {
                 Some(Composer::Holding) => {
                     return Err(format!(
@@ -14893,11 +14982,16 @@ impl Daemon {
         // words wait on the launch road's composer read and wait, read
         // fresh at the key, and are kept `unsent` if no box comes.
         if ack.word != Ack::CROWN_WAKE.word {
-            use crate::agents::claude::composer::{self, Composer};
+            use crate::agents::claude::composer::Composer;
             let clients = self.clients_at_pane(&sid);
             let young = clients != PaneClients::Here && self.young_seat(id);
             let read = (young || clients == PaneClients::Idle)
-                .then(|| self.backend.capture_input_screen(&sid).ok().map(|s| composer::read(&s)))
+                .then(|| {
+                    self.backend
+                        .capture_input_screen(&sid)
+                        .ok()
+                        .map(|s| crate::agents::read_box(kind, &s))
+                })
                 .flatten();
             if young && !command && !matches!(read, Some(Composer::Empty | Composer::Holding)) {
                 return self.park_until_composer(id, ticket, text, ack);
@@ -14908,19 +15002,37 @@ impl Daemon {
                 return Err(format!("{why}{NOT_SENT}"));
             }
         }
+        // agy's send-now is its own key (`road::AGY_SEND_NOW_KEY`, T-1233).
+        let agy = kind == SessionKind::Agy;
         if immediately {
             // The paste, then the send-now in its own call, as an Enter
             // goes in its own (`paste_text`): keys in the paste's burst are
             // read as pasted text.
             self.backend
                 .paste_input(&sid, text)
-                .and_then(|()| self.backend.send_now(&sid))
+                .and_then(|()| {
+                    if agy {
+                        self.backend.press_key(&sid, road::AGY_SEND_NOW_KEY)
+                    } else {
+                        self.backend.send_now(&sid)
+                    }
+                })
                 .map_err(|e| format!("could not deliver: {e}"))?;
             self.feed.board("daemon", "prompt_sent_immediately", Some(ticket));
         } else {
             self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
         }
         self.paste_entered(id, ticket, text, ack, None);
+        // Words into a working agy turn fire no `PreInvocation` of their own
+        // while it runs (1.5.9, T-1233): an Enter queues them under the turn,
+        // run as a turn of their own after its `Stop`, and alt+m hands them
+        // to its next model call. Its box reading empty after the key is
+        // agy's receipt, as a command's is.
+        if agy && !self.session_idle(id) {
+            if let Some(owed) = self.owed.get_mut(&id) {
+                owed.screen_acked = true;
+            }
+        }
         Ok(())
     }
 
@@ -15759,7 +15871,7 @@ impl Daemon {
         Some(if self.tier_book().seat_provider(ticket).has_send_now() {
             "has no turn for a send-now to cut into ∙ now delivers the words"
         } else {
-            "has no send-now (Claude Code's alone)"
+            "has no send-now (Codex)"
         })
     }
 
@@ -16667,7 +16779,7 @@ impl Daemon {
     /// holds.
     fn person_holds_words(&self, id: uuid::Uuid, q: &QueuedAsk) -> Option<String> {
         let rec = self.board.sessions.iter().find(|s| s.id == id && s.state.has_pane())?;
-        if rec.kind != SessionKind::Claude
+        if !crate::agents::pastes(rec.kind)
             || self.takes_by_submit(id, &q.text)
             || self.relaunches(id, q.plan)
         {
@@ -17460,11 +17572,19 @@ impl Daemon {
             return;
         }
         let Some(rec) =
-            self.board.sessions.iter().find(|s| s.id == *id && s.kind == SessionKind::Claude)
+            self.board.sessions.iter().find(|s| s.id == *id && crate::agents::pastes(s.kind))
         else {
             return;
         };
-        let (id, ticket) = (rec.id, rec.ticket);
+        let (id, ticket, kind) = (rec.id, rec.ticket, rec.kind);
+        // An agy pane is typed nothing before its box draws (T-1233).
+        if kind == SessionKind::Agy {
+            let title = self.board.ticket(ticket).map(|t| t.title.trim().to_string());
+            if let Some(title) = title.filter(|t| !t.is_empty()) {
+                self.agy_prefills.insert(id, (title, now_ms()));
+            }
+            return;
+        }
         self.type_title(id, ticket);
     }
 
@@ -17502,9 +17622,6 @@ impl Daemon {
                 message: "no live agent session on this ticket — start or wake one first".into(),
             };
         };
-        if self.session_kind(id) == SessionKind::Agy {
-            return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
-        }
         let resp = self.resume_session_in(id, false, plan);
         match &resp {
             Response::Spawned { .. } => self.park(id, ticket, words, ack),
@@ -18829,17 +18946,12 @@ impl Daemon {
                     .into(),
             };
         }
-        // An agy start carries no words yet (T-1225): the board has no road
-        // into its prompt box, and a prompt on argv would be stored with the
+        // An agy start's words go by the paste road once its box is drawn
+        // (T-1233), never on argv: a prompt there would be stored with the
         // record, shown to every `ps`, and run by agy before its own folder
         // trust dialog is answered (1.5.8).
-        if kind == SessionKind::Agy {
-            if !crate::agents::agy::enabled() {
-                return Response::Err { message: AGY_SWITCHED_OFF.into() };
-            }
-            if submit_prompt {
-                return Response::Err { message: AGY_TAKES_NO_WORDS.into() };
-            }
+        if kind == SessionKind::Agy && !crate::agents::agy::enabled() {
+            return Response::Err { message: AGY_SWITCHED_OFF.into() };
         }
         // One claude per ticket (2026-09-02). Everything that has to pick
         // "the" agent of a ticket — the board's prompt, the merge notice,
@@ -18966,9 +19078,12 @@ impl Daemon {
         // own words, so neither Claude's raw mode nor its paste detection
         // nor its `<pasted_content>` wrapping (T-588) is in the way.
         let by_mod = submit_prompt && kind == SessionKind::Claude && road == Road::Mod;
-        // An agy pane gets no typed title (T-1225): keys sent before its box
-        // draws would land on its trust dialog or a startup notice.
-        if kind.is_agent() && kind != SessionKind::Agy {
+        // An agy pane is typed nothing before its box is drawn (T-1225): keys
+        // sent ahead of it land on its trust dialog. Its title goes in with
+        // the start's words (`Parked::title`), or alone, typed once the box
+        // reads empty (`prefill_agy_titles`, T-1233).
+        let agy = kind == SessionKind::Agy;
+        if kind.is_agent() {
             if let Some(title) = self
                 .board
                 .ticket(ticket)
@@ -18977,6 +19092,7 @@ impl Daemon {
             {
                 if kind == SessionKind::Codex
                     || by_mod
+                    || agy
                     || self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok()
                 {
                     // This pane's box will hold the title (T-961).
@@ -19007,7 +19123,7 @@ impl Daemon {
                         let text = prompt.unwrap_or_default();
                         let mut owed = Owed::launch(
                             ticket,
-                            Parked { text, brief: true, title: by_mod },
+                            Parked { text, brief: true, title: by_mod || agy },
                             Ack::PROMPT,
                         );
                         owed.mod_road = by_mod;
@@ -19015,7 +19131,17 @@ impl Daemon {
                         if kind == SessionKind::Claude && !by_mod {
                             owed.typed = Some(title.to_string());
                         }
+                        // agy says nothing a launch's words could wait on:
+                        // its `SessionStart` fires at the first prompt
+                        // (1.5.8). They are armed at once, and its box's
+                        // read and the composer's wait gate the paste.
+                        if agy {
+                            owed.next_press = Some(now_ms() + SUBMIT_RETRY_MS);
+                            owed.ready_by = Some(now_ms() + composer_wait_ms());
+                        }
                         self.owed.insert(id, owed);
+                    } else if agy {
+                        self.agy_prefills.insert(id, (title.clone(), now_ms()));
                     }
                 }
             }
@@ -22637,8 +22763,12 @@ fn idle_at_prompt(state: &SessionState) -> bool {
 
 /// A Claude seat the startup probe reads the screen of: on its way up, or
 /// stopped at a dialog the probe recognises.
+/// A Claude or agy seat on its way up (T-844, T-1233): its folder trust
+/// dialog is read off its screen, since no hook says it is there. agy's
+/// `StartupModal` is never set (the spawn probe is Claude's), so only its
+/// `Spawning` and `Trust` count.
 fn claude_startup_candidate(s: &SessionRecord) -> bool {
-    s.kind == SessionKind::Claude
+    crate::agents::pastes(s.kind)
         && s.state.has_pane()
         && matches!(
             s.state,

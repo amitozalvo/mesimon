@@ -27,6 +27,12 @@
 //! Enter runs the line, the box reads `❯ ` again and the line's echo and
 //! output sit above it. That empty box is the only receipt a shell line
 //! gets, since no hook fires for one (T-707).
+//!
+//! agy's box is the same shape (T-1233, measured on agy 1.5.9): a rule, the
+//! `> ` row, the rows its input wraps onto (indented two), a rule, and the
+//! footer. Its history echoes each prompt as a `> ` row under a shorter
+//! rule, so an agy box is read exactly ([`AGY`]): its two rules the same
+//! length and every row between them indented.
 
 use mesimon_backend_tmux::InputScreen;
 use mesimon_core::text::squeeze;
@@ -46,6 +52,20 @@ pub enum Composer {
 const PROMPT: char = '❯';
 /// The row's glyph in bash mode (T-876).
 const SHELL: char = '!';
+
+/// Whose box is read: the glyphs its input row opens with, and whether the
+/// box must be exact (T-1233): its two rules the same length and every row
+/// between the input row and the bottom rule indented two, as agy draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    prompts: &'static [char],
+    exact: bool,
+}
+
+/// Claude Code's box: `❯`, or `!` in bash mode.
+pub const CLAUDE: Shape = Shape { prompts: &[PROMPT, SHELL], exact: false };
+/// agy's box (1.5.9): `>`, read exactly.
+pub const AGY: Shape = Shape { prompts: &['>'], exact: true };
 const RULE: char = '─';
 /// The shortest run of `─` read as a rule. Claude draws it across the pane,
 /// so anything this short is something else.
@@ -124,7 +144,7 @@ pub fn compacting(screen: &InputScreen) -> bool {
 
 /// The row of the composer's top rule: the same composer `read` finds.
 fn composer_top(lines: &[String]) -> Option<usize> {
-    locate(lines).map(|b| b.row - 1)
+    locate(lines, CLAUDE).map(|b| b.row - 1)
 }
 
 /// The composer on a screen: its `❯` (or `!`) row, the input after the
@@ -138,11 +158,12 @@ struct Located<'a> {
 }
 
 /// The bottom-most `❯` (or, in bash mode, `!`) row with a rule directly
-/// above it and a rule somewhere below it.
-fn locate(lines: &[String]) -> Option<Located<'_>> {
+/// above it and a rule somewhere below it; for an exact shape, a bottom rule
+/// as long as the top one with only indented rows between.
+fn locate(lines: &[String], shape: Shape) -> Option<Located<'_>> {
     for (row, line) in lines.iter().enumerate().rev() {
         let body = line.trim_start();
-        let Some(rest) = body.strip_prefix(PROMPT).or_else(|| body.strip_prefix(SHELL)) else {
+        let Some(rest) = body.strip_prefix(shape.prompts) else {
             continue;
         };
         if row == 0 || !is_rule(&lines[row - 1]) {
@@ -150,6 +171,15 @@ fn locate(lines: &[String]) -> Option<Located<'_>> {
         }
         let Some(bottom) = lines[row + 1..].iter().position(|l| is_rule(l)) else { continue };
         let wrapped = &lines[row + 1..row + 1 + bottom];
+        if shape.exact {
+            let width = |l: &str| l.trim().chars().count();
+            let indented = |l: &String| l.trim().is_empty() || l.starts_with("  ");
+            if width(&lines[row - 1]) != width(&lines[row + 1 + bottom])
+                || !wrapped.iter().all(indented)
+            {
+                continue;
+            }
+        }
         return Some(Located { row, rest, wrapped, indent: line.len() - body.len() });
     }
     None
@@ -182,7 +212,12 @@ pub fn is_rule(line: &str) -> bool {
 /// bash mode, `!`) row with a rule directly above it and a rule somewhere
 /// below it.
 pub fn read(screen: &InputScreen) -> Composer {
-    locate(&screen.lines).map_or(Composer::Absent, |b| classify(screen, &b))
+    read_as(CLAUDE, screen)
+}
+
+/// [`read`] for a harness's own box shape (T-1233).
+pub fn read_as(shape: Shape, screen: &InputScreen) -> Composer {
+    locate(&screen.lines, shape).map_or(Composer::Absent, |b| classify(screen, &b))
 }
 
 /// What the located composer `b` holds.
@@ -204,7 +239,12 @@ fn classify(screen: &InputScreen, b: &Located) -> Composer {
 /// Whitespace is ignored on both sides, as a wrap's join cannot say where
 /// a space was.
 pub fn holds_only(screen: &InputScreen, words: &str) -> bool {
-    let Some(b) = locate(&screen.lines) else { return false };
+    holds_only_as(CLAUDE, screen, words)
+}
+
+/// [`holds_only`] for a harness's own box shape (T-1233).
+pub fn holds_only_as(shape: Shape, screen: &InputScreen, words: &str) -> bool {
+    let Some(b) = locate(&screen.lines, shape) else { return false };
     if classify(screen, &b) != Composer::Holding {
         return false;
     }
@@ -473,6 +513,53 @@ mod tests {
         let ran =
             format!("! echo mesimon-876-a\n  ⎿  mesimon-876-a\n⏺ echo ran.\n{}", composer("", &[]));
         assert_eq!(read(&screen(&ran, Some((2, 8)))), Composer::Empty);
+    }
+
+    /// agy 1.5.9's screens as tmux captured them at 120 columns (T-1233):
+    /// at rest under a startup notice, with the mode's placeholder and the
+    /// cursor before it; holding a two-line paste; after a turn, its prompt
+    /// echoed under a shorter rule; mid-turn, a queued message above.
+    #[test]
+    fn agy_s_box_is_read_exactly() {
+        let rule = "─".repeat(120);
+        let short = "─".repeat(60);
+        let footer = format!("? for shortcuts{}auto · Gemini 3.8 Flash · high", " ".repeat(75));
+        let rest = format!(
+            " ┃ Changes to third-party model access\n ┃ esc to dismiss\n{rule}\n> Auto mode: edits & \
+             safe commands auto-approved (shift+tab to cycle)\n{rule}\n{footer}"
+        );
+        assert_eq!(read_as(AGY, &screen(&rest, Some((2, 3)))), Composer::Empty);
+        assert_eq!(read_as(AGY, &screen(&rest, Some((40, 3)))), Composer::Holding);
+        let bare = format!("{rule}\n>\n{rule}\n{footer}");
+        assert_eq!(read_as(AGY, &screen(&bare, Some((2, 1)))), Composer::Empty);
+        let pasted = format!(
+            "{rule}\n> Say only the word PONG.\n  Second line of the brief.\n{rule}\n{}",
+            " ".repeat(90)
+        );
+        let held = screen(&pasted, Some((27, 2)));
+        assert_eq!(read_as(AGY, &held), Composer::Holding);
+        assert!(holds_only_as(AGY, &held, "Say only the word PONG.\nSecond line of the brief."));
+        assert!(!holds_only_as(AGY, &held, "Say only the word PONG."));
+        // The prompt echoed in the history is no box, with the live one
+        // gone (a dialog in its place) or under it.
+        let echo = format!("{short}\n> Say only PONG.\n▸ Thought for 5s\n  PONG\n{rule}");
+        assert_eq!(read_as(AGY, &screen(&echo, None)), Composer::Absent);
+        let terse = format!("{short}\n> hi\n  PONG\n{rule}\n");
+        assert_eq!(read_as(AGY, &screen(&terse, None)), Composer::Absent);
+        let turn = format!(
+            "{short}\n> Count.\n  1\n▸ Then say DONE. (alt+m to send immediately)\n{rule}\n>\n{rule}\n  \
+             Press up to edit queued messages"
+        );
+        assert_eq!(read_as(AGY, &screen(&turn, Some((2, 5)))), Composer::Empty);
+        // Neither harness reads the other's box.
+        assert_eq!(read(&screen(&bare, None)), Composer::Absent);
+        assert_eq!(
+            read_as(AGY, &screen(&format!("{RULE_ROW}\n❯ \n{RULE_ROW}"), None)),
+            Composer::Absent
+        );
+        // agy's trust dialog is no box.
+        let trust = "Do you trust the contents of this project?\n\n> Yes, I trust this folder\n  No, exit\n\n  ↑/↓ Navigate · enter Confirm";
+        assert_eq!(read_as(AGY, &screen(trust, None)), Composer::Absent);
     }
 
     #[test]

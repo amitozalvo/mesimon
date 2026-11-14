@@ -364,6 +364,12 @@ pub const SPEAKS: [&str; 4] = ["ping", "submit", "answer", "fill"];
 /// the composer, typed, pasted or filled.
 pub const SEND_NOW_KEYS: [&str; 2] = ["C-x", "C-s"];
 
+/// agy's send-now (1.5.9, T-1233), as a tmux key name: over words in the
+/// box of a working session ("alt+m to send immediately") it hands them to
+/// the running turn's next model call, one turn and one `Stop` for both,
+/// where an Enter queues them as a turn of their own after it.
+pub const AGY_SEND_NOW_KEY: &str = "M-m";
+
 /// A command the daemon addresses to one session's mod. Nothing here may
 /// carry words for the model to read that the person did not write (README
 /// promise 3): a `submit`'s text is a person's prompt or the brief they

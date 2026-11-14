@@ -47,13 +47,13 @@ impl AgentProvider {
     }
 
     /// The CLI has a send-now key (T-601, T-685): Claude Code's Ctrl+X
-    /// Ctrl+S, which puts the composer's words in front of a WORKING agent
-    /// mid-turn. Codex has none, so `immediately` there is a plain paste at
-    /// best and is refused instead.
+    /// Ctrl+S and agy's alt+m (T-1233), which put the box's words in front
+    /// of a WORKING agent mid-turn. Codex has none, so `immediately` there
+    /// is a plain paste at best and is refused instead.
     pub fn has_send_now(self) -> bool {
         match self {
-            Self::ClaudeCode => true,
-            Self::Codex | Self::Agy => false,
+            Self::ClaudeCode | Self::Agy => true,
+            Self::Codex => false,
         }
     }
 }
@@ -431,6 +431,12 @@ pub struct SessionRecord {
     /// record without one hosts no conversation to resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agy_conversation_id: Option<String>,
+    /// agy's running turn has had its `Stop` (T-1233): its title feed's
+    /// `idle` that follows is that turn's end, and one with no `Stop` before
+    /// it is an Esc, which fires none. Ephemeral: a restart reads the seat
+    /// afresh from its feed.
+    #[serde(skip)]
+    pub agy_turn_stopped: bool,
     /// Identity of the owned Codex runtime process. A launch chooses a fresh
     /// generation, so an old supervisor cannot overwrite its replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -749,6 +755,7 @@ impl SessionRecord {
             native: false,
             codex_thread_id: None,
             agy_conversation_id: None,
+            agy_turn_stopped: false,
             codex_generation: None,
             codex_observed_seq: 0,
             codex_pending_seq: None,
@@ -4624,7 +4631,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&SessionKind::Agy).unwrap(), "\"agy\"");
         assert_eq!(Agy.session_kind(), SessionKind::Agy);
         assert_eq!(SessionKind::Agy.provider(), Some(Agy));
-        assert!(SessionKind::Agy.is_agent() && !Agy.has_send_now());
+        assert!(SessionKind::Agy.is_agent() && Agy.has_send_now());
     }
 
     #[test]

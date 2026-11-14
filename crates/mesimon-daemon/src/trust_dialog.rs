@@ -27,6 +27,9 @@
 //! `Trust this folder?` with `› 1. Trust and continue` and `2. Quit`
 //! (0.163, the fixtures in `agents::codex`); 0.166 offers `Back to Agent
 //! Command Center` instead of `Quit` (T-1169, the live capture in `tui::live`).
+//! agy's (1.5.9, T-1233) is `Do you trust the contents of this project?`
+//! under `Accessing workspace:` and the folder, with `> Yes, I trust this
+//! folder` and `No, exit`, unnumbered, the cursor `>` opening on Yes.
 
 use mesimon_backend_tmux::InputScreen;
 
@@ -81,6 +84,9 @@ const CLAUDE_YES: &str = "Yes, I trust this folder";
 const CLAUDE_NO: &[&str] = &["No, exit", "No, continue without these permissions"];
 const CLAUDE_HEADINGS: &[&str] =
     &["Quick safety check", "Do you trust the files in this folder", "Accessing workspace:"];
+const AGY_HEADING: &str = "Do you trust the contents of this project?";
+const AGY_YES: &str = "Yes, I trust this folder";
+const AGY_NO: &[&str] = &["No, exit"];
 const CODEX_HEADING: &str = "Trust this folder?";
 const CODEX_YES: &str = "Trust and continue";
 const CODEX_NO: &[&str] = &["Quit", "Back to Agent Command Center"];
@@ -92,10 +98,28 @@ fn row(line: &str) -> (bool, &str) {
     (selected, label)
 }
 
+/// A row of agy's menu: its marker is `>`, and its rows carry no number.
+fn agy_row(line: &str) -> (bool, &str) {
+    let line = line.trim();
+    match line.strip_prefix('>') {
+        Some(rest) => (true, rest.trim()),
+        None => (false, line),
+    }
+}
+
 /// The two rows of a dialog, Yes and No, by their exact labels: their
 /// order, and which one is selected. `None` unless both are on screen as
 /// whole rows and at most one carries the marker.
 fn rows(lines: &[&str], yes: &str, no: &[&str]) -> Option<(bool, Selected)> {
+    rows_by(lines, yes, no, row)
+}
+
+fn rows_by(
+    lines: &[&str],
+    yes: &str,
+    no: &[&str],
+    row: fn(&str) -> (bool, &str),
+) -> Option<(bool, Selected)> {
     let mut yes_at = None;
     let mut no_at = None;
     let mut selected = Selected::Unknown;
@@ -148,7 +172,21 @@ pub fn codex(lines: &[&str]) -> Option<Dialog> {
     Some(Dialog { selected, yes_first, folder: None })
 }
 
-/// Either harness's dialog, off a captured screen.
+/// agy's folder trust dialog (1.5.9). The folder under `Accessing
+/// workspace:` wraps at the pane's edge, so its rows are joined up to the
+/// heading.
+pub fn agy(lines: &[&str]) -> Option<Dialog> {
+    let heading = lines.iter().position(|l| l.trim() == AGY_HEADING)?;
+    let (yes_first, selected) = rows_by(&lines[heading..], AGY_YES, AGY_NO, agy_row)?;
+    let folder = lines[..heading]
+        .iter()
+        .position(|l| l.trim() == "Accessing workspace:")
+        .map(|at| lines[at + 1..heading].iter().map(|l| l.trim()).collect::<String>())
+        .filter(|f| !f.is_empty());
+    Some(Dialog { selected, yes_first, folder })
+}
+
+/// Any harness's dialog, off a captured screen.
 pub fn read(screen: &InputScreen) -> Option<Dialog> {
     let lines: Vec<&str> = screen.lines.iter().map(String::as_str).collect();
     read_lines(&lines)
@@ -160,8 +198,10 @@ pub fn read_text(screen: &str) -> Option<Dialog> {
     read_lines(&lines)
 }
 
+/// agy's is read first: it shares Claude Code's `Accessing workspace:`
+/// heading and its row labels, under another marker.
 fn read_lines(lines: &[&str]) -> Option<Dialog> {
-    claude(lines).or_else(|| codex(lines))
+    agy(lines).or_else(|| claude(lines)).or_else(|| codex(lines))
 }
 
 #[cfg(test)]
@@ -296,6 +336,47 @@ mod tests {
             screen.replace("Trust this folder?", "Hooks need review"),
         ] {
             assert_eq!(read_text(&bad), None, "{bad}");
+        }
+    }
+
+    /// agy 1.5.9's dialog as tmux captured it at 120 columns, the folder
+    /// wrapped at the edge.
+    const AGY: &str = "\
+Accessing workspace:
+
+/private/tmp/claude-501/-Users-me-worktrees-T-1233-agy-words-into-its-
+pane-paste/scratchpad/untrusted
+
+Do you trust the contents of this project?
+
+Antigravity CLI requires permission to read, edit, and execute files here.
+
+> Yes, I trust this folder
+  No, exit
+
+  ↑/↓ Navigate · enter Confirm
+                                                    auto · Gemini 3.8 Flash · high
+";
+
+    #[test]
+    fn agy_opens_on_yes_and_an_up_reaches_it_from_no() {
+        let d = read_text(AGY).expect("the dialog");
+        assert_eq!(d.selected, Selected::Yes);
+        assert!(d.yes_first);
+        assert_eq!(
+            d.folder.as_deref(),
+            Some("/private/tmp/claude-501/-Users-me-worktrees-T-1233-agy-words-into-its-pane-paste/scratchpad/untrusted")
+        );
+        assert_eq!(d.toward_yes(), Some(Step::Enter));
+        let moved = AGY.replace("> Yes,", "  Yes,").replace("  No, exit", "> No, exit");
+        assert_eq!(read_text(&moved).and_then(|d| d.toward_yes()), Some(Step::Up));
+        for bad in [
+            AGY.replace("> Yes,", "  Yes,"),
+            AGY.replace("  No, exit", "> No, exit"),
+            AGY.replace("  No, exit\n", ""),
+            AGY.replace("Do you trust the contents of this project?", "Trust it?"),
+        ] {
+            assert_eq!(read_text(&bad).and_then(|d| d.toward_yes()), None, "{bad}");
         }
     }
 

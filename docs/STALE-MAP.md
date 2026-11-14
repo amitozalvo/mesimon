@@ -44992,3 +44992,75 @@ under the cursor); the three table goldens reminted (the `▋` in the first cell
 A group header under the cursor (or under its rename) wore the cursor's bar as a whole painted
 cell; it goes through `tags::thin_bar` as the rows' bars do, `▋` in the cursor bar's colour.
 Checks: `cargo ut`; `a_table_header_under_the_cursor_wears_the_thin_bar`.
+
+## agy takes words by its box: the paste road, its trust dialog, alt+m and Esc (T-1233, 2026-11-14, ticket 3 of T-1225's plan; the author on send-now: "Yes, by alt+m")
+
+**What changed.** `AGY_TAKES_NO_WORDS` is gone: an agy start with words, its title alone, a wake
+with words, a resend, an ask into a live pane and the crown's wake all take the paste road
+Claude's hook set takes (`agents::pastes`): bracketed paste into agy's box, then a separate
+Enter, acked by the first `PreInvocation` (`UserPromptSubmit`). Nothing rides argv.
+- **The box** is Claude's composer reader with agy's shape (`claude::composer::AGY`, read by
+  kind through `agents::read_box`): `>` for `❯`, and read exactly (both rules one length, only
+  indented rows between), because agy echoes each prompt in its history as a `> ` row under a
+  shorter rule.
+- **Arming.** agy's `SessionStart` fires at the first prompt, so no edge arms launch words: a
+  start's, a wake's (`park`) and a resend's are armed at birth, gated by the box read and the
+  composer's wait, held while the seat reads TRUST.
+- **A plain start's title** waits for a sample showing the box empty (`agy_prefills`,
+  `prefill_agy_titles`), typed with no Enter; a box holding words drops it. A fresh wake's too.
+  A start with words pastes the title with them (`Parked::title`).
+- **The trust dialog** (`trust_dialog::agy`, read before Claude's: same `Accessing workspace:`
+  heading and row labels, `>` marker) reads TRUST through the startup probe, which now takes agy
+  seats, and the board's and the phone's accept walk it.
+- **The clear is Ctrl+U** (`clear_box`): agy reads Ctrl+C as the first of the two that exit it.
+- **`immediately` is alt+m** (`road::AGY_SEND_NOW_KEY`; `has_send_now` is true for agy).
+- **Mid-turn words** (an Enter queues them, alt+m hands them over) are acked by the box reading
+  empty after the key (`screen_acked`): agy fires no `PreInvocation` for them while the turn runs.
+- **Esc** is read off the title feed: an `idle` on a running or asking turn with no `Stop` heard
+  since its last `PreInvocation` (`SessionRecord::agy_turn_stopped`, `#[serde(skip)]`) is
+  `TurnEnded{Interrupted}`.
+
+**Measured on agy 1.5.9, on this machine** (one past the ticket's 1.5.8).
+- The box at rest: a full-width rule, `> ` and the mode's placeholder with the cursor at column 2,
+  a rule, `? for shortcuts`. A startup notice ("esc to dismiss") sits above it and takes no keys:
+  typing and an Enter go to the box under it, and the first submit dismisses it.
+- Bracketed paste of two lines stays in the box, wrapped rows indented two; a separate Enter
+  submits. `PreInvocation` arrives ~20 ms after the Enter, with `lastUserInput` the words.
+- **Ctrl+C does not clear the box**: "press ctrl+c again to exit". Ctrl+U clears the line.
+- **Esc fires no `Stop`** (the ticket asked whether `USER_CANCELED` fires: it did not). The pane
+  says "Interrupted · What should Antigravity CLI do instead?" and the feed goes `idle`.
+- A completed turn's `Stop` lands ~290 ms before the feed's `idle`, inside the attention
+  machine's 1500 ms leave settle.
+- An Enter mid-turn queues the words (`▸ … (alt+m to send immediately)`); they run after the
+  `Stop` as a turn of their own, `invocationNum: 0`. alt+m ("Sending to agent...") hands them to
+  the running turn's next model call: one turn, one `Stop`, no `invocationNum: 0`.
+- The trust dialog: `Accessing workspace:`, the folder (wrapped at the pane's edge), `Do you
+  trust the contents of this project?`, `> Yes, I trust this folder` / `No, exit`, `↑/↓ Navigate
+  · enter Confirm`, cursor on Yes. Answering `No, exit` left the person's `settings.json` as it was.
+
+**Refuted.**
+- "Esc's end is `Stop{USER_CANCELED}`": not on 1.5.9.
+- "Read an `idle` under `Running` by the machine's `StatusFileIdle` rule (never over a pending
+  leave)": it is an inferred signal, and the flap pin dropped it after a busy minute in the e2e;
+  agy's feed states the idle, so the end is stated, and the `Stop` flag tells the two apart.
+- "The state alone says a `Stop` came": the record reads `Running` until the leave settles, and
+  the first cut read every completed turn as interrupted.
+- "Clear with Ctrl+C, as Claude's": arms agy's exit.
+
+**Known gaps.** A daemon restart forgets the `Stop` flag: an `idle` in the first turn after one
+is read as the feed re-deriving the seat, never an interrupt. A `Stop` with `fullyIdle: false`
+followed by an `idle` reads as interrupted (background tasks were not measured). Whether `!`
+opens a shell mode in agy's box was not measured: a `!` line takes Claude's command rules.
+
+**Checks.** `cargo ut`; unit tests `agy_s_box_is_read_exactly`,
+`agy_opens_on_yes_and_an_up_reaches_it_from_no`, `an_idle_report_with_no_stop_before_it_is_the_interrupt`;
+`agy_e2e::` (3 passed) against a stand-in rewritten as a raw-mode TUI that paints the box and the
+dialog: a start with words, a confirmation, a live prompt, a queued one, alt+m, Esc, a park and
+a wake with words; a dialog the board accepts and a title prefilled. Two reds on the way, each
+fixed, no reruns of a red: Esc read as the interrupt of every completed turn (above), then
+dropped by the flap pin (above). `prompt_e2e::`, `trust_accept_e2e::` and `spawn_ready_e2e::`
+for the Claude road the change runs through. One live run on real agy 1.5.9 through the board
+in a scratch checkout, trusted by the session's own settings: the start's title, a live prompt,
+an Esc, an alt+m and a wake with words, each acked; the wake's agy recalled the first turn's
+answer. No rig run: agy has no rig yet, and what Claude, Codex or a crown is told did not change.
+The full workspace suite is owed once after the merge (`server.rs`).

@@ -21,9 +21,12 @@
 //! reaches them through its own `call_mcp_tool`, after reading a schema file
 //! it keeps under its home, never as native tools.
 //!
-//! Not built yet, each its own ticket: words into the pane (the paste road,
-//! the trust dialog), approvals and plan mode from the board, the transcript
-//! reader, cost and quota.
+//! Words go into the pane by the paste road Claude's hook set takes
+//! (T-1233): bracketed paste into agy's box (`claude::composer::AGY`), then
+//! a separate Enter, acked by the first `PreInvocation`.
+//!
+//! Not built yet, each its own ticket: approvals and plan mode from the
+//! board, the transcript reader, cost and quota.
 
 use std::path::{Path, PathBuf};
 
@@ -314,9 +317,14 @@ fn stop_signal(payload: &Value) -> Option<Signal> {
 /// What a title report says, against the state the record holds. A pending
 /// confirmation is agy asking the person; its answer shows as the agent at
 /// work again. `idle` is the prompt box of a pane that just came up (agy's
-/// `SessionStart` waits for the first prompt), and never the end of a turn:
-/// that is `Stop`'s to say.
-fn title_signal(payload: &Value, state: &SessionState) -> Option<Signal> {
+/// `SessionStart` waits for the first prompt). A turn's end is `Stop`'s to
+/// say, but for one: **an Esc fires no `Stop`** (1.5.9, T-1233: the turn
+/// cut, "Interrupted" on screen, and the feed alone going `idle`), so an
+/// `idle` on a running or asking turn that had no `Stop` (`stopped`) is that
+/// interrupt. A completed turn's `Stop` comes ~300 ms ahead of its `idle`
+/// (measured), inside the leave's settle, so the record still reads the turn
+/// running then: the flag, not the state, says the end was stated.
+fn title_signal(payload: &Value, state: &SessionState, stopped: bool) -> Option<Signal> {
     if payload.get("tool_confirmation_pending").and_then(Value::as_bool) == Some(true) {
         return Some(Signal::Attention { reason: Reason::Permission });
     }
@@ -328,8 +336,12 @@ fn title_signal(payload: &Value, state: &SessionState) -> Option<Signal> {
             }
     );
     let asked = matches!(state, SessionState::RequiresAction { reason: Reason::Permission });
+    let turning = *state == SessionState::Running || asked;
     match payload.get("agent_state").and_then(Value::as_str)? {
         "idle" | "reviewing" if coming_up => Some(Signal::Ready),
+        "idle" if turning && !stopped => {
+            Some(Signal::TurnEnded { outcome: TurnOutcome::Interrupted })
+        }
         "working" | "thinking" | "tool_use" if coming_up || asked => Some(Signal::TurnStarted),
         _ => None,
     }
@@ -366,11 +378,13 @@ impl AgentAdapter for Agy {
             // one is the same turn going on.
             PRE_INVOCATION => {
                 let first = payload.get("invocationNum").and_then(Value::as_u64).unwrap_or(0) == 0;
+                record.agy_turn_stopped = false;
                 result.signal =
                     Some(if first { Signal::UserPromptSubmit } else { Signal::TurnStarted });
             }
             STOP => {
                 result.signal = stop_signal(payload);
+                record.agy_turn_stopped = result.signal.is_some();
                 if matches!(
                     result.signal,
                     Some(Signal::TurnEnded { outcome: TurnOutcome::Failed(_) })
@@ -386,7 +400,7 @@ impl AgentAdapter for Agy {
                         );
                 }
             }
-            TITLE => result.signal = title_signal(payload, &record.state),
+            TITLE => result.signal = title_signal(payload, &record.state, record.agy_turn_stopped),
             _ => {}
         }
         result
@@ -546,6 +560,46 @@ mod tests {
         // The idle report that follows a stop never restates the turn's end.
         rec.state = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         assert_eq!(Agy.parse_hook(&title("idle", false), &mut rec).signal, None);
+    }
+
+    /// An Esc mid-turn (1.5.9, T-1233): no `Stop`, the feed goes `working`
+    /// then `idle`. That idle, on a running or asking turn, is the
+    /// interrupt; behind the turn's `Stop`, whose leave is still settling
+    /// while the record reads `Running`, it says nothing.
+    #[test]
+    fn an_idle_report_with_no_stop_before_it_is_the_interrupt() {
+        use mesimon_core::board::StopReason;
+        let idle = frame(TITLE, json!({"agent_state": "idle", "conversation_id": ID}));
+        let invoked = frame(PRE_INVOCATION, json!({"invocationNum": 0}));
+        let interrupted = Some(Signal::TurnEnded { outcome: TurnOutcome::Interrupted });
+        let mut rec = record(SessionState::Running);
+        let _ = Agy.parse_hook(&invoked, &mut rec);
+        assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, interrupted);
+        rec.state = SessionState::RequiresAction { reason: Reason::Permission };
+        assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, interrupted);
+        // A completed turn: its `Stop`, then the idle, the record still
+        // `Running` inside the settle.
+        rec.state = SessionState::Running;
+        let stop = frame(STOP, json!({"terminationReason": "NO_TOOL_CALL", "fullyIdle": true}));
+        assert!(Agy.parse_hook(&stop, &mut rec).signal.is_some());
+        assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, None);
+        // A stop that ends nothing (background tasks) states no end.
+        let busy = frame(STOP, json!({"terminationReason": "NO_TOOL_CALL", "fullyIdle": false}));
+        let _ = Agy.parse_hook(&invoked, &mut rec);
+        let _ = Agy.parse_hook(&busy, &mut rec);
+        assert!(!rec.agy_turn_stopped);
+        // The next turn's first call clears the stop: its Esc is read again.
+        let _ = Agy.parse_hook(&stop, &mut rec);
+        let _ = Agy.parse_hook(&invoked, &mut rec);
+        assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, interrupted);
+        // Not on a seat at its trust dialog, nor one idle.
+        for state in [
+            SessionState::RequiresAction { reason: Reason::Trust },
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        ] {
+            rec.state = state;
+            assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, None);
+        }
     }
 
     #[test]

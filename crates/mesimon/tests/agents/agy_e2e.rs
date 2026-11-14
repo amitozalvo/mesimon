@@ -1,7 +1,8 @@
-//! T-1225: an agy session through the real daemon, with a stand-in for agy
-//! that runs the hooks and the title command the launch registered, and
-//! (T-1232) dials the board's server as agy does. What agy itself does with
-//! them was measured on 1.5.8 and 1.5.9 (STALE-MAP, T-1225 and T-1232).
+//! T-1225, T-1232, T-1233: an agy session through the real daemon, with a
+//! stand-in for agy that paints its box and its trust dialog, takes its
+//! keys, runs the hooks and the title command the launch registered, and
+//! dials the board's server as agy does. What agy itself does was measured
+//! on 1.5.8 and 1.5.9 (STALE-MAP, T-1225, T-1232, T-1233).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::common::*;
@@ -25,8 +26,10 @@ struct Bed {
 }
 
 impl Bed {
-    /// A daemon whose `agy` is the stand-in. `on` is the switch.
-    fn boot(name: &str, on: bool) -> Option<Self> {
+    /// A daemon whose `agy` is the stand-in. `on` is the switch; `trusted`
+    /// writes the person's own agy settings naming the checkout, so no
+    /// dialog stands at a start there.
+    fn boot(name: &str, on: bool, trusted: bool) -> Option<Self> {
         if !require_tmux() {
             return None;
         }
@@ -37,8 +40,14 @@ impl Bed {
         std::fs::write(&fake, FAKE_AGY).unwrap();
         std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
+        let home = owner.dir.join("agy-home");
+        if trusted {
+            std::fs::create_dir_all(&home).unwrap();
+            let list = serde_json::json!({ "trustedWorkspaces": [repo.display().to_string()] });
+            std::fs::write(home.join("settings.json"), list.to_string()).unwrap();
+        }
         owner.set_env("MESIMON_AGY_BIN", &fake);
-        owner.set_env("MESIMON_AGY_HOME", owner.dir.join("agy-home"));
+        owner.set_env("MESIMON_AGY_HOME", &home);
         owner.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
         owner.set_env("MESIMON_PANE_QUIET_MS", "600000");
         if on {
@@ -58,23 +67,52 @@ impl Bed {
 
     /// What the hooks printed, one `(event, stdout)` per handler that did.
     fn printed(&self) -> Vec<(String, String)> {
-        std::fs::read_to_string(self.owner.dir.join("agy-stdout.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| {
-                let v: serde_json::Value = serde_json::from_str(line).unwrap();
-                (v["event"].as_str().unwrap().into(), v["stdout"].as_str().unwrap().into())
-            })
+        self.jsonl::<serde_json::Value>("agy-stdout.jsonl")
+            .into_iter()
+            .map(|v| (v["event"].as_str().unwrap().into(), v["stdout"].as_str().unwrap().into()))
             .collect()
     }
 
     /// Every argv the stand-in was started with, in order.
     fn launches(&self) -> Vec<Vec<String>> {
-        std::fs::read_to_string(self.owner.dir.join("agy-argv.jsonl"))
+        self.jsonl("agy-argv.jsonl")
+    }
+
+    /// Every prompt the stand-in ran, as `(how, text)`: a `turn` its box
+    /// submitted, a `queued` one run after a turn's `Stop`, a `steer` its
+    /// alt+m handed to a running turn.
+    fn prompts(&self) -> Vec<(String, String)> {
+        self.jsonl::<serde_json::Value>("agy-prompts.jsonl")
+            .into_iter()
+            .map(|v| (v["how"].as_str().unwrap().into(), v["text"].as_str().unwrap().into()))
+            .collect()
+    }
+
+    fn jsonl<T: serde::de::DeserializeOwned>(&self, name: &str) -> Vec<T> {
+        std::fs::read_to_string(self.owner.dir.join(name))
             .unwrap_or_default()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    fn await_prompt(&self, n: usize, how: &str, text: &str) {
+        wait_until(Duration::from_secs(15), &format!("prompt {n}: {how} {text:?}"), || {
+            self.prompts().get(n).is_some_and(|(h, t)| h == how && t == text)
+        });
+    }
+
+    /// What the stand-in's box holds.
+    fn box_text(&self) -> String {
+        std::fs::read_to_string(self.owner.dir.join("agy-box.txt")).unwrap_or_default()
+    }
+
+    fn keys(&self, rec: &SessionRecord, keys: &[&str]) {
+        tmux(&self.paths.tmux_sock())
+            .args(["send-keys", "-t", &rec.sid16()])
+            .args(keys)
+            .output()
+            .unwrap();
     }
 }
 
@@ -102,47 +140,48 @@ fn pair<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
     argv.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
 }
 
-/// A start, a turn with a confirmation in it, a park and a wake: the seat's
-/// state follows agy's own reports, the conversation it minted is the one
-/// the wake names, and nothing is written into the checkout.
-#[test]
-fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
-    let Some(bed) = Bed::boot("agy-turn", true) else { return };
-    let mut c = TestClient::connect(&bed.paths.orch_sock());
-    // The board's provider is agy's built-in tier.
+fn agy_board(c: &mut TestClient) {
     assert!(matches!(
         c.request(Command::SetAgentProvider { provider: AgentProvider::Agy }),
         Response::Ok
     ));
     assert_eq!(c.board().agent_provider, AgentProvider::Agy);
+}
+
+/// A start that carries words, a turn with a confirmation in it, words into
+/// the live box at rest and mid-turn (queued, and handed over by alt+m), an
+/// Esc, a park and a wake with words: every prompt goes in by the box, the
+/// seat's state follows agy's own reports, and the wake names the
+/// conversation agy minted. Nothing is written into the checkout.
+#[test]
+fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
+    let Some(bed) = Bed::boot("agy-turn", true, true) else { return };
+    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    agy_board(&mut c);
     // The board's tools and the brief, both on (T-1232).
     assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
     assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
-    let t = ticket(&mut c, "Teach the parser a new word");
+    let title = "Teach the parser a new word";
+    let t = ticket(&mut c, title);
 
-    // A start that carries words is refused before any pane: the board has
-    // no road into agy's prompt box yet.
-    err_containing(start(&mut c, t, true), "takes no words");
-    assert!(bed.launches().is_empty(), "nothing launched for the refused start");
-
-    let id = match start(&mut c, t, false) {
+    // The start's words are the title, pasted into the box once it draws.
+    let id = match start(&mut c, t, true) {
         Response::Spawned { id, .. } => id,
         response => panic!("start: {response:?}"),
     };
-    // The prompt box agy's title feed reports is the seat coming up.
-    c.await_state(id, "agy at its prompt", |s| matches!(s, SessionState::Idle { .. }));
-    let rec = session(&mut c, id);
-    assert_eq!(rec.kind, SessionKind::Agy);
-    assert_eq!(rec.agy_conversation_id, None, "agy mints its conversation at the first prompt");
-    assert_eq!(rec.typed_title, None, "no title is typed into an agy pane");
+    bed.await_prompt(0, "turn", title);
+    c.await_state(id, "agy working", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(5), "the conversation id", || {
+        session(&mut c, id).agy_conversation_id.as_deref() == Some(MINTED)
+    });
     let launched = bed.launches();
     assert_eq!(launched.len(), 1, "{launched:?}");
+    assert!(!launched[0].iter().any(|a| a.contains(title)), "no words on argv: {launched:?}");
+    assert!(!launched[0].iter().any(|a| a.starts_with("--prompt")), "{launched:?}");
     let folder = PathBuf::from(pair(&launched[0], "--add-dir")[0]);
-    let settings = PathBuf::from(pair(&launched[0], "--settings")[0]);
     assert!(folder.starts_with(&bed.paths.state_dir), "{folder:?}");
-    assert!(settings.starts_with(&bed.paths.state_dir), "{settings:?}");
-    assert!(pair(&launched[0], "--conversation").is_empty(), "{launched:?}");
     assert!(!launched[0].iter().any(|a| a.contains("dangerously")), "{launched:?}");
+    let settings = PathBuf::from(pair(&launched[0], "--settings")[0]);
 
     // The board's server beside the hooks, on this board's socket and this
     // session, and one allow rule for its tools (T-1232).
@@ -170,12 +209,6 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
     let tools = mcp["tools/list"]["result"]["tools"].as_array().expect("tools/list");
     assert!(tools.iter().any(|t| t["name"] == "get_ticket"), "{mcp}");
 
-    // The first model call is the prompt taken, and names the conversation.
-    bed.cue("prompt");
-    c.await_state(id, "agy working", |s| *s == SessionState::Running);
-    wait_until(Duration::from_secs(5), "the conversation id", || {
-        session(&mut c, id).agy_conversation_id.as_deref() == Some(MINTED)
-    });
     // A pending confirmation asks the person; its answer is work again.
     bed.cue("ask");
     c.await_state(id, "agy asking", |s| {
@@ -188,23 +221,57 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
         *s == (SessionState::Idle { stop_reason: StopReason::EndTurn })
     });
 
-    // Words for the live pane are refused, not typed.
-    err_containing(c.prompt(t, "and now the tests"), "takes no words");
+    // Words for the live pane at rest: a turn of their own.
+    assert!(matches!(c.prompt(t, "and now the tests"), Response::Ok));
+    bed.await_prompt(1, "turn", "and now the tests");
+    c.await_state(id, "agy on the asked turn", |s| *s == SessionState::Running);
 
-    // Park and wake: the same folder and file, and agy's own conversation.
+    // Mid-turn, an Enter queues them under the turn: agy runs them after
+    // its `Stop`, and the box reading empty was their receipt.
+    assert!(matches!(c.prompt(t, "then the docs"), Response::Ok));
+    wait_until(Duration::from_secs(10), "the words queued", || bed.box_text().is_empty());
+    assert_eq!(bed.prompts().len(), 2, "nothing ran yet: {:?}", bed.prompts());
+    bed.cue("stop");
+    bed.await_prompt(2, "queued", "then the docs");
+    c.await_state(id, "agy on the queued turn", |s| *s == SessionState::Running);
+
+    // `immediately` is agy's alt+m: the running turn takes the words.
+    let now = Command::PromptSession {
+        ticket: t,
+        text: "look at the tests first".into(),
+        queued: false,
+        immediately: true,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: Vec::new(),
+    };
+    assert!(matches!(c.request(now), Response::Ok));
+    bed.await_prompt(3, "steer", "look at the tests first");
+
+    // An Esc fires no `Stop`: the feed's idle under a running turn ends it.
+    let rec = session(&mut c, id);
+    bed.keys(&rec, &["Escape"]);
+    c.await_state(id, "agy interrupted", |s| {
+        *s == (SessionState::Idle { stop_reason: StopReason::Interrupted })
+    });
+
+    // Park, and wake with words: agy's own conversation, the words by the box.
     assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
     c.await_state(id, "parked", |s| matches!(s, SessionState::Sleeping));
-    err_containing(c.prompt(t, "wake up and go"), "takes no words");
-    assert!(matches!(c.request(Command::WakeSession { id }), Response::Spawned { .. }));
+    assert!(!matches!(c.prompt(t, "wake up and go"), Response::Err { .. }));
     wait_until(Duration::from_secs(10), "the wake's launch", || bed.launches().len() == 2);
     let woke = &bed.launches()[1];
     assert_eq!(pair(woke, "--conversation"), [MINTED]);
     assert_eq!(pair(woke, "--add-dir"), [folder.to_str().unwrap()]);
-    c.await_state(id, "agy back at its prompt", |s| matches!(s, SessionState::Idle { .. }));
+    bed.await_prompt(4, "turn", "wake up and go");
+    c.await_state(id, "agy on the wake's turn", |s| *s == SessionState::Running);
 
-    // One handler printed, once: the brief's, on the one `SessionStart` (a
-    // wake has none), as agy's system message. No reporter printed a byte:
-    // an empty object on a tool hook is agy's refusal of the call.
+    // One handler printed, once: the brief's, on the one `SessionStart` (the
+    // first prompt's; a wake has none), as agy's system message. No reporter
+    // printed a byte: an empty object on a tool hook is agy's refusal of the
+    // call.
     let printed = bed.printed();
     assert_eq!(printed.len(), 1, "{printed:?}");
     assert_eq!(printed[0].0, "SessionStart");
@@ -216,13 +283,46 @@ fn an_agy_seat_follows_its_hooks_and_wakes_into_its_conversation() {
     );
     // Nothing of mesimon's is in the checkout or in agy's own folder.
     assert!(!Path::new(&bed.repo).join(".agents").exists());
-    assert!(!bed.owner.dir.join("agy-home").exists());
+    let home: Vec<_> = std::fs::read_dir(bed.owner.dir.join("agy-home"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(home, ["settings.json"], "agy's own folder holds the person's file alone");
+}
+
+/// A folder the person never trusted gets agy's own dialog: the seat reads
+/// TRUST, the board's accept walks it (Enter on its `> Yes` row), and a
+/// plain start's title is typed into the box once it draws, never sent.
+#[test]
+fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
+    let Some(bed) = Bed::boot("agy-trust", true, false) else { return };
+    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    agy_board(&mut c);
+    let title = "Rename the flag";
+    let t = ticket(&mut c, title);
+    let id = match start(&mut c, t, false) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("start: {response:?}"),
+    };
+    c.await_state(id, "agy at its trust dialog", |s| {
+        *s == (SessionState::RequiresAction { reason: Reason::Trust })
+    });
+    assert_eq!(bed.box_text(), "", "nothing typed into the dialog");
+    assert!(matches!(c.request(Command::AcceptTrust { ticket: t }), Response::Ok));
+    c.await_state(id, "agy at its prompt", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(10), "the title in the box", || {
+        bed.box_text() == format!("{title} ")
+    });
+    assert_eq!(session(&mut c, id).typed_title.as_deref(), Some(title));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(bed.prompts().is_empty(), "the title is the person's to send: {:?}", bed.prompts());
+    assert!(bed.printed().is_empty(), "{:?}", bed.printed());
 }
 
 /// Without its switch nothing of agy's starts, whatever names it.
 #[test]
 fn agy_starts_nowhere_without_its_switch() {
-    let Some(bed) = Bed::boot("agy-off", false) else { return };
+    let Some(bed) = Bed::boot("agy-off", false, false) else { return };
     let mut c = TestClient::connect(&bed.paths.orch_sock());
     // A board may name agy all the same: a start's kind follows its tier.
     assert!(matches!(
