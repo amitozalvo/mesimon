@@ -45683,3 +45683,36 @@ drop the wheel.
 
 Test: `ui::tests::the_wheel_scrolls_the_preview_while_asking` (offset 0 → 3 → 0, field open; a
 wheel on the rail leaves `rail_idx`). Run: `cargo ut`. TUI-only, no e2e reaches it.
+
+## A Monitor's watch is no hook child either: the listed command is matched in runs (T-1259 follow-up, 2026-11-15, the author: "also monitor prevents it from being woken")
+
+**Seen**, same crown, on the daemon that already had the quote fix (`started … exe mtime` after
+the build): `async_hook_wait` `2 unaccounted child processes` at every `Stop` while a Monitor
+watch ran, the card `crown wakes ∙ after its turn`, eight wakes waiting.
+
+- The watch was a shell loop with a Python script on lines of its own. `ps` writes a newline in
+  argv as `\012` (macOS), so the listed command was not a substring of argv, quotes undone or not.
+- Read off the 2.1.325 binary, the `Stop`'s row builder: a `local_bash` task (a background
+  command and the Monitor tool's watch alike) carries `command`, **capped at 1000 characters, a
+  clipped one ending `… [+N chars]`**. A longer command could never have matched either.
+
+**Shipped.**
+- `asynchooks::on_argv`: the listed command's runs of printable ASCII, the cap's marker dropped,
+  are found on argv in order (plain, and with `'"'"'` read as `'`). Whatever `ps` writes for a
+  newline, a tab or a non-ASCII letter, the runs between are verbatim. A command of no run names
+  nothing.
+- **The native road's Monitor row carries its `command`** (`register.ts::taskStarted`). It held
+  only a description, so on that road no watch could be matched at all. Only the hold reads a
+  row's `command`.
+
+**Refuted: counting a row without matching it** (one listed shell forgives one child). A real
+async hook beside a watch would be forgiven in its place.
+
+**Not measured:** the native road live (no Team account here; the mod's own test holds the row),
+Linux `ps` (it writes `?` for a newline; the runs rule does not care which), and a command
+clipped at the cap on a real pane (the marker is the binary's `pl`, the test's is typed).
+
+Tests: `asynchooks::a_reported_watch_on_several_lines_is_not_hook_work` (the measured argv's
+shape; the same lines in another order stay hook work),
+`a_reported_shell_clipped_at_the_cap_is_matched_by_what_was_kept`, `register.test.ts`'s native
+task-ledger case. Run: `cargo ut`, `--test agents async_hook_e2e::`, `--test mods mod_plugin::`.

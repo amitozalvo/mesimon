@@ -67,13 +67,33 @@ fn accounted(argv: &str, shells: &[String]) -> bool {
     }) {
         return true;
     }
-    // Stop carries each background shell's command. Claude's Bash wrapper
-    // keeps that command on argv, unlike the command-hook runner: inside
-    // `eval '…'`, so each `'` of the command is spelled `'"'"'` there
-    // (2.1.325, T-1259). Read past that spelling, or a command with a quote
-    // in it is hook work for the ten-minute cap.
+    // Stop carries each background shell's command, a Monitor's watch
+    // included. Claude's Bash wrapper keeps that command on argv, unlike the
+    // command-hook runner: inside `eval '…'`, so each `'` of the command is
+    // spelled `'"'"'` there (2.1.325, T-1259). Read past that spelling, or a
+    // command with a quote in it is hook work for the ten-minute cap.
     let unquoted = argv.replace(r#"'"'"'"#, "'");
-    shells.iter().any(|s| !s.is_empty() && (argv.contains(s) || unquoted.contains(s)))
+    shells.iter().any(|s| on_argv(argv, s) || on_argv(&unquoted, s))
+}
+
+/// Is this listed command the one on `argv` (T-1259)? Never the whole text
+/// at once: `ps` writes a newline or a tab its own way (`\012` on macOS),
+/// and Claude Code caps a listed command at 1000 characters and ends a
+/// clipped one `… [+N chars]`. So the command's runs of printable ASCII,
+/// the cap's marker dropped, are found on `argv` in order.
+fn on_argv(argv: &str, command: &str) -> bool {
+    let command = command
+        .rsplit_once("… [+")
+        .filter(|(_, n)| n.strip_suffix(" chars]").is_some_and(|n| n.parse::<u32>().is_ok()))
+        .map_or(command, |(kept, _)| kept);
+    let mut rest = argv;
+    let mut found = false;
+    for run in command.split(|c: char| !(' '..='~').contains(&c)).filter(|r| !r.trim().is_empty()) {
+        let Some(at) = rest.find(run) else { return false };
+        rest = &rest[at + run.len()..];
+        found = true;
+    }
+    found
 }
 
 impl Daemon {
@@ -582,6 +602,39 @@ mod tests {
         // A shell the Stop did not list stays hook work (a `!` command's, T-1140).
         assert!(!accounted(argv, &["git log -1 --format='%h'".into()]));
         assert!(!accounted(argv, &[]));
+    }
+
+    /// T-1259: a Monitor's watch as the same crown armed it, a loop with a
+    /// Python script on lines of its own. `ps` writes each newline `\012`.
+    #[test]
+    fn a_reported_watch_on_several_lines_is_not_hook_work() {
+        let command = "while true; do glab api jobs | python3 -c \"\nimport sys,json\n\
+                       d={j['name']:j['status'] for j in json.load(sys.stdin)}\n\
+                       print(d)\" || true; sleep 45; done";
+        let argv = concat!(
+            "/bin/zsh -c source /home/me/.claude/shell-snapshots/snapshot-zsh-1-a.sh ",
+            r#"2>/dev/null || true && eval 'while true; do glab api jobs | python3 -c ""#,
+            r#"\012import sys,json\012d={j['"'"'name'"'"']:j['"'"'status'"'"'] "#,
+            r#"for j in json.load(sys.stdin)}\012print(d)" || true; sleep 45; done' "#,
+            "< /dev/null && pwd -P >| /tmp/claude-8b3b-cwd",
+        );
+        assert!(accounted(argv, &[command.into()]));
+        // The same lines in another order are another command.
+        let other = "print(d)\nimport sys,json";
+        assert!(!accounted(argv, &[other.into()]));
+        // A blank command names nothing.
+        assert!(!accounted(argv, &["\n \t".into()]));
+    }
+
+    /// Claude Code lists at most 1000 characters of a command and marks the
+    /// clip (2.1.325's own schema text): the kept part is what is matched.
+    #[test]
+    fn a_reported_shell_clipped_at_the_cap_is_matched_by_what_was_kept() {
+        let argv = "/bin/zsh -c eval 'sleep 600 && echo a very long tail' < /dev/null";
+        assert!(accounted(argv, &["sleep 600 && echo a very… [+412 chars]".into()]));
+        assert!(!accounted(argv, &["sleep 700 && echo a very… [+412 chars]".into()]));
+        // Not the marker: the text is the command's own, and is not on argv.
+        assert!(!accounted(argv, &["sleep 600… [+many chars]".into()]));
     }
 
     #[test]

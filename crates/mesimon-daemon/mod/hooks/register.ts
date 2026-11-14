@@ -686,7 +686,11 @@ export function taskStarted(e: any, result: any): Row | undefined {
     case 'Monitor': {
       const id = result.taskId
       if (typeof id !== 'string') return undefined
-      return { id, type: 'shell', status: 'running', description: String(e.description ?? '') }
+      // The command rides too, as the hook set's row carries it: the
+      // daemon knows the watch's process by it (T-1259).
+      const row: Row = { id, type: 'shell', status: 'running', description: String(e.description ?? '') }
+      if (typeof e.command === 'string') row.command = e.command
+      return row
     }
     case 'Agent':
     case 'Task': {

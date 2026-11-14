@@ -1168,7 +1168,7 @@ test('native: the task ledger lists a backgrounded command on the Stop as a shel
   await $.tool.call({ tool: 'TaskStop', tool_use_id: 'tx', task_id: 'mon1' } as any)
   await $.turn.complete({ ...TURN, turnId: 't6' } as any)
   await settle()
-  expect(stops()[4]).toEqual([{ id: 'mon1', type: 'shell', status: 'running', description: 'watch x' }])
+  expect(stops()[4]).toEqual([{ id: 'mon1', type: 'shell', status: 'running', description: 'watch x', command: 'tail -f x' }])
   expect(stops()[5]).toEqual([])
   // A subagent's own backgrounded command is not the lead's work (T-483).
   await $.tool.call({ tool: 'Bash', tool_use_id: 'tb2', agentId: 'a1', command: 'sleep 9', run_in_background: true } as any)
