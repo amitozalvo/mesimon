@@ -1126,7 +1126,13 @@ async function notesFlow(browser, engineName, size, viewport) {
   // under Notes, where the bar walks the notes.
   const paneAt = () => page.evaluate(() => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane"));
   const at = (n) => until(page, (n) => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane") === String(n), n);
-  const next = async () => ((await paneAt()) === "0" ? page.locator("#tab-notes").click() : page.locator("#pane-next").click());
+  // From the transcript the Notes tab is the list (T-1208), whose first row
+  // opens the description; from a note the bar goes to the next.
+  const next = async () => {
+    if ((await paneAt()) !== "0") return page.locator("#pane-next").click();
+    await page.locator("#tab-notes").click();
+    await page.locator("#notes-list .note-row").first().click();
+  };
   const back = () => page.locator("#pane-name").click();
   const named = async () => ((await paneAt()) === "0" ? "Transcript" : page.locator("#pane-name").textContent());
   // Back to the transcript, then right until the pane named `text` is shown.
@@ -1162,6 +1168,51 @@ async function notesFlow(browser, engineName, size, viewport) {
     await at(0);
     assert.equal(await named(), "Transcript");
     assert.match(await page.locator("#tab-notes").textContent(), /Notes2/);
+    // The Notes tab is the list (T-1208): a row a note, its name, who wrote
+    // it and its first words, the desk's picture marks counted; no message
+    // box under it. A Summary's boxes lead it, and a press ticks one in the
+    // note's own text, on the revision this page read.
+    await page.locator("#tab-notes").click();
+    await page.locator("#notes-list").waitFor();
+    assert.equal(await page.locator("#tab-notes").getAttribute("aria-selected"), "true");
+    assert.deepEqual(await page.locator("#notes-list .note-row b").allTextContents(), ["Description", "Plan: retry the train"]);
+    await until(page, () => /read well on a phone/.test(document.querySelector("#notes-list .note-row")?.textContent || ""));
+    await until(page, () => /1 picture/.test(document.querySelectorAll("#notes-list .note-row")[1]?.textContent || ""));
+    assert.equal(await page.locator("#notes-list script").count(), 0);
+    assert.equal(await page.locator("#prompt").count(), 0, "the list has no message box");
+    assert.equal(await page.locator("#summary-card").count(), 0, "no Summary, no card");
+    const plain = await page.evaluate(() => {
+      const note = fixture.notes["ticket-0"][1];
+      const was = { ...note };
+      note.text += "\n\n## Summary\n- [x] Re-read the tip\n- [ ] Requeue it\n";
+      note.rev += 1;
+      fixture.stampNotes();
+      fixture.update();
+      return was;
+    });
+    await page.locator("#summary-card").waitFor();
+    assert.equal(await page.locator(".summary-count").textContent(), "1/2");
+    assert.deepEqual(await page.locator(".summary-box").evaluateAll((all) => all.map((n) => [n.textContent.trim(), n.getAttribute("aria-checked")])),
+      [["Re-read the tip", "true"], ["Requeue it", "false"]]);
+    if (size === "phone")
+      assert.deepEqual(await page.locator(".summary-box, .note-row, #list-add-note").evaluateAll((all) =>
+        all.filter((n) => n.getBoundingClientRect().height < 44).map((n) => n.textContent)), []);
+    await shot("notes-list");
+    await page.locator(".summary-box").nth(1).click();
+    await until(page, () => /- \[x\] Requeue it/.test(fixture.notes["ticket-0"][1].text));
+    await until(page, () => document.querySelector(".summary-count")?.textContent === "2/2");
+    const ticked = await page.evaluate(() => fixture.noteWrites.at(-1));
+    assert.deepEqual([ticked.note, ticked.text.includes("- [x] Re-read the tip\n- [x] Requeue it\n")], ["plan-0", true]);
+    await page.evaluate((was) => {
+      const note = fixture.notes["ticket-0"][1];
+      Object.assign(note, was);
+      fixture.noteWrites.length = 0;
+      fixture.stampNotes();
+      fixture.update();
+    }, plain);
+    await page.locator("#summary-card").waitFor({ state: "detached" });
+    await page.locator("#tab-chat, #tab-terminal").first().click();
+    await at(0);
     await swipe(page, page.locator(".panes"), -200);
     await at(1);
     assert.match(await named(), /Description/);
@@ -2811,6 +2862,8 @@ async function shelfFlow(browser, engineName, size, viewport) {
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="shelf-1"]').locator("visible=true").click();
     await page.locator("#tab-notes").click();
+    await until(page, () => /Shelf description canary/.test(document.querySelector("#notes-list .note-row")?.textContent || ""));
+    await page.locator("#notes-list .note-row").first().click();
     await until(page, () => document.querySelector('.pane-note[aria-hidden="false"]')?.textContent.includes("Shelf description canary"));
     assert.match(await page.locator('.pane-note[aria-hidden="false"] .note-pane-meta').textContent(), /as of/);
     await page.locator("#pane-name").click();

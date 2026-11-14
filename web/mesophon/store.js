@@ -10,6 +10,7 @@ import { Mailbox } from "./mailbox.js";
 import { Starts, startWaiting } from "./starts.js";
 import { Edits } from "./edits.js";
 import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
+import { toggle as toggleBox } from "./summary.js";
 import { showAlert, clearAlerts } from "./awareness.js";
 import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
 import { mergePage, tailAsk } from "./transcript.js";
@@ -1585,8 +1586,12 @@ export class Store {
       c.request({ op: "notes", ticket: ticket.id }, `notes:${ticket.id}:${stamp}`);
     const rows = book.entry(ticket.id)?.rows || [];
     // The body the pane shown wants (T-701); the description's otherwise.
+    // The Notes list (T-1208) reads every note's first words and Summary
+    // boxes, so it wants each body not read yet, one ask at a time.
     const shown = this.panesOf(ticket)[this.paneAt(ticket)];
-    const wanted = shown?.kind === "note" ? shown.row.id : rows[0]?.id;
+    const wanted = this.viewOf(ticket) === "notes"
+      ? rows.find((r) => book.body(ticket.id, r.id) === undefined)?.id
+      : shown?.kind === "note" ? shown.row.id : rows[0]?.id;
     if (wanted && rows.some((r) => r.id === wanted) && book.body(ticket.id, wanted) === undefined && !c.has("note"))
       c.request({ op: "note", ticket: ticket.id, note: wanted }, `note:${ticket.id}`);
   }
@@ -1604,6 +1609,7 @@ export class Store {
     if (reply.result === "note") {
       this.noteBook().read(ticket, reply);
       this.persistNotes();
+      this.loadNotes();
     } else if (reply.result === "rejected") {
       // Gone since the list was read: read the list again.
       const entry = this.noteBook().entry(ticket);
@@ -1646,6 +1652,27 @@ export class Store {
     this.view = { ticket: ticketId, name };
     this.reading = undefined;
     this.editError = "";
+    if (name === "notes") this.loadNotes();
+    this.emit();
+  }
+  // A Summary box ticked from the Notes list (T-1208), the desk's SUMMARY
+  // dialog: the note's own text with that one box flipped, saved as any
+  // edit of the note is, on the revision this page read. A note with an
+  // edit of this browser's still on its way is left alone.
+  tickSummary(ticketId, noteId, line) {
+    const board = this.active?.pin.board;
+    const ticket = this.board?.tickets.find((t) => t.id === ticketId);
+    if (!board || !ticket || !this.canWriteNotes) return;
+    if (this.noteMail.pending(board, ticketId, noteId)) return;
+    const book = this.noteBook();
+    const row = (book.entry(ticketId)?.rows || []).find((r) => r.id === noteId);
+    const body = book.body(ticketId, noteId);
+    if (!row || body === undefined) return;
+    const text = toggleBox(body, line);
+    if (text === undefined) return;
+    const error = this.sendNote(board, { ticket: ticketId, key: ticket.key, note: noteId, name: nameOf(text), rev: row.rev, text });
+    if (error) this.say(error);
+    this.persistNotes(board);
     this.emit();
   }
   showPane(ticketId, at) {

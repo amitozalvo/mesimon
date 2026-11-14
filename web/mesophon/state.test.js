@@ -1316,3 +1316,25 @@ test("the bottom inset goes while the visible area is shorter than the window: a
   assert.equal(keyboardUp(undefined, 844), false);
   assert.equal(keyboardUp({ height: 0 }, 844), false);
 });
+
+// The Notes list's Summary card (T-1208) reads a note as the desk's
+// `summary.rs` does: boxes under a `Summary` heading only, a fenced block
+// skipped, a deeper heading inside the section, a box flipped in place.
+test("a note's Summary boxes are read and flipped as the desk reads them", async () => {
+  const { extract, toggle } = await import("./summary.js");
+  const body = "# Plan\n\n- [ ] not the summary's\n\n## Summary\n- [ ] one\n* [x] two\nwords\n```\n- [ ] code\n```\n### Deeper\n1. [X] three\n- [ ]\n## Other\n- [ ] no\n";
+  assert.deepEqual(extract(body), [
+    { line: 5, text: "one", done: false },
+    { line: 6, text: "two", done: true },
+    { line: 12, text: "three", done: true },
+    { line: 13, text: "", done: false },
+  ]);
+  assert.deepEqual(extract("## summary ##\n- [ ] any case\n# Summary of the rest\n- [ ] not this\n"), [{ line: 1, text: "any case", done: false }]);
+  assert.deepEqual(extract("Summary\n- [ ] no heading\n"), []);
+  assert.equal(toggle(body, 5).split("\n")[5], "- [x] one");
+  assert.equal(toggle(body, 12).split("\n")[12], "1. [ ] three");
+  assert.equal(toggle(body, 7), undefined, "a line with no box writes nothing");
+  assert.equal(toggle(body, 99), undefined);
+  assert.equal(toggle("## Summary\r\n  - [ ] kept\r\n", 1), "## Summary\r\n  - [x] kept\r\n", "every other byte stays");
+  assert.equal(toggle(toggle(body, 6), 6), body);
+});

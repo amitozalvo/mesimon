@@ -7,7 +7,7 @@ import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
 import { Attention, cardAnswers } from "./dialogs.js";
 import { CrownMark, StartButton, StartReceipt, WorktreeMark, ageWords, crownTouch, exitWords, loggedOut, stateAge } from "./lists.js";
-import { NotePane, PictureList, PicturePick, pastePictures } from "./notepad.js";
+import { NotePane, NotesList, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
 import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
@@ -45,8 +45,11 @@ function TicketTabs({ store, ticket, panes, at }) {
   const chat = store.chatShown;
   const notes = panes.length - 1;
   const screen = store.screenShown(ticket);
-  // Details (T-1208) is a view of its own over the panes.
-  const details = store.viewOf(ticket) === "details";
+  // Details and the Notes list (T-1208) are views of their own over the
+  // panes: the list opens a note's pane, and the tab is the way back.
+  const view = store.viewOf(ticket);
+  const details = view === "details";
+  const listed = view === "notes";
   const show = (view) => {
     store.showPane(ticket.id, 0);
     store.setOutputView(view);
@@ -54,9 +57,9 @@ function TicketTabs({ store, ticket, panes, at }) {
   const tab = (id, on, label, press, off = false, count = "") => html`<button id=${id} type="button" role="tab"
     aria-selected=${String(on)} class=${on ? "on" : ""} disabled=${off} onClick=${press}>${label}${count !== "" && html`<span class="tab-count">${count}</span>`}</button>`;
   return html`<nav id="ticket-tabs" class="ticket-tabs" role="tablist" aria-label="Ticket">
-    ${store.chatCapable && tab("tab-chat", !details && at === 0 && chat, "Chat", () => show("chat"))}
-    ${tab("tab-terminal", !details && at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
-    ${tab("tab-notes", !details && at > 0, "Notes", () => (notes ? store.showPane(ticket.id, at > 0 ? at : 1) : store.editNote(ticket.id)),
+    ${store.chatCapable && tab("tab-chat", !view && at === 0 && chat, "Chat", () => show("chat"))}
+    ${tab("tab-terminal", !view && at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
+    ${tab("tab-notes", listed || (!view && at > 0), "Notes", () => (notes ? store.showView(ticket.id, "notes") : store.editNote(ticket.id)),
       !notes && !store.canWriteNotes, notes || "")}
     ${tab("tab-details", details, "Details", () => store.showView(ticket.id, "details"))}
   </nav>`;
@@ -586,7 +589,8 @@ export function Detail({ store, bp }) {
     return swipePanes(node, (step) => store.showPane(ticket.id, at + step));
   }, [ticket?.id, at]);
   const anim = animOf(agent);
-  const details = store.viewOf(ticket) === "details";
+  const view = store.viewOf(ticket);
+  const details = view === "details";
   // What Details says before its choices: who holds the seat and since
   // when, its tier, and how the ticket came to be.
   const tier = store.board?.tierNamed(agent?.tier || ticket?.tier)?.name;
@@ -618,11 +622,14 @@ export function Detail({ store, bp }) {
         aria-label=${`Actions for ${ticket.key}`} onClick=${() => store.openCardSheet(ticket.id)}><${Icon} name="more" size=${22} width=${3} /></button>`}
     </header>
     ${ticket && html`<${TicketTabs} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
-    ${ticket && at > 0 && !details && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
+    ${ticket && at > 0 && !view && html`<${PaneBar} store=${store} ticket=${ticket} panes=${panes} at=${at} />`}
     ${details && html`<section id="details" class="details-scroll" aria-label="Details">
       <${DetailsPane} store=${store} ticket=${ticket} facts=${facts} />
     </section>`}
-    <div class="panes" ref=${track} hidden=${details}>
+    ${view === "notes" && html`<section id="notes" class="details-scroll" aria-label="Notes">
+      <${NotesList} store=${store} ticket=${ticket} panes=${panes} />
+    </section>`}
+    <div class="panes" ref=${track} hidden=${!!view}>
       <div class="pane-track" style=${{ "--pane": at }}>
         <section class="pane pane-transcript" aria-label="Transcript" aria-hidden=${String(at !== 0)} inert=${at !== 0 || undefined}>
           <div class="detail-scroll">
@@ -647,7 +654,7 @@ export function Detail({ store, bp }) {
         </section>`)}
       </div>
     </div>
-    ${details
+    ${view
       ? null
       : ticket && at === 0 && !store.chatShown && store.keysReach(ticket)
         ? html`<${KeyBar} store=${store} ticket=${ticket} />`

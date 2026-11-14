@@ -5888,3 +5888,140 @@ input[type="checkbox"][role="switch"]:checked::before {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
+
+/* ---- the Notes tab's list (T-1208): the Summary card, then a row a note --------- */
+.notes-list {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  max-width: 640px;
+}
+.summary-card {
+  display: grid;
+  padding: 10px 12px 6px;
+  border-radius: 14px;
+  background: var(--s1);
+}
+.summary-card h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 2px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.summary-count {
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+/* A box is a 44px press that takes a text line's room. */
+.summary-box {
+  min-height: 44px;
+  margin-block: -6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.875rem;
+  text-align: start;
+}
+.summary-box:last-child {
+  margin-bottom: -2px;
+}
+.summary-box:disabled {
+  opacity: 0.6;
+}
+.summary-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--ink3);
+  border-radius: 5px;
+}
+.summary-box.done .summary-mark {
+  border-color: transparent;
+  background: var(--ink2);
+  color: var(--bg);
+}
+.summary-box.done .summary-text {
+  color: var(--ink3);
+  text-decoration: line-through;
+}
+.summary-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.note-rows {
+  display: grid;
+  margin-inline: -16px;
+}
+.note-row {
+  min-height: 44px;
+  display: grid;
+  gap: 3px;
+  padding: 10px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: start;
+}
+.note-row + .note-row {
+  border-top: 1px solid var(--line);
+}
+.note-row:hover {
+  background: var(--s1);
+}
+.note-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.note-row-head b {
+  min-width: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note-row-by {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+}
+.note-row-words {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--ink2);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.note-row-pics {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink3);
+  font-size: 0.75rem;
+}
+.note-rows .notes-empty {
+  padding: 10px 16px;
+}
+.notes-list-foot {
+  display: flex;
+  gap: 8px;
+}

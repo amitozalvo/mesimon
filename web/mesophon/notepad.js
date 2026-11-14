@@ -9,6 +9,7 @@ import { Markdown } from "./markdown.js";
 // desk's `Newline::of_note` reads them (T-626).
 const byPerson = (row) => !!row && row.by !== "agent";
 import { NOTE_MAX_BYTES, ago } from "./notes.js";
+import { extract } from "./summary.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const waitTick = { sending: "clock", local: "clock", relay: "one" };
@@ -89,6 +90,78 @@ export function NotePane({ store, ticket, pane, shown }) {
         onClick=${() => store.editNote(ticket.id, row.id)}><${Icon} name="pencil" size=${16} /><span>Edit</span></button>
       <button id=${shown ? "add-note" : undefined} type="button" class="btn btn-quiet notes-add" onClick=${() => store.editNote(ticket.id)}>
         <${Icon} name="plus" size=${16} /><span>Note</span></button>
+    </div>`}
+  </div>`;
+}
+
+// What a note's row says of its body: its first words past a heading, the
+// desk's picture marks counted, never drawn.
+const PICTURE_MARK = /!?\[[^\]]*\]\(mesimon-attachment:[^)]*\)/g;
+function previewOf(body) {
+  const pictures = (body.match(PICTURE_MARK) || []).length;
+  const words = body
+    .replace(PICTURE_MARK, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^#{1,6}(\s|$)/.test(line) && !/^(```|~~~)/.test(line))
+    .slice(0, 4)
+    .join(" ")
+    .replace(/[*_`>#]+/g, "")
+    .slice(0, 240);
+  return { words, pictures };
+}
+
+// The Notes tab (T-1208): the ticket's Summary boxes in one card, ticked
+// here as the desk ticks them, then every note as a row (its name, who and
+// when, its first words) that opens its pane. A box of a note this browser
+// has an edit of on its way waits for that edit.
+export function NotesList({ store, ticket, panes }) {
+  const board = store.active.pin.board;
+  const book = store.noteBook();
+  const away = !store.live;
+  const writes = store.canWriteNotes;
+  const rows = panes.map((pane, at) => ({ pane, at })).filter(({ pane }) => pane.kind !== "transcript");
+  const bodyOf = (pane) => {
+    const pending = store.noteMail.pending(board, ticket.id, pane.row.id);
+    return { pending, body: pending ? pending.text : book.body(ticket.id, pane.row.id) };
+  };
+  const boxes = [];
+  for (const { pane } of rows) {
+    if (pane.kind !== "note") continue;
+    const { pending, body } = bodyOf(pane);
+    for (const box of extract(body || "")) boxes.push({ ...box, note: pane.row.id, busy: !!pending });
+  }
+  const done = boxes.filter((b) => b.done).length;
+  return html`<div id="notes-list" class="notes-list">
+    ${boxes.length > 0 && html`<section id="summary-card" class="summary-card" aria-label="Summary">
+      <h3><span>Summary</span><span class="summary-count">${done}/${boxes.length}</span></h3>
+      ${boxes.map((box) => html`<button type="button" class=${`summary-box${box.done ? " done" : ""}`} key=${`${box.note}:${box.line}`}
+        role="checkbox" aria-checked=${String(box.done)} disabled=${!writes || box.busy}
+        onClick=${() => store.tickSummary(ticket.id, box.note, box.line)}>
+        <span class="summary-mark" aria-hidden="true">${box.done && html`<${Icon} name="check" size=${13} width=${3} />`}</span>
+        <span class="summary-text" dir="auto">${box.text}</span></button>`)}
+    </section>`}
+    <div class="note-rows">${rows.map(({ pane, at }, i) => {
+      if (pane.kind === "unread")
+        return html`<p class="notes-empty" key="unread">${pane.count} ${pane.count === 1 ? "note" : "notes"} · ${away ? "needs your terminal" : "loading…"}</p>`;
+      const fresh = pane.kind === "fresh";
+      const { pending, body } = fresh ? { pending: pane.item, body: pane.item.text } : bodyOf(pane);
+      const said = body === undefined ? undefined : previewOf(body);
+      const name = fresh ? pane.item.name || "New note" : i === 0 ? "Description" : pane.row.name || "Untitled";
+      return html`<button type="button" class="note-row" key=${pane.key} data-note=${fresh ? undefined : pane.row.id}
+        onClick=${() => store.showPane(ticket.id, at)}>
+        <span class="note-row-head"><b dir="auto">${name}</b><span class="note-row-by">${fresh
+          ? html`<${PendingMark} item=${pane.item} /><span>on its way</span>`
+          : html`${pending && html`<${PendingMark} item=${pending} />`}<span>${pane.row.by} · ${ago(pane.row.at)}</span>`}</span></span>
+        ${said === undefined
+          ? html`<span class="note-row-words">${away ? "Needs your terminal." : "Loading…"}</span>`
+          : html`${said.words && html`<span class="note-row-words" dir="auto">${said.words}</span>`}
+            ${said.pictures > 0 && html`<span class="note-row-pics"><${Icon} name="image" size=${13} /><span>${said.pictures} ${said.pictures === 1 ? "picture" : "pictures"}</span></span>`}`}
+      </button>`;
+    })}</div>
+    ${writes && html`<div class="notes-list-foot">
+      <button id="list-add-note" type="button" class="btn" onClick=${() => store.editNote(ticket.id)}>
+        <${Icon} name="plus" size=${16} /><span>New note</span></button>
     </div>`}
   </div>`;
 }

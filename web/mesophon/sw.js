@@ -31,6 +31,7 @@ const PAGE = [
   "./notepad.js",
   "./pictures.js",
   "./queue.js",
+  "./summary.js",
   "./sent.js",
   "./sessions.js",
   "./shelf.js",
