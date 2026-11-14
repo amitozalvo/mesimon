@@ -45332,3 +45332,15 @@ DONE ticket now moves it, which is T-1239's rule, not Z's subject. Verified: `ca
 three crown e2es, `--test board sleep_offer_e2e:: column_e2e::`, `--test git merge_train_e2e::`.
 The change is in `daemon/src/server.rs` outside its tests: the full workspace suite runs once
 after the merge.
+
+## T-1247's post-merge suite: two more tests that prompted a DONE ticket (2026-11-14)
+
+The full workspace run at `ddf434b2` passed 3,652 of 3,654. The two reds failed again alone,
+and both are T-1239's, the same shape as `sleep_offer_e2e`: a test sent a real prompt turn to
+a DONE ticket's session only to get it idle, and that turn now takes the ticket out of DONE.
+`archive_e2e::archive_gates_suggests_and_restores` (the offers never read `sleep=1`) and
+`column_reclaim_e2e::arrival_waits_for_a_parked_live_pane_then_wake_recuts_the_same_branch`
+(never `evicted`: the ticket had left for REVIEW, which frees no worktree; its comment "Hooks can
+automove out of DONE only if explicitly configured" was T-1037's premise). Both now go idle with
+no `UserPromptSubmit` (`SessionStart` + `Stop`; `end_turn`). Verified: `--test git archive_e2e::
+column_reclaim_e2e::`, 4/4.

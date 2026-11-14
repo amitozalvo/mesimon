@@ -38,8 +38,9 @@ fn arrival_waits_for_a_parked_live_pane_then_wake_recuts_the_same_branch() {
     arrive(&mut c, id, "DONE");
     await_refusal(&mut c, id, "waiting for agents");
     assert!(path.join("landed.txt").exists());
-    h.one_turn(&mut c, sid);
-    // Hooks can automove out of DONE only if explicitly configured; its template stays.
+    // Idle with no prompt: a turn begun on a DONE ticket takes it to
+    // IN PROGRESS (T-1239), out of the column whose arrival this tests.
+    h.end_turn(&mut c, sid);
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
     c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
     assert!(path.exists(), "sleep's live pane still owns the cwd until the reaper");
