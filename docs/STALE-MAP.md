@@ -44978,3 +44978,11 @@ printing handler: one `SessionStart`, the brief); `mcp_e2e::` (4) and `brief_off
 `tools`; `ci/rig_agy_test.py` (5); the agy rig without `--live` and once with it. No full
 workspace suite owed: no `command.rs`, `mcp.rs` (core), `authorize.rs`, schema, `server.rs` or
 harness change.
+
+## An untagged table row's bar is the main tag's shape (T-1240 follow-up, 2026-11-14, the author: "ticket with no tag rendered as bulky grey tag instead of the normal sized tag")
+
+An untagged row kept the card's neutral bar, a whole cell painted in the ladder's grey, beside
+tagged rows' `▋`. In the table that bar is `▋` in the same grey (`tags::thin_bar`: a bar painted
+as a ground becomes that ground's ink); a bar with no ground (below TrueColor's paint) stays as
+the card draws it. Checks: `cargo ut`; `an_untagged_row_wears_the_main_tags_shape` (at rest and
+under the cursor); the three table goldens reminted (the `▋` in the first cell).

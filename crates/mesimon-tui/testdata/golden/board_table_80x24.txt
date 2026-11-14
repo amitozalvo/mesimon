@@ -1,20 +1,20 @@
  BOARD   mesimon › kanban-tui   7 tickets
 
   TODO  2
-  Decay treatments                             claude                       >1y
-  Keymap validator                             claude                       >1y
+▋ Decay treatments                             claude                       >1y
+▋ Keymap validator                             claude                       >1y
 
   IN PROGRESS  2
-  ⠋ Fix OSC-11 detection                       claude                       >1y
-    Fixed the OSC-11 race: the query now runs once before raw mode; goldens up~
-  ⠋ Adopt drawer import                        claude                       >1y
+▋ ⠋ Fix OSC-11 detection                       claude                       >1y
+▋   Fixed the OSC-11 race: the query now runs once before raw mode; goldens up~
+▋ ⠋ Adopt drawer import                        claude                       >1y
 
   REVIEW  2
-  ✓ Grapheme truncation                        claude                       >1y
-  x Flaky e2e on runner                        claude                       >1y
+▋ ✓ Grapheme truncation                        claude                       >1y
+▋ x Flaky e2e on runner                        claude                       >1y
 
   DONE  1
-  z Painted accent bar                         claude                       >1y
+▋ z Painted accent bar                         claude                       >1y
 
 
 

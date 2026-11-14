@@ -830,6 +830,13 @@ pub(super) fn render(
             vec![Span::styled(ladder_ch.to_string().repeat(crate::tags::BAR), state_style)]
         } else if let Some((first, _)) = &stripes {
             vec![first.clone()]
+        } else if ctx.row {
+            // An untagged row's bar is the main tag's shape in its own grey
+            // (T-1240), never the full cell.
+            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level)
+                .into_iter()
+                .map(crate::tags::thin_bar)
+                .collect()
         } else {
             crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level)
         }

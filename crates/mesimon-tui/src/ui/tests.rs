@@ -6735,6 +6735,30 @@ fn table_rows_wear_both_tags_as_thin_stripes() {
     }
 }
 
+/// An untagged row's bar is the main tag's shape in its grey, never the
+/// full cell (T-1240, the author: "ticket with no tag rendered as bulky grey
+/// tag instead of the normal sized tag").
+#[test]
+fn an_untagged_row_wears_the_main_tags_shape() {
+    for selected in [false, true] {
+        let mut app = app_graphite(fixture(false));
+        app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+        app.cursor_col = if selected { 1 } else { 0 };
+        app.cursor_row = Some(0);
+        let lines = render(&app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("the row") as u16;
+        let buf = cells(&app, 120, 30);
+        let bar = &buf[(0, y)];
+        let row = &buf[(5, y)];
+        assert!(
+            bar.symbol() == "▋" || (bar.symbol() == " " && bar.bg == row.bg),
+            "a thin bar or none, never a painted cell: {:?} on {:?}",
+            bar.symbol(),
+            bar.bg
+        );
+    }
+}
+
 /// A table row names the tier its ticket runs on, the default's name too,
 /// never the provider (T-1240, the author: "instead of claude show the
 /// actual tier of the ticket").

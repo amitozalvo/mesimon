@@ -98,6 +98,18 @@ pub(crate) fn row_stripes(theme: &Theme, tags: &[Painted]) -> Option<(Span<'stat
     Some((first, tints.next().map(|n| stripe("▎", n))))
 }
 
+/// The table's shape for a bar painted as a whole cell (T-1240): its ground
+/// becomes the ink of the main tag's `▋`. A bar with no ground (below
+/// TrueColor's paint, where a glyph or an underline says it) is left whole.
+pub(crate) fn thin_bar(span: Span<'static>) -> Span<'static> {
+    match span.style.bg {
+        Some(ground) if ground != Color::Reset && span.content.trim().is_empty() => {
+            Span::styled("▋".repeat(span.content.width()), Style::default().fg(ground))
+        }
+        _ => span,
+    }
+}
+
 /// Put `cell` in the line's cell `at` where that cell is a blank, splitting
 /// the span that holds it; anything else there is left alone.
 pub(crate) fn blank_cell(line: &mut Line<'static>, at: usize, cell: Span<'static>) {
