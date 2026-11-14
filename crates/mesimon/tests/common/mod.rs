@@ -899,8 +899,9 @@ while select.select([fd], [], [], 0.1)[0]:
         sys.exit(0)
     take(data)
 draw()
-with open(os.path.join(d, "first.txt"), "w") as f:
+with open(os.path.join(d, "first.tmp"), "w") as f:
     f.write(box)
+os.replace(os.path.join(d, "first.tmp"), os.path.join(d, "first.txt"))
 while True:
     data = os.read(fd, 4096)
     if not data:
