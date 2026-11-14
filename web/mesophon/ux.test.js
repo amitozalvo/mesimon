@@ -1616,6 +1616,9 @@ async function startFlow(browser, engineName, size, viewport) {
   const pageStart = page.locator("#detail .start-agent");
   const sheet = page.locator("#start-sheet");
   const receipt = page.locator("#detail .start-receipt");
+  // On the ticket's own page a start's news is its receipt (T-1245): no pill
+  // over the page says it again. A pill about another ticket may still be up.
+  const noPill = async (key, why) => assert(!(await page.locator("#toast").textContent()).includes(key), why);
   // The page's start opens the sheet; the words, if any, and Start.
   const start = async (text = "") => {
     await pageStart.click();
@@ -1737,7 +1740,8 @@ async function startFlow(browser, engineName, size, viewport) {
     });
     await page.locator("#send").click();
     await receiptIs("rejected");
-    await toast("Not started: this ticket already has an agent");
+    assert.match(await receipt.textContent(), /Not started: this ticket already has an agent/);
+    await noPill("T-3", "the receipt says why");
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3", prompt: "Rebase first." });
     assert.equal(await prompt.inputValue(), "", "the words left with the start");
     assert(await pageStart.isEnabled(), "a refusal leaves the button to try again");
@@ -1755,8 +1759,8 @@ async function startFlow(browser, engineName, size, viewport) {
     await page.locator("#start-send").click();
     await sheet.waitFor({ state: "hidden" });
     await receiptIs("sending");
-    await toast("Starting an agent on T-3");
-    assert.equal(await page.locator("#toast .tick circle").count(), 1, "a clock");
+    assert.equal(await receipt.locator(".tick circle").count(), 1, "a clock");
+    await noPill("T-3", "the receipt says it");
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3" });
     assert(await pageStart.isDisabled(), "one start at a time");
     const command = await page.evaluate(() => fixture.startCommands.at(-1));
@@ -1777,9 +1781,8 @@ async function startFlow(browser, engineName, size, viewport) {
     );
     // It took its first prompt: two ticks, found by the receipt's poll.
     await page.evaluate(() => fixture.run("ticket-3"));
-    await toast("An agent is working on T-3");
-    assert.equal(await page.locator("#toast .tick path").count(), 2, "two ticks");
     await receiptIs("started");
+    await noPill("T-3", "two ticks on the receipt say it");
     assert.match(await receipt.textContent(), /Started from this browser · \d/);
     // A start that took sits at the transcript's top (T-547, T-701).
     assert.equal(await page.locator("#detail .pane-transcript .start-receipt").count(), 1);
@@ -1809,7 +1812,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#send").getAttribute("aria-label"), "Wake agent with these words");
     await shot("wake-composer");
     await page.locator("#send").click();
-    await toast("Waking the agent on T-9");
+    await receipt.waitFor();
+    await noPill("T-9", "the receipt says it");
     assert.equal(await prompt.inputValue(), "", "the words left with the wake");
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), {
       op: "start",
@@ -1829,7 +1833,7 @@ async function startFlow(browser, engineName, size, viewport) {
     await start();
     await receiptIs("rejected");
     assert.match(await receipt.textContent(), /Not started: this ticket already has an agent/);
-    await toast("Not started: this ticket already has an agent");
+    await noPill("T-5", "the receipt says why");
     assert(await pageStart.isEnabled(), "a refusal leaves the button to try again");
 
     // A lost answer is asked after with `status`, never sent again.
@@ -1923,7 +1927,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "false");
     assert(await page.locator("#send").isEnabled(), "the press under a note starts too");
     await page.locator("#send").click();
-    await toast("Starting an agent on T-7");
+    await receiptIs("sending");
+    await noPill("T-7", "the page shows the conversation, where the receipt says it");
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-7" });
     assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true", "a start shows the conversation");
     assert.equal(await page.locator("#tab-notes").getAttribute("aria-selected"), "false");
@@ -3475,7 +3480,11 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.locator("#prompt").fill("Not yet");
     await page.locator("#send").click();
     await until(page, () => fixture.resumes.length === 2);
-    await until(page, () => /Not started: a prompt is queued for this ticket at your terminal/.test(document.querySelector("#toast")?.textContent || ""));
+    // T-1245: said as a line in the conversation on screen, where the start
+    // is, with no receipt above the conversation and no pill over it.
+    await until(page, () => /Not started: a prompt is queued for this ticket at your terminal/.test(document.querySelector("#chat .chat-said-err")?.textContent || ""));
+    assert.equal(await page.locator("#detail .start-receipt").count(), 0, "no line above the conversation");
+    assert(!/Not started/.test(await page.locator("#toast").textContent()), "no pill over the conversation");
     await page.evaluate(() => (fixture.resumeRefusal = ""));
     await until(page, () => !document.querySelector("#prompt").disabled);
     // T-1218: a picture and a picked tier ride the resume, and the host
@@ -3728,6 +3737,21 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.locator("#stop").click();
     await until(page, () => fixture.keys.length === 7);
     assert.deepEqual((await keys()).at(-1), { ...pane, key: "escape" });
+    // T-1245: the news is a line in the conversation on screen, with its
+    // time, and no pill over the words; what the agent writes after it
+    // reads under it.
+    const said = page.locator("#chat .chat-said").last();
+    await until(page, () => [...document.querySelectorAll("#chat .chat-said")].at(-1)?.textContent.startsWith("Stopping the turn…"));
+    assert.match(await said.locator("time").textContent(), /\d/);
+    assert(!(await page.locator("#toast").textContent()).includes("Stopping"), "no pill over the conversation");
+    await page.evaluate(() => fixture.transcript.push({ at: 9000, kind: "notice", text: "interrupted-canary" }));
+    await until(page, () => document.querySelector("#chat").textContent.includes("interrupted-canary"));
+    assert(await page.evaluate(() => {
+      const rows = [...document.querySelectorAll("#chat .chat-row")];
+      const line = rows.findLastIndex((n) => n.classList.contains("chat-said"));
+      return line >= 0 && rows.findIndex((n) => n.textContent.includes("interrupted-canary")) > line;
+    }), "the agent's words after the line read under it");
+    await shot("conversation-news");
     await page.locator("#prompt").fill("Words instead");
     assert(await page.locator("#stop").isHidden(), "words make it a send again");
     assert(await page.locator("#send").isVisible());

@@ -2945,6 +2945,47 @@ select {
   color: var(--ink3);
   font-size: 0.75rem;
 }
+/* A ticket's news in its conversation (T-1245), where the pill once sat
+   over the words: the notice lane's size and ink, its tick and its time,
+   and its button, 44px tall in a text line's room, while it is offered. */
+.chat-said {
+  align-self: center;
+  max-width: 92%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px 6px;
+  color: var(--ink3);
+  font-size: 0.75rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.chat-said .tick {
+  flex: none;
+  color: var(--ink4);
+}
+.chat-said time {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink4);
+}
+.chat-said-err {
+  color: var(--err);
+}
+.chat-said-act {
+  min-height: 44px;
+  margin-block: -14px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .chat-edge,
 .chat-empty {
   margin: 0;

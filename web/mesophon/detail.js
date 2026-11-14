@@ -683,7 +683,7 @@ export function Detail({ store, bp }) {
               <p id="agent-state">${seatWords(store, agent)}</p>
               ${store.startsAgents && html`<${StartButton} store=${store} ticket=${ticket} />`}
             </div>`}
-            ${ticket && html`<${StartReceipt} item=${start} agent=${agent} />`}
+            ${ticket && !(agent && store.chatShown) && html`<${StartReceipt} item=${start} agent=${agent} />`}
             <${Output} store=${store} ticket=${ticket} entry=${entry} live=${live} />
             ${!ticket && html`<div class="detail-empty"><${Shin} size="medium" scale=${4} /><p>Pick a ticket to read its agent’s output and send it a prompt.</p></div>`}
           </div>

@@ -45447,3 +45447,52 @@ intro, where the ש in משימון wakes, is unchanged.
 
 **Refuted.** The m: the ש turned over reads as mesimon's initial, but it still swells into a
 shin whose arms are where the m's legs were, and it is still a letter to read.
+
+## The phone's ticket news reads as lines in its conversation, not a pill over it (T-1245, 2026-11-14, the author: "Like the ticket page transcript where we augment it with events from board, crown.. remove the snackbar on top of the web transcript, it's awkward"; then "go with recommended, keep in mind today theres a line above the transcript when starting an agent so make sure it's removed as well")
+
+Proposed first as a simulation (https://claude.ai/artifact/4JpveozjNsRM5Pk6EypWGj, two phones,
+four choices); the author took every recommendation.
+
+**Changed (Mesophon only, no wire change).** `store.say(text, tick, action, about)`: news `about`
+a ticket said while that ticket's conversation is on screen (`chatOnScreen`: its page open, the
+Chat tab, the transcript pane, an agent whose conversation is drawn) is a line in the
+conversation instead of the pill, worded without the key (`about.line`: "Moved to REVIEW",
+"Queued for claude."). Said anywhere else (the board, Sent, the Terminal, Notes or Details tab,
+another ticket) it is the pill alone, as before; a line is kept only where it was seen, so a key
+refused on the Terminal tab does not turn up later in the conversation (the first build kept it,
+and the screenshot read as noise). Lines live in the tab (`store.lines`, board → ticket, the
+newest 40) until a reload; the conversation file never holds them.
+
+**Where a line sits.** A row's `at` is a byte offset, not a time, so a line records the
+conversation's `end` the page held when it was said and reads after the rows before it
+(`transcript::withLines`): what the agent writes later reads under it. A line from another
+conversation, or one said before anything was written (an empty seat's start), leads the shown
+conversation; one said before the conversation was read is placed at its first read
+(`placeLines`); one due above earlier pages not read yet waits until the start is held.
+
+**The start is one line that changes** (`lists::startLine`, `Starts.sent` now records `kind`:
+start, wake or resume): "Starting an agent…" with a clock, the worktree and starting steps, then
+"An agent is working" with two ticks, or "Not started: …" in the error ink. The receipt above the
+conversation (`StartReceipt`, "Started from this browser · 14:02") is drawn only where no
+conversation is: an empty seat before its agent, or a host without the transcript. There the
+receipt says the start, and the pill is skipped while that pane is on screen (`paneOnScreen`).
+A start typed under a note shows the conversation before the start is sent (`sendPrompt` calls
+`showChat` first), so its news is said there.
+
+**Kept as it was:** notes' news (Saved, Tell claude, Deleted) is said on the Notes tab, which has
+no conversation; Sent's news; a button on a line (crown Undo, archive Restore) is offered for the
+toast's 6 s and then the line stays without it.
+
+**Left:** the crown's acts and raised hands in the phone's conversation, as the terminal's page
+draws them (T-1162, T-1155): the phone does not receive them, so that needs the board to send
+them first. A ticket of its own if wanted.
+
+Tests: `state.test.js` "news lines sit after what was held when they were said"; `ux.test.js`
+terminalFlow (Stop's line in the conversation with its time, no pill, the agent's next row under
+it; a resume's refusal as an error line with no receipt above), startFlow (the receipt says a
+start on its own page, no pill). `browser.test.js` (the relay's, not run here) waits for the
+receipt or the start's line instead of the pill.
+
+**Owed:** a CHANGELOG line at the next bump. **Changed:** on a phone, what happens to the ticket
+you are reading (a start, a move, words queued, a refusal) appears as a line in its
+conversation instead of a banner over it.

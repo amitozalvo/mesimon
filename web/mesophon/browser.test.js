@@ -204,9 +204,8 @@ for (const [name, engine] of [
         await page.locator(`.ticket[data-id="${filed.id}"]`).click();
         await page.locator("#detail .start-agent").click();
         await page.locator("#start-send").click();
-        await page.waitForFunction(() =>
-          document.querySelector("#toast").textContent.includes("Starting an agent on"),
-        );
+        // On the ticket's page the start is said by its receipt (T-1245).
+        await page.waitForFunction(() => !!document.querySelector("#detail .start-receipt"));
         let started;
         for (let i = 0; i < 100 && !started; i++) {
           const { board } = await command({ cmd: "snapshot" });
@@ -216,7 +215,9 @@ for (const [name, engine] of [
         assert.equal(started?.kind, "claude", "the board's provider started on it");
         await ask("agent-run", "agent-ran", started.id);
         await page.waitForFunction(
-          () => document.querySelector("#detail .start-receipt")?.dataset.status === "started",
+          // The receipt, or with the conversation drawn, the start's line in it.
+          () => document.querySelector("#detail .start-receipt")?.dataset.status === "started" ||
+            /is working/.test(document.querySelector("#chat .chat-said")?.textContent || ""),
           null,
           { timeout: 30000 },
         );

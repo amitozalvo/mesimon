@@ -19,8 +19,9 @@ export class Starts {
     return this.items.get(this.key(board, ticket));
   }
   // A new press replaces whatever the last one on this ticket came to.
-  sent(board, ticket, command, incarnation, key = "") {
-    const item = { board, ticket, key, command, incarnation, status: "sending", message: "", at: Date.now() };
+  // `kind` is what the press asked: a start, a wake or a resume (T-1245).
+  sent(board, ticket, command, incarnation, key = "", kind = "start") {
+    const item = { board, ticket, key, kind, command, incarnation, status: "sending", message: "", at: Date.now() };
     this.items.set(this.key(board, ticket), item);
     return item;
   }

@@ -68,6 +68,10 @@ export const ENTER_AFTER_TEXT_MS = 150;
 // answer that never comes (a socket gone quiet) frees it, as the
 // connection's own ten-second silence does.
 const TYPING_MAX_MS = 10000;
+// A ticket's news lines this tab keeps (T-1245), the newest, per ticket.
+const LINES_KEPT = 40;
+// How long a line's button (an Undo, a Restore) is offered, as a toast's was.
+const LINE_ACTION_MS = 6000;
 // How often a page opened from the kept copy asks whether the relay is back.
 const PROBE_MS = 5000;
 // Opened from the home screen, not a browser tab.
@@ -166,6 +170,10 @@ export class Store {
     // transcript and n the nth note; none, and the page picks.
     this.pane = undefined;
     this.toast = undefined;
+    // A ticket's news as lines in its conversation (T-1245): board id →
+    // ticket id → lines, oldest first. In this tab only, until a reload.
+    this.lines = new Map();
+    this.lineId = 0;
     this.depositing = new Set(); // ids handed to the mailbox socket, unanswered
     // Words for agents sealed while the terminal is away (T-881), and the
     // sheet that says so before the first one goes ({ ticket }).
@@ -486,6 +494,7 @@ export class Store {
     }
     this.sessions.purge(id);
     this.starts.purge(id);
+    this.lines.delete(id);
     this.edits.purge(id);
     this.boards.delete(id);
     const dropped = this.forgetRemembered(id);
@@ -746,12 +755,13 @@ export class Store {
       startContext(id),
     );
     if (command === undefined) {
-      this.say("Not started: the connection dropped. Try again when your terminal is back.");
+      this.say("Not started: the connection dropped. Try again when your terminal is back.", undefined, undefined, { ticket: id, err: true });
       this.emit();
       return false;
     }
-    this.starts.sent(board, id, command, c.incarnation, ticket.key);
-    this.say(ticket.agent?.state === "sleeping" ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock");
+    const wakes = ticket.agent?.state === "sleeping";
+    const item = this.starts.sent(board, id, command, c.incarnation, ticket.key, wakes ? "wake" : "start");
+    this.say(wakes ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock", undefined, { ticket: id, start: item });
     this.emit();
     return true;
   }
@@ -793,10 +803,10 @@ export class Store {
     if (!this.keysReach(ticket)) return false;
     const id = this.connection.request(
       { op: "keys", ticket: ticket.id, session: ticket.agent.session, ...press },
-      (reply) => this.onKeysReply(reply),
+      (reply) => this.onKeysReply(reply, ticket.id),
     );
     if (id === undefined) {
-      this.say("Not sent: the connection dropped.");
+      this.say("Not sent: the connection dropped.", undefined, undefined, { ticket: ticket.id, err: true });
       this.emit();
       return false;
     }
@@ -804,9 +814,9 @@ export class Store {
     setTimeout(() => this.preview(), 250);
     return true;
   }
-  onKeysReply(reply) {
+  onKeysReply(reply, ticket) {
     if (reply.result === "rejected") {
-      this.say(`Not sent: ${reply.message || "your terminal refused the keys"}`);
+      this.say(`Not sent: ${reply.message || "your terminal refused the keys"}`, undefined, undefined, { ticket, err: true });
       this.emit();
     }
   }
@@ -826,7 +836,7 @@ export class Store {
     const ticket = this.board?.current;
     if (!text || this.typing || !this.keysReach(ticket)) return false;
     if (new TextEncoder().encode(text).length > KEYS_TEXT_MAX_BYTES) {
-      this.say(`Not sent: a line fits ${KEYS_TEXT_MAX_BYTES} bytes.`);
+      this.say(`Not sent: a line fits ${KEYS_TEXT_MAX_BYTES} bytes.`, undefined, undefined, { ticket: ticket.id, err: true });
       this.emit();
       return false;
     }
@@ -842,7 +852,7 @@ export class Store {
       if (this.typingLine !== line) return;
       if (reply.result !== "edited") {
         finish();
-        this.onKeysReply(reply.result === "rejected" ? reply : { result: "rejected", message: "" });
+        this.onKeysReply(reply.result === "rejected" ? reply : { result: "rejected", message: "" }, line.ticket);
         return;
       }
       done(text);
@@ -854,7 +864,7 @@ export class Store {
       }, ENTER_AFTER_TEXT_MS);
     });
     if (id === undefined) {
-      this.say("Not sent: the connection dropped.");
+      this.say("Not sent: the connection dropped.", undefined, undefined, { ticket: line.ticket, err: true });
       this.emit();
       return false;
     }
@@ -865,7 +875,7 @@ export class Store {
   // Stop the turn (T-1208): the desk's Escape in the agent's pane.
   stopTurn() {
     if (this.sendKeys({ key: "escape" })) {
-      this.say("Stopping the turn…");
+      this.say("Stopping the turn…", undefined, undefined, { ticket: this.board.current.id });
       this.emit();
     }
   }
@@ -890,12 +900,12 @@ export class Store {
       startContext(id),
     );
     if (command === undefined) {
-      this.say("Not resumed: the connection dropped. Try again when your terminal is back.");
+      this.say("Not resumed: the connection dropped. Try again when your terminal is back.", undefined, undefined, { ticket: id, err: true });
       this.emit();
       return false;
     }
-    this.starts.sent(board, id, command, c.incarnation, ticket.key);
-    this.say(`Resuming the agent on ${ticket.key}…`, "clock");
+    const item = this.starts.sent(board, id, command, c.incarnation, ticket.key, "resume");
+    this.say(`Resuming the agent on ${ticket.key}…`, "clock", undefined, { ticket: id, start: item });
     this.emit();
     return true;
   }
@@ -910,9 +920,15 @@ export class Store {
     const before = item.status;
     this.starts.reply(item, reply);
     if (item.status !== before) {
-      if (item.status === "started") this.say(`An agent is working on ${item.key}`, "two");
-      else if (item.status === "rejected") this.say(`Not started: ${item.message || "the terminal refused it"}`);
-      else if (item.status === "unknown") this.say("Start unknown. Check the board before you start it again.");
+      // The start's own line follows it (T-1245); the pill says the news
+      // only where that line and the start's receipt are both off screen.
+      const said = (text, tick) => {
+        if (!this.paneOnScreen(item.board, id)) this.say(text, tick);
+        else if (tick === "two") this.tap();
+      };
+      if (item.status === "started") said(`An agent is working on ${item.key}`, "two");
+      else if (item.status === "rejected") said(`Not started: ${item.message || "the terminal refused it"}`);
+      else if (item.status === "unknown") said("Start unknown. Check the board before you start it again.");
       // The board shows the new agent; its output follows.
       this.refresh();
     }
@@ -941,7 +957,7 @@ export class Store {
     const command = this.connection.request({ op, ticket: ticket.id, ...body }, "edit");
     if (command === undefined) {
       this.editError = "Not sent: the connection dropped. Try again when your terminal is back.";
-      this.say(this.editError);
+      this.say(this.editError, undefined, undefined, { ticket: ticket.id, err: true });
       this.emit();
       return false;
     }
@@ -965,19 +981,23 @@ export class Store {
         crown: item.on ? "Not crowned" : "Crown not taken off",
       }[item.op];
       this.editError = `${what}: ${reply.message || "the terminal refused it."}`;
-      this.say(this.editError);
-    } else if (reply.result === "edited" && item.moved) this.say(`Moved ${item.key} to ${item.patch.column}`, "two");
-    else if (reply.result === "edited" && item.op === "park") this.say(`Parked ${item.provider} on ${item.key}`, "two");
+      this.say(this.editError, undefined, undefined, { ticket: item.ticket, board: item.board, err: true });
+    } else if (reply.result === "edited" && item.moved)
+      this.say(`Moved ${item.key} to ${item.patch.column}`, "two", undefined,
+        { ticket: item.ticket, board: item.board, line: `Moved to ${item.patch.column}` });
+    else if (reply.result === "edited" && item.op === "park")
+      this.say(`Parked ${item.provider} on ${item.key}`, "two", undefined,
+        { ticket: item.ticket, board: item.board, line: `Parked ${item.provider}` });
     else if (reply.result === "edited" && item.op === "crown")
       this.say(item.on ? `${item.key} wears the crown` : `Took the crown off ${item.key}`, "two", {
         label: "Undo",
         run: () => (item.was ? this.crownTicket(item.was, true) : this.crownTicket(item.ticket, !item.on)),
-      });
+      }, { ticket: item.ticket, board: item.board, line: item.on ? "This ticket wears the crown" : "Took the crown off this ticket" });
     else if (reply.result === "edited" && item.op === "archive")
       this.say(`${item.restore ? "Restored" : "Archived"} ${item.key}`, "two", item.restore ? undefined : {
         label: "Restore",
         run: () => this.restoreTicket(item.ticket, item.key),
-      });
+      }, { ticket: item.ticket, board: item.board, line: item.restore ? "Restored" : "Archived" });
     // The board that follows is the truth, the refusal's included.
     this.refresh();
     this.emit();
@@ -1418,6 +1438,7 @@ export class Store {
       const entry = this.sessions.get(board, ticket);
       if (entry.chat && (entry.chatAt || 0) >= item.at) return;
       entry.chat = mergePage(undefined, {}, item.page);
+      this.placeLines(entry);
       entry.chatAt = item.at;
       entry.chatError = "";
     }
@@ -1564,9 +1585,14 @@ export class Store {
     return this.here;
   }
   // A toast says what just happened, whichever view is open. The caller emits.
-  say(text, tick, action) {
+  // News `about` a ticket ({ ticket, board?, line?, err?, start? }) said
+  // while its conversation is on screen is a line there instead (T-1245),
+  // worded for it (`line`, the toast's own words when none): no pill over
+  // the words. Said anywhere else, it is the pill alone, as before.
+  say(text, tick, action, about) {
     // Two ticks is "it arrived": the one moment the phone taps.
     if (tick === "two" || tick === "picked") this.tap();
+    if (about && this.addLine(about, about.line ?? text, tick, action)) return;
     clearTimeout(this.toastTimer);
     const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick, action });
     this.toastTimer = setTimeout(() => {
@@ -1581,6 +1607,76 @@ export class Store {
   // an agent, a note, a start) goes through say() and is said there too (T-902).
   sayOfSent(text, tick) {
     if (this.board?.mode !== "sent") this.say(text, tick);
+  }
+  // One line of a ticket's news (T-1245), kept when it is said where it is
+  // seen: the conversation on screen, or for a start the transcript pane,
+  // whose receipt says it until the conversation is drawn. It is placed
+  // after what the page held of the conversation: `after` is its end, -1
+  // before any of it was written, undefined when none was read yet
+  // (`placeLines` sets it at the first read). A start's line holds the
+  // start and reads as it goes. False, and nothing kept, when not seen.
+  addLine(about, text, tick, action) {
+    const board = about.board || this.active?.pin.board;
+    if (!board) return false;
+    if (!(about.start ? this.paneOnScreen(board, about.ticket) : this.chatOnScreen(board, about.ticket))) return false;
+    const ticket = this.boards.get(board)?.tickets.find((t) => t.id === about.ticket) ||
+      (board === this.active?.pin.board ? this.board?.tickets.find((t) => t.id === about.ticket) : undefined);
+    const chat = ticket?.agent ? this.sessions.get(board, ticket)?.chat : undefined;
+    const at = Date.now();
+    let tickets = this.lines.get(board);
+    if (!tickets) this.lines.set(board, (tickets = new Map()));
+    const list = tickets.get(about.ticket) || [];
+    list.push({
+      id: ++this.lineId,
+      at,
+      // A line from another conversation than the one shown leads it: an
+      // empty seat's start, before its agent wrote anything, leads the new one.
+      conversation: chat?.conversation,
+      after: chat ? chat.end : ticket?.agent ? undefined : -1,
+      text,
+      tick,
+      err: !!about.err,
+      start: about.start,
+      action,
+      until: action ? at + LINE_ACTION_MS : 0,
+    });
+    if (list.length > LINES_KEPT) list.splice(0, list.length - LINES_KEPT);
+    tickets.set(about.ticket, list);
+    if (action) setTimeout(() => this.emit(), LINE_ACTION_MS);
+    return true;
+  }
+  linesOf(ticket) {
+    const board = this.active?.pin.board;
+    return (ticket && this.lines.get(board)?.get(ticket.id)) || [];
+  }
+  // The first read of a conversation places the lines said before it.
+  placeLines(entry) {
+    for (const line of this.lines.get(entry.board)?.get(entry.ticket) || [])
+      if (line.after === undefined) {
+        line.after = entry.chat.end;
+        line.conversation = entry.chat.conversation;
+      }
+  }
+  // A line's button, once and while it is offered.
+  lineAction(line) {
+    if (!line.action || Date.now() >= line.until) return;
+    line.until = 0;
+    this.emit();
+    line.action.run();
+  }
+  // Whether `ticket`'s page shows its transcript pane (T-1245): the ticket
+  // open on screen, on neither Details nor Notes nor a note.
+  paneOnScreen(board, id) {
+    const ticket = this.board?.current;
+    if (board !== this.active?.pin.board || ticket?.id !== id) return false;
+    const open = narrow() ? this.detailOpen : this.board.mode !== "board" || this.detailOpen;
+    return open && !this.viewOf(ticket) && this.paneAt(ticket) === 0;
+  }
+  // And whether that pane draws the conversation, where its lines read.
+  chatOnScreen(board, id) {
+    const agent = this.board?.current?.agent;
+    return this.paneOnScreen(board, id) && !!agent && this.chatShown &&
+      (agent.state !== "sleeping" || !!this.entry?.chat);
   }
   // Swiped away (T-628): gone without its button's action.
   dismissToast() {
@@ -2243,6 +2339,7 @@ export class Store {
     this.sent = new Sent();
     this.sentLoaded.clear();
     this.starts = new Starts();
+    this.lines.clear();
     this.edits = new Edits();
     this.renaming = this.cardSheet = this.pane = undefined;
     this.noteBooks.clear();
@@ -2291,6 +2388,7 @@ export class Store {
       if (this.active) {
         this.sessions.purge(this.active.pin.board);
         this.starts.purge(this.active.pin.board);
+        this.lines.delete(this.active.pin.board);
         this.edits.purge(this.active.pin.board);
         this.boards.delete(this.active.pin.board);
         this.forgetRemembered(this.active.pin.board);
@@ -2443,6 +2541,7 @@ export class Store {
       if (entry) {
         const before = entry.chat;
         entry.chat = mergePage(before, original.body, reply);
+        this.placeLines(entry);
         entry.chatAt = Date.now();
         entry.chatError = "";
         if (landed(entry)) entry.receipt.landed = true;
@@ -2655,12 +2754,13 @@ export class Store {
     }
     if (starts) {
       const resumes = this.resumes && this.stopped(this.board?.tickets.find((t) => t.id === entry.ticket));
+      // The conversation first, so the start's news is said there (T-1245).
+      this.showChat(entry.ticket);
       if (resumes ? this.resumeAgent(entry.ticket, text, entry.tier, uploads) : this.startAgent(entry.ticket, text, entry.tier, uploads)) {
         entry.draft = "";
         entry.tier = undefined;
         entry.delivery = "";
         dropPictures(entry);
-        this.showChat(entry.ticket);
       }
       this.sync();
       return;
@@ -2776,6 +2876,8 @@ export class Store {
           ? "Saved in this browser. It goes out when you’re back online."
           : "Saved in this browser. It goes out when the relay answers.",
         "clock",
+        undefined,
+        { ticket: ticket.id, board },
       );
     this.sync();
   }
@@ -2785,6 +2887,10 @@ export class Store {
     const entry = ticket && this.sessions.get(item.board, ticket);
     if (entry) this.sessions.retain(entry, item.text, item.session);
   }
+  // Words for an agent are news about its ticket (T-1245).
+  aboutMail(item, err = false) {
+    return { ticket: item.ticket, board: item.board, err };
+  }
   onPromptMail(wire, item) {
     if (wire.kind === "deposited") {
       this.depositing.delete(item.id);
@@ -2792,7 +2898,7 @@ export class Store {
       this.promptMail.deposited(item);
       if (before !== item.status) {
         this.persistPrompts(item.board);
-        if (!this.live) this.say("Waits at the relay for your terminal.", "one");
+        if (!this.live) this.say("Waits at the relay for your terminal.", "one", undefined, this.aboutMail(item));
       }
     } else if (wire.kind === "refused") {
       this.depositing.delete(item.id);
@@ -2803,14 +2909,14 @@ export class Store {
       this.persistPrompts(item.board);
       this.say(wire.code === "capacity"
         ? "Not sent: too much waits at the relay. Your words are back in the box."
-        : "Not sent: the relay did not keep it. Your words are back in the box.");
+        : "Not sent: the relay did not keep it. Your words are back in the box.", undefined, undefined, this.aboutMail(item, true));
     } else if (wire.kind === "withdrawn") {
       if (wire.removed) {
         this.promptMail.remove(item.id);
         this.giveBack(item);
         this.persistPrompts(item.board);
-        this.say("Taken back. Your words are in the box.");
-      } else this.say("Too late to take back: your terminal has it.");
+        this.say("Taken back. Your words are in the box.", undefined, undefined, this.aboutMail(item));
+      } else this.say("Too late to take back: your terminal has it.", undefined, undefined, this.aboutMail(item));
     }
     this.sync();
   }
@@ -2823,12 +2929,14 @@ export class Store {
     else item.status = "unknown";
     if (queued) {
       const replaced = replacedWords(body.replaced);
-      this.say(`Queued for ${item.provider || "the agent"} on ${item.key}.${replaced ? ` ${replaced}` : ""}`, "two");
+      const queued = `Queued for ${item.provider || "the agent"}`;
+      this.say(`${queued} on ${item.key}.${replaced ? ` ${replaced}` : ""}`, "two", undefined,
+        { ...this.aboutMail(item), line: `${queued}.${replaced ? ` ${replaced}` : ""}` });
       if (this.live) this.refresh();
     } else if (refused) {
       this.giveBack(item);
       const why = body.result === "revoked" ? "this browser may no longer prompt it" : body.message || "your terminal refused it";
-      this.say(`Not queued: ${why}. Your words are back in the box.`);
+      this.say(`Not queued: ${why}. Your words are back in the box.`, undefined, undefined, this.aboutMail(item, true));
     }
     this.persistPrompts(item.board);
     this.sync();
@@ -2839,14 +2947,14 @@ export class Store {
     if (!item) return;
     if (item.status === "relay") {
       if (!this.mailbox?.send({ kind: "withdraw", board: this.active.pin.board, id }))
-        this.say("Taking it back needs the relay. Try again when you’re back online.");
+        this.say("Taking it back needs the relay. Try again when you’re back online.", undefined, undefined, this.aboutMail(item, true));
       this.emit();
       return;
     }
     this.promptMail.remove(id);
     if (item.status === "local") {
       this.giveBack(item);
-      this.say("Taken back. It never left this browser.");
+      this.say("Taken back. It never left this browser.", undefined, undefined, this.aboutMail(item));
     }
     this.persistPrompts(item.board);
     this.sync();

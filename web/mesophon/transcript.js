@@ -7,6 +7,7 @@ import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
 import { Linked, Markdown } from "./markdown.js";
 import { keepAtEnd } from "./viewport.js";
+import { startLine } from "./lists.js";
 
 const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -107,6 +108,39 @@ export function groupRows(rows) {
   return items;
 }
 
+// A ticket's news among the rows (T-1245): each line after the rows the
+// page held when it was said, one from another conversation (or before
+// any was written) at the top. A line due above what is held waits until
+// the start of the conversation is.
+export function withLines(chat, lines) {
+  const rows = chat?.rows || [];
+  if (!chat || !lines?.length) return rows;
+  const due = lines
+    .map((line) => ({ kind: "said", line, after: line.conversation === chat.conversation ? line.after ?? Infinity : -1 }))
+    .sort((a, b) => a.after - b.after || a.line.id - b.line.id);
+  const out = [];
+  let k = 0;
+  const flush = (upTo) => {
+    for (; k < due.length && due[k].after <= upTo; k++) if (out.length || chat.floor == null) out.push(due[k]);
+  };
+  for (const row of rows) {
+    flush(row.at);
+    out.push(row);
+  }
+  flush(Infinity);
+  return out;
+}
+
+// One line of news: its words, its tick, its time, and a button while it
+// is offered. A start's line reads off the start as it goes.
+function Said({ store, line }) {
+  const now = line.start ? { ...line, ...startLine(line.start) } : line;
+  const offered = !!line.action && Date.now() < line.until;
+  return html`<p class=${`chat-row chat-said${now.err ? " chat-said-err" : ""}`} dir="auto"><span>${now.text}</span>${now.tick &&
+    html`<${Tick} state=${now.tick} />`}<time datetime=${new Date(now.at).toISOString()}>${clock(now.at)}</time>${offered &&
+    html`<button type="button" class="chat-said-act" onClick=${() => store.lineAction(line)}>${line.action.label}</button>`}</p>`;
+}
+
 function Step({ text }) {
   const { name, arg } = stepParts(text);
   // The space between the spans keeps the line's text one line.
@@ -148,13 +182,14 @@ export function Chat({ store, entry, doing, tail }) {
     if (chat?.floor != null && node.scrollHeight <= node.clientHeight) store.olderSoon();
   });
   useLayoutEffect(() => keepAtEnd(ref.current, () => entry?.chatFollowing !== false));
-  const rows = chat?.rows || [];
+  const held = chat?.rows || [];
+  const rows = withLines(chat, store.linesOf(store.board?.current));
   // Away (T-698), the conversation is what this page last held or the
   // shelf's newest page: earlier pages wait for the terminal.
   const away = !store.live;
   const empty = !chat
     ? entry?.chatError || "Reading the conversation…"
-    : rows.length || chat.floor != null
+    : held.length || chat.floor != null
       ? ""
       : "Nothing said yet.";
   const toggle = (key) => setOpen((was) => {
@@ -165,9 +200,10 @@ export function Chat({ store, entry, doing, tail }) {
   return html`<div id="chat" ref=${ref} class="chat" aria-label="Conversation" tabindex="0"
       onScroll=${(e) => store.chatScrolled(e.currentTarget)}>
     ${chat?.floor != null && html`<p class="chat-edge" aria-live="polite">${away ? "Earlier parts need your terminal" : entry.chatOlder ? "Reading earlier…" : "Scroll up for earlier"}</p>`}
-    ${chat && chat.floor == null && rows.length > 0 && html`<p class="chat-edge">Start of the conversation</p>`}
+    ${chat && chat.floor == null && held.length > 0 && html`<p class="chat-edge">Start of the conversation</p>`}
     ${empty && html`<p class="chat-empty">${empty}</p>`}
     ${groupRows(rows).map((item) => {
+      if (item.row?.kind === "said") return html`<${Said} key=${`said:${item.row.line.id}`} store=${store} line=${item.row.line} />`;
       const key = rowKey(rows, item.i);
       if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
       const shown = open.has(key);

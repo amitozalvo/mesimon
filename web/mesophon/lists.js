@@ -128,6 +128,19 @@ const startWords = (item) =>
     unknown: "Start unknown. Check the board before you start it again.",
   })[item.status];
 
+// A start as a line in its conversation (T-1245): what it asked while it
+// waits, then the agent working, or why not. One line that changes.
+const asking = { start: "Starting an agent…", wake: "Waking the agent…", resume: "Resuming the agent…" };
+export function startLine(item) {
+  const waits = item.status === "sending";
+  const text = waits
+    ? asking[item.kind] || asking.start
+    : item.status === "started"
+      ? item.kind === "start" ? "An agent is working" : "The agent is working"
+      : startWords(item);
+  return { text, tick: startTick[item.status], err: item.status === "rejected", at: item.at };
+}
+
 // A start's receipt. Two ticks are news only while its agent is there.
 export function StartReceipt({ item, agent }) {
   if (!item || (item.status === "started" && !agent)) return null;

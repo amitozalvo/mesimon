@@ -7,7 +7,7 @@ import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
-import { foldWords, groupRows, mergePage, stepParts, tailAsk } from "./transcript.js";
+import { foldWords, groupRows, mergePage, stepParts, tailAsk, withLines } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { keyboardUp, viewportVars } from "./viewport.js";
@@ -1126,6 +1126,24 @@ test("a remembered board keeps each ticket's note count and digest", () => {
   board.update({ title: "B", columns: ["TODO"], tickets: [{ ...ticket("one"), notes: 2, noted: "abc" }, ticket("two")] });
   const [one, two] = JSON.parse(JSON.stringify(board.snapshot())).tickets;
   assert.deepEqual([one.notes, one.noted, two.notes, two.noted], [2, "abc", 0, ""]);
+});
+
+// T-1245: a ticket's news reads where it happened: after the rows the page
+// held when it was said, at the top when it came before the conversation
+// shown, and never above an earlier page not read yet.
+test("news lines sit after what was held when they were said", () => {
+  const row = (at) => ({ at, kind: "reply", text: `r${at}` });
+  const line = (id, after, conversation = "a") => ({ id, after, conversation, text: `l${id}` });
+  const names = (out) => out.map((r) => (r.kind === "said" ? r.line.text : r.text));
+  const chat = { conversation: "a", rows: [row(0), row(10), row(20)], end: 30, floor: null };
+  assert.deepEqual(names(withLines(chat, [line(1, 20), line(2, 30), line(3, -1)])), ["l3", "r0", "r10", "l1", "r20", "l2"]);
+  // Another conversation's line, or one said before any was read, leads it;
+  // one whose place was never read waits at the end.
+  assert.deepEqual(names(withLines(chat, [line(4, 10, "b"), line(5, undefined)])), ["l4", "r0", "r10", "r20", "l5"]);
+  // With earlier pages unread, a line due above them is not drawn yet.
+  assert.deepEqual(names(withLines({ ...chat, floor: 0 }, [line(6, -1), line(7, 20)])), ["r0", "r10", "l7", "r20"]);
+  assert.equal(withLines(undefined, [line(8, 0)]).length, 0);
+  assert.equal(withLines(chat, []), chat.rows);
 });
 
 // T-626: the conversation's pages join by byte offset.
