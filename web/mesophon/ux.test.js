@@ -1699,16 +1699,24 @@ async function startFlow(browser, engineName, size, viewport) {
     }
 
     // The field at the bottom is the desk's Shift+Enter on an empty seat
-    // (T-709): it says so before any words, the row under the words says
-    // what the press does, and the words ride the start as the first prompt.
+    // (T-709): it says so before any words, and the words ride the start as
+    // the first prompt. With no words the press is the start on the title
+    // (T-1208), and no line beside the plus repeats the field's own words.
     const prompt = page.locator("#prompt");
     assert(await prompt.isEnabled(), "an empty seat takes a first prompt");
     assert.equal(await prompt.getAttribute("placeholder"), "Start an agent with these words…");
-    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Start agent with these words");
-    assert(await page.locator("#send").isDisabled(), "no words, no start: the button is the start on the title");
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Start agent on the ticket’s title");
+    assert(await page.locator("#send").isEnabled(), "no words: the press is the start on the title");
     assert.equal(await page.locator("#prompt-mode").count(), 0, "no Queue / Steer over an empty seat");
+    assert.equal(await page.locator("#start-what").count(), 0, "the field says what the press does, once");
+    await page.evaluate(() => {
+      fixture.startDisposition = "rejected";
+    });
+    await page.locator("#send").click();
+    await receiptIs("rejected");
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3" });
     await prompt.fill("Rebase first.");
-    assert.equal(await page.locator("#start-what").textContent(), "Starts an agent on these words.");
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Start agent with these words");
     assert(await page.locator("#send").isEnabled());
     await shot("start-composer");
     await page.evaluate(() => {
@@ -1773,7 +1781,8 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.equal(await pageStart.getAttribute("aria-label"), "Wake agent on T-9");
     assert.equal(await page.locator("#agent-state").textContent(), "codex is asleep on this ticket.");
     assert.equal(await prompt.getAttribute("placeholder"), "Wake codex with these words…");
-    assert(await page.locator("#send").isDisabled(), "no words, no wake");
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Wake agent");
+    assert(await page.locator("#send").isEnabled(), "no words: a plain wake");
     await page.evaluate(() => {
       fixture.startDisposition = "starting";
     });
@@ -1784,7 +1793,6 @@ async function startFlow(browser, engineName, size, viewport) {
     await page.locator("#start-sheet .btn-quiet").click();
     await sheet.waitFor({ state: "hidden" });
     await prompt.fill("Rebase first, then run the tests.");
-    assert.equal(await page.locator("#start-what").textContent(), "Wakes codex, then says this.");
     assert.equal(await page.locator("#send").getAttribute("aria-label"), "Wake agent with these words");
     await shot("wake-composer");
     await page.locator("#send").click();
@@ -1882,6 +1890,30 @@ async function startFlow(browser, engineName, size, viewport) {
     await page.keyboard.press("Escape");
     await page.locator("#board-list").waitFor({ state: "hidden" });
     assert.equal(await page.locator("#sidebar .side-pick-name").textContent(), "Mesimon");
+
+    // From a note (T-1208): on a host with notes and the conversation, the
+    // press under a ticket's description starts the agent with no words,
+    // and the page shows the conversation it will speak in.
+    await page.evaluate(() => {
+      fixture.features.push("start", "notes", "transcript");
+      fixture.startDisposition = "hold";
+      fixture.notes["ticket-7"] = [{ id: "desc-7", name: "Quiet ticket", by: "you", at: Date.now(), rev: 1, text: "# Quiet ticket\n\nNo agent here." }];
+      fixture.stampNotes();
+      fixture.channel().close();
+    });
+    await connected();
+    await open("ticket-7");
+    await page.locator("#tab-notes").click();
+    await page.locator("#notes-list .note-row").first().click();
+    await until(page, () => /No agent here/.test(document.querySelector('.pane-note[aria-hidden="false"]')?.textContent || ""));
+    assert.equal(await page.locator("#tab-notes").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "false");
+    assert(await page.locator("#send").isEnabled(), "the press under a note starts too");
+    await page.locator("#send").click();
+    await toast("Starting an agent on T-7");
+    assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-7" });
+    assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true", "a start shows the conversation");
+    assert.equal(await page.locator("#tab-notes").getAttribute("aria-selected"), "false");
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: start from the ticket's sheet, clock, ticks, wake with words, refusal, lost answer, away, older host, board picker passed`);
   } catch (error) {

@@ -756,11 +756,19 @@ export class Store {
   // Whether the composer's press starts or wakes the agent (T-709): the
   // desk's Shift+Enter on an empty or a parked seat, from the same field a
   // live agent is messaged at. The words are the first turn; a blank field
-  // stays off, the page's button is the start on the title.
+  // is the start on the title, as the page's button is (T-1208).
   // Over a stopped agent (T-1208) the press resumes its conversation with
   // the words, on a host that resumes.
   composerStarts(ticket) {
     return (this.startsAgents && this.startable(ticket)) || (this.stopped(ticket) && this.resumes);
+  }
+  // A start asked from the field shows where its agent will speak (T-1208):
+  // the conversation, whichever note or tab the words were typed under.
+  showChat(ticketId) {
+    const ticket = this.board?.tickets.find((t) => t.id === ticketId);
+    if (!ticket || this.board.current?.id !== ticketId) return;
+    if (this.viewOf(ticket) || this.paneAt(ticket) !== 0) this.showPane(ticketId, 0);
+    if (this.chatCapable) this.setOutputView("chat");
   }
   // Whether the host resumed agents when last live, as `startsAgents`.
   get resumes() {
@@ -2596,9 +2604,17 @@ export class Store {
     if (entry) entry.why = false;
     const agent = this.board?.current?.agent;
     // A picture still being read would be left out of the words (T-1219).
-    if (!entry?.draft.trim() || entry.sending || entry.reading > 0) return;
-    if (this.mailsPrompt(this.board?.current)) return this.mailPrompt(entry);
+    if (!entry || entry.sending || entry.reading > 0) return;
+    // Over an empty, a parked or a stopped seat a blank field is a plain
+    // start, wake or resume (T-1208, the person's decision): the ticket's
+    // own title and description are the first turn. Everywhere else a
+    // press with no words sends nothing.
     const starts = this.composerStarts(this.board?.current);
+    if (!entry.draft.trim()) {
+      if (starts && this.canComposeStart) this.sendPrompt(entry, "", [], true);
+      return;
+    }
+    if (this.mailsPrompt(this.board?.current)) return this.mailPrompt(entry);
     if (!starts && (!this.live || !agent?.promptable ||
       entry.review || entry.receipt?.waiting || entry.answer?.waiting))
       return;
@@ -2642,6 +2658,7 @@ export class Store {
         entry.tier = undefined;
         entry.delivery = "";
         dropPictures(entry);
+        this.showChat(entry.ticket);
       }
       this.sync();
       return;

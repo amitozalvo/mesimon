@@ -44761,3 +44761,23 @@ notes were short; `notesFlow` now gives the list a long name and a box that wrap
 that nothing passes the view's right edge, the page does not scroll sideways and no box lies over
 the next; `editFlow` asserts the same widths of Details. Checks: the UX suite on Chromium and
 WebKit at phone size, green.
+
+## The message box starts an agent with no words, and shows Chat (T-1208, 2026-11-14, the author's phone)
+
+The author, on a ticket with no agent: "'start an agent on these words...' doesn't work from input,
+user needs to click on 'chat' to actually run the agent. the play should be enabled in input
+(starting an agent should then move to 'chat' screen), and the text next to the + icon button
+should be removed as it's redundant". A ticket with no agent opens on its description, so the box
+there was the only start in sight, and its play was off until words were typed. **Refuted, by the
+author's decision: T-709's "a blank field stays off, the blank start on the title is the button's
+alone".** Over an empty, a parked or a stopped seat the play is on with no words: a blank start
+(the host reads the ticket's title and description), a plain wake, or a plain resume, the same
+`start` and `resume` requests the page's button and Resume send; nothing new crosses to the host.
+A start, wake or resume that left from the box shows the conversation (`store.showChat`: pane 0,
+and the Chat view where the host has one). `#start-what`, the sentence beside the plus, is gone:
+the placeholder says it. `#away-what` stays, it says what the placeholder does not. The button's
+name says which press it is ("Start agent on the ticket's title", "Wake agent", "Resume agent",
+or "… with these words"). Checks: `startFlow` presses the empty box on an empty seat, reads it
+lit over a parked one (the blank wake is not pressed there), and at its end starts from under a note on a host with notes and the conversation,
+then reads the Chat tab selected; state and assets tests, the UX suite on Chromium at phone,
+tablet and desktop and on WebKit at phone, green. WebKit at tablet and desktop not run.

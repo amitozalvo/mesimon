@@ -212,6 +212,14 @@ function startPlaceholder(store, ticket, asleep) {
   return asleep ? `Wake ${who} with these words…` : "Start an agent with these words…";
 }
 
+// What the press says it does there: the field's words when it has any,
+// and a plain start, wake or resume when it has none (T-1208).
+function startLabel(store, ticket, asleep, stopped, words) {
+  if (stopped && store.resumes) return words ? "Resume agent with these words" : "Resume agent";
+  if (asleep) return words ? "Wake agent with these words" : "Wake agent";
+  return words ? "Start agent with these words" : "Start agent on the ticket’s title";
+}
+
 function Composer({ store, ticket, entry, live }) {
   // A parked agent has no pane to type at: the field is its wake (T-709).
   const asleep = ticket?.agent?.state === "sleeping";
@@ -245,8 +253,11 @@ function Composer({ store, ticket, entry, live }) {
   // for it, as the New ticket sheet and a note's Save do, or the words would
   // go without it.
   const reading = entry?.reading > 0;
+  // Over an empty, a parked or a stopped seat the press works with no words
+  // too (T-1208, the person's decision): a blank start is the ticket's own
+  // title and description, a blank wake or resume a plain one.
   const sendOff = sending || reading || !!letter || (starts
-    ? startOff || !entry?.draft.trim()
+    ? startOff
     : mails
       ? !entry?.draft.trim()
       : !live || !agent?.promptable || !!entry?.review || !!entry?.receipt?.waiting ||
@@ -336,7 +347,7 @@ function Composer({ store, ticket, entry, live }) {
       <div class="composer" data-starts=${String(starts)}>
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
           placeholder=${entry?.why && agent ? "Say what to do differently…" : mails ? `Message ${agent.provider} · it waits for your terminal…` : stopping ? `${agent.provider} is stopping · words wait here…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
-          required disabled=${fieldOff}
+          required=${!starts} disabled=${fieldOff}
           value=${entry?.draft || ""} onInput=${(e) => {
             mark(e);
             store.setDraft(e.currentTarget.value);
@@ -374,11 +385,7 @@ function Composer({ store, ticket, entry, live }) {
                 ? "One message waits for this ticket · take it back to change it."
                 : `Waits for your terminal, then queues for ${agent.provider}.`}</span></p>`
             : starts
-            ? html`<p id="start-what" class="start-what"><${Icon} name="play" size=${13} /><span>${asleep
-                ? `Wakes ${ticket.agent.provider}, then says this.`
-                : stopped && store.resumes
-                  ? `Resumes ${ticket.agent.provider}’s conversation, then says this.`
-                  : "Starts an agent on these words."}</span></p>`
+            ? null
             : html`<label class="chip-pick mode-pick"><span class="sr-only">Delivery</span>
               <select id="prompt-mode" value=${mode} disabled=${!agent} onChange=${(e) => store.setDelivery(e.currentTarget.value)}>
                 <option value="queue">Queue</option>
@@ -392,7 +399,7 @@ function Composer({ store, ticket, entry, live }) {
           <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
             onClick=${() => store.stopTurn()}><${Icon} name="stop" size=${16} /></button>
           <button id="send" type="submit" class="send" hidden=${stops} disabled=${sendOff}
-            aria-label=${starts ? (asleep ? "Wake agent with these words" : "Start agent with these words") : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
+            aria-label=${starts ? startLabel(store, ticket, asleep, stopped, !!entry?.draft.trim()) : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
             ? html`<${Icon} name="play" size=${16} />`
             : html`<${Icon} name="up" size=${18} width=${2.2} />`}</button>
         </div>
