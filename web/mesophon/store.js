@@ -49,6 +49,25 @@ function awayExplained() {
     return false;
   }
 }
+// A preference kept for the next load. Where storage refuses (a private
+// window, a full quota) the choice still holds for this page.
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* In-memory choice still applies. */
+  }
+}
+// What a host says of itself that a pairing keeps for when it is away
+// (T-497): the pairing's field, and the feature that sets it.
+const KEPT_FEATURES = {
+  collects: "mailbox",
+  starts: "start",
+  notes: "notes",
+  filedPictures: "filed_pictures",
+  mailPrompts: "mail_prompts",
+  resumes: "resume",
+};
 const sentContext = (item) => `sent:${item.id}`;
 const startContext = (ticket) => `start:${ticket}`;
 // The tier a start or a prompt carries (T-643): a pick this ticket may make
@@ -208,11 +227,7 @@ export class Store {
     const terminal = this.board?.terminalTheme;
     if (this.theme === "terminal" && terminal && terminal !== this.lastWorn) {
       this.lastWorn = terminal;
-      try {
-        localStorage.setItem("mesophon-worn", terminal);
-      } catch {
-        /* The next load wears the device's appearance until the board says. */
-      }
+      remember("mesophon-worn", terminal);
     }
     this.version++;
     for (const fn of this.listeners) fn();
@@ -601,11 +616,7 @@ export class Store {
   setOutputView(view) {
     if (this.outputView === view) return;
     this.outputView = view;
-    try {
-      localStorage.setItem("mesophon-view", view);
-    } catch {
-      /* The choice still holds for this page. */
-    }
+    remember("mesophon-view", view);
     this.sync();
     this.preview();
   }
@@ -746,22 +757,34 @@ export class Store {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!board || !this.startable(ticket) || !this.canStart || startWaiting(this.startOf(ticket))) return false;
+    const wakes = ticket.agent?.state === "sleeping";
+    return this.launch(board, ticket, text, tier, uploads, {
+      op: "start",
+      kind: wakes ? "wake" : "start",
+      dropped: "Not started: the connection dropped. Try again when your terminal is back.",
+      saying: wakes ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`,
+    });
+  }
+  // The one road a start, a wake and a resume leave by: the words, the tier
+  // and the pictures ride only when there are any, and `extra` is what the
+  // op names beside the ticket (a resume's session).
+  launch(board, ticket, text, tier, uploads, { op, extra = {}, kind, dropped, saying }) {
+    const id = ticket.id;
     const c = this.connection;
     const prompt = text.trim();
     const pick = tierPick(this, ticket, tier);
     const command = c.request(
-      { op: "start", ticket: id, ...(prompt ? { prompt } : {}), ...(pick ? { tier: pick } : {}),
+      { op, ticket: id, ...extra, ...(prompt ? { prompt } : {}), ...(pick ? { tier: pick } : {}),
         ...(uploads.length ? { uploads } : {}) },
       startContext(id),
     );
     if (command === undefined) {
-      this.say("Not started: the connection dropped. Try again when your terminal is back.", undefined, undefined, { ticket: id, err: true });
+      this.say(dropped, undefined, undefined, { ticket: id, err: true });
       this.emit();
       return false;
     }
-    const wakes = ticket.agent?.state === "sleeping";
-    const item = this.starts.sent(board, id, command, c.incarnation, ticket.key, wakes ? "wake" : "start");
-    this.say(wakes ? `Waking the agent on ${ticket.key}…` : `Starting an agent on ${ticket.key}…`, "clock", undefined, { ticket: id, start: item });
+    const item = this.starts.sent(board, id, command, c.incarnation, ticket.key, kind);
+    this.say(saying, "clock", undefined, { ticket: id, start: item });
     this.emit();
     return true;
   }
@@ -801,18 +824,22 @@ export class Store {
   sendKeys(press) {
     const ticket = this.board?.current;
     if (!this.keysReach(ticket)) return false;
-    const id = this.connection.request(
-      { op: "keys", ticket: ticket.id, session: ticket.agent.session, ...press },
-      (reply) => this.onKeysReply(reply, ticket.id),
-    );
-    if (id === undefined) {
-      this.say("Not sent: the connection dropped.", undefined, undefined, { ticket: ticket.id, err: true });
-      this.emit();
-      return false;
-    }
+    if (!this.pressKeys(ticket, press, (reply) => this.onKeysReply(reply, ticket.id))) return false;
     // The screen shows what the keys did on its next read.
     setTimeout(() => this.preview(), 250);
     return true;
+  }
+  // The request both key roads make, and the words for a connection that
+  // dropped under it.
+  pressKeys(ticket, press, onReply) {
+    const id = this.connection.request(
+      { op: "keys", ticket: ticket.id, session: ticket.agent.session, ...press },
+      onReply,
+    );
+    if (id !== undefined) return true;
+    this.say("Not sent: the connection dropped.", undefined, undefined, { ticket: ticket.id, err: true });
+    this.emit();
+    return false;
   }
   onKeysReply(reply, ticket) {
     if (reply.result === "rejected") {
@@ -841,14 +868,13 @@ export class Store {
       return false;
     }
     const c = this.connection;
-    const pane = { op: "keys", ticket: ticket.id, session: ticket.agent.session };
-    const line = { connection: c, incarnation: c.incarnation, ticket: pane.ticket, session: pane.session, at: Date.now() };
+    const line = { connection: c, incarnation: c.incarnation, ticket: ticket.id, session: ticket.agent.session, at: Date.now() };
     const finish = () => {
       if (this.typingLine !== line) return;
       this.typingLine = undefined;
       this.emit();
     };
-    const id = c.request({ ...pane, text }, (reply) => {
+    const sent = this.pressKeys(ticket, { text }, (reply) => {
       if (this.typingLine !== line) return;
       if (reply.result !== "edited") {
         finish();
@@ -863,11 +889,7 @@ export class Store {
         finish();
       }, ENTER_AFTER_TEXT_MS);
     });
-    if (id === undefined) {
-      this.say("Not sent: the connection dropped.", undefined, undefined, { ticket: line.ticket, err: true });
-      this.emit();
-      return false;
-    }
+    if (!sent) return false;
     this.typingLine = line;
     this.emit();
     return true;
@@ -891,23 +913,13 @@ export class Store {
     const board = this.active?.pin.board;
     const ticket = this.board?.tickets.find((t) => t.id === id);
     if (!board || !this.stopped(ticket) || !this.canResume || startWaiting(this.startOf(ticket))) return false;
-    const prompt = text.trim();
-    const pick = tierPick(this, ticket, tier);
-    const c = this.connection;
-    const command = c.request(
-      { op: "resume", ticket: id, session: ticket.agent.session, ...(prompt ? { prompt } : {}),
-        ...(pick ? { tier: pick } : {}), ...(uploads.length ? { uploads } : {}) },
-      startContext(id),
-    );
-    if (command === undefined) {
-      this.say("Not resumed: the connection dropped. Try again when your terminal is back.", undefined, undefined, { ticket: id, err: true });
-      this.emit();
-      return false;
-    }
-    const item = this.starts.sent(board, id, command, c.incarnation, ticket.key, "resume");
-    this.say(`Resuming the agent on ${ticket.key}…`, "clock", undefined, { ticket: id, start: item });
-    this.emit();
-    return true;
+    return this.launch(board, ticket, text, tier, uploads, {
+      op: "resume",
+      extra: { session: ticket.agent.session },
+      kind: "resume",
+      dropped: "Not resumed: the connection dropped. Try again when your terminal is back.",
+      saying: `Resuming the agent on ${ticket.key}…`,
+    });
   }
   get canComposeStart() {
     const ticket = this.board?.current;
@@ -1777,9 +1789,11 @@ export class Store {
     const entry = this.noteBook().entry(ticket.id);
     const rows = entry?.rows || [];
     const panes = [{ kind: "transcript", name: "Transcript", key: "transcript" }];
-    rows.forEach((row, i) =>
-      panes.push({ kind: "note", name: i === 0 ? "Description" : `Note · ${row.name || "Untitled"}`, key: row.id, row }),
-    );
+    // `title` is the note's bare name; the first note is the description.
+    rows.forEach((row, i) => {
+      const title = i === 0 ? "Description" : row.name || "Untitled";
+      panes.push({ kind: "note", name: i === 0 ? title : `Note · ${title}`, title, key: row.id, row });
+    });
     if (!rows.length && ticket.notes > 0) panes.push({ kind: "unread", name: "Notes", key: "unread", count: ticket.notes });
     if (board)
       for (const item of this.noteMail.fresh(board, ticket.id))
@@ -2419,21 +2433,10 @@ export class Store {
     this.active = chosen;
     this.returnBoard = undefined;
     // What the host said about itself, kept for when it is away (T-497).
-    const collects = !!this.connection.features?.includes("mailbox");
-    const starts = !!this.connection.features?.includes("start");
-    const notes = !!this.connection.features?.includes("notes");
-    const filedPictures = !!this.connection.features?.includes("filed_pictures");
-    const mailPrompts = !!this.connection.features?.includes("mail_prompts");
-    const resumes = !!this.connection.features?.includes("resume");
-    if (!!chosen.collects !== collects || !!chosen.starts !== starts || !!chosen.notes !== notes
-      || !!chosen.filedPictures !== filedPictures || !!chosen.mailPrompts !== mailPrompts
-      || !!chosen.resumes !== resumes) {
-      chosen.resumes = resumes;
-      chosen.collects = collects;
-      chosen.starts = starts;
-      chosen.notes = notes;
-      chosen.filedPictures = filedPictures;
-      chosen.mailPrompts = mailPrompts;
+    const features = this.connection.features;
+    const said = Object.entries(KEPT_FEATURES).map(([key, feature]) => [key, !!features?.includes(feature)]);
+    if (said.some(([key, on]) => !!chosen[key] !== on)) {
+      for (const [key, on] of said) chosen[key] = on;
       this.persist();
     }
     this.board = this.boards.get(chosen.pin.board);
@@ -2626,11 +2629,7 @@ export class Store {
   setRail(rail) {
     this.rail = rail;
     if (rail) this.boardMenuOpen = false;
-    try {
-      localStorage.setItem("mesophon-sidebar", rail ? "rail" : "full");
-    } catch {
-      /* The fold still holds for this page. */
-    }
+    remember("mesophon-sidebar", rail ? "rail" : "full");
     this.emit();
   }
 
@@ -2824,11 +2823,7 @@ export class Store {
   confirmAway() {
     const ask = this.awayAsk;
     this.awayAsk = undefined;
-    try {
-      localStorage.setItem(AWAY_EXPLAINED, "1");
-    } catch {
-      /* Explained again next time. */
-    }
+    remember(AWAY_EXPLAINED, "1");
     const ticket = this.board?.current;
     if (ask && ticket?.id === ask.ticket && this.entry) this.sealPrompt(this.entry, ticket);
     this.sync();
@@ -2964,11 +2959,7 @@ export class Store {
   // "terminal", "system" or a theme's id; `emit` puts it on the page.
   setTheme(theme) {
     this.theme = theme;
-    try {
-      localStorage.setItem("mesophon-theme", theme);
-    } catch {
-      /* In-memory choice still applies. */
-    }
+    remember("mesophon-theme", theme);
     this.emit();
   }
   // A tap when an answer or a prompt lands (T-1208), where the device has
@@ -2978,11 +2969,7 @@ export class Store {
   }
   setHaptics(on) {
     this.haptics = !!on;
-    try {
-      localStorage.setItem("mesophon-haptics", this.haptics ? "on" : "off");
-    } catch {
-      /* In-memory choice still applies. */
-    }
+    remember("mesophon-haptics", this.haptics ? "on" : "off");
     if (this.haptics) this.tap();
     this.emit();
   }
@@ -2997,11 +2984,7 @@ export class Store {
   setDensity(density) {
     this.density = density === "comfortable" ? "comfortable" : "compact";
     document.documentElement.dataset.density = this.density;
-    try {
-      localStorage.setItem("mesophon-density", this.density);
-    } catch {
-      /* In-memory choice still applies. */
-    }
+    remember("mesophon-density", this.density);
     this.emit();
   }
   // The browser offered to install the page, or installed it.

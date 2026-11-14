@@ -97,7 +97,7 @@ impl Daemon {
         if !agy::enabled() || self.agy_models_reading || !agy::models_due(&file, now_ms()) {
             return;
         }
-        let bin = std::env::var("MESIMON_AGY_BIN").unwrap_or_else(|_| "agy".into());
+        let bin = crate::agents::cli_bin(AgentProvider::Agy);
         let argv = self.launch(&[bin, "models".into()], &[]);
         let cwd = self.paths.state_dir.clone();
         let tx = self.tx.clone();

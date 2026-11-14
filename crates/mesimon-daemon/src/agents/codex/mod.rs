@@ -352,7 +352,7 @@ fn prepare(context: &LaunchContext<'_>, resume: Option<String>) -> Result<Launch
         session: id,
         generation,
         cwd: context.cwd.to_path_buf(),
-        executable: std::env::var("MESIMON_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
+        executable: crate::agents::cli_bin(mesimon_core::board::AgentProvider::Codex),
         upstream_socket: context.paths.rt_dir.join(format!("{stem}-up.sock")),
         proxy_socket: context.paths.rt_dir.join(format!("{stem}-ui.sock")),
         snapshot_path: snapshot_path(context.paths, id),

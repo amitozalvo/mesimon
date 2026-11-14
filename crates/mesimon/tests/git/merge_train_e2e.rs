@@ -32,6 +32,20 @@ fn git_ok(repo: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Waits for `n` panes on the board's tmux, then half a second more: every
+/// stub reading before anything is pasted.
+fn panes_up(h: &Harness, n: usize) {
+    let tmux_sock = h.paths.tmux_sock();
+    wait_until(Duration::from_secs(15), &format!("{n} panes"), || {
+        tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= n)
+            .unwrap_or(false)
+    });
+    std::thread::sleep(Duration::from_millis(500));
+}
+
 fn automation_of(c: &mut TestClient) -> AutomationStatus {
     match c.request(Command::Snapshot) {
         Response::Board { automation, .. } => automation,
@@ -196,14 +210,11 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
         return;
     };
     let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
     let repo = h.repo.clone();
     // The harness boots on a bare directory; the train needs a repository.
     init_repo(&repo, "a.txt", "hello\n");
     git(&repo, &["branch", "staging"]);
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train");
     assert!(matches!(
         c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
@@ -213,27 +224,11 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
     // Both stubs reading before anything is pasted.
-    wait_until(Duration::from_secs(15), "two panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
+    panes_up(&h, 2);
     // A turn each: automove lands both in REVIEW, the later one on top —
     // so B first, then A, and A is the first candidate.
     for sid in [sb, sa] {
-        start(&mut c, sid);
-        stop(&mut c, sid);
+        h.one_turn(&mut c, sid);
     }
     wait_until(Duration::from_secs(5), "both in REVIEW", || {
         let board = c.board();
@@ -271,31 +266,25 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     );
     assert!(feed().contains("\"on_merged\""), "{}", feed());
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
-        text().contains(&format!("Your branch {branch_a} has been merged into staging"))
+        h.got().contains(&format!("Your branch {branch_a} has been merged into staging"))
     });
     // The notice started a turn on A: the train waits for it. Ack and end it.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     assert_eq!(c.board().ticket(a).unwrap().column, "DONE", "DONE drags no turn back");
     // B fell behind: asked to rebase — once.
     wait_until(Duration::from_secs(15), "B to be asked to rebase", || {
-        text().contains(&format!("Rebase your current branch {branch_b} onto staging"))
+        h.got().contains(&format!("Rebase your current branch {branch_b} onto staging"))
     });
-    let asks = || {
-        text()
-            .lines()
-            .filter(|l| l.contains(&format!("Rebase your current branch {branch_b}")))
-            .count()
-    };
+    let asks = || lines_in(&got, &format!("Rebase your current branch {branch_b}")).len();
     assert_eq!(asks(), 1);
     assert!(automation_of(&mut c)
         .train_asked
         .iter()
         .any(|x| x.ticket == b && x.current && x.by == "train"));
     // The agent takes the turn, rebases, ends it; the same tip is not asked again.
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     git(&wt_b, &["rebase", "-q", "staging"]);
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "staging"])
     });
@@ -304,20 +293,12 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
 
     // The safeguard: a third ready ticket, and the arming board goes away.
     let (cid, sc, branch_c, _) = ready(&mut c, "gamma");
-    wait_until(Duration::from_secs(15), "three panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 3)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
+    panes_up(&h, 3);
     // Disarm by closing the connection BEFORE C finishes its turn, so the
     // train never sees a quiet board while armed.
     drop(c);
     let mut c2 = h.client("train-2");
-    start(&mut c2, sc);
-    stop(&mut c2, sc);
+    h.one_turn(&mut c2, sc);
     wait_until(Duration::from_secs(5), "C in REVIEW", || {
         c2.board().ticket(cid).unwrap().column == "REVIEW"
     });
@@ -346,9 +327,9 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     assert!([b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "DONE"));
     std::thread::sleep(Duration::from_millis(1500));
     assert!(
-        !text().contains(&format!("Your branch {branch_c}")),
+        !h.got().contains(&format!("Your branch {branch_c}")),
         "silent after a merge: {}",
-        text()
+        h.got()
     );
     let _ = c2.request(Command::Shutdown);
 }
@@ -370,71 +351,49 @@ fn a_finished_turn_is_held_until_the_train_is_done_with_it() {
     ) else {
         return;
     };
-    let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-hold");
     let (a, sa, branch_a, wt_a) = ready(&mut c, "alpha");
     // Nothing on A's branch yet: its work is the turn's below.
     git(&wt_a, &["reset", "-q", "--hard", "main"]);
     let (m, sm, _, _) = ready(&mut c, "manual");
-    wait_until(Duration::from_secs(15), "two panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
+    panes_up(&h, 2);
     assert!(matches!(c.request(Command::SetManualMerge { id: m, on: true }), Response::Ok));
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: true }),
         Response::Ok
     ));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
     let holding = |c: &mut TestClient| automation_of(c).holding;
 
     // The manual ticket's turn ends first: the train will not take it.
-    start(&mut c, sm);
-    stop(&mut c, sm);
+    h.one_turn(&mut c, sm);
     assert!(!holding(&mut c).contains(&m), "a person's merge is the person's news");
 
     // A turn that left nothing to merge is held only until it is looked
     // at, and that look reads the branch `ahead 0`.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(Duration::from_secs(10), "A let go: nothing for the train", || {
         !holding(&mut c).contains(&a)
     });
     // A's next turn commits and ends: held at once, while the last look
     // still reads `ahead 0`, and merged by the train within a look, not a
     // bucket.
-    start(&mut c, sa);
+    h.prompt_turn(&mut c, sa);
     std::fs::write(wt_a.join("alpha-2.txt"), "more\n").unwrap();
     git(&wt_a, &["add", "."]);
     git(&wt_a, &["commit", "-qm", "alpha 2"]);
-    stop(&mut c, sa);
+    h.end_turn(&mut c, sa);
     assert!(holding(&mut c).contains(&a), "held from the turn's end");
     wait_until(Duration::from_secs(15), "A to be merged", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
     });
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
-        text().contains(&format!("Your branch {branch_a} has been merged into main"))
+        h.got().contains(&format!("Your branch {branch_a} has been merged into main"))
     });
     assert!(holding(&mut c).contains(&a), "merged, its notice not yet taken");
     // The notice's turn ends: done with, and let go.
-    start(&mut c, sa);
-    stop(&mut c, sa);
+    h.one_turn(&mut c, sa);
     wait_until(Duration::from_secs(10), "A to be let go once its notice turn ended", || {
         !holding(&mut c).contains(&a)
     });
@@ -462,42 +421,18 @@ fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
         return;
     };
     let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-turn");
 
     let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
     let (cid, sc, branch_c, wt_c) = ready(&mut c, "gamma");
-    wait_until(Duration::from_secs(15), "three panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 3)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let asks = |branch: &str| {
-        text()
-            .lines()
-            .filter(|l| l.contains(&format!("Rebase your current branch {branch}")))
-            .count()
-    };
+    panes_up(&h, 3);
+    let asks = |branch: &str| lines_in(&got, &format!("Rebase your current branch {branch}")).len();
     // C, B, then A: automove parks each on top, so REVIEW reads A, B, C.
     for sid in [sc, sb, sa] {
-        start(&mut c, sid);
-        stop(&mut c, sid);
+        h.one_turn(&mut c, sid);
     }
     wait_until(Duration::from_secs(5), "all three in REVIEW", || {
         let board = c.board();
@@ -516,31 +451,31 @@ fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
     assert_eq!(asks(&branch_c), 0, "C is behind B in board order");
 
     // B takes the turn and lands the git step at once — the tests run on.
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     git(&wt_b, &["rebase", "-q", "main"]);
     // Three flag refreshes: the old hold read `needs_rebase`, which is now
     // false for B, and the pass asked C onto the same tip within one.
     std::thread::sleep(Duration::from_millis(3500));
-    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", text());
+    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", h.got());
     let owed = pending_of(&mut c, Some(cid));
     let rebase = owed.iter().find(|p| p.action == PendingAction::Rebase).unwrap();
     let key_b = c.board().ticket(b).unwrap().short_key.clone();
     assert_eq!(rebase.waits_on, vec![key_b], "C's row names B: {rebase:?}");
 
     // B's turn ends: B merges, main moves, and C is asked onto the new tip.
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
     });
     wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
-    start(&mut c, sc);
+    h.prompt_turn(&mut c, sc);
     git(&wt_c, &["rebase", "-q", "main"]);
-    stop(&mut c, sc);
+    h.end_turn(&mut c, sc);
     wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
     });
     std::thread::sleep(Duration::from_millis(2500));
-    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", text());
+    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", h.got());
     let _ = c.request(Command::Shutdown);
 }
 
@@ -560,45 +495,19 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
         return;
     };
     let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-restart");
 
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
     let (cid, sc, branch_c, wt_c) = ready(&mut c, "gamma");
     // The base moves under both.
-    std::fs::write(repo.join("base.txt"), "base advanced\n").unwrap();
-    git(&repo, &["add", "base.txt"]);
-    git(&repo, &["commit", "-qm", "advance base"]);
-    wait_until(Duration::from_secs(15), "two panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let asks = |branch: &str| {
-        text()
-            .lines()
-            .filter(|l| l.contains(&format!("Rebase your current branch {branch}")))
-            .count()
-    };
+    commit(&repo, "base.txt");
+    panes_up(&h, 2);
+    let asks = |branch: &str| lines_in(&got, &format!("Rebase your current branch {branch}")).len();
     // C, then B: automove parks each on top, so REVIEW reads B, C.
     for sid in [sc, sb] {
-        start(&mut c, sid);
-        stop(&mut c, sid);
+        h.one_turn(&mut c, sid);
     }
     wait_until(Duration::from_secs(5), "both in REVIEW", || {
         let board = c.board();
@@ -615,7 +524,7 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
     assert_eq!(asks(&branch_c), 0, "C is behind B in board order");
 
     // B takes the turn and lands the git step; the tests run on.
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     git(&wt_b, &["rebase", "-q", "main"]);
     let kept = std::fs::read_to_string(h.paths.state_dir.join("train.json")).unwrap();
     assert!(kept.contains(&b.to_string()), "B's open ask is kept: {kept}");
@@ -627,15 +536,15 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
     let mut c = h.client("train-restart-2");
     // B's agent re-derives as running (here: its next hook frame), and the
     // board re-arms the train on its first snapshot.
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     arm(&mut c);
     // Several passes on fresh flags: B is not mid-rebase any more, so only
     // the kept ask holds C.
     std::thread::sleep(Duration::from_millis(3500));
-    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", text());
+    assert_eq!(asks(&branch_c), 0, "C asked while B's rebase turn runs: {}", h.got());
 
     // B's turn ends: B merges, main moves, and C is asked onto the new tip.
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
     });
@@ -645,14 +554,14 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
     let file: serde_json::Value = serde_json::from_str(&kept).unwrap();
     assert!(file["asks"].get(b.to_string()).is_none(), "B's ask settled with its turn: {kept}");
     assert!(file["settled"].get(b.to_string()).is_some(), "and is remembered: {kept}");
-    start(&mut c, sc);
+    h.prompt_turn(&mut c, sc);
     git(&wt_c, &["rebase", "-q", "main"]);
-    stop(&mut c, sc);
+    h.end_turn(&mut c, sc);
     wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
     });
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", text());
+    assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", h.got());
     let _ = c.request(Command::Shutdown);
 }
 
@@ -674,49 +583,23 @@ fn a_later_delivery_of_a_merged_branch_waits_behind_a_fresh_rebase() {
         return;
     };
     let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-paid");
 
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
     let (cid, sc, branch_c, wt_c) = ready(&mut c, "gamma");
     // The base moves under both.
-    std::fs::write(repo.join("base.txt"), "base advanced\n").unwrap();
-    git(&repo, &["add", "base.txt"]);
-    git(&repo, &["commit", "-qm", "advance base"]);
-    wait_until(Duration::from_secs(15), "two panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    let asks = |branch: &str| {
-        text()
-            .lines()
-            .filter(|l| l.contains(&format!("Rebase your current branch {branch}")))
-            .count()
-    };
+    commit(&repo, "base.txt");
+    panes_up(&h, 2);
+    let asks = |branch: &str| lines_in(&got, &format!("Rebase your current branch {branch}")).len();
     let merged = |branch: &str| git_ok(&repo, &["merge-base", "--is-ancestor", branch, "main"]);
     let merge_row = |c: &mut TestClient, t: ulid::Ulid| {
         pending_of(c, Some(t)).iter().any(|p| p.action == PendingAction::Merge)
     };
     // C, then B: automove parks each on top, so REVIEW reads B, C.
     for sid in [sc, sb] {
-        start(&mut c, sid);
-        stop(&mut c, sid);
+        h.one_turn(&mut c, sid);
     }
     wait_until(Duration::from_secs(5), "both in REVIEW", || {
         let board = c.board();
@@ -728,42 +611,42 @@ fn a_later_delivery_of_a_merged_branch_waits_behind_a_fresh_rebase() {
     ));
     // B is asked, rebases and merges; C is asked onto the tip B left.
     wait_until(Duration::from_secs(15), "B to be asked to rebase", || asks(&branch_b) == 1);
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     git(&wt_b, &["rebase", "-q", "main"]);
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || merged(&branch_b));
     wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
 
     // C's rebase turn: the git step lands and the turn runs on.
-    start(&mut c, sc);
+    h.prompt_turn(&mut c, sc);
     git(&wt_c, &["rebase", "-q", "main"]);
     // B delivers again inside it, on the base as it stands.
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     std::fs::write(wt_b.join("beta2.txt"), "beta again\n").unwrap();
     git(&wt_b, &["add", "."]);
     git(&wt_b, &["commit", "-qm", "beta 2"]);
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     // Both read ready on a sample taken since: B now, C at its turn's end.
     wait_until(Duration::from_secs(15), "B's later delivery to read ready", || {
         merge_row(&mut c, b)
     });
     wait_until(Duration::from_secs(15), "C's rebase to be read", || merge_row(&mut c, cid));
-    assert!(!merged(&branch_b), "merged inside C's rebase turn: {}", text());
+    assert!(!merged(&branch_b), "merged inside C's rebase turn: {}", h.got());
 
     // C's turn ends with both ready: C, asked at this base, goes first.
-    stop(&mut c, sc);
+    h.end_turn(&mut c, sc);
     wait_until(Duration::from_secs(15), "C to be merged on its one rebase", || merged(&branch_c));
     assert!(!merged(&branch_b), "B's later delivery went over C's rebase");
     // B is behind what C moved: asked once more, and it merges on that.
     wait_until(Duration::from_secs(15), "B to be asked onto the tip C left", || {
         asks(&branch_b) == 2
     });
-    start(&mut c, sb);
+    h.prompt_turn(&mut c, sb);
     git(&wt_b, &["rebase", "-q", "main"]);
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B's later delivery to be merged", || merged(&branch_b));
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!((asks(&branch_b), asks(&branch_c)), (2, 1), "C rebased once: {}", text());
+    assert_eq!((asks(&branch_b), asks(&branch_c)), (2, 1), "C rebased once: {}", h.got());
     let _ = c.request(Command::Shutdown);
 }
 
@@ -793,9 +676,7 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     // B needs a rebase; A is already ready to merge onto the newer base.
     // Rebasing B before A lands would only make B need another rebase.
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
-    std::fs::write(repo.join("base.txt"), "base advanced\n").unwrap();
-    git(&repo, &["add", "base.txt"]);
-    git(&repo, &["commit", "-qm", "advance base"]);
+    commit(&repo, "base.txt");
     let (a, sa, branch_a, _) = ready(&mut c, "alpha");
     // In the way: the ff would create this file, and git will not overwrite
     // one it does not know about.
@@ -1033,35 +914,15 @@ fn a_worker_mid_turn_says_what_the_train_does_after_it() {
     ) else {
         return;
     };
-    let got = h.dir.join("got.txt");
-    let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo, "a.txt", "hello\n");
-    let tmux_sock = h.paths.tmux_sock();
-    let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-after-turn");
 
     let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
-    wait_until(Duration::from_secs(15), "two panes", || {
-        tmux(&tmux_sock)
-            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() >= 2)
-            .unwrap_or(false)
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    let start = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-        c.await_state(sid, "running", |s| *s == SessionState::Running);
-    };
-    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
-        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    };
-    start(&mut c, sa);
-    stop(&mut c, sa);
-    start(&mut c, sb);
+    panes_up(&h, 2);
+    h.one_turn(&mut c, sa);
+    h.prompt_turn(&mut c, sb);
     wait_until(Duration::from_secs(5), "A in REVIEW, B in IN PROGRESS", || {
         let board = c.board();
         board.ticket(a).unwrap().column == "REVIEW"
@@ -1081,8 +942,8 @@ fn a_worker_mid_turn_says_what_the_train_does_after_it() {
     wait_until(Duration::from_secs(15), "B's row: a rebase ask after its turn", || {
         owed(&mut c, PendingAction::Rebase).is_some_and(|p| p.waits_on.first() == Some(&key_b))
     });
-    let asked = |branch: &str| text().contains(&format!("Rebase your current branch {branch}"));
-    assert!(!asked(&branch_b), "no ask mid-turn: {}", text());
+    let asked = |branch: &str| h.got().contains(&format!("Rebase your current branch {branch}"));
+    assert!(!asked(&branch_b), "no ask mid-turn: {}", h.got());
 
     git(&wt_b, &["rebase", "-q", "main"]);
     wait_until(Duration::from_secs(15), "B's row: the merge after its turn", || {
@@ -1092,10 +953,10 @@ fn a_worker_mid_turn_says_what_the_train_does_after_it() {
         !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"]),
         "nothing merged under a working agent"
     );
-    stop(&mut c, sb);
+    h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged once its turn ends", || {
         git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
     });
-    assert!(!asked(&branch_b), "the rebase was never asked: {}", text());
+    assert!(!asked(&branch_b), "the rebase was never asked: {}", h.got());
     let _ = c.request(Command::Shutdown);
 }

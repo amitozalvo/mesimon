@@ -171,10 +171,6 @@ fn composed(c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid {
     }
 }
 
-fn record(c: &mut TestClient, sid: uuid::Uuid) -> mesimon_core::board::SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
-}
-
 /// The events of the hook file a record's `--settings` names.
 fn settings_events(rec: &mesimon_core::board::SessionRecord) -> Vec<String> {
     let at = rec.argv.iter().position(|a| a == "--settings").expect("--settings");
@@ -234,7 +230,7 @@ fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
     let ticket =
         ticket_with_brief(&mut c, "mods off", "## Brief\n\nmesimon-598-brief arrives once");
     let sid = composed(&mut c, ticket);
-    let first = record(&mut c, sid);
+    let first = c.record(sid);
     assert_eq!(first.road, Road::Mod);
     assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
     assert!(!first.argv.iter().any(|a| a == "--settings"), "{:?}", first.argv);
@@ -242,10 +238,10 @@ fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
     // No SessionStart and no bridge: the pane shows its composer, so the
     // relaunch comes a bridge wait after the launch, on the hook set.
     wait_until(Duration::from_secs(10), "the relaunch on the hook set", || {
-        let rec = record(&mut c, sid);
+        let rec = c.record(sid);
         rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(!rec.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", rec.argv);
     assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
     assert_eq!(rec.state, SessionState::Spawning);
@@ -276,13 +272,13 @@ fn a_mod_launch_that_never_reports_is_relaunched_on_the_hook_set() {
         got().contains("mesimon-598-brief")
     });
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
     assert_eq!(got().matches("mesimon-598-brief").count(), 1, "{}", got());
 
     // The next launch takes the hook set at once.
     let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-598-next");
     let next = composed(&mut c, other);
-    let rec = record(&mut c, next);
+    let rec = c.record(next);
     assert_eq!(rec.road, Road::Hooks);
     assert!(rec.argv.iter().any(|a| a == "--settings"), "{:?}", rec.argv);
     let _ = c.request(Command::KillSession { id: sid });
@@ -321,7 +317,7 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_nati
     let ticket =
         ticket_with_brief(&mut c, "deaf mod", "## Brief\n\nmesimon-650-brief arrives once");
     let sid = composed(&mut c, ticket);
-    let first = record(&mut c, sid);
+    let first = c.record(sid);
     assert_eq!(first.road, Road::Mod);
     assert!(first.argv.iter().any(|a| a == "--plugin-dir"), "{:?}", first.argv);
     assert!(!first.argv.iter().any(|a| a == "--settings"), "{:?}", first.argv);
@@ -330,9 +326,9 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_nati
     // wait after that first poll the launch is relaunched native, and the
     // journal's reason says the bridge had polled.
     wait_until(Duration::from_secs(10), "the native relaunch", || {
-        record(&mut c, sid).argv.iter().any(|a| a == "--settings")
+        c.record(sid).argv.iter().any(|a| a == "--settings")
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_native(&h, &rec);
     assert_eq!(rec.state, SessionState::Spawning);
     assert!(rec.pending_submit, "the words are still owed");
@@ -376,7 +372,7 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_nati
     let frames = std::fs::read_to_string(h.dir.join(format!("mod-{sid}.ndjson"))).unwrap();
     assert!(frames.contains("\"kind\":\"submit\""), "{frames}");
     wait_until(Duration::from_secs(5), "the mod's entered clears the mark", || {
-        record(&mut c, sid).unsent.is_none()
+        c.record(sid).unsent.is_none()
     });
     hook_send_road(
         &hook_sock,
@@ -387,13 +383,13 @@ fn a_mod_launch_whose_bridge_polls_and_hears_no_session_start_is_relaunched_nati
         r#"{"prompt":"go"}"#,
         Some("mod"),
     );
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
     assert_eq!(got().matches("mesimon-650-brief").count(), 1, "{}", got());
 
     // The next launch is native at once.
     let other = ticket_with_brief(&mut c, "the next one", "## Brief\n\nmesimon-650-next");
     let next = composed(&mut c, other);
-    assert_native(&h, &record(&mut c, next));
+    assert_native(&h, &c.record(next));
     let _ = c.request(Command::KillSession { id: sid });
     let _ = c.request(Command::KillSession { id: next });
 }
@@ -433,7 +429,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
     let mut c = h.client("auto-enterprise");
     let ticket = ticket_with_brief(&mut c, "native", "## Brief\n\nmesimon-658-brief arrives once");
     let sid = composed(&mut c, ticket);
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_native(&h, &rec);
     assert_eq!(rec.state, SessionState::Spawning);
     // The native launch's own verdict keeps the limit (T-1069).
@@ -456,9 +452,9 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
         Some("mod"),
     );
     wait_until(Duration::from_secs(5), "the mod's SessionStart", || {
-        record(&mut c, sid).state != SessionState::Spawning
+        c.record(sid).state != SessionState::Spawning
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_eq!(rec.claude_session_id, None, "the launch's own id");
     assert_eq!(rec.transcript_path, None, "nothing written before the first prompt");
     let got = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
@@ -479,7 +475,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
         None,
     );
     wait_until(Duration::from_secs(5), "the permission request reaches the card", || {
-        record(&mut c, sid).state
+        c.record(sid).state
             == SessionState::RequiresAction { reason: mesimon_core::board::Reason::Permission }
     });
     // The feed is written at the tick's end; the Stop came first.
@@ -498,7 +494,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
         r#"{"prompt":"go"}"#,
         Some("mod"),
     );
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
     assert_eq!(got().matches("mesimon-658-brief").count(), 1, "{}", got());
     assert!(!feed_has(&h, "claude_road_relaunch"), "nothing to relaunch");
 
@@ -525,7 +521,7 @@ fn an_enterprise_account_is_read_by_the_probe_and_the_first_launch_is_native() {
         Some("mod"),
     );
     wait_until(Duration::from_secs(5), "the transcript found by id", || {
-        record(&mut c, sid).transcript_path.as_deref() == Some(transcript.to_str().unwrap())
+        c.record(sid).transcript_path.as_deref() == Some(transcript.to_str().unwrap())
     });
     let _ = c.request(Command::KillSession { id: sid });
 }
@@ -712,7 +708,7 @@ impl Relaunch {
         let mut c = h.client(name);
         let ticket = c.create_ticket(title);
         let sid = c.spawn_claude(ticket);
-        assert_eq!(record(&mut c, sid).road, Road::Mod);
+        assert_eq!(c.record(sid).road, Road::Mod);
         Some(Relaunch { h, c, ticket, sid })
     }
 
@@ -750,7 +746,7 @@ impl Relaunch {
         let sid = self.sid;
         let c = &mut self.c;
         wait_until(Duration::from_secs(15), "the relaunch on the hook set", || {
-            let rec = record(c, sid);
+            let rec = c.record(sid);
             rec.road == Road::Hooks && rec.argv.iter().any(|a| a == "--settings")
         });
     }
@@ -784,7 +780,7 @@ fn a_silent_mod_relaunch_records_the_title_it_types() {
     r.first("silent seat ");
     r.paint(false);
     r.relaunched();
-    let rec = record(&mut r.c, r.sid);
+    let rec = r.c.record(r.sid);
     assert_eq!(rec.typed_title.as_deref(), Some("silent seat"), "the new pane's prefill");
     r.start();
     r.prompt("mesimon-probe-961r the words");
@@ -817,7 +813,7 @@ fn a_carried_relaunch_entry_takes_the_new_pane_s_prefill() {
     r.first("carried seat draft-b");
     r.paint(false);
     r.relaunched();
-    let rec = record(&mut r.c, r.sid);
+    let rec = r.c.record(r.sid);
     assert_eq!(rec.typed_title, None, "the relaunch typed nothing for carried words");
     assert!(rec.pending_submit || r.file("got.txt").is_empty(), "the words are carried");
     // The new pane: a draft equal to the title, typed before its box.

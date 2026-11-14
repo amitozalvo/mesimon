@@ -21,7 +21,7 @@ use common::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, SessionRecord, SessionState};
+use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::road::Road;
 use mesimon_core::Principal;
@@ -67,10 +67,6 @@ fn frames(h: &Harness, sid: uuid::Uuid, kind: &str) -> Vec<serde_json::Value> {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|f| f["kind"] == kind)
         .collect()
-}
-
-fn record(c: &mut TestClient, sid: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
 }
 
 fn ticket_with_brief(c: &mut TestClient, title: &str, brief: &str) -> ulid::Ulid {
@@ -141,7 +137,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     let brief = brief();
     let ticket = ticket_with_brief(&mut c, "mod me: do the brief", &brief);
     let sid = spawn(&mut c, ticket, true);
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_eq!(rec.road, Road::Mod);
     assert!(rec.pending_submit, "the prompt is owed");
     wait_bridge(&h, sid);
@@ -166,12 +162,12 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     assert!(took < Duration::from_secs(4), "no composer wait: {took:?}");
     wait_feed(&h, &["\"cmd\":\"prompt_by_mod\""]);
     assert!(!h.feed().contains("prompt_submit_not_ready"));
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(rec.ticket_read, "the brief went in with the first prompt");
     assert!(rec.pending_submit, "owed until UserPromptSubmit");
 
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
     wait_feed(&h, &["\"cmd\":\"prompt_submitted\""]);
 
     // A prompt into the live session goes down the mod too, never pasted.
@@ -188,7 +184,7 @@ fn a_mod_launch_takes_its_whole_prompt_with_no_composer_and_a_live_prompt_likewi
     assert_eq!(submits.len(), 2);
     assert_eq!(submits[1]["text"], "mesimon-probe-575 one more turn");
     // A live prompt draws no launching arc, on either road.
-    assert!(!record(&mut c, sid).pending_submit);
+    assert!(!c.record(sid).pending_submit);
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
     wait_until(Duration::from_secs(5), "the second ack", || {
         h.feed().matches("\"cmd\":\"prompt_submitted\"").count() == 2
@@ -227,7 +223,7 @@ fn a_mod_that_never_comes_up_leaves_the_words_to_the_paste_road() {
     let mut c = h.client("modsilent");
     let ticket = ticket_with_brief(&mut c, "silent me", "## Brief\n\nmesimon-silent-1 by paste");
     let sid = spawn(&mut c, ticket, true);
-    assert_eq!(record(&mut c, sid).road, Road::Mod);
+    assert_eq!(c.record(sid).road, Road::Mod);
     std::thread::sleep(Duration::from_millis(700));
     session_start(&hook_sock, sid);
     // The bridge wait runs out, and the words go the way an older Claude Code
@@ -242,7 +238,7 @@ fn a_mod_that_never_comes_up_leaves_the_words_to_the_paste_road() {
     wait_feed(&h, &["\"cmd\":\"prompt_by_paste\""]);
     assert!(frames(&h, sid, "submit").is_empty());
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
 
     // A live prompt with no mod to take it is pasted, as before.
     hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
@@ -266,7 +262,7 @@ fn a_mod_launch_with_no_session_start_is_given_its_words_by_paste() {
     let mut c = h.client("modnostart");
     let ticket = ticket_with_brief(&mut c, "no start", "## Brief\n\nmesimon-nostart-1 by paste");
     let sid = spawn(&mut c, ticket, true);
-    assert_eq!(record(&mut c, sid).road, Road::Mod);
+    assert_eq!(c.record(sid).road, Road::Mod);
     // No SessionStart, from either road.
     wait_until(Duration::from_secs(12), "the rescued delivery", || {
         h.got().contains("mesimon-nostart-1 by paste")
@@ -312,9 +308,9 @@ fn a_submit_the_mod_refuses_is_kept_unsent_and_its_resend_goes_down_the_mod() {
     wait_bridge(&h, sid);
     session_start(&hook_sock, sid);
     wait_until(Duration::from_secs(5), "the brief marked unsent", || {
-        record(&mut c, sid).unsent.is_some()
+        c.record(sid).unsent.is_some()
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(rec.unsent.as_ref().unwrap().brief, "the brief, for the card's `brief not sent`");
     assert!(!rec.pending_submit);
     wait_feed(&h, &["\"cmd\":\"prompt_submit_refused\"", "\"outcome\":\"dropped\""]);
@@ -331,9 +327,7 @@ fn a_submit_the_mod_refuses_is_kept_unsent_and_its_resend_goes_down_the_mod() {
     assert_eq!(submits[1]["text"], "drop me\n\n## Brief\n\nmesimon-drop-1 resent whole");
     wait_feed(&h, &["\"cmd\":\"prompt_resent\""]);
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    wait_until(Duration::from_secs(3), "the ack clears it", || {
-        record(&mut c, sid).unsent.is_none()
-    });
+    wait_until(Duration::from_secs(3), "the ack clears it", || c.record(sid).unsent.is_none());
     let _ = c.request(Command::KillSession { id: sid });
 }
 
@@ -352,12 +346,12 @@ fn an_old_entered_clears_no_newer_delivery_s_unsent_words() {
     wait_bridge(&h, sid);
     session_start(&hook_sock, sid);
     wait_until(Duration::from_secs(5), "the brief marked unsent", || {
-        record(&mut c, sid).unsent.is_some()
+        c.record(sid).unsent.is_some()
     });
     // A newer delivery, the person's own words, refused too.
     assert!(matches!(prompt(&mut c, ticket, "mesimon-stale-2 newer words", false), Response::Ok));
     wait_until(Duration::from_secs(5), "the newer words unsent", || {
-        record(&mut c, sid).unsent.is_some_and(|u| u.text.contains("mesimon-stale-2"))
+        c.record(sid).unsent.is_some_and(|u| u.text.contains("mesimon-stale-2"))
     });
     let submits = frames(&h, sid, "submit");
     assert_eq!(submits.len(), 2, "{submits:?}");
@@ -375,7 +369,7 @@ fn an_old_entered_clears_no_newer_delivery_s_unsent_words() {
     };
     entered(old);
     std::thread::sleep(Duration::from_millis(800));
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(
         rec.unsent.as_ref().is_some_and(|u| u.text.contains("mesimon-stale-2")),
         "an earlier delivery's report keeps the newer words: {:?}",
@@ -399,7 +393,7 @@ fn a_queued_ask_waits_for_a_late_bridge_and_goes_down_the_mod() {
     let mut c = h.client("modlate");
     let ticket = ticket_with_brief(&mut c, "late me", "## Brief\n\nnot sent");
     let sid = spawn(&mut c, ticket, false);
-    assert_eq!(record(&mut c, sid).road, Road::Mod);
+    assert_eq!(c.record(sid).road, Road::Mod);
     session_start(&hook_sock, sid);
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     let queued = c.request(Command::PromptSession {
@@ -594,7 +588,7 @@ fn a_submit_held_after_a_stop_is_pasted_into_the_empty_box() {
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     // The refusal reads the box once, and the stub's first line can be held
     // past `SessionStart` (its first exec's scan, T-738): wait for the box.
-    let sid16 = record(&mut c, sid).sid16();
+    let sid16 = c.record(sid).sid16();
     wait_until(Duration::from_secs(10), "the stub's composer", || {
         let out = tmux(&h.paths.tmux_sock()).args(["capture-pane", "-p", "-t", &sid16]).output();
         out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("? for shortcuts"))
@@ -605,7 +599,7 @@ fn a_submit_held_after_a_stop_is_pasted_into_the_empty_box() {
         h.got().contains("mesimon-894 held words")
     });
     assert_eq!(frames(&h, sid, "submit").len(), 1, "one submit, then the paste");
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
     assert!(!h.feed().contains("\"cmd\":\"prompt_submit_refused\""));
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
@@ -629,10 +623,8 @@ fn a_submit_held_after_a_stop_with_no_empty_box_is_kept_unsent() {
     session_start(&hook_sock, sid);
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     assert!(matches!(prompt(&mut c, ticket, "mesimon-894 kept words", false), Response::Ok));
-    wait_until(Duration::from_secs(5), "the words kept unsent", || {
-        record(&mut c, sid).unsent.is_some()
-    });
-    assert_eq!(record(&mut c, sid).unsent.unwrap().text, "mesimon-894 kept words");
+    wait_until(Duration::from_secs(5), "the words kept unsent", || c.record(sid).unsent.is_some());
+    assert_eq!(c.record(sid).unsent.unwrap().text, "mesimon-894 kept words");
     wait_feed(&h, &["\"cmd\":\"prompt_submit_refused\""]);
     std::thread::sleep(Duration::from_millis(500));
     assert!(!h.got().contains("mesimon-894 kept words"), "nothing pasted");

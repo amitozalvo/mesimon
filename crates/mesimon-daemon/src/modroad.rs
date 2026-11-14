@@ -178,7 +178,7 @@ pub fn read_setting() -> Setting {
 /// The Claude Code a launch would run: `MESIMON_CLAUDE_BIN` (a name or a
 /// path), else `claude`, found on the captured `PATH`.
 pub fn claude_binary(path_var: Option<&str>) -> Option<PathBuf> {
-    let name = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+    let name = crate::agents::cli_bin(mesimon_core::board::AgentProvider::ClaudeCode);
     if name.contains('/') {
         return Some(PathBuf::from(name)).filter(|p| p.is_file());
     }

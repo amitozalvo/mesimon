@@ -234,6 +234,29 @@ pub(crate) struct Pasted {
     pub(crate) trimmed: bool,
 }
 
+/// A paste's text for a field of lines: `"\r\n"` and a lone `'\r'` become
+/// `'\n'`, then `scrub_cells` keeps the newlines and turns tabs into spaces.
+/// The order matters: scrubbing first would drop the `'\r'` of a `"\r\n"`
+/// and the pair's newline would survive, but a lone `'\r'` (an old Mac file)
+/// would vanish with its line break.
+fn clean_lines(raw: &str) -> String {
+    let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
+    mesimon_core::text::scrub_cells(&unified, true)
+}
+
+/// `s` into `text` at `cursor`, grapheme by grapheme, while the text stays
+/// within `limit` bytes: the cut never splits a cluster.
+fn insert_clusters(text: &mut String, cursor: &mut usize, limit: usize, s: &str) -> Pasted {
+    for g in s.graphemes(true) {
+        if g.len() > limit.saturating_sub(text.len()) {
+            return Pasted { trimmed: true };
+        }
+        text.insert_str(*cursor, g);
+        *cursor += g.len();
+    }
+    Pasted { trimmed: false }
+}
+
 impl EditBuffer {
     pub(crate) fn new(limit: usize) -> Self {
         Self { text: String::new(), cursor: 0, limit }
@@ -266,16 +289,7 @@ impl EditBuffer {
     /// cut never splits a cluster.
     pub(crate) fn paste(&mut self, raw: &str) -> Pasted {
         let flat = one_line(raw);
-        let mut trimmed = false;
-        for g in flat.graphemes(true) {
-            if g.len() > self.room() {
-                trimmed = true;
-                break;
-            }
-            self.text.insert_str(self.cursor, g);
-            self.cursor += g.len();
-        }
-        Pasted { trimmed }
+        insert_clusters(&mut self.text, &mut self.cursor, self.limit, &flat)
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -329,19 +343,9 @@ impl EditBuffer {
     /// the blank lines at either end are trimmed, as a copied line's own
     /// newline is. Up to the limit, never splitting a cluster.
     pub(crate) fn paste_lines(&mut self, raw: &str) -> Pasted {
-        let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
-        let clean = mesimon_core::text::scrub_cells(&unified, true);
+        let clean = clean_lines(raw);
         let clean = clean.trim_matches('\n').trim_end();
-        let mut trimmed = false;
-        for g in clean.graphemes(true) {
-            if g.len() > self.room() {
-                trimmed = true;
-                break;
-            }
-            self.text.insert_str(self.cursor, g);
-            self.cursor += g.len();
-        }
-        Pasted { trimmed }
+        insert_clusters(&mut self.text, &mut self.cursor, self.limit, clean)
     }
 
     /// Zero-based line the cursor is on.
@@ -559,17 +563,7 @@ impl TextArea {
     /// already past the limit is kept whole, the field just refuses to grow
     /// it (the same rule as `EditBuffer::from_text`).
     pub(crate) fn from_text(text: &str, limit: usize) -> Self {
-        Self { text: Self::clean(text), cursor: 0, want_col: None, limit }
-    }
-
-    /// `"\r\n"` and a lone `'\r'` become `'\n'`, then `scrub_cells` keeps the
-    /// newlines and turns tabs into spaces. The order matters: scrubbing
-    /// first would drop the `'\r'` of a `"\r\n"` and the pair's newline would
-    /// survive, but a lone `'\r'` (an old Mac file) would vanish with its
-    /// line break.
-    fn clean(raw: &str) -> String {
-        let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
-        mesimon_core::text::scrub_cells(&unified, true)
+        Self { text: clean_lines(text), cursor: 0, want_col: None, limit }
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -672,18 +666,8 @@ impl TextArea {
     /// text goes in grapheme by grapheme under the limit; the cut never
     /// splits a cluster.
     pub(crate) fn paste(&mut self, raw: &str) -> Pasted {
-        let clean = Self::clean(raw);
-        let mut trimmed = false;
-        for g in clean.graphemes(true) {
-            if g.len() > self.room() {
-                trimmed = true;
-                break;
-            }
-            self.text.insert_str(self.cursor, g);
-            self.cursor += g.len();
-        }
         self.want_col = None;
-        Pasted { trimmed }
+        insert_clusters(&mut self.text, &mut self.cursor, self.limit, &clean_lines(raw))
     }
 
     /// Grapheme-wise; at column 0 the `'\n'` before the cursor is the

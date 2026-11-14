@@ -14,9 +14,6 @@ pub(super) struct Holds {
     pending: HashMap<uuid::Uuid, PendingStop>,
     // A hook from an earlier turn can survive a rewake and the next Stop.
     known: HashMap<uuid::Uuid, HashMap<i32, u64>>,
-    // T-1200: the frame being handled began a turn over a hold that lifted
-    // a resting seat, and that lift's withheld edge is this turn's begin.
-    begun: Option<(uuid::Uuid, SessionState)>,
 }
 
 struct PendingStop {
@@ -76,6 +73,10 @@ fn accounted(argv: &str, shells: &[String]) -> bool {
 }
 
 impl Daemon {
+    /// The signal the machine reads, and with it the resting state a lifted
+    /// hold left when this frame began a turn over it (T-1200): the lift's
+    /// withheld edge is this turn's begin, which `begin_lifted_turn` makes
+    /// once the machine has read the frame.
     pub(super) fn hold_async_stop(
         &mut self,
         id: uuid::Uuid,
@@ -83,7 +84,8 @@ impl Daemon {
         frame: &HookFrame,
         detail: Option<String>,
         now: u64,
-    ) -> Signal {
+    ) -> (Signal, Option<SessionState>) {
+        let mut lifted = None;
         match &sig {
             // The lead's own tool, started or done, is a turn after the held
             // Stop: the one Claude Code runs on a `!` command's output opens
@@ -95,10 +97,7 @@ impl Daemon {
             Signal::UserPromptSubmit
             | Signal::ToolStarted { nested: false }
             | Signal::ToolCompleted { nested: false } => {
-                if let Some(from) = self.async_hooks.pending.remove(&id).and_then(|p| p.lifted_from)
-                {
-                    self.async_hooks.begun = Some((id, from));
-                }
+                lifted = self.async_hooks.pending.remove(&id).and_then(|p| p.lifted_from);
             }
             Signal::PaneDied { .. }
             | Signal::SessionEnd { .. }
@@ -110,7 +109,7 @@ impl Daemon {
             _ => {}
         }
         if !matches!(sig, Signal::Stop { has_agent_id: false, .. }) {
-            return sig;
+            return (sig, lifted);
         }
         let Some(rec) = self.board.sessions.iter().find(|r| {
             r.id == id
@@ -120,7 +119,7 @@ impl Daemon {
                 && !r.observe_only()
                 && r.state != (SessionState::Idle { stop_reason: StopReason::EndTurn })
         }) else {
-            return sig;
+            return (sig, lifted);
         };
         let shells = frame
             .payload
@@ -156,16 +155,22 @@ impl Daemon {
         self.pane_due.hook_rows = true;
         // Keep the existing turn open. No delivered edge, automove, or
         // crown turn-end probe exists until the saved Stop is released.
-        Signal::TurnStarted
+        (Signal::TurnStarted, lifted)
     }
 
     /// The turn this frame began over a lifted hold (T-1200), as the edge
     /// the lift withheld: automove, the open turn and its age then follow
-    /// as from any begin. Called after the machine read the frame, so the
-    /// prompt's own bookkeeping (T-186's hand rule) comes first.
-    pub(super) fn begin_lifted_turn(&mut self, id: uuid::Uuid, hook: &str) -> bool {
-        let Some((at, from)) = self.async_hooks.begun.take() else { return false };
-        if at != id || self.board.session(id).is_none_or(|r| r.state != SessionState::Running) {
+    /// as from any begin. `lifted` is `hold_async_stop`'s for the same
+    /// frame. Called after the machine read the frame, so the prompt's own
+    /// bookkeeping (T-186's hand rule) comes first.
+    pub(super) fn begin_lifted_turn(
+        &mut self,
+        id: uuid::Uuid,
+        lifted: Option<SessionState>,
+        hook: &str,
+    ) -> bool {
+        let Some(from) = lifted else { return false };
+        if self.board.session(id).is_none_or(|r| r.state != SessionState::Running) {
             return false;
         }
         let change = Change {
@@ -376,7 +381,7 @@ mod tests {
             monitoring_tasks: false,
             teammates: 0,
         };
-        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000).0, Signal::TurnStarted));
         let facts = facts.map(|mut fs| {
             for f in &mut fs {
                 f.session_name = sid.clone();
@@ -442,16 +447,16 @@ mod tests {
             monitoring_tasks: false,
             teammates: 0,
         };
-        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000).0, Signal::TurnStarted));
         let nested = Signal::ToolCompleted { nested: true };
         assert!(matches!(
-            d.hold_async_stop(id, nested, &frame, None, 2_000),
+            d.hold_async_stop(id, nested, &frame, None, 2_000).0,
             Signal::ToolCompleted { nested: true }
         ));
         assert!(d.async_stop_pending(id), "a subagent's completion keeps the hold");
         let lead = Signal::ToolCompleted { nested: false };
         assert!(matches!(
-            d.hold_async_stop(id, lead, &frame, None, 3_000),
+            d.hold_async_stop(id, lead, &frame, None, 3_000).0,
             Signal::ToolCompleted { nested: false }
         ));
         assert!(!d.async_stop_pending(id), "the lead's completion is a turn of its own");
@@ -502,7 +507,6 @@ mod tests {
         d.on_hook(frame("Stop"));
         assert!(d.async_stop_pending(id));
         d.on_hook(frame("UserPromptSubmit"));
-        assert!(d.async_hooks.begun.is_none());
         d.feed.flush().unwrap();
         let feed = std::fs::read_to_string(d.paths.activity_log()).unwrap();
         let begins = feed

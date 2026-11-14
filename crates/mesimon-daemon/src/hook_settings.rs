@@ -264,9 +264,14 @@ fn write_file(paths: &Paths, session: uuid::Uuid, value: &Value) -> Result<PathB
     let dir = paths.hooks_dir();
     std::fs::create_dir_all(&dir)?;
     let file = dir.join(format!("{session}.json"));
-    std::fs::write(&file, serde_json::to_string_pretty(value)?)?;
-    std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    write_private(&file, value)?;
     Ok(file)
+}
+
+/// A generated JSON file a launch reads: pretty-printed, mode 0600.
+pub fn write_private(path: &Path, value: &Value) -> std::io::Result<()> {
+    std::fs::write(path, serde_json::to_string_pretty(value)?)?;
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
 }
 
 /// The mesimon binary a spawned session should exec back into — for the hook
@@ -311,6 +316,16 @@ pub fn mcp_config_json(
     session: uuid::Uuid,
     tier: mesimon_core::board::AgentTools,
 ) -> String {
+    mcp_config(paths, mesimon_bin, session, tier).to_string()
+}
+
+/// [`mcp_config_json`] as a value, for a seat that reads it from a file.
+pub fn mcp_config(
+    paths: &Paths,
+    mesimon_bin: &Path,
+    session: uuid::Uuid,
+    tier: mesimon_core::board::AgentTools,
+) -> Value {
     // Built through serde, never by formatting: a repo path containing a quote
     // would otherwise break the blob open.
     json!({
@@ -332,7 +347,6 @@ pub fn mcp_config_json(
             }
         }
     })
-    .to_string()
 }
 
 #[cfg(test)]

@@ -129,8 +129,7 @@ fn launch(
     identity_flag: &str,
     identity: &str,
 ) -> Result<Vec<String>, String> {
-    let executable = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-    let mut argv = vec![executable];
+    let mut argv = vec![super::cli_bin(mesimon_core::board::AgentProvider::ClaudeCode)];
     argv.extend(hook_set(context)?);
     argv.extend(flags(context));
     argv.extend([identity_flag.into(), identity.into()]);

@@ -587,8 +587,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // never calm — calm is the `m` offer's register on this row. A queued
     // ask the zone's closed box shows says it there, beside its words
     // (T-1189), and not here as well.
-    let ask_boxed = ask_in_box(app, ticket.id, area.width >= TWO_ZONE_MIN_W, rail_idx);
-    if let Some(row) = app.pending_row(ticket.id).filter(|_| !ask_boxed) {
+    let row = app.rail_rows(ticket_id).get(rail_idx).copied();
+    let ask_boxed = ask_in_box(app, ticket.id, area.width >= TWO_ZONE_MIN_W, row);
+    if let Some(row) = app.pending_row(ticket.id).filter(|_| ask_boxed.is_none()) {
         let text = if wt_spans.is_empty() { format!(" {row}") } else { format!(" ∙ {row}") };
         wt_spans.push(Span::styled(text, d2));
         // The send and the take-back beside the words, in the keymap's own
@@ -712,7 +713,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // does not move as the cursor walks into the notes.
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     app.page_zone.set(two_zone);
-    let row = app.rail_rows(ticket_id).get(rail_idx).copied();
     let reading_note = two_zone && matches!(row, Some(RailRow::Note(_)));
     let body_rows = (area.height as usize).saturating_sub(7 + wt_row as usize);
     let desc: Vec<Line<'static>> = ticket
@@ -979,7 +979,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }),
             None if launch.is_some() => Some((Anim::Rocking, crate::text::hash64(ticket_id))),
             // Only where a start is offered: an archived ticket has no seat.
-            None if app.rail_rows(ticket_id).iter().any(|r| matches!(r, RailRow::NewAgent)) => {
+            None if app.new_agent_row(ticket_id) => {
                 Some((Anim::Egg, crate::text::hash64(ticket_id)))
             }
             None => None,
@@ -1004,7 +1004,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             seat,
             launch.as_ref(),
             shin.is_some(),
-            ask_boxed,
+            ask_boxed.as_ref(),
         );
         // Under the content where it ends, at the zone's foot where it does
         // not: `used` is the whole zone exactly when the content overflowed.
@@ -1147,7 +1147,7 @@ fn draw_preview(
     seat: Option<ulid::Ulid>,
     launch: Option<&Launch>,
     shin_on_rail: bool,
-    ask_boxed: bool,
+    ask_boxed: Option<&(&str, String)>,
 ) -> (usize, Option<Composer>) {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -1310,8 +1310,7 @@ fn draw_preview(
         // the dialog's: its pointer goes and its key row is the page's.
         // The seam is found by the pointer, so a trust dialog's is read off
         // the pane's own screen: `for_trust` only adds rows at the end.
-        let (page, trust_keys) =
-            if rec.on_trust_dialog() { shot.for_trust() } else { (shot.for_page(), None) };
+        let (page, trust_keys) = app.live_page(&shot, rec.on_trust_dialog());
         // So is any dialog's (T-1198): the page draws it without its pointer.
         let trust_anchor =
             (trust_keys.is_some() || shot.box_rows().is_none()).then(|| shot.anchor());
@@ -1351,14 +1350,15 @@ fn draw_preview(
             let live_n = ((view.len() - at) as isize).min(zone_h as isize + collapse).max(0);
             (collapse, live_n as usize)
         };
-        let queued =
-            boxed.filter(|_| closed && ask_boxed && trust_keys.is_none()).and_then(|(top, ..)| {
+        let queued = boxed.zip(ask_boxed).filter(|_| closed && trust_keys.is_none()).and_then(
+            |((top, ..), ask)| {
                 // The pane's own prompt mark, which the open field keeps.
                 let mark = shot.prompt_row().and_then(|p| shot.rows[p].text.trim().chars().next());
-                let rows = queued_box(app, rec.ticket, 0, box_w, LIVE_WORDS, mark)?;
+                let rows = queued_box(app, ask, 0, box_w, LIVE_WORDS, mark)?;
                 let (_, live_n) = fit(rows.len());
                 view[view.len() - live_n..].contains(&top).then_some(rows)
-            });
+            },
+        );
         let (collapse, live_n) = fit(queued.as_ref().map_or(1, Vec::len));
         let live_from = view.len() - live_n;
         let drawn_n = (live_n as isize - collapse).max(0) as usize;
@@ -1602,12 +1602,12 @@ fn draw_preview(
         let open = asking_here(app, ticket.id);
         // A queued ask (T-1189) fills the closed box: its words, then the
         // row that says when they go, as the live window's does.
-        let rows = (ask_boxed && !open && area.width >= 12)
-            .then(|| {
+        let rows = ask_boxed
+            .filter(|_| !open && area.width >= 12)
+            .and_then(|ask| {
                 let rule_w = (area.width as usize).saturating_sub(4);
-                queued_box(app, ticket.id, 2, rule_w, FOOT_WORDS as usize, None)
+                queued_box(app, ask, 2, rule_w, FOOT_WORDS as usize, None)
             })
-            .flatten()
             .unwrap_or_else(|| foot_box(app, area.width as usize, open));
         if lines.len() + rows.len() <= h && area.width >= 12 {
             lines.resize(h - rows.len(), Line::default());
@@ -1739,13 +1739,7 @@ fn delivery_row(
     // `Some(lit)` over a running turn (T-1188): the words say what Enter
     // does, and in the lit phase the row takes the armed delete's red.
     let lit = interrupts == Some(true);
-    let mut said = word.to_string();
-    if shell {
-        said.push_str(super::card::SHELL);
-    }
-    if interrupts.is_some() {
-        said.push_str(super::card::INTERRUPTS);
-    }
+    let said = super::card::ask_said(word, shell, interrupts.is_some(), None);
     let said_ink = if lit { super::card::interrupt_ink(theme) } else { word_ink };
     let mut words = vec![Span::styled(said, said_ink)];
     if let Some(t) = tier_word {
@@ -1781,7 +1775,27 @@ fn delivery_row(
 }
 
 /// The reading rows' gutter: the pane's marks' two columns.
-const GUTTER: &str = "  ";
+pub(super) const GUTTER: &str = "  ";
+
+/// A row of a person's words as Claude Code draws them (the author,
+/// 2026-11-06: "use same theme like claude code does (the background color +
+/// >)"): the prompt mark in the gutter on the message's `first` row, the
+/// raised surface out to `total` cells. The ticket page's and the transcript
+/// dialog's (T-1152).
+pub(super) fn persons_row(
+    theme: &crate::theme::Theme,
+    line: Line<'static>,
+    first: bool,
+    total: usize,
+) -> Line<'static> {
+    let mark = if theme.glyph_tier() == glyphs::Tier::Ascii { "> " } else { "❯ " };
+    let raised = theme.selected_bg.map_or(Style::default(), |bg| Style::default().bg(bg));
+    let mut spans = vec![Span::styled(if first { mark } else { GUTTER }, theme.dim2())];
+    spans.extend(line.spans);
+    let used = super::spans_width(&spans);
+    spans.push(Span::raw(" ".repeat(total.saturating_sub(used))));
+    Line::from(spans).style(raised)
+}
 
 /// How many of the conversation's last rows the fade is checked against:
 /// more than a pane's screen of one reply.
@@ -2192,7 +2206,6 @@ fn closed_rule(app: &App, lead: usize, width: usize) -> Line<'static> {
 /// not fit.
 fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     let theme = &app.theme;
-    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
     let ctx = app.frame_ctx();
     // Held (T-1156): words in the box that are not mesimon's. The key is
     // shown out, and why, where it would be.
@@ -2206,40 +2219,63 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     } else {
         return (Vec::new(), 0);
     };
-    // The cap's box right after the two dashes, its own padding the gap:
-    // its left edge is the transcript text's column (the author: "push
-    // shift+enter hint left one column, to align with transcript text").
+    cap_spans(theme, cap, cap_style, said, said_style, width).unwrap_or_default()
+}
+
+/// A closed rule's left end: two dashes, a key cap and its words, and the
+/// columns they take; `None` where they do not fit in `width` with two
+/// columns of rule after them. The cap's box comes right after the two
+/// dashes, its own padding the gap: its left edge is the transcript text's
+/// column (the author: "push shift+enter hint left one column, to align with
+/// transcript text").
+fn cap_spans(
+    theme: &crate::theme::Theme,
+    cap: String,
+    cap_style: Style,
+    said: String,
+    said_style: Style,
+    width: usize,
+) -> Option<(Vec<Span<'static>>, usize)> {
     let used = 2 + cap.width() + said.width();
     if used + 2 > width {
-        return (Vec::new(), 0);
+        return None;
     }
-    let spans = vec![
-        Span::styled("--".to_string(), fade),
-        Span::styled(cap, cap_style),
-        Span::styled(said, said_style),
-    ];
-    (spans, used)
+    Some((
+        vec![tail_rule(theme, 2), Span::styled(cap, cap_style), Span::styled(said, said_style)],
+        used,
+    ))
 }
 
 /// Will the zone's closed box show the ticket's queued ask (T-1189)? Where
 /// the zone draws a box: the seat's and a launch's at its foot, and a pane's
 /// composer in the live window, unless the pane is on its trust dialog or
 /// its box holds someone's words. Asked before the page's branch row is
-/// built, which leaves the ask's row to the box.
-fn ask_in_box(app: &App, ticket: ulid::Ulid, two_zone: bool, rail_idx: usize) -> bool {
-    if !two_zone || app.boxed_ask(ticket).is_none() {
-        return false;
+/// built, which leaves the ask's row to the box. `row` is the rail's row
+/// under the cursor; the answer is the ask as the box shows it
+/// (`App::boxed_ask`).
+fn ask_in_box<'a>(
+    app: &'a App,
+    ticket: ulid::Ulid,
+    two_zone: bool,
+    row: Option<RailRow<'_>>,
+) -> Option<(&'a str, String)> {
+    if !two_zone {
+        return None;
     }
-    match app.rail_rows(ticket).get(rail_idx).copied() {
+    let ask = app.boxed_ask(ticket)?;
+    let boxed = match row {
         Some(RailRow::NewAgent) => true,
         Some(RailRow::Session(s)) if launch::booting(s) => true,
         Some(RailRow::Session(s)) => {
             !s.on_trust_dialog()
                 && !app.frame_ctx().ticket_box_held
-                && app.live_shot(s.id).is_some_and(|shot| shot.for_page().page_box().is_some())
+                && app
+                    .live_shot(s.id)
+                    .is_some_and(|shot| app.live_page(&shot, false).0.page_box().is_some())
         }
         _ => false,
-    }
+    };
+    boxed.then_some(ask)
 }
 
 /// The closed box with a queued ask in it (T-1189): the rule with the key
@@ -2248,15 +2284,15 @@ fn ask_in_box(app: &App, ticket: ulid::Ulid, two_zone: bool, rail_idx: usize) ->
 /// `words_col` (where the open field types them), up to `QUEUED_ROWS` rows with the cut marker
 /// past them, and a rule carrying when they go and the keys that send or
 /// take them back. `lead` blank columns before each; `width` is the rules'.
+/// The ask is `ask_in_box`'s: its words, and the row that says when they go.
 fn queued_box(
     app: &App,
-    ticket: ulid::Ulid,
+    (words, row): &(&str, String),
     lead: usize,
     width: usize,
     words_col: usize,
     mark: Option<char>,
 ) -> Option<Vec<Line<'static>>> {
-    let (words, row) = app.boxed_ask(ticket)?;
     let theme = &app.theme;
     let mark = mark.unwrap_or_else(|| glyphs::prompt_mark(theme.glyph_tier())).to_string();
     let room = (lead + width).saturating_sub(words_col);
@@ -2294,7 +2330,6 @@ fn queued_box(
 /// page ground as the top rule is. Words that do not fit are cut.
 fn said_rule(app: &App, lead: usize, width: usize, said: &str) -> Line<'static> {
     let theme = &app.theme;
-    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
     let said = format!(" {} ", truncate(said, width.saturating_sub(6)));
     let used = 2 + said.width();
     if used + 2 > width {
@@ -2302,7 +2337,7 @@ fn said_rule(app: &App, lead: usize, width: usize, said: &str) -> Line<'static> 
     }
     Line::from(vec![
         Span::raw(" ".repeat(lead)),
-        Span::styled("--".to_string(), fade),
+        tail_rule(theme, 2),
         Span::styled(said, theme.dim1()),
         tail_rule(theme, width - used),
     ])
@@ -2323,7 +2358,6 @@ const LIVE_WORDS: usize = 3;
 /// cap does not.
 fn trust_rule(app: &App, width: usize) -> Line<'static> {
     let theme = &app.theme;
-    let fade = Style::default().fg(theme.toward_ground(theme.rest.dim3, FOOT_FADE));
     let ctx = app.frame_ctx();
     let mut spans = Vec::new();
     let mut used = 0;
@@ -2334,12 +2368,9 @@ fn trust_rule(app: &App, width: usize) -> Line<'static> {
         let enter = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Act, &ctx)
             .filter(|(_, verb)| *verb == "focus")
             .map(|(key, _)| format!("∙ {key} {TRUST_ENTER} "));
-        let base = 2 + cap.width() + said.width();
-        if base + 2 <= width {
-            let bold = theme.selected_row().add_modifier(Modifier::BOLD);
-            spans.push(Span::styled("--".to_string(), fade));
-            spans.push(Span::styled(cap, bold));
-            spans.push(Span::styled(said, theme.dim1()));
+        let bold = theme.selected_row().add_modifier(Modifier::BOLD);
+        if let Some((cap, base)) = cap_spans(theme, cap, bold, said, theme.dim1(), width) {
+            spans = cap;
             used = base;
             if let Some(enter) = enter.filter(|e| base + e.width() + 2 <= width) {
                 used += enter.width();
@@ -2480,13 +2511,9 @@ fn conversation(
             return Some((key, Rc::clone(&c.rows)));
         }
     }
-    // A person's words as Claude Code draws them (the author, 2026-11-06:
-    // "use same theme like claude code does (the background color + >)"):
-    // on the page's raised surface, the prompt mark in the gutter on the
-    // first row. Every row carries the two-column gutter the pane's own
-    // marks stand in, so the words line up with the pane's.
-    let mark = if theme.glyph_tier() == glyphs::Tier::Ascii { "> " } else { "❯ " };
-    let raised = theme.selected_bg.map_or(Style::default(), |bg| Style::default().bg(bg));
+    // Every row carries the two-column gutter the pane's own marks stand
+    // in, so the words line up with the pane's; a person's wear their mark
+    // there (`persons_row`).
     let gutter = |line: Line<'static>| {
         let mut spans = vec![Span::raw(GUTTER)];
         spans.extend(line.spans);
@@ -2505,12 +2532,7 @@ fn conversation(
                 if !prompt {
                     return gutter(line);
                 }
-                let lead = if r == 0 { mark } else { GUTTER };
-                let mut spans = vec![Span::styled(lead, theme.dim2())];
-                spans.extend(line.spans);
-                let used = super::spans_width(&spans);
-                spans.push(Span::raw(" ".repeat((width + GUTTER.len()).saturating_sub(used))));
-                Line::from(spans).style(raised)
+                persons_row(theme, line, r == 0, width + GUTTER.len())
             })
             .chain(cause.clone().map(gutter))
             .collect()

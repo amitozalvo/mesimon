@@ -6,7 +6,7 @@ import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin, animOf } from "./shin.js";
 import { Attention, cardAnswers } from "./dialogs.js";
-import { CrownMark, StartButton, StartReceipt, WorktreeMark, ageWords, crownTouch, exitWords, loggedOut, stateAge } from "./lists.js";
+import { CrownMark, StartButton, StartReceipt, WorktreeMark, agoWords, crownTouch, exitWords, loggedOut, stateAge, stoppedWhen } from "./lists.js";
 import { NotePane, NotesList, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
@@ -138,10 +138,8 @@ function StoppedLine({ store, ticket }) {
   const agent = ticket.agent;
   const entry = store.entry;
   const waiting = startWaiting(store.startOf(ticket));
-  const at = agent.exit?.at;
-  const when = Number.isFinite(at) ? ageWords(store.board, at) : "";
   return html`<div id="stopped-line" class="agent-line stopped-line" role="group" aria-label="Agent stopped">
-    <p><span class="mark mark-stopped" aria-hidden="true"></span><b>${exitWords(agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`}</b></p>
+    <p><span class="mark mark-stopped" aria-hidden="true"></span><b>${stoppedWhen(store.board, agent)}</b></p>
     <p class="stopped-why">${loggedOut(agent)
       ? `${agent.provider} was logged out. Log in to ${agent.provider} at your terminal first; then Resume picks its conversation up where it stopped, with what you type below if anything.`
       : `${agent.provider}’s process ended. Its conversation is kept: Resume picks it up where it stopped, with what you type below if anything.`}</p>
@@ -278,7 +276,7 @@ function Composer({ store, ticket, entry, live }) {
   // cursor was; the agent reads the rest from the board.
   const [attach, setAttach] = useState("");
   const others = attach === "ticket" ? (store.board?.found() || []).filter((t) => t.id !== ticket?.id).slice(0, 6) : [];
-  const named = ticket ? store.panesOf(ticket).filter((p) => p.kind === "note") : [];
+  const named = ticket && attach ? store.panesOf(ticket).filter((p) => p.kind === "note") : [];
   const put = (words) => {
     const draft = entry?.draft || "";
     const at = Math.min(caret.current ?? draft.length, draft.length);
@@ -369,8 +367,8 @@ function Composer({ store, ticket, entry, live }) {
             onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Choose from library</span></${PicturePick}>`}
           ${named.length > 0 && html`<button id="attach-note" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "note")}
             onClick=${() => setAttach(attach === "note" ? "menu" : "note")}><${Icon} name="file" size=${17} /><span>A note on this ticket</span></button>`}
-          ${attach === "note" && html`<div class="attach-picks">${named.map((p, i) => html`<button type="button" class="attach-pick" key=${p.key}
-            onClick=${() => put(`the note “${i === 0 ? "Description" : p.row.name || "Untitled"}”`)}>${i === 0 ? "Description" : p.row.name || "Untitled"}</button>`)}</div>`}
+          ${attach === "note" && html`<div class="attach-picks">${named.map((p) => html`<button type="button" class="attach-pick" key=${p.key}
+            onClick=${() => put(`the note “${p.title}”`)}>${p.title}</button>`)}</div>`}
           <button id="attach-ticket" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "ticket")}
             onClick=${() => setAttach(attach === "ticket" ? "menu" : "ticket")}><${Icon} name="kanban" size=${17} /><span>Another ticket</span></button>
           ${attach === "ticket" && html`<div class="attach-picks">${others.map((t) => html`<button type="button" class="attach-pick" key=${t.id}
@@ -563,10 +561,10 @@ export function crownSentence(touch) {
 function CrownLine({ store, ticket }) {
   const touch = ticket && crownTouch(store.board, ticket);
   if (!touch) return null;
-  const age = ageWords(store.board, touch.at);
+  const ago = agoWords(store.board, touch.at);
   return html`<div id="crown-line" class="crown-line">
     <${Icon} name="crown" size=${15} width=${2.2} />
-    <p>${crownSentence(touch)}${age && ` · ${age === "now" ? "just now" : `${age} ago`}`}</p>
+    <p>${crownSentence(touch)}${ago && ` · ${ago}`}</p>
   </div>`;
 }
 
@@ -579,31 +577,22 @@ function seatWords(store, agent) {
   return store.live ? what : `${what} ${agent ? "Waking" : "Starting"} ${it} needs your terminal back.`;
 }
 
-// The divider between the ticket and its panes (T-701): the pane's name at
-// the left, what a swipe reaches at the right, and both are presses too.
-// On the transcript it says how many notes lie to the right; on a note,
-// which one this is of them.
+// The divider between the ticket and a note's pane (T-701): the note's name
+// at the left, a press back; which one this is of them at the right, a
+// press on to the next. The transcript's pane draws none.
 function PaneBar({ store, ticket, panes, at }) {
   const notes = panes.length - 1;
   const last = at === panes.length - 1;
-  const writes = store.canWriteNotes;
-  const name = at === 0 ? "Transcript" : panes[at].name;
-  const rhs = at === 0
-    ? notes
-      ? `${notes} ${notes === 1 ? "note" : "notes"}`
-      : writes
-        ? "note"
-        : ""
-    : `${at}/${notes}`;
-  const next = () => (at === 0 && !notes ? store.editNote(ticket.id) : store.showPane(ticket.id, at + 1));
+  const name = panes[at].name;
+  const rhs = `${at}/${notes}`;
   return html`<div id="pane-bar" class="pane-bar" data-pane=${at}>
-    <button id="pane-name" type="button" class="pane-name" disabled=${at === 0} aria-label=${at === 0 ? name : `${name} · back`}
+    <button id="pane-name" type="button" class="pane-name" aria-label=${`${name} · back`}
       onClick=${() => store.showPane(ticket.id, at - 1)}>
-      ${at > 0 && html`<span class="pane-arrow" aria-hidden="true">‹</span>`}<span dir="auto">${name}</span></button>
+      <span class="pane-arrow" aria-hidden="true">‹</span><span dir="auto">${name}</span></button>
     <span class="pane-rule" aria-hidden="true"></span>
-    <button id="pane-next" type="button" class="pane-next" disabled=${last && !(at === 0 && !notes && writes)} hidden=${!rhs}
-      aria-label=${at === 0 ? (notes ? `${rhs} · swipe left to read them` : "Add a description") : last ? rhs : `${rhs} · next note`}
-      onClick=${next}>${at === 0 && !notes && writes && html`<${Icon} name="plus" size=${11} width=${2.6} />`}<span>${rhs}</span>${(at === 0 ? notes > 0 : !last) && html`<span class="pane-arrow" aria-hidden="true">›</span>`}</button>
+    <button id="pane-next" type="button" class="pane-next" disabled=${last}
+      aria-label=${last ? rhs : `${rhs} · next note`}
+      onClick=${() => store.showPane(ticket.id, at + 1)}><span>${rhs}</span>${!last && html`<span class="pane-arrow" aria-hidden="true">›</span>`}</button>
   </div>`;
 }
 
@@ -634,11 +623,11 @@ export function Detail({ store, bp }) {
   // What Details says before its choices: who holds the seat and since
   // when, its tier, and how the ticket came to be.
   const tier = store.board?.tierNamed(agent?.tier || ticket?.tier)?.name;
-  const made = ticket && Number.isFinite(ticket.created) ? ageWords(store.board, ticket.created) : "";
+  const made = ticket ? agoWords(store.board, ticket.created) : "";
   const facts = !ticket ? [] : [
     ["Agent", agent ? `${agent.provider} · ${store.stopped(ticket) ? exitWords(agent).toLowerCase() : agent.state}${since ? ` · ${since}` : ""}` : "none yet"],
     tier && ["Tier", tier],
-    made && ["Filed", made === "now" ? "just now" : `${made} ago`],
+    made && ["Filed", made],
     ticket.notes > 0 && ["Notes", String(ticket.notes)],
   ].filter(Boolean);
   // The header opened in place (T-1219), for one ticket at a time.

@@ -181,9 +181,6 @@ impl LinkStrike {
 #[derive(Debug, Default)]
 pub(crate) struct Spots {
     pub cards: Vec<CardSpot>,
-    /// A cell on each drawn column's header row, for a bolt whose card is
-    /// scrolled out of its column.
-    pub heads: Vec<(String, u16, u16)>,
     /// The ghosts moved cards left where they were, for the bolt to run
     /// through: the same ticket also has its card where it went.
     pub trails: Vec<CardSpot>,
@@ -199,7 +196,8 @@ pub(crate) struct Spots {
     /// the dialog hangs from.
     pub about: Option<Rect>,
     /// Each drawn column's header row, whole (T-1240): where it flies from
-    /// and lands when the board turns into its table and back.
+    /// and lands when the board turns into its table and back, and where
+    /// `head` finds a bolt's cell.
     pub head_rows: Vec<(String, Rect)>,
 }
 
@@ -226,8 +224,13 @@ impl Spots {
         self.trails.iter().find(|c| c.id == id)
     }
 
-    fn head(&self, column: &str) -> Option<(u16, u16)> {
-        self.heads.iter().find(|(n, ..)| n == column).map(|&(_, x, y)| (x, y))
+    /// A cell on a drawn column's header row, for a bolt whose card is
+    /// scrolled out of its column: past the tag bar, or a folded column's
+    /// one cell.
+    pub(crate) fn head(&self, column: &str) -> Option<(u16, u16)> {
+        let (_, row) = self.head_rows.iter().find(|(n, _)| n == column)?;
+        let past_bar = if row.width > 1 { crate::tags::BAR as u16 + 1 } else { 0 };
+        Some((row.x + past_bar, row.y))
     }
 }
 
@@ -661,6 +664,14 @@ pub(crate) fn draw_page(f: &mut Frame, app: &App, ticket: ulid::Ulid, zone: Rect
         return;
     }
     let now = mesimon_core::clock::now_ms();
+    // Nothing lit, the common frame: no word, shin or crown row is looked for.
+    let lit = |seen: u64| now.saturating_sub(seen) < BOLT_MS;
+    let crowned = app.board.crown == Some(ticket);
+    if !app.strikes.iter().any(|s| lit(s.seen))
+        && !(crowned && app.link_strikes.iter().any(|s| lit(s.seen)))
+    {
+        return;
+    }
     let screen = f.area();
     let header = Rect { height: 1, ..screen };
     let label = page_label(app, ticket, now).map(|l| page_label_at(header, &l));
@@ -684,7 +695,7 @@ pub(crate) fn draw_page(f: &mut Frame, app: &App, ticket: ulid::Ulid, zone: Rect
             bolts.push((bolt(s.seed(), &[a, b], header.y), t));
         }
     }
-    if app.board.crown == Some(ticket) {
+    if crowned {
         for s in &app.link_strikes {
             let t = now.saturating_sub(s.seen);
             let (Some(l), Some(m)) = (label, shin) else { continue };

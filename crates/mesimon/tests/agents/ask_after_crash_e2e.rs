@@ -13,7 +13,7 @@
 use crate::common;
 use common::*;
 
-use mesimon_core::board::{ExitReason, SessionKind, SessionState};
+use mesimon_core::board::{ExitReason, SessionState};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -24,58 +24,24 @@ fn asking_a_crashed_claude_resumes_its_conversation_and_starts_nothing() {
         return;
     };
     let mut c = h.client("askcrash");
-    // Claude's own store is what `--resume` reads: a transcript under the
-    // census root makes the record resumable rather than fresh.
-    let projects = h.dir.join("claude-home").join("projects").join("msmn");
-    std::fs::create_dir_all(&projects).unwrap();
 
-    let _ = c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "crashed".into(),
-        workspace: None,
-        tier: None,
-    });
-    let ticket = c.board().tickets.first().expect("ticket").id;
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
-    std::fs::write(
-        projects.join(format!("{sid}.jsonl")),
-        "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n",
-    )
-    .unwrap();
+    let ticket = c.create_ticket("crashed");
+    let sid = c.spawn_claude(ticket);
+    resumable(&h, sid);
 
     let dead = c.await_state(sid, "exited", |s| matches!(s, SessionState::Exited { .. }));
     assert_eq!(dead, SessionState::Exited { reason: ExitReason::Crashed }, "a crash is a corpse");
 
     // The board's Shift+Enter with words: the receipt is the SAME record,
     // resumed — not a fresh conversation, not a second session.
-    match c.request(Command::PromptSession {
-        ticket,
-        text: "carry on".into(),
-        queued: false,
-        immediately: false,
-        accept_plan: false,
-        plan: false,
-        tier: None,
-        resend: false,
-        uploads: Vec::new(),
-    }) {
+    match c.prompt(ticket, "carry on") {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the crashed record is the one resumed");
             assert!(!fresh, "its conversation was there to resume");
         }
         other => panic!("the ask did not resume: {other:?}"),
     }
-    let board = c.board();
-    let agents: Vec<_> =
-        board.sessions.iter().filter(|s| s.ticket == ticket && s.kind.is_agent()).collect();
+    let agents = agents_of(&mut c, ticket);
     assert_eq!(agents.len(), 1, "no second claude beside the corpse: {agents:?}");
     assert!(agents[0].state.is_live(), "the record is live again: {:?}", agents[0].state);
 }
@@ -104,6 +70,19 @@ fn crash_idle(h: &Harness, c: &mut TestClient, ticket: ulid::Ulid) -> uuid::Uuid
     sid
 }
 
+/// A conversation for `sid` in Claude's own store, which is what `--resume`
+/// reads: a transcript under the census root makes the record resumable
+/// rather than fresh.
+fn resumable(h: &Harness, sid: uuid::Uuid) {
+    let projects = h.dir.join("claude-home").join("projects").join("msmn");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join(format!("{sid}.jsonl")),
+        "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n",
+    )
+    .unwrap();
+}
+
 fn agents_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
     c.board().sessions.iter().filter(|s| s.ticket == ticket && s.kind.is_agent()).cloned().collect()
 }
@@ -123,15 +102,6 @@ fn the_crown_s_start_resumes_the_crashed_worker_it_started() {
     };
     let mut c = h.client("crownresume");
     init_repo(&h.repo, "a.txt", "hello\n");
-    let projects = h.dir.join("claude-home").join("projects").join("msmn");
-    std::fs::create_dir_all(&projects).unwrap();
-    let transcript = |sid: uuid::Uuid| {
-        std::fs::write(
-            projects.join(format!("{sid}.jsonl")),
-            "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n",
-        )
-        .unwrap();
-    };
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 4 }), Response::Ok));
 
     let a = c.create_ticket("coordinate");
@@ -148,17 +118,13 @@ fn the_crown_s_start_resumes_the_crashed_worker_it_started() {
     // ---- start_agent on the crown's own crashed worker: that record, resumed
     assert!(matches!(c.crown_start(sa, &kw, "worktree"), Response::AgentStarted { .. }));
     let sw = crash_idle(&h, &mut c, w);
-    transcript(sw);
+    resumable(&h, sw);
     // The ticket says so: `exited` and how, where it said nothing at all.
     let state = c.agent_read(sa, &kw).unwrap().state.expect("an exited agent is read");
     assert_eq!((state.state.as_str(), state.exited.as_deref()), ("exited", Some("crashed")));
-    match c.send(mesimon_core::Principal::Agent { session: sa }, Command::AgentListBoard) {
-        Response::AgentBoard { board } => {
-            let row = board.tickets.iter().find(|t| t.key == kw).expect("the row");
-            assert_eq!(row.state.as_deref(), Some("exited"), "list_board says it too");
-        }
-        other => panic!("list_board: {other:?}"),
-    }
+    let listed = c.crown_board(sa);
+    let row = listed.tickets.iter().find(|t| t.key == kw).expect("the row");
+    assert_eq!(row.state.as_deref(), Some("exited"), "list_board says it too");
     match c.crown_start(sa, &kw, "worktree") {
         Response::AgentStarted { woken, session_started, .. } => {
             assert!(woken, "the crashed worker is woken, not replaced");
@@ -176,7 +142,7 @@ fn the_crown_s_start_resumes_the_crashed_worker_it_started() {
     // ---- ask_agent on one: sent, where it was held as "a person's" --------
     assert!(matches!(c.crown_start(sa, &kasked, "worktree"), Response::AgentStarted { .. }));
     let sasked = crash_idle(&h, &mut c, asked);
-    transcript(sasked);
+    resumable(&h, sasked);
     match c.crown_ask(sa, &kasked, "carry on", mesimon_core::command::Deliver::Idle, None) {
         Response::AgentAsked { held_for_person, held_because, .. } => {
             assert!(!held_for_person, "the crown's own worker: {held_because:?}");
@@ -191,7 +157,7 @@ fn the_crown_s_start_resumes_the_crashed_worker_it_started() {
     // ---- a person's crashed agent stays the person's ----------------------
     let sp = c.spawn_claude(person);
     assert_eq!(crash_idle(&h, &mut c, person), sp);
-    transcript(sp);
+    resumable(&h, sp);
     match c.crown_start(sa, &kperson, "shared_checkout") {
         Response::Err { message } => {
             assert!(message.contains("was started by a person and exited"), "{message}");

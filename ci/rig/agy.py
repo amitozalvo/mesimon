@@ -207,7 +207,6 @@ class Case:
             if "trust the contents" in self.screen():
                 raise AssertionError("agy asked to trust a folder the session settings name")
             return self.session()["state"]["state"] == "idle"
-        launched = time.time() - 5
         self.wait("agy's seat", settled, 60)
         # agy starts an MCP server lazily: at the first prompt, or when `/mcp`
         # lists them, which calls no model. A listed server with its tools is
@@ -222,7 +221,7 @@ class Case:
             return row if row and "Tools:" in row[0] else None
         try:
             row = self.wait("mesimon in agy's server list", listed, 30)[0].strip()
-            self.mark("agy lists the board's tools", row.startswith("✓") or "✓" in row, row[:200])
+            self.mark("agy lists the board's tools", "✓" in row, row[:200])
         except Inconclusive:
             self.mark("agy lists the board's tools", False, self.screen()[-600:])
         (self.out / "screen-mcp.txt").write_text(self.screen())
@@ -239,17 +238,15 @@ class Case:
         time.sleep(0.5)
         self.tm("send-keys", "-t", self.pane, "Enter")
         self.wait("agy's turn", lambda: self.session()["state"]["state"] == "running", 60)
-        asked = []
 
         def ended():
             state = self.session()["state"]
             if state["state"] == "requires_action":
-                asked.append(state)
                 (self.out / "screen-asked.txt").write_text(self.screen())
                 raise AssertionError(f"agy asked the person: {state}")
             return state["state"] == "idle"
         self.wait("the turn's end", ended, self.args.timeout)
-        self.mark("no board tool asked the person", not asked)
+        self.mark("no board tool asked the person", True)
         (self.out / "screen-end.txt").write_text(self.screen())
         conversation = self.session().get("agy_conversation_id")
         if not conversation:

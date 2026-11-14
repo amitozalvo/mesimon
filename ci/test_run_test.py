@@ -637,8 +637,10 @@ class RustcSlotTests(unittest.TestCase):
                                 env={**self.env, "MESIMON_RUSTC_SLOTS": str(slots)}, **popen)
 
     def hold(self):
-        held = self.compile(1, 3, "held")
+        """The one slot, held until the test is over: killed there, never waited out."""
+        held = self.compile(1, 60, "held")
         self.addCleanup(held.wait, 30)
+        self.addCleanup(held.kill)
         deadline = time.monotonic() + 10
         while not self.log.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -680,10 +682,7 @@ class RustcSlotTests(unittest.TestCase):
         self.assertEqual([line.split()[0] for line in self.log.read_text().splitlines()][:2], ["start", "start"])
 
     def test_a_killed_compile_gives_its_slot_back(self):
-        held = self.compile(1, 60, "held")
-        deadline = time.monotonic() + 10
-        while not self.log.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        held = self.hold()
         held.kill()
         held.wait(10)
         started = time.monotonic()
@@ -691,11 +690,7 @@ class RustcSlotTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5)
 
     def test_a_probe_takes_no_slot_and_the_exit_code_is_the_compilers(self):
-        held = self.compile(1, 2, "held")
-        self.addCleanup(held.wait, 30)
-        deadline = time.monotonic() + 10
-        while not self.log.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        self.hold()
         out = subprocess.run([sys.executable, "-B", str(HERE / "rustc-slot.py"), "sh", "-c", "echo probed; exit 3"],
                              env={**self.env, "MESIMON_RUSTC_SLOTS": "1"}, capture_output=True, text=True, timeout=1.5)
         self.assertEqual((out.returncode, out.stdout), (3, "probed\n"))

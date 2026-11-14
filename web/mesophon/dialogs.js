@@ -52,6 +52,18 @@ export function formAnswers(dialog, form) {
 // dialog is gone.
 export const pickedOption = (entry, dialog, index) =>
   entry?.answer?.pick?.request === dialog?.request && entry.answer.pick.index === index;
+// One choice of a question, on the ticket page (`prefix` "att") and on an
+// Inbox card ("need"): its label, the mark on the one picked, and its
+// description, which the button is described by.
+export function optionButton(entry, dialog, option, index, prefix, disabled, onPick) {
+  const described = option.description ? `${prefix}-${dialog.request}-${index}` : undefined;
+  const picked = pickedOption(entry, dialog, index);
+  return html`<button type="button" class=${`option${picked ? " option-picked" : ""}`} disabled=${disabled} aria-label=${option.label} aria-describedby=${described}
+    aria-pressed=${picked ? "true" : undefined} onClick=${onPick}>
+    <span class="option-label">${option.label}${picked && html`<${Icon} name="check" size=${15} width=${2.4} />`}</span>
+    ${described && html`<span class="option-desc" id=${described}>${option.description}</span>`}
+  </button>`;
+}
 
 // The whole request, for the ticket page (T-1208): a command as it would
 // run, then every other field (T-1218), so nothing the approval covers is
@@ -186,13 +198,8 @@ export function Attention({ store, ticket, entry, live }) {
       <h3 class="attention-head"><${Icon} name="bell" size=${18} cls="attn-ink" /><span>${question.question}</span></h3>
       <div class="options">
         ${question.options.map((option, index) => {
-          const described = option.description ? `att-${dialog.request}-${index}` : undefined;
-          const picked = pickedOption(entry, dialog, index);
-          return html`<button type="button" class=${`option${picked ? " option-picked" : ""}`} aria-label=${option.label} aria-describedby=${described}
-            aria-pressed=${picked ? "true" : undefined} ...${answer({ answer: "choice", index }, supported)}>
-            <span class="option-label">${option.label}${picked && html`<${Icon} name="check" size=${15} width=${2.4} />`}</span>
-            ${described && html`<span class="option-desc" id=${described}>${option.description}</span>`}
-          </button>`;
+          const press = answer({ answer: "choice", index }, supported);
+          return optionButton(entry, dialog, option, index, "att", press.disabled, press.onClick);
         })}
       </div>
     </div>`)}

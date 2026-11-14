@@ -64,10 +64,12 @@ macro_rules! pref_words {
     (ring $ty:ident { $($v:ident => $w:literal),+ $(,)? }) => {
         pref_words!($ty { $($v => $w),+ });
         impl $ty {
+            /// Every value, in ring order.
+            pub const ALL: &[$ty] = &[$($ty::$v),+];
+
             pub fn next(self) -> Self {
-                const ALL: &[$ty] = &[$($ty::$v),+];
-                let i = ALL.iter().position(|v| *v == self).unwrap_or(0);
-                ALL[(i + 1) % ALL.len()]
+                let i = Self::ALL.iter().position(|v| *v == self).unwrap_or(0);
+                Self::ALL[(i + 1) % Self::ALL.len()]
             }
         }
     };
@@ -234,10 +236,6 @@ pref_words!(ring BoardView {
     Table => "table",
 });
 
-impl BoardView {
-    pub const ALL: [BoardView; 2] = [BoardView::Columns, BoardView::Table];
-}
-
 /// A card's second line names the ticket's pull requests (T-739): always,
 /// only as news until the cursor rests on the card (the new reply's decay),
 /// or never — the ticket page lists them either way.
@@ -276,9 +274,6 @@ pref_words!(ring FetchEvery {
 });
 
 impl FetchEvery {
-    pub const ALL: [FetchEvery; 4] =
-        [FetchEvery::Off, FetchEvery::One, FetchEvery::Five, FetchEvery::Fifteen];
-
     /// The word the Settings row and the status line show.
     pub fn show(self) -> &'static str {
         match self {

@@ -52,11 +52,6 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, width));
                 app.spots.borrow_mut().head_rows.push((name.clone(), Rect { height: 1, ..rect }));
-                app.spots.borrow_mut().heads.push((
-                    name.clone(),
-                    rect.x + crate::tags::BAR as u16 + 1,
-                    rect.y,
-                ));
                 draw_column(f, rect, app, ci, name);
             }
             Slot::Spine { x } => {
@@ -71,7 +66,6 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
                 drop(hits);
                 app.spots.borrow_mut().columns.push((ci, rect.x, 1));
                 app.spots.borrow_mut().head_rows.push((name.clone(), Rect { height: 1, ..rect }));
-                app.spots.borrow_mut().heads.push((name.clone(), rect.x, rect.y));
             }
         }
     }
@@ -608,16 +602,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // The column's ask field (T-378) hangs UNDER THE HEADER the way a
     // ticket's hangs under its card: the header is what names where the
     // words go, so it stays whole and the field takes rows from the body.
-    let column_ask: Option<(&EditBuffer, bool, bool)> = match editing {
-        Some((
-            InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. },
-            buf,
-        )) if n == name => Some((buf, *queued, *accept_plan)),
-        _ => None,
-    };
-    let column_ask_toggle = column_ask.is_some() && app.column_ask_queueable(name);
+    let column_ask = column_ask_rows(app, &ctx, name, editing);
     // Header, blank — plus the field and its delivery row while it is open.
-    let head_rows = 2 + usize::from(column_ask.is_some()) + usize::from(column_ask_toggle);
+    let head_rows = 2 + column_ask.as_ref().map_or(0, |(rows, _)| rows.len());
     // Keep two blank rows inside the column above the board's footer gap.
     // Overflow cues also reserve a row plus a blank next to visible cards.
     let body_h = area.height.saturating_sub(2 + head_rows as u16) as usize;
@@ -638,23 +625,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         scroll = 0;
     }
     if is_cursor_col {
-        if let Some((cs, ce)) = cursor_range {
-            let lo = cs.saturating_sub(2);
-            let hi = (ce + 2).min(total);
-            if hi > scroll + body_h {
-                scroll = hi - body_h;
-            }
-            if lo < scroll {
-                scroll = lo;
-            }
-            // Scroll margins must yield before they cut the cursor card.
-            // An oversized group instead keeps its live input row visible.
-            if ce - cs <= body_h {
-                scroll = scroll.clamp(ce.saturating_sub(body_h), cs);
-            } else {
-                let focus = edit_at.map(|(line, _)| line).unwrap_or(cs);
-                scroll = focus.saturating_sub(body_h.saturating_sub(1)).max(cs);
-            }
+        if let Some(range) = cursor_range {
+            let focus = edit_at.map(|(line, _)| line);
+            scroll = scroll_into_view(scroll, total, body_h, range, focus, 2);
         }
         if total <= body_h {
             scroll = 0;
@@ -727,7 +700,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let doomed =
         header_edit.is_none() && app.column_doomed(name) && theme.delete_lit(app.spin_frame());
     let mut head: Vec<Span<'static>> = Vec::new();
-    let mut header_cursor_x: Option<u16> = None;
     if col_header || header_edit.is_some() {
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
         head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR), bar_style));
@@ -735,26 +707,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     } else {
         head.push(Span::raw(" ".repeat(crate::tags::BAR + 1)));
     }
-    if let Some(buf) = header_edit {
-        // The name edited in place, with the hardware cursor (06 §5.7),
-        // the badges standing down for the field.
-        let budget = (area.width as usize).saturating_sub(crate::tags::BAR + 2);
-        let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-        header_cursor_x = Some(crate::tags::BAR as u16 + 1 + cx);
-        head.push(Span::styled(
-            shown,
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-        ));
-    } else if doomed {
-        head.push(Span::styled(name.to_uppercase(), theme.err_text().add_modifier(Modifier::BOLD)));
-    } else if is_cursor_col {
-        head.push(Span::styled(
-            name.to_uppercase(),
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        head.push(Span::styled(name.to_uppercase(), theme.dim1().add_modifier(Modifier::BOLD)));
-    }
+    // The name, or its rename edited in place with the hardware cursor
+    // (06 §5.7), the badges standing down for the field.
+    let (name_span, name_cursor) =
+        head_name(theme, name, is_cursor_col, doomed, header_edit, area.width as usize);
+    head.push(name_span);
+    let mut header_cursor_x: Option<u16> = name_cursor;
     let mut right: Vec<Span<'static>> = Vec::new();
     if header_edit.is_none() {
         if attn_out > 0 {
@@ -803,34 +761,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     let mut out: Vec<Line<'static>> = vec![head_line];
     let mut header_cursor_y: u16 = 0;
-    if let Some((buf, queued, accept_plan)) = column_ask {
-        // The empty field says what it is for in the key's own words — or,
-        // where the column holds a seat a blank Enter would fill, what that
-        // Enter does (T-405), the plural of the card's `start on the title`
-        // and by the same rule `commit_input` judges it. At `accept plan`
-        // (T-429) a blank Enter accepts every plan in the column.
-        let placeholder = if accept_plan {
-            "enter accepts the plans"
-        } else if app.column_starts(name) {
-            "start on the titles"
-        } else {
-            "ask every agent"
-        };
-        let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
-        out.push(line);
+    if let Some((rows, x_off)) = column_ask {
+        out.extend(rows);
         header_cursor_x = Some(x_off);
         header_cursor_y = 1;
-        if column_ask_toggle {
-            out.push(card::render_ask_mode(
-                &ctx,
-                crate::app::App::ask_mode_word(accept_plan, queued, false, false),
-                true,
-                None,
-                // A column's ask has no `immediately` stop (T-601).
-                false,
-                crate::app::App::shell_line(buf.as_str()),
-            ));
-        }
     }
     out.push(Line::default());
     debug_assert_eq!(out.len(), head_rows);
@@ -1105,28 +1039,16 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
     if app.header_focus && app.cursor_col == 0 {
         scroll = 0;
     }
-    if let Some((cs, ce)) = cursor_range {
-        let lo = cs.saturating_sub(1);
-        let hi = (ce + 1).min(total);
-        if hi > scroll + body_h {
-            scroll = hi - body_h;
-        }
-        if lo < scroll {
-            scroll = lo;
-        }
-        if ce - cs <= body_h {
-            scroll = scroll.clamp(ce.saturating_sub(body_h), cs);
-        } else {
-            let focus = edit_at.map(|(line, _)| line).unwrap_or(cs);
-            scroll = focus.saturating_sub(body_h.saturating_sub(1)).max(cs);
-        }
+    if let Some(range) = cursor_range {
+        let focus = edit_at.map(|(line, _)| line);
+        scroll = scroll_into_view(scroll, total, body_h, range, focus, 1);
     }
     if total <= body_h {
         scroll = 0;
     }
     app.scroll_row.set(scroll);
     let end_vis = (scroll + body_h).min(total);
-    f.render_widget(Paragraph::new(lines[scroll..end_vis].to_vec()), area);
+    f.render_widget(Paragraph::new(lines.drain(scroll..end_vis).collect::<Vec<_>>()), area);
 
     let row_of = |line: usize| area.y + (line - scroll) as u16;
     let shown = |line: usize| line >= scroll && line < end_vis;
@@ -1148,7 +1070,6 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
         }
         let rect = Rect { x: area.x, y: row_of(line), width: area.width, height: 1 };
         hits.record(rect, crate::mouse::Target::Column(ci));
-        spots.heads.push((cols[ci].clone(), area.x + crate::tags::BAR as u16 + 1, rect.y));
         spots.head_rows.push((cols[ci].clone(), rect));
     }
     for p in &placed {
@@ -1205,6 +1126,33 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// The scroll that keeps the cursor's rows `cs..ce` in a `body_h`-row view of
+/// `total` rows, with `margin` rows either side of them where they fit. The
+/// margins yield before they cut the cursor's rows; rows taller than the view
+/// keep `focus`, the field being typed in, on its last row instead.
+fn scroll_into_view(
+    mut scroll: usize,
+    total: usize,
+    body_h: usize,
+    (cs, ce): (usize, usize),
+    focus: Option<usize>,
+    margin: usize,
+) -> usize {
+    let lo = cs.saturating_sub(margin);
+    let hi = (ce + margin).min(total);
+    if hi > scroll + body_h {
+        scroll = hi - body_h;
+    }
+    if lo < scroll {
+        scroll = lo;
+    }
+    if ce - cs <= body_h {
+        scroll.clamp(ce.saturating_sub(body_h), cs)
+    } else {
+        focus.unwrap_or(cs).saturating_sub(body_h.saturating_sub(1)).max(cs)
+    }
+}
+
 /// A group's header in the table (T-1240): the column's name and count, the
 /// cursor's bar on it when the cursor is, the column's automation mark, and
 /// for a folded group how many of its hidden cards need you. The column's
@@ -1237,7 +1185,6 @@ fn table_head(
         header_edit.is_none() && app.column_doomed(name) && theme.delete_lit(app.spin_frame());
     let quiet = if is_cursor_col { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
     let mut head: Vec<Span<'static>> = Vec::new();
-    let mut cursor: Option<(usize, u16)> = None;
     if on_head || header_edit.is_some() {
         // The cursor's bar in the main tag's shape, as the rows wear it.
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
@@ -1249,23 +1196,11 @@ fn table_head(
     } else {
         head.push(Span::raw(" ".repeat(crate::tags::BAR + 1)));
     }
-    if let Some(buf) = header_edit {
-        let budget = width.saturating_sub(crate::tags::BAR + 2);
-        let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-        cursor = Some((0, crate::tags::BAR as u16 + 1 + cx));
-        head.push(Span::styled(
-            shown,
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        let style = if doomed {
-            theme.err_text().add_modifier(Modifier::BOLD)
-        } else if is_cursor_col {
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.dim1().add_modifier(Modifier::BOLD)
-        };
-        head.push(Span::styled(name.to_uppercase(), style));
+    let (name_span, name_cursor) =
+        head_name(theme, name, is_cursor_col, doomed, header_edit, width);
+    head.push(name_span);
+    let mut cursor: Option<(usize, u16)> = name_cursor.map(|x| (0, x));
+    if header_edit.is_none() {
         head.push(Span::styled(format!("  {count}"), quiet));
         if waiting > 0 {
             head.push(Span::styled(format!("  !{waiting}"), theme.attn_text()));
@@ -1288,35 +1223,84 @@ fn table_head(
     };
     let mut out = vec![head_line];
     // The column's ask field (T-378) hangs under its header, as on the board.
-    if let Some((
-        InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. },
-        buf,
-    )) = editing
-    {
-        if n == name {
-            let placeholder = if *accept_plan {
-                "enter accepts the plans"
-            } else if app.column_starts(name) {
-                "start on the titles"
-            } else {
-                "ask every agent"
-            };
-            let (line, x_off) = card::render_prompt(ctx, buf, placeholder);
-            out.push(line);
-            cursor = Some((1, x_off));
-            if app.column_ask_queueable(name) {
-                out.push(card::render_ask_mode(
-                    ctx,
-                    crate::app::App::ask_mode_word(*accept_plan, *queued, false, false),
-                    true,
-                    None,
-                    false,
-                    crate::app::App::shell_line(buf.as_str()),
-                ));
-            }
-        }
+    if let Some((rows, x_off)) = column_ask_rows(app, ctx, name, editing) {
+        out.extend(rows);
+        cursor = Some((1, x_off));
     }
     (out, cursor)
+}
+
+/// A column's ask field (T-378) and, where its asks can queue, the delivery
+/// row under it: the rows that hang under the column's header, and the x of
+/// the field's cursor. `None` while no ask is open on `name`.
+fn column_ask_rows(
+    app: &App,
+    ctx: &CardCtx,
+    name: &str,
+    editing: Option<(&InputPurpose, &EditBuffer)>,
+) -> Option<(Vec<Line<'static>>, u16)> {
+    let (InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. }, buf) =
+        editing?
+    else {
+        return None;
+    };
+    if n != name {
+        return None;
+    }
+    // The empty field says what it is for in the key's own words — or,
+    // where the column holds a seat a blank Enter would fill, what that
+    // Enter does (T-405), the plural of the card's `start on the title`
+    // and by the same rule `commit_input` judges it. At `accept plan`
+    // (T-429) a blank Enter accepts every plan in the column.
+    let placeholder = if *accept_plan {
+        "enter accepts the plans"
+    } else if app.column_starts(name) {
+        "start on the titles"
+    } else {
+        "ask every agent"
+    };
+    let (line, x_off) = card::render_prompt(ctx, buf, placeholder);
+    let mut rows = vec![line];
+    if app.column_ask_queueable(name) {
+        rows.push(card::render_ask_mode(
+            ctx,
+            crate::app::App::ask_mode_word(*accept_plan, *queued, false, false),
+            true,
+            None,
+            // A column's ask has no `immediately` stop (T-601).
+            false,
+            crate::app::App::shell_line(buf.as_str()),
+        ));
+    }
+    Some((rows, x_off))
+}
+
+/// A column header's name in its ink (doomed, the cursor column's, quiet), or
+/// its rename edited in place of it: the span, and while the name is edited
+/// the x of the field's cursor in a row `width` cells wide.
+fn head_name(
+    theme: &crate::theme::Theme,
+    name: &str,
+    is_cursor_col: bool,
+    doomed: bool,
+    header_edit: Option<&EditBuffer>,
+    width: usize,
+) -> (Span<'static>, Option<u16>) {
+    let bold = |style: Style| style.add_modifier(Modifier::BOLD);
+    let on_cursor = Style::default().fg(theme.sel.base);
+    if let Some(buf) = header_edit {
+        let budget = width.saturating_sub(crate::tags::BAR + 2);
+        let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+        return (Span::styled(shown, bold(on_cursor)), Some(crate::tags::BAR as u16 + 1 + cx));
+    }
+    let style = if doomed {
+        theme.err_text()
+    } else if is_cursor_col {
+        on_cursor
+    } else {
+        theme.dim1()
+    };
+    (Span::styled(name.to_uppercase(), bold(style)), None)
 }
 
 /// One phase of a linked card's flash, in spinner frames: the MOVE

@@ -299,6 +299,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.ticket_shells = ticket_shells();
     // agy's place in the tier lists (T-1234) — same rule.
     app.agy_switch = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1");
+    // This terminal's shell, for the shell-env chip (T-1201) — same rule.
+    app.shell = std::env::var("SHELL").ok();
     // Where the tier page reads each provider's model list (T-951) — same
     // rule: a test app reads none.
     app.model_homes = Some(app::ModelHomes {

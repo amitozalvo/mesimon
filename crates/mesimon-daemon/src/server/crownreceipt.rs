@@ -533,7 +533,7 @@ mod tests {
             monitoring_tasks: false,
             teammates: 0,
         };
-        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000), Signal::TurnStarted));
+        assert!(matches!(d.hold_async_stop(id, stop, &frame, None, 1_000).0, Signal::TurnStarted));
         d.receipt_state(&rec, &change(SessionState::Running, SessionState::Running));
         // A held Stop can also promote an inferred idle. This is the
         // turn_begins edge that used to revoke the receipt after rebase.

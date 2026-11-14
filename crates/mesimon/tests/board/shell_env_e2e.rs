@@ -230,18 +230,17 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
         c.request(Command::ReloadShellEnv { shell: Some(second.clone()) }),
         Response::Ok
     ));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let st = shell_env_of(c.request(Command::Snapshot));
-        let file = std::fs::read(paths.shell_env_file()).unwrap_or_default();
-        let file = String::from_utf8_lossy(&file).to_string();
-        if st.shell == second && !st.reloading && file.contains("from-the-second-shell") {
-            assert!(file.contains(&format!("SHELL={second}")), "a pane's $SHELL is the old one");
-            break;
-        }
-        assert!(Instant::now() < deadline, "the named shell was never run: {st:?}");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    let file = || {
+        String::from_utf8_lossy(&std::fs::read(paths.shell_env_file()).unwrap_or_default())
+            .to_string()
+    };
+    wait_until_says(
+        Duration::from_secs(20),
+        "the named shell to run",
+        || (shell_env_of(c.request(Command::Snapshot)), file()),
+        |(st, file)| st.shell == second && !st.reloading && file.contains("from-the-second-shell"),
+    );
+    assert!(file().contains(&format!("SHELL={second}")), "a pane's $SHELL is the old one");
 
     // The dump is a copy of the user's whole environment. It must not outlive
     // the capture that made it.

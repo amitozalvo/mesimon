@@ -22,7 +22,7 @@ pub(crate) struct Launches {
     seats: RefCell<HashSet<ulid::Ulid>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Seen {
     worktree: Option<(Instant, Option<Instant>)>,
     init: Option<(Instant, Option<Instant>)>,
@@ -82,9 +82,7 @@ impl App {
     /// made, and no agent on the ticket yet. The seat's press is spent.
     pub(crate) fn launch_parked(&self, ticket: ulid::Ulid) -> bool {
         self.board.live_agent(ticket).is_none()
-            && self
-                .wt_item(ticket)
-                .is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"))
+            && self.wt_item(ticket).is_some_and(mesimon_core::command::WorktreeItem::making)
     }
 
     /// The ticket's launch as the page draws it, `None` once the agent is
@@ -93,7 +91,10 @@ impl App {
     pub(crate) fn launch(&self, ticket: ulid::Ulid) -> Option<Launch> {
         let now = Instant::now();
         let rec = self.board.live_agent(ticket);
-        let parked = self.launch_parked(ticket);
+        let wt = self.wt_item(ticket);
+        let making = wt.is_some_and(mesimon_core::command::WorktreeItem::making);
+        // `launch_parked`, off the two reads above.
+        let parked = rec.is_none() && making;
         let boot = rec.is_some_and(booting);
         let mut seen = self.launches.seen.borrow_mut();
         if !parked && !boot {
@@ -110,18 +111,10 @@ impl App {
         let fresh = from_seat
             || rec.is_none()
             || rec.is_some_and(|r| r.typed_title.is_some() && r.transcript_path.is_none());
-        let s = seen.entry(ticket).or_insert(Seen {
-            worktree: None,
-            init: None,
-            agent: None,
-            fresh,
-            ended: None,
-        });
+        let s = seen.entry(ticket).or_insert(Seen { fresh, ..Seen::default() });
         if s.ended.is_some() {
-            *s = Seen { worktree: None, init: None, agent: None, fresh, ended: None };
+            *s = Seen { fresh, ..Seen::default() };
         }
-        let wt = self.wt_item(ticket);
-        let making = wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
         let init_running = making && wt.and_then(|w| w.detail.as_deref()) == Some(INIT_RUNNING);
         if making {
             s.worktree.get_or_insert((now, None));
@@ -196,4 +189,4 @@ impl App {
 
 /// The binding's detail while its init script runs (`server.rs`'s
 /// `on_provision_init`).
-pub(crate) const INIT_RUNNING: &str = "init script running";
+pub(crate) const INIT_RUNNING: &str = mesimon_core::command::WorktreeItem::INIT_RUNNING;

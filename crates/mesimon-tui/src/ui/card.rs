@@ -283,7 +283,7 @@ pub(super) fn shell_ink(theme: &Theme) -> Style {
 pub(super) const SHELL_PLACEHOLDER: &str = "shell command";
 
 /// The delivery row's words for a shell line (T-1211): Enter runs it.
-pub(super) const SHELL: &str = " ∙ shell command";
+const SHELL: &str = " ∙ shell command";
 /// `SHELL` on a card too narrow for it.
 const SHELL_SHORT: &str = " ∙ shell";
 
@@ -415,17 +415,7 @@ pub(super) fn render_ask_mode(
     let lit = interrupts && theme.delete_lit(ctx.spin);
     let ink = if lit { interrupt_ink(theme) } else { Style::default().fg(theme.sel.dim1) };
     let lead = crate::tags::BAR + 1;
-    let mut said = word.to_string();
-    if shell {
-        // T-1211: Enter runs the words; the short form where it would cut.
-        let fits = lead + word.width() + SHELL.width() < ctx.width as usize;
-        said.push_str(if fits { SHELL } else { SHELL_SHORT });
-    }
-    if interrupts {
-        // A column's width: the short form where the whole one would be cut.
-        let fits = lead + said.width() + INTERRUPTS.width() < ctx.width as usize;
-        said.push_str(if fits { INTERRUPTS } else { INTERRUPTS_SHORT });
-    }
+    let said = ask_said(word, shell, interrupts, Some((ctx.width as usize).saturating_sub(lead)));
     let mut spans = vec![Span::raw(" ".repeat(lead)), Span::styled(said, ink)];
     // `^r` (T-443): the tier the words switch the agent to.
     if let Some(tier) = tier_word {
@@ -441,9 +431,26 @@ pub(super) fn render_ask_mode(
     Line::from(spans).style(if lit { theme.delete_row() } else { theme.selected_row() })
 }
 
+/// The timing row's words, on the card, the ticket page and the ask room:
+/// `word`, then that Enter runs them as a shell line (T-1211), then what
+/// Enter does to a running turn (T-1188). `room` is a card's cells for them,
+/// a column's width: the short form goes where the whole one would be cut.
+pub(super) fn ask_said(word: &str, shell: bool, interrupts: bool, room: Option<usize>) -> String {
+    let mut said = word.to_string();
+    for (on, whole, short) in
+        [(shell, SHELL, SHELL_SHORT), (interrupts, INTERRUPTS, INTERRUPTS_SHORT)]
+    {
+        if on {
+            let fits = room.is_none_or(|room| said.width() + whole.width() < room);
+            said.push_str(if fits { whole } else { short });
+        }
+    }
+    said
+}
+
 /// The timing row's words over a running turn (T-1188): `immediately`
 /// says what Enter does to the agent.
-pub(super) const INTERRUPTS: &str = " ∙ interrupts the agent";
+const INTERRUPTS: &str = " ∙ interrupts the agent";
 /// `INTERRUPTS` on a card too narrow for it.
 const INTERRUPTS_SHORT: &str = " ∙ interrupts";
 
@@ -750,8 +757,7 @@ pub(super) fn render(
         Some(('!', Register::Attn))
     } else {
         glyphs::card_glyph(sessions, terminal_busy, tier, ctx.spin).or_else(|| {
-            let launching =
-                wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
+            let launching = wt.is_some_and(mesimon_core::command::WorktreeItem::making);
             launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
         })
     };

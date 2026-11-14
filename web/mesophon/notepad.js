@@ -99,15 +99,18 @@ export function NotePane({ store, ticket, pane, shown }) {
 const PICTURE_MARK = /!?\[[^\]]*\]\(mesimon-attachment:[^)]*\)/g;
 function previewOf(body) {
   const pictures = (body.match(PICTURE_MARK) || []).length;
-  const words = body
-    .replace(PICTURE_MARK, "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line && !/^#{1,6}(\s|$)/.test(line) && !/^(```|~~~)/.test(line))
-    .slice(0, 4)
-    .join(" ")
-    .replace(/[*_`>#]+/g, "")
-    .slice(0, 240);
+  const text = body.replace(PICTURE_MARK, "");
+  // The first four lines that say something; the rest of a long note is
+  // never split or trimmed.
+  const kept = [];
+  for (let from = 0; from <= text.length && kept.length < 4; ) {
+    let to = text.indexOf("\n", from);
+    if (to < 0) to = text.length;
+    const line = text.slice(from, to).trim();
+    if (line && !/^#{1,6}(\s|$)/.test(line) && !/^(```|~~~)/.test(line)) kept.push(line);
+    from = to + 1;
+  }
+  const words = kept.join(" ").replace(/[*_`>#]+/g, "").slice(0, 240);
   return { words, pictures };
 }
 
@@ -120,15 +123,19 @@ export function NotesList({ store, ticket, panes }) {
   const book = store.noteBook();
   const away = !store.live;
   const writes = store.canWriteNotes;
-  const rows = panes.map((pane, at) => ({ pane, at })).filter(({ pane }) => pane.kind !== "transcript");
-  const bodyOf = (pane) => {
-    const pending = store.noteMail.pending(board, ticket.id, pane.row.id);
-    return { pending, body: pending ? pending.text : book.body(ticket.id, pane.row.id) };
-  };
+  // Each row with its body, read once: a note's is this browser's edit on
+  // its way, else the host's; a fresh note's is its own text.
+  const rows = panes
+    .map((pane, at) => {
+      if (pane.kind === "fresh") return { pane, at, pending: pane.item, body: pane.item.text };
+      if (pane.kind !== "note") return { pane, at };
+      const pending = store.noteMail.pending(board, ticket.id, pane.row.id);
+      return { pane, at, pending, body: pending ? pending.text : book.body(ticket.id, pane.row.id) };
+    })
+    .filter(({ pane }) => pane.kind !== "transcript");
   const boxes = [];
-  for (const { pane } of rows) {
+  for (const { pane, pending, body } of rows) {
     if (pane.kind !== "note") continue;
-    const { pending, body } = bodyOf(pane);
     for (const box of extract(body || "")) boxes.push({ ...box, note: pane.row.id, busy: !!pending });
   }
   const done = boxes.filter((b) => b.done).length;
@@ -141,13 +148,12 @@ export function NotesList({ store, ticket, panes }) {
         <span class="summary-mark" aria-hidden="true">${box.done && html`<${Icon} name="check" size=${13} width=${3} />`}</span>
         <span class="summary-text" dir="auto">${box.text}</span></button>`)}
     </section>`}
-    <div class="note-rows">${rows.map(({ pane, at }, i) => {
+    <div class="note-rows">${rows.map(({ pane, at, pending, body }) => {
       if (pane.kind === "unread")
         return html`<p class="notes-empty" key="unread">${pane.count} ${pane.count === 1 ? "note" : "notes"} · ${away ? "needs your terminal" : "loading…"}</p>`;
       const fresh = pane.kind === "fresh";
-      const { pending, body } = fresh ? { pending: pane.item, body: pane.item.text } : bodyOf(pane);
       const said = body === undefined ? undefined : previewOf(body);
-      const name = fresh ? pane.item.name || "New note" : i === 0 ? "Description" : pane.row.name || "Untitled";
+      const name = fresh ? pane.item.name || "New note" : pane.title;
       return html`<button type="button" class="note-row" key=${pane.key} data-note=${fresh ? undefined : pane.row.id}
         onClick=${() => store.showPane(ticket.id, at)}>
         <span class="note-row-head"><b dir="auto">${name}</b><span class="note-row-by">${fresh
@@ -208,11 +214,10 @@ export function PictureList({ draft, onRemove }) {
 }
 
 // The file input that picks pictures into a draft, dressed as a button:
-// the icon and whatever `children` says beside it. The composer (T-853)
-// shows the icon alone, a plus.
-export function PicturePick({ id, draft, caret, onAdd, label, icon = "image", capture, children }) {
+// the picture icon and whatever `children` says beside it.
+export function PicturePick({ id, draft, caret, onAdd, label, capture, children }) {
   const busy = !!draft.sending;
-  return html`<label class=${`btn btn-quiet note-pic-add${children ? "" : " note-pic-icon"}`} data-busy=${String(busy || draft.reading > 0)}
+  return html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}
     aria-label=${label}>
     <input id=${id} type="file" accept="image/*" multiple=${!capture} capture=${capture} class="sr-only" disabled=${busy}
       onChange=${async (e) => {
@@ -221,7 +226,7 @@ export function PicturePick({ id, draft, caret, onAdd, label, icon = "image", ca
         const at = await onAdd(files, caret.current);
         if (at !== undefined) caret.current = at;
       }} />
-    <${Icon} name=${icon} size=${17} />${children}</label>`;
+    <${Icon} name="image" size=${17} />${children}</label>`;
 }
 
 // A pasted image goes in as a picked one; anything else pastes as text.

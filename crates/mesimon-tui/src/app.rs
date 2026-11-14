@@ -2145,6 +2145,9 @@ pub struct App {
     /// The last window's session and picture, and the zone's size it was
     /// fitted to (`park_live`): what the next window starts from.
     pub live_last: std::collections::HashMap<uuid::Uuid, std::rc::Rc<crate::live::Shot>>,
+    /// The newest capture as the page draws it (`live_page`), made once
+    /// per capture, not once per frame.
+    pub(crate) live_paged: std::cell::RefCell<Option<crate::live::Paged>>,
     /// A window the page waits for before it has started (`live_pending`):
     /// the session and when the wait began.
     pub live_wait: std::cell::Cell<Option<(uuid::Uuid, std::time::Instant)>>,
@@ -2497,6 +2500,10 @@ pub struct App {
     /// on the provider ring. Set by `lib.rs::run`, never `App::new`, the
     /// `ticket_shells` rule.
     pub agy_switch: bool,
+    /// This terminal's `$SHELL` (T-1201), read once: the shell-env chip
+    /// asks it every frame. Set by `lib.rs::run`, never `App::new`, the
+    /// `ticket_shells` rule.
+    pub shell: Option<String>,
     /// The OS appearance watch (T-485): a thread asking the OS, never the
     /// terminal. Armed by `arm_appearance` exactly while the two theme
     /// slots differ (`Prefs::follows_os`), nothing is pinned and a probe
@@ -2700,6 +2707,7 @@ impl App {
             tmux_sock: None,
             live_rect: std::cell::Cell::new(None),
             live_last: std::collections::HashMap::new(),
+            live_paged: std::cell::RefCell::new(None),
             live_wait: std::cell::Cell::new(None),
             live_size: std::cell::Cell::new(None),
             page_ticket: None,
@@ -2802,6 +2810,7 @@ impl App {
             icons: None,
             ticket_shells: false,
             agy_switch: false,
+            shell: None,
             appearance: None,
             appearance_probe: None,
             appearance_barred: false,
@@ -4333,6 +4342,8 @@ impl App {
             self.board.tickets.iter().map(|t| t.id).collect();
         self.pr_seen.retain(|t, _| tickets.contains(t));
         self.crown_residue.retain(|t| tickets.contains(t));
+        // And a parked window's last picture with its session.
+        self.live_last.retain(|id, _| self.board.session(*id).is_some());
         let notes: std::collections::HashSet<ulid::Ulid> =
             self.board.tickets.iter().flat_map(|t| t.notes.iter().map(|n| n.id)).collect();
         self.summaries.retain(|n, _| notes.contains(n));
@@ -6568,6 +6579,24 @@ impl App {
         self.live.as_ref().filter(|l| l.session == session).and_then(|l| l.shot.clone())
     }
 
+    /// `shot` as the ticket page draws it (`Shot::for_page`; on the folder
+    /// trust dialog `Shot::for_trust`, with the row the page's keys go in),
+    /// kept until another capture or the other reading is asked for: a
+    /// capture changes at the reader's rate, the page draws at the frame's.
+    pub(crate) fn live_page(
+        &self,
+        shot: &std::rc::Rc<crate::live::Shot>,
+        trust: bool,
+    ) -> (std::rc::Rc<crate::live::Shot>, Option<usize>) {
+        let mut memo = self.live_paged.borrow_mut();
+        match &*memo {
+            Some(p) if p.trust == trust && std::rc::Rc::ptr_eq(&p.of, shot) => {}
+            _ => *memo = Some(crate::live::Paged::of(shot, trust)),
+        }
+        let p = memo.as_ref().expect("just set");
+        (std::rc::Rc::clone(&p.page), p.keys)
+    }
+
     /// The zone's size for the pane, from the draw.
     pub(crate) fn live_wish(&self, cols: u16, rows: u16) {
         self.live_size.set(Some((cols, rows)));
@@ -6949,6 +6978,26 @@ impl App {
         done
     }
 
+    /// A board's named value, one step round `inherit → each word →
+    /// inherit`. `words` are the values in ring order: the word the file
+    /// keeps and the word the status line shows. A word the file holds that
+    /// no value has steps to the first, as an unset one does.
+    fn step_board_word(&mut self, key: PrefKey, label: &str, words: &[(&'static str, &str)]) {
+        let at = self.board_prefs.word(key).and_then(|w| words.iter().position(|(k, _)| *k == w));
+        let next = match at {
+            None => words.first(),
+            Some(i) => words.get(i + 1),
+        };
+        match next {
+            Some(&(word, shown)) => {
+                self.set_board_pref(&format!("{label}: {shown}"), |b| b.set_word(key, word))
+            }
+            None => {
+                self.set_board_pref(&format!("{label} inherits the machine's"), |b| b.clear(key))
+            }
+        }
+    }
+
     /// One step of the board's override: `inherit → on → off → inherit`
     /// for a switch, `inherit → each sound → inherit` for a sound. A key the
     /// machine keeps says so and does nothing.
@@ -6983,42 +7032,16 @@ impl App {
             // The board's view (T-1240), the same ring as the fetch's.
             PrefKey::BoardView => {
                 use crate::prefs::BoardView;
-                let next = match self.board_prefs.word(key).and_then(BoardView::from_key) {
-                    None => Some(BoardView::ALL[0]),
-                    Some(v) => {
-                        let i = BoardView::ALL.iter().position(|x| *x == v).unwrap_or(0);
-                        BoardView::ALL.get(i + 1).copied()
-                    }
-                };
                 let was = self.prefs.board_view;
-                match next {
-                    Some(v) => self.set_board_pref(&format!("{label}: {}", v.key()), |b| {
-                        b.set_word(key, v.key())
-                    }),
-                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
-                        b.clear(key)
-                    }),
-                }
+                let words: Vec<_> = BoardView::ALL.iter().map(|v| (v.key(), v.key())).collect();
+                self.step_board_word(key, label, &words);
                 self.view_switched(was);
             }
             // A named value (T-739): `inherit → each word → inherit`.
             PrefKey::FetchEvery => {
                 use crate::prefs::FetchEvery;
-                let next = match self.board_prefs.word(key).and_then(FetchEvery::from_key) {
-                    None => Some(FetchEvery::ALL[0]),
-                    Some(v) => {
-                        let i = FetchEvery::ALL.iter().position(|x| *x == v).unwrap_or(0);
-                        FetchEvery::ALL.get(i + 1).copied()
-                    }
-                };
-                match next {
-                    Some(v) => self.set_board_pref(&format!("{label}: {}", v.show()), |b| {
-                        b.set_word(key, v.key())
-                    }),
-                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
-                        b.clear(key)
-                    }),
-                }
+                let words: Vec<_> = FetchEvery::ALL.iter().map(|v| (v.key(), v.show())).collect();
+                self.step_board_word(key, label, &words);
             }
             _ => {
                 let next = match self.board_prefs.bool(key) {
@@ -8674,6 +8697,9 @@ impl App {
         // Every frame's read lets a page pick go once the cursor is off its
         // session, the page left included (T-1143).
         let _ = self.page_selected();
+        // Read once: three fields below ask each of these.
+        let launching = subject.is_some_and(|t| self.launch_parked(t));
+        let box_held = subject.is_some_and(|t| self.box_held(t));
         let editor = match &self.mode {
             Mode::Editor(e) => Some(e),
             _ => None,
@@ -8842,10 +8868,7 @@ impl App {
             ticket_links: self.page_visible(|on| on.next().is_some()).unwrap_or(false),
             link_picked: self.pick_live(),
             link_askable: subject.is_some_and(|t| {
-                !self.ticket_queued(t)
-                    && self.unsent_of(t).is_none()
-                    && !self.launch_parked(t)
-                    && !self.box_held(t)
+                !self.ticket_queued(t) && self.unsent_of(t).is_none() && !launching && !box_held
             }),
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
@@ -8863,7 +8886,7 @@ impl App {
             // `reloading` takes the offer down the instant the press lands, so
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: (self.shell_env.stale
-                || self.shell_env.shell_differs(std::env::var("SHELL").ok().as_deref()))
+                || self.shell_env.shell_differs(self.shell.as_deref()))
                 && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             // The notice IS the fact (T-690): the daemon raises it when a
@@ -8882,10 +8905,9 @@ impl App {
             sel_note: matches!(row, Some(RailRow::Note(_))),
             // A start parked behind its worktree (T-1156) has had its press:
             // the row's Enter waits for the agent the launch is making.
-            sel_new_agent: matches!(row, Some(RailRow::NewAgent))
-                && !subject.is_some_and(|t| self.launch_parked(t)),
-            ticket_launching: subject.is_some_and(|t| self.launch_parked(t)),
-            ticket_box_held: subject.is_some_and(|t| self.box_held(t)),
+            sel_new_agent: matches!(row, Some(RailRow::NewAgent)) && !launching,
+            ticket_launching: launching,
+            ticket_box_held: box_held,
             sel_terminal: matches!(row, Some(RailRow::Terminal(_))),
             adopt_armed: matches!((row, self.adopt_armed, subject), (Some(RailRow::Terminal(_)), Some(armed), Some(t)) if armed == t),
             ticket_shells: self.ticket_shells,
@@ -10756,7 +10778,7 @@ impl App {
             Verb::ReloadShellEnv => {
                 // This terminal's shell goes with the press (T-1201): the
                 // daemon's is the one it was started with.
-                self.send(Command::ReloadShellEnv { shell: std::env::var("SHELL").ok() })?;
+                self.send(Command::ReloadShellEnv { shell: self.shell.clone() })?;
                 // Names the boundary in the same breath as the confirmation: a
                 // running process's environment cannot be changed, so a live
                 // pane keeps what it was born with and sleep/wake is the way
@@ -12492,12 +12514,6 @@ impl App {
         }
     }
 
-    /// Where a ticket sits on the board: (column index, row).
-    /// The column and row a ticket stands at (T-1240's flights).
-    pub(crate) fn locate_card(&self, id: ulid::Ulid) -> Option<(usize, usize)> {
-        self.locate(id)
-    }
-
     /// Is the board drawn as a table (T-1240)?
     pub(crate) fn table_view(&self) -> bool {
         self.prefs.board_view == crate::prefs::BoardView::Table
@@ -12522,6 +12538,7 @@ impl App {
         *self.view_shift.borrow_mut() = shift;
     }
 
+    /// Where a ticket sits on the board: (column index, row).
     fn locate(&self, id: ulid::Ulid) -> Option<(usize, usize)> {
         self.columns().iter().enumerate().find_map(|(c, name)| {
             self.board.column_tickets(name).iter().position(|t| t.id == id).map(|r| (c, r))

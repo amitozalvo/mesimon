@@ -5987,7 +5987,8 @@ impl Daemon {
         let signal = observation.signal;
         if let Some(sig) = signal {
             let held = self.async_stop_pending(id);
-            let sig = self.hold_async_stop(id, sig, &frame, observation.detail.clone(), now);
+            let (sig, lifted) =
+                self.hold_async_stop(id, sig, &frame, observation.detail.clone(), now);
             dirty |= held != self.async_stop_pending(id)
                 || (frame.event == "Stop" && self.async_stop_pending(id));
             // A Codex runtime outlives its pane until cleanup confirms; a
@@ -6090,7 +6091,7 @@ impl Daemon {
                     }
                 }
             }
-            dirty |= self.begin_lifted_turn(id, &frame.event);
+            dirty |= self.begin_lifted_turn(id, lifted, &frame.event);
             if let Some(change) = change {
                 dirty |= self.apply_change(id, &change, observation.detail, Some(&frame.event));
                 // ...unless the user simply left. A clean exit is a park.
@@ -10146,10 +10147,9 @@ impl Daemon {
         crown: ulid::Ulid,
         word: &'static str,
         detail: &str,
-        text: &str,
+        words: u64,
     ) {
         use mesimon_core::crownact::{Cause, BOARD_REPLIED, WOKE_CROWN};
-        let words = mesimon_core::crownact::words_key(text);
         let cause = match word {
             WOKE_CROWN => Cause::Wake {
                 news: mesimon_core::text::cap_bytes(detail, mesimon_core::crownact::DETAIL_BYTES)
@@ -10163,11 +10163,15 @@ impl Daemon {
         self.record_crown_act(crown, crown, word, mesimon_core::clock::now_ms());
     }
 
-    /// A linked board's crown's words went into this board's crown.
-    fn crown_heard_board(&mut self, crown: ulid::Ulid, fb: &peer::FromBoard, text: &str) {
+    /// A linked board's crown's words went into this board's crown (T-733):
+    /// the feed names the road, the crown's card says whose words and what
+    /// they were, and the act keeps them by their key (`words_key`).
+    fn board_ask_sent(&mut self, crown: ulid::Ulid, fb: &peer::FromBoard, words: u64) {
         use mesimon_core::crownact::{BOARD_ASKED, BOARD_REPLIED};
+        self.feed.board("peer", "board_ask_sent", Some(crown));
+        self.crown_said(crown, &format!("{}: {}", fb.name, fb.words));
         let word = if fb.reply { BOARD_REPLIED } else { BOARD_ASKED };
-        self.crown_heard_road(crown, word, &fb.name.clone(), text);
+        self.crown_heard_road(crown, word, &fb.name, words);
     }
 
     /// The crown's prompt reached it (T-1162): the turn answers the words
@@ -10728,14 +10732,16 @@ impl Daemon {
             }
             _ => {
                 let news = telling.news.clone();
-                self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, &text);
+                let words = mesimon_core::crownact::words_key(&text);
+                self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, words);
                 let wakes = std::mem::take(&mut *self.crown_wakes);
                 self.told(crown, telling, &wakes);
                 return true;
             }
         };
         let news = telling.news.clone();
-        self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, &text);
+        let words = mesimon_core::crownact::words_key(&text);
+        self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, words);
         let (frame, pane, expires_ms, parked) = waits;
         let wakes = std::mem::take(&mut *self.crown_wakes);
         *self.crown_wake_entering = Some(crownwake::Entering {
@@ -12076,9 +12082,17 @@ impl Daemon {
     /// reading against its model's window — Claude Code's table, wide where
     /// the session's `--model` names `[1m]`, or the window Codex names.
     fn agent_context_view(&self, ticket: ulid::Ulid) -> Option<AgentContextView> {
-        let rec = self.board.live_agent(ticket)?;
+        self.context_view_of(self.board.live_agent(ticket)?)
+    }
+
+    /// `agent_context_view` of the record that holds the seat, for a caller
+    /// that already has it (the snapshot walks the sessions once).
+    fn context_view_of(
+        &self,
+        rec: &mesimon_core::board::SessionRecord,
+    ) -> Option<AgentContextView> {
         let (path, reader) = crate::cost::transcript_of(rec)?;
-        let fill = self.costs.fill(ticket, &path.display().to_string())?;
+        let fill = self.costs.fill(rec.ticket, &path.display().to_string())?;
         match reader {
             crate::cost::Reader::Codex => return mesimon_core::context::codex_view(fill),
             crate::cost::Reader::Agy => {
@@ -12552,7 +12566,7 @@ impl Daemon {
                         Some(worktree::error_words(stage, message))
                     }
                     BindingStatus::Provisioning if self.wt_init.contains(tid) => {
-                        Some("init script running".into())
+                        Some(WorktreeItem::INIT_RUNNING.into())
                     }
                     BindingStatus::Provisioning => {
                         self.wt_progress.get(tid).map(|(d, t)| format!("{d}/{t}"))
@@ -12743,15 +12757,25 @@ impl Daemon {
             usage: self.usage.view(),
             prs: self.forge_items(),
             forge: self.forge_status(),
-            costs: self
-                .costs
-                .view(now_ms())
-                .into_iter()
-                .map(|mut c| {
-                    c.context_pct = self.agent_context_view(c.ticket).and_then(|v| v.pct);
-                    c
-                })
-                .collect(),
+            costs: {
+                // Each ticket's seat, found in one pass: `live_agent` per
+                // costed ticket scanned every session for each.
+                let mut seats = HashMap::new();
+                for rec in self.board.sessions.iter().filter(|s| s.holds_agent_seat()) {
+                    seats.entry(rec.ticket).or_insert(rec);
+                }
+                self.costs
+                    .view(now_ms())
+                    .into_iter()
+                    .map(|mut c| {
+                        c.context_pct = seats
+                            .get(&c.ticket)
+                            .and_then(|rec| self.context_view_of(rec))
+                            .and_then(|v| v.pct);
+                        c
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -12768,14 +12792,12 @@ impl Daemon {
         }
         for p in self.usage.due(now) {
             let (bin, args) = match p {
-                Provider::Claude => (
-                    std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
-                    crate::usage::claude_args(),
-                ),
-                Provider::Codex => (
-                    std::env::var("MESIMON_CODEX_BIN").unwrap_or_else(|_| "codex".into()),
-                    crate::usage::codex_args(),
-                ),
+                Provider::Claude => {
+                    (crate::agents::cli_bin(AgentProvider::ClaudeCode), crate::usage::claude_args())
+                }
+                Provider::Codex => {
+                    (crate::agents::cli_bin(AgentProvider::Codex), crate::usage::codex_args())
+                }
                 // Never due: agy's quota is its sessions' title feed.
                 Provider::Agy => continue,
             };
@@ -16999,7 +17021,8 @@ impl Daemon {
             // pane since the sample gets no key, and the entry goes back.
             let kept = entry.clone();
             let QueuedAsk { ticket, seat, text, plan, by, from_board, .. } = entry;
-            let delivered = if from_board.is_some() { text.clone() } else { String::new() };
+            // A linked board's words by their key, read before they move.
+            let from_board = from_board.map(|fb| (fb, mesimon_core::crownact::words_key(&text)));
             changed = true;
             let word = seat.word();
             let words = by.map(|_| text.clone());
@@ -17079,16 +17102,12 @@ impl Daemon {
                 // A linked board's crown's words (T-733), sent at this
                 // crown's idle: the feed names the road, and the crown's
                 // card says whose words and what they were.
-                None if from_board.is_some() => {
-                    self.feed.board("peer", "board_ask_sent", Some(ticket));
-                    if let Some(fb) = from_board {
-                        self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
-                        self.crown_heard_board(ticket, &fb, &delivered);
+                None => match from_board {
+                    Some((fb, words)) => self.board_ask_sent(ticket, &fb, words),
+                    None => {
+                        self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
                     }
-                }
-                None => {
-                    self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
-                }
+                },
             }
         }
         if changed {
@@ -17563,7 +17582,7 @@ impl Daemon {
         }
         let immediately = q.deliver == Deliver::Immediately;
         let words = q.by.map(|_| q.text.clone());
-        let delivered = if q.from_board.is_some() { q.text.clone() } else { String::new() };
+        let heard = q.from_board.as_ref().map(|_| mesimon_core::crownact::words_key(&q.text));
         let (seat_id, working) = self.ask_seat(&q.seat);
         let response =
             self.deliver_queued_ask(ticket, q.seat, q.text, Ack::QUEUED, q.plan, immediately);
@@ -17596,10 +17615,10 @@ impl Daemon {
             }
         }
         // A linked board's words a person sent (T-733): the card says whose.
-        if let (Some(fb), false) = (q.from_board, matches!(response, Response::Err { .. })) {
-            self.feed.board("peer", "board_ask_sent", Some(ticket));
-            self.crown_said(ticket, &format!("{}: {}", fb.name, fb.words));
-            self.crown_heard_board(ticket, &fb, &delivered);
+        if let (Some(fb), Some(words), false) =
+            (q.from_board, heard, matches!(response, Response::Err { .. }))
+        {
+            self.board_ask_sent(ticket, &fb, words);
         }
         self.broadcast();
         response

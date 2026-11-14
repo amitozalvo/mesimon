@@ -1413,7 +1413,12 @@ pub(in crate::server) mod ledger_tests {
         let (crown, worker) = (b.crown, b.worker);
         b.d.board.crown = Some(crown);
         // The board's wake went in, and the crown's prompt is its words.
-        b.d.crown_heard_road(crown, WOKE_CROWN, "T-2 \"x\" delivered", "wake words here");
+        b.d.crown_heard_road(
+            crown,
+            WOKE_CROWN,
+            "T-2 \"x\" delivered",
+            words_key("wake words here"),
+        );
         b.d.frame_words = Some("wake  words\nhere".into());
         b.d.crown_prompted(crown);
         b.d.board.ticket_mut(worker).unwrap().column = "REVIEW".into();

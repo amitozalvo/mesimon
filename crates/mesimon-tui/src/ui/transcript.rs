@@ -15,12 +15,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, Scope, Verb};
+use mesimon_core::keymap::Scope;
 use mesimon_core::mesophon::RowKind;
 
 use super::dialog::{self, Edges};
 use crate::app::App;
-use crate::glyphs::Tier;
 use crate::rich::Newline;
 use crate::text::truncate;
 
@@ -30,8 +29,8 @@ use crate::text::truncate;
 pub(super) const ROWS: u16 = 14;
 pub(super) const WIDTH: u16 = 68;
 /// The two cells between the frame and the words, where a person's
-/// message wears its prompt mark.
-const PAD: &str = "  ";
+/// message wears its prompt mark: the ticket page's gutter.
+const PAD: &str = super::ticket::GUTTER;
 
 /// When a message was written: the clock today, how long ago before that.
 pub(super) fn when(ms: Option<u64>, now_ms: u64) -> String {
@@ -93,14 +92,12 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         ));
     }
     // The keys that read go in the edge; Esc is the footer's.
-    let ctx = app.frame_ctx();
-    // A live pick's keys are the edge's too (T-1192): Enter is the pick's.
-    let scope = if app.pick_live() { Scope::Link } else { Scope::Transcript };
-    let (own, _) = keymap::footer_split(scope, &ctx);
-    let own: Vec<_> =
-        own.into_iter().filter(|b| b.verb != Verb::Back && b.verb != Verb::LinkLetGo).collect();
-    let tail =
-        super::chrome::hint_spans(&own, &ctx, &theme.rest, inner.width.saturating_sub(4).into());
+    let tail = dialog::reading_keys(
+        app,
+        Scope::Transcript,
+        &theme.rest,
+        inner.width.saturating_sub(4).into(),
+    );
     dialog::frame(f, app, area, None, &theme.rest, Edges { title, tail });
     dialog::notch(f, app, area);
     if !fits {
@@ -168,12 +165,10 @@ fn words(
         app.transcript_cursor_source(),
     );
     // What started the crown's turn, under its words (T-1162).
-    let rows = match super::ticket::cause_row(theme, m, width) {
-        Some(cause) => std::rc::Rc::new(rows.iter().cloned().chain([cause]).collect::<Vec<_>>()),
-        None => rows,
-    };
+    let cause = super::ticket::cause_row(theme, m, width);
+    let total = rows.len() + usize::from(cause.is_some());
     let budget = usize::from(body.height.saturating_sub(2));
-    let mut at = t.pager.window(Some(key), rows.len(), budget, false);
+    let mut at = t.pager.window(Some(key), total, budget, false);
     if t.reveal_link.replace(false) {
         if let Some(row) = rows.iter().position(|line| {
             line.spans.iter().any(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
@@ -182,16 +177,16 @@ fn words(
             // on this frame, even when it was below the old reading window.
             if row < at || row >= at + budget.saturating_sub(1).max(1) {
                 t.pager.jump(row);
-                at = t.pager.window(Some(key), rows.len(), budget, false);
+                at = t.pager.window(Some(key), total, budget, false);
             }
         }
     }
-    let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
-    if at + shown.len() < rows.len() {
+    // The cause row is never a link's, so the search above reads the words.
+    let mut shown: Vec<Line<'static>> =
+        rows.iter().chain(cause.iter()).skip(at).take(budget).cloned().collect();
+    if at + shown.len() < total {
         crate::rich::mark_cut(&mut shown, width, theme);
     }
-    let mark = if theme.glyph_tier() == Tier::Ascii { "> " } else { "❯ " };
-    let raised = theme.selected_bg.map_or(Style::default(), |bg| Style::default().bg(bg));
     for (r, line) in shown.iter_mut().enumerate() {
         super::ticket::ink_message(theme, m, line);
         if !prompt {
@@ -200,11 +195,12 @@ fn words(
         }
         // The mark on the message's first row only, not a scrolled
         // window's; the ground runs to the frame on both sides.
-        let lead = if at + r == 0 { mark } else { PAD };
-        line.spans.insert(0, Span::styled(lead, theme.dim2()));
-        let used = super::spans_width(&line.spans);
-        line.spans.push(Span::raw(" ".repeat((width + 2 * PAD.len()).saturating_sub(used))));
-        *line = std::mem::take(line).style(raised);
+        *line = super::ticket::persons_row(
+            theme,
+            std::mem::take(line),
+            at + r == 0,
+            width + 2 * PAD.len(),
+        );
     }
     (Line::from(head), shown)
 }

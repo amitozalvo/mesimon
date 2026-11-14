@@ -43,10 +43,6 @@ fn create(c: &mut TestClient, title: &str, pick: Option<&str>) -> ulid::Ulid {
     }
 }
 
-fn record(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == id).expect("session")
-}
-
 fn flag(rec: &SessionRecord, name: &str) -> Option<String> {
     let at = rec.argv.iter().position(|a| a == name)?;
     rec.argv.get(at + 1).cloned()
@@ -92,10 +88,24 @@ fn stop(h: &Harness, c: &mut TestClient, id: uuid::Uuid) {
     });
 }
 
+/// The relaunched pane's `SessionStart`, a resume of `conversation`, and
+/// the seat idle on it; `what` names the wait.
+fn resumed(h: &Harness, c: &mut TestClient, id: uuid::Uuid, conversation: uuid::Uuid, what: &str) {
+    hook_send(
+        &h.paths.hook_sock(),
+        &id.to_string(),
+        "SessionStart",
+        &serde_json::json!({"session_id": conversation, "source": "resume",
+            "transcript_path": h.dir.join(format!("{conversation}.jsonl"))})
+        .to_string(),
+    );
+    c.await_state(id, what, |s| matches!(s, SessionState::Idle { .. }));
+}
+
 /// The relaunch landed: a new pane on the same record, on `tier`.
 fn await_relaunch(c: &mut TestClient, id: uuid::Uuid, pane: &Option<String>, tier: &str) {
     wait_until(Duration::from_secs(15), "the tier relaunch", || {
-        let rec = record(c, id);
+        let rec = c.record(id);
         rec.pane_key != *pane && rec.tier == tier && !rec.tier_owed
     });
 }
@@ -162,7 +172,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     let t1 = create(&mut c, "picked at the composer", Some("01CODER"));
     assert_eq!(c.board().ticket(t1).unwrap().tier.as_deref(), Some("01CODER"));
     let (s1, conversation) = start(&h, &mut c, t1);
-    let rec = record(&mut c, s1);
+    let rec = c.record(s1);
     assert_eq!(flag(&rec, "--model").as_deref(), Some("opus"));
     assert_eq!(flag(&rec, "--effort").as_deref(), Some("max"), "the board's override wins");
     assert_eq!(rec.tier, "01CODER");
@@ -173,9 +183,9 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         c.request(Command::SetTicketTier { id: t1, tier: Some("01QUICK".into()) }),
         Response::Ok
     ));
-    assert!(record(&mut c, s1).tier_owed, "owed the moment it is picked");
+    assert!(c.record(s1).tier_owed, "owed the moment it is picked");
     await_relaunch(&mut c, s1, &pane, "01QUICK");
-    let rec = record(&mut c, s1);
+    let rec = c.record(s1);
     assert_eq!(flag(&rec, "--model").as_deref(), Some("sonnet"));
     assert_eq!(flag(&rec, "--effort").as_deref(), Some("high"));
     assert_eq!(flag(&rec, "--resume"), Some(conversation.to_string()), "the same conversation");
@@ -186,17 +196,9 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     });
 
     // ---- a working seat waits for its idle ------------------------------------
-    hook_send(
-        &h.paths.hook_sock(),
-        &s1.to_string(),
-        "SessionStart",
-        &serde_json::json!({"session_id": conversation, "source": "resume",
-            "transcript_path": h.dir.join(format!("{conversation}.jsonl"))})
-        .to_string(),
-    );
-    c.await_state(s1, "resumed", |s| matches!(s, SessionState::Idle { .. }));
+    resumed(&h, &mut c, s1, conversation, "resumed");
     run(&h, &mut c, s1);
-    let pane = record(&mut c, s1).pane_key;
+    let pane = c.record(s1).pane_key;
     // Back to the default, which stores as inherit.
     assert!(matches!(
         c.request(Command::SetTicketTier { id: t1, tier: Some("claude".into()) }),
@@ -204,26 +206,18 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     ));
     assert_eq!(c.board().ticket(t1).unwrap().tier, None, "the default is stored as inherit");
     std::thread::sleep(Duration::from_millis(3500));
-    let rec = record(&mut c, s1);
+    let rec = c.record(s1);
     assert_eq!(rec.pane_key, pane, "a turn is never cut");
     assert!(rec.tier_owed);
     stop(&h, &mut c, s1);
     await_relaunch(&mut c, s1, &pane, "claude");
-    let rec = record(&mut c, s1);
+    let rec = c.record(s1);
     assert!(flag(&rec, "--model").is_none() && flag(&rec, "--effort").is_none(), "{:?}", rec.argv);
 
     // ---- a queued ask with a pick at an idle pane (T-1163): the drain's
     //      relaunch carries the words at once, and the receipt says so ------
-    hook_send(
-        &h.paths.hook_sock(),
-        &s1.to_string(),
-        "SessionStart",
-        &serde_json::json!({"session_id": conversation, "source": "resume",
-            "transcript_path": h.dir.join(format!("{conversation}.jsonl"))})
-        .to_string(),
-    );
-    c.await_state(s1, "resumed idle", |s| matches!(s, SessionState::Idle { .. }));
-    let pane = record(&mut c, s1).pane_key;
+    resumed(&h, &mut c, s1, conversation, "resumed idle");
+    let pane = c.record(s1).pane_key;
     match c.request(Command::PromptSession {
         ticket: t1,
         text: "mesimon-probe-1163 on the new tier".into(),
@@ -239,22 +233,14 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         other => panic!("the relaunch delivered the words, so no refusal: {other:?}"),
     }
     await_relaunch(&mut c, s1, &pane, "01QUICK");
-    assert!(record(&mut c, s1).pending_submit, "the words are parked for the relaunched pane");
+    assert!(c.record(s1).pending_submit, "the words are parked for the relaunched pane");
     assert!(pending_of(&mut c, Some(t1)).is_empty(), "the ask left the queue with the switch");
 
     // ---- an ask with a pick, sent now at a working pane: it queues, then the
     //      switch carries it -------------------------------------------------
-    hook_send(
-        &h.paths.hook_sock(),
-        &s1.to_string(),
-        "SessionStart",
-        &serde_json::json!({"session_id": conversation, "source": "resume",
-            "transcript_path": h.dir.join(format!("{conversation}.jsonl"))})
-        .to_string(),
-    );
-    c.await_state(s1, "resumed again", |s| matches!(s, SessionState::Idle { .. }));
+    resumed(&h, &mut c, s1, conversation, "resumed again");
     run(&h, &mut c, s1);
-    let pane = record(&mut c, s1).pane_key;
+    let pane = c.record(s1).pane_key;
     match c.request(Command::PromptSession {
         ticket: t1,
         text: "mesimon-probe-443 after the switch".into(),
@@ -272,7 +258,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     assert_eq!(c.board().ticket(t1).unwrap().tier.as_deref(), Some("01CODER"));
     stop(&h, &mut c, s1);
     await_relaunch(&mut c, s1, &pane, "01CODER");
-    let rec = record(&mut c, s1);
+    let rec = c.record(s1);
     assert!(rec.pending_submit, "the words are parked for the relaunched pane");
     assert!(pending_of(&mut c, Some(t1)).is_empty(), "the ask left the queue with the switch");
 
@@ -300,7 +286,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
     // ---- a person inside the pane is never thrown out --------------------------
     let t3 = create(&mut c, "focused", None);
     let (s3, _) = start(&h, &mut c, t3);
-    let pane = record(&mut c, s3).pane_key;
+    let pane = c.record(s3).pane_key;
     let mut holder = h.client("focus");
     let focused = holder.request(Command::FocusStart { session: s3 });
     assert!(!matches!(focused, Response::Err { .. }), "{focused:?}");
@@ -309,7 +295,7 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         Response::Ok
     ));
     std::thread::sleep(Duration::from_millis(3500));
-    assert_eq!(record(&mut c, s3).pane_key, pane, "the focused pane is left alone");
+    assert_eq!(c.record(s3).pane_key, pane, "the focused pane is left alone");
     assert!(matches!(holder.request(Command::FocusEnd { session: s3 }), Response::Ok));
     await_relaunch(&mut c, s3, &pane, "01QUICK");
 
@@ -319,5 +305,5 @@ fn a_tier_rides_the_launch_and_a_pick_switches_a_running_seat_at_its_idle() {
         Response::Ok
     ));
     assert_eq!(c.board().ticket(t3).unwrap().tier, None);
-    assert!(!record(&mut c, s3).tier_owed, "nobody picked what it now resolves to");
+    assert!(!c.record(s3).tier_owed, "nobody picked what it now resolves to");
 }

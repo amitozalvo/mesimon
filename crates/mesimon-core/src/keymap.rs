@@ -1239,78 +1239,10 @@ impl SettingsSection {
         )
     }
 
-    /// The section a row lives in; `Theme` for anything that is not a row.
+    /// The section a row lives in, which is the one whose page lists it
+    /// (`section_verbs`); `Theme` for anything that is not a row.
     pub fn for_verb(verb: Verb) -> Self {
-        match verb {
-            Verb::StatusLine
-            | Verb::CrownLightning
-            | Verb::CardMoves
-            | Verb::Peek
-            | Verb::ColumnWidths
-            | Verb::CursorGrow
-            | Verb::SummaryShow
-            | Verb::NewReplies
-            | Verb::CardPrs
-            | Verb::CardCorner
-            | Verb::BoardView => Self::Appearance,
-            Verb::NotifyToggle
-            | Verb::NotifyVia
-            | Verb::NotifyDone
-            | Verb::NotifyFocused
-            | Verb::NotifyInPane
-            | Verb::NotifyCrown
-            | Verb::NotifyWords
-            | Verb::NotifyDockBounce
-            | Verb::NotifySoundNeedsYou
-            | Verb::NotifySoundDone => Self::Notifications,
-            Verb::TabTitle
-            | Verb::TabTitleNeedsYou
-            | Verb::TabTitleFocus
-            | Verb::TabProgress
-            | Verb::TabTheme
-            | Verb::TabColor
-            | Verb::TabSubtitle
-            | Verb::TabIcon => Self::Terminal,
-            Verb::Usage
-            | Verb::UsageShow
-            | Verb::UsageFiveHour
-            | Verb::UsageWeekly
-            | Verb::UsageModel
-            | Verb::UsageResets
-            | Verb::UsageClaude
-            | Verb::UsageCodex
-            | Verb::UsageAgy => Self::Usage,
-            Verb::MergeTrain
-            | Verb::MergeTrainNotice
-            | Verb::FetchEvery
-            | Verb::MergeInto
-            | Verb::SetMergeBranch
-            | Verb::PromoteMain
-            | Verb::ReviewedPrs
-            | Verb::SnoozeQuiet
-            | Verb::WeekStart
-            | Verb::KeepAwake
-            | Verb::IdleSnake
-            | Verb::EnterTicketPage
-            | Verb::Mouse
-            | Verb::EditorChoice => Self::Behaviour,
-            Verb::SystemPrompt
-            | Verb::McpTools
-            | Verb::DefaultTier
-            | Verb::Tiers
-            | Verb::AgentPrompts => Self::Agents,
-            Verb::CrownBudget
-            | Verb::CrownMode
-            | Verb::CrownArchives
-            | Verb::CrownWatches
-            | Verb::CrownContext
-            | Verb::CrownTour
-            | Verb::CrownCost
-            | Verb::CrownSamples
-            | Verb::CrownLinks => Self::Crown,
-            Verb::ProjectPage | Verb::ReleaseChannel => Self::About,
-            _ => Self::Theme,
-        }
+        Self::ALL.into_iter().find(|s| section_verbs(*s).contains(&verb)).unwrap_or(Self::Theme)
     }
 }
 
@@ -7377,15 +7309,8 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     COLUMN_ITEMS
         .iter()
         .filter(|m| {
-            let agent = matches!(
-                m.verb,
-                Verb::ColumnClaudeMode
-                    | Verb::ColumnCodexSandbox
-                    | Verb::ColumnCodexApproval
-                    | Verb::ColumnAgyMode
-                    | Verb::ColumnTools
-                    | Verb::ColumnSleepAfter
-            );
+            // The agent page's rows are the ones under its two headings.
+            let agent = matches!(column_group(m.verb), Some("LAUNCH" | "IDLE"));
             m.live(ctx)
                 && if ctx.col_new || ctx.col_naming {
                     m.verb == Verb::ColumnName
@@ -8132,6 +8057,22 @@ static HEADER: &[Binding] = &[
 pub const INTERRUPT_HINT: &str =
     "sends into the turn: a running command goes to the background, or the turn stops";
 
+/// What the press that sends an ask does, in the footer's word: the field's
+/// Enter and the editor's `^s` say the same one.
+fn ask_word(c: &Ctx) -> &'static str {
+    if c.ask_queued {
+        "queue"
+    } else if c.ask_interrupts {
+        // T-1188: what send-now does to a running turn.
+        INTERRUPT_HINT
+    } else if c.ask_shell {
+        // T-1211: a shell line runs.
+        "run"
+    } else {
+        "send"
+    }
+}
+
 static INPUT: &[Binding] = &[
     Binding {
         keys: &[Key::Enter],
@@ -8144,16 +8085,8 @@ static INPUT: &[Binding] = &[
             if c.prompting {
                 if c.ask_accepts_plan {
                     "accept plan"
-                } else if c.ask_queued {
-                    "queue"
-                } else if c.ask_interrupts {
-                    // T-1188: what send-now does to a running turn.
-                    INTERRUPT_HINT
-                } else if c.ask_shell {
-                    // T-1211: a shell line runs.
-                    "run"
                 } else {
-                    "send"
+                    ask_word(c)
                 }
             } else {
                 "save"
@@ -8664,14 +8597,8 @@ static EDITOR: &[Binding] = &[
         hint: |c| {
             if !c.editor_asking {
                 "save"
-            } else if c.ask_queued {
-                "queue"
-            } else if c.ask_interrupts {
-                INTERRUPT_HINT
-            } else if c.ask_shell {
-                "run"
             } else {
-                "send"
+                ask_word(c)
             }
         },
         avail: |c| c.editing,
@@ -12761,7 +12688,9 @@ mod tests {
 
     /// Every row a Settings page draws has a value beside its name (T-717)
     /// and lives in the section `for_verb` names, so a door back to it
-    /// lands on its own page; a choice marks one of its own options.
+    /// lands on its own page: `for_verb` reads the pages' own lists, so
+    /// what this holds is that no row is listed on two pages. A choice
+    /// marks one of its own options.
     #[test]
     fn every_setting_has_a_value() {
         let full = Ctx {

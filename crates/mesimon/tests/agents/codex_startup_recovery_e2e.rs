@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::common;
 use common::*;
-use mesimon_core::board::{AgentProvider, SessionKind, SessionRecord, SessionState};
+use mesimon_core::board::{AgentProvider, SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 use serde_json::Value;
 use std::time::Duration;
@@ -31,10 +31,6 @@ while True:
     print('Synthetic native composer',flush=True)
     time.sleep(0.1)
 "#;
-
-fn record(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|session| session.id == id).unwrap()
-}
 
 fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
     if !require_tmux() {
@@ -76,9 +72,9 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         response => panic!("spawn: {response:?}"),
     };
     wait_until(Duration::from_secs(10), "failed runtime keeps its reserved seat", || {
-        record(&mut c, id).codex_stopping
+        c.record(id).codex_stopping
     });
-    let old_generation = record(&mut c, id).codex_generation;
+    let old_generation = c.record(id).codex_generation;
     assert!(matches!(c.request(Command::WakeSession { id }), Response::Err { .. }));
     assert!(matches!(
         c.request(Command::SetAgentProvider { provider: AgentProvider::ClaudeCode }),
@@ -100,7 +96,7 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         // the runtime gone and released the checkout (T-405). What the rule
         // is about survives either way — the record, its identity, and the
         // single launch behind it.
-        assert_eq!(record(&mut c, id).codex_generation, old_generation);
+        assert_eq!(c.record(id).codex_generation, old_generation);
         assert_eq!(
             std::fs::read_to_string(fixture.dir.join("launches.jsonl")).unwrap().lines().count(),
             1
@@ -126,10 +122,10 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
         matches!(c.request(Command::ResumeSession { id, confirm:true }), Response::Spawned { fresh, .. } if fresh == expected_resume.is_none())
     );
     wait_until(Duration::from_secs(10), "replacement startup is observed", || {
-        let observed = record(&mut c, id);
+        let observed = c.record(id);
         observed.codex_thread_id.is_some() && matches!(observed.state, SessionState::Idle { .. })
     });
-    let resumed = record(&mut c, id);
+    let resumed = c.record(id);
     assert_eq!(resumed.kind, SessionKind::Codex);
     assert_ne!(resumed.codex_generation, old_generation);
     assert!(!resumed.codex_stopping);
@@ -195,15 +191,15 @@ fn a_crashed_runtime_on_a_live_ticket_releases_the_checkout() {
         response => panic!("spawn: {response:?}"),
     };
     wait_until(Duration::from_secs(10), "the failed runtime claims the checkout", || {
-        let rec = record(&mut c, id);
+        let rec = c.record(id);
         rec.codex_stopping && mesimon_core::quiet::is_working(&rec)
     });
     // The ticket is still on the board — this is the case T-357 left out.
     assert!(c.board().ticket(ticket).is_some());
     wait_until(Duration::from_secs(60), "the sweep to release the checkout", || {
-        !record(&mut c, id).codex_stopping
+        !c.record(id).codex_stopping
     });
-    let released = record(&mut c, id);
+    let released = c.record(id);
     assert!(!mesimon_core::quiet::is_working(&released), "the checkout is free: {released:?}");
     assert!(!released.observation_hold, "the observation hold goes with it");
     assert_eq!(released.ticket, ticket, "the corpse stays on its ticket's rail");

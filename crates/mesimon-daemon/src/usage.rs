@@ -99,10 +99,9 @@ struct FileBody {
 /// schedule, and what each connection asked for.
 pub struct UsageState {
     view: Usage,
-    claude: Cadence,
-    codex: Cadence,
-    /// Never due: agy has no probe, and its `wants` is never set.
-    agy: Cadence,
+    /// By `slot`. agy's is never due: it has no probe, and its `wants` is
+    /// never set.
+    cadence: [Cadence; 3],
     in_flight: [bool; 3],
     /// Unix ms of this daemon's last probe that read: a mod's merged windows
     /// (T-581) refresh the reading's age but not the probe's, which alone
@@ -132,9 +131,7 @@ impl UsageState {
     pub fn new(file: Option<PathBuf>) -> Self {
         let mut s = UsageState {
             view: Usage::default(),
-            claude: Cadence::default(),
-            codex: Cadence::default(),
-            agy: Cadence::default(),
+            cadence: Default::default(),
             in_flight: [false; 3],
             probed_at: [None; 3],
             wants_by: HashMap::new(),
@@ -148,11 +145,7 @@ impl UsageState {
     }
 
     fn cadence(&mut self, p: Provider) -> &mut Cadence {
-        match p {
-            Provider::Claude => &mut self.claude,
-            Provider::Codex => &mut self.codex,
-            Provider::Agy => &mut self.agy,
-        }
+        &mut self.cadence[slot(p)]
     }
 
     /// The snapshot's copy.

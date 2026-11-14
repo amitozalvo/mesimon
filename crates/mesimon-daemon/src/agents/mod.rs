@@ -104,6 +104,29 @@ pub fn adapter(kind: SessionKind) -> Option<&'static dyn AgentAdapter> {
     }
 }
 
+/// The CLI a launch of `provider` runs: its `MESIMON_*_BIN` override (a name
+/// or a path), else the CLI's own name.
+pub fn cli_bin(provider: mesimon_core::board::AgentProvider) -> String {
+    use mesimon_core::board::AgentProvider;
+    let (key, name) = match provider {
+        AgentProvider::ClaudeCode => ("MESIMON_CLAUDE_BIN", "claude"),
+        AgentProvider::Codex => ("MESIMON_CODEX_BIN", "codex"),
+        AgentProvider::Agy => ("MESIMON_AGY_BIN", "agy"),
+    };
+    std::env::var(key).unwrap_or_else(|_| name.into())
+}
+
+/// Cards get an excerpt, never a transcript (D11). Hard cap.
+const DETAIL_MAX: usize = 200;
+
+/// A card's detail from words a pane an agent controls sent (07 §18 rule
+/// 5): control bytes stripped, trimmed, capped; `None` when nothing is left.
+pub(crate) fn detail_text(text: &str) -> Option<String> {
+    let cleaned = mesimon_core::text::scrub_cells(text, false);
+    let cleaned: String = cleaned.trim().chars().take(DETAIL_MAX).collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
 /// Whether a session's words take the paste road with its box read off the
 /// screen (T-1233): a Claude pane's and an agy pane's. Codex has its own
 /// road (`drive_codex_inputs`), and a shell has no box.

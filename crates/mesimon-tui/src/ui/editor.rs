@@ -30,7 +30,7 @@ use crate::layout::{self, Slot};
 use crate::text::{age_ago, area_window, created_at_epoch_ms, edit_window, truncate};
 use crate::theme::{Ramp, Theme};
 
-use mesimon_core::keymap::{self, Scope};
+use mesimon_core::keymap::Scope;
 
 use super::chrome;
 use super::dialog;
@@ -532,15 +532,12 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             let interrupts =
                 app.ask_interrupts(target, (*queued, *immediately), *accept_plan, *plan);
             let lit = interrupts && app.theme.delete_lit(app.spin_frame());
-            let mut said =
-                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan)
-                    .to_string();
-            if crate::app::App::shell_line(ed.body.as_str()) {
-                said.push_str(super::card::SHELL);
-            }
-            if interrupts {
-                said.push_str(super::card::INTERRUPTS);
-            }
+            let said = super::card::ask_said(
+                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan),
+                crate::app::App::shell_line(ed.body.as_str()),
+                interrupts,
+                None,
+            );
             ctx_spans.push(if lit {
                 Span::styled(said, super::card::interrupt_ink(&app.theme))
                     .patch_style(app.theme.delete_row())
@@ -732,15 +729,7 @@ fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
     // Elevated reads as the ground where the profile paints no card.
     let lines = fits.then(|| reader_lines(app, ed, words, 0, crate::rich::Surface::Elevated));
     app.preview_measured();
-    let ctx = app.frame_ctx();
-    // A live pick's keys are the edge's too (T-1192): Enter is the pick's.
-    let scope = if app.pick_live() { Scope::Link } else { Scope::Reader };
-    let (own, _) = keymap::footer_split(scope, &ctx);
-    let own: Vec<_> = own
-        .into_iter()
-        .filter(|b| b.verb != keymap::Verb::Back && b.verb != keymap::Verb::LinkLetGo)
-        .collect();
-    let tail = super::chrome::hint_spans(&own, &ctx, ink, inner.width.saturating_sub(4).into());
+    let tail = dialog::reading_keys(app, Scope::Reader, ink, inner.width.saturating_sub(4).into());
     let title = edge_heading(app, ed, ink);
     dialog::frame(f, app, area, surface, ink, dialog::Edges { title, tail });
     dialog::notch(f, app, area);

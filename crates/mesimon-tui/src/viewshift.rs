@@ -95,13 +95,23 @@ pub(crate) fn between(from: Rect, to: Rect, p: f32) -> Rect {
 /// view drew is taken off, and each card's and header's row is put back
 /// where its flight has it. Drawn after the board, before the bolts.
 pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let Some(shift) = app.view_shift.borrow().clone() else { return };
+    let shift = app.view_shift.borrow();
+    let Some(shift) = shift.as_ref() else { return };
     let now = (app.now)();
     if !shift.playing(now) {
         return;
     }
     let elapsed = now.saturating_sub(shift.at);
     let cols = app.columns();
+    // Every card's column and row, read off the board once for the frame.
+    let places: HashMap<ulid::Ulid, (usize, usize)> = cols
+        .iter()
+        .enumerate()
+        .flat_map(|(ci, name)| {
+            let tickets = app.board.column_tickets(name);
+            tickets.into_iter().enumerate().map(move |(ri, t)| (t.id, (ci, ri)))
+        })
+        .collect();
     // What this frame drew, and where each item flies from.
     let mut items: Vec<(Rect, Rect, u64)> = Vec::new();
     {
@@ -109,7 +119,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, area: Rect) {
         for c in &spots.cards {
             let Some(&from) = shift.cards.get(&c.id) else { continue };
             let to = Rect { x: c.x, y: c.y, width: c.width, height: 1 };
-            let (ci, ri) = app.locate_card(c.id).unwrap_or((0, 0));
+            let (ci, ri) = places.get(&c.id).copied().unwrap_or((0, 0));
             items.push((from, to, delay(ci, Some(ri))));
         }
         for (name, to) in &spots.head_rows {

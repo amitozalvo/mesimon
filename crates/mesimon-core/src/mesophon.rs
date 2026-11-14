@@ -476,16 +476,10 @@ pub fn notes_stamp(notes: &[crate::board::NoteMeta]) -> String {
     if notes.is_empty() {
         return String::new();
     }
-    // FNV-1a: stable across builds and platforms, which a page comparing
-    // two answers needs, and no secret is kept by it.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for n in notes {
-        for byte in n.id.to_bytes().into_iter().chain(n.rev.to_le_bytes()) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    format!("{hash:016x}")
+    // Stable across builds and platforms, which a page comparing two
+    // answers needs.
+    let bytes = notes.iter().flat_map(|n| n.id.to_bytes().into_iter().chain(n.rev.to_le_bytes()));
+    format!("{:016x}", crate::text::fnv1a(bytes))
 }
 
 /// A tag a new ticket wears, spelled as the board's vocabulary spells it.
@@ -655,7 +649,7 @@ pub fn workspace(
     };
     // The card's order (`card::worktree_mark`): what is wrong first.
     let state = match w.status.as_str() {
-        "queued" | "provisioning" => "provisioning",
+        _ if w.making() => "provisioning",
         "error" => "error",
         "evicted" => "evicted",
         _ if w.conflict => "conflict",
@@ -1328,8 +1322,11 @@ mod tests {
         assert_ne!(one, notes_stamp(&[meta(2)]));
         let mut other = meta(1);
         other.id = ulid::Ulid::from_parts(2, 2);
-        assert_ne!(one, notes_stamp(&[meta(1), other]));
+        assert_ne!(one, notes_stamp(&[meta(1), other.clone()]));
         assert_eq!(notes_stamp(&[]), "");
+        // The digest itself is pinned: a page compares a stamp it kept with
+        // the one a newer daemon sends.
+        assert_eq!(notes_stamp(&[meta(1), other]), "1cd92c07b848eadd");
         let row = NoteRow::of(&meta(4), "you".into());
         assert_eq!((row.at, row.rev, row.by.as_str()), (1_790_845_550_000, 4, "you"));
     }

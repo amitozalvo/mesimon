@@ -2214,12 +2214,7 @@ pub const MAX_TAGS_PER_GROUP: usize = 10;
 /// The colour a name falls back to when nobody has picked one: stable across
 /// machines and screenshots, never the order it was created in.
 pub fn default_tint(name: &str) -> u8 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    (h % TAG_TINTS as u64) as u8
+    (crate::text::fnv1a(name.bytes()) % TAG_TINTS as u64) as u8
 }
 
 impl Tag {

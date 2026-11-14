@@ -652,24 +652,19 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         "default tier",
         format!("{} ∙ {}", default.name, default.summary()),
     )
-    .advice("Settings > Agents > Default tier picks what a ticket starts on; ^n on a ticket picks its own. Existing and sleeping sessions keep their original provider.")];
+    .advice("Settings > Agents > Default tier picks what a ticket starts on; ^r on a ticket picks its own. Existing and sleeping sessions keep their original provider.")];
     if let Some(line) = tiers_line(&book) {
         records.push(rec(Level::Note, "tiers", line));
     }
     // agy's rows (T-1234) only where something could start it: behind its
     // switch, or a board that already names it, so nobody else reads an
     // "optional provider unavailable" for a CLI they never chose.
-    let agy = std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1")
-        || selected == AgentProvider::Agy;
-    for (provider, name, override_key) in [
-        (AgentProvider::ClaudeCode, "claude", "MESIMON_CLAUDE_BIN"),
-        (AgentProvider::Codex, "codex", "MESIMON_CODEX_BIN"),
-        (AgentProvider::Agy, "agy", "MESIMON_AGY_BIN"),
-    ] {
+    let agy = mesimon_daemon::agents::agy::enabled() || selected == AgentProvider::Agy;
+    for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex, AgentProvider::Agy] {
         if provider == AgentProvider::Agy && !agy {
             continue;
         }
-        let binary = std::env::var(override_key).unwrap_or_else(|_| name.into());
+        let binary = mesimon_daemon::agents::cli_bin(provider);
         let path = which(&binary);
         let version = path.as_deref().and_then(|path| tool_version(path, &["--version"]));
         records.extend(provider_installation(

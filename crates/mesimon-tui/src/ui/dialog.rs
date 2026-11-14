@@ -113,6 +113,25 @@ pub(super) fn keys(app: &App, scope: Scope, ink: &Ramp, budget: usize) -> Vec<Sp
     chrome::hint_spans(&keymap::frame_keys(scope, &ctx, budget), &ctx, ink, budget)
 }
 
+/// A reading dialog's keys for its bottom edge, the note reader's and the
+/// transcript's: its scope's own cluster without Esc, which is the footer's.
+/// A live pick's keys are the edge's too (T-1192): Enter is the pick's.
+pub(super) fn reading_keys(
+    app: &App,
+    rest: Scope,
+    ink: &Ramp,
+    budget: usize,
+) -> Vec<Span<'static>> {
+    let ctx = app.frame_ctx();
+    let scope = if app.pick_live() { Scope::Link } else { rest };
+    let (own, _) = keymap::footer_split(scope, &ctx);
+    let own: Vec<_> = own
+        .into_iter()
+        .filter(|b| b.verb != keymap::Verb::Back && b.verb != keymap::Verb::LinkLetGo)
+        .collect();
+    chrome::hint_spans(&own, &ctx, ink, budget)
+}
+
 /// Clears `area`, paints it `surface` (the page ground when `None`), draws
 /// the frame in `ink.dim3` with `edges` set into it, records the frame, and
 /// returns the inner rectangle. Below three rows or four columns there is

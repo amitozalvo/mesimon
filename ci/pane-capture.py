@@ -65,6 +65,9 @@ def run_shape(tmux, argv, repo, want, deadline, prompt_after=None):
         tm("respawn-pane", "-k", "-t", "p", shlex.join(argv))
         pane_pid = int(tm("display-message", "-p", "-t", "p", "#{pane_pid}").stdout.strip())
         started, typed, trusted_at, got = time.monotonic(), False, 0.0, None
+
+        def up(screen):
+            return any(w in screen for w in want.split("|")) and (prompt_after or box_drawn(screen))
         try:
             while time.monotonic() - started < deadline:
                 screen = tm("capture-pane", "-p", "-t", "p").stdout
@@ -84,15 +87,14 @@ def run_shape(tmux, argv, repo, want, deadline, prompt_after=None):
                     time.sleep(0.3)
                     tm("send-keys", "-t", "p", "Enter")
                     typed = True
-                elif (not prompt_after or typed) and any(w in screen for w in want.split("|")) \
-                        and (prompt_after or box_drawn(screen)):
+                elif (not prompt_after or typed) and up(screen):
                     time.sleep(0.5)  # one more frame: the box's rules settle
                     raw = tm("capture-pane", "-p", "-e", "-t", "p").stdout
                     cursor = tm("display-message", "-p", "-t", "p", "#{cursor_x} #{cursor_y}").stdout.split()
                     # The shape must still be up on the screen saved: Codex
                     # draws its box, then an update offer over it.
                     again = tm("capture-pane", "-p", "-t", "p").stdout
-                    if any(w in again for w in want.split("|")) and (prompt_after or box_drawn(again)):
+                    if up(again):
                         got = (raw, (int(cursor[0]), int(cursor[1])))
                         break
                 time.sleep(0.25)
@@ -120,7 +122,12 @@ def box_drawn(screen):
                for i, r in enumerate(rows)) or any(r.startswith("›") and not option.match(r) for r in rows)
 
 
-def save(out, name, shot):
+def shoot(out, name, tmux, argv, repo, want, deadline, prompt):
+    """Runs one shape and saves its screen and cursor, or says it was not seen."""
+    shot = run_shape(tmux, argv, repo, want, deadline, prompt_after=prompt)
+    if not shot:
+        print(f"  {name}: not seen within {deadline} s")
+        return
     raw, (x, y) = shot
     (out / f"{name}.txt").write_text(raw)
     (out / f"{name}.cursor").write_text(f"{x} {y} {COLS}\n")
@@ -162,18 +169,10 @@ def main():
                             "--permission-mode", "default", "--tools", tools]
                     if name == "working":
                         argv += ["--allowedTools", "Bash(sleep*)"]
-                    shot = run_shape(tmux, argv, repo, want, args.deadline, prompt_after=prompt)
-                    if shot:
-                        save(out, name, shot)
-                    else:
-                        print(f"  {name}: not seen within {args.deadline} s")
+                    shoot(out, name, tmux, argv, repo, want, args.deadline, prompt)
             else:
                 for name, (prompt, want) in CODEX.items():
-                    shot = run_shape(tmux, [exe], repo, want, args.deadline, prompt_after=prompt)
-                    if shot:
-                        save(out, name, shot)
-                    else:
-                        print(f"  {name}: not seen within {args.deadline} s")
+                    shoot(out, name, tmux, [exe], repo, want, args.deadline, prompt)
         dirs.append(out)
     if args.no_check or not dirs:
         return 0

@@ -78,21 +78,15 @@ function LinkIcon({ link, size = 14 }) {
 // connection's hops are spelled out. On a narrow page the quieter counts
 // give way first (style.css), so the board's name keeps its room.
 const PIPS = ["needs", "stopped", "working", "idle"];
-const pipOf = (board, ticket) =>
-  ticket.agent.state === "needs attention"
-    ? "needs"
-    : board.stoppedNow(ticket)
-      ? "stopped"
-      : ["starting", "working", "stopping"].includes(ticket.agent.state)
-        ? "working"
-        : "idle";
 function Pill({ store }) {
   const link = store.link;
   const board = store.board;
   const counts = {};
   for (const t of board?.tickets || [])
-    if (t.agent && (!["sleeping", "exited"].includes(t.agent.state) || board.stoppedNow(t))) {
-      const pip = pipOf(board, t);
+    if (t.agent) {
+      // A parked or an ended agent is counted only while its stop is news.
+      const pip = board.phaseOf(t);
+      if (pip === "idle" && ["sleeping", "exited"].includes(t.agent.state)) continue;
       counts[pip] = (counts[pip] || 0) + 1;
     }
   const pips = PIPS.filter((p) => counts[p]);
@@ -142,52 +136,46 @@ function Pairing({ store, hidden }) {
   </section>`;
 }
 
-function ModeButtons({ store, board, ids = false }) {
+const needsCount = (board) => (board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0);
+// One view's button, in the sidebar and in the phone's tab bar: its icon,
+// its word and whatever counts beside it.
+const modeTab = (store, mode, id, m, icon, label, extra) => html`<button id=${id} type="button" class="mode" data-mode=${m}
+      aria-pressed=${String(mode === m)} onClick=${() => store.setMode(m)}>
+      <${Icon} name=${icon} size=${22} width=${1.8} /><span>${label}</span>${extra}</button>`;
+
+function ModeButtons({ store, board }) {
   const mode = board?.mode || "agents";
-  const needs = board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0;
+  const needs = needsCount(board);
   const unsettled = store.sent.unsettled(store.active?.pin.board);
   return html`
-    <button id=${ids ? "agents-mode" : undefined} type="button" class="mode" data-mode="agents"
-      aria-pressed=${String(mode === "agents")} onClick=${() => store.setMode("agents")}>
-      <${Icon} name="inbox" size=${22} width=${1.8} /><span>Inbox</span>
-      ${needs > 0 && html`<span class="badge">${needs}</span>`}
-    </button>
-    <button id=${ids ? "board-mode" : undefined} type="button" class="mode" data-mode="board"
-      aria-pressed=${String(mode === "board")} onClick=${() => store.setMode("board")}>
-      <${Icon} name="kanban" size=${22} width=${1.8} /><span>Board</span>
-      ${board && html`<span class="count">${board.tickets.length}</span>`}
-    </button>
-    <button id=${ids ? "sent-mode" : undefined} type="button" class="mode" data-mode="sent"
-      aria-pressed=${String(mode === "sent")} onClick=${() => store.setMode("sent")}>
-      <${Icon} name="send" size=${22} width=${1.8} /><span>Sent</span>
-      ${unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`}
-    </button>`;
+    ${modeTab(store, mode, undefined, "agents", "inbox", "Inbox", needs > 0 && html`<span class="badge">${needs}</span>`)}
+    ${modeTab(store, mode, undefined, "board", "kanban", "Board", board && html`<span class="count">${board.tickets.length}</span>`)}
+    ${modeTab(store, mode, undefined, "sent", "send", "Sent",
+      unsettled > 0 && html`<span class="badge badge-quiet" aria-label=${`${unsettled} not landed yet`}>${unsettled}</span>`)}`;
 }
 
 // The phone's tab bar (T-1208): Inbox and Board, New ticket in the middle,
 // then Find and Settings. Sent has no tab here: a ticket still waiting to
-// land opens it, and over it no tab is the open one.
+// land opens it, and over it no tab is the open one. On the Board the new
+// ticket starts in the column on screen.
 function TabBar({ store, board }) {
   const mode = board?.mode || "agents";
-  const needs = board ? board.tickets.filter((t) => t.agent?.state === "needs attention").length : 0;
-  const tab = (id, m, icon, label, extra) => html`<button id=${id} type="button" class="mode" data-mode=${m}
-      aria-pressed=${String(mode === m)} onClick=${() => store.setMode(m)}>
-      <${Icon} name=${icon} size=${22} width=${1.8} /><span>${label}</span>${extra}</button>`;
+  const needs = needsCount(board);
   return html`
-    ${tab("agents-mode", "agents", "inbox", "Inbox", needs > 0 && html`<span class="badge">${needs}</span>`)}
-    ${tab("board-mode", "board", "kanban", "Board", null)}
+    ${modeTab(store, mode, "agents-mode", "agents", "inbox", "Inbox", needs > 0 && html`<span class="badge">${needs}</span>`)}
+    ${modeTab(store, mode, "board-mode", "board", "kanban", "Board", null)}
     <button id="new-ticket-fab" type="button" class="mode mode-new" disabled=${!board} aria-label="New ticket"
       onClick=${() => store.openComposer(mode === "board" ? board.column : undefined)}><span class="mode-disc"><${Icon} name="plus" size=${20} width=${2.4} /></span></button>
-    ${tab("find-mode", "find", "search", "Find", null)}
+    ${modeTab(store, mode, "find-mode", "find", "search", "Find", null)}
     <button id="settings-mode" type="button" class="mode" aria-haspopup="dialog" onClick=${() => store.openSettings(true)}>
       <${Icon} name="settings" size=${22} width=${1.8} /><span>Settings</span></button>`;
 }
 
-// On a phone's Board the ticket starts in the column on screen; elsewhere in
-// the draft's own column, or the board's default.
-function NewTicketButton({ store, board, id, cls, column }) {
+// The desktop's New ticket: it starts in the draft's own column, or the
+// board's default.
+function NewTicketButton({ store, board, id, cls }) {
   return html`<button id=${id} type="button" class=${cls} disabled=${!board}
-    onClick=${() => store.openComposer(column)}>
+    onClick=${() => store.openComposer()}>
     <${Icon} name="plus" size=${18} width=${2.4} /><span>New ticket</span></button>`;
 }
 

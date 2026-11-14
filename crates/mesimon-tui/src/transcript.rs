@@ -338,6 +338,8 @@ pub(crate) struct Transcript {
     /// the ticket's newest, which alone says the acts after its last words.
     acts: Vec<ActLine>,
     newest: bool,
+    /// What the two above are (`acts_stamp`), hashed where they are set.
+    acts_stamp: u64,
     /// The `crownacts::Acts::version` the acts were read from.
     pub acts_seen: Option<u64>,
     messages: Vec<Message>,
@@ -376,6 +378,11 @@ fn stat_of(path: &Path) -> (u64, u64) {
         .unwrap_or_default()
 }
 
+/// A conversation's acts and whether it is the newest, as one number.
+fn stamp_acts(acts: &[ActLine], newest: bool) -> u64 {
+    crate::text::hash64((acts, newest))
+}
+
 impl Transcript {
     /// The newest page of `rec`'s conversation, on the newest message (a
     /// raised `hand`, when it is the newest). `None` when there is no file
@@ -400,6 +407,7 @@ impl Transcript {
             hand,
             acts: Vec::new(),
             newest: true,
+            acts_stamp: stamp_acts(&[], true),
             acts_seen: None,
             messages: Vec::new(),
             idx: 0,
@@ -528,6 +536,9 @@ impl Transcript {
         }
         let first_ms = out.iter().find_map(|m| m.ms).unwrap_or(0);
         let last_ms = out.iter().rev().find_map(|m| m.ms).unwrap_or(0);
+        // A prompt's key by its row, hashed the first time an act asks: an
+        // act whose words no prompt holds asks every later one.
+        let mut keys: HashMap<usize, u64> = HashMap::new();
         for (i, a) in self.acts.iter().enumerate() {
             let crowned =
                 |act| Crowned { head: a.head.clone(), road: a.road, act, cause: a.cause.clone() };
@@ -537,7 +548,8 @@ impl Transcript {
                         && m.crown.is_none()
                         && m.hand.is_none()
                         && m.ms.is_none_or(|ms| ms + ACT_SLACK_MS >= a.ms)
-                        && words_key(&self.rows[m.row].text) == w
+                        && *keys.entry(m.row).or_insert_with(|| words_key(&self.rows[m.row].text))
+                            == w
                 });
                 if let Some(j) = carried {
                     out[j].crown = Some(crowned(None));
@@ -584,6 +596,7 @@ impl Transcript {
         if self.acts == acts && self.newest == newest {
             return false;
         }
+        self.acts_stamp = stamp_acts(&acts, newest);
         self.acts = acts;
         self.newest = newest;
         self.rebuild();
@@ -592,7 +605,7 @@ impl Transcript {
 
     /// What the acts are, for a draw cache's key.
     pub(crate) fn acts_stamp(&self) -> u64 {
-        crate::text::hash64((&self.acts, self.newest))
+        self.acts_stamp
     }
 
     pub(crate) fn hand(&self) -> Option<&Hand> {

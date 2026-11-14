@@ -188,8 +188,17 @@ pub fn builtin_id(provider: AgentProvider) -> &'static str {
     }
 }
 
+/// The providers with a built-in, in the provider ring's order.
+const BUILTIN_PROVIDERS: [AgentProvider; 3] =
+    [AgentProvider::ClaudeCode, AgentProvider::Codex, AgentProvider::Agy];
+
+/// The provider whose built-in `id` names, if it names one.
+fn builtin_provider(id: &str) -> Option<AgentProvider> {
+    BUILTIN_PROVIDERS.into_iter().find(|p| builtin_id(*p) == id)
+}
+
 pub fn is_builtin_id(id: &str) -> bool {
-    id == CLAUDE || id == CODEX || id == AGY
+    builtin_provider(id).is_some()
 }
 
 /// The machine layer: `tiers.toml` in the state root, every board's.
@@ -258,12 +267,11 @@ impl<'a> Book<'a> {
     /// The built-ins a list offers, in the provider ring's order: Claude
     /// Code, Codex, and agy where [`Self::agy`].
     pub fn builtins(&self) -> Vec<Tier> {
-        let mut out =
-            vec![Tier::builtin(AgentProvider::ClaudeCode), Tier::builtin(AgentProvider::Codex)];
-        if self.agy {
-            out.push(Tier::builtin(AgentProvider::Agy));
-        }
-        out
+        BUILTIN_PROVIDERS
+            .into_iter()
+            .filter(|p| self.agy || *p != AgentProvider::Agy)
+            .map(Tier::builtin)
+            .collect()
     }
 
     /// The tiers a person made, resolved: machine tiers in their order (a
@@ -295,14 +303,8 @@ impl<'a> Book<'a> {
     }
 
     pub fn get(&self, id: &str) -> Option<Tier> {
-        if id == CLAUDE {
-            return Some(Tier::builtin(AgentProvider::ClaudeCode));
-        }
-        if id == CODEX {
-            return Some(Tier::builtin(AgentProvider::Codex));
-        }
-        if id == AGY {
-            return Some(Tier::builtin(AgentProvider::Agy));
+        if let Some(provider) = builtin_provider(id) {
+            return Some(Tier::builtin(provider));
         }
         self.custom().into_iter().map(|(t, _)| t).find(|t| t.id == id)
     }

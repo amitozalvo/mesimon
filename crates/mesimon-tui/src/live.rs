@@ -86,6 +86,24 @@ pub(crate) struct Shot {
     pub cursor: Option<(u16, u16)>,
 }
 
+/// A capture as the ticket page draws it (`App::live_page`): the capture
+/// it was made of, held so its address names it, which reading was asked
+/// (the trust dialog's or the page's), the screen and the trust dialog's
+/// key row.
+pub(crate) struct Paged {
+    pub of: Rc<Shot>,
+    pub trust: bool,
+    pub page: Rc<Shot>,
+    pub keys: Option<usize>,
+}
+
+impl Paged {
+    pub(crate) fn of(shot: &Rc<Shot>, trust: bool) -> Self {
+        let (page, keys) = if trust { shot.for_trust() } else { (shot.for_page(), None) };
+        Paged { of: Rc::clone(shot), trust, page: Rc::new(page), keys }
+    }
+}
+
 impl Shot {
     /// The first row of the live window: the composer's top rule and the
     /// row above it; a dialog from its top (`dialog_top`); or the screen's
@@ -119,23 +137,37 @@ impl Shot {
     /// the box's place.
     pub(crate) fn box_rows(&self) -> Option<(usize, usize)> {
         if let Some(p) = self.boxed_prompt() {
-            let n = self.rows.len();
-            let bottom = (p + 1..(p + BOX_REACH).min(n)).find(|&j| is_rule(&self.rows[j].text))?;
-            return Some((p - 1, bottom));
+            return Some((p - 1, self.bottom_rule(p)?));
         }
         self.cursor_prompt().map(|p| (p, p))
+    }
+
+    /// The rule that closes a box whose prompt row is `p`, within reach.
+    fn bottom_rule(&self, p: usize) -> Option<usize> {
+        (p + 1..(p + BOX_REACH).min(self.rows.len())).find(|&j| is_rule(&self.rows[j].text))
     }
 
     /// Whether the box holds words (T-1156). A placeholder is none: the
     /// agent draws it where the input starts and parks the cursor before it
     /// (the daemon's `composer::read` reads the same). `None` with no box.
+    #[cfg(test)]
     pub(crate) fn box_holds(&self) -> Option<bool> {
-        let (p, bottom, col) = self.box_words()?;
+        self.box_words().map(|(.., held)| held)
+    }
+
+    /// Where the box's words are, and whether it holds any (`box_holds`):
+    /// its prompt row, the row under its last words (the bottom rule), and
+    /// the column the words start in. One look for the box.
+    fn box_words(&self) -> Option<(usize, usize, usize, bool)> {
+        let (top, bottom) = self.box_rows()?;
+        // Claude Code's prompt row is under its top rule; Codex's is the box.
+        let p = top + usize::from(top != bottom);
         let row = &self.rows[p].text;
+        let col = words_col(row);
         let first = row.chars().skip(col).collect::<String>();
         let wrapped = (p + 1..bottom).any(|i| !self.rows[i].blank());
         if first.trim_matches([' ', '\u{a0}']).is_empty() && !wrapped {
-            return Some(false);
+            return Some((p, bottom, col, false));
         }
         // The cursor parked at the input's start, past the mark and its
         // space (a no-break space on Claude Code 2.1.3xx), with nothing
@@ -143,25 +175,14 @@ impl Shot {
         let parked = self
             .cursor
             .is_some_and(|(x, y)| y as usize == p && (x as usize) <= col + 1 && !wrapped);
-        Some(!parked)
-    }
-
-    /// Where the box's words are: its prompt row, the row under its last
-    /// words (the bottom rule), and the column the words start in.
-    fn box_words(&self) -> Option<(usize, usize, usize)> {
-        let (_, bottom) = self.box_rows()?;
-        let p = self.prompt_row()?;
-        Some((p, bottom, words_col(&self.rows[p].text)))
+        Some((p, bottom, col, !parked))
     }
 
     /// The words in the box (T-1156): the prompt row's past its mark, and
     /// the rows its words wrapped onto, joined by a space. `None` with no
     /// box, or with nothing typed (`box_holds`).
     pub(crate) fn box_text(&self) -> Option<String> {
-        if self.box_holds() != Some(true) {
-            return None;
-        }
-        let (p, bottom, col) = self.box_words()?;
+        let (p, bottom, col, true) = self.box_words()? else { return None };
         let first: String = self.rows[p].text.chars().skip(col).collect();
         let rest = (p + 1..bottom).map(|i| self.rows[i].text.as_str());
         let words: Vec<&str> =
@@ -209,7 +230,7 @@ impl Shot {
                     under_frame |= self.rows[i].text.trim_start().starts_with('╰');
                 }
             }
-            return Shot { rows, ..self.clone() };
+            return Shot { rows, cols: self.cols, cursor: self.cursor };
         };
         for row in rows.iter_mut().take(top) {
             *row = strip_hints(row);
@@ -247,7 +268,7 @@ impl Shot {
         // which no parsed row has: an agent's own row of hyphens is never
         // taken for one.
         if top == bottom {
-            let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
+            let rule = page_rule(self.cols);
             if top > 0 && rows[top - 1].blank() {
                 rows[top - 1] = rule.clone();
             }
@@ -277,7 +298,7 @@ impl Shot {
         };
         let mut rows = self.rows.clone();
         rows[m] = unpointed(&rows[m]);
-        let rule = Row { runs: Vec::new(), text: "-".repeat(self.cols as usize) };
+        let rule = page_rule(self.cols);
         let last = rows.iter().rposition(|r| !r.blank()).unwrap_or(m);
         let keys = if last > m && is_dialog_keys(&rows[last].text) {
             rows[last] = rule;
@@ -320,16 +341,12 @@ impl Shot {
                 return false;
             }
             if is_prompt(t) && !is_option(t) {
-                return (i + 1..(i + BOX_REACH).min(n)).any(|j| is_rule(&self.rows[j].text));
+                return self.bottom_rule(i).is_some();
             }
             if !t.starts_with('>') {
                 return false;
             }
-            let Some(bottom) =
-                (i + 1..(i + BOX_REACH).min(n)).find(|&j| is_rule(&self.rows[j].text))
-            else {
-                return false;
-            };
+            let Some(bottom) = self.bottom_rule(i) else { return false };
             let width = |j: usize| self.rows[j].text.trim().chars().count();
             width(i - 1) == width(bottom)
                 && (i + 1..bottom)
@@ -681,6 +698,12 @@ fn nameless(row: &Row) -> Row {
     }
     runs.push((rule, ink));
     Row { runs, text }
+}
+
+/// The page's own rule across a screen `cols` wide: words and no runs,
+/// which no parsed row has.
+fn page_rule(cols: u16) -> Row {
+    Row { runs: Vec::new(), text: "-".repeat(cols as usize) }
 }
 
 /// A rule the page drew into a screen (`Shot::for_page`): words, no runs.
@@ -1633,7 +1656,6 @@ mod tests {
         assert_eq!(echo.box_rows(), None);
     }
 
-    #[test]
     /// Codex's trust and hook prompts are no box: no rule, no mark over
     /// them. The window starts at the prompt's first words.
     #[test]

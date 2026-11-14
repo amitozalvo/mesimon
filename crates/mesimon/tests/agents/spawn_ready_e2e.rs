@@ -27,7 +27,7 @@ use common::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, SessionRecord, SessionState, Unsent};
+use mesimon_core::board::{SessionKind, SessionState, Unsent};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 
@@ -117,10 +117,6 @@ fn pastes(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn record(c: &mut TestClient, sid: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
-}
-
 /// A ticket with a description, and its claude started the composed way.
 fn composed(c: &mut TestClient, h: &Harness, title: &str) -> (ulid::Ulid, uuid::Uuid) {
     let _ = c.request(Command::CreateTicket {
@@ -192,16 +188,16 @@ fn the_brief_waits_for_the_composer_and_arrives_whole() {
     };
     assert_eq!(pastes(&text), vec![format!("\n\n{BRIEF}")], "one paste, whole: {text:?}");
     assert_eq!(text.matches("mesimon-ready-12").count(), 1, "nothing typed outside it: {text:?}");
-    assert!(record(&mut c, sid).ticket_read, "the brief went in");
+    assert!(c.record(sid).ticket_read, "the brief went in");
 
     hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
-    wait_until(Duration::from_secs(3), "the ack", || !record(&mut c, sid).pending_submit);
+    wait_until(Duration::from_secs(3), "the ack", || !c.record(sid).pending_submit);
     // The feed reaches disk on the next tick.
     wait_until(Duration::from_secs(3), "the ack's feed line", || {
         feed_count(&h, "prompt_submitted", ticket) == 1
     });
     assert_eq!(feed_count(&h, "prompt_submit_not_ready", ticket), 0);
-    assert!(record(&mut c, sid).unsent.is_none());
+    assert!(c.record(sid).unsent.is_none());
     let _ = c.request(Command::KillSession { id: sid });
 }
 
@@ -220,7 +216,7 @@ fn a_composer_that_never_paints_is_a_failed_start() {
     wait_until(Duration::from_secs(10), "prompt_submit_not_ready", || {
         feed_count(&h, "prompt_submit_not_ready", ticket) == 1
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_eq!(rec.unsent, Some(Unsent { text: String::new(), brief: true }));
     assert!(!rec.pending_submit, "nothing is owed any more");
     assert!(!rec.ticket_read, "the brief never went in");
@@ -261,7 +257,7 @@ fn a_box_holding_other_text_holds_the_brief_until_the_wait_runs_out() {
         feed_count(&h, "prompt_submit_not_ready", ticket) == 1
     });
     assert_eq!(feed_count(&h, "composer_held", ticket), 1, "the hold is said once");
-    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    assert_eq!(c.record(sid).unsent, Some(Unsent { text: String::new(), brief: true }));
     assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
     assert!(!got(&h).contains('\x03'), "the wait clears nothing");
     assert!(pastes(&got(&h)).is_empty(), "nothing went under the text: {:?}", got(&h));
@@ -280,7 +276,7 @@ fn a_box_holding_other_text_holds_the_brief_until_the_wait_runs_out() {
         })
     };
     assert!(matches!(resend(&mut c), Response::Ok));
-    assert!(record(&mut c, sid).pending_submit, "the Enter is owed again");
+    assert!(c.record(sid).pending_submit, "the Enter is owed again");
     err_containing(resend(&mut c), "already waiting");
 
     wait_until(Duration::from_secs(10), "the resend's paste", || pastes(&got(&h)).len() == 1);
@@ -290,11 +286,11 @@ fn a_box_holding_other_text_holds_the_brief_until_the_wait_runs_out() {
     let first = text.find(OPEN).unwrap();
     assert!(ctrl_c < first, "the box is cleared before the paste: {text:?}");
     assert_eq!(pastes(&text)[0], format!("resend me\n\n{BRIEF}"), "title and brief: {text:?}");
-    assert!(record(&mut c, sid).unsent.is_some(), "the mark stays until the agent takes the words");
+    assert!(c.record(sid).unsent.is_some(), "the mark stays until the agent takes the words");
 
     hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
     wait_until(Duration::from_secs(3), "the ack clears the mark", || {
-        let rec = record(&mut c, sid);
+        let rec = c.record(sid);
         rec.unsent.is_none() && !rec.pending_submit
     });
     assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 0);
@@ -322,7 +318,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
     wait_until(Duration::from_secs(15), "prompt_submit_gave_up", || {
         feed_count(&h, "prompt_submit_gave_up", ticket) == 1
     });
-    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    assert_eq!(c.record(sid).unsent, Some(Unsent { text: String::new(), brief: true }));
     assert_eq!(c.board().needs_you_count(mesimon_core::clock::now_ms()), 1);
     assert!(!got(&h).contains('\x03'), "the first paste clears nothing");
     assert_eq!(pastes(&got(&h)).len(), 1, "the first paste went in: {:?}", got(&h));
@@ -351,7 +347,7 @@ fn a_give_up_is_marked_and_the_resend_clears_the_box_once() {
     assert_eq!(pastes(&text)[1], format!("resend me\n\n{BRIEF}"), "title and brief: {text:?}");
     hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
     wait_until(Duration::from_secs(3), "the ack clears the mark", || {
-        let rec = record(&mut c, sid);
+        let rec = c.record(sid);
         rec.unsent.is_none() && !rec.pending_submit
     });
     let _ = c.request(Command::KillSession { id: sid });
@@ -389,7 +385,7 @@ fn a_restart_s_resend_never_clears_the_text_that_held_its_brief() {
         feed_count(&h, "prompt_submit_not_ready", ticket) == 1
     });
     assert_eq!(feed_count(&h, "composer_held", ticket), 2, "held again after the restart");
-    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    assert_eq!(c.record(sid).unsent, Some(Unsent { text: String::new(), brief: true }));
     let text = got(&h);
     assert!(!text.contains('\x03'), "no Ctrl+C into the box: {text:?}");
     assert!(pastes(&text).is_empty(), "no paste under its text: {text:?}");
@@ -433,7 +429,7 @@ fn recovery_at_the_key(name: &str, cue: &str) -> Option<(Harness, ulid::Ulid, uu
     );
     hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("startup"), &start);
     c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-    assert!(record(&mut c, sid).pending_submit, "the brief waits for a box");
+    assert!(c.record(sid).pending_submit, "the brief waits for a box");
     drop(c);
     h.restart_after(|| std::fs::write(&barrier, "").unwrap());
     let c = h.client(&format!("{name}-2"));
@@ -462,7 +458,7 @@ fn a_recovery_never_clears_text_after_the_title() {
     let text = got(&h);
     assert!(!text.contains('\x03'), "no Ctrl+C into the draft: {text:?}");
     assert!(pastes(&text).is_empty(), "no paste under it: {text:?}");
-    assert_eq!(record(&mut c, sid).unsent, Some(Unsent { text: String::new(), brief: true }));
+    assert_eq!(c.record(sid).unsent, Some(Unsent { text: String::new(), brief: true }));
     let _ = c.request(Command::KillSession { id: sid });
 }
 

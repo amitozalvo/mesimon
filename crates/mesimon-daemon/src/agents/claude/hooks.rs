@@ -10,9 +10,6 @@ use mesimon_core::background::{
 use mesimon_core::board::SessionRecord;
 use serde_json::Value;
 
-/// Cards get an excerpt, never a transcript (D11). Hard cap.
-const DETAIL_MAX: usize = 200;
-
 #[cfg(test)]
 use crate::ingest::parse_frame;
 use crate::ingest::HookFrame;
@@ -168,8 +165,7 @@ pub fn failure_unsaid(frame: &HookFrame) -> bool {
 /// The card excerpt for a failure read off the transcript: `detail_of`'s
 /// treatment of `last_assistant_message`.
 pub fn failure_detail(text: &str) -> Option<String> {
-    let text = sanitize(text);
-    (!text.is_empty()).then_some(text)
+    crate::agents::detail_text(text)
 }
 
 pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
@@ -455,22 +451,7 @@ pub fn detail_of(frame: &HookFrame) -> Option<String> {
         "Notification" => frame.payload.get("message").and_then(Value::as_str).map(str::to_string),
         _ => None,
     }?;
-    let text = sanitize(&text);
-    if text.is_empty() {
-        return None;
-    }
-    Some(text)
-}
-
-/// Control bytes stripped, hard length cap — every string here originates in
-/// a pane an agent controls (07 §18 rule 5).
-fn sanitize(s: &str) -> String {
-    let cleaned = mesimon_core::text::scrub_cells(s, false);
-    let cleaned = cleaned.trim();
-    if cleaned.chars().count() <= DETAIL_MAX {
-        return cleaned.to_string();
-    }
-    cleaned.chars().take(DETAIL_MAX).collect()
+    crate::agents::detail_text(&text)
 }
 
 #[cfg(test)]

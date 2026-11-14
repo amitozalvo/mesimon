@@ -21,9 +21,7 @@ const FAKE_AGY: &str = include_str!("../common/fake_agy.py");
 const MINTED: &str = "11111111-2222-4333-8444-555555555555";
 
 struct Bed {
-    owner: TestFixture,
-    repo: PathBuf,
-    paths: mesimon_daemon::Paths,
+    h: Harness,
 }
 
 impl Bed {
@@ -31,37 +29,30 @@ impl Bed {
     /// writes the person's own agy settings naming the checkout, so no
     /// dialog stands at a start there.
     fn boot(name: &str, on: bool, trusted: bool) -> Option<Self> {
-        if !require_tmux() {
-            return None;
-        }
-        let owner = TestFixture::new(name);
-        let repo = owner.dir.join("repo");
-        init_repo(&repo, "README.md", "agy fixture.\n");
-        let fake = owner.dir.join("fake_agy.py");
-        std::fs::write(&fake, FAKE_AGY).unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .unwrap();
-        let home = owner.dir.join("agy-home");
-        if trusted {
-            std::fs::create_dir_all(&home).unwrap();
-            let list = serde_json::json!({ "trustedWorkspaces": [repo.display().to_string()] });
-            std::fs::write(home.join("settings.json"), list.to_string()).unwrap();
-        }
-        owner.set_env("MESIMON_AGY_BIN", &fake);
-        owner.set_env("MESIMON_AGY_HOME", &home);
-        owner.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
-        owner.set_env("MESIMON_PANE_QUIET_MS", "600000");
+        let mut env = vec![("MESIMON_SLEEP_MIN_AGE_MS", "0"), ("MESIMON_PANE_QUIET_MS", "600000")];
         if on {
-            owner.set_env("MESIMON_AGY", "1");
+            env.push(("MESIMON_AGY", "1"));
         }
-        let paths = owner.paths(&repo);
-        let _daemon = owner.daemon(&repo);
-        wait_until(Duration::from_secs(10), "the daemon socket", || paths.orch_sock().exists());
-        Some(Self { owner, repo, paths })
+        let h = Harness::boot_staged(name, None, &env, |owner, repo| {
+            init_repo(repo, "README.md", "agy fixture.\n");
+            let fake = owner.dir.join("fake_agy.py");
+            std::fs::write(&fake, FAKE_AGY).unwrap();
+            std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .unwrap();
+            let home = owner.dir.join("agy-home");
+            if trusted {
+                std::fs::create_dir_all(&home).unwrap();
+                let list = serde_json::json!({ "trustedWorkspaces": [repo.display().to_string()] });
+                std::fs::write(home.join("settings.json"), list.to_string()).unwrap();
+            }
+            owner.set_env("MESIMON_AGY_BIN", &fake);
+            owner.set_env("MESIMON_AGY_HOME", &home);
+        })?;
+        Some(Self { h })
     }
 
     fn cue(&self, word: &str) {
-        let dir = self.owner.dir.join("agy-cue");
+        let dir = self.h.dir.join("agy-cue");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(word), "").unwrap();
     }
@@ -90,7 +81,7 @@ impl Bed {
     }
 
     fn jsonl<T: serde::de::DeserializeOwned>(&self, name: &str) -> Vec<T> {
-        std::fs::read_to_string(self.owner.dir.join(name))
+        std::fs::read_to_string(self.h.dir.join(name))
             .unwrap_or_default()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -105,11 +96,11 @@ impl Bed {
 
     /// What the stand-in's box holds.
     fn box_text(&self) -> String {
-        std::fs::read_to_string(self.owner.dir.join("agy-box.txt")).unwrap_or_default()
+        std::fs::read_to_string(self.h.dir.join("agy-box.txt")).unwrap_or_default()
     }
 
     fn keys(&self, rec: &SessionRecord, keys: &[&str]) {
-        tmux(&self.paths.tmux_sock())
+        tmux(&self.h.paths.tmux_sock())
             .args(["send-keys", "-t", &rec.sid16()])
             .args(keys)
             .output()
@@ -133,10 +124,6 @@ fn start(c: &mut TestClient, ticket: ulid::Ulid, submit_prompt: bool) -> Respons
     c.request(Command::SpawnSession { ticket, kind: SessionKind::Agy, submit_prompt, plan: false })
 }
 
-fn session(c: &mut TestClient, id: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.iter().find(|s| s.id == id).cloned().expect("session")
-}
-
 fn pair<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
     argv.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
 }
@@ -157,7 +144,7 @@ fn agy_board(c: &mut TestClient) {
 #[test]
 fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     let Some(bed) = Bed::boot("agy-turn", true, true) else { return };
-    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     // The board's tools and the brief, both on (T-1232).
     assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
@@ -175,14 +162,14 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     assert!(pair(&bed.launches()[0], "--mode").is_empty(), "{:?}", bed.launches());
     c.await_state(id, "agy working", |s| *s == SessionState::Running);
     wait_until(Duration::from_secs(5), "the conversation id", || {
-        session(&mut c, id).agy_conversation_id.as_deref() == Some(MINTED)
+        c.record(id).agy_conversation_id.as_deref() == Some(MINTED)
     });
     let launched = bed.launches();
     assert_eq!(launched.len(), 1, "{launched:?}");
     assert!(!launched[0].iter().any(|a| a.contains(title)), "no words on argv: {launched:?}");
     assert!(!launched[0].iter().any(|a| a.starts_with("--prompt")), "{launched:?}");
     let folder = PathBuf::from(pair(&launched[0], "--add-dir")[0]);
-    assert!(folder.starts_with(&bed.paths.state_dir), "{folder:?}");
+    assert!(folder.starts_with(&bed.h.paths.state_dir), "{folder:?}");
     assert!(!launched[0].iter().any(|a| a.contains("dangerously")), "{launched:?}");
     let settings = PathBuf::from(pair(&launched[0], "--settings")[0]);
 
@@ -198,15 +185,15 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
         .iter()
         .map(|a| a.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(pair(&args, "--sock"), [bed.paths.orch_sock().to_str().unwrap()]);
+    assert_eq!(pair(&args, "--sock"), [bed.h.paths.orch_sock().to_str().unwrap()]);
     assert_eq!(pair(&args, "--session"), [id.to_string().as_str()]);
     assert_eq!(read(&settings)["permissions"]["allow"], serde_json::json!(["mcp(mesimon/*)"]));
     // The shim answered as agy dials it: `server/discover` refused at once,
     // then the older handshake and the board's tools.
     wait_until(Duration::from_secs(10), "the stand-in's server probe", || {
-        bed.owner.dir.join("agy-mcp.json").exists()
+        bed.h.dir.join("agy-mcp.json").exists()
     });
-    let mcp = read(&bed.owner.dir.join("agy-mcp.json"));
+    let mcp = read(&bed.h.dir.join("agy-mcp.json"));
     assert_eq!(mcp["server/discover"]["error"]["code"], -32601, "{mcp}");
     assert_eq!(mcp["initialize"]["result"]["protocolVersion"], "2025-11-25", "{mcp}");
     let tools = mcp["tools/list"]["result"]["tools"].as_array().expect("tools/list");
@@ -254,7 +241,7 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     bed.await_prompt(3, "steer", "look at the tests first");
 
     // An Esc fires no `Stop`: the feed's idle under a running turn ends it.
-    let rec = session(&mut c, id);
+    let rec = c.record(id);
     bed.keys(&rec, &["Escape"]);
     c.await_state(id, "agy interrupted", |s| {
         *s == (SessionState::Idle { stop_reason: StopReason::Interrupted })
@@ -299,8 +286,8 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
         "{answer}"
     );
     // Nothing of mesimon's is in the checkout or in agy's own folder.
-    assert!(!Path::new(&bed.repo).join(".agents").exists());
-    let home: Vec<_> = std::fs::read_dir(bed.owner.dir.join("agy-home"))
+    assert!(!Path::new(&bed.h.repo).join(".agents").exists());
+    let home: Vec<_> = std::fs::read_dir(bed.h.dir.join("agy-home"))
         .unwrap()
         .map(|e| e.unwrap().file_name())
         .collect();
@@ -308,14 +295,14 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
 
     // `agy models` was read off the writer, once, into the machine's file
     // the tier page reads (T-1234), in agy's words.
-    let models = bed.paths.state_dir.parent().unwrap().join("agy-models.tsv");
+    let models = bed.h.paths.state_dir.parent().unwrap().join("agy-models.tsv");
     wait_until(Duration::from_secs(10), "the models file", || models.exists());
     assert_eq!(
         std::fs::read_to_string(&models).unwrap(),
         "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
          gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
     );
-    let calls = std::fs::read_to_string(bed.owner.dir.join("agy-models.log")).unwrap();
+    let calls = std::fs::read_to_string(bed.h.dir.join("agy-models.log")).unwrap();
     assert_eq!(calls.lines().count(), 1, "one read for a daemon whose file is fresh");
 }
 
@@ -330,7 +317,7 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
 #[test]
 fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
     let Some(bed) = Bed::boot("agy-words", true, true) else { return };
-    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     let title = "Count the parser's words";
     let t = ticket(&mut c, title);
@@ -341,13 +328,13 @@ fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
     bed.await_prompt(0, "turn", title);
     c.await_state(id, "agy working", |s| *s == SessionState::Running);
     let want = bed
-        .owner
+        .h
         .dir
         .join("agy-brain")
         .join(MINTED)
         .join(".system_generated/logs/transcript_full.jsonl");
     wait_until(Duration::from_secs(5), "the hooks' transcript path", || {
-        session(&mut c, id).transcript_path.as_deref() == want.to_str()
+        c.record(id).transcript_path.as_deref() == want.to_str()
     });
     // Mid-turn the card reads the person's words and the agent thinking.
     let peek = |path: &Path| {
@@ -359,7 +346,7 @@ fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
 
     bed.cue("stop");
     c.await_state(id, "agy's turn ended", |s| matches!(s, SessionState::Idle { .. }));
-    let path = session(&mut c, id).transcript_path.expect("the path stands");
+    let path = c.record(id).transcript_path.expect("the path stands");
     assert_eq!(Path::new(&path), want, "the title feed's path never replaced it");
     let done = format!("done: {title}");
     assert_eq!(peek(&want).text.as_deref(), Some(done.as_str()));
@@ -404,7 +391,7 @@ fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
 #[test]
 fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
     let Some(bed) = Bed::boot("agy-trust", true, false) else { return };
-    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     let title = "Rename the flag";
     let t = ticket(&mut c, title);
@@ -421,7 +408,7 @@ fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
     wait_until(Duration::from_secs(10), "the title in the box", || {
         bed.box_text() == format!("{title} ")
     });
-    assert_eq!(session(&mut c, id).typed_title.as_deref(), Some(title));
+    assert_eq!(c.record(id).typed_title.as_deref(), Some(title));
     std::thread::sleep(Duration::from_millis(1500));
     assert!(bed.prompts().is_empty(), "the title is the person's to send: {:?}", bed.prompts());
     assert!(bed.printed().is_empty(), "{:?}", bed.printed());
@@ -431,7 +418,7 @@ fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
 #[test]
 fn agy_starts_nowhere_without_its_switch() {
     let Some(bed) = Bed::boot("agy-off", false, false) else { return };
-    let mut c = TestClient::connect(&bed.paths.orch_sock());
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     // A board may name agy all the same: a start's kind follows its tier.
     assert!(matches!(
         c.request(Command::SetAgentProvider { provider: AgentProvider::Agy }),
@@ -441,5 +428,5 @@ fn agy_starts_nowhere_without_its_switch() {
     err_containing(start(&mut c, t, false), "switched off");
     assert!(c.board().sessions.is_empty());
     assert!(bed.launches().is_empty());
-    assert!(!bed.owner.dir.join("agy-models.log").exists(), "no `agy models` either");
+    assert!(!bed.h.dir.join("agy-models.log").exists(), "no `agy models` either");
 }

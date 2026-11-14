@@ -6,7 +6,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { Shin } from "./shin.js";
-import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, pickedOption, requestFields } from "./dialogs.js";
+import { CodeBox, DIALOG_OMITTED, RequestFields, TrustAccept, answerable, optionButton, requestFields } from "./dialogs.js";
 import { startWaiting } from "./starts.js";
 import { answerBusy, receiptTick } from "./sessions.js";
 import { RECENT_MS, omittedWords, digestWords } from "./board.js";
@@ -25,6 +25,11 @@ export function ageWords(board, at) {
       : seconds < 86400
         ? `${Math.floor(seconds / 3600)}h`
         : `${Math.floor(seconds / 86400)}d`;
+}
+// The same, as a sentence's tail: "just now", "5m ago", or nothing.
+export function agoWords(board, at) {
+  const age = ageWords(board, at);
+  return age && (age === "now" ? "just now" : `${age} ago`);
 }
 // How long an agent has been in its state (T-497).
 export const stateAge = (board, agent) => ageWords(board, agent?.since);
@@ -188,6 +193,11 @@ const EXIT_WORDS = {
   resumed: "Resumed elsewhere",
 };
 export const exitWords = (agent) => EXIT_WORDS[agent?.exit?.reason] || "Stopped";
+// How a stopped agent's line opens: how it ended and how long ago.
+export function stoppedWhen(board, agent) {
+  const ago = agoWords(board, agent.exit?.at);
+  return `${exitWords(agent)}${ago && ` ${ago}`}`;
+}
 // A logged-out agent resumes only after a login at the terminal (T-1219):
 // the phone cannot log in for it, so Resume is not its main way on.
 export const loggedOut = (agent) => agent?.exit?.reason === "logged_out";
@@ -285,16 +295,9 @@ function NeedCard({ store, ticket, board, live }) {
     </div>`}
     ${question && html`<div class="need-body">
       <p class="need-question" dir="auto">${question.question}</p>
-      <div class="options">${question.options.map((option, index) => {
-        const described = option.description ? `need-${dialog.request}-${index}` : undefined;
-        const picked = pickedOption(entry, dialog, index);
-        return html`<button type="button" class=${`option${picked ? " option-picked" : ""}`} disabled=${off} aria-label=${option.label} aria-describedby=${described}
-          aria-pressed=${picked ? "true" : undefined}
-          onClick=${() => send({ op: "dialog", request: dialog.request, response: { answer: "choice", index } })}>
-          <span class="option-label">${option.label}${picked && html`<${Icon} name="check" size=${15} width=${2.4} />`}</span>
-          ${described && html`<span class="option-desc" id=${described}>${option.description}</span>`}
-        </button>`;
-      })}</div>
+      <div class="options">${question.options.map((option, index) =>
+        optionButton(entry, dialog, option, index, "need", off,
+          () => send({ op: "dialog", request: dialog.request, response: { answer: "choice", index } })))}</div>
     </div>`}
     ${ticket.agent.dialog_omitted && html`<div class="need-body"><p class="need-note">${DIALOG_OMITTED}</p></div>`}
     ${!live
@@ -321,15 +324,13 @@ function NeedCard({ store, ticket, board, live }) {
 // and Resume takes it up again from here. Start fresh begins a new one.
 function StoppedCard({ store, ticket, board, live }) {
   const waiting = startWaiting(store.startOf(ticket));
-  const at = ticket.agent.exit?.at;
-  const when = Number.isFinite(at) ? ageWords(board, at) : "";
   const out = loggedOut(ticket.agent);
   return html`<article class="need stopped" data-tint=${tintOf(ticket)}>
     <button type="button" class="ticket need-open" data-id=${ticket.id} aria-pressed=${String(ticket.id === board.selected)}
       onClick=${() => store.select(ticket.id)}>
       <${Face} store=${store} ticket=${ticket} board=${board} column=${true} />
     </button>
-    <div class="need-body"><p class="need-line">${exitWords(ticket.agent)}${when && ` ${when === "now" ? "just now" : `${when} ago`}`} · ${out ? "log in at your terminal first, then Resume" : "its conversation is kept"}</p></div>
+    <div class="need-body"><p class="need-line">${stoppedWhen(board, ticket.agent)} · ${out ? "log in at your terminal first, then Resume" : "its conversation is kept"}</p></div>
     <div class="need-actions">
       <button type="button" class=${`btn${out ? "" : " btn-pri"} resume-agent`} disabled=${!live || !store.canResume || waiting}
         onClick=${() => store.resumeAgent(ticket.id)}><${Icon} name="play" size=${14} /><span>Resume</span></button>

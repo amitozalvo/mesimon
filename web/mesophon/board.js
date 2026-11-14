@@ -102,6 +102,11 @@ export class BoardState {
   stoppedNow(ticket) {
     return stoppedUnasked(ticket, this.columns, this.now);
   }
+  // Which of needs / stopped / working / idle a ticket's agent is in: the
+  // Inbox's groups and the header's counts.
+  phaseOf(ticket) {
+    return phase(ticket, this.columns, this.now);
+  }
   get current() {
     return this.tickets.find((t) => t.id === this.selected);
   }

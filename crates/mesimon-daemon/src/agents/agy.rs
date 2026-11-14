@@ -73,8 +73,6 @@ const HOOKS: [(&str, &str); 3] =
 /// `mesimon hook` aborts itself at 500 ms; agy's own bound is seconds.
 const HOOK_TIMEOUT_SECS: u32 = 5;
 
-const DETAIL_MAX: usize = 200;
-
 /// Whether this process may start an agy session: `MESIMON_AGY=1`
 /// ([`mesimon_core::board::AGY_SWITCH`]). Off, nothing of agy's launches,
 /// whatever a board or a tier names.
@@ -252,11 +250,7 @@ fn render_settings(
 }
 
 fn write_private(path: &Path, value: &Value) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("{}: {e}", path.display()))
+    hook_settings::write_private(path, value).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Write the session's folder and settings file, rewritten on every launch
@@ -278,9 +272,7 @@ fn prepare(context: &LaunchContext<'_>, trusted: &[String]) -> Result<(PathBuf, 
     // as it stands then.
     let mcp = agents.join("mcp_config.json");
     if tools {
-        let text = hook_settings::mcp_config_json(paths, &bin, session, context.tools);
-        let value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        write_private(&mcp, &value)?;
+        write_private(&mcp, &hook_settings::mcp_config(paths, &bin, session, context.tools))?;
     } else if let Err(e) = std::fs::remove_file(&mcp) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(format!("{}: {e}", mcp.display()));
@@ -329,9 +321,8 @@ fn launch_with(
 ) -> Result<Vec<String>, String> {
     let (dir, settings) =
         prepare(context, trusted).map_err(|e| format!("agy launch files: {e}"))?;
-    let executable = std::env::var("MESIMON_AGY_BIN").unwrap_or_else(|_| "agy".into());
     let mut argv = vec![
-        executable,
+        super::cli_bin(AgentProvider::Agy),
         "--add-dir".into(),
         dir.display().to_string(),
         "--settings".into(),
@@ -356,12 +347,6 @@ fn launch_with(
         argv.extend(["--conversation".into(), id.into()]);
     }
     Ok(argv)
-}
-
-fn sanitize(text: &str) -> Option<String> {
-    let cleaned = mesimon_core::text::scrub_cells(text, false);
-    let cleaned: String = cleaned.trim().chars().take(DETAIL_MAX).collect();
-    (!cleaned.is_empty()).then_some(cleaned)
 }
 
 /// What a `Stop` says. `fullyIdle: false` is a turn whose background tasks
@@ -465,15 +450,16 @@ impl AgentAdapter for Agy {
                     result.signal,
                     Some(Signal::TurnEnded { outcome: TurnOutcome::Failed(_) })
                 ) {
-                    result.detail =
-                        payload.get("error").and_then(Value::as_str).and_then(sanitize).or_else(
-                            || {
-                                payload
-                                    .get("terminationReason")
-                                    .and_then(Value::as_str)
-                                    .and_then(sanitize)
-                            },
-                        );
+                    result.detail = payload
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .and_then(super::detail_text)
+                        .or_else(|| {
+                            payload
+                                .get("terminationReason")
+                                .and_then(Value::as_str)
+                                .and_then(super::detail_text)
+                        });
                 }
             }
             TITLE => result.signal = title_signal(payload, &record.state, record.agy_turn_stopped),
@@ -574,6 +560,23 @@ mod tests {
 
     fn pair<'a>(argv: &'a [String], flag: &str) -> Vec<&'a str> {
         argv.windows(2).filter(|w| w[0] == flag).map(|w| w[1].as_str()).collect()
+    }
+
+    /// A repository and a worktree folder beside it, with the board's state
+    /// under the same temporary root: `(root, paths, tree)`.
+    fn bed() -> (tempfile::TempDir, crate::paths::Paths, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, tree) = (root.path().join("repo"), root.path().join("tree"));
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+        let mut paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        paths.state_dir = root.path().join("state");
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        (root, paths, tree)
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
     const ID: &str = "e491708f-fd93-4aec-9a23-1ad87af7c910";
@@ -795,12 +798,7 @@ mod tests {
     /// both on argv, and resumes by the conversation the record learned.
     #[test]
     fn a_launch_writes_its_folder_and_settings_and_a_wake_names_the_conversation() {
-        let root = std::env::temp_dir().join(format!("msmn-agy-{}", uuid::Uuid::new_v4()));
-        let repo = root.join("repo");
-        let tree = root.join("tree");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&tree).unwrap();
-        let paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        let (_root, paths, tree) = bed();
         let tier = Tier {
             id: "A".into(),
             name: "flash".into(),
@@ -822,9 +820,7 @@ mod tests {
         assert!(pair(&started, "--conversation").is_empty(), "{started:?}");
         assert!(!started.iter().any(|a| a.contains("dangerously")), "{started:?}");
 
-        let hooks: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join(".agents/hooks.json")).unwrap())
-                .unwrap();
+        let hooks = read_json(&dir.join(".agents/hooks.json"));
         let ours = hooks["mesimon"].as_object().unwrap();
         assert_eq!(ours.len(), 3, "{hooks}");
         for (event, name) in HOOKS {
@@ -837,8 +833,7 @@ mod tests {
         // A column without the board's tools: no server, no rule, no brief.
         assert_eq!(ours["SessionStart"].as_array().unwrap().len(), 1, "{hooks}");
         assert!(!dir.join(".agents/mcp_config.json").exists());
-        let file: Value =
-            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let file = read_json(&settings);
         assert!(file["title"]["command"].as_str().unwrap().ends_with(TITLE));
         assert!(file.get("permissions").is_none(), "{file}");
         // Nobody trusted the checkout: only mesimon's own folder is named.
@@ -859,8 +854,6 @@ mod tests {
             assert!(pair(&woke, flag).is_empty(), "{flag}: {woke:?}");
         }
         assert_eq!(Agy.conversation_key(&rec).as_deref(), Some(ID));
-        let _ = std::fs::remove_dir_all(&paths.state_dir);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The board's tools and the brief (T-1232): the shim's server beside
@@ -869,10 +862,8 @@ mod tests {
     /// three away again.
     #[test]
     fn a_launch_with_the_board_s_tools_writes_the_server_the_rule_and_the_brief() {
-        let root = std::env::temp_dir().join(format!("msmn-agy-mcp-{}", uuid::Uuid::new_v4()));
-        let repo = root.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        let paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        let (_root, paths, _tree) = bed();
+        let repo = paths.repo_root.clone();
         let tier = Tier::builtin(AgentProvider::Agy);
         let ctx = LaunchContext {
             tools: AgentTools::Full,
@@ -881,26 +872,27 @@ mod tests {
         };
         launch_with(&ctx, None, &[]).unwrap();
         let dir = session_dir(&paths, ctx.session);
-        let read = |path: &Path| -> Value {
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-        };
-        let config = read(&dir.join(".agents/mcp_config.json"));
+        let config = read_json(&dir.join(".agents/mcp_config.json"));
         let server = &config["mcpServers"][mesimon_core::mcp::SERVER_NAME];
-        let args: Vec<&str> =
-            server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        let args: Vec<String> = server["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
         assert_eq!(args[0], "mcp");
-        assert_eq!(pair_of(&args, "--sock"), paths.orch_sock().display().to_string());
-        assert_eq!(pair_of(&args, "--session"), ctx.session.to_string());
-        assert_eq!(pair_of(&args, "--tools"), AgentTools::Full.word());
+        assert_eq!(pair(&args, "--sock"), [paths.orch_sock().display().to_string()]);
+        assert_eq!(pair(&args, "--session"), [ctx.session.to_string()]);
+        assert_eq!(pair(&args, "--tools"), [AgentTools::Full.word()]);
         use std::os::unix::fs::PermissionsExt;
         let mode =
             std::fs::metadata(dir.join(".agents/mcp_config.json")).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
 
-        let settings = read(&settings_file(&paths, ctx.session));
+        let settings = read_json(&settings_file(&paths, ctx.session));
         assert_eq!(settings["permissions"]["allow"], json!(["mcp(mesimon/*)"]));
 
-        let hooks = read(&dir.join(".agents/hooks.json"));
+        let hooks = read_json(&dir.join(".agents/hooks.json"));
         let start = hooks["mesimon"]["SessionStart"].as_array().unwrap();
         assert_eq!(start.len(), 2, "{hooks}");
         // The observer first, the brief second; nothing else gains a handler.
@@ -913,7 +905,7 @@ mod tests {
         // The brief switched off keeps the tools and drops the handler.
         let quiet = LaunchContext { brief: false, ..ctx };
         launch_with(&quiet, None, &[]).unwrap();
-        let hooks = read(&dir.join(".agents/hooks.json"));
+        let hooks = read_json(&dir.join(".agents/hooks.json"));
         assert_eq!(hooks["mesimon"]["SessionStart"].as_array().unwrap().len(), 1);
         assert!(dir.join(".agents/mcp_config.json").exists());
 
@@ -922,11 +914,9 @@ mod tests {
             LaunchContext { tools: AgentTools::Off, brief: true, ..context(&paths, &repo, tier) };
         launch_with(&off, Some(ID), &[]).unwrap();
         assert!(!dir.join(".agents/mcp_config.json").exists());
-        assert!(read(&settings_file(&paths, ctx.session)).get("permissions").is_none());
-        let hooks = read(&dir.join(".agents/hooks.json"));
+        assert!(read_json(&settings_file(&paths, ctx.session)).get("permissions").is_none());
+        let hooks = read_json(&dir.join(".agents/hooks.json"));
         assert_eq!(hooks["mesimon"]["SessionStart"].as_array().unwrap().len(), 1);
-        let _ = std::fs::remove_dir_all(&paths.state_dir);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// T-1234: the column's agy mode rides `--mode` for agy's three words;
@@ -936,11 +926,7 @@ mod tests {
     #[test]
     fn the_columns_agy_mode_rides_the_flag_or_the_settings() {
         use mesimon_core::board::{AgyMode, ClaudeMode};
-        let root = std::env::temp_dir().join(format!("msmn-agy-mode-{}", uuid::Uuid::new_v4()));
-        let (repo, tree) = (root.join("repo"), root.join("tree"));
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&tree).unwrap();
-        let paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        let (_root, paths, tree) = bed();
         let launched = |agy_mode: AgyMode, plan: bool| {
             let column =
                 ColumnSettings { agy_mode, claude_mode: ClaudeMode::Plan, ..Default::default() };
@@ -950,10 +936,7 @@ mod tests {
                 ..context(&paths, &tree, Tier::builtin(AgentProvider::Agy))
             };
             let argv = launch_with(&ctx, None, &[]).unwrap();
-            let file: Value = serde_json::from_str(
-                &std::fs::read_to_string(settings_file(&paths, ctx.session)).unwrap(),
-            )
-            .unwrap();
+            let file = read_json(&settings_file(&paths, ctx.session));
             let mode: Vec<String> = pair(&argv, "--mode").into_iter().map(str::to_string).collect();
             (mode, file.get("agentMode").cloned())
         };
@@ -964,8 +947,6 @@ mod tests {
         assert_eq!(launched(AgyMode::Plan, false), (vec!["plan".into()], None));
         assert_eq!(launched(AgyMode::Default, true), (vec!["plan".into()], None));
         assert_eq!(launched(AgyMode::Auto, true), (vec!["plan".into()], None));
-        let _ = std::fs::remove_dir_all(&paths.state_dir);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// What the brief's hook prints is agy's `SessionStart` answer, the
@@ -979,10 +960,6 @@ mod tests {
             mesimon_core::brief::TEXT
         );
         assert_eq!(answer.as_object().unwrap().len(), 1, "{answer}");
-    }
-
-    fn pair_of(args: &[&str], flag: &str) -> String {
-        args.windows(2).find(|w| w[0] == flag).map(|w| w[1].to_string()).unwrap()
     }
 
     /// T-1234: the models file keeps the lines agy listed, in its words, and
@@ -1010,12 +987,7 @@ mod tests {
     /// person's own list is carried whole.
     #[test]
     fn a_worktree_is_trusted_only_where_the_person_trusts_its_checkout() {
-        let root = std::env::temp_dir().join(format!("msmn-agy-trust-{}", uuid::Uuid::new_v4()));
-        let repo = root.join("repo");
-        let tree = root.join("tree");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::create_dir_all(&tree).unwrap();
-        let paths = crate::paths::Paths::for_repo(&repo).unwrap();
+        let (root, paths, tree) = bed();
         let builtin = || Tier::builtin(AgentProvider::Agy);
         let dir = PathBuf::from("/state/agy/s");
         let bin = Path::new("/bin/mesimon");
@@ -1028,7 +1000,7 @@ mod tests {
                 .collect()
         };
         let checkout = paths.repo_root.display().to_string();
-        let parent = root.display().to_string();
+        let parent = root.path().display().to_string();
         let tree_word = tree.display().to_string();
         let managed =
             LaunchContext { managed_git_worktree: true, ..context(&paths, &tree, builtin()) };
@@ -1041,6 +1013,5 @@ mod tests {
         // A folder that is no worktree of mesimon's is never added.
         let shared = context(&paths, &tree, builtin());
         assert!(!list(&shared, std::slice::from_ref(&checkout)).contains(&tree_word));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -25,7 +25,7 @@ use common::*;
 
 use std::time::Duration;
 
-use mesimon_core::board::{AgentProvider, Reason, SessionKind, SessionRecord, SessionState};
+use mesimon_core::board::{AgentProvider, Reason, SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 const HOOKS: (&str, &str) = ("MESIMON_CLAUDE_ROAD", "hooks");
@@ -98,10 +98,6 @@ fn got(h: &Harness) -> String {
     String::from_utf8_lossy(&std::fs::read(h.dir.join("got.bin")).unwrap_or_default()).into_owned()
 }
 
-fn record(c: &mut TestClient, sid: uuid::Uuid) -> SessionRecord {
-    c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record")
-}
-
 #[test]
 fn the_board_trusts_the_workspace_with_the_dialog_s_own_keys_and_the_brief_follows() {
     // The composer wait is cut to 3 s: without the hold, the brief would be
@@ -145,15 +141,12 @@ fn the_board_trusts_the_workspace_with_the_dialog_s_own_keys_and_the_brief_follo
     c.await_state(sid, "the trust dialog", |s| {
         *s == SessionState::RequiresAction { reason: Reason::Trust }
     });
-    assert_eq!(
-        record(&mut c, sid).detail.as_deref(),
-        Some("Claude Code asks to trust this folder")
-    );
+    assert_eq!(c.record(sid).detail.as_deref(), Some("Claude Code asks to trust this folder"));
 
     // (2) The brief waits on the dialog: past the composer wait, nothing
     // went unsent, nothing was abandoned, and no key went by itself.
     std::thread::sleep(Duration::from_secs(5));
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_eq!(rec.state, SessionState::RequiresAction { reason: Reason::Trust });
     assert!(rec.unsent.is_none(), "the brief went unsent: {:?}", rec.unsent);
     assert!(rec.pending_submit, "the launch's words are still owed");
@@ -182,7 +175,7 @@ fn the_board_trusts_the_workspace_with_the_dialog_s_own_keys_and_the_brief_follo
     wait_until(Duration::from_secs(10), "the accept's feed line", || {
         feed().contains(r#""cmd":"trust_accept""#) && feed().contains(r#""outcome":"answered""#)
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
     assert_eq!(keys(&h), "Down\nEnter\n", "no key went after the accept");
     // And nothing to accept any more.
@@ -249,7 +242,7 @@ fn codex_trust(back: &str) {
     c.await_state(sid, "the trust dialog", |s| {
         *s == SessionState::RequiresAction { reason: Reason::Trust }
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert_eq!(rec.detail.as_deref(), Some("Codex asks to trust this folder"));
     assert!(rec.pending_submit, "the launch's words are still owed");
     assert_eq!(typed(), "", "a key went into the dialog with nobody asking");
@@ -266,7 +259,7 @@ fn codex_trust(back: &str) {
     wait_until(Duration::from_secs(10), "the accept's feed line", || {
         feed().contains(r#""cmd":"trust_accept""#) && feed().contains(r#""outcome":"answered""#)
     });
-    let rec = record(&mut c, sid);
+    let rec = c.record(sid);
     assert!(rec.unsent.is_none() && !rec.pending_submit, "{:?}", rec.unsent);
     assert_ne!(rec.detail.as_deref(), Some(mesimon_daemon::trust_dialog::NOT_ACCEPTED));
     let typed = typed();

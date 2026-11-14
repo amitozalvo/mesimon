@@ -68,20 +68,11 @@ pub const REPLIED_BOARD: &str = "replied_board";
 /// transcript's row of it, compare whitespace-blind. FNV-1a, stable across
 /// builds (a line outlives the binary that wrote it).
 pub fn words_key(text: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut first = true;
-    for word in text.split_whitespace() {
-        if !first {
-            h ^= u64::from(b' ');
-            h = h.wrapping_mul(0x0100_0000_01b3);
-        }
-        first = false;
-        for b in word.bytes() {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    h
+    crate::text::fnv1a(
+        text.split_whitespace()
+            .enumerate()
+            .flat_map(|(i, word)| (i > 0).then_some(b' ').into_iter().chain(word.bytes())),
+    )
 }
 
 /// Whose words a conversation's prompt was, when an act carried them: the
@@ -202,6 +193,7 @@ mod tests {
         assert_ne!(words_key("ab c"), words_key("a bc"));
         // Stable across builds: a line outlives the binary that wrote it.
         assert_eq!(words_key(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(words_key(" fix\tthe  loop\n"), 0xd598_1c00_1e96_aff7);
     }
 
     #[test]

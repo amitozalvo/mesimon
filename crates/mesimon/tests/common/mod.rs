@@ -469,6 +469,12 @@ impl TestClient {
         board_of(self.request(Command::Snapshot))
     }
 
+    /// `id`'s record off a fresh snapshot; a session the board does not hold
+    /// is a panic.
+    pub fn record(&mut self, id: uuid::Uuid) -> mesimon_core::board::SessionRecord {
+        self.board().sessions.into_iter().find(|s| s.id == id).expect("session record")
+    }
+
     /// One ticket's records, an archived ticket's parked ones included: the
     /// snapshot leaves those out (T-804).
     pub fn sessions_of(&mut self, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
@@ -545,13 +551,7 @@ impl TestClient {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last = SessionState::unknown();
         while Instant::now() < deadline {
-            last = self
-                .board()
-                .sessions
-                .iter()
-                .find(|s| s.id == id)
-                .map(|s| s.state.clone())
-                .expect("session record");
+            last = self.record(id).state;
             if ok(&last) {
                 return last;
             }
@@ -961,6 +961,20 @@ impl Harness {
     /// The stub exactly as written: one that paints its own composer, or
     /// none (T-570).
     pub fn boot_bare(name: &str, stub: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
+        Self::boot_staged(name, stub, env, |_, _| {})
+    }
+
+    /// `boot_bare`, with `stage` run on the fixture and its (empty) repo
+    /// directory before the daemon starts: a file the daemon's environment
+    /// names, a stand-in for another agent's binary, a repository the first
+    /// boot should already find. One daemon, where a boot, `set_env` and a
+    /// `restart` made two.
+    pub fn boot_staged(
+        name: &str,
+        stub: Option<&str>,
+        env: &[(&str, &str)],
+        stage: impl FnOnce(&TestFixture, &Path),
+    ) -> Option<Self> {
         if !require_tmux() {
             return None;
         }
@@ -990,6 +1004,7 @@ impl Harness {
             fixture.set_env("MESIMON_CLAUDE_BIN", &p);
             p
         });
+        stage(&fixture, &repo);
         let paths = fixture.paths(&repo);
         let _daemon = fixture.daemon(&repo);
         wait_until(Duration::from_secs(5), "the daemon socket", || paths.orch_sock().exists());

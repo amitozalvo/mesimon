@@ -1358,12 +1358,12 @@ const fn hex(rgb: u32) -> Color {
 /// How much of the needs-you colour a lowered hand keeps (T-888).
 const LOWERED_KEEP: f32 = 0.5;
 
-/// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
-/// have a halfway; anything else is `a` from the half up and `b` below it.
 /// How much lighter the jump pill's ground is under the pointer, per
 /// channel (T-1174): Claude Code's own step, 15 dark and 12 light.
 const PILL_HOVER_STEP: u8 = 14;
 
+/// `a` weighted `k` against `b`, channel by channel. Only two RGB colours
+/// have a halfway; anything else is `a` from the half up and `b` below it.
 pub(crate) fn mix(a: Color, b: Color, k: f32) -> Color {
     let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
         return if k >= 0.5 { a } else { b };
@@ -1393,11 +1393,17 @@ fn shimmer_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
     } else {
         -PR_SHIMMER_BAND + span * ease(t)
     };
-    let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PR_SHIMMER_BAND;
+    crest(front, cell, PR_SHIMMER_BAND, PR_SHIMMER_PEAK)
+}
+
+/// A soft crest's lift on `cell`, its front at `front` (in cells): 0 from
+/// `band` cells off it, `peak` on it.
+fn crest(front: f32, cell: usize, band: f32, peak: f32) -> f32 {
+    let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / band;
     if d <= 0.0 {
         return 0.0;
     }
-    d * d * (3.0 - 2.0 * d) * PR_SHIMMER_PEAK
+    d * d * (3.0 - 2.0 * d) * peak
 }
 
 /// How much of its lift the picked link's crest gives `cell` of `cells`,
@@ -1416,11 +1422,14 @@ fn pick_crest(at_ms: u64, cells: usize, cell: usize) -> f32 {
     let t = at as f32 / PICK_SHIMMER_MS as f32;
     let span = cells as f32 + 2.0 * PICK_SHIMMER_BAND;
     let front = -PICK_SHIMMER_BAND + span * ease(t);
-    let d = 1.0 - ((cell as f32 + 0.5) - front).abs() / PICK_SHIMMER_BAND;
-    if d <= 0.0 {
-        return 0.0;
-    }
-    d * d * (3.0 - 2.0 * d) * PICK_SHIMMER_PEAK
+    crest(front, cell, PICK_SHIMMER_BAND, PICK_SHIMMER_PEAK)
+}
+
+/// How far an acted pick's flash has faded, `ms` after the act, once its
+/// hold is over (`ms >= LINK_ACK_HOLD_MS`): 0 at the hold's end, 1 at
+/// `LINK_ACK_MS`.
+fn ack_fade(ms: u64) -> f32 {
+    ease((ms - LINK_ACK_HOLD_MS) as f32 / (LINK_ACK_MS - LINK_ACK_HOLD_MS) as f32)
 }
 
 /// Sine ease-in-out over `0..=1`: starts and lands gently.
@@ -1875,10 +1884,11 @@ impl Theme {
         let light = self.flavor.ground() == Ground::Light;
         let (i0, i7, i8, i15) = (I0, I7, I8, Color::Indexed(15));
         let r = &self.rest;
+        // The ground where the theme paints none: the flavor's own.
+        let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
         let (hi, body, shade, deep, eye, glint) = match self.profile {
             Profile::Mono => return None,
             Profile::TrueColor => {
-                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
                 if light {
                     (mix(r.dim3, bg, 0.45), mix(r.dim3, bg, 0.75), r.dim3, r.dim2, r.base, bg)
                 } else {
@@ -1899,10 +1909,7 @@ impl Theme {
         // anything around it, and old code in a quiet ink on it.
         let (bezel, screen, code) = match self.profile {
             Profile::TrueColor if light => (r.dim1, r.base, r.dim3),
-            Profile::TrueColor => {
-                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
-                (r.dim3, mix(bg, Color::Rgb(0, 0, 0), 0.65), r.dim1)
-            }
+            Profile::TrueColor => (r.dim3, mix(bg, Color::Rgb(0, 0, 0), 0.65), r.dim1),
             Profile::Ansi256 if light => (r.dim1, r.base, r.dim3),
             Profile::Ansi256 => (r.dim3, Color::Indexed(16), r.dim1),
             _ => (i8, i0, i7),
@@ -1913,26 +1920,22 @@ impl Theme {
         // on a light one, where the ground would erase the stems.
         let crown = self.tints().map(|_| {
             let tint = self.pip(5);
-            let ground = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
             if light {
-                let (lit, shade) = (mix(tint, ground, 0.62), mix(tint, r.base, 0.7));
+                let (lit, shade) = (mix(tint, bg, 0.62), mix(tint, r.base, 0.7));
                 CrownInk { lit, tint, shade, flash: mix(tint, r.base, 0.35) }
             } else {
-                let (lit, shade) = (mix(tint, r.base, 0.7), mix(tint, ground, 0.7));
+                let (lit, shade) = (mix(tint, r.base, 0.7), mix(tint, bg, 0.7));
                 CrownInk { lit, tint, shade, flash: self.sel.base }
             }
         });
         let shell = match self.profile {
             Profile::TrueColor => {
-                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
                 if light {
                     let (lit, face) = (mix(r.dim3, bg, 0.55), mix(r.dim3, bg, 0.85));
                     ShellInk { lit, face, shade: mix(r.dim3, bg, 0.3) }
                 } else {
-                    {
-                        let (face, shade) = (mix(r.base, r.dim1, 0.3), mix(r.base, r.dim1, 0.75));
-                        ShellInk { lit: r.base, face, shade }
-                    }
+                    let (face, shade) = (mix(r.base, r.dim1, 0.3), mix(r.base, r.dim1, 0.75));
+                    ShellInk { lit: r.base, face, shade }
                 }
             }
             Profile::Ansi256 if light => ShellInk { lit: r.dim3, face: r.dim3, shade: r.dim2 },
@@ -2554,7 +2557,7 @@ impl Theme {
         if ms < LINK_ACK_HOLD_MS {
             return Style::default().bg(crest).fg(letters);
         }
-        let k = ease((ms - LINK_ACK_HOLD_MS) as f32 / (LINK_ACK_MS - LINK_ACK_HOLD_MS) as f32);
+        let k = ack_fade(ms);
         let own = if bg == Color::Reset { self.bg.unwrap_or(bg) } else { bg };
         Style::default().bg(mix(own, crest, k)).fg(mix(fg, letters, k))
     }
@@ -2564,9 +2567,7 @@ impl Theme {
     /// hold, easing to none as the act's flash fades.
     pub fn pick_recess(ack_ms: Option<u64>) -> f32 {
         match ack_ms {
-            Some(ms) if ms >= LINK_ACK_HOLD_MS => {
-                1.0 - ease((ms - LINK_ACK_HOLD_MS) as f32 / (LINK_ACK_MS - LINK_ACK_HOLD_MS) as f32)
-            }
+            Some(ms) if ms >= LINK_ACK_HOLD_MS => 1.0 - ack_fade(ms),
             _ => 1.0,
         }
     }
@@ -3723,10 +3724,6 @@ mod tests {
         }
     }
 
-    /// T-794: a running pipeline's words shimmer — a crest crossing them
-    /// right to left and back left to right (T-858), lifting `ink` toward
-    /// `lift` and never past it, then a rest at `ink`. Grey on grey: no
-    /// colour of its own. Mono holds still.
     /// T-1192: a picked link is inverted under a crest that crosses it left
     /// to right, rests, and comes again; its letters are the page's ground
     /// throughout. Acted on, it rises to the crest's ink, holds, and lands
@@ -3762,6 +3759,10 @@ mod tests {
         assert_eq!(mono.link_pick(300, N, 3), mono.selection(), "mono holds still");
     }
 
+    /// T-794: a running pipeline's words shimmer — a crest crossing them
+    /// right to left and back left to right (T-858), lifting `ink` toward
+    /// `lift` and never past it, then a rest at `ink`. Grey on grey: no
+    /// colour of its own. Mono holds still.
     #[test]
     fn a_running_pipelines_shimmer_crosses_slowly_then_rests() {
         const N: usize = 16;

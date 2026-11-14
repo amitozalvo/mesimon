@@ -45496,3 +45496,120 @@ receipt or the start's line instead of the pill.
 **Owed:** a CHANGELOG line at the next bump. **Changed:** on a phone, what happens to the ticket
 you are reading (a start, a move, words queued, a refusal) appears as a line in its
 conversation instead of a banner over it.
+
+## The tenth simplify pass (T-1253, 2026-11-14, "simplify")
+
+Seven reviewers over the 130 commits since the ninth pass (`ef9e585a..355b182a`, T-1152 to
+T-1252), one per area — the web client, the TUI's state, the TUI's drawing, `server.rs` with its
+modules, the rest of the daemon, core with the binary, the e2e tests with `ci/` — each reading
+all four angles (reuse, simplification, efficiency, altitude) against the live file, kind
+`mechanical` or `decision`. Appliers worked by file ownership (seven forks, started as each
+report landed); the lead took the changes across owners. Quality only: behaviour, the wire, every
+state file and every word a person, an agent, the crown or the phone reads are unchanged, and no
+golden moved. A bug a reviewer tripped over is listed, not fixed, with one exception named below.
+
+**Applied, hot paths.**
+- **The ticket page builds its live screen once per capture, not once or twice per frame.**
+  `Shot::for_page` / `for_trust` cloned every row and re-ran the box, hint and survey scans each
+  frame, and `ask_in_box` did it again; `App::live_page(shot, trust)` memoises on the source
+  `Rc<Shot>`.
+- **The board/table turn borrows its `ViewShift`** (two maps were cloned every board frame for
+  the rest of the session after the first `b`) and places cards from one map per playing frame.
+- **The crown's page**: `acts_stamp()` hashed every act per frame, now once in `set_acts`;
+  `place_acts` hashes each prompt's words once per call, not once per act; the transcript dialog
+  no longer rebuilds a message's rows to append its cause.
+- `strike::draw_page` scans for the crown's head only when a bolt is lit; `ctx()` reads
+  `launch_parked` and `box_held` once (three and two times) and `$SHELL` never (`App.shell`, set
+  in `lib.rs::run`); `box_words` finds the box once where `box_text` found it four times;
+  `live_last` drops screens of sessions gone from the board; the table drains its window.
+- **A snapshot reads each agent's context off one walk of the sessions**
+  (`context_view_of`), not a `live_agent` scan per costed ticket per client. A linked board's
+  ask travels to `crown_heard_road` as its `words_key`, not a clone of its text.
+
+**Applied, one home each.**
+- Core: `SettingsSection::for_verb` reads `section_verbs` (a 60-line second list went);
+  `column_items` reads `column_group`; `sleep_eligible` uses `SessionKind::is_agent`; `ask_word`
+  for the Enter and `^s` hints; `tier::builtin_provider` over one list; `text::fnv1a` for the
+  three hand-written loops (`words_key`, `default_tint`, `notes_stamp`, each pinned to its old
+  value); `WorktreeItem::making()` and `WorktreeItem::INIT_RUNNING` for five status matches and
+  the init text the TUI matched by a second literal.
+- Daemon: a phone's `Start` and `Resume` are one `control_launch` (same gates in the same
+  order, every refusal and feed rule byte-identical; `control_starting` for the triple);
+  `Holds::begun` is a return value, not a field; `board_ask_sent` for the two send tails;
+  `agents::cli_bin(provider)` for eight spellings of `MESIMON_*_BIN`, doctor's table included;
+  `agents::detail_text` for the two card-detail scrubs; `hook_settings::write_private` and
+  `mcp_config` (agy re-parsed the JSON it had just written); `Cursor::reader()` in `cost.rs`;
+  `usage`'s cadences as one array.
+- TUI: `column_ask_rows` and `head_name` for the column's and the table's header;
+  `scroll_into_view` for both views; `dialog::reading_keys` for the reader and the transcript;
+  `card::ask_said` for the three timing rows; `ticket::persons_row`; `cap_spans` and `tail_rule`
+  for the closed caps; `insert_clusters` and `clean_lines` in `text.rs`; `step_board_word` and
+  the ring macro's `ALL`; `theme::crest` and `ack_fade`; `Spots::head` derives from `head_rows`
+  (the parallel `heads` went).
+- Tests and `ci/`: `TestClient::record` (seven per-file copies, 84 call sites);
+  `Harness::boot_staged`, with `boot_bare` its caller and `agy_e2e`'s bed on it;
+  `merge_train_e2e`'s six preludes on `prompt_turn` / `end_turn` / `one_turn` / `panes_up`;
+  `resumable` and `resumed`; `RustcSlotTests.hold()` kills its stand-in instead of waiting it out
+  (4.5 s per run); dead state out of `ci/rig/agy.py`; daemon and TUI test beds on
+  `tempfile::tempdir()` (eleven pid-named dirs leaked on a failed assert, and agy's tests wrote
+  under the real state dir).
+
+- Phone (`web/mesophon`): `startAgent` and `resumeAgent` call one `launch`; `sendKeys` and
+  `typeLine` one `pressKeys`; `BoardState.phaseOf` replaces the header pill's own copy of the
+  Inbox phase rule; `agoWords` / `stoppedWhen` for four spellings of "just now / N ago";
+  `optionButton` for the answer card's and the Inbox card's option; `remember(key, value)` for
+  seven `localStorage` writes; `panesOf` names a note once (`title`); `NotesList` resolves each
+  body once per render and `previewOf` stops at its fourth line; `PaneBar` lost its `at === 0`
+  arms (it is drawn only past the transcript); dead parameters (`ids`, `column`, `icon`); six
+  CSS rules no module names, and the earlier declarations of seven selectors a later identical
+  selector re-declares (nothing moved up: `.theme-pv-split` sits between two of them);
+  `ux.test.js`'s five pasted `mode` helpers are one `pressMode`.
+
+**Fixed, the exception.** `mesimon doctor`'s default-tier advice said `^n on a ticket picks its
+own`; the key is `^r` since T-1192 (`^n` walks links).
+
+**Refuted or kept.** `runtime_failure` onto `tail::window_text`: the helper drops a ragged first
+line the read keeps. `act_extra` as an argument: see the first open item. `column` → `col_of` in
+`ui/tests.rs`: it would turn two `Some(n)` assertions into a panic. `line_start` / `line_end` in
+`EditBuffer`: one-line bodies. `standing` for the phone tests' dialog checks: it would move
+assertions.
+
+**Found and left open (each a behaviour, wire or design decision, or an unproven bug):**
+- **`Daemon::act_extra` outlives its act** (CONFIRMED by reading): an agent tagging its own
+  ticket sets it and `crown_touched` returns early on `target == own`, so the crown's next act on
+  that ticket carries the tag's name as its detail (`untagged` after a removal). Passing the
+  extra as an argument (`record_crown_act(.., extra)`) fixes it and drops the field; a bug fix
+  with its own test.
+- An agy seat types a `!`-titled ticket's title into its box (PLAUSIBLE): `spawn_session`
+  refuses a shell title for Claude only and `retype_title`'s agy branch has no `!` filter.
+- `poll_page_transcript` sets a transcript's acts only when the acts file moves (PLAUSIBLE): a
+  newer session on the ticket leaves the older conversation `newest`, and a retitled ticket keeps
+  its old title in the crown's conversation, until the crown acts again.
+- The shell-line predicates disagree on a leading blank (PLAUSIBLE, cosmetic): ` !git status`
+  reads `SHELL` in the footer and keeps the `›` caret.
+- `control_answers_here` builds the whole phone board to learn whether one dialog survived the
+  fit (three callers, an `fs::metadata` per transcript on the writer).
+- A third shell word splitter (`server/mesophon.rs::shell_words`) beside `forge::shell_words`
+  and `board::evaluated_words`; one strict tokenizer changes how forge reads `"\x"`.
+- `crownacts::Log` is `journal::Journal` again (a `RotatingLog` for both; the T-234 deferral now
+  has three instances). agy's card preview re-reads up to 1 MiB per transcript growth where
+  Claude's carries forward (T-755). The queued-attachment arm of `claude/history.rs` repeats the
+  `user` arm, differing on `/clear`'s words.
+- **`web/mesophon/browser.test.js` still clicks `#raw-switch` and `#output-view`** (CONFIRMED by
+  reading; the relay's browser pass, not run here): T-1208/T-1219 removed both, the Terminal tab
+  is `#tab-terminal`, so its preview step throws on null.
+- `store.js::startLanded` drops a "Start an agent now" wish when the Sent item is not on the
+  active board (PLAUSIBLE): file with the switch on, change boards before it lands, and the
+  ticket lands with no agent and no word.
+- `viewport.js::keepAtEnd` builds a ResizeObserver over every row on every store emit (a
+  deps-less layout effect); keeping one changes the pinning's timing. The card's edge bar keeps
+  a second ten-row tint table (`[data-tint="N"]::after`) beside `.tint-N`.
+- `ci/rig/agy.py`'s `Case` copies the Codex rig's `Verification` (a provider-neutral fixture;
+  only a live rig run proves it). `live::contrast` and the theme tests' WCAG ratio (f32 vs f64,
+  laws at exactly 4.5:1).
+
+Verified on the applied tree: `cargo nextest run --workspace --no-fail-fast` under
+`ci/test-run.py`, 3,657 passed, first run, no rerun (the shared `tests/common/mod.rs` moved, so
+every e2e binary was in reach); `node --test state.test.js assets.test.js` (65); the UX suite on
+Chromium at phone, tablet and desktop and on WebKit at phone; `ci/test_run_test.py` (40) and
+`ci/rig_agy_test.py` (5). 64 files, −2,077 +1,559 outside this file.

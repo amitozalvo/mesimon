@@ -3795,6 +3795,16 @@ pub struct WorktreeItem {
     pub repos: Vec<WorktreeRepoItem>,
 }
 
+impl WorktreeItem {
+    /// `detail` while a provisioning worktree's init script runs (T-614).
+    pub const INIT_RUNNING: &'static str = "init script running";
+
+    /// Still being made: waiting for its cut, or cut and being provisioned.
+    pub fn making(&self) -> bool {
+        matches!(self.status.as_str(), "queued" | "provisioning")
+    }
+}
+
 /// One pull request of a ticket, as the forge last said it (T-739). Words,
 /// not enums, for `Notice.kind`'s reason: a word a newer daemon adds must
 /// not blank an older client's board.

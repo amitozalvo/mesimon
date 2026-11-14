@@ -229,6 +229,41 @@ pub struct Done {
     pub pr_acted: Vec<String>,
 }
 
+impl Cursor {
+    /// Whose format the transcript is in, from the two kept bools.
+    pub fn reader(&self) -> Reader {
+        match (self.codex, self.agy) {
+            (true, _) => Reader::Codex,
+            (false, true) => Reader::Agy,
+            (false, false) => Reader::Claude,
+        }
+    }
+
+    /// A cursor at a transcript's start, with nothing left to backfill.
+    fn fresh(reader: Reader) -> Self {
+        Cursor {
+            codex: reader == Reader::Codex,
+            agy: reader == Reader::Agy,
+            backfilled: true,
+            fill_seen: true,
+            ..Cursor::default()
+        }
+    }
+
+    /// Whether a Claude message or an agy step is counted now: once, by
+    /// its id among the last `RECENT`.
+    fn counts(&mut self, id: String) -> bool {
+        if self.recent.contains(&id) {
+            return false;
+        }
+        self.recent.push(id);
+        if self.recent.len() > RECENT {
+            self.recent.remove(0);
+        }
+        true
+    }
+}
+
 impl Ledger {
     /// A transcript a ticket's session points at. True when it is new. A
     /// session that no longer reports through a mod (`by_mod` false: a wake
@@ -242,14 +277,7 @@ impl Ledger {
             return false;
         }
         // Read from its start, so every `pr create` in it is seen (T-810).
-        let cursor = Cursor {
-            codex: reader == Reader::Codex,
-            agy: reader == Reader::Agy,
-            backfilled: true,
-            fill_seen: true,
-            ..Cursor::default()
-        };
-        t.conversations.insert(path.to_string(), cursor);
+        t.conversations.insert(path.to_string(), Cursor::fresh(reader));
         true
     }
 
@@ -403,7 +431,7 @@ impl Ledger {
                 if tokens.is_empty() {
                     continue;
                 }
-                if !cursor.codex && !cursor.agy {
+                if cursor.reader() == Reader::Claude {
                     if tokens.write_1h > 0 {
                         t.hint.writes_1h = Some(true);
                     } else if tokens.write_5m > 0 {
@@ -566,12 +594,12 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
     let mut all = jobs;
     let found: Vec<Job> = all
         .iter()
-        .filter(|j| !j.cursor.codex && !j.cursor.agy)
+        .filter(|j| j.cursor.reader() == Reader::Claude)
         .flat_map(|j| {
             subagents(&j.path).into_iter().map(|path| Job {
                 ticket: j.ticket,
                 path,
-                cursor: Cursor { backfilled: true, fill_seen: true, ..Cursor::default() },
+                cursor: Cursor::fresh(Reader::Claude),
             })
         })
         .filter(|j| !known.contains(&j.path))
@@ -603,13 +631,7 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         return None;
     }
     if len < cursor.offset {
-        cursor = Cursor {
-            codex: cursor.codex,
-            agy: cursor.agy,
-            backfilled: true,
-            fill_seen: true,
-            ..Cursor::default()
-        };
+        cursor = Cursor::fresh(cursor.reader());
     }
     let mut file = std::fs::File::open(&job.path).ok()?;
     file.seek(SeekFrom::Start(cursor.offset)).ok()?;
@@ -635,8 +657,8 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
         let named = named_on(line, &mut cursor.pending_create, &mut cursor.pending_act);
         pr_urls.extend(named.opened);
         pr_acted.extend(named.acted);
-        if cursor.codex {
-            match codex_line(line) {
+        match cursor.reader() {
+            Reader::Codex => match codex_line(line) {
                 Some(CodexLine::Model(m)) => cursor.model = Some(m),
                 Some(CodexLine::Totals { at_ms, tokens, last_input, window }) => {
                     let grew = delta(&cursor.totals.unwrap_or_default(), &tokens);
@@ -649,34 +671,26 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
                 }
                 Some(CodexLine::Compacted) => compacted(&mut cursor.fill),
                 None => {}
+            },
+            Reader::Agy => {
+                let Some(step) = agy_step(line) else { continue };
+                if let Some(f) = agy_reading(&step).filter(|_| own) {
+                    cursor.fill = Some(f);
+                }
+                if cursor.counts(step.id) {
+                    added.push((stamp(step.at_ms, now_ms), step.model, step.tokens));
+                }
             }
-        } else if cursor.agy {
-            let Some(step) = agy_step(line) else { continue };
-            if let Some(f) = agy_reading(&step).filter(|_| own) {
-                cursor.fill = Some(f);
+            Reader::Claude if own && claude_compacted(line) => compacted(&mut cursor.fill),
+            Reader::Claude => {
+                let Some(turn) = claude_turn(line) else { continue };
+                if let Some(f) = claude_reading(&turn).filter(|_| own) {
+                    cursor.fill = Some(f);
+                }
+                if cursor.counts(turn.id) {
+                    added.push((stamp(turn.at_ms, now_ms), turn.model, turn.tokens));
+                }
             }
-            if cursor.recent.contains(&step.id) {
-                continue;
-            }
-            cursor.recent.push(step.id);
-            if cursor.recent.len() > RECENT {
-                cursor.recent.remove(0);
-            }
-            added.push((stamp(step.at_ms, now_ms), step.model, step.tokens));
-        } else if own && claude_compacted(line) {
-            compacted(&mut cursor.fill);
-        } else if let Some(turn) = claude_turn(line) {
-            if let Some(f) = claude_reading(&turn).filter(|_| own) {
-                cursor.fill = Some(f);
-            }
-            if cursor.recent.contains(&turn.id) {
-                continue;
-            }
-            cursor.recent.push(turn.id);
-            if cursor.recent.len() > RECENT {
-                cursor.recent.remove(0);
-            }
-            added.push((stamp(turn.at_ms, now_ms), turn.model, turn.tokens));
         }
     }
     cursor.offset += end as u64 + 1;
@@ -741,13 +755,15 @@ fn last_reading(path: &str, end: u64, cursor: &Cursor) -> Option<Fill> {
     let text = crate::tail::window_text(Path::new(path), end, FILL_TAIL)?;
     let mut model = cursor.model.clone().unwrap_or_else(|| "codex".into());
     let mut fill = None;
+    let reader = cursor.reader();
     for line in text.lines() {
-        if cursor.agy {
-            if let Some(f) = agy_step(line).as_ref().and_then(agy_reading) {
-                fill = Some(f);
+        match reader {
+            Reader::Agy => {
+                if let Some(f) = agy_step(line).as_ref().and_then(agy_reading) {
+                    fill = Some(f);
+                }
             }
-        } else if cursor.codex {
-            match codex_line(line) {
+            Reader::Codex => match codex_line(line) {
                 Some(CodexLine::Model(m)) => model = m,
                 Some(CodexLine::Totals { last_input, window, .. }) => {
                     if let Some(f) = codex_reading(&model, last_input, window) {
@@ -756,11 +772,13 @@ fn last_reading(path: &str, end: u64, cursor: &Cursor) -> Option<Fill> {
                 }
                 Some(CodexLine::Compacted) => compacted(&mut fill),
                 None => {}
+            },
+            Reader::Claude if claude_compacted(line) => compacted(&mut fill),
+            Reader::Claude => {
+                if let Some(f) = claude_turn(line).as_ref().and_then(claude_reading) {
+                    fill = Some(f);
+                }
             }
-        } else if claude_compacted(line) {
-            compacted(&mut fill);
-        } else if let Some(f) = claude_turn(line).as_ref().and_then(claude_reading) {
-            fill = Some(f);
         }
     }
     fill

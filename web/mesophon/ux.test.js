@@ -612,6 +612,15 @@ function noisePng(width, height) {
   ]);
 }
 
+// A view by its button: the one on screen, else the sidebar's own. Sent
+// has no way in on a narrow screen (T-1208), so the suite reaches it through
+// the sidebar's button, which such a screen does not draw.
+async function pressMode(page, name) {
+  const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
+  if (await press.count()) return press.click();
+  await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
+}
+
 async function until(page, fn, arg, timeout = 30000) {
   const deadline = Date.now() + timeout;
   let last;
@@ -678,15 +687,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   const sheet = page.locator("#new-ticket-sheet");
-  // On a phone Sent is a row in Find (T-1208): through Find when its press
-  // is not on screen.
-  const mode = async (name) => {
-    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (await press.count()) return press.click();
-    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
-    // through the sidebar's own button, which such a screen does not draw.
-    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
-  };
+  const mode = (name) => pressMode(page, name);
   const openSheet = () => page.locator(size === "desktop" ? "#new-ticket" : "#new-ticket-fab").click();
   const connected = () =>
     until(page, () => document.querySelector("#connection").textContent === "Connected");
@@ -1583,15 +1584,7 @@ async function startFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  // On a phone Sent is a row in Find (T-1208): through Find when its press
-  // is not on screen.
-  const mode = async (name) => {
-    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (await press.count()) return press.click();
-    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
-    // through the sidebar's own button, which such a screen does not draw.
-    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
-  };
+  const mode = (name) => pressMode(page, name);
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -1970,15 +1963,7 @@ async function tierFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  // On a phone Sent is a row in Find (T-1208): through Find when its press
-  // is not on screen.
-  const mode = async (name) => {
-    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (await press.count()) return press.click();
-    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
-    // through the sidebar's own button, which such a screen does not draw.
-    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
-  };
+  const mode = (name) => pressMode(page, name);
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -2127,15 +2112,7 @@ async function editFlow(browser, engineName, size, viewport) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  // On a phone Sent is a row in Find (T-1208): through Find when its press
-  // is not on screen.
-  const mode = async (name) => {
-    const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-    if (await press.count()) return press.click();
-    // Sent has no way in on a narrow screen (T-1208): the suite reaches it
-    // through the sidebar's own button, which such a screen does not draw.
-    await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
-  };
+  const mode = (name) => pressMode(page, name);
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
@@ -4367,13 +4344,7 @@ try {
           await overview();
           await page.locator(`.ticket[data-id="ticket-${id}"]`).click();
         };
-        const mode = async (name) => {
-          const press = page.locator(`button[data-mode="${name}"]`).locator("visible=true");
-          if (await press.count()) return press.click();
-          // Sent has no way in on a narrow screen (T-1208): the suite reaches it
-          // through the sidebar's own button, which such a screen does not draw.
-          await page.evaluate((name) => document.querySelector(`.side-nav button[data-mode="${name}"]`).click(), name);
-        };
+        const mode = (name) => pressMode(page, name);
         // The delivery pill sits in the box's bar (T-1208).
         const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
         const attention = (name) =>

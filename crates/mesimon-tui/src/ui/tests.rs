@@ -3808,6 +3808,12 @@ fn a_provisioning_ticket_launches_too() {
     assert!(!launching(&app), "attached card still launching");
 }
 
+/// A registered tag's colour as the theme paints it.
+fn tag_tint(app: &App, group: u8, name: &str) -> Color {
+    let tag = app.board.tag_def(group, name).expect("registered");
+    app.theme.pip(tag.tint().expect("a colour") as usize)
+}
+
 /// The tags fixture keeps its own tickets so the thirteen board goldens above
 /// stay byte-identical: an untagged card must render exactly as it did before
 /// tags existed, which is what the zero-width tag zone buys.
@@ -3850,9 +3856,7 @@ fn test_the_bar_carries_the_tags_in_their_own_tints() {
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16;
     // "Decay treatments" is the first card of the cursor column, so it is the
     // cursor card and wears its tag at full strength.
-    let tint = app
-        .theme
-        .pip(app.board.tag_def(1, "FTR").expect("registered").tint().expect("a colour") as usize);
+    let tint = tag_tint(&app, 1, "FTR");
     let cell = &buf[(bar_x, y)];
     assert_eq!(cell.symbol(), " ", "the bar drew a glyph");
     assert_eq!(cell.bg, tint, "the bar is not painted in the tag's tint");
@@ -3881,15 +3885,7 @@ fn test_the_second_tag_hangs_under_the_stripe() {
                 app.cursor_col = if selected { 1 } else { 0 };
                 app.cursor_row = Some(0);
                 app.peek = peek;
-                let at = |group, name| {
-                    app.theme.pip(
-                        app.board
-                            .tag_def(group, name)
-                            .expect("registered")
-                            .tint()
-                            .expect("a colour") as usize,
-                    )
-                };
+                let at = |group, name| tag_tint(&app, group, name);
                 let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
                 let lines = render(&app, 120, 30);
                 let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
@@ -3927,9 +3923,7 @@ fn test_a_colorless_tag_takes_no_block_and_keeps_its_name() {
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     app.peek = true;
-    let staging = app
-        .theme
-        .pip(app.board.tag_def(2, "STAGING").expect("tag").tint().expect("a colour") as usize);
+    let staging = tag_tint(&app, 2, "STAGING");
     let grey = app.theme.colorless_tag();
     let lines = render(&app, 120, 30);
     let buf = cells(&app, 120, 30);
@@ -3974,8 +3968,7 @@ fn test_a_colorless_tag_takes_no_block_and_keeps_its_name() {
 fn test_tags_keep_full_strength_off_the_cursor() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    let tint =
-        app.theme.pip(app.board.tag_def(1, "FTR").expect("tag").tint().expect("a colour") as usize);
+    let tint = tag_tint(&app, 1, "FTR");
     for row in [0, 1] {
         app.cursor_row = Some(row);
         let buf = cells(&app, 120, 30);
@@ -4044,10 +4037,7 @@ fn test_a_waiting_card_still_shouts() {
             let lines = lines_of(&buf);
             let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
             let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
-            let tint = |group, name| {
-                app.theme
-                    .pip(app.board.tag_def(group, name).unwrap().tint().expect("a colour") as usize)
-            };
+            let tint = |group, name| tag_tint(&app, group, name);
             let x = (30..60).find(|x| buf[(*x, y)].bg == tint(1, "BUG")).expect("tags");
             assert_eq!(buf[(x + 1, y)].bg, app.theme.attn, "the title keeps its alarm band");
             // The stripe's last row: the space keeps the card's surface.
@@ -4172,9 +4162,7 @@ fn test_the_peek_names_the_tags() {
     assert!(reply < at, "the tags sit under the reply");
     // Painted in their own tints, the same ones the mark under the card uses.
     let buf = cells(&app, 120, 30);
-    let tint = app
-        .theme
-        .pip(app.board.tag_def(1, "BUG").expect("registered").tint().expect("a colour") as usize);
+    let tint = tag_tint(&app, 1, "BUG");
     let y = at as u16;
     assert!((30..58u16).any(|x| buf[(x, y)].bg == tint), "the chips are not wearing the tag tint");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -4206,9 +4194,7 @@ fn test_a_quick_tag_names_the_tag_on_a_session_less_card() {
     let lines = render(&app, 120, 30);
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16 + 1;
     let buf = cells(&app, 120, 30);
-    let tint = app
-        .theme
-        .pip(app.board.tag_def(1, "FTR").expect("registered").tint().expect("a colour") as usize);
+    let tint = tag_tint(&app, 1, "FTR");
     assert!((1..40u16).any(|x| buf[(x, y)].bg == tint), "the chip is not wearing the tint");
 
     // A moment, not a mode — and it belongs to the card it tagged, so the
@@ -4563,23 +4549,7 @@ fn golden_prompt_field_120() {
     // T-3, in progress, with a live claude on it.
     app.cursor_col = 1;
     app.cursor_row = Some(0);
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "rebase onto main".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field_on(&mut app, ulid_n(3), "rebase onto main", false, false);
     let lines = render(&app, 120, 30);
     assert!(
         lines.iter().any(|l| l.contains("Fix OSC-11")),
@@ -4605,23 +4575,7 @@ fn golden_prompt_field_queued_120() {
     app.rich_keys = true;
     app.cursor_col = 1;
     app.cursor_row = Some(0);
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "commit what you have".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: true,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field_on(&mut app, ulid_n(3), "commit what you have", true, false);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("enter queue")), "{:?}", lines.last());
@@ -5017,19 +4971,7 @@ fn the_held_keys_row_is_gated_as_the_keys_are() {
 
     // A field open over the held card: `^u` is the field's, so no keys row.
     app.cursor_col = 2;
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(5)),
-            walk: None,
-            queued: true,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
+    ask_field_on(&mut app, ulid_n(5), "", true, false);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("agent asked ∙ you send")), "{}", lines.join("\n"));
     assert!(!lines.iter().any(|l| l.contains(keys)), "{}", lines.join("\n"));
@@ -5927,19 +5869,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         deliver: mesimon_core::command::Deliver::Idle,
         person: None,
     }];
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: true,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
+    ask_field_on(&mut app, ulid_n(3), "", true, false);
     // The narrowest board there is: every column at MIN_COL.
     for w in [120u16, crate::layout::MIN_W] {
         let lines = render(&app, w, 30);
@@ -5965,19 +5895,7 @@ fn test_the_prompt_field_moves_no_text() {
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     let before = render(&app, 120, 30);
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
+    ask_field_on(&mut app, ulid_n(3), "", false, false);
     let after = render(&app, 120, 30);
     let card = before
         .iter()
@@ -6666,19 +6584,15 @@ fn thinking_replaces_the_state_word_when_the_prompt_is_newer() {
 /// named, and the cursor's row opening its one line, the agent's reply.
 fn table_board(tag: &str) -> App {
     // A directory per test: the goldens run side by side.
-    let dir = std::env::temp_dir().join(format!("msmn-table-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("table dir");
-    let path = dir.join("t.jsonl");
-    std::fs::write(
-        &path,
-        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
-    )
-    .expect("table transcript");
+    let path = write_transcript(
+        &format!("table-{tag}"),
+        &reply_record(
+            "Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated \
+             and clippy is clean.",
+        ),
+    );
     let mut b = fixture(false);
-    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
-        Some(path.to_string_lossy().into_owned());
+    attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
     app.cursor_col = 1;
@@ -6721,11 +6635,7 @@ fn table_rows_wear_both_tags_as_thin_stripes() {
         app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
         app.cursor_col = if selected { 1 } else { 0 };
         app.cursor_row = Some(0);
-        let at = |group, name| {
-            app.theme
-                .pip(app.board.tag_def(group, name).expect("registered").tint().expect("a colour")
-                    as usize)
-        };
+        let at = |group, name| tag_tint(&app, group, name);
         let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
         let lines = render(&app, 120, 30);
         let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("the row") as u16;
@@ -7484,6 +7394,15 @@ fn test_transcript_dialog_steps_messages_and_scrolls_the_one_on_show() {
         app.transcript.is_none() || render(&app, 120, 30).iter().all(|l| !l.contains("TRANSCRIPT"))
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Where `words` start in a 120x30 frame: the column, counted in cells
+/// drawn, and the row.
+fn find_words(buf: &ratatui::buffer::Buffer, words: &str) -> Option<(u16, u16)> {
+    (0..30u16).find_map(|y| {
+        let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+        row.find(words).map(|ix| (row[..ix].chars().count() as u16, y))
+    })
 }
 
 /// The cell column `needle` starts at on `line`.
@@ -8770,12 +8689,7 @@ never one per frame. The run: https://ci.test/run/42\n\n- `detect.rs` asks the t
 #[test]
 fn golden_shell_line_in_the_ask_field_120() {
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-    let find = |buf: &ratatui::buffer::Buffer, words: &str| {
-        (0..30u16).find_map(|y| {
-            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
-            row.find(words).map(|ix| (row[..ix].chars().count() as u16, y))
-        })
-    };
+    let find = find_words;
     let bold = |c: &ratatui::buffer::Cell| c.modifier.contains(ratatui::style::Modifier::BOLD);
 
     // The board: the field under T-3's card.
@@ -9547,12 +9461,7 @@ fn ask_field_at(app: &mut App, text: &str, queued: bool, immediately: bool) {
 fn golden_immediately_over_a_running_turn_flashes_120() {
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let del_bg = theme.diff_del_bg().expect("graphite tints");
-    let find = |buf: &ratatui::buffer::Buffer, words: &str| {
-        (0..30u16).find_map(|y| {
-            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
-            row.find(words).map(|ix| (row[..ix].chars().count() as u16, y))
-        })
-    };
+    let find = find_words;
     let at = |app: &App, ago_ms: u64| {
         app.spin_epoch
             .set(Some(std::time::Instant::now() - std::time::Duration::from_millis(ago_ms)));
@@ -12233,12 +12142,7 @@ fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
                             buf[(x, y)].fg,
                             if index == cursor { app.theme.sel.base } else { app.theme.rest.base }
                         );
-                        let tint = |group, name| {
-                            app.theme.pip(
-                                app.board.tag_def(group, name).unwrap().tint().expect("a colour")
-                                    as usize,
-                            )
-                        };
+                        let tint = |group, name| tag_tint(&app, group, name);
                         // One cell, the first tag; a second ends the stripe
                         // and hangs under it, at the edge too (T-1159).
                         assert_eq!(buf[(1, y)].bg, tint(1, "BUG"));
@@ -13100,7 +13004,7 @@ fn a_move_leaves_a_trail_where_the_card_was() {
     };
     let (mut app, buf) = frame(LEADER_MS + 20);
     let lines = lines_of(&buf);
-    let todo = app.spots.borrow().heads.iter().find(|h| h.0 == "todo").map(|h| h.1);
+    let todo = app.spots.borrow().head("todo").map(|h| h.0);
     let trail = *app.spots.borrow().trails.first().expect("the trail is drawn");
     assert_eq!(trail.id, t1);
     assert_eq!(Some(trail.x + crate::tags::BAR as u16 + 1), todo, "in the column it left");
@@ -15555,11 +15459,7 @@ fn golden_ticket_live_trust_120() {
     let shot =
         crate::live::Shot { rows: crate::live::parse(&rows.join("\n")), cols: 80, cursor: None };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
-    let rec = std::sync::Arc::make_mut(&mut app.board)
-        .sessions
-        .iter_mut()
-        .find(|s| s.id == uuid_n(31))
-        .expect("the seat");
+    let rec = app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("the seat");
     rec.state = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust };
     rec.detail = Some("Claude Code asks to trust this folder".into());
     let lines = render(&app, 120, 30);
@@ -15599,11 +15499,7 @@ fn golden_ticket_live_codex_trust_120() {
         cursor: Some((1, 23)),
     };
     app.live = Some(crate::live::Live::fixed(uuid_n(31), shot));
-    let rec = std::sync::Arc::make_mut(&mut app.board)
-        .sessions
-        .iter_mut()
-        .find(|s| s.id == uuid_n(31))
-        .expect("the seat");
+    let rec = app.board_mut().sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("the seat");
     rec.kind = SessionKind::Codex;
     rec.state = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Trust };
     rec.detail = Some("Codex asks to trust this folder".into());
@@ -15777,7 +15673,7 @@ fn the_crown_s_bolt_runs_from_the_header_to_its_row() {
 #[test]
 fn the_crown_s_own_bolt_leaves_the_shin() {
     let (mut app, path) = app_crowned_worker("tcrown-own");
-    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(3));
+    app.board_mut().crown = Some(ulid_n(3));
     let mut acts = app.crown_acts.all().as_ref().clone();
     for a in &mut acts {
         (a.crown, a.ticket) = (ulid_n(3), ulid_n(1));
@@ -15816,7 +15712,7 @@ fn the_crown_s_own_bolt_leaves_the_shin() {
 #[test]
 fn the_crown_s_words_across_boards_strike_between_the_shin_and_the_header() {
     let (mut app, path) = app_crowned_worker("tcrown-road");
-    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(3));
+    app.board_mut().crown = Some(ulid_n(3));
     let now = mesimon_core::clock::now_ms();
     app.link_lit = Some(crate::app::boards::LinkLit {
         board: "relay".into(),
@@ -15850,7 +15746,7 @@ fn the_crown_s_words_across_boards_strike_between_the_shin_and_the_header() {
     assert!(bolt.iter().all(|&(x, _)| x >= 60), "between the shin and the word: {bolt:?}");
     assert!(bolt.iter().any(|&(_, y)| y < shin.y / 2), "up to the header: {bolt:?} {shin:?}");
     // A worker's page wears no word for another board's words.
-    std::sync::Arc::make_mut(&mut app.board).crown = Some(ulid_n(1));
+    app.board_mut().crown = Some(ulid_n(1));
     let lines = render(&app, 120, 30);
     assert!(!lines[0].contains("relay"), "{}", lines[0]);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -17014,23 +16910,7 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
     golden("ticket_live_closed_120x30", &closed);
     let rect = app.live_rect.get().expect("the window");
 
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "measure it".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field_on(&mut app, ulid_n(3), "measure it", false, false);
     let open = render(&app, 120, 30);
     // The field opens between the pane's own rules, the status line still
     // under them; the box's two more rows move what is over it up by two.
@@ -17130,23 +17010,7 @@ fn the_seats_box_opens_in_place() {
     assert!(closed[at - 1].contains("start + ask agent"), "and what it does: {closed:#?}");
     assert!(closed[at].chars().take(80).all(|c| c == ' '), "no words under the rule: {closed:#?}");
     assert!(closed[at + 1].chars().take(80).all(|c| c == ' '), "nor a bottom rule: {closed:#?}");
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    for c in "measure it".chars() {
-        buffer.insert(c);
-    }
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(2)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field_on(&mut app, ulid_n(2), "measure it", false, false);
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| super::draw(f, &app)).unwrap();
     let open = lines_of(terminal.backend().buffer());
@@ -17170,21 +17034,7 @@ fn the_seats_box_opens_in_place() {
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let closed = render(&app, 120, 20);
     assert!(!closed.iter().any(|l| l.contains("--  shift+enter")), "no box fits: {closed:#?}");
-    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
-    buffer.insert('x');
-    app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt {
-            images: Vec::new(),
-            target: crate::app::AskTarget::Ticket(ulid_n(1)),
-            walk: None,
-            queued: false,
-            immediately: false,
-            accept_plan: false,
-            plan: false,
-            tier: None,
-        },
-        buffer,
-    };
+    ask_field_on(&mut app, ulid_n(1), "x", false, false);
     let open = render(&app, 120, 20);
     let field = open
         .iter()

@@ -128,6 +128,15 @@ pub fn nonblank(s: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+/// FNV-1a over `bytes`, 64 bits. Stable across builds and platforms, which
+/// a key that is persisted or compared between two processes needs; no
+/// secret is kept by it.
+pub fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes
+        .into_iter()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +183,14 @@ mod tests {
         assert_eq!(tail_bytes("hi", 0), "");
         assert_eq!(nonblank("  "), None);
         assert_eq!(nonblank(" x "), Some("x".into()));
+    }
+
+    /// The published FNV-1a vectors: keys made by it are persisted
+    /// (`crown-acts.jsonl`) and compared across builds, so it never drifts.
+    #[test]
+    fn fnv1a_is_the_published_function() {
+        assert_eq!(fnv1a([]), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(*b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(*b"foobar"), 0x8594_4171_f739_67e8);
     }
 }
