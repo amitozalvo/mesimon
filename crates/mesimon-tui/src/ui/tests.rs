@@ -6775,6 +6775,39 @@ fn a_table_header_under_the_cursor_wears_the_thin_bar() {
     assert_eq!(buf[(0, y)].symbol(), "▋", "{:?}", lines[y as usize]);
 }
 
+/// The new ticket's row and a rename in place wear the table's bar shape
+/// too, untagged or with its tags (T-1240, the author: "still when ticket
+/// is in it's creating state the tag block is big").
+#[test]
+fn a_table_row_being_typed_wears_the_thin_bar() {
+    for tagged in [false, true] {
+        let mut app = app_graphite(if tagged { fixture_tagged() } else { fixture(false) });
+        app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+        app.cursor_col = 1;
+        app.cursor_row = Some(0);
+        press(&mut app, 'r');
+        let lines = render(&app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("the rename") as u16;
+        let buf = cells(&app, 120, 30);
+        assert_eq!(buf[(0, y)].symbol(), "▋", "rename, tagged {tagged}: {}", lines[y as usize]);
+        if tagged {
+            assert_eq!(buf[(1, y)].symbol(), "▎", "the second tag beside it");
+        }
+    }
+    let mut app = app_graphite(fixture(false));
+    app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    press(&mut app, 'o');
+    for c in "New one".chars() {
+        press(&mut app, c);
+    }
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("New one")).expect("the new row") as u16;
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(0, y)].symbol(), "▋", "the new ticket: {}", lines[y as usize]);
+}
+
 /// A table row names the tier its ticket runs on, the default's name too,
 /// never the provider (T-1240, the author: "instead of claude show the
 /// actual tier of the ticket").

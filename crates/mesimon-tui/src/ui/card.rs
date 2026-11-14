@@ -171,11 +171,24 @@ pub(super) fn render_edit(
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
     let x_off = crate::tags::BAR as u16 + 1 + cx;
+    // A table row (T-1240) wears its tags as the rows do: the main tag's
+    // `▋`, the second's `▎` beside it, and an untagged bar in the same shape.
+    let stripes = if ctx.row { crate::tags::row_stripes(theme, tags) } else { None };
+    if ctx.row {
+        spans = match &stripes {
+            Some((first, _)) => vec![first.clone()],
+            None => spans.into_iter().map(crate::tags::thin_bar).collect(),
+        };
+    }
     spans.extend([
         Span::raw(" "),
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
     ]);
-    (Line::from(spans).style(theme.selected_row()), x_off)
+    let mut line = Line::from(spans).style(theme.selected_row());
+    if let Some((_, Some(second))) = stripes {
+        crate::tags::blank_cell(&mut line, crate::tags::BAR, second);
+    }
+    (line, x_off)
 }
 
 /// The board's prompt row (Shift+Enter): a line hanging under the selected

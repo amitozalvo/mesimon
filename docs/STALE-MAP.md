@@ -45081,3 +45081,10 @@ The full workspace suite is owed once after the merge (`server.rs`).
 - **Checks.** `cargo ut` (72 + 17 + 764 + 859 + 24 + 1,459 passed, 0 failed), new
   `keymap::ctrl_shift_r_is_inert_without_rich_keys`, `app::ctrl_shift_r_steps_the_tier_back`, and
   back-step asserts in `tier`'s ring test. No e2e names the changed functions; no full suite owed.
+
+## The table's row being typed wears the thin bar (T-1240 follow-up, 2026-11-14, the author: "still when ticket is in it's creating state the tag block is big")
+
+`card::render_edit` (the new ticket's phantom row and a rename in place) painted its own whole-cell
+bar. Under `CardCtx::row` it takes the rows' shapes: the main tag's `▋`, the second's `▎` beside it,
+an untagged bar through `tags::thin_bar`. Checks: `cargo ut`;
+`a_table_row_being_typed_wears_the_thin_bar` (a rename untagged and tagged, a new ticket).
