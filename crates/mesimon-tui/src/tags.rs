@@ -79,6 +79,54 @@ pub(crate) fn bar_spans(
     vec![Span::styled(" ".repeat(BAR), style.bg(theme.pip(first as usize)))]
 }
 
+/// A table row's tag stripes (T-1240): rows stand with no blank row
+/// between them, so the stripe end's hang has nowhere to go. Each of the
+/// first two tags with a colour is a thin stripe, `▎`, in its own cell: the
+/// first in the bar's cell, the second in the pad beside it. `None` with no
+/// tag that has a colour, or no tints to draw them in; the caller keeps
+/// the card's own bar then.
+pub(crate) fn row_stripes(theme: &Theme, tags: &[Painted]) -> Option<(Span<'static>, Option<Span<'static>>)> {
+    if !theme.paints_tags() {
+        return None;
+    }
+    let mut tints = blocks(tags);
+    let stripe = |n: u8| Span::styled("▎", Style::default().fg(theme.pip(n as usize)));
+    let first = stripe(tints.next()?);
+    Some((first, tints.next().map(stripe)))
+}
+
+/// Put `cell` in the line's cell `at` where that cell is a blank, splitting
+/// the span that holds it; anything else there is left alone.
+pub(crate) fn blank_cell(line: &mut Line<'static>, at: usize, cell: Span<'static>) {
+    let mut x = 0;
+    for i in 0..line.spans.len() {
+        let w = line.spans[i].content.width();
+        if at >= x + w {
+            x += w;
+            continue;
+        }
+        let content = line.spans[i].content.to_string();
+        let style = line.spans[i].style;
+        let k = at - x;
+        // Only an all-narrow run splits by chars; a wide glyph keeps its cell.
+        if content.chars().count() != w || content.chars().nth(k) != Some(' ') {
+            return;
+        }
+        let before: String = content.chars().take(k).collect();
+        let after: String = content.chars().skip(k + 1).collect();
+        let mut parts = Vec::new();
+        if !before.is_empty() {
+            parts.push(Span::styled(before, style));
+        }
+        parts.push(cell);
+        if !after.is_empty() {
+            parts.push(Span::styled(after, style));
+        }
+        line.spans.splice(i..=i, parts);
+        return;
+    }
+}
+
 /// Where a two-tag stripe ends (T-1159, the author: "the 2nd tag color should
 /// be a block below the first tag, only half and keep a small space between
 /// them"). A cell holds two colours, and the first tag, the space and the

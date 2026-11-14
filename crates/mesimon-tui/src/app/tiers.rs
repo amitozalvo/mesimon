@@ -250,6 +250,12 @@ impl App {
         (want.id != book.default_tier().id || self.tier_flashing(ticket)).then_some(want.name)
     }
 
+    /// The name of the tier this ticket runs on, default or not: what a
+    /// table row says (T-1240).
+    pub(crate) fn ticket_tier_name(&self, ticket: ulid::Ulid) -> String {
+        self.tiers().of_ticket(ticket).name
+    }
+
     /// Is `^r`'s reveal still up on this ticket's card?
     pub(crate) fn tier_flashing(&self, ticket: ulid::Ulid) -> bool {
         self.tier_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TIER_FLASH)

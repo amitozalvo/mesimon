@@ -44873,3 +44873,18 @@ change reads no width).
 - **Checks.** `cargo ut`, `cargo build --workspace`; goldens `board_table_120x30`,
   `board_table_80x24`, `board_table_switch_120x30`, and the reminted help and Appearance
   goldens (the `b table` key and the Board view row, reviewed by eye). No e2e names the code.
+
+## The table's rows wear both tags as thin stripes and name their tier (T-1240 follow-up, 2026-11-14)
+
+- **What the author saw.** A notch at the foot of a table row's tag bar, and no second tag: the
+  row took the card's two-tag stripe end (T-1159), whose `▁` foot closes the bar for a `▀` hang in
+  the blank row under a card, and a table row has no such row. The full-cell bar also read as
+  "too bulky" in rows that stand one on another.
+- **What changed.** A table row's tags are `tags::row_stripes`: the first tag with a colour a `▎`
+  in the bar's cell, the second a `▎` in the pad beside it, down every row of the ticket; no
+  `StripeEnd` in the table, the rename and the composer's phantom row included. The agent slot
+  is the ticket's tier by name (`App::ticket_tier_name`, `tiers().of_ticket`), the default's
+  too, in a 14-cell slot (`research-codex`); the provider is no longer named. The author: "instead
+  of claude show the actual tier of the ticket".
+- **Checks.** `cargo ut`; `table_rows_wear_both_tags_as_thin_stripes`,
+  `table_rows_name_their_tier`; the three table goldens reminted (the tier column).

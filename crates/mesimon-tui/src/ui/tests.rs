@@ -6703,6 +6703,52 @@ fn table_rows_open_one_line_at_most() {
     assert!(!lines[at + 2].contains("goldens updated"), "one line, never a wrap");
 }
 
+/// A table row's tags are two thin stripes side by side, the first in the
+/// bar's cell and the second beside it, and no stripe end: rows stand with
+/// no blank row under them for the board's hang (T-1240).
+#[test]
+fn table_rows_wear_both_tags_as_thin_stripes() {
+    for selected in [false, true] {
+        let mut app = app_graphite(fixture_tagged());
+        app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+        app.cursor_col = if selected { 1 } else { 0 };
+        app.cursor_row = Some(0);
+        let at = |group, name| {
+            app.theme.pip(
+                app.board.tag_def(group, name).expect("registered").tint().expect("a colour")
+                    as usize,
+            )
+        };
+        let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
+        let lines = render(&app, 120, 30);
+        let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("the row") as u16;
+        let buf = cells(&app, 120, 30);
+        assert_eq!((buf[(0, y)].symbol(), buf[(0, y)].fg), ("▎", first), "the first tag");
+        assert_eq!((buf[(1, y)].symbol(), buf[(1, y)].fg), ("▎", second), "the second beside it");
+        for row in y..y + 3 {
+            for x in 0..2 {
+                let cell = buf[(x, row)].symbol();
+                assert!(cell != "▁" && cell != "▀", "no stripe end at ({x}, {row}): {cell}");
+            }
+        }
+    }
+}
+
+/// A table row names the tier its ticket runs on, the default's name too,
+/// never the provider (T-1240, the author: "instead of claude show the
+/// actual tier of the ticket").
+#[test]
+fn table_rows_name_their_tier() {
+    let mut app = tier_app();
+    app.seed_pref(|p| p.board_view = crate::prefs::BoardView::Table);
+    let lines = render(&app, 120, 30);
+    let row = |title: &str| lines.iter().find(|l| l.contains(title)).expect(title).clone();
+    assert!(row("Decay treatments").contains(" coder "), "{}", row("Decay treatments"));
+    assert!(row("Fix OSC-11 detection").contains(" coder "), "{}", row("Fix OSC-11 detection"));
+    assert!(row("Keymap validator").contains(" quick "), "the default by its name");
+    assert!(!row("Adopt drawer import").contains("claude"), "{}", row("Adopt drawer import"));
+}
+
 /// The switch, part way (T-1240): the columns' cards on their way to their
 /// rows, nothing else under the board's top row while they travel.
 #[test]

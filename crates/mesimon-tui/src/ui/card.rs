@@ -44,26 +44,26 @@ pub(super) struct CardCtx<'a> {
 
 /// A table row's tag names (T-1240): the cells they get on the title line.
 const ROW_TAGS: usize = 18;
-/// Its agent's name: `claude`, the widest.
-const ROW_AGENT: usize = 6;
+/// The tier the ticket runs on: `research-codex` is fourteen cells.
+const ROW_TIER: usize = 14;
 /// Its summary's count, `12/12`.
 const ROW_BOXES: usize = 5;
 /// The worktree mark's slot, kept on every row so the fields line up.
 const ROW_WT: usize = 3;
-/// A row this narrow keeps its agent and its count, not its tags.
+/// A row this narrow keeps its tier and its count, not its tags.
 const ROW_TAGS_FROM: usize = 90;
 /// And this narrow, nothing but the card's own line.
 const ROW_FIELDS_FROM: usize = 60;
 
 /// The fields a table row names between its title and its marks (T-1240):
-/// its tags, each in its own tint, the agent at work on it, and how many of
+/// its tags, each in its own tint, the tier it runs on, and how many of
 /// its summary's boxes are ticked — each in a slot of its own width, so the
 /// rows read as columns. Empty below `ROW_FIELDS_FROM`.
 fn row_fields(
     theme: &Theme,
     t_cells: usize,
     tags: &[crate::tags::Painted],
-    sessions: &[&SessionRecord],
+    tier: Option<&str>,
     summary: Option<&crate::app::TicketSummary>,
     quiet: Style,
 ) -> Vec<Span<'static>> {
@@ -93,8 +93,8 @@ fn row_fields(
         let used = super::spans_width(&spans);
         spans.push(Span::raw(" ".repeat(ROW_TAGS + 1 - used.min(ROW_TAGS))));
     }
-    let agent = sessions.iter().find(|s| s.kind.is_agent()).map_or("", |s| s.kind.word());
-    spans.push(Span::styled(format!("{:<w$} ", truncate(agent, ROW_AGENT), w = ROW_AGENT), quiet));
+    let tier = truncate(tier.unwrap_or(""), ROW_TIER);
+    spans.push(Span::styled(format!("{tier:<w$} ", w = ROW_TIER), quiet));
     let boxes = summary
         .filter(|s| s.count.total > 0)
         .map(|s| format!("{}/{}", s.count.done, s.count.total))
@@ -770,10 +770,17 @@ pub(super) fn render(
     // wears an attention/delete band; a yellow tag must not vanish into gold.
     let bar_surface = if cursorish { theme.selected_bg.or(theme.bg) } else { theme.bg };
     // A second tag ends the stripe (T-1159); a trail's ghost bar wears none.
-    let end = (!trail).then(|| crate::tags::StripeEnd::new(theme, tags, bar_surface)).flatten();
+    // A table row has no row under it for the stripe's end (T-1240): its
+    // tags are thin stripes side by side instead (`tags::row_stripes`).
+    let stripes = if ctx.row && !trail { crate::tags::row_stripes(theme, tags) } else { None };
+    let end = (!trail && stripes.is_none())
+        .then(|| crate::tags::StripeEnd::new(theme, tags, bar_surface))
+        .flatten();
     let bar_spans = || {
         if trail {
             vec![Span::styled(ladder_ch.to_string().repeat(crate::tags::BAR), state_style)]
+        } else if let Some((first, _)) = &stripes {
+            vec![first.clone()]
         } else {
             crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level)
         }
@@ -824,7 +831,7 @@ pub(super) fn render(
     // has a mark, so every row's fields stand in the same cells.
     let row_quiet = if cursorish { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
     let fields = if ctx.row {
-        row_fields(theme, t_cells, tags, sessions, summary, row_quiet)
+        row_fields(theme, t_cells, tags, tier_word, summary, row_quiet)
     } else {
         Vec::new()
     };
@@ -1244,6 +1251,12 @@ pub(super) fn render(
                 row.push(Span::raw(" "));
                 lines.truncate(1);
                 lines.push(Line::from(row).style(acc_style));
+            }
+        }
+        // The second tag's stripe beside the first, down every row.
+        if let Some((_, Some(second))) = &stripes {
+            for line in &mut lines {
+                crate::tags::blank_cell(line, crate::tags::BAR, second.clone());
             }
         }
         return (lines, end);

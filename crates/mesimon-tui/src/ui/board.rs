@@ -212,7 +212,9 @@ fn column_groups(
         let painted = crate::tags::painted(&app.board, &t.tags);
         if let Some(buf) = rename_of(t).filter(|_| !left) {
             let (mut line, x_off) = card::render_edit(&ctx, buf, &painted);
-            let hang = crate::tags::StripeEnd::new(ctx.theme, &painted, ctx.theme.selected_bg);
+            // A table row has no row under it for the stripe's end (T-1240).
+            let hang = crate::tags::StripeEnd::new(ctx.theme, &painted, ctx.theme.selected_bg)
+                .filter(|_| !row);
             if let Some(end) = &hang {
                 end.foot(&mut line);
             }
@@ -344,7 +346,10 @@ fn column_groups(
                 (!owed_keys.is_empty()).then_some((owed_keys.as_slice(), &*keys_ctx)),
                 app.remote_initials(t.id).as_deref(),
                 if left { crate::ui::CrownMark::None } else { app.crown_mark(t.id) },
-                app.card_tier_word(t.id).as_deref(),
+                // A table row names the tier its ticket runs on, whichever
+                // it is (T-1240); a card names a tier that is not the default.
+                if row { Some(app.ticket_tier_name(t.id)) } else { app.card_tier_word(t.id) }
+                    .as_deref(),
                 app.card_corner(t.id),
                 summary.as_ref(),
                 (!summary_keys.is_empty()).then_some(summary_keys.as_slice()),
@@ -517,7 +522,9 @@ fn column_groups(
             let mut selector =
                 card::render_workspace_selector(&ctx, *workspace, *plan, tier_word.as_deref());
             // Its second tag hangs under the stripe, in the selector's row.
-            if let Some(end) = crate::tags::StripeEnd::new(theme, &painted, theme.selected_bg) {
+            if let Some(end) =
+                crate::tags::StripeEnd::new(theme, &painted, theme.selected_bg).filter(|_| !row)
+            {
                 end.foot(&mut line);
                 end.hang(&mut selector);
             }
