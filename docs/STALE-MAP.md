@@ -45420,3 +45420,30 @@ record exists, so the step reads `starting agy` / `starting codex` / `starting c
 and the provider's name is the fact the step adds.
 **Verified.** `cargo ut`; `the_launch_list_follows_the_binding_and_the_record` gains an agy
 seat (fails on the old match). TUI-only: no e2e reaches it, no golden changed.
+
+## An egg instead of the ש on the ticket page before its agent (T-1252, 2026-11-14, the author: "m instead of ש on the pre and loading animation in ticket page … or maybe an egg?", then "egg")
+
+Proposed as one simulation of three marks on one clock (ש, an upside-down ש as mesimon's m, an
+egg): https://claude.ai/artifact/Tij6NSxz5XTvPRjgs6MHhL; the author picked the egg. Someone
+who does not read Hebrew saw the small ש as a "w"; the egg needs no letter, and the shin is
+born each time an agent is.
+
+**What changed** (`creature.rs`, the egg section). `Anim::Letter` and `Anim::Stir` are
+`Anim::Egg` (still, on a seat) and `Anim::Rocking` (a breath, a hold, the top half rocked a
+pixel to and fro while the worktree is made: the old stir's beats). `Anim::Waking` opens on
+`HATCH`: the crack runs out from the middle in a zigzag over rows four and five, the egg rocks
+once, the top piece flies off up-left through the stage's `ABOVE` row, the shin sits asleep in
+the bottom half, hops out of it, then `WAKING` as before. The egg is ten by ten, centred on
+the small body's twelve columns (`EGG`, `EGG_X`), so its stage is the shin's to the cell and
+`Stage::shift` (the ש's one-column margin, T-1156) is gone. The shell is lit as one piece
+(`Shards`: a piece lit on its own drew a seam across the whole egg), in its own greys
+(`CreatureInk::shell`: lighter than the body on a dark ground, nearer the ground on a light
+one, none of them a body ink, so a shard over the hatched shin stands apart). Only the small
+size hatches; Medium and Large play their poses (Large already did).
+
+**Removed.** The small ש (`intro::SMALL_SHIN`, `letter_pixels`, the size-generic morph):
+`intro.rs` is back to its T-1150 text, its morph the Medium letter's alone. The first-run
+intro, where the ש in משימון wakes, is unchanged.
+
+**Refuted.** The m: the ש turned over reads as mesimon's initial, but it still swells into a
+shin whose arms are where the m's legs were, and it is still a letter to read.

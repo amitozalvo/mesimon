@@ -573,12 +573,12 @@ const UNKNOWN: &[Frame] = &[
     plain(500),
 ];
 
-/// Half asleep, the cheeks not yet showing: the waking letter's first poses.
+/// Half asleep, the cheeks not yet showing: the waking shin's first poses.
 const fn drowsy(ms: u32, eyes: Eyes, mouth: Mouth) -> Frame {
     Frame { blush: false, ..f(ms).eyes(eyes).mouth(mouth) }
 }
-/// The shin the ש has just become (T-1156), as the intro's wakes: asleep,
-/// heavy, shut again, awake at once, then a look at each neighbour.
+/// The shin just hatched (T-1252), as the intro's wakes: asleep, heavy,
+/// shut again, awake at once, then a look at each neighbour.
 const WAKING: &[Frame] = &[
     drowsy(800, Eyes::Closed, Mouth::None),
     drowsy(500, Eyes::Lid, Mouth::Flat),
@@ -605,59 +605,217 @@ const READY: &[Frame] = &[
     f(500).eyes(Eyes::Happy),
 ];
 
-/// The letter's beats (T-1156): how long, then the morph's `t` (`None` for
-/// the letter itself), the letter's shift right and whether it is up a
-/// pixel. Every beat a multiple of the redraw clock's 100 ms.
-type LetterBeat = (u32, Option<f32>, i16, bool);
-/// A breath, a long hold, a shiver, a hold: the letter while it waits on
-/// the worktree.
-const STIR: &[LetterBeat] = &[
-    (1200, None, 0, false),
-    (200, None, 0, true),
-    (200, None, 0, false),
-    (900, None, 0, false),
-    (100, None, 1, false),
-    (100, None, -1, false),
-    (100, None, 1, false),
-    (100, None, -1, false),
-    (100, None, 0, false),
-    (600, None, 0, false),
+// -- the egg (T-1252) -----------------------------------------------------------
+
+/// The egg the shin hatches from on a ticket with no agent yet, on the
+/// small body's own rows and centred on its twelve columns, so its stage
+/// is the shin's to the cell. Speckles are the shell's darker pixels.
+const EGG: &[&str] = &[
+    "...####...",
+    "..######..",
+    ".##s#####.",
+    ".######s#.",
+    "##########",
+    "##########",
+    "######s###",
+    "##########",
+    ".###s####.",
+    "..######..",
 ];
-/// The intro's morph, its beats at the redraw clock: a held letter, then
-/// the stems swelling into the body from the bottom up, a breath held.
-const MORPH: &[LetterBeat] = &[
-    (300, None, 0, false),
-    (100, Some(0.2), 0, false),
-    (100, Some(0.3), 0, false),
-    (100, Some(0.4), 0, false),
-    (100, Some(0.5), 0, false),
-    (100, Some(0.6), 0, false),
-    (100, Some(0.7), 0, false),
-    (100, Some(0.82), 0, false),
-    (100, Some(1.0), 0, false),
-    (100, Some(1.1), 0, false),
-    (100, Some(1.1), 0, false),
-    (100, Some(1.0), 0, false),
+/// The egg's left column on the small body.
+const EGG_X: i16 = 1;
+/// The crack's row in each of the egg's columns: a zigzag over rows four
+/// and five, the top piece above it and the bottom piece below.
+const fn crack_row(x: i16) -> i16 {
+    if x % 2 == 1 {
+        4
+    } else {
+        5
+    }
+}
+
+/// What the egg is in a beat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EggBeat {
+    /// Whole: its top half rocked `rock` pixels, up a pixel or not, and
+    /// the crack open across `crack` of its columns (from the middle out).
+    Whole { rock: i16, lift: bool, crack: i16 },
+    /// Hatched: the shin, asleep, with the top piece moved by `top` or gone
+    /// and the bottom piece dropped by `bottom` or gone.
+    Hatched { top: Option<(i16, i16)>, bottom: Option<i16>, lift: bool },
+}
+const fn whole(ms: u32, rock: i16, lift: bool, crack: i16) -> (u32, EggBeat) {
+    (ms, EggBeat::Whole { rock, lift, crack })
+}
+/// A breath, a long hold, a rock to and fro, a hold: the egg while the
+/// worktree is made and its init script runs.
+const ROCKING: &[(u32, EggBeat)] = &[
+    whole(1200, 0, false, 0),
+    whole(200, 0, true, 0),
+    whole(200, 0, false, 0),
+    whole(900, 0, false, 0),
+    whole(100, 1, false, 0),
+    whole(100, -1, false, 0),
+    whole(100, 1, false, 0),
+    whole(100, -1, false, 0),
+    whole(100, 0, false, 0),
+    whole(600, 0, false, 0),
 ];
-fn beats_ms(beats: &[LetterBeat]) -> u64 {
+/// The hatch as the agent starts: the crack runs out from the middle, the
+/// egg rocks once, the top flies off, the shin sits asleep in the bottom
+/// half, hops out of it; then `WAKING`.
+const HATCH: &[(u32, EggBeat)] = &[
+    whole(300, 0, false, 0),
+    whole(300, 0, false, 4),
+    whole(200, 0, false, 10),
+    whole(100, 1, false, 10),
+    whole(100, -1, false, 10),
+    whole(200, 0, false, 10),
+    (100, EggBeat::Hatched { top: Some((-1, -2)), bottom: Some(0), lift: false }),
+    (200, EggBeat::Hatched { top: Some((-2, -5)), bottom: Some(0), lift: false }),
+    (700, EggBeat::Hatched { top: None, bottom: Some(0), lift: false }),
+    (100, EggBeat::Hatched { top: None, bottom: Some(2), lift: true }),
+    (200, EggBeat::Hatched { top: None, bottom: None, lift: false }),
+];
+fn shell_ms(beats: &[(u32, EggBeat)]) -> u64 {
     beats.iter().map(|b| u64::from(b.0)).sum()
 }
-/// The letter's beat `ms` into `anim`, or `None` where the shin's own
-/// poses play: past the morph, and in every other animation.
-fn letter_beat(anim: Anim, ms: u64) -> Option<LetterBeat> {
+/// The egg's beat `ms` into `anim` at `size`, or `None` where the shin's
+/// own poses play: past the hatch, in every other animation, and at a size
+/// with no egg (only the rail's small shin hatches).
+fn egg_beat(size: Size, anim: Anim, ms: u64) -> Option<EggBeat> {
+    if size != Size::Small {
+        return None;
+    }
     let (beats, mut t) = match anim {
-        Anim::Letter => return Some((0, None, 0, false)),
-        Anim::Stir => (STIR, ms % beats_ms(STIR)),
-        Anim::Waking if ms < beats_ms(MORPH) => (MORPH, ms),
+        Anim::Egg => return Some(EggBeat::Whole { rock: 0, lift: false, crack: 0 }),
+        Anim::Rocking => (ROCKING, ms % shell_ms(ROCKING)),
+        Anim::Waking if ms < shell_ms(HATCH) => (HATCH, ms),
         _ => return None,
     };
     for b in beats {
         if t < u64::from(b.0) {
-            return Some(*b);
+            return Some(b.1);
         }
         t -= u64::from(b.0);
     }
     None
+}
+/// How far into `anim` the shin's poses start: past the hatch on a waking
+/// small shin, at once everywhere else.
+fn poses_from(size: Size, anim: Anim) -> u64 {
+    if size == Size::Small && anim == Anim::Waking {
+        shell_ms(HATCH)
+    } else {
+        0
+    }
+}
+/// Where the shell's pieces stand, as one grid two rows taller than the
+/// body (its first two rows are above it): `Some(true)` a speckle.
+struct Shards {
+    w: i16,
+    rise: i16,
+    px: Vec<Option<bool>>,
+}
+
+impl Shards {
+    fn new(w: i16, h: i16, rise: i16) -> Shards {
+        Shards { w, rise, px: vec![None; (w * (h + rise)) as usize] }
+    }
+
+    fn get(&self, x: i16, y: i16) -> Option<bool> {
+        let i = (y + self.rise) * self.w + x;
+        (x >= 0 && x < self.w && i >= 0)
+            .then(|| self.px.get(i as usize).copied().flatten())
+            .flatten()
+    }
+
+    /// The egg's pixels `keep` picks, moved by `(dx, dy)`.
+    fn place(&mut self, keep: &dyn Fn(i16, i16) -> bool, (dx, dy): (i16, i16)) {
+        for (y, row) in EGG.iter().enumerate() {
+            for (x, c) in row.bytes().enumerate() {
+                let (x, y) = (x as i16, y as i16);
+                let (sx, sy) = (x + EGG_X + dx, y + dy);
+                if c == b'.' || !keep(x, y) || sx < 0 || sx >= self.w || sy < -self.rise {
+                    continue;
+                }
+                if let Some(slot) = self.px.get_mut(((sy + self.rise) * self.w + sx) as usize) {
+                    *slot = Some(c == b's');
+                }
+            }
+        }
+    }
+
+    /// Every piece lit as one: the top and left edges catch the light, the
+    /// bottom and right edges and the speckles fall into shade.
+    fn ink(&self, put: &mut dyn FnMut(i16, i16, Role)) {
+        let solid = |x: i16, y: i16| self.get(x, y).is_some();
+        let h = self.px.len() as i16 / self.w - self.rise;
+        for y in -self.rise..h {
+            for x in 0..self.w {
+                let Some(speck) = self.get(x, y) else { continue };
+                let role = if !solid(x, y + 1) || !solid(x + 1, y) || speck {
+                    Role::ShellShade
+                } else if !solid(x, y - 1) || !solid(x - 1, y) {
+                    Role::ShellHi
+                } else {
+                    Role::Shell
+                };
+                put(x, y, role);
+            }
+        }
+    }
+}
+
+/// The egg's stage in a beat: the shin's own stage, the hatched shin
+/// composed under what is left of the shell.
+fn egg_stage(size: Size, beat: EggBeat, ink: &CreatureInk, block_gaps: bool) -> Stage {
+    let b = Body::get(size);
+    let (w, h) = (b.w, b.h);
+    // Two pixel rows above the body, the stage's `ABOVE` row, for a lift
+    // and the top piece as it flies.
+    let rise = 2 * ABOVE as i16;
+    let mut px: Vec<Option<Role>> = vec![None; (w * (h + rise)) as usize];
+    let mut put = |x: i16, y: i16, role: Role| {
+        if x >= 0 && x < w && y >= -rise && y < h {
+            px[((y + rise) * w + x) as usize] = Some(role);
+        }
+    };
+    let mut shards = Shards::new(w, h, rise);
+    match beat {
+        EggBeat::Whole { rock, lift, crack } => {
+            let dy = -i16::from(lift);
+            let (from, to) = (5 - crack / 2, 4 + (crack + 1) / 2);
+            let open = |x: i16, y: i16| y == crack_row(x) && (from..=to).contains(&x);
+            shards.place(&|x, y| y <= 4 && !open(x, y), (rock, dy));
+            shards.place(&|x, y| y > 4 && !open(x, y), (0, dy));
+        }
+        EggBeat::Hatched { top, bottom, lift } => {
+            let pic = compose(size, &Frame { lift, ..drowsy(100, Eyes::Closed, Mouth::None) }, 0);
+            for y in -rise..h {
+                for x in 0..w {
+                    if let Some(role) = pic.at(x, y) {
+                        put(x, y, role);
+                    }
+                }
+            }
+            if let Some(off) = top {
+                shards.place(&|x, y| y < crack_row(x), off);
+            }
+            if let Some(dy) = bottom {
+                shards.place(&|x, y| y > crack_row(x), (0, dy));
+            }
+        }
+    }
+    shards.ink(&mut put);
+    let pic = Picture { w, h: h + rise, px, lift: false, marks: Vec::new() };
+    let mut st = stage(&pic, ink, block_gaps);
+    // The picture held the stage's `ABOVE` row as pixels: drop the empty
+    // row `stage` put over it, so the stage is the shin's to the cell.
+    st.cells.drain(..st.cols as usize);
+    st.rows -= 1;
+    st.body = w as u16;
+    st
 }
 /// How long the launch's last act plays before the shin settles (T-1156).
 pub(crate) fn ready_ms() -> u64 {
@@ -682,14 +840,13 @@ pub(crate) enum Anim {
     Failed,
     Exited,
     Unknown,
-    /// The rail's ש on a ticket with no agent yet (T-1156): the letter of
-    /// the intro, still.
-    Letter,
-    /// The ש stirring while the agent's worktree is made and its init
-    /// script runs: a breath, a hold, now and then a shiver.
-    Stir,
-    /// The ש waking into the shin as the agent starts: the intro's morph,
-    /// then asleep, half awake, awake, a look round; then `IDLE`.
+    /// The rail's egg on a ticket with no agent yet (T-1252), still.
+    Egg,
+    /// The egg rocking while the agent's worktree is made and its init
+    /// script runs: a breath, a hold, now and then a rock to and fro.
+    Rocking,
+    /// The shin hatching as the agent starts: the egg cracks and its top
+    /// flies off, then asleep, half awake, awake, a look round; then `IDLE`.
     Waking,
     /// The agent ready, the launch over: a smile, a wave, the happy hop;
     /// then `IDLE`.
@@ -713,8 +870,8 @@ impl Anim {
         Anim::Failed,
         Anim::Exited,
         Anim::Unknown,
-        Anim::Letter,
-        Anim::Stir,
+        Anim::Egg,
+        Anim::Rocking,
         Anim::Waking,
         Anim::Ready,
     ];
@@ -768,9 +925,9 @@ impl Anim {
             Anim::Failed => (&[], FAILED),
             Anim::Exited => (&[], EXITED),
             Anim::Unknown => (&[], UNKNOWN),
-            // The letter's beats are pixels, not poses (`letter_beat`); the
-            // cycle here is what a shin after them would do.
-            Anim::Letter | Anim::Stir => (&[], IDLE),
+            // The egg's beats are pixels, not poses (`egg_beat`); the cycle
+            // here is what a size with no egg plays.
+            Anim::Egg | Anim::Rocking => (&[], IDLE),
             Anim::Waking => (WAKING, IDLE),
             Anim::Ready => (READY, IDLE),
         }
@@ -822,6 +979,11 @@ pub(crate) enum Role {
     CrownDeep,
     /// Every stem pixel in the crown, as its lightning leaves the shin.
     CrownFlash,
+    /// The egg's shell (T-1252): its lit edge, its face, its shaded edge
+    /// and speckles.
+    ShellHi,
+    Shell,
+    ShellShade,
 }
 
 impl Role {
@@ -852,6 +1014,9 @@ impl Role {
             Role::Crown => ink.crown.map_or(ink.body, |c| c.tint),
             Role::CrownDeep => ink.crown.map_or(ink.shade, |c| c.shade),
             Role::CrownFlash => ink.crown.map_or(ink.glint, |c| c.flash),
+            Role::ShellHi => ink.shell.lit,
+            Role::Shell => ink.shell.face,
+            Role::ShellShade => ink.shell.shade,
         }
     }
 }
@@ -1276,9 +1441,6 @@ pub(crate) struct Stage {
     pub cols: u16,
     pub rows: u16,
     pub body: u16,
-    /// Columns the stage is drawn left of a body stage's place, so its
-    /// body stands where the shin's does: the letter's margin (T-1156).
-    pub shift: u16,
     cells: Vec<Option<(char, Style)>>,
 }
 
@@ -1286,9 +1448,9 @@ pub(crate) struct Stage {
 /// theme draws no picture (mono). Every frame of one animation has the same
 /// stage, so a reply beside it wraps once per state, not once per frame.
 /// `blink`: a click's blink (T-1177) shuts the frame's eyes where they are
-/// open, and nothing else of the frame or its clock changes; the letter has
+/// open, and nothing else of the frame or its clock changes; the egg has
 /// no face to blink. `crown`: the crown on the stems (T-1186), in the
-/// crown's tint where the theme paints tags and nowhere else; the letter
+/// crown's tint where the theme paints tags and nowhere else; the egg
 /// wears none.
 pub(crate) fn stage_for(
     size: Size,
@@ -1298,22 +1460,14 @@ pub(crate) fn stage_for(
     crown: Crown,
     theme: &Theme,
 ) -> Option<Stage> {
-    // The ש (T-1156): the intro's letter or its morph, on the body's own
-    // pixels, so its stage is the shin's to the cell.
-    // A size with no letter (Large) plays the poses instead.
-    if let Some((_, t, dx, lift)) = letter_beat(anim, ms) {
-        if let Some((pad, px)) = crate::intro::letter_pixels(size, t, dx) {
-            let ink = theme.creature_ink(false)?;
-            let b = Body::get(size);
-            let pic = Picture { w: b.w + 2 * pad, h: b.h, px, lift, marks: Vec::new() };
-            let mut st = stage(&pic, &ink, theme.block_gaps);
-            st.body = b.w as u16;
-            st.shift = pad as u16;
-            return Some(st);
-        }
+    // The egg (T-1252), on the body's own rows, so its stage is the
+    // shin's to the cell. A size with no egg plays the poses instead.
+    if let Some(beat) = egg_beat(size, anim, ms) {
+        let ink = theme.creature_ink(false)?;
+        return Some(egg_stage(size, beat, &ink, theme.block_gaps));
     }
-    // The waking shin's poses start where its morph ends.
-    let ms = if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
+    // The waking shin's poses start where its hatch ends.
+    let ms = ms.saturating_sub(poses_from(size, anim));
     let mut frame = *frame_at(size, anim, ms);
     let ink = theme.creature_ink(frame.faded)?;
     let gild = if ink.crown.is_some() { crown.gild(size) } else { Gild::default() };
@@ -1425,7 +1579,7 @@ fn stage(pic: &Picture, ink: &CreatureInk, block_gaps: bool) -> Stage {
             *cell = Some((m.ch, if m.bold { style.add_modifier(Modifier::BOLD) } else { style }));
         }
     }
-    Stage { cols, rows, body: pic.w as u16, shift: 0, cells }
+    Stage { cols, rows, body: pic.w as u16, cells }
 }
 
 impl Stage {
@@ -1591,7 +1745,7 @@ mod tests {
     }
 
     /// The crown in a theme (T-1186): the crown's own tint where the theme
-    /// paints tags, nothing where it does not, and none on the letter.
+    /// paints tags, nothing where it does not, and none on the egg.
     #[test]
     fn the_crown_is_the_crown_s_tint_and_only_where_tags_are_painted() {
         let cells = |theme: &Theme, anim, crown| {
@@ -1621,12 +1775,12 @@ mod tests {
         }
         let plain = Theme::new(Flavor::Graphite, Profile::Ansi256);
         assert_eq!(cells(&plain, Anim::Idle, Crown::On), cells(&plain, Anim::Idle, Crown::Off));
-        assert_eq!(cells(&tc, Anim::Letter, Crown::On), cells(&tc, Anim::Letter, Crown::Off));
+        assert_eq!(cells(&tc, Anim::Egg, Crown::On), cells(&tc, Anim::Egg, Crown::Off));
     }
 
     /// A click's blink (T-1177): every frame whose eyes are open draws them
     /// shut and changes nothing else; a frame with its eyes already shut,
-    /// happy or X'd, and the letter, draws as it always does.
+    /// happy or X'd, and the egg, draws as it always does.
     #[test]
     fn a_click_blinks_open_eyes_and_leaves_the_rest_of_the_frame() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
@@ -1634,17 +1788,16 @@ mod tests {
             for anim in Anim::ALL {
                 let (intro, cycle) = anim.timeline(size);
                 let span: u64 = intro.iter().chain(cycle).map(|f| u64::from(f.ms)).sum::<u64>()
-                    + if anim == Anim::Waking { beats_ms(MORPH) } else { 0 };
+                    + poses_from(size, anim);
                 for ms in (0..span).step_by(100) {
                     let cells = |blink| {
                         stage_for(size, anim, ms, blink, Crown::Off, &theme).map(|s| s.cells)
                     };
                     let (open, blinked) = (cells(false), cells(true));
-                    let pose_ms =
-                        if anim == Anim::Waking { ms.saturating_sub(beats_ms(MORPH)) } else { ms };
+                    let pose_ms = ms.saturating_sub(poses_from(size, anim));
                     let fr = frame_at(size, anim, pose_ms);
-                    // The letter has no face; Large has no letter.
-                    let face = letter_beat(anim, ms).is_none() || size == Size::Large;
+                    // The egg has no face, and its hatch blinks none.
+                    let face = egg_beat(size, anim, ms).is_none();
                     if face && fr.eyes.shut_by_a_click() {
                         assert_ne!(open, blinked, "{size:?} {anim:?} at {ms}: the eyes shut");
                         let as_blink = fr.eyes(Eyes::Blink);
@@ -1849,9 +2002,9 @@ mod tests {
             let ink = theme.creature_ink(fr.faded).expect("ink");
             stage(&compose(Size::Medium, fr, 0), &ink, false).cells
         };
-        // The ש's two (T-1156) are pixels, not poses: `letter_beat`.
+        // The egg's two (T-1252) are pixels, not poses: `egg_beat`.
         let posed: Vec<Anim> =
-            Anim::ALL.into_iter().filter(|a| !matches!(a, Anim::Letter | Anim::Stir)).collect();
+            Anim::ALL.into_iter().filter(|a| !matches!(a, Anim::Egg | Anim::Rocking)).collect();
         let firsts: Vec<_> = posed.iter().map(|&a| glyphs(frame_at(Size::Medium, a, 0))).collect();
         for (i, a) in posed.iter().enumerate() {
             for (j, b) in posed.iter().enumerate().skip(i + 1) {

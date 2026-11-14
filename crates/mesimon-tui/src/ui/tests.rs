@@ -9122,11 +9122,11 @@ fn the_quiet_zone_says_why_there_are_no_words() {
     assert_eq!(words(&dead).0, "exited");
 }
 
-/// The empty seat's creature is the rail's ש (T-1156), never the zone's: the
-/// zone keeps its words at any height, and the letter stands at the rail's
-/// foot while the page has the rows for it.
+/// The empty seat's creature is the rail's egg (T-1156, T-1252), never the
+/// zone's: the zone keeps its words at any height, and the egg stands at
+/// the rail's foot while the page has the rows for it.
 #[test]
-fn the_empty_seat_keeps_its_words_and_the_rail_its_letter() {
+fn the_empty_seat_keeps_its_words_and_the_rail_its_egg() {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
         t.notes.push(note_meta(90, "What changed", "local"));
@@ -9136,12 +9136,11 @@ fn the_empty_seat_keeps_its_words_and_the_rail_its_letter() {
     // A ticket with no description leaves the rail its foot.
     app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
     let tall = render(&app, 120, 30);
-    let drawn = app.mascot.borrow().clone().expect("the letter fits at 30");
-    // The letter stage's margin column lands on the rail's own first column.
-    assert!(drawn.rect.x >= 120 - super::ticket::RAIL_W, "on the rail: {:?}", drawn.rect);
+    let drawn = app.mascot.borrow().clone().expect("the egg fits at 30");
+    assert!(drawn.rect.x > 120 - super::ticket::RAIL_W, "on the rail: {:?}", drawn.rect);
     assert!(tall.iter().any(|l| l.contains("no agent yet")), "the zone's words: {tall:?}");
     // The description's rows come off the page's height; the rail keeps
-    // every row it lists and drops the letter before one of them.
+    // every row it lists and drops the egg before one of them.
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     // A description takes the rows off the top of the zone, which is the
     // ordinary way it runs out.
@@ -9161,7 +9160,7 @@ fn the_shin_acts_out_every_agent_state() {
     let mut app = app_graphite(fixture(false));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let buf = cells(&app, 120, 30);
-    let drawn = app.mascot.borrow().clone().expect("the empty seat has the rail's letter");
+    let drawn = app.mascot.borrow().clone().expect("the empty seat has the rail's egg");
     let mut blocks = 0;
     for y in drawn.rect.y..drawn.rect.bottom() {
         for x in drawn.rect.x..drawn.rect.right() {
@@ -9172,7 +9171,7 @@ fn the_shin_acts_out_every_agent_state() {
             }
         }
     }
-    assert!(blocks > 20, "the small letter is a picture, {blocks} cells");
+    assert!(blocks > 20, "the egg is a picture, {blocks} cells");
     // Frame 0 is what a first draw shows; its own clock moves it on.
     assert_eq!(buf, cells(&app, 120, 30), "a redraw inside a frame is the same frame");
     let at = |ms: u64| {
@@ -9181,8 +9180,8 @@ fn the_shin_acts_out_every_agent_state() {
             .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(ms))));
         cells(&app, 120, 30)
     };
-    // The letter waits, still (T-1156): the press is what wakes it.
-    assert_eq!(buf, at(2850), "the ש stands still");
+    // The egg waits, still (T-1252): the press is what hatches it.
+    assert_eq!(buf, at(2850), "the egg stands still");
 
     app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
     let lines = render(&app, 120, 30);
@@ -9212,10 +9211,10 @@ fn the_shin_acts_out_every_agent_state() {
     app.board_mut().sessions.retain(|s| s.ticket != ulid_n(1));
     app.board_mut().sessions.push(session(11, ulid_n(1), SessionKind::Bash, SessionState::Running));
     let _ = cells(&app, 120, 30);
-    // A shell has no agent to be: the ticket still has none, so the rail's ש
-    // waits for one (T-1156), never a shin acting the shell out.
-    let drawn = app.mascot.borrow().clone().expect("the ticket's letter");
-    assert!(drawn.rect.height <= 6, "the small letter, not a shin at work: {:?}", drawn.rect);
+    // A shell has no agent to be: the ticket still has none, so the rail's
+    // egg waits for one (T-1252), never a shin acting the shell out.
+    let drawn = app.mascot.borrow().clone().expect("the ticket's egg");
+    assert!(drawn.rect.height <= 6, "the egg, not a shin at work: {:?}", drawn.rect);
 
     app.screen = Screen::Board;
     let _ = cells(&app, 120, 30);
@@ -16765,7 +16764,7 @@ fn the_launch_list_follows_the_binding_and_the_record() {
     };
     let has = |lines: &[String], s: &str| lines.iter().any(|l| l.contains(s));
 
-    // Seen with no agent first: the launch that follows is the letter's.
+    // Seen with no agent first: the launch that follows hatches the egg.
     let seat = render(&app, 120, 30);
     assert!(has(&seat, "no agent yet"), "{seat:?}");
 
@@ -16821,10 +16820,11 @@ fn the_launch_list_follows_the_binding_and_the_record() {
     assert!(!has(&lines, "starting the agent"), "{lines:?}");
 }
 
-/// The rail's letter (T-1156): still on a seat, stirring while the worktree
-/// is made, and waking from the letter into the shin as the agent starts.
+/// The rail's egg (T-1252): still on a seat, rocking while the worktree
+/// is made, and hatching the shin as the agent starts, on the shin's own
+/// stage throughout so nothing beside it moves.
 #[test]
-fn the_letter_stirs_and_wakes_into_the_shin() {
+fn the_egg_rocks_and_hatches_the_shin() {
     use crate::creature::{stage_for, Anim, Crown, Size};
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let lines = |anim: Anim, ms: u64| {
@@ -16832,20 +16832,36 @@ fn the_letter_stirs_and_wakes_into_the_shin() {
             .expect("truecolor draws it");
         (0..st.rows).map(|r| format!("{}", st.line(r, 0))).collect::<Vec<_>>()
     };
-    let letter = lines(Anim::Letter, 0);
-    assert_eq!(letter, lines(Anim::Letter, 9_000), "the seat's letter is still");
-    assert!((0..5_000).step_by(100).any(|ms| lines(Anim::Stir, ms) != letter), "it stirs");
-    assert_eq!(lines(Anim::Waking, 0), letter, "the wake opens on the letter");
-    let woken = lines(Anim::Waking, 1_400);
-    assert_ne!(woken, letter, "and ends on the shin");
-    assert_eq!(
-        lines(Anim::Waking, 1_400).len(),
-        lines(Anim::Idle, 0).len(),
-        "on the shin's own stage"
-    );
+    let size = |anim: Anim, ms: u64| {
+        let st = stage_for(Size::Small, anim, ms, false, Crown::Off, &theme).expect("drawn");
+        (st.cols, st.rows, st.body)
+    };
+    let egg = lines(Anim::Egg, 0);
+    assert_eq!(egg, lines(Anim::Egg, 9_000), "the seat's egg is still");
+    assert!((0..5_000).step_by(100).any(|ms| lines(Anim::Rocking, ms) != egg), "it rocks");
+    assert_eq!(lines(Anim::Waking, 0), egg, "the hatch opens on the egg");
+    assert_ne!(lines(Anim::Waking, 400), egg, "the crack runs");
+    let shell = |l: &[String]| l.iter().any(|r| r.contains('▀') || r.contains('▄'));
+    assert!(shell(&lines(Anim::Waking, 1_500)), "the shin sits in the bottom half");
+    assert_ne!(lines(Anim::Waking, 2_600), egg, "and comes out");
+    for ms in (0..4_000).step_by(100) {
+        for anim in [Anim::Egg, Anim::Rocking, Anim::Waking] {
+            assert_eq!(size(anim, ms), size(Anim::Idle, 0), "{anim:?} at {ms}: the shin's stage");
+        }
+    }
+    // The shell is its own greys on every flavor: no ink of the body's, so
+    // a shard over the hatched shin stands apart from it.
+    for flavor in Flavor::ALL {
+        let ink = Theme::new(flavor, Profile::TrueColor).creature_ink(false).expect("ink");
+        let shell = [ink.shell.lit, ink.shell.face, ink.shell.shade];
+        for (i, c) in shell.iter().enumerate() {
+            assert!(!shell[..i].contains(c), "{flavor:?}: the shell's three inks are three");
+            assert!(![ink.body, ink.shade, ink.deep].contains(c), "{flavor:?}: not the body's");
+        }
+    }
     assert!(stage_for(
         Size::Small,
-        Anim::Letter,
+        Anim::Egg,
         0,
         false,
         Crown::Off,

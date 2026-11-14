@@ -964,10 +964,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .or_else(|| app.board.live_agent(ticket_id))
             .or_else(|| app.rail_sessions(ticket_id).into_iter().find(|s| s.kind.is_agent()));
         let shin_peek = shin_rec.and_then(|s| app.peek_cache.peek_of(s));
-        // What it acts out (T-1156): the ש on a ticket with no agent, still
-        // until the press and stirring while the worktree is made; waking
-        // into the shin as a fresh agent starts, and a hop once it is at its
-        // box; the agent's own state after that.
+        // What it acts out (T-1156, T-1252): an egg on a ticket with no
+        // agent, still until the press and rocking while the worktree is
+        // made; hatching the shin as a fresh agent starts, and a hop once it
+        // is at its box; the agent's own state after that.
         let shin_act = match shin_rec {
             Some(rec) if !rec.kind.is_agent() => None,
             Some(rec) => Some(match &launch {
@@ -977,10 +977,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 }
                 _ => (agent_anim(rec, shin_peek.as_deref()), crate::text::hash64(rec.id)),
             }),
-            None if launch.is_some() => Some((Anim::Stir, crate::text::hash64(ticket_id))),
+            None if launch.is_some() => Some((Anim::Rocking, crate::text::hash64(ticket_id))),
             // Only where a start is offered: an archived ticket has no seat.
             None if app.rail_rows(ticket_id).iter().any(|r| matches!(r, RailRow::NewAgent)) => {
-                Some((Anim::Letter, crate::text::hash64(ticket_id)))
+                Some((Anim::Egg, crate::text::hash64(ticket_id)))
             }
             None => None,
         };
@@ -2010,7 +2010,7 @@ fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
 }
 
 /// What the `+ agent session` row would do, previewed (T-308): since
-/// T-1156 in words alone — the creature is the rail's ש — `no agent yet`,
+/// T-1156 in words alone — the creature is the rail's egg — `no agent yet`,
 /// then each press beside what becomes of the box's words, in the keymap's
 /// own keys, then what the session about to exist will BE. Every fact is
 /// one the page already holds; nothing is asked of the daemon to draw it.
@@ -2072,9 +2072,8 @@ fn launch_rows(
     let w = area.width as usize;
     // The seat's own CLI once it has a record, else the one the ticket's
     // tier starts (T-1251: an agy seat read "starting claude").
-    let agent = record
-        .map_or_else(|| app.tiers().start_provider(ticket).session_kind(), |r| r.kind)
-        .word();
+    let agent =
+        record.map_or_else(|| app.tiers().start_provider(ticket).session_kind(), |r| r.kind).word();
     let mut lines = vec![
         Line::default(),
         Line::from(Span::styled("   starting the agent", theme.dim1())),
@@ -2432,10 +2431,7 @@ fn rail_shin(
     let ms = app.creature_ms(crate::text::hash64((key, anim)));
     let stage = creature::stage_for(Size::Small, anim, ms, app.shin_blinking(), crown, &app.theme)?;
     let y = floor.checked_sub(stage.rows)?;
-    // A letter stage is wider by its margin and drawn that much left, so
-    // the body stands where the shin's does.
-    let x = (rail.x + 1).saturating_sub(stage.shift);
-    (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, x, y))
+    (y >= rail.y + 4 && rail.width > stage.cols + 1).then_some((stage, rail.x + 1, y))
 }
 
 /// The whole conversation the zone reads (T-1143): every message the

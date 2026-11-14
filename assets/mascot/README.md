@@ -21,9 +21,10 @@ of that engine. Remint them with
 `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui creature`; a plain
 `cargo ut` fails when they drift from the pixels.
 
-On the ticket page the medium shin stands over the empty seat's words and over
-a session with nothing to read, acting out its state; beside a reply, the small
-shin stands in the zone's top-right corner on a zone at least 72 columns wide.
+On the ticket page the small shin stands at the rail's foot, acting out its
+agent's state. Before there is an agent it is an egg (T-1252), drawn in
+`creature.rs` beside the body rather than in `shin.txt`: still on a seat,
+rocking while the worktree is made, hatching the shin as the agent starts.
 The body is the theme's greyscale ramp, the blush and the props borrow the tag
 ring's tints, and only the needs-you "!" wears `attn`. Below truecolor there is
 no blush; mono draws no picture and keeps the wordmark. The installer draws the

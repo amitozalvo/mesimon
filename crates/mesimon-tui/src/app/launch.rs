@@ -18,7 +18,7 @@ use super::App;
 pub(crate) struct Launches {
     seen: RefCell<HashMap<ulid::Ulid, Seen>>,
     /// Tickets last drawn with no agent at all: a launch that begins from
-    /// here is the letter's to wake.
+    /// here hatches the rail's egg.
     seats: RefCell<HashSet<ulid::Ulid>>,
 }
 
@@ -60,7 +60,7 @@ pub(crate) struct Launch {
     /// them once the agent is ready (a start with an ask, a brief), `false`
     /// when the title waits there for the person's Enter.
     pub sends: bool,
-    /// The launch began on a ticket with no agent: the rail's letter wakes.
+    /// The launch began on a ticket with no agent: the rail's egg hatches.
     pub fresh: bool,
 }
 

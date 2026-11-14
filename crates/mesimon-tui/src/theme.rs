@@ -1315,6 +1315,19 @@ pub(crate) struct CreatureInk {
     /// The crown on the stems (T-1186), or `None` where the theme does not
     /// paint tags and the stems stay as they are.
     pub crown: Option<CrownInk>,
+    /// The egg the shin hatches from (T-1252).
+    pub shell: ShellInk,
+}
+
+/// The egg's shell (T-1252): a step lighter than the body on a dark ground
+/// and a step nearer the ground on a light one, lit and shaded as the body
+/// is; the shaded edge also inks its speckles. Greys only, none of them the
+/// body's own, so a shard over the hatched shin stands apart from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShellInk {
+    pub lit: Color,
+    pub face: Color,
+    pub shade: Color,
 }
 
 /// The crown's inks on the shin's stems (T-1186): its tint lit, plain and
@@ -1909,6 +1922,25 @@ impl Theme {
                 CrownInk { lit, tint, shade, flash: self.sel.base }
             }
         });
+        let shell = match self.profile {
+            Profile::TrueColor => {
+                let bg = self.bg.unwrap_or(hex(self.flavor.palette().truecolor.bg));
+                if light {
+                    let (lit, face) = (mix(r.dim3, bg, 0.55), mix(r.dim3, bg, 0.85));
+                    ShellInk { lit, face, shade: mix(r.dim3, bg, 0.3) }
+                } else {
+                    {
+                        let (face, shade) = (mix(r.base, r.dim1, 0.3), mix(r.base, r.dim1, 0.75));
+                        ShellInk { lit: r.base, face, shade }
+                    }
+                }
+            }
+            Profile::Ansi256 if light => ShellInk { lit: r.dim3, face: r.dim3, shade: r.dim2 },
+            Profile::Ansi256 => ShellInk { lit: r.base, face: r.base, shade: r.dim1 },
+            Profile::Ansi16 | Profile::Ansi8 if light => ShellInk { lit: i8, face: i7, shade: i8 },
+            Profile::Ansi16 => ShellInk { lit: i15, face: i15, shade: i7 },
+            Profile::Ansi8 | Profile::Mono => ShellInk { lit: i7, face: i7, shade: i8 },
+        };
         let mut ink = CreatureInk {
             hi,
             body,
@@ -1927,6 +1959,7 @@ impl Theme {
             code,
             add: self.calm,
             crown,
+            shell,
         };
         if faded {
             let sink = |c: Color| match self.bg {

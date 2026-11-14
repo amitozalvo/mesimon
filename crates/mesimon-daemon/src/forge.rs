@@ -763,9 +763,8 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     // GitLab's repositories are listed a host and an account at a time
     // (T-1243), each reported as its own answer.
     type Account = (String, PathBuf, Option<String>);
-    let account = |r: &RepoQuery| -> Account {
-        (r.remote.host.clone(), r.cli.bin.clone(), r.viewer.clone())
-    };
+    let account =
+        |r: &RepoQuery| -> Account { (r.remote.host.clone(), r.cli.bin.clone(), r.viewer.clone()) };
     let mut gitlab: HashMap<Account, Result<(Vec<Pr>, bool), String>> = HashMap::new();
     for r in &q.repos {
         let listed = match r.cli.forge {

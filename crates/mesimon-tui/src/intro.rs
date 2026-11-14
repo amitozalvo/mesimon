@@ -144,27 +144,6 @@ fn shin_frame(fr: &Frame) -> Glyph {
 /// The stage margin each side of the morph, so its swell has room.
 const MPAD: i16 = 2;
 
-/// The ש at the small shin's size (T-1156): the rail's letter, which the
-/// ticket page wakes into the small shin as its agent starts. The large
-/// letter's proportions (stems four, gaps three, of eighteen) at thirteen
-/// wide, ten tall: stems three, gaps two, a pixel wider each side than the
-/// twelve-pixel body, on the morph's margin (the author, of a ten-wide
-/// letter with two-pixel stems and two-pixel gaps: "very thin, should be a
-/// little wider"; of eleven wide with one-pixel gaps: "the lines should be
-/// thinner, and … the whole shin supposed to be wider").
-const SMALL_SHIN: &[&str] = &[
-    "###..###..###",
-    "###..###..###",
-    "###..###..###",
-    "###..###..###",
-    "###..###..###",
-    "####.###.####",
-    "#############",
-    "#############",
-    ".###########.",
-    "..#########..",
-];
-
 /// The letter and the shin as distance fields on one stage (positive
 /// inside). A frame of the morph is their blend: the stems swell, the gaps
 /// close, the arms slide to where the shin keeps them.
@@ -174,67 +153,48 @@ struct Morph {
     letter: Vec<f32>,
     shin: Vec<f32>,
     top: i16,
-    /// The margin each side of the stage, so the swell has room.
-    pad: i16,
 }
 
-/// The morph's stage for `size`: the intro's at Medium, the rail's at Small.
-fn morph(size: Size) -> &'static Morph {
-    static MEDIUM: OnceLock<Morph> = OnceLock::new();
-    static SMALL: OnceLock<Morph> = OnceLock::new();
-    match size {
-        Size::Small => SMALL.get_or_init(|| build_morph(Size::Small, SMALL_SHIN, 1)),
-        _ => MEDIUM.get_or_init(|| build_morph(Size::Medium, SHIN, MPAD)),
-    }
-}
-
-/// Where the letter stands from the shin's left edge: the large one a pixel
-/// in (eighteen on twenty), the small one at the edge (thirteen on twelve,
-/// its last stem a pixel onto the margin).
-fn letter_inset(size: Size) -> i16 {
-    match size {
-        Size::Small => 0,
-        _ => 1,
-    }
-}
-
-fn build_morph(size: Size, rows: &[&str], pad: i16) -> Morph {
-    let letter = Glyph::of(rows);
-    let (sw, sh, solid, top) = creature::silhouette(size);
-    let (w, h) = (sw + 2 * pad, sh + pad);
-    let inset = letter_inset(size);
-    let in_letter = |x: i16, y: i16| letter.at(x - pad - inset, y - pad).is_some();
-    let in_shin = |x: i16, y: i16| {
-        let (sx, sy) = (x - pad, y - pad);
-        sx >= 0 && sy >= 0 && sx < sw && sy < sh && solid[(sy * sw + sx) as usize]
-    };
-    let field = |inside: &dyn Fn(i16, i16) -> bool| -> Vec<f32> {
-        let mut d = Vec::with_capacity((w * h) as usize);
-        for y in 0..h {
-            for x in 0..w {
-                let me = inside(x, y);
-                let mut best = f32::MAX;
-                for yy in -4..h + 4 {
-                    for xx in -4..w + 4 {
-                        if inside(xx, yy) != me {
-                            let (dx, dy) = (f32::from(xx - x), f32::from(yy - y));
-                            best = best.min((dx * dx + dy * dy).sqrt());
+fn morph() -> &'static Morph {
+    static MORPH: OnceLock<Morph> = OnceLock::new();
+    MORPH.get_or_init(|| {
+        let letter = Glyph::of(SHIN);
+        let (sw, sh, solid, top) = creature::silhouette(Size::Medium);
+        let (w, h) = (sw + 2 * MPAD, sh + MPAD);
+        // The letter stands a pixel in from the shin's left edge.
+        let in_letter = |x: i16, y: i16| letter.at(x - MPAD - 1, y - MPAD).is_some();
+        let in_shin = |x: i16, y: i16| {
+            let (sx, sy) = (x - MPAD, y - MPAD);
+            sx >= 0 && sy >= 0 && sx < sw && sy < sh && solid[(sy * sw + sx) as usize]
+        };
+        let field = |inside: &dyn Fn(i16, i16) -> bool| -> Vec<f32> {
+            let mut d = Vec::with_capacity((w * h) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let me = inside(x, y);
+                    let mut best = f32::MAX;
+                    for yy in -4..h + 4 {
+                        for xx in -4..w + 4 {
+                            if inside(xx, yy) != me {
+                                let (dx, dy) = (f32::from(xx - x), f32::from(yy - y));
+                                best = best.min((dx * dx + dy * dy).sqrt());
+                            }
                         }
                     }
+                    d.push(if me { best - 0.5 } else { 0.5 - best });
                 }
-                d.push(if me { best - 0.5 } else { 0.5 - best });
             }
-        }
-        d
-    };
-    Morph { w, h, letter: field(&in_letter), shin: field(&in_shin), top: top + pad, pad }
+            d
+        };
+        Morph { w, h, letter: field(&in_letter), shin: field(&in_shin), top: top + MPAD }
+    })
 }
 
 /// The morph at `t`: the bottom rows lead, so the letter fills from the
 /// bottom up, and past 1 the body (never the arms, whose heads would run
 /// together) swells a pixel, a breath held.
-fn morph_at(size: Size, t: f32) -> Glyph {
-    let m = morph(size);
+fn morph_at(t: f32) -> Glyph {
+    let m = morph();
     let mut grid = Vec::with_capacity((m.w * m.h) as usize);
     for y in 0..m.h {
         let lag = 0.3 * (1.0 - f32::from(y) / f32::from(m.h - 1));
@@ -247,38 +207,6 @@ fn morph_at(size: Size, t: f32) -> Glyph {
         }
     }
     Glyph { w: m.w, h: m.h, px: creature::light(&grid, m.w, m.h, m.top) }
-}
-
-/// The letter, or the morph at `t`, on the shin's own pixels at `size`
-/// with the morph's margin each side (`pad` columns, returned first): the
-/// body's height, the letter `letter_inset` from the body's left edge and
-/// `dx` more, so a stage built from it stands exactly where the shin does
-/// once drawn `pad` columns left (T-1156); a letter wider than the body
-/// reaches onto the margin. `None` at a size with no letter.
-pub(crate) fn letter_pixels(
-    size: Size,
-    t: Option<f32>,
-    dx: i16,
-) -> Option<(i16, Vec<Option<Role>>)> {
-    let rows = match size {
-        Size::Small => SMALL_SHIN,
-        Size::Medium => SHIN,
-        Size::Large => return None,
-    };
-    let (sw, sh, _, _) = creature::silhouette(size);
-    let pad = morph(size).pad;
-    let w = sw + 2 * pad;
-    let (glyph, ox, oy) = match t {
-        None => (Glyph::of(rows), pad + letter_inset(size), sh - rows.len() as i16),
-        Some(t) => (morph_at(size, t), 0, -pad),
-    };
-    let mut px = vec![None; (w * sh) as usize];
-    for y in 0..sh {
-        for x in 0..w {
-            px[(y * w + x) as usize] = glyph.at(x - ox - dx, y - oy);
-        }
-    }
-    Some((pad, px))
 }
 
 // -- the storyboard ---------------------------------------------------------------
@@ -523,7 +451,7 @@ fn render(buf: &mut Buffer, area: Rect, beat: &Beat, theme: &Theme, ink: &Creatu
                 let ox = (LETTER_W - p.w) / 2 + dx;
                 (p, ox)
             }
-            Hero::Morph(t) => (morph_at(Size::Medium, t), -1 - MPAD),
+            Hero::Morph(t) => (morph_at(t), -1 - MPAD),
             Hero::Squash(fr, (w, h)) => {
                 let p = shin_frame(&fr).resample(w, h);
                 let ox = -1 + (20 - p.w) / 2;
@@ -797,57 +725,23 @@ mod tests {
 
     #[test]
     fn the_morph_starts_on_the_letter_and_ends_on_the_shin() {
-        for (size, rows) in [(Size::Medium, SHIN), (Size::Small, SMALL_SHIN)] {
-            let m = morph(size);
-            let pad = m.pad;
-            let solid = |g: &Glyph| g.px.iter().map(Option::is_some).collect::<Vec<_>>();
-            let letter = Glyph::of(rows);
-            let want: Vec<bool> = (0..m.h)
-                .flat_map(|y| (0..m.w).map(move |x| (x, y)))
-                .map(|(x, y)| letter.at(x - pad - letter_inset(size), y - pad).is_some())
-                .collect();
-            assert_eq!(solid(&morph_at(size, 0.0)), want, "{size:?}: t = 0 is the letter");
-            let (sw, sh, body, _) = creature::silhouette(size);
-            let want: Vec<bool> = (0..m.h)
-                .flat_map(|y| (0..m.w).map(move |x| (x, y)))
-                .map(|(x, y)| {
-                    let (sx, sy) = (x - pad, y - pad);
-                    sx >= 0 && sy >= 0 && sx < sw && sy < sh && body[(sy * sw + sx) as usize]
-                })
-                .collect();
-            assert_eq!(solid(&morph_at(size, 1.0)), want, "{size:?}: t = 1 is the shin");
-        }
-    }
-
-    /// The rail's letter stands on the small shin's own pixels (T-1156):
-    /// the same width and height, so its stage is the shin's to the cell,
-    /// and the morph's last frame is the shin's silhouette there.
-    #[test]
-    fn the_small_letter_stands_where_the_small_shin_does() {
-        let (sw, sh, body, _) = creature::silhouette(Size::Small);
-        let (pad, letter) = letter_pixels(Size::Small, None, 0).expect("a small letter");
-        let w = (sw + 2 * pad) as usize;
-        assert_eq!(letter.len(), w * sh as usize);
-        let p = pad as usize;
-        assert!(letter[p - 1].is_none(), "the left margin is free");
-        assert!(letter[p].is_some(), "the first stem at the body's left edge");
-        // Thirteen wide on a twelve-wide body: the last stem reaches a
-        // pixel onto the right margin.
-        assert!(letter[p + sw as usize].is_some(), "onto the margin");
-        assert!(letter[p + sw as usize + 1].is_none(), "and no further");
-        let (_, shin) = letter_pixels(Size::Small, Some(1.0), 0).expect("the morph's end");
-        let solid: Vec<bool> = (0..sh as usize)
-            .flat_map(|y| (0..sw as usize).map(move |x| (x, y)))
-            .map(|(x, y)| shin[y * w + p + x].is_some())
+        let m = morph();
+        let solid = |g: &Glyph| g.px.iter().map(Option::is_some).collect::<Vec<_>>();
+        let letter = Glyph::of(SHIN);
+        let want: Vec<bool> = (0..m.h)
+            .flat_map(|y| (0..m.w).map(move |x| (x, y)))
+            .map(|(x, y)| letter.at(x - MPAD - 1, y - MPAD).is_some())
             .collect();
-        assert_eq!(solid, body.to_vec(), "t = 1 is the small shin, on the body's columns");
-        assert!(
-            shin.iter()
-                .enumerate()
-                .all(|(i, c)| c.is_none() || (p..p + sw as usize).contains(&(i % w))),
-            "nothing on the margin at the end"
-        );
-        assert!(letter_pixels(Size::Large, None, 0).is_none());
+        assert_eq!(solid(&morph_at(0.0)), want, "t = 0 is the letter");
+        let (sw, sh, body, _) = creature::silhouette(Size::Medium);
+        let want: Vec<bool> = (0..m.h)
+            .flat_map(|y| (0..m.w).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let (sx, sy) = (x - MPAD, y - MPAD);
+                sx >= 0 && sy >= 0 && sx < sw && sy < sh && body[(sy * sw + sx) as usize]
+            })
+            .collect();
+        assert_eq!(solid(&morph_at(1.0)), want, "t = 1 is the shin");
     }
 
     #[test]
