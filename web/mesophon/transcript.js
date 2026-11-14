@@ -52,16 +52,39 @@ export function stepParts(text) {
   return { name: m[1], arg };
 }
 
-// Three steps or more in a row fold to one line (T-701): how many, and the
-// tools' names in order, once each. A press unfolds them.
-export const FOLD_FROM = 3;
+// Two steps or more in a row fold to one line (T-701, from three; T-1208,
+// from two) that says what they did in words: files read, edited and
+// written counted once each, searches and commands by how many, any other
+// tool by its name. A press unfolds them, and folds them again.
+export const FOLD_FROM = 2;
+const KIND = {
+  Read: "read", Edit: "edit", MultiEdit: "edit", NotebookEdit: "edit", apply_patch: "edit", Write: "write",
+  Grep: "search", Glob: "search", WebSearch: "search", Bash: "run", shell: "run", exec_command: "run", local_shell: "run",
+};
+const files = (n) => `${n} ${n === 1 ? "file" : "files"}`;
+const SAID = {
+  read: (n) => `read ${files(n)}`,
+  edit: (n) => `edited ${files(n)}`,
+  write: (n) => `wrote ${files(n)}`,
+  search: (n) => (n === 1 ? "searched once" : `searched ${n} times`),
+  run: (n) => `ran ${n} ${n === 1 ? "command" : "commands"}`,
+};
 export function foldWords(rows) {
-  const names = [];
+  const seen = new Map();
   for (const row of rows) {
-    const { name } = stepParts(row.text);
-    if (name && !names.includes(name)) names.push(name);
+    const { name, arg } = stepParts(row.text);
+    const kind = KIND[name] || `=${name || "step"}`;
+    if (!seen.has(kind)) seen.set(kind, { n: 0, args: new Set() });
+    const of = seen.get(kind);
+    of.n++;
+    of.args.add(arg);
   }
-  return `${rows.length} steps${names.length ? ` · ${names.join(", ")}` : ""}`;
+  const parts = [...seen].map(([kind, of]) =>
+    kind[0] === "="
+      ? `${of.n} ${kind.slice(1)}`
+      : SAID[kind](["read", "edit", "write"].includes(kind) ? of.args.size : of.n));
+  const said = parts.join(", ");
+  return said ? said[0].toUpperCase() + said.slice(1) : `${rows.length} steps`;
 }
 
 // The rows grouped for drawing: a run of FOLD_FROM or more tool rows is
@@ -134,7 +157,11 @@ export function Chat({ store, entry, doing, tail }) {
     : rows.length || chat.floor != null
       ? ""
       : "Nothing said yet.";
-  const unfold = (key) => setOpen((was) => new Set([...was, key]));
+  const toggle = (key) => setOpen((was) => {
+    const now = new Set(was);
+    if (!now.delete(key)) now.add(key);
+    return now;
+  });
   return html`<div id="chat" ref=${ref} class="chat" aria-label="Conversation" tabindex="0"
       onScroll=${(e) => store.chatScrolled(e.currentTarget)}>
     ${chat?.floor != null && html`<p class="chat-edge" aria-live="polite">${away ? "Earlier parts need your terminal" : entry.chatOlder ? "Reading earlier…" : "Scroll up for earlier"}</p>`}
@@ -142,12 +169,11 @@ export function Chat({ store, entry, doing, tail }) {
     ${empty && html`<p class="chat-empty">${empty}</p>`}
     ${groupRows(rows).map((item) => {
       const key = rowKey(rows, item.i);
-      if (!item.run || open.has(key)) {
-        if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
-        return item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n)} row=${row} />`);
-      }
-      return html`<button key=${key} type="button" class="chat-row chat-run" aria-expanded="false"
-        onClick=${() => unfold(key)}><${Icon} name="chevronRight" size=${12} width=${2.4} /><span>${foldWords(item.run)}</span></button>`;
+      if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
+      const shown = open.has(key);
+      return html`<button key=${`run:${key}`} type="button" class="chat-row chat-run" aria-expanded=${String(shown)}
+        onClick=${() => toggle(key)}><${Icon} name=${shown ? "chevronDown" : "chevronRight"} size=${12} width=${2.4} /><span>${foldWords(item.run)}</span></button>
+        ${shown && item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n)} row=${row} />`)}`;
     })}
     ${ghost && html`<div class="chat-row chat-prompt chat-ghost" aria-label="Sent, not yet in the conversation">
       <p dir="auto">${ghost.text}</p><${Tick} state=${receiptTick(ghost.status) || "clock"} /></div>`}

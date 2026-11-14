@@ -2904,21 +2904,26 @@ select {
 .chat-tool + .chat-tool {
   margin-top: -7px;
 }
-/* A run of steps folded to one line (T-701); a press opens it. */
+/* A run of steps folded to one line (T-701), a plain line since T-1208: its
+   words say what the steps did, and a press opens or folds them. The press
+   is 44px tall and takes a text line's room. */
 .chat-run {
   align-self: flex-start;
   max-width: 100%;
-  min-height: 32px;
+  min-height: 44px;
+  margin-block: -11px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 11px 0 8px;
+  gap: 8px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: var(--s2);
-  color: var(--ink2);
+  background: transparent;
+  color: var(--ink3);
   font-size: 0.8125rem;
   text-align: left;
+}
+.chat-run:hover {
+  color: var(--ink2);
 }
 .chat-run svg {
   flex: none;

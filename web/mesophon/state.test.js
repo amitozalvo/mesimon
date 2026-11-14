@@ -1290,9 +1290,16 @@ test("a step splits into its tool's name and what it took; three or more in a ro
     tool(40, "Edit a.rs"), tool(50, "Bash(cargo test)"), tool(60, "Edit b.rs"), tool(70, "Read c.rs"),
   ];
   const items = groupRows(rows);
-  // Two steps stay two rows; four fold to one item at the first's index.
-  assert.deepEqual(items.map((i) => (i.run ? `run@${i.i}:${i.run.length}` : `row@${i.i}`)), ["row@0", "row@1", "row@2", "row@3", "run@4:4"]);
-  assert.equal(foldWords(items[4].run), "4 steps · Edit, Bash, Read");
+  // Two steps or more fold to one item at the first's index (T-1208), and
+  // its line says what they did: a file counted once, a tool with no word
+  // of its own by its name.
+  assert.deepEqual(items.map((i) => (i.run ? `run@${i.i}:${i.run.length}` : `row@${i.i}`)), ["row@0", "run@1:2", "row@3", "run@4:4"]);
+  assert.equal(foldWords(items[1].run), "Read 2 files");
+  assert.equal(foldWords(items[3].run), "Edited 2 files, ran 1 command, read 1 file");
+  assert.equal(foldWords([tool(1, "Grep foo"), tool(2, "Glob *.rs"), tool(3, "Edit a.rs"), tool(4, "Edit a.rs"), tool(5, "WebFetch https://x"), tool(6, "Bash(ls)"), tool(7, "Bash(ls)")]),
+    "Searched 2 times, edited 1 file, 1 WebFetch, ran 2 commands");
+  assert.equal(foldWords([tool(1, "Grep foo"), tool(2, "(no name)")]), "Searched once, 1 step");
+  assert.deepEqual(groupRows([tool(1, "Read a.rs"), { at: 2, kind: "reply", text: "ok" }]).map((i) => !!i.run), [false, false], "one step is its own row");
 });
 test("the shin's animation follows the agent's state, a tool in flight apart from a turn with none (T-701)", () => {
   assert.equal(animOf(undefined), undefined);

@@ -2770,21 +2770,25 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#chat .chat-ghost"));
     assert.equal(await chat.locator(".chat-prompt").last().textContent(), "ghost-canary");
     assert(await page.locator("#delivery").isHidden());
-    // Three steps or more in a row fold to one line that says how many and
-    // which tools (T-701); a press opens them. A step reads as its tool's
-    // name and what it took.
+    // Two steps or more in a row fold to one line that says what they did
+    // (T-701, T-1208); a press opens them and another folds them. A step
+    // reads as its tool's name and what it took.
     await page.evaluate(() => fixture.transcript.push(
       { at: 430, kind: "tool", text: "Read src/main.rs" },
       { at: 440, kind: "tool", text: "Edit src/main.rs" },
       { at: 450, kind: "tool", text: "Bash(cargo test fold-canary)" },
     ));
-    await chat.locator(".chat-run").waitFor();
-    assert.equal(await chat.locator(".chat-run").textContent(), "3 steps · Read, Edit, Bash");
+    const run = chat.locator(".chat-run").last();
+    await until(page, () => [...document.querySelectorAll("#chat .chat-run")].at(-1)?.textContent === "Read 1 file, edited 1 file, ran 1 command");
     assert(!(await chat.textContent()).includes("fold-canary"), "folded steps are not drawn");
-    await chat.locator(".chat-run").click();
+    await run.click();
     await until(page, () => document.querySelector("#chat").textContent.includes("fold-canary"));
-    assert.equal(await chat.locator(".chat-run").count(), 0);
+    assert.equal(await run.getAttribute("aria-expanded"), "true");
     assert.deepEqual(await chat.locator(".chat-tool").last().locator("span").allTextContents(), ["Bash", "cargo test fold-canary"]);
+    await run.click();
+    await until(page, () => !document.querySelector("#chat").textContent.includes("fold-canary"));
+    await run.click();
+    await until(page, () => document.querySelector("#chat").textContent.includes("fold-canary"));
     // A new conversation (`/clear`) starts over at its tail.
     await page.evaluate(() => {
       fixture.conversation = "conversation-b";
