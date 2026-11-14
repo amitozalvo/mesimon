@@ -465,12 +465,13 @@ export function BoardList({ store, board, bp }) {
       : {};
     return html`<section class=${`column${here ? " drop-target" : ""}`} key=${column} aria-label=${column} ...${over}>
       <h3 class="column-label" title=${about || undefined}><span>${column}</span><span class="group-count">${group.length}</span></h3>
+      ${bp === "phone" && about && html`<p class="column-note" dir="auto">${about}</p>`}
       <div class=${`cards${here && here.before === null ? " drop-end" : ""}`}>
         ${ghosts.map((item) => html`<${Ghost} key=${item.id} store=${store} item=${item} />`)}
         ${group.map((t) => html`<${Card} key=${t.id} store=${store} ticket=${t} board=${board} drag=${drag} />`)}
       </div>
-      ${bp !== "phone" && html`<button type="button" class="add-to-column" data-column=${column}
-        onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>Add to ${column}</span></button>`}
+      <button type="button" class="add-to-column" data-column=${column}
+        onClick=${() => store.openComposer(column)}><${Icon} name="plus" size=${16} /><span>${bp === "phone" ? `New ticket in ${column}` : `Add to ${column}`}</span></button>
     </section>`;
   })}</div>${board.omitted > 0 && html`<p class="empty" id="omitted">${omittedWords(board.omitted)}</p>`}`;
 }

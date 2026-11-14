@@ -44681,3 +44681,70 @@ MERGED/PRODUCTION columns are unchanged; the ticket named DONE only.
 IN PROGRESS (was `None`); `board::delete_refuses_live_tickets_and_the_last_column_and_clears_refs`
 now lists DONE's `on_working` among the refs deleting IN PROGRESS clears. Verified: `cargo ut`,
 `--test board column_e2e:: setup_e2e::` (rename and delete of IN PROGRESS carry the new ref).
+
+## The phone page takes the rest of the prototype: Details, the Notes list, Settings rows, Find, and what a turn and a ticket can do (T-1208, 2026-11-14, the author: "let's ship a new version of the remote control first then move on to ALL gaps")
+
+Everything the block above listed as still different, built in `web/mesophon` alone: no daemon,
+relay or wire change, every op one the host already took.
+
+- **Ticket page.** A fourth tab, Details (`store.showView`, `DetailsPane` in `compose.js`): the
+  agent, its tier and when the ticket was filed, then the card sheet's own body (`CardBody`,
+  shared by both; `pre` names its radios and ids, so the sheet and the tab can be drawn at once).
+  The title row ends in `#ticket-more`, which opens the sheet; the key leads the line under the
+  title. The tab's view sits over the panes, which stay mounted and hidden.
+- **Notes.** The Notes tab is a list (`NotesList`, `notepad.js`): the Summary's boxes in a card,
+  then a row a note that opens its pane. `summary.js` ports `core/src/summary.rs`'s `extract` and
+  `toggle` (a rule changed there changes here; its state test mirrors the core's cases), and a box
+  ticked writes the note's own text with that box flipped, on the revision the page read
+  (`store.tickSummary`), as any note edit goes. The list reads every body, one `note` ask at a
+  time (`loadNotes`), where a pane reads only its own.
+- **Settings.** Rows in groups (This phone, Connection, About), the theme picker on its own page
+  behind the Theme row (`store.settingsPage`), still mounted on either so a theme is worn from the
+  first frame. New: Haptics (`navigator.vibrate(12)` when a toast says two ticks; this browser's
+  choice, `mesophon-haptics`), a Release notes link.
+- **Find.** A phone's fourth tab (`mode: "find"`, `FindList`, `board.found()`): every ticket the
+  words match, the last eight touched before any words, and three things to do (Sent tickets, New
+  ticket, Theme). Sent left the tab bar for a row here, and Find's tab stays lit over it. A
+  phone's Inbox and Board have no search field, and `setMode` drops Find's words on leaving, or
+  they would narrow a list that shows no field to clear them in. Wider pages are unchanged.
+- **Chat.** Two tool steps or more fold (was three) into one plain line that says what they did
+  (`foldWords`: files read, edited and written counted once, searches and commands by how many,
+  any other tool by its name); a press opens them and another folds them.
+- **A permission** counts its time down (`TimeLeft`) and offers Deny and say why: the same `deny`,
+  then the message box takes the cursor (`store.sayWhy`). The host's `permission` op carries no
+  reason, so the words go as a prompt does; nothing rides the decision.
+- **New ticket** has Start an agent now, off until asked: the ticket is filed as any other, and
+  once it is on the board the page sends the plain `start` (`startWhenLanded`, `startLanded`),
+  from this page's memory alone and within two minutes. "A filed ticket starts nothing by itself"
+  holds at the host: this is the person's second press, made for them by the page.
+- **The plus** on the message box opens a menu in the box: take a photo (`capture`), choose from
+  the library, one of this ticket's notes or another ticket, whose name or key is typed into the
+  words at the cursor.
+- **Inbox** says what changed since the page was left (`digestOf`, `board.digest`): after five
+  minutes hidden, or on a new visit against the remembered board, until its x.
+- **A phone's Board** shows what the column is for over its cards and a "New ticket in COLUMN" row
+  at their end.
+
+**Not built, and why.**
+- A `ctrl` key on the Terminal tab. The host takes a fixed list of named keys (`PressKeys`,
+  T-1208's security review); a modifier means new keys on that list, which is a decision about
+  what a paired phone may type, the author's.
+- "Worked 6m 40s · 14 tools" under a finished turn. The transcript's rows carry an offset, not a
+  time, so the page cannot say how long a turn took.
+- The permission pinned over the message box. It is the conversation's last row, which is where
+  it sits when the page follows the conversation; pinned, a long plan or a batch of questions
+  would take the screen from the box on a phone with its keyboard up (360 x 330).
+- The Mac's settings rows and the usage meters: deferred in T-1208's first block, the author's ok.
+
+**Refuted.** A Details pane that reused the sheet's ids: a desktop draws the sheet beside the
+ticket page, and two radio groups of one name are one group. A Summary parsed loosely in the page:
+the card on the desk and the list on the phone would count different boxes.
+
+**Verified.** `npm test` in `web/mesophon` on this branch's last page commit: state and assets 63
+passed (two new: the Summary reader against the core's cases, the digest's counts), and the UX
+suite green on Chromium and WebKit at phone, tablet and desktop, with new steps for the Details
+tab, the Notes list and a ticked box, Settings' Theme page, Find, the folded steps, the countdown
+and Deny and say why, Start an agent now, the attach menu and the digest. No reruns. One full run
+before it stopped on three tests whose `[data-column]` click now matched the phone Board's new
+row as well as the column tab; they name the tab now. Each new screen was looked at by screenshot
+at 390 px beside the prototype's. Not run: a real phone, its camera, its vibration.

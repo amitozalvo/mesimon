@@ -777,7 +777,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#detail .selection-key")?.textContent === "T-200");
     await overview();
     await mode("board");
-    if (size === "phone") await page.locator('[data-column="TODO"]').click();
+    if (size === "phone") await page.locator('.column-tab[data-column="TODO"]').click();
     await page.locator('.ticket[data-id="mailed-1"] .from-here').waitFor();
     if (size !== "phone") {
       await page.locator('.add-to-column[data-column="DONE"]').click();
@@ -892,7 +892,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator(".ticket.card.ghost").count(), 2);
     await mode("board");
     // Both went to IN PROGRESS: the bar keeps the column the last one used.
-    if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
+    if (size === "phone") await page.locator('.column-tab[data-column="IN PROGRESS"]').click();
     assert.equal(await page.locator(".ticket.card.ghost").count(), 2);
     await shot("board-ghosts");
     // A receipt the relay forges does not count: only the host's seal does.
@@ -4398,7 +4398,7 @@ try {
             );
           const inNow = await anatomy();
           await mode("board");
-          if (size === "phone") await page.locator('[data-column="IN PROGRESS"]').click();
+          if (size === "phone") await page.locator('.column-tab[data-column="IN PROGRESS"]').click();
           assert.deepEqual(await anatomy(), inNow);
           // A glyph never moves a card's lower lines (T-948): two neighbouring
           // cards, one with the agent's mark and a shell's glyph and one with

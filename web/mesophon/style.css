@@ -6277,3 +6277,12 @@ button.set-row:hover {
 a.set-row {
   text-decoration: none;
 }
+
+/* A phone's Board (T-1208): what the column is for, over its cards, and the
+   row that files a ticket into it, at their end. */
+.column-note {
+  margin: 0 2px;
+  color: var(--ink3);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
