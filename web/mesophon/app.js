@@ -13,6 +13,7 @@ try {
   store.lastWorn = localStorage.getItem("mesophon-worn") || "";
   store.density = localStorage.getItem("mesophon-density") === "comfortable" ? "comfortable" : "compact";
   store.rail = localStorage.getItem("mesophon-sidebar") === "rail";
+  store.haptics = localStorage.getItem("mesophon-haptics") !== "off";
   // The Chat or Terminal choice (T-1208). The raw switch's own key from
   // before it meant something else, and is dropped (T-1219).
   localStorage.removeItem("mesophon-output");

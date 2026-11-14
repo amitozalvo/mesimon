@@ -6025,3 +6025,113 @@ input[type="checkbox"][role="switch"]:checked::before {
   display: flex;
   gap: 8px;
 }
+
+/* ---- Settings as rows (T-1208): groups of rows, Theme on its own page ---------- */
+.settings[data-page] {
+  gap: 0;
+}
+.settings-home,
+.settings-theme {
+  display: grid;
+  gap: 8px;
+}
+.settings-home[hidden],
+.settings-theme[hidden] {
+  display: none;
+}
+.set-head {
+  margin: 10px 4px 0;
+  color: var(--ink3);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.set-list {
+  display: grid;
+  border-radius: 14px;
+  background: var(--s1);
+  overflow: hidden;
+}
+.set-row {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.9375rem;
+  text-align: start;
+}
+.set-list > * + * {
+  border-top: 1px solid var(--line);
+}
+button.set-row:hover {
+  background: var(--s2);
+}
+.set-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--s2);
+  color: var(--ink2);
+}
+.set-label {
+  flex: 1;
+  min-width: 0;
+}
+.set-label small {
+  display: block;
+  color: var(--ink3);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+.set-value {
+  flex: none;
+  max-width: 50%;
+  color: var(--ink3);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.set-chev {
+  flex: none;
+  color: var(--ink4);
+}
+.set-row input[role="switch"] {
+  flex: none;
+}
+.set-danger,
+.set-danger .set-icon {
+  color: var(--err);
+}
+.set-note {
+  padding: 8px 12px;
+}
+.set-row .segmented.density {
+  background: var(--s2);
+}
+.set-row .segmented.density button {
+  padding: 0 10px;
+}
+.settings-home .settings-about {
+  display: grid;
+  gap: 8px;
+}
+.settings-home .settings-about .hops,
+.settings-home .settings-about .side-note {
+  margin-top: 0;
+}
+.settings-back {
+  justify-self: start;
+  gap: 2px;
+  padding-inline: 6px 10px;
+}

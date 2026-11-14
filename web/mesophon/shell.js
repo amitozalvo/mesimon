@@ -214,9 +214,10 @@ function Install({ store }) {
   const { prompt, standalone, apple } = store.install;
   if (standalone) return null;
   if (prompt)
-    return html`<button id="install" type="button" class="btn btn-quiet" onClick=${() => store.installApp()}><${Icon} name="download" size=${16} /><span>Add to Home Screen</span></button>`;
+    return html`<button id="install" type="button" class="set-row" onClick=${() => store.installApp()}>
+      <span class="set-icon"><${Icon} name="download" size=${16} /></span><span class="set-label">Add to Home Screen</span></button>`;
   if (apple)
-    return html`<p id="install-note" class="side-note"><${Icon} name="download" size=${13} /><span>To open it like an app: Share, then Add to Home Screen. The Home Screen app keeps its own pairing.</span></p>`;
+    return html`<p id="install-note" class="side-note set-note"><${Icon} name="download" size=${13} /><span>To open it like an app: Share, then Add to Home Screen. The Home Screen app keeps its own pairing.</span></p>`;
   return null;
 }
 
@@ -234,7 +235,7 @@ function About({ store }) {
     nonet: "Unknown while this browser is offline",
   }[link];
   return html`<section id="about" class="settings-about" aria-labelledby="about-heading">
-    <h3 id="about-heading" class="label">Connection</h3>
+    <h3 id="about-heading" class="set-head">Connection</h3>
     <ol class="hops">
       <${Hop} icon="smartphone" name="This browser" state=${store.online ? "Online" : "No connection"} ok=${store.online} />
       <${Hop} icon="cloud" name="Relay" state=${link === "relay" ? "Unreachable" : link === "nonet" ? "Unknown" : "Reachable"} ok=${!["relay", "nonet"].includes(link)} />
@@ -256,8 +257,7 @@ function ThemePicker({ store }) {
   // the terminal's, or System until the terminal says one.
   const on = (id) => (follows ? store.worn === id : store.theme === id);
   const pick = (id) => store.setTheme(id);
-  return html`<section class="theme-picker" aria-labelledby="theme-heading">
-    <h3 id="theme-heading" class="label">Theme</h3>
+  return html`<section class="theme-picker" aria-label="Theme">
     <label class="setting-switch">
       <span>Follow the terminal<small>${follows
         ? worn
@@ -297,6 +297,12 @@ function Settings({ store }) {
     if (!store.settingsOpen && dialog.open) dialog.close();
   });
   const close = () => store.openSettings(false);
+  // Its rows, or the Theme page a row opens (T-1208). The picker is drawn
+  // on either, so the theme control is in the page from the first frame.
+  const themed = store.settingsPage === "theme";
+  const follows = store.theme === "terminal";
+  const wornName = store.theme === "system" ? "System" : THEMES.find((t) => t.id === store.theme)?.name || "System";
+  const alerts = typeof Notification === "undefined" ? "Unavailable" : Notification.permission === "granted" ? "On" : Notification.permission === "denied" ? "Blocked" : "Off";
   return html`<dialog id="settings-sheet" class="compose settings-sheet" ref=${ref} aria-labelledby="settings-heading"
       onCancel=${(e) => {
         e.preventDefault();
@@ -308,27 +314,52 @@ function Settings({ store }) {
       }}>
     <div class="compose-form">
       <header class="compose-head">
-        <span></span>
-        <h2 id="settings-heading" tabindex="-1" autofocus>Settings</h2>
+        ${themed
+          ? html`<button id="settings-back" type="button" class="btn btn-quiet settings-back" onClick=${() => store.showSettingsPage("")}>
+              <${Icon} name="chevronLeft" size=${18} width=${2.2} /><span>Settings</span></button>`
+          : html`<span></span>`}
+        <h2 id="settings-heading" tabindex="-1" autofocus>${themed ? "Theme" : "Settings"}</h2>
         <button id="settings-done" type="button" class="btn btn-quiet compose-send-top" onClick=${close}>Done</button>
       </header>
-      <div class="compose-body settings">
-        <${ThemePicker} store=${store} />
-        <div class="setting-row">
-          <span class="setting-label">Density</span>
-          <div class="segmented density" role="group" aria-label="Density">
-            ${["compact", "comfortable"].map((d) => html`<button id=${`density-${d}`} type="button" key=${d}
-              class=${store.density === d ? "on" : ""} aria-pressed=${String(store.density === d)}
-              onClick=${() => store.setDensity(d)}>${d === "compact" ? "Compact" : "Comfortable"}</button>`)}
+      <div class="compose-body settings" data-page=${themed ? "theme" : "home"}>
+        <div class="settings-home" hidden=${themed}>
+          <h3 class="set-head">This phone</h3>
+          <div class="set-list">
+            <button id="settings-theme" type="button" class="set-row" onClick=${() => store.showSettingsPage("theme")}>
+              <span class="set-icon"><${Icon} name="palette" size=${16} /></span>
+              <span class="set-label">Theme</span>
+              <span class="set-value">${follows ? "Follows the terminal" : wornName}</span>
+              <${Icon} name="chevronRight" size=${16} cls="set-chev" /></button>
+            <div class="set-row">
+              <span class="set-icon"><${Icon} name="sliders" size=${16} /></span>
+              <span class="set-label">Density</span>
+              <div class="segmented density" role="group" aria-label="Density">
+                ${["compact", "comfortable"].map((d) => html`<button id=${`density-${d}`} type="button" key=${d}
+                  class=${store.density === d ? "on" : ""} aria-pressed=${String(store.density === d)}
+                  onClick=${() => store.setDensity(d)}>${d === "compact" ? "Compact" : "Comfortable"}</button>`)}
+              </div>
+            </div>
+            ${store.canTap && html`<label class="set-row">
+              <span class="set-icon"><${Icon} name="vibrate" size=${16} /></span>
+              <span class="set-label">Haptics<small>A tap when an answer lands</small></span>
+              <input id="haptics" type="checkbox" role="switch" checked=${store.haptics}
+                onChange=${(e) => store.setHaptics(e.currentTarget.checked)} /></label>`}
+            <button id="alerts" type="button" class="set-row" onClick=${() => store.enableAlerts()}>
+              <span class="set-icon"><${Icon} name="bell" size=${16} /></span>
+              <span class="set-label">Alerts on this phone${store.alertStatus && html`<small id="alert-status">${store.alertStatus}</small>`}</span>
+              <span class="set-value">${alerts}</span></button>
+            <${Install} store=${store} />
+          </div>
+          <${About} store=${store} />
+          <div class="set-list">
+            <button id="forget" type="button" class="set-row set-danger" onClick=${() => store.forget()}>
+              <span class="set-icon"><${Icon} name="leave" size=${16} /></span>
+              <span class="set-label">Forget this browser</span></button>
           </div>
         </div>
-        <div class="settings-actions">
-          <${Install} store=${store} />
-          <button id="alerts" type="button" class="btn btn-quiet" onClick=${() => store.enableAlerts()}><${Icon} name="bell" size=${16} /><span>Enable alerts</span></button>
-          ${store.alertStatus && html`<p id="alert-status" class="side-note">${store.alertStatus}</p>`}
+        <div class="settings-theme" hidden=${!themed}>
+          <${ThemePicker} store=${store} />
         </div>
-        <${About} store=${store} />
-        <button id="forget" type="button" class="btn btn-quiet btn-danger settings-forget" onClick=${() => store.forget()}><${Icon} name="leave" size=${16} /><span>Forget this browser</span></button>
       </div>
     </div>
   </dialog>`;

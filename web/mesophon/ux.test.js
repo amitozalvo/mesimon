@@ -4859,8 +4859,23 @@ try {
           }
           await settings.waitFor({ state: "visible" });
           assert.equal(await settings.locator("#about .hop").count(), 3);
-          for (const id of ["theme-follow", "alerts", "forget"])
+          // Settings is rows (T-1208); the Theme row opens the picker's own
+          // page, and its Back is the rows again.
+          for (const id of ["settings-theme", "density-compact", "alerts", "forget"])
             assert(await settings.locator(`#${id}`).isVisible(), id);
+          assert(!(await settings.locator("#theme-follow").isVisible()), "the picker is its own page");
+          await settings.locator("#settings-theme").click();
+          assert.equal(await page.locator("#settings-heading").textContent(), "Theme");
+          assert(await settings.locator("#theme-follow").isVisible());
+          assert(await settings.locator('.theme-tile[data-theme-id="nord"]').isVisible());
+          assert(!(await settings.locator("#forget").isVisible()));
+          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings-theme.png`) });
+          await settings.locator("#settings-back").click();
+          assert.equal(await page.locator("#settings-heading").textContent(), "Settings");
+          assert(await settings.locator("#forget").isVisible());
+          if (size === "phone")
+            assert.deepEqual(await settings.locator("button, input:not([type=checkbox])").evaluateAll((all) =>
+              all.filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44).map((n) => n.id || n.textContent)), []);
           await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings.png`) });
           await page.keyboard.press("Escape");
           await settings.waitFor({ state: "hidden" });

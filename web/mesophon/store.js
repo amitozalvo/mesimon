@@ -118,6 +118,8 @@ export class Store {
     this.sheetOpen = false;
     // The Settings dialog (T-548), opened from the sidebar's foot or the pill.
     this.settingsOpen = false;
+    this.settingsPage = "";
+    this.haptics = true;
     // The sidebar's board picker (T-510), open under the board's name.
     this.boardMenuOpen = false;
     // The board a Forget press in that menu asks about (T-673).
@@ -436,9 +438,15 @@ export class Store {
     this.forgetting = undefined;
     this.emit();
   }
+  // Settings' own pages (T-1208): its rows, or the Theme picker.
+  showSettingsPage(page) {
+    this.settingsPage = page === "theme" ? "theme" : "";
+    this.emit();
+  }
   openSettings(open) {
     if (this.settingsOpen === open) return;
     this.settingsOpen = open;
+    this.settingsPage = "";
     this.sheetOpen = false;
     this.boardMenuOpen = false;
     this.emit();
@@ -1512,6 +1520,8 @@ export class Store {
   }
   // A toast says what just happened, whichever view is open. The caller emits.
   say(text, tick, action) {
+    // Two ticks is "it arrived": the one moment the phone taps.
+    if (tick === "two" || tick === "picked") this.tap();
     clearTimeout(this.toastTimer);
     const toast = (this.toast = { id: (this.toast?.id || 0) + 1, text, tick, action });
     this.toastTimer = setTimeout(() => {
@@ -2772,6 +2782,29 @@ export class Store {
       /* In-memory choice still applies. */
     }
     this.emit();
+  }
+  // A tap when an answer or a prompt lands (T-1208), where the device has
+  // one to give: this browser's own choice, on until turned off.
+  get canTap() {
+    return typeof navigator !== "undefined" && typeof navigator.vibrate === "function";
+  }
+  setHaptics(on) {
+    this.haptics = !!on;
+    try {
+      localStorage.setItem("mesophon-haptics", this.haptics ? "on" : "off");
+    } catch {
+      /* In-memory choice still applies. */
+    }
+    if (this.haptics) this.tap();
+    this.emit();
+  }
+  tap() {
+    if (!this.haptics || !this.canTap) return;
+    try {
+      navigator.vibrate(12);
+    } catch {
+      /* A device that refuses stays silent. */
+    }
   }
   setDensity(density) {
     this.density = density === "comfortable" ? "comfortable" : "compact";
