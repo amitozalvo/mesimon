@@ -202,7 +202,9 @@ pub const CROWN_WAKES: &str = concat!(
      nothing sent (the receipt's prompt: none): its work goes on in the turn ask_agent's \
      words start, sent once; otherwise the \
      person resumes it with credits, another model or the limit's reset. A worker's raised \
-     hand comes down once its sentence reaches this session, and get_ticket on that ticket \
+     hand's sentence carries its reason in quotes, the worker's words. The hand comes down \
+     once the sentence reaches this session (one lowered before that reads hand since \
+     lowered), and get_ticket on that ticket \
      carries the reason as told_hand until the worker's next turn begins, it raises \
      another, or its ticket is archived, snoozed or deleted; a watch ending keeps it. \
      The board \

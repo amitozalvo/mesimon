@@ -45861,3 +45861,66 @@ those dialogs (menu through setup) is now `ui::draw_app_dialogs`, called from bo
 same place in the stack (above the page's own dialogs, under the merge dialog and `?`). Kept: the
 binding itself (the author's complaint was the hidden dialog, not the key). No golden moved.
 Test: `settings_draws_over_the_ticket_page` (fails without the change). Run: `cargo ut`.
+
+## A raised hand's reason rides the crown's wake (T-1266, 2026-11-15, "Worker raise hand crown interaction")
+
+**The person's decision, over T-414's "the hand's reason never rides the sentence"** (kept by
+T-469 and T-922). Asked whether the crown receives the reason or has to read the ticket, and to
+measure it.
+
+**Measured** (every raised-hand wake in crown transcripts under `~/.claude/projects`,
+2026-10-10 to 2026-11-15: 205 wakes, 167 of them one crown conversation on the simbly board):
+- The crown called `get_ticket` on the raised ticket after 182 of 205 wakes (89%; simbly 159 of
+  167, 95%), as its first tool call in 166, and `read_note` too in 117. Median 2.5 s from the
+  wake to the reason in context, with nobody between.
+- The answer was 3.3 KB at the median and the reason 146 chars of it: 771 KB read for 27 KB of
+  reasons, by a crown whose context was 338K tokens at the median.
+- After the read: 90 turns wrote on that ticket (the `seen` stamp was needed anyway), 46 only
+  read a note (the note id was needed), 46 did nothing more on it. So the sentence saves the
+  call in about a quarter of wakes, not all.
+- **14 of 182 reads (8%) found no reason at all**: `crownwake::told` copied it from
+  `Ticket.raised` as the sentence went, and a hand lowered before that (T-861's roads, the
+  worker's next turn) kept nothing while the wake still said a hand went up.
+
+**Shipped.**
+- `CrownWake.hand`: the reason as `sanitize_reason` left it, set when the hand goes up
+  (`Daemon::hear_hand`, through `owe_said`; the latest hand's where two went up before the
+  sentence, `restore_wakes` included). Persisted with the wake, `serde(default)`.
+- The sentence: `T-15 "add tests" raised its hand: "<reason>" (…) ∙ get_ticket key=…`
+  (`hand_said`: `scrub_text`, then its own `"` and `\` escaped, so where the worker's words end
+  is the board's to say). Only where the wake's cause IS the hand: a plan or a question folded
+  over it says its own clause and no reason (T-414 stands for those).
+- A hand that is down when the sentence goes says so first in the brackets: `hand since
+  lowered`. `told_hand` is unchanged (T-922): still read from the ticket at the telling, so such
+  a hand keeps none on `get_ticket`.
+- The crown's card line (`crown_wake_news`) and the feed keep the bare clause: the worker's own
+  card shows the reason.
+- `CROWN_WAKES`: the hand sentence now says the reason is in quotes, the worker's words, and
+  what `hand since lowered` is. `raise_hand`'s own tool text is unchanged.
+
+**Why the rule could go.** It kept one agent's words out of another's prompt with no person
+between. Since it was written: the title already rides the sentence and a worker retitles its
+own ticket; a linked board's crown's words arrive as a prompt (T-733); an autonomous crown's
+`ask_agent` words reach a worker unsent by a person; and the crown read the reason itself 2.5 s
+later. What stays different is prompt against tool result, which the fixed clause and the
+escaped quotes answer as they do for a title.
+
+**Refuted.** Keeping the rule and only storing the reason for `get_ticket` (fixes the 8%, saves
+no call). Dropping `get_ticket key=` from a hand's sentence (three quarters of the turns need
+the stamp or a note id). The reason on the crown's card line (no room under a title).
+
+**Tests.** Unit `a_hands_reason_rides_the_crowns_sentence_in_quotes` (quotes and escapes, the
+card's bare clause, `hand since lowered`, a question over the hand, a returned wake, a wake
+persisted before the field). E2e: `crown_e2e` pins the whole sentence, `told_hand_e2e` the
+reason in it and step 6 the lowered hand's sentence. Rig: **RH5** (new) with two checks,
+`hand_said:<word>` and `hand_unread`; RH2's expectation reworded.
+Live, once (2026-11-15, Claude Code 2.1.325, crown claude-opus-5-5 high, worker the rig's
+claude-sonnet-5-5): RH5 PASS in 25 s, woken with the reason in quotes, named its word with no
+`get_ticket` or `read_note` after the wake; RH2 PASS in 50 s, one `ask_agent`.
+Run: `cargo ut`; `crown_e2e::`, `told_hand_e2e::`, `raise_hand_e2e::`, `agent_tools_e2e::`,
+`mcp_e2e::` (128 passed, first run). `core/mcp.rs` changed, so the full suite owes one run after
+the merge.
+
+**Owed:** a CHANGELOG line at the next bump — **Changed:** when an agent the crown started
+raises its hand, the crown is told the reason at once instead of having to open the ticket for
+it.

@@ -132,6 +132,10 @@
 #              its box, some such line printed <text>, or no `!` line ran),
 #              hand:<word> (T-908: the worker raised its hand on its own
 #              ticket, the reason naming <word>, case aside),
+#              hand_said:<word> / hand_unread (T-1266: the crown's prompt
+#              saying the ticket raised its hand holds <word> in the
+#              reason's quotes; from that prompt on the crown made no
+#              get_ticket or read_note keyed to the ticket),
 #              keyed:<tool>:<ok|refused> (T-1089: a call of the worker's
 #              <tool> keyed to the crown's ticket was answered, or refused
 #              in the crown's words),
@@ -1889,12 +1893,28 @@ id = "RH2"
 title = "RH2 · a worker asks the crown a question with its raised hand: do the steps below"
 workspace = "worktree"
 brief = "Call the raise_hand tool on this ticket with the reason: Which word goes in the reply, rh2-teal or rh2-amber? Then end your turn with the single line: waiting. When an answer naming one of the two words arrives, reply with that single word and end your turn. Read no file and run no command."
-expect = "the crown starts the worker, which raises its hand with a question and ends its turn. The board wakes the crown, raised its hand, a sentence without the question, and lowers the hand. The crown reads the question on get_ticket (told_hand, T-922) and answers it with one ask_agent naming the first word offered, never asking the worker what it wants; the worker replies with that word."
+expect = "the crown starts the worker, which raises its hand with a question and ends its turn. The board wakes the crown, raised its hand, the question in quotes in the sentence (T-1266), and lowers the hand. The crown answers it with one ask_agent naming the first word offered (its get_ticket for the seen stamp carries the question too, told_hand, T-922), never asking the worker what it wants; the worker replies with that word."
 checks = ["road:mod", "started_by_crown", "hand:rh2-teal", "woke:raised", "crown:ask_agent=1", "crown_line:RH2 answered:rh2-teal", "reply:rh2-teal"]
 
   [[test.steps]]
   crown = "RH2: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH2 started. When the board wakes you because {key}'s agent raised its hand, answer its question with one ask_agent naming the first of the two words it offers, and end your turn with the single line: RH2 answered: and that word. When the board wakes you because {key}'s agent answered or finished, end your turn with the single line: RH2 seen."
   until = { stops = 2, state = "idle" }
+  wake = true
+
+# T-1266: the wake said a hand went up and never why, so the crown read the
+# ticket after 89% of 205 measured hands, a quarter of them for the reason
+# alone, and one read in twelve found the hand down and no reason.
+[[test]]
+id = "RH5"
+title = "RH5 · a worker's raised hand tells the crown its reason in the wake: do the steps below"
+workspace = "worktree"
+brief = "Call the raise_hand tool on this ticket with the reason: Nothing is needed from you; the word of the day is rh5-cobalt. Then end your turn with the single line: waiting. Read no file and run no command."
+expect = "the crown starts the worker, which raises its hand with a reason that asks nothing and ends its turn. The board wakes the crown, raised its hand, the reason in quotes in the sentence (T-1266). Asked only what the worker's hand said, the crown names the word from the sentence it was woken with, reading neither the ticket nor a note for it."
+checks = ["road:mod", "started_by_crown", "hand:rh5-cobalt", "woke:raised", "hand_said:rh5-cobalt", "hand_unread", "crown_line:RH5 heard:rh5-cobalt"]
+
+  [[test.steps]]
+  crown = "RH5: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH5 started. When the board wakes you because {key}'s agent raised its hand, end your turn with the single line: RH5 heard: and the word of the day its hand names."
+  until = { stops = 1, state = "idle" }
   wake = true
 
 [[test]]

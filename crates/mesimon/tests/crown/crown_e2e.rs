@@ -1158,7 +1158,8 @@ fn wake_rows(c: &mut TestClient, t: ulid::Ulid) -> Vec<mesimon_core::command::Pe
 /// the crown when the crown itself is idle. A turn that leaves nothing new
 /// is silent. Deliveries that pile up while the crown works coalesce into
 /// one sentence; a person's queued ask on the crown goes first; the hand's
-/// reason never rides the sentence; uncrowning drops what was owed.
+/// reason rides the sentence in quotes (T-1266); uncrowning drops what was
+/// owed.
 #[test]
 fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     // The quiet probe would otherwise flip a stub between working and idle
@@ -1393,7 +1394,7 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     });
     received(&mut c, a);
 
-    // ---- a hand: the sentence says a hand went up, never why ----------------
+    // ---- a hand: the sentence says a hand went up, and why (T-1266) ---------
     start(&mut c, sa);
     match c.send(
         Principal::Agent { session: ws1 },
@@ -1405,21 +1406,20 @@ fn the_board_wakes_the_crown_when_a_started_worker_delivers() {
     let rows = wake_rows(&mut c, a);
     assert_eq!(rows.len(), 1, "{rows:?}");
     let raised = format!(
-        "{kw1} \"mesimon-probe-71 worker\" raised its hand ∙ get_ticket key={kw1} for state and \
-         notes"
+        "{kw1} \"mesimon-probe-71 worker\" raised its hand: \"mesimon-secret-73 need the sandbox \
+         key\" ∙ get_ticket key={kw1} for state and notes"
     );
     assert_eq!(rows[0].text.as_deref(), Some(raised.as_str()));
     stop(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the hand's wake to land", || {
         lines_with(&raised) == 1
     });
-    assert_eq!(lines_with("mesimon-secret-73"), 0, "the reason never reaches the crown's pane");
     // Told, the crown holds the question and the worker's hand is down
     // (T-861): one card asks a person one thing, never two.
     received(&mut c, a);
     assert!(!c.board().ticket(w1).unwrap().hand_raised(), "the hand the crown was told of is down");
-    // …and the reason is the crown's to read where the sentence sent it
-    // (T-922): `told_hand` on its keyed `get_ticket`.
+    // …and the reason the sentence said stays the crown's to read (T-922):
+    // `told_hand` on its keyed `get_ticket`.
     let told = c.agent_read(sa, &kw1).unwrap().told_hand.map(|h| h.reason);
     assert_eq!(told.as_deref(), Some("mesimon-secret-73 need the sandbox key"));
 
@@ -10916,7 +10916,7 @@ fn the_crown_watches_a_ticket_a_person_started() {
     );
     h.one_turn(&mut c, sa);
 
-    // ---- 6. its hand goes up: raised, the reason never on the line ---------
+    // ---- 6. its hand goes up: raised, the reason on the line (T-1266) ------
     match c.send(
         Principal::Agent { session: ws },
         Command::AgentRaiseHand { reason: "mesimon-probe-94 the reason".into() },
@@ -10927,8 +10927,8 @@ fn the_crown_watches_a_ticket_a_person_started() {
     wait_until(std::time::Duration::from_secs(10), "the hand's wake", || {
         lines_with(&worker).len() == 3
     });
-    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} raised its hand")));
-    assert!(!std::fs::read_to_string(&got).unwrap().contains("mesimon-probe-94"));
+    assert!(lines_with(&worker)[2]
+        .starts_with(&format!("{worker} raised its hand: \"mesimon-probe-94 the reason\"")));
     assert!(!c.board().ticket(w).unwrap().hand_raised(), "told, the hand is down (T-861)");
     // A watched ticket's reason is the crown's to read as a started one's
     // (T-922).

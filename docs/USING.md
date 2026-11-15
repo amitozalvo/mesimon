@@ -610,7 +610,8 @@ merged worktree is reclaimed. Turned off, it holds from the crown's next call.
 **Settings › Crown › Watches tickets** (on by default) lets the crown watch a ticket you
 started yourself. The board then wakes the crown for that ticket as it does for the agents the
 crown started: when it delivers, finishes a turn, raises its hand or is merged, one sentence
-saying so is sent into the crown's session, and the watch ends at the merge. While it watches,
+saying so is sent into the crown's session (a raised hand's with the agent's reason in quotes),
+and the watch ends at the merge. While it watches,
 words the crown leaves for that ticket's agent go to it as they go to an agent the crown
 started (under autonomous mode) instead of waiting for your `^y`; when the watch ends, words
 still waiting go back to you. The agent otherwise stays yours: its questions and plans wait for

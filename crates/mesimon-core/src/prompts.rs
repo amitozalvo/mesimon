@@ -44,8 +44,8 @@ pub enum AgentPrompt {
     /// (T-414, T-469): the daemon's `crown_wake` rule, into the crown's own
     /// box. `{events}` is the clause list mesimon builds, each with what
     /// changed (`T-14 "fix the thing" delivered (merge_state ahead, column
-    /// REVIEW); T-15 "add tests" raised its hand`) and `{keys}` the keys
-    /// alone.
+    /// REVIEW); T-15 "add tests" raised its hand: "which fixture?"`, the
+    /// hand's reason in quotes since T-1266) and `{keys}` the keys alone.
     CrownWake,
     /// Another board's crown asked this board's crown (T-733): the words
     /// that land on the crown's card and go in as its next prompt. `{board}`

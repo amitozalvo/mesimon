@@ -11322,11 +11322,10 @@ impl Daemon {
         // reason is `state.raised` now, and the next telling keeps it.
         self.forget_told_hand(ticket);
         self.feed.board(by.actor(), "raise_hand", Some(ticket));
-        // A hand on an agent the crown started wakes the crown (T-414) —
-        // that a hand went up, never the reason: one agent's words do not
-        // start another's turn with no person between (T-413); the crown
-        // reads the reason through `get_ticket`.
-        self.note_crown_wake(ticket, WakeCause::Raised, None, None);
+        // A hand on an agent the crown started wakes the crown (T-414),
+        // with its reason in the sentence (T-1266, the person's decision
+        // over T-414's "never the reason").
+        self.hear_hand(ticket, &reason);
         Response::AgentRaised { reason, board_version: self.board_version }
     }
 

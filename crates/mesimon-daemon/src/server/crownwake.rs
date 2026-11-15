@@ -20,7 +20,10 @@
 //!    `ask_agent` words, an answer or a plan's accept rode has ended,
 //!    whatever it left behind; an ask's line names it and its word then
 //!    (`crownask`, T-938);
-//! 4. **raised its hand** — `raise_hand`, as before, and **asks a
+//! 4. **raised its hand** — `raise_hand`, with its reason in quotes
+//!    (T-1266: the crown read it on `get_ticket` a moment later in nine
+//!    wakes of ten, and one read in twelve found the hand already down
+//!    and no reason), and **asks a
 //!    question** — a worker it started stopped on `AskUserQuestion`, where
 //!    the board lets the crown answer (T-569); and **hit a usage limit**
 //!    (T-802) — its turn ended on the account's limit, which no turn of
@@ -388,11 +391,11 @@ impl WakeCause {
             WakeCause::Failed => "ended its turn on an error",
             WakeCause::Limited => "hit a usage limit",
             WakeCause::Raised => "raised its hand",
-            // Never the plan's words (T-414's rule for a hand's reason):
-            // the crown reads them with `get_ticket`.
+            // Never the plan's words (T-414): the crown reads them with
+            // `get_ticket`. A hand's one line is the exception (T-1266).
             WakeCause::Planned => "stops on a plan",
-            // Never the question's words (T-414's rule for a hand's
-            // reason): the crown reads them with `get_ticket`.
+            // Never the question's words (T-414): the crown reads them
+            // with `get_ticket`.
             WakeCause::Asked => "asks a question",
             WakeCause::Unstarted => "could not start",
             WakeCause::Promotion => "integration branch promoted to main",
@@ -467,6 +470,12 @@ pub(super) struct CrownWake {
     /// Board-level promotion detail; the worker key is the crown ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     promotion: Option<String>,
+    /// A raised hand's reason (T-1266), as the worker gave it when the hand
+    /// went up (`board::sanitize_reason`'s line): said in quotes after the
+    /// clause, and kept here, so a hand somebody lowered before the
+    /// sentence went still says why it was raised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hand: Option<String>,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -838,6 +847,7 @@ impl CrownWake {
             overrun,
             merge,
             promotion: None,
+            hand: None,
         }
     }
 
@@ -2565,6 +2575,17 @@ impl Daemon {
         }
     }
 
+    /// A worker raised its hand (T-414): the crown that claims it is woken
+    /// with the reason on the wake (T-1266), the latest hand's where two
+    /// went up before the sentence did.
+    pub(super) fn hear_hand(&mut self, worker: ulid::Ulid, reason: &str) {
+        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return };
+        if self.crown_claims(worker, crown, WakeCause::Raised) {
+            let reason = reason.to_string();
+            self.owe_said(crown, worker, WakeCause::Raised, |w| w.hand = Some(reason));
+        }
+    }
+
     /// A successful person promotion wakes the current crown with the exact
     /// target and repository legs that advanced.
     pub(super) fn note_promotion_wake(&mut self, target: &str, legs: &[String]) {
@@ -2968,10 +2989,11 @@ impl Daemon {
     /// (`WakeCause`'s order) comes down with its dialog (T-611), and a hand
     /// folded over a delivery is still the hand.
     ///
-    /// The reason stays with the crown that was told (T-922): the sentence
-    /// sent it to `get_ticket` for it, and the hand it would have read
-    /// there is the one coming down here. A hand somebody lowered before
-    /// the sentence went in keeps nothing: that person dealt with it.
+    /// The reason stays with the crown that was told (T-922): the hand it
+    /// would read on `get_ticket` is the one coming down here. A hand
+    /// somebody lowered before the sentence went in keeps nothing there:
+    /// that person dealt with it, and the sentence said so beside the
+    /// reason (T-1266, `hand since lowered`).
     pub(super) fn told(&mut self, crown: ulid::Ulid, telling: Telling, wakes: &[CrownWake]) {
         for wake in wakes.iter().filter(|wake| wake.reports_merge()) {
             if let Some(to) = wake.to.as_ref().filter(|to| to.merge == Some("merged")) {
@@ -3187,8 +3209,9 @@ impl Daemon {
     /// over every wake owed, in the order they happened, each with what
     /// changed in brackets. A worker's title and a column's name are user
     /// text headed for another process, so they cross `scrub_text`. A worker
-    /// no longer on the board contributes nothing. A hand's reason never
-    /// rides it (T-414): the crown reads it through `get_ticket`. A delivered
+    /// no longer on the board contributes nothing. A hand's reason rides it
+    /// in quotes (T-1266, `hand_said`), a worker's words like the title
+    /// before it; a plan's or a question's never do (T-414). A delivered
     /// branch that is not yet merged says who merges it (T-613, `merge:
     /// crown`), read as the sentence goes — the board's mode and train as
     /// they stand now, not as they stood when the wake was owed.
@@ -3223,6 +3246,15 @@ impl Daemon {
                 format!("{} {}", t.short_key, w.clause())
             };
             let mut changed = w.changed();
+            // The hand's own line (T-1266), in the crown's sentence alone:
+            // the card under the crown's title has the worker's card for it.
+            if let Some(reason) = w.hand.as_ref().filter(|_| titled && w.cause == WakeCause::Raised)
+            {
+                event.push_str(&format!(": {}", hand_said(reason)));
+                if t.raised.is_none() {
+                    changed.insert(0, "hand since lowered".to_string());
+                }
+            }
             let unmerged_branch =
                 w.to.as_ref().is_some_and(|to| to.merge.is_some_and(|m| m != "merged"));
             // An ask's turn that left commits is a delivery by another name
@@ -3247,6 +3279,14 @@ impl Daemon {
     }
 }
 
+/// A hand's reason as the crown's sentence says it (T-1266): scrubbed for
+/// another process and in quotes, its own quotes and backslashes escaped, so
+/// where the worker's words end is the board's to say and never theirs.
+fn hand_said(reason: &str) -> String {
+    let reason = mesimon_core::text::scrub_text(reason);
+    format!("\"{}\"", reason.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Put returned wakes before those owed meanwhile, folding each worker's
 /// newer news into its returned wake. Kept separate from delivery so the
 /// complete return fold can be checked without a live Codex box.
@@ -3259,6 +3299,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
             first.unstarted = w.unstarted.or(first.unstarted.take());
             first.failed = w.failed.or(first.failed.take());
             first.promotion = w.promotion.or(first.promotion.take());
+            first.hand = w.hand.or(first.hand.take());
         } else {
             owed.push(w);
         }
@@ -4607,6 +4648,54 @@ pub(in crate::server) mod tests {
         assert!(!b.d.hear_stepped(), "the answered turn already heard this merge");
         assert!(b.d.crown_wakes.is_empty());
         assert!(!b.d.crown_watched.contains(&w), "observing the merge still ends its watch");
+    }
+
+    /// T-1266: a hand's reason rides the crown's sentence, in quotes with
+    /// its own quotes escaped, as the worker gave it when the hand went up:
+    /// a hand lowered before the sentence went still says why, and that it
+    /// is down. The crown's card keeps the bare clause, a plan or a question
+    /// folded over the hand says no reason, and a returned wake keeps the
+    /// later hand's words.
+    #[test]
+    fn a_hands_reason_rides_the_crowns_sentence_in_quotes() {
+        let mut b = crate::server::crownask::ledger_tests::bed("hand-said");
+        let w = b.worker;
+        let reason = r#"I need "emulator yours" at C:\tmp"#;
+        b.d.board.tickets.iter_mut().find(|t| t.id == w).unwrap().raised =
+            Some(mesimon_core::board::Raised {
+                at: "2026-11-15T00:00:00Z".into(),
+                by: "agent".into(),
+                reason: reason.into(),
+            });
+        b.d.enter_wake(b.crown, w, WakeCause::Raised, None, None, Owed::default());
+        b.d.crown_wakes[0].hand = Some(reason.into());
+        let said =
+            r#"T-2 "T-2" raised its hand: "I need \"emulator yours\" at C:\\tmp" ∙ get_ticket"#;
+        let text = b.d.crown_wake_text();
+        assert!(text.starts_with(said), "{text}");
+        assert_eq!(b.d.crown_wake_news(), "T-2 raised its hand");
+        // Lowered before the sentence went: the reason stays, and says so.
+        b.d.board.tickets.iter_mut().find(|t| t.id == w).unwrap().raised = None;
+        let text = b.d.crown_wake_text();
+        assert!(text.contains(r#"at C:\\tmp" (hand since lowered) ∙ "#), "{text}");
+        // A question over the hand is the question's line.
+        let mut asked = b.d.crown_wakes[0].clone();
+        asked.fold(WakeCause::Asked, None, None);
+        let hand = std::mem::replace(&mut b.d.crown_wakes[0], asked);
+        let text = b.d.crown_wake_text();
+        assert!(text.contains("asks a question ∙ ") && !text.contains("emulator"), "{text}");
+        // A wake given back after a second hand went up keeps the second's.
+        let mut later = hand.clone();
+        later.hand = Some("the second ask".into());
+        let mut owed = vec![later];
+        restore_wakes(&mut owed, vec![hand]);
+        assert_eq!(owed[0].hand.as_deref(), Some("the second ask"));
+        // A wake owed by a build before the field reads as it did.
+        let old = CrownWake::new(w, WakeCause::Raised, None, None, Owed::default());
+        let old = serde_json::to_string(&old).unwrap();
+        assert!(!old.contains("hand"), "{old}");
+        b.d.crown_wakes[0] = serde_json::from_str(&old).unwrap();
+        assert!(b.d.crown_wake_text().starts_with(r#"T-2 "T-2" raised its hand ∙ "#));
     }
 
     /// T-1183: a turn the crown's ask rode that left commits says who

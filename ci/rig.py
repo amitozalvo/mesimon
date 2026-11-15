@@ -501,6 +501,21 @@ def keyed_calls(rows, tool, key):
             if (c.name or "").endswith(f"__{tool}") and c.input.get("key") == key and c.result]
 
 
+def hand_wake(rows, key):
+    """(sentence, reads) for the crown's first prompt saying `key` raised its
+    hand (T-1266): the board's sentence, and the crown's `get_ticket` and
+    `read_note` calls keyed to the ticket from that prompt on. `("", [])`
+    with no such prompt."""
+    for i, row in enumerate(rows):
+        if row.get("type") != "user" or row.get("isMeta"):
+            continue
+        said = "\n".join(texts(row)).strip()
+        if f'{key} "' in said and " raised its hand" in said:
+            return said, [c.tool for c in calls(rows[i:])
+                          if c.tool in ("get_ticket", "read_note") and c.key == key]
+    return "", []
+
+
 def tool_calls(rows):
     """(tool name, its result) for every tool use in a transcript, in order;
     a result is `{is_error, text}`, or None while none came."""
@@ -4161,7 +4176,8 @@ Reply with the single word ready and end your turn."""
             if rec is None and name not in ("woke", "woke_once", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing", "title_words", "title_never",
-                                            "title_is", "title_match", "described", "create_start"):
+                                            "title_is", "title_match", "described", "create_start",
+                                            "hand_said", "hand_unread"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -4910,6 +4926,19 @@ Reply with the single word ready and end your turn."""
                 # calls and results, so a re-read before the ask fails too.
                 ok, seen = receipt_ask_outcome(crown_all, key)
                 check(c, ok and arg == "accepted", seen)
+            elif name == "hand_said":
+                # `hand_said:<word>` (RH5, T-1266): the sentence that woke
+                # the crown says the hand's reason, <word> in its quotes.
+                said, _ = hand_wake(crown_rows, key)
+                _, _, quoted = said.partition(' raised its hand: "')
+                check(c, arg.lower() in quoted.lower(),
+                      f"woken with {said[:200]!r}" if said else "no prompt says the hand")
+            elif name == "hand_unread":
+                # `hand_unread` (RH5, T-1266): from that sentence on, the
+                # crown read the ticket and its notes not once.
+                said, reads = hand_wake(crown_rows, key)
+                check(c, bool(said) and not reads,
+                      f"read after the wake: {reads}" if said else "no prompt says the hand")
             elif name == "woke_once":
                 # `woke_once:<cause>` (LD1, T-1220): that wake for the ticket
                 # exactly once, where `woke` is membership.

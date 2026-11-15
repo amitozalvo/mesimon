@@ -1,8 +1,8 @@
 //! A raised hand's reason outlives its telling (T-922). The board wakes the
 //! crown for a hand a worker it started raises, with a sentence that names
-//! the hand and never its words (T-414), and lowers the hand once the
-//! sentence is in (T-861). The crown that sentence sends to `get_ticket`
-//! reads the reason there as `told_hand`: through a restart, replaced by the
+//! the hand and, since T-1266, its words in quotes, and lowers the hand
+//! once the sentence is in (T-861). The crown's `get_ticket` on that ticket
+//! reads the reason as `told_hand`: through a restart, replaced by the
 //! worker's next hand, gone at the worker's next turn, and only for the
 //! crown — another agent's keyed read is refused, the worker's own read
 //! carries none, and a hand a person lowered before the telling keeps
@@ -81,7 +81,7 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     wait_until(std::time::Duration::from_secs(10), "the hand's wake to land", || {
         lines_with(&raised) == 1
     });
-    assert_eq!(lines_with("mesimon-secret-81"), 0, "the reason never reaches the crown's pane");
+    assert_eq!(lines_with(&format!("{raised}: \"{first}\"")), 1, "the sentence says why (T-1266)");
     wait_until(std::time::Duration::from_secs(5), "the told hand to come down", || {
         !c.board().ticket(w).unwrap().hand_raised()
     });
@@ -150,6 +150,11 @@ fn the_crown_reads_the_reason_of_a_hand_it_was_told_of() {
     assert!(matches!(c.request(Command::LowerHand { id: w }), Response::Ok));
     stop(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "the owed wake to go", || wakes(&mut c, a) == 0);
+    // The sentence still says why the hand went up, and that it is down
+    // (T-1266): one read in twelve found such a wake with no reason at all.
+    wait_until(std::time::Duration::from_secs(10), "the lowered hand's sentence", || {
+        lines_with(&format!("{raised}: \"mesimon-secret-83 one more\" (hand since lowered)")) == 1
+    });
     assert_eq!(told(&mut c, sa, &kw), None, "the person dealt with it");
 
     // ---- 7. a new crown has heard nothing ---------------------------------

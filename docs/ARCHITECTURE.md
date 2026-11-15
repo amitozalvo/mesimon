@@ -1602,7 +1602,8 @@ correcting a misread tail rather than a new turn, and `RequiresAction` → `Runn
 dialog resolving mid-turn. Since T-861 (2026-10-19) the roads that deal with the AGENT rather
 than the card lower it too: stepping into its pane and out (`FocusStart`, `FocusEnd`), a person's
 or the crown's park (`SleepSession`, `sleep_agent`, the exit park), and the crown being told the
-hand went up (`crownwake::lower_told_hands`, at the wake's delivery); an autosleep, a bulk
+hand went up (`crownwake::told`, at the wake's delivery, whose sentence says the reason in
+quotes since T-1266); an autosleep, a bulk
 reclaim, a restart's park and a tier relaunch are nobody dealing with it and keep the mark. Unlike `woke_at` the board
 CURSOR lowers nothing (a glance is not an answer) and the page lowers it on the way OUT (clearing
 on arrival would blank the row before it could be read). `train::plan` skips a ticket with a hand
