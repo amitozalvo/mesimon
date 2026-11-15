@@ -27,4 +27,4 @@
  ── queued  shift+tab ───────────────────────────────────────────────────────────           █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
    ~/…/T-1143-ticket-page-rehaul | ⎇ msmn/T-1143-ticket-page-rehaul | Fable 5.1             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
    ⏵⏵ auto mode on
- ASK  enter queue ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued / immediately
+ ASK  enter queue ∙ esc cancel ∙ ^] keep draft ∙ tab expand ∙ shift+tab now / queued / immediately

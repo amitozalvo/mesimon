@@ -17171,27 +17171,32 @@ fn a_long_queued_ask_shows_three_rows_and_the_cut() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// A draft kept by `^]` (T-1262) fills the closed box as a queued ask does,
-/// in the live window and on the seat's box: its words where the field
-/// types them, `draft ∙ not sent` under them, no send or take-back keys.
-/// A queued ask outranks it.
+/// A draft kept by `^]` (T-1262, the author: "don't show expanded input if
+/// user didn't focus the input in ticket page, indicate there's a draft
+/// there while collapsed instead"): the closed box stays its rule, in the
+/// live window and on the seat's box, and the rule's key says `edit draft`.
+/// The words show only once Shift+Enter opens the field on them.
 #[test]
-fn a_kept_draft_shows_in_the_closed_box() {
+fn a_kept_draft_is_named_on_the_closed_rule() {
     let draft = |text: &str| crate::app::PageDraft { text: text.into(), images: Vec::new() };
     let (mut app, path) = app_live("tlive-draft", false);
     app.rich_keys = true;
+    let plain = render(&app, 120, 30);
     app.page_drafts.insert(ulid_n(3), draft("look at the diff first"));
     let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("look at the diff")), "collapsed: {lines:#?}");
     let y = lines
         .iter()
-        .position(|l| l.starts_with(" ❯  look at the diff first"))
-        .unwrap_or_else(|| panic!("the words in the box: {lines:#?}"));
-    assert!(lines[y - 1].starts_with(" -- shift+enter "), "the closed rule: {lines:#?}");
-    assert!(lines[y + 1].starts_with(" -- draft ∙ not sent --"), "{lines:#?}");
-    app.pending = vec![queued_words(3, &["T-3"], "commit it")];
-    let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.starts_with(" ❯  commit it")), "{lines:#?}");
-    assert!(!lines.iter().any(|l| l.contains("look at the diff")), "{lines:#?}");
+        .position(|l| l.starts_with(" -- shift+enter  edit draft "))
+        .unwrap_or_else(|| panic!("the rule says so: {lines:#?}"));
+    assert!(plain[y].starts_with(" -- shift+enter "), "the same row: {plain:#?}");
+    assert!(lines[29].contains("shift+enter edit draft"), "and the footer: {lines:#?}");
+    for (r, (a, b)) in plain.iter().zip(&lines).enumerate().take(29) {
+        if r != y {
+            let zone = |l: &String| l.chars().take(84).collect::<String>();
+            assert_eq!(zone(a), zone(b), "row {r} moved");
+        }
+    }
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 
     let mut app = app_graphite(fixture(false));
@@ -17201,8 +17206,12 @@ fn a_kept_draft_shows_in_the_closed_box() {
     app.page_drafts.insert(ulid_n(1), draft("write the tests first"));
     let lines = render(&app, 120, 30);
     let rule = box_rule(&plain).expect("the seat's box");
-    assert!(lines[rule + 1].starts_with("   › write the tests first"), "{lines:#?}");
-    assert!(lines[rule + 2].starts_with("   -- draft ∙ not sent"), "{lines:#?}");
+    assert!(lines[rule].contains("shift+enter  edit draft"), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("write the tests")), "{lines:#?}");
+    // The open field's footer offers the key that kept it.
+    ask_field_on(&mut app, ulid_n(1), "write the tests first", false, false);
+    let open = render(&app, 120, 30);
+    assert!(open[29].contains("^] keep draft"), "{:?}", open[29]);
 }
 
 /// What does not go in the box (T-1189): a held ask — the crown's words,

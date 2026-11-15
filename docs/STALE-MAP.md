@@ -45764,3 +45764,21 @@ already did. Snapshots still keep every asset's raw count, so no saved row chang
 ask (keep a day only once GitHub's late counts are in) was already on main from the T-1157
 simplify pass; the 2026-11-15 run that saved `mesimon`'s 2026-11-14 early ran this branch's
 older copy, before its rebase. That one row stays as saved.
+
+## A kept draft is named on the closed rule, and the field offers `^]` (T-1262 follow-up, 2026-11-15, the author: "advertise this option in hints (^] ^5 while editing)", "don't show expanded input if user didn't focus the input in ticket page, indicate there's a draft there while collapsed instead")
+
+**Changed.** The closed box no longer draws a kept draft's words (the `BoxedAsk` draft road of the
+block above is gone; `ui/ticket.rs` is back to T-1189's queued box alone). The draft's one sign is
+Shift+Enter's word: `ask_hint` reads `edit draft` under `Ctx::ticket_draft`, after `resend` and
+`edit the queued ask`, so the closed rule's cap and the page footer say `shift+enter edit draft`
+and no row moves. The `^]` press is now a keymap binding: `INPUT`'s `Verb::Back` on `Ctrl(']')`
+and `Ctrl('5')`, shown `^] keep draft` beside `esc cancel`, live only under `Ctx::page_asking`
+(the ask field on the ticket page); `App::key_input`'s `Verb::Back` arm keeps the words and runs
+the page's own `^]`. Shown as `^]` only, as every other `^]` binding is shown: `^5` is the legacy
+spelling of the same key.
+
+Tests: `ctrl_bracket_leaves_the_page_and_keeps_the_ask` asserts both hints;
+`ui::tests::a_kept_draft_is_named_on_the_closed_rule` (replaces
+`a_kept_draft_shows_in_the_closed_box`: no words, the rule and footer say it, the open field's
+footer offers `^]`). Goldens reminted for the footer word only: `ticket_live_ask`,
+`ticket_live_ask_shell`, `ticket_prompt`, the five `ticket_rail_*_100x24`. Run: `cargo ut`.

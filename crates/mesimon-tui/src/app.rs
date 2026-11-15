@@ -2129,8 +2129,8 @@ pub struct App {
     /// that instant, where the press was looking, not the title.
     pub box_refused: Option<Instant>,
     /// The ticket page's ask field left with `^]` (T-1262): its words and
-    /// pictures by ticket, drawn in the page's closed box and put back in
-    /// the field by the page's next Shift+Enter. Memory only.
+    /// pictures by ticket, named on the page's closed box (`edit draft`)
+    /// and put back in the field by the page's next Shift+Enter. Memory only.
     pub page_drafts: std::collections::HashMap<ulid::Ulid, PageDraft>,
     /// The keyboard's last letter was not a Latin one (T-458): outside a
     /// text field every character but an English letter or a digit is
@@ -8010,8 +8010,8 @@ impl App {
         *images = draft.images;
     }
 
-    /// The draft the ticket page's closed box shows (T-1262): words `^]`
-    /// kept, while no queued ask fills the box.
+    /// The draft `^]` kept for `ticket`'s page (T-1262).
+    #[cfg(test)]
     pub(crate) fn page_draft(&self, ticket: ulid::Ulid) -> Option<&str> {
         self.page_drafts.get(&ticket).map(|d| d.text.as_str())
     }
@@ -9108,6 +9108,15 @@ impl App {
                     ..
                 })
             ),
+            page_asking: matches!(self.screen, Screen::Ticket { .. })
+                && matches!(
+                    &self.mode,
+                    Mode::Input {
+                        purpose: InputPurpose::Prompt { target: AskTarget::Ticket(_), .. },
+                        ..
+                    }
+                ),
+            ticket_draft: self.ticket_page().is_some_and(|t| self.page_drafts.contains_key(&t)),
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             ticket_held: subject.is_some_and(|t| self.ticket_held(t)),
             ticket_unsent: subject.is_some_and(|t| self.unsent_of(t).is_some()),
@@ -13795,25 +13804,6 @@ impl App {
             }
         }
         let key = crate::keys::to_key_text(code, mods);
-        // `^]` (both spellings) in the ticket page's ask field leaves the
-        // page, as it does with no field open, and keeps the words (T-1262):
-        // the closed box shows them and the page's Shift+Enter puts them
-        // back. Esc still closes the field and drops them.
-        if let (
-            Some(Key::Ctrl(']' | '5')),
-            Screen::Ticket { .. },
-            InputPurpose::Prompt { target: AskTarget::Ticket(id), images, .. },
-        ) = (key, &self.screen, &purpose)
-        {
-            let text = buffer.as_str().to_string();
-            if text.trim().is_empty() && images.is_empty() {
-                self.page_drafts.remove(id);
-            } else {
-                self.page_drafts.insert(*id, PageDraft { text, images: images.clone() });
-            }
-            self.mode = Mode::Normal;
-            return self.handle_key_inner(code, mods);
-        }
         let ctx = self.ctx();
         let mut verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
         // The board's ask field is one line (T-1212): its Shift+Enter is
@@ -13835,6 +13825,23 @@ impl App {
             }
         }
         match verb {
+            // `^]` in the ticket page's ask field (T-1262): the page's own
+            // way back, the field's words and pictures kept for the page's
+            // next Shift+Enter (`restore_page_draft`). A blank field keeps
+            // nothing. Esc still closes the field and drops them.
+            Some(Verb::Back) => {
+                if let InputPurpose::Prompt { target: AskTarget::Ticket(id), images, .. } = &purpose
+                {
+                    let text = buffer.into_text();
+                    if text.trim().is_empty() && images.is_empty() {
+                        self.page_drafts.remove(id);
+                    } else {
+                        self.page_drafts.insert(*id, PageDraft { text, images: images.clone() });
+                    }
+                }
+                self.mode = Mode::Normal;
+                return self.handle_key_inner(code, mods);
+            }
             Some(Verb::Cancel) => {
                 if purpose == InputPurpose::SetMergeBranch {
                     self.return_to_settings(Verb::SetMergeBranch);
@@ -26774,6 +26781,11 @@ mod tests {
             }
             app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
             press(&mut app, 'x');
+            // The field's footer offers it, beside esc's cancel.
+            assert_eq!(
+                keymap::hint_for(Scope::Input, Verb::Back, &app.ctx()),
+                Some(("^]", "keep draft"))
+            );
             app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
             assert_eq!(app.screen, Screen::Board, "^{key} leaves the page");
             assert_eq!(app.mode, Mode::Normal);
@@ -26782,10 +26794,15 @@ mod tests {
             // The board's own field on the card does not take it.
             app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
             assert_eq!(field(&app), "");
+            assert_eq!(keymap::hint_for(Scope::Input, Verb::Back, &app.ctx()), None);
             app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
             assert_eq!(app.page_draft(id), Some("ship\nx"));
-            // Back on the page, Shift+Enter opens on the words.
+            // Back on the page, Shift+Enter says it opens on the words, and does.
             app.screen = page.clone();
+            assert_eq!(
+                keymap::hint_for(Scope::Ticket, Verb::Prompt, &app.ctx()),
+                Some(("shift+enter", "edit draft"))
+            );
             app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
             assert_eq!(field(&app), "ship\nx");
             assert_eq!(app.page_draft(id), None, "the field holds them now");

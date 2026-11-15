@@ -21,4 +21,4 @@
   ↓ 84 below
    › rebase onto main
    now  shift+tab
- ASK  enter send ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued / immediately
+ ASK  enter send ∙ esc cancel ∙ ^] keep draft ∙ tab expand ∙ shift+tab now / queued / immediately

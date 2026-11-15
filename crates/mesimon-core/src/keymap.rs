@@ -1621,6 +1621,13 @@ pub struct Ctx {
     /// agent, not a column's seats (T-853): a picture belongs to a ticket,
     /// so only there can one be pasted into the words.
     pub ask_ticket: bool,
+    /// The ask field is open on the ticket page (T-1262): `^]` leaves the
+    /// page with its words kept, where the board's field has no page to
+    /// leave.
+    pub page_asking: bool,
+    /// The ticket page keeps a draft its ask field was left with (T-1262):
+    /// Shift+Enter opens the field on it.
+    pub ticket_draft: bool,
     /// A claude is mid-turn in the subject ticket's shared checkout, so a
     /// press that would START or WAKE a session there stops and asks first
     /// (T-294). The TUI's own read of `quiet::is_working`, and a HINT: it
@@ -2180,6 +2187,10 @@ fn ask_hint(c: &Ctx) -> &'static str {
         "resend"
     } else if c.ticket_queued {
         "edit the queued ask"
+    } else if c.ticket_draft {
+        // Words `^]` kept when the page was left mid-ask (T-1262): the
+        // collapsed box's one sign of them, the field opens on them.
+        "edit draft"
     } else if c.ticket_plan_ready {
         // The agent is on its plan dialog (T-420): the field opens at
         // `accept plan`, a blank Enter presses the harness's default, words
@@ -8240,6 +8251,20 @@ static INPUT: &[Binding] = &[
         group: Group::Ticket,
         mutates: false,
         prio: 20,
+    },
+    Binding {
+        // The page's way back (T-1262), from inside its ask field: the
+        // field closes, its words are kept, and the page's Shift+Enter
+        // opens on them. Esc beside it still drops them.
+        keys: &[Key::Ctrl(']'), Key::Ctrl('5')],
+        verb: Verb::Back,
+        show: "^]",
+        hint: |_| "keep draft",
+        avail: |c| c.page_asking,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 21,
     },
     Binding {
         keys: &[Key::BackTab],
