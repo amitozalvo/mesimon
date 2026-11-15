@@ -2632,11 +2632,13 @@ fn conversation(
 
 /// Who wrote a message, as its head says: a raised hand (T-1155) says
 /// what it is behind the board's hand marks (`!` up, `¡` down), a notice
-/// nobody.
+/// nobody. A crown act's sentence fits `room` cells by its title alone
+/// (`fit_title`), so what was done and where stay on the row.
 pub(super) fn who_word(
     theme: &crate::theme::Theme,
     m: &crate::transcript::Message,
     kind: SessionKind,
+    room: usize,
 ) -> String {
     use mesimon_core::mesophon::RowKind;
     let agent = match kind {
@@ -2647,7 +2649,8 @@ pub(super) fn who_word(
     if let Some(c) = &m.crown {
         let tier = theme.glyph_tier();
         let mark = if c.road { crate::glyphs::bolt(tier) } else { crate::glyphs::crown(tier) };
-        return format!("{mark} {}", c.head);
+        let room = room.saturating_sub(mark.width() + 1);
+        return format!("{mark} {}", fit_title(&c.head, &c.title, room));
     }
     match (m.hand, m.kind) {
         (Some(raise), _) => {
@@ -2659,6 +2662,22 @@ pub(super) fn who_word(
         (_, RowKind::Notice) => String::new(),
         _ => agent.into(),
     }
+}
+
+/// `head` cut to `room` cells by shortening `title` inside it (T-1263): a
+/// long title pushed the act's object (`to DONE`) and its time off the
+/// row. The title keeps a few cells; what still does not fit is cut at the
+/// end, as any row is.
+pub(super) fn fit_title(head: &str, title: &str, room: usize) -> String {
+    /// The least of a title a shortened head keeps, its marker included.
+    const TITLE_FLOOR: usize = 12;
+    let over = head.width().saturating_sub(room);
+    let times = if title.is_empty() { 0 } else { head.matches(title).count() };
+    if over == 0 || times == 0 {
+        return truncate(head, room);
+    }
+    let keep = title.width().saturating_sub(over.div_ceil(times)).max(TITLE_FLOOR);
+    truncate(&head.replace(title, &truncate(title, keep)), room)
 }
 
 /// A message head's ink: a hand's, the crown's tint for the crown's
@@ -2732,9 +2751,9 @@ fn message_head(
     width: usize,
     now: u64,
 ) -> Line<'static> {
-    let who = who_word(theme, m, kind);
-    let who_style = head_ink(theme, m);
     let time = super::transcript::when(m.ms, now);
+    let who = who_word(theme, m, kind, width.saturating_sub(time.width() + 2));
+    let who_style = head_ink(theme, m);
     let steps = super::transcript::steps_word(m.steps, &m.tools);
     let mut head = Vec::new();
     if who.is_empty() {

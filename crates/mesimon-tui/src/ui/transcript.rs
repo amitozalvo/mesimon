@@ -131,10 +131,10 @@ fn words(
     let width = body.width as usize;
 
     // Who, when, and the steps that followed, at the right.
-    let who = super::ticket::who_word(theme, m, t.kind);
+    let time = when(m.ms, mesimon_core::clock::now_ms());
+    let who = super::ticket::who_word(theme, m, t.kind, width.saturating_sub(time.width() + 2));
     // `you` as bold as the agent's name, as the ticket page heads both.
     let who_style = super::ticket::head_ink(theme, m);
-    let time = when(m.ms, mesimon_core::clock::now_ms());
     let left = if who.is_empty() { time.clone() } else { format!("{who}  {time}") };
     let room = width.saturating_sub(left.width() + 2);
     let steps = truncate(&steps_word(m.steps, &m.tools), room);

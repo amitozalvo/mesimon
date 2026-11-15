@@ -45841,3 +45841,12 @@ one run after the merge.
 ticket reads in its conversation at the time it happened, as on the terminal's ticket page,
 instead of a banner over it — and the relay's `ship.sh` after it merges, since the hosted relay
 serves this page.
+
+**T-1263 follow-up, same day (the author: "truncated crown notifications in ticket page").** With the
+title beside the key, a long title ran the act's row past the zone and cut its object (`to
+DONE`) and its time off. `crownact::Line` (core since T-1264) and `Crowned` now carry the
+`title` the head spells (the phone wraps and ignores it), and
+`ui::ticket::who_word` takes the room the row leaves beside the time: `fit_title` shortens only
+the title (every place the head spells it, a 12-cell floor) and cuts the rest at the end only
+when even that does not fit. Same on the ticket page and the transcript dialog. No golden moved.
+Test: `a_long_title_shortens_inside_the_crown_s_row`. Run: `cargo ut`.

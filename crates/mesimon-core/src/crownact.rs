@@ -173,6 +173,9 @@ pub fn is_board_road(act: &CrownAct) -> bool {
 pub struct Line {
     pub ms: u64,
     pub head: String,
+    /// The other ticket's title as `head` spells it, the part a narrow row
+    /// shortens (T-1263); empty where the head names none.
+    pub title: String,
     pub road: bool,
     /// Words the act carries itself (the crown's answer), else empty.
     pub body: String,
@@ -211,24 +214,27 @@ pub fn lines_of(
             a
         };
         let (name, owns);
+        let mut title = String::new();
         let subject = if own && a.ticket != ticket {
             let Some(t) = board.ticket(a.ticket) else { continue };
             name = format!("{} “{}”", t.short_key, t.title);
+            title = t.title.clone();
             owns = format!("{name}'s");
             Subject { name: &name, own: &owns }
         } else {
             Subject { name: "this ticket", own: "this ticket's" }
         };
-        let head = match a.words.and(words_head(a)) {
-            Some(head) => head,
+        let (head, title) = match a.words.and(words_head(a)) {
+            Some(head) => (head, String::new()),
             None => match sentence(a, &subject) {
-                Some(s) => s,
+                Some(s) => (s, title),
                 None => continue,
             },
         };
         out.push(Line {
             ms: a.at_ms,
             head,
+            title,
             road: is_board_road(a),
             body: body(a).unwrap_or_default().to_string(),
             // The crown's own conversation says what started its turn.

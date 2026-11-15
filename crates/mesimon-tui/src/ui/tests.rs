@@ -15738,6 +15738,44 @@ fn the_crown_s_own_bolt_leaves_the_shin() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// A long title shortens inside the act's row (T-1263): the column it went
+/// to and the time stay on the row, the title keeps its start.
+#[test]
+fn a_long_title_shortens_inside_the_crown_s_row() {
+    let (mut app, path) = app_crowned_worker("tcrown-long");
+    app.board_mut().crown = Some(ulid_n(3));
+    let title = "Click the order / delivery cell in a table to open that order's / \
+                 delivery's side panel (v1 habit staff miss) — design the UX, MR when ready";
+    let t1 = app.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(1)).expect("T-1");
+    t1.title = title.into();
+    let mut acts = app.crown_acts.all().as_ref().clone();
+    for a in &mut acts {
+        (a.crown, a.ticket) = (ulid_n(3), ulid_n(1));
+    }
+    acts.truncate(1);
+    app.crown_acts.set(acts);
+    let _ = app.poll_page_transcript();
+    let lines = render(&app, 120, 30);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("♛ crown moved T-1 “Click the order"))
+        .unwrap_or_else(|| panic!("the act's row: {lines:#?}"));
+    assert!(row.contains("” to REVIEW  >1y"), "the column and time stay: {row}");
+    assert!(!row.contains("MR when ready"), "the title is what shortened: {row}");
+    // The fit alone: a title met twice shortens in both places, and one
+    // too long for any room is cut at the end like any row.
+    let fit = super::ticket::fit_title;
+    assert_eq!(fit("crown moved T-1 “abc” to DONE", "abc", 40), "crown moved T-1 “abc” to DONE");
+    let twice = fit("renamed “a long long title” “a long long title”", "a long long title", 40);
+    assert!(twice.width() <= 40 && !twice.contains("title"), "{twice}");
+    assert_eq!(twice.matches("“a long long").count(), 2, "both shortened: {twice}");
+    assert_eq!(
+        fit("crown moved T-1 “abcdefghijklmnop” to DONE", "abcdefghijklmnop", 10).width(),
+        10
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// Words across boards on the crown's own page (T-1162): the header says
 /// what they did, and the bolt runs between that word and the shin — up
 /// from the shin for words that left.

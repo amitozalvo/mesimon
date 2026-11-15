@@ -68,6 +68,9 @@ pub(crate) struct Message {
 pub(crate) struct Crowned {
     /// The sentence the head says, without its mark or time.
     pub head: String,
+    /// The other ticket's title as `head` spells it, the part a narrow
+    /// row shortens (T-1263); empty where the head names none.
+    pub title: String,
     /// Words across boards, which wear the bolt's mark instead.
     pub road: bool,
     /// An act's own row: its words are `ActLine::body`, by this index.
@@ -486,8 +489,13 @@ impl Transcript {
         // act whose words no prompt holds asks every later one.
         let mut keys: HashMap<usize, u64> = HashMap::new();
         for (i, a) in self.acts.iter().enumerate() {
-            let crowned =
-                |act| Crowned { head: a.head.clone(), road: a.road, act, cause: a.cause.clone() };
+            let crowned = |act| Crowned {
+                head: a.head.clone(),
+                title: a.title.clone(),
+                road: a.road,
+                act,
+                cause: a.cause.clone(),
+            };
             if let Some(w) = a.words {
                 let carried = out.iter().position(|m| {
                     m.kind == RowKind::Prompt

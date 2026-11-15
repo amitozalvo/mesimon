@@ -1505,6 +1505,7 @@ mod tests {
         let line = |ms: u64, head: &str| Line {
             ms,
             head: head.into(),
+            title: String::new(),
             road: false,
             body: String::new(),
             cause: None,
