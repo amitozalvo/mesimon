@@ -11,7 +11,8 @@ JSON lines to a file outside the repository:
                    clones and unique cloners that day. GitHub's counts arrive hours late,
                    so today and yesterday are shown but recorded only once two days old.
   kind "snapshot"  one per repository per run day: stars, forks, watchers, the 14-day
-                   referrers and popular paths, and every release asset's download count.
+                   referrers and popular paths, and every release asset's download count
+                   (the printed totals leave the `.sha256` checksums out).
 
 A day or a snapshot already in the file is never written again, so a second run on the
 same day adds nothing. The file is the author's record; it holds GitHub's aggregate counts
@@ -113,8 +114,13 @@ def read(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def install(name):
+    """A downloaded file that is an install, not the checksum fetched beside it."""
+    return not name.endswith(".sha256")
+
+
 def total(downloads):
-    return sum(sum(assets.values()) for assets in downloads.values())
+    return sum(n for assets in downloads.values() for name, n in assets.items() if install(name))
 
 
 def delta(old, new):
@@ -144,7 +150,7 @@ def report(repo, rows, raw, today, live):
                      f" downloads {delta(total(prev['downloads']), total(live['downloads']))}")
         moved = [(tag, name, prev["downloads"].get(tag, {}).get(name, 0), count)
                  for tag, assets in live["downloads"].items() for name, count in assets.items()
-                 if count != prev["downloads"].get(tag, {}).get(name, 0) and not name.endswith(".sha256")]
+                 if count != prev["downloads"].get(tag, {}).get(name, 0) and install(name)]
         for tag, name, old, new in moved[:8]:
             lines.append(f"    {name}: {delta(old, new)}")
         if len(moved) > 8:

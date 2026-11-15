@@ -45754,3 +45754,13 @@ its two-press discard) keeps nothing.
 Tests: `app::tests::ctrl_bracket_leaves_the_page_and_keeps_the_ask` (both spellings; the board's
 field ignores it; Shift+Enter restores; Esc drops); `ui::tests::a_kept_draft_shows_in_the_closed_box`
 (live window and seat box; a queued ask outranks it). Run: `cargo ut`. TUI-only, no e2e reaches it.
+
+## `ci/traffic.py`'s download totals count installs, not checksums (T-1129, 2026-11-15, the author: "fix both")
+
+The printed download total and its "since" change summed every release asset, so an install
+that fetched its `.sha256` beside the tarball counted twice (813 on 2026-11-15, 476 without the
+checksums). `install(name)` now leaves `.sha256` files out of the total, as the per-file list
+already did. Snapshots still keep every asset's raw count, so no saved row changes. The second
+ask (keep a day only once GitHub's late counts are in) was already on main from the T-1157
+simplify pass; the 2026-11-15 run that saved `mesimon`'s 2026-11-14 early ran this branch's
+older copy, before its rebase. That one row stays as saved.
