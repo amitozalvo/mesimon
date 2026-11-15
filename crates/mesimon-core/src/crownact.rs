@@ -92,7 +92,7 @@ pub fn words_head(act: &CrownAct) -> Option<String> {
 pub struct Subject<'a> {
     /// `this ticket`, or `T-14 “Fix login”`.
     pub name: &'a str,
-    /// `this ticket's`, or `T-14's`.
+    /// `this ticket's`, or `T-14 “Fix login”'s` (T-1263: the key alone reads as an id).
     pub own: &'a str,
 }
 

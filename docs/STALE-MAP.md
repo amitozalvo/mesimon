@@ -45782,3 +45782,19 @@ Tests: `ctrl_bracket_leaves_the_page_and_keeps_the_ask` asserts both hints;
 `a_kept_draft_shows_in_the_closed_box`: no words, the rule and footer say it, the open field's
 footer offers `^]`). Goldens reminted for the footer word only: `ticket_live_ask`,
 `ticket_live_ask_shell`, `ticket_prompt`, the five `ticket_rail_*_100x24`. Run: `cargo ut`.
+
+## A crown's start names its tier and the ticket's title, never an id (T-1263, 2026-11-15, the author: "♛ crown started T-437's agent on 01M3YWB6NR6KES3Y3KD828CNRY … what is the on X? ID is not readable for users, title should be alongside it")
+
+The `on X` of `crown started … agent on X` is the tier the agent started on. The daemon's
+`act_detail` wrote the ticket's stored tier pick, a person-made tier's ULID, into the
+`crown-acts.jsonl` line, and the page printed it verbatim. It now writes the tier's **name**: the
+live seat's launched tier (`SessionRecord::tier`) when it resolves, else `Book::of_ticket`, so a
+ticket with no pick says the default it started on instead of nothing. Lines already on disk keep
+the id: `transcript::acts_of` takes the `Book` and names a ULID-shaped `started` detail, or drops
+`on …` when this machine has no such tier (a deleted or teammate's tier). And on the crown's own
+page the possessive carries the title beside the key (`T-437 “Fix login”'s agent`), as the plain
+name already did (`crown moved T-437 “Fix login” to DONE`): a bare key reads as one more id.
+
+Tests: `the_crown_s_page_names_the_ticket_and_the_worker_s_says_why` (a named id, an unknown id,
+the titled possessive). Run: `cargo ut`, `cargo build --workspace`, `crown_e2e::`. `server.rs`
+changed outside tests, so the full suite owes one run after the merge.

@@ -3452,7 +3452,13 @@ impl App {
         let t = self.transcript.as_mut().expect("held above");
         if acts_moved || t.acts_seen != Some(self.crown_acts.version) {
             t.acts_seen = Some(self.crown_acts.version);
-            let lines = crate::transcript::acts_of(&self.board, &self.crown_acts.all(), t.ticket);
+            let lines = crate::transcript::acts_of(
+                &self.board,
+                &mesimon_core::tier::Book::new(&self.machine_tiers, &self.board)
+                    .with_agy(self.agy_switch),
+                &self.crown_acts.all(),
+                t.ticket,
+            );
             changed |= t.set_acts(lines, true);
         }
         if changed {
@@ -6490,11 +6496,15 @@ impl App {
         self.crown_acts.poll();
         let version = self.crown_acts.version;
         let newest = crate::transcript::session_of(&self.board, ticket).map(|s| s.id);
-        let lines = self
-            .page_transcripts
-            .values()
-            .any(|t| t.acts_seen != Some(version))
-            .then(|| crate::transcript::acts_of(&self.board, &self.crown_acts.all(), ticket));
+        let lines =
+            self.page_transcripts.values().any(|t| t.acts_seen != Some(version)).then(|| {
+                crate::transcript::acts_of(
+                    &self.board,
+                    &self.tiers(),
+                    &self.crown_acts.all(),
+                    ticket,
+                )
+            });
         for (id, kind, path, hand) in records {
             let Some(t) = self.page_transcripts.get_mut(&id) else { continue };
             let mut moved = t.poll(path.as_deref().map(|p| (kind, p)));

@@ -10133,7 +10133,16 @@ impl Daemon {
         match word {
             "moved" => t.column.clone(),
             "renamed" | "created" => t.title.clone(),
-            "started" => t.tier.clone().unwrap_or_default(),
+            // The tier's name, never its id (T-1263): the seat's own launch
+            // where it has one, else the tier the ticket starts on.
+            "started" => {
+                let book = self.tier_book();
+                self.board
+                    .live_agent(target)
+                    .and_then(|s| book.get(&s.tier))
+                    .unwrap_or_else(|| book.of_ticket(target))
+                    .name
+            }
             "workspace" => t.workspace.map(|w| w.word().to_string()).unwrap_or_default(),
             _ => String::new(),
         }

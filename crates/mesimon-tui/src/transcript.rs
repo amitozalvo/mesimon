@@ -99,6 +99,7 @@ const ACT_SLACK_MS: u64 = 5_000;
 /// did to every other ticket and the words the board carried into it.
 pub(crate) fn acts_of(
     board: &mesimon_core::board::Board,
+    tiers: &mesimon_core::tier::Book,
     acts: &[mesimon_core::crownact::CrownAct],
     ticket: ulid::Ulid,
 ) -> Vec<ActLine> {
@@ -109,11 +110,24 @@ pub(crate) fn acts_of(
         if !own && a.ticket != ticket {
             continue;
         }
+        // A start names its tier (T-1263): a line written before the
+        // daemon wrote the name holds the tier's id, which is named here,
+        // or left unsaid when this machine has no such tier.
+        let named;
+        let a = if a.act == "started" && a.detail.parse::<ulid::Ulid>().is_ok() {
+            named = ca::CrownAct {
+                detail: tiers.get(&a.detail).map(|t| t.name).unwrap_or_default(),
+                ..a.clone()
+            };
+            &named
+        } else {
+            a
+        };
         let (name, owns);
         let subject = if own && a.ticket != ticket {
             let Some(t) = board.ticket(a.ticket) else { continue };
             name = format!("{} “{}”", t.short_key, t.title);
-            owns = format!("{}'s", t.short_key);
+            owns = format!("{name}'s");
             Subject { name: &name, own: &owns }
         } else {
             Subject { name: "this ticket", own: "this ticket's" }
@@ -813,8 +827,34 @@ pub(crate) mod tests {
         }))
         .expect("a ticket");
         board.tickets.push(t);
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Book, MachineTiers, Tier};
+        let opus = ulid::Ulid(77).to_string();
+        let tiers = MachineTiers {
+            default_tier: None,
+            tiers: vec![Tier {
+                id: opus.clone(),
+                name: "Opus".into(),
+                provider: AgentProvider::ClaudeCode,
+                model: "opus".into(),
+                effort: Default::default(),
+                description: String::new(),
+            }],
+        };
         let crown = ulid::Ulid(1);
+        let started = |at_ms, detail: &str| CrownAct {
+            at_ms,
+            crown,
+            ticket: worker,
+            act: "started".into(),
+            detail: detail.into(),
+            words: None,
+            cause: None,
+        };
         let acts = [
+            // An older line holds the tier's id: named, or left unsaid.
+            started(3, &opus),
+            started(4, &ulid::Ulid(78).to_string()),
             CrownAct {
                 at_ms: 5,
                 crown,
@@ -844,21 +884,24 @@ pub(crate) mod tests {
                 cause: None,
             },
         ];
-        let own = acts_of(&board, &acts, crown);
+        let own = acts_of(&board, &Book::new(&tiers, &board), &acts, crown);
         let heads: Vec<_> =
             own.iter().map(|a| (a.head.as_str(), a.road, a.cause.clone())).collect();
         assert_eq!(
             heads,
             vec![
-                ("crown merged T-14's branch", false, None),
+                ("crown started T-14 “Fix login”'s agent on Opus", false, None),
+                ("crown started T-14 “Fix login”'s agent", false, None),
+                ("crown merged T-14 “Fix login”'s branch", false, None),
                 ("the relay board's crown replied", true, None),
             ]
         );
-        assert_eq!(own[1].words, Some(words_key("cookie path stays")));
-        let theirs = acts_of(&board, &acts, worker);
-        assert_eq!(theirs.len(), 1);
-        assert_eq!(theirs[0].head, "crown merged this ticket's branch");
-        assert_eq!(theirs[0].cause.as_deref(), Some("after you asked the crown"));
+        assert_eq!(own[3].words, Some(words_key("cookie path stays")));
+        let theirs = acts_of(&board, &Book::new(&tiers, &board), &acts, worker);
+        assert_eq!(theirs.len(), 3);
+        assert_eq!(theirs[0].head, "crown started this ticket's agent on Opus");
+        assert_eq!(theirs[2].head, "crown merged this ticket's branch");
+        assert_eq!(theirs[2].cause.as_deref(), Some("after you asked the crown"));
     }
 
     #[test]
