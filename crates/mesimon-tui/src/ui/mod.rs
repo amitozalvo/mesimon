@@ -207,6 +207,10 @@ fn draw_screen(f: &mut Frame, app: &App) {
         if let Mode::PullRequests { ticket, idx } = &app.mode {
             prs::draw(f, app, *ticket, *idx);
         }
+        // `,` opens Settings here as on the board (T-717), so its dialogs
+        // are drawn here too: a mode open and not drawn takes keys unseen
+        // (T-1265).
+        draw_app_dialogs(f, app);
         // The merge dialog (T-431): the m flow's question, wait and answer,
         // over the page whose branch it is about.
         if let Some(d) = &app.merge_dialog {
@@ -301,6 +305,32 @@ fn draw_screen(f: &mut Frame, app: &App) {
     if let Mode::PullRequests { ticket, idx } = &app.mode {
         prs::draw(f, app, *ticket, *idx);
     }
+    draw_app_dialogs(f, app);
+    // The merge dialog, over the card whose branch it is about (T-697): the
+    // ticket page's, the same frame and words.
+    if let Some(d) = &app.merge_dialog {
+        dialog::draw_merge(f, app, d);
+    }
+    // The search picker, over the board it is a view of (T-349). Last of the
+    // dialogs and before the overlay: it is the biggest surface here, and
+    // nothing else may be open at the same time.
+    if let Mode::Search(s) = &app.mode {
+        if let Some((x, y)) = search::draw(f, app, s) {
+            f.set_cursor_position((x.min(f.area().width.saturating_sub(1)), y));
+        }
+    }
+    // The overlay is the last thing drawn on every screen: it answers a
+    // question about whatever is underneath it.
+    if app.help {
+        help::draw(f, app);
+    }
+}
+
+/// The dialogs a mode opens over whichever screen it was opened from: the
+/// menu, Settings and everything one level under it (T-1265). The board and
+/// the ticket page both draw them, so no mode takes keys under a page that
+/// hides it.
+fn draw_app_dialogs(f: &mut Frame, app: &App) {
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
     }
@@ -339,24 +369,6 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::Setup) {
         setup::draw(f, app);
-    }
-    // The merge dialog, over the card whose branch it is about (T-697): the
-    // ticket page's, the same frame and words.
-    if let Some(d) = &app.merge_dialog {
-        dialog::draw_merge(f, app, d);
-    }
-    // The search picker, over the board it is a view of (T-349). Last of the
-    // dialogs and before the overlay: it is the biggest surface here, and
-    // nothing else may be open at the same time.
-    if let Mode::Search(s) = &app.mode {
-        if let Some((x, y)) = search::draw(f, app, s) {
-            f.set_cursor_position((x.min(f.area().width.saturating_sub(1)), y));
-        }
-    }
-    // The overlay is the last thing drawn on every screen: it answers a
-    // question about whatever is underneath it.
-    if app.help {
-        help::draw(f, app);
     }
 }
 

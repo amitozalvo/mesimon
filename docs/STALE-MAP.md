@@ -45850,3 +45850,14 @@ DONE`) and its time off. `crownact::Line` (core since T-1264) and `Crowned` now 
 the title (every place the head spells it, a 12-cell floor) and cuts the rest at the end only
 when even that does not fit. Same on the ticket page and the transcript dialog. No golden moved.
 Test: `a_long_title_shortens_inside_the_crown_s_row`. Run: `cargo ut`.
+
+## Settings is drawn over the ticket page (T-1265, 2026-11-15, "settings accessible from ticket page hidden but interactable")
+
+`,` on the ticket page has opened Settings since T-717 (`keymap::TICKET`), and the mode-first
+`App::scope` routed every key to it, but `ui::draw_screen`'s ticket branch drew only its own
+dialogs (links, summary, PRs, merge) and returned: Settings, and every dialog one level under it
+(Usage, Prompts, Tiers, Boards, …), took keys under a page that hid them. The board's block of
+those dialogs (menu through setup) is now `ui::draw_app_dialogs`, called from both screens in the
+same place in the stack (above the page's own dialogs, under the merge dialog and `?`). Kept: the
+binding itself (the author's complaint was the hidden dialog, not the key). No golden moved.
+Test: `settings_draws_over_the_ticket_page` (fails without the change). Run: `cargo ut`.

@@ -1052,6 +1052,31 @@ fn golden_settings_120() {
     golden("settings_60x20", &narrow);
 }
 
+/// `,` on the ticket page opens Settings over the page, not under it
+/// (T-1265): a mode that takes the keys is drawn where they are pressed, and
+/// Esc leaves the page as it was.
+#[test]
+fn settings_draws_over_the_ticket_page() {
+    let mut app = app_graphite(fixture_archived());
+    app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
+    press(&mut app, ',');
+    assert_eq!(app.mode, Mode::Sections);
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("SETTINGS")), "the dialog's title: {rows:#?}");
+    for section in mesimon_core::keymap::SettingsSection::ALL {
+        assert!(rows.iter().any(|r| r.contains(section.name())), "{section:?}: {rows:#?}");
+    }
+    // One level down is drawn too: Usage's dialog from its section.
+    app.settings_section = mesimon_core::keymap::SettingsSection::Usage;
+    app.mode = Mode::Usage { idx: 0 };
+    let usage = render(&app, 120, 30);
+    app.mode = Mode::Normal;
+    let page = render(&app, 120, 30);
+    assert!(!page.iter().any(|r| r.contains("SETTINGS")), "{page:#?}");
+    assert_ne!(usage, page, "the usage dialog is drawn over the page");
+    assert_ne!(usage, rows, "and replaces the sections");
+}
+
 #[test]
 fn golden_codex_provider_and_existing_claude() {
     let mut board = fixture(false);
