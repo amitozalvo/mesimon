@@ -5362,6 +5362,24 @@ try {
           await swipe(page, banner, 0, -60);
           await until(page, () => document.querySelector("#awareness").hidden);
           assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
+          // A finished turn goes by itself after a few seconds (T-1268); a
+          // call for the person's input stays until it is answered or put away.
+          // The phone alone: the wait is the same at every size.
+          if (size === "phone") {
+          await alertOther();
+          await page.waitForTimeout(5400);
+          assert(await banner.isHidden(), "a finished turn's banner passes");
+          await page.evaluate(async () => {
+            const { showAlert } = await import("./awareness.js");
+            showAlert({ result: "awareness", ticket: "other", alert: true,
+              awareness: { phase: "waiting_for_input", headline: "T-OTHER · asks", deepLink: "#ticket=other" } },
+              "m2", () => {});
+          });
+          await page.waitForTimeout(5400);
+          assert(await banner.isVisible(), "a call for input stays");
+          await page.locator("#awareness button").nth(1).click();
+          assert(await banner.isHidden());
+          }
           // Zero and one ticket snapshots; selected identity falls back cleanly.
           await page.evaluate(() => {
             fixture.tickets = [];

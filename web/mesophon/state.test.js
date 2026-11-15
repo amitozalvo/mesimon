@@ -169,6 +169,14 @@ test("awareness alerts follow daemon phases and silence the visible ticket", asy
   }
 });
 
+test("a finished turn's banner passes by itself; a call for the person stays (T-1268)", async () => {
+  const { passes } = await import("./awareness.js");
+  assert.equal(passes("completed"), true);
+  for (const phase of ["waiting_for_approval", "waiting_for_input", "failed"]) {
+    assert.equal(passes(phase), false, phase);
+  }
+});
+
 test("dialog and approval receipts preserve drafts and never imply execution", () => {
   const sessions = new Sessions();
   const entry = sessions.get("board-a", ticket("one", "session-a"));

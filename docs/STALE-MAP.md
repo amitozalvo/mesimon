@@ -45924,3 +45924,15 @@ the merge.
 **Owed:** a CHANGELOG line at the next bump — **Changed:** when an agent the crown started
 raises its hand, the crown is told the reason at once instead of having to open the ticket for
 it.
+
+## Remote Control's "Turn completed" banner goes by itself (T-1268, 2026-11-15, the author: "\"end turn\" notification doesn't dismiss itself, it should dismiss after a few seconds")
+
+**What shipped.** `web/mesophon/awareness.js`: the awareness banner for a `completed` phase hides
+itself after 5 s (`PASSING_MS`, `passes(phase)`). A new alert, Open, Dismiss or a swipe clears the
+timer as before. Only the in-page banner goes: the system `Notification` shown for the same alert
+stays in the phone's list, so a turn that ends while the phone is in a pocket is still there.
+
+**Kept on purpose.** "Approval needed", "Your input is needed" and "Agent failed" still stay until
+the person opens, dismisses or swipes them: those are calls for the person, and a finished turn is
+news. The browser check runs at the phone size only (it waits ~11 s; the timer does not depend on
+size). Mesophon is served by the relay, so the hosted page changes with the relay's next ship.

@@ -9,14 +9,28 @@ export function alertTitle(phase) {
   return { waiting_for_approval: "Approval needed", waiting_for_input: "Your input is needed",
     completed: "Turn completed", failed: "Agent failed" }[phase] || "Agent update";
 }
+// A finished turn is news, not a call (T-1268): its banner goes by itself
+// after a few seconds. A call for approval, for input or a failure stays
+// until it is opened, dismissed or swiped away.
+export const PASSING_MS = 5000;
+export function passes(phase) {
+  return phase === "completed";
+}
 let nativeNotice;
 let swipeArmed;
-export function clearAlerts() {
-  nativeNotice?.close();
-  nativeNotice = undefined;
+let passTimer;
+// Only the banner: a system notice stays in the phone's list until read.
+function hideBanner() {
+  clearTimeout(passTimer);
+  passTimer = undefined;
   const banner = document.getElementById("awareness");
   banner.hidden = true;
   banner.replaceChildren();
+}
+export function clearAlerts() {
+  nativeNotice?.close();
+  nativeNotice = undefined;
+  hideBanner();
 }
 export function showAlert(reply, visibleTicket, navigate) {
   if (!shouldAlert(reply, visibleTicket)) return;
@@ -36,6 +50,7 @@ export function showAlert(reply, visibleTicket, navigate) {
   dismiss.onclick = clearAlerts;
   banner.append(open, dismiss);
   banner.hidden = false;
+  if (passes(reply.awareness.phase)) passTimer = setTimeout(hideBanner, PASSING_MS);
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   try {
     const notice = nativeNotice = new Notification(alertTitle(reply.awareness.phase), {
