@@ -10,6 +10,44 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.20 — 2026-11-15
+
+An ask you leave half-written on the ticket page is kept, and Remote Control
+types like a chat on a computer. Nothing changes a state file's format.
+
+### Added
+
+- **`^]` leaves the ticket page mid-ask and keeps your words.** The closed box
+  says `draft ∙ not sent`, and the next Shift+Enter puts the draft back. The
+  ask field's hints offer it.
+- **A refused Shift+Enter shakes its key.** When someone else's words are held
+  in the agent's box, the press no longer does nothing silently.
+- **In Remote Control, a tap copies inline code** and a step's argument.
+
+### Changed
+
+- **`^r` picks a tier only while you type**: in the new-ticket field, the ask
+  field and the editor. A blank ask with a pick switches the tier alone. On the
+  board and the ticket page `^r` no longer switches a tier by accident.
+- **Remote Control's Enter sends on a computer**, and Shift+Enter breaks the
+  line. A phone's Return still starts a new line.
+- Remote Control's Turn completed banner goes by itself after 5 seconds.
+  Approval, input and failure banners stay until you handle them.
+- Remote Control shows the crown's acts on a ticket in its conversation, at
+  their time, instead of a banner over it.
+- A crown hears why a hand went up, in the reason's own words.
+
+### Fixed
+
+- **A background command no longer keeps an agent's card on working** for ten
+  minutes after its turn ended, when the command had a quote in it or a watch
+  ran over several lines.
+- Settings opened from the ticket page is drawn over the page, not hidden under
+  it while it takes your keys.
+- The wheel scrolls the ticket page's conversation while the ask field is open.
+- A crown's start names the agent's tier and the ticket's title, never an id,
+  and a long title no longer pushes the column and time off its row.
+
 ## v0.1.0-beta.19 — 2026-11-14
 
 A table view of the board, and Remote Control built out to its approved
