@@ -45716,3 +45716,21 @@ Tests: `asynchooks::a_reported_watch_on_several_lines_is_not_hook_work` (the mea
 shape; the same lines in another order stay hook work),
 `a_reported_shell_clipped_at_the_cap_is_matched_by_what_was_kept`, `register.test.ts`'s native
 task-ledger case. Run: `cargo ut`, `--test agents async_hook_e2e::`, `--test mods mod_plugin::`.
+
+## Remote Control: a tap copies inline code and a step's argument (T-1261, 2026-11-15, "remote control hard to copy links or commands")
+
+**Asked.** "it selects them on click but users don't get the option to copy." T-704 made inline
+code and a step's argument `user-select: all`: a tap selects the whole span, but a phone shows no
+Copy menu for a selection a tap made, so the span was selected and stuck.
+
+- **A tap copies the span** (`markdown.js::tapCopy`, on inline `code` and `.step-arg`): through
+  `copyText`, then the selection is cleared and the span carries `data-copied` for 1.5 s (a check
+  before it, the `--s3` surface; no saturated colour). Where the clipboard refuses, the span stays
+  selected, as before. `user-select: all` stays, so a long-press still takes it whole.
+- **A code span inside a link keeps the link's tap**: it follows the link. A link's own long-press
+  is the phone's Copy Link; a URL written in backticks is code, so a tap copies it.
+- **Not done:** a page toast for the copy. `Markdown` has no store, and the in-place check matches
+  the fenced block's Copy.
+
+Tests: `chatFlow` (a table's inline code and a step's argument reach a stubbed clipboard whole,
+the span marked copied); run on WebKit phone and Chromium desktop.

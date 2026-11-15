@@ -452,7 +452,8 @@ function Run({ run }) {
   let node = run.text.includes("\n")
     ? run.text.split("\n").flatMap((part, i) => (i ? [html`<br />`, part] : [part]))
     : run.text;
-  if (run.code) node = html`<code>${node}</code>`;
+  // A code span inside a link is the link's: a tap follows it.
+  if (run.code) node = run.href ? html`<code>${node}</code>` : html`<code onClick=${tapCopy}>${node}</code>`;
   if (run.strong) node = html`<strong>${node}</strong>`;
   if (run.em) node = html`<em>${node}</em>`;
   if (run.dead) node = html`<del>${node}</del>`;
@@ -474,6 +475,19 @@ export async function copyText(text) {
   } catch {
     return false;
   }
+}
+
+// A tap on a span drawn whole (inline code, a step's argument) copies it
+// (T-1261): a phone selects a `user-select: all` span on a tap but offers
+// no Copy for it. Copied, the span carries a check for 1.5 s; where the
+// clipboard refuses, the span stays selected, as before.
+export async function tapCopy(e) {
+  const node = e.currentTarget;
+  if (!(await copyText(node.textContent))) return;
+  getSelection()?.removeAllRanges();
+  node.setAttribute("data-copied", "");
+  clearTimeout(node.copiedTimer);
+  node.copiedTimer = setTimeout(() => node.removeAttribute("data-copied"), 1500);
 }
 
 // A box that scrolls sideways (a code block, a table) takes a finger's

@@ -2620,7 +2620,7 @@ select {
   color: var(--ink2);
 }
 /* One press takes the whole span (T-704): a path or a command is copied
-   whole, never word by word. */
+   whole, never word by word. A tap copies it (T-1261, markdown.js::tapCopy). */
 .markdown code {
   -webkit-user-select: all;
   user-select: all;
@@ -2879,6 +2879,21 @@ select {
   font-family: var(--mono);
   font-size: 0.75rem;
   color: var(--ink3);
+}
+/* Copied by a tap (T-1261): a check before the span for 1.5 s. */
+.markdown code[data-copied],
+.step-arg[data-copied] {
+  color: var(--ink);
+  background: var(--s3);
+}
+.markdown code[data-copied]::before,
+.step-arg[data-copied]::before {
+  content: "\2713\00a0";
+  color: var(--ink3);
+}
+.markdown code:not(a code),
+.step-arg {
+  cursor: copy;
 }
 /* Consecutive tool calls read as one block. */
 .chat-tool + .chat-tool {

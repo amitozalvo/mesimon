@@ -5,7 +5,7 @@
 import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
-import { Linked, Markdown } from "./markdown.js";
+import { Linked, Markdown, tapCopy } from "./markdown.js";
 import { keepAtEnd } from "./viewport.js";
 import { startLine } from "./lists.js";
 
@@ -144,7 +144,7 @@ function Said({ store, line }) {
 function Step({ text }) {
   const { name, arg } = stepParts(text);
   // The space between the spans keeps the line's text one line.
-  return html`<${Icon} name="terminal" size=${12} width=${2.2} />${name && html`<span class="step-name">${name}</span>${" "}`}<span class="step-arg">${arg}</span>`;
+  return html`<${Icon} name="terminal" size=${12} width=${2.2} />${name && html`<span class="step-name">${name}</span>${" "}`}<span class="step-arg" onClick=${tapCopy}>${arg}</span>`;
 }
 
 function Row({ row }) {

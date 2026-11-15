@@ -2850,6 +2850,17 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () =>
       document.querySelector(".code-copy")?.getAttribute("aria-label") === "Copied" ||
       getSelection().toString().includes("cargo ut --run"));
+    // A tap on inline code or a step's argument copies it whole (T-1261):
+    // a phone's tap selects such a span but offers no Copy for it.
+    await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => void (window.copiedText = text) },
+    }));
+    await chat.locator(".chat-reply .md-table code").click();
+    await until(page, () => window.copiedText === "cargo ut" && document.querySelector(".md-table code")?.hasAttribute("data-copied"));
+    const arg = chat.locator(".chat-tool .step-arg").last();
+    await arg.click();
+    assert.equal(await page.evaluate(() => window.copiedText), await arg.textContent(), "a step's argument is copied");
     // Scrolling up asks for the page before; it lands on top, and the row
     // the reader had in view stays where it was.
     await page.evaluate(() => (fixture.transcriptHold = true));
