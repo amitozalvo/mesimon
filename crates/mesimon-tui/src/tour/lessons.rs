@@ -442,19 +442,25 @@ pub(crate) static LESSONS: &[Lesson] = &[
     Lesson {
         group: "Agents",
         title: "Agent tiers",
-        about: "A tier is the agent, model and effort a ticket starts on. ^r steps the card \
-                through your tiers, so the hard bug gets the deep one and the rename the \
-                quick one. Settings, then Agents, makes them.",
+        about: "A tier is the agent, model and effort a ticket starts on. ^r in the field \
+                you type in steps through your tiers, so the hard bug gets the deep one and \
+                the rename the quick one. Settings, then Agents, makes them.",
         seed: board,
         show: &[
-            Say("^r gives the card the next tier"),
+            Say("o, then the title"),
+            K(Key::Char('o')),
+            Type("Rename the settings page"),
+            Say("^r gives it the next tier"),
             K(Key::Ctrl('r')),
             Wait(500),
             Say("and the one after"),
             K(Key::Ctrl('r')),
             Wait(500),
+            Say("enter files it on that tier"),
+            K(Key::Enter),
+            Wait(600),
         ],
-        ask: Some("press ^r on a card"),
+        ask: Some("press o, type a title, ^r, then enter"),
         done: Some(|w, _| w.board.tickets.iter().any(|t| t.tier.is_some())),
     },
     Lesson {

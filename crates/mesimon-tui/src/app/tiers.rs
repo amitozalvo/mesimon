@@ -126,8 +126,8 @@ impl App {
 
     // ------------------------------------------------------------ the cycle
 
-    /// Whether `^r` has somewhere to go right now: the open field's ring, or
-    /// the subject ticket's.
+    /// Whether `^r` has somewhere to go right now: the open field's ring.
+    /// Outside a field there is no `^r` (T-1269).
     pub(crate) fn tier_cycle_ctx(&self) -> bool {
         let book = self.tiers();
         match &self.mode {
@@ -143,33 +143,24 @@ impl App {
                 purpose: EditorPurpose::Ask { target: AskTarget::Ticket(t), .. },
                 ..
             }) => book.ring(*t).len() > 1,
-            Mode::Input { .. } | Mode::Editor(_) => false,
-            _ => self.subject().is_some_and(|t| book.ring(t).len() > 1),
+            _ => false,
         }
     }
 
-    /// `^r` on the board or the ticket page: the ticket's next tier, at
-    /// once — or, `back` (`^R`, T-1242), the one before. The status says
-    /// what the press did to the seat.
+    /// A blank send that carries only a field's `^r` pick (T-1269): the
+    /// ticket switches to it, as a send with words would, and the status
+    /// says what that does to the seat. The board and the page no longer
+    /// pick: a press there switched at once, so a stray `^r` moved the
+    /// ticket and a walk past a tier relaunched on it.
     ///
-    /// The step is laid on the card at once (T-1131), as a digit's tag is
-    /// (T-911): the reveal read the board before its landing and flashed
-    /// the tier the press was leaving.
-    pub(crate) fn cycle_tier(&mut self, back: bool) -> Result<()> {
-        // The tier as the daemon has it (T-812 review): a second press
-        // before the first's board lands steps from the first's laid pick.
-        let on = self.subject();
-        let laid = |e: &Edit| matches!(e, Edit::Tier { ticket, .. } if Some(*ticket) == on);
-        if !self.catch_up_unless_laid(laid)? {
-            return Ok(());
-        }
-        let Some(id) = self.subject() else { return Ok(()) };
+    /// The pick is laid on the card at once (T-1131), as a digit's tag is
+    /// (T-911), and the card names it for a moment.
+    pub(super) fn apply_field_tier(&mut self, id: ulid::Ulid, pick: &str) -> Result<()> {
         let book = self.tiers();
-        let current = book.of_ticket(id).id;
-        let Some(next) = book.step_from(id, &current, back) else { return Ok(()) };
-        let stored = book.stored_pick(&next.id);
-        let words = self.tier_press_words(id, &next);
-        match self.req(Command::SetTicketTier { id, tier: Some(next.id.clone()) }) {
+        let Some(to) = book.get(pick) else { return Ok(()) };
+        let stored = book.stored_pick(&to.id);
+        let words = self.tier_press_words(id, &to);
+        match self.req(Command::SetTicketTier { id, tier: Some(to.id.clone()) }) {
             Response::Err { message } => self.status = message,
             _ => {
                 self.lay(Edit::Tier { ticket: id, tier: stored });
@@ -181,7 +172,7 @@ impl App {
         Ok(())
     }
 
-    /// What `^r` did, in the seat's words: where there is no agent yet, it
+    /// What a tier pick does, in the seat's words: where there is no agent yet, it
     /// starts on the tier; a parked one wakes on it; a live one switches at
     /// its idle — or already runs it.
     fn tier_press_words(&self, ticket: ulid::Ulid, to: &Tier) -> String {

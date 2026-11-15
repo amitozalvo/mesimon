@@ -295,13 +295,20 @@ impl World {
             Command::ArchivedTickets => Response::Tickets {
                 tickets: self.board.archived_tickets().into_iter().cloned().collect(),
             },
-            Command::CreateTicket { column, title, .. } => self.create(&column, &title, ""),
-            Command::CreateTicketWithNote { column, title, text, tags, .. } => {
+            Command::CreateTicket { column, title, tier, .. } => {
+                let made = self.create(&column, &title, "");
+                if let Response::Created { id } = made {
+                    self.edit(id, |t| t.tier = tier);
+                }
+                made
+            }
+            Command::CreateTicketWithNote { column, title, text, tags, tier, .. } => {
                 let made = self.create(&column, &title, &text);
                 if let Response::Created { id } = made {
                     for tag in tags {
                         self.tag(id, tag.group, &tag.name);
                     }
+                    self.edit(id, |t| t.tier = tier);
                 }
                 made
             }

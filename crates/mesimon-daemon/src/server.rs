@@ -11058,7 +11058,7 @@ impl Daemon {
             Some(_) if !self.board.is_crowned(from) => {
                 return Response::Err {
                     message: "tier is the crown's to pick; a ticket filed here is for a person \
-                              to pick up, and the person picks its tier (^r on its card)"
+                              to pick up, and the person picks its tier"
                         .into(),
                 }
             }

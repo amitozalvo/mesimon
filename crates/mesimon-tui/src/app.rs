@@ -10331,10 +10331,9 @@ impl App {
             // The boards this one reaches (T-733).
             Verb::CrownLinks => self.open_boards_list(),
             Verb::CrownTour => self.open_tour(),
-            // `^r` on the board or the ticket page; the fields take theirs
-            // in `key_input` and `key_editor`.
-            Verb::TierNext => self.cycle_tier(false)?,
-            Verb::TierPrev => self.cycle_tier(true)?,
+            // `^r` is the fields' alone (T-1269), taken in `key_input` and
+            // `key_editor`.
+            Verb::TierNext | Verb::TierPrev => {}
             Verb::TierModelName => self.type_tier_model(),
             Verb::CrownBudget => {
                 if !self.catch_up()? {
@@ -14792,6 +14791,14 @@ impl App {
             }
         }
         let text = ed.body.as_str().trim().to_string();
+        // The field's blank send with a `^r` pick (T-1269), in the room: the
+        // switch alone.
+        if text.is_empty() && !accept_plan && ed.images.is_empty() {
+            if let (AskTarget::Ticket(ticket), Some(pick)) = (&target, &tier) {
+                self.mode = Mode::Normal;
+                return self.apply_field_tier(*ticket, pick);
+            }
+        }
         if text.is_empty() && !accept_plan {
             self.status = "nothing to ask".into();
             self.mode = Mode::Editor(ed);
@@ -16429,6 +16436,12 @@ impl App {
                         *queued = false;
                     }
                     return self.commit_prompt(purpose, title, Vec::new());
+                }
+                // A `^r` pick with no words is the switch alone (T-1269): the
+                // one place left to change a seated ticket's tier.
+                if let InputPurpose::Prompt { tier: Some(pick), .. } = &purpose {
+                    let pick = pick.clone();
+                    return self.apply_field_tier(ticket, &pick);
                 }
                 self.status = "nothing to send".into();
                 self.shake(ticket);
@@ -19491,47 +19504,16 @@ mod tests {
         assert!(app.pending_spawn_focus.is_none(), "the board asked after the key settles it");
     }
 
-    /// Two `^r` before the first's board lands step the tier twice (T-812
-    /// review), and a tag's colour and a tag's wearing cycle the same way.
+    /// A tag's colour and a tag's wearing, pressed twice before the first's
+    /// board lands, step twice (T-812 review).
     #[test]
     fn repeated_presses_each_step_once_while_the_board_lands_late() {
-        use mesimon_core::board::AgentProvider;
-        use mesimon_core::tier::{MachineTiers, Tier};
-        let tier = |id: &str| Tier {
-            id: id.into(),
-            name: id.into(),
-            provider: AgentProvider::ClaudeCode,
-            model: String::new(),
-            effort: Default::default(),
-            description: String::new(),
-        };
-        let tiers =
-            MachineTiers { default_tier: None, tiers: vec![tier("a"), tier("b"), tier("c")] };
         let mut board = board_three_columns();
         board.register_tag(1, "red").unwrap();
-        let (mut app, _) = App::for_test_with(board, theme(), |f| f.machine_tiers = tiers);
-        // `new` leaves the machine's tiers to the first refresh.
+        let (mut app, _) = App::for_test_with(board, theme(), |_| {});
         app.refresh().unwrap();
         let id = ulid::Ulid(1);
-        let ring = app.tiers().ring(id);
-        assert!(ring.len() >= 3, "{ring:?}");
-        let at = ring.iter().position(|t| t.id == app.tiers().of_ticket(id).id).unwrap();
-        let twice = ring[(at + 2) % ring.len()].id.clone();
         let hold = slow(&mut app);
-        hold.borrow_mut().pushes = 1;
-        app.pump().unwrap();
-        // The first press waits for the push's board; the second steps
-        // from the first's laid pick (T-1131) and waits for none.
-        release_late(&hold, LATE);
-        app.cycle_tier(false).unwrap();
-        app.cycle_tier(false).unwrap();
-        assert_eq!(app.tiers().of_ticket(id).id, twice, "drawn at once");
-        while !hold.borrow().replies.is_empty() {
-            release(&hold);
-            app.pump().unwrap();
-        }
-        assert!(app.laid.is_empty());
-        assert_eq!(app.tiers().of_ticket(id).id, twice, "two steps, not one");
         // The tag sheet: colour forward twice is two tints on; toggling
         // twice is on and off again, not on twice.
         app.tag_armed = Some(TagArm::new(Some(id)));
@@ -23724,12 +23706,13 @@ mod tests {
         }
     }
 
-    /// `^r`'s reveal names the tier the press landed on from its first
-    /// frame (T-1131): before its board lands, the card read the old board
-    /// and flashed the tier it was leaving. Quick presses step from the
-    /// laid tier without a wait, as quick digits do (T-911).
+    /// `^r` (T-443) is a pick that rides the composer's mint — the ring is
+    /// the tiers a person made, plus the default where it is a built-in
+    /// (T-562: `codex` is not in it), and a full turn is no pick — and on a
+    /// card it does nothing (T-1269): a press there switched the ticket at
+    /// once, so a stray one moved it.
     #[test]
-    fn ctrl_r_reveals_its_tier_before_the_board_lands() {
+    fn ctrl_r_picks_a_tier_only_in_the_composer() {
         use mesimon_core::board::AgentProvider;
         use mesimon_core::tier::{Effort, Tier};
         let mut board = board_three_columns();
@@ -23744,71 +23727,11 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
         app.cursor_row = Some(0);
-        // A wait would give up here and send nothing.
-        app.catch_up_wait = Duration::from_millis(20);
-        let one = ulid::Ulid(1);
-        let hold = slow(&mut app);
         let ctrl_r =
             |app: &mut App| app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
         ctrl_r(&mut app);
-        assert!(app.snapshot_in_flight(), "its board is out");
-        assert_eq!(app.card_tier_word(one).as_deref(), Some("quick"), "never the tier it left");
-        hold.borrow_mut().pushes = 1;
-        app.pump().unwrap();
-        ctrl_r(&mut app);
-        assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"), "the second steps on");
-        let picks: Vec<String> =
-            sent.borrow().iter().filter(|c| c.starts_with("SetTicketTier ")).cloned().collect();
-        assert_eq!(picks.len(), 2, "{picks:?}");
-        assert!(picks[0].contains("01QUICK") && !picks[1].contains("01QUICK"), "{picks:?}");
-        while !hold.borrow().replies.is_empty() {
-            release(&hold);
-            app.pump().unwrap();
-        }
-        assert!(app.laid.is_empty(), "the board that shows it retires the edit");
-        assert_eq!(app.board.ticket(one).unwrap().tier, None, "the default, stored as inherit");
-    }
-
-    /// `^r` (T-443): on a card it picks the ticket's next tier at once —
-    /// the ring is the tiers a person made, plus the default where it is a
-    /// built-in (T-562: `codex` is not in it), and the default comes back
-    /// as inherit — and in the composer it is a pick that rides the mint.
-    #[test]
-    fn ctrl_r_picks_a_tickets_tier_and_rides_the_composers_mint() {
-        use mesimon_core::board::AgentProvider;
-        use mesimon_core::tier::{Effort, Tier};
-        let mut board = board_three_columns();
-        board.tiers.push(Tier {
-            id: "01QUICK".into(),
-            name: "quick".into(),
-            provider: AgentProvider::ClaudeCode,
-            model: "sonnet".into(),
-            effort: Effort::High,
-            description: String::new(),
-        });
-        let (mut app, sent) = App::for_test_logged(board, theme(), false);
-        app.cursor_col = 0;
-        app.cursor_row = Some(0);
-        // The reply row off (T-1132), where the flash alone opens the card.
-        app.peek = false;
-        let ctrl_r =
-            |app: &mut App| app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
-        let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
-        ctrl_r(&mut app);
-        assert!(sent_contains(&sent, "SetTicketTier"));
-        assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
-        assert!(app.status.contains("quick") && app.status.contains("starts on"), "{}", app.status);
-        ctrl_r(&mut app);
-        assert_eq!(pick(&app), None, "back to the default, stored as inherit");
-        assert!(!sent_contains(&sent, "\"codex\""), "the built-in codex is not in the cycle");
-        // The press opens the card on the tier it landed on — the default
-        // too — for a moment, and the card at rest says nothing of it.
-        let one = ulid::Ulid(1);
-        assert!(app.peek_showing(one) && !app.peek, "opened, the preference untouched");
-        assert_eq!(app.card_tier_word(one).as_deref(), Some("claude"));
-        app.tier_flash = Some((one, Instant::now() - TIER_FLASH));
-        assert!(!app.peek_showing(one));
-        assert_eq!(app.card_tier_word(one), None, "the default is quiet at rest");
+        assert!(!sent_contains(&sent, "SetTicketTier"), "{:?}", sent.borrow());
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().tier, None, "the card is untouched");
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace: None,
@@ -23837,6 +23760,7 @@ mod tests {
             Mode::Input { purpose: InputPurpose::Create { tier: None, .. }, .. }
         ));
         ctrl_r(&mut app);
+        assert!(!sent_contains(&sent, "\"codex\""), "the built-in codex is not in the cycle");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             sent.borrow()
@@ -23847,9 +23771,9 @@ mod tests {
         );
     }
 
-    /// `^R` (T-1242): `^r` the other way round the same ring, on the card
-    /// and in the composer — and nothing where the terminal cannot tell it
-    /// from `^r`.
+    /// `^R` (T-1242): `^r` the other way round the same ring in the composer
+    /// — and nothing where the terminal cannot tell it from `^r`, nor on a
+    /// card (T-1269).
     #[test]
     fn ctrl_shift_r_steps_the_tier_back() {
         use mesimon_core::board::AgentProvider;
@@ -23871,16 +23795,9 @@ mod tests {
         let ctrl_shift_r = |app: &mut App| {
             app.handle_key(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap()
         };
-        let pick = |app: &App| app.board.ticket(ulid::Ulid(1)).unwrap().tier.clone();
-        ctrl_shift_r(&mut app);
-        assert!(!sent_contains(&sent, "SetTicketTier"), "no kitty tier, no ^R");
         app.rich_keys = true;
         ctrl_shift_r(&mut app);
-        assert_eq!(pick(&app).as_deref(), Some("01DEEP"), "back from the default wraps");
-        ctrl_shift_r(&mut app);
-        assert_eq!(pick(&app).as_deref(), Some("01QUICK"));
-        ctrl_shift_r(&mut app);
-        assert_eq!(pick(&app), None, "back to the default, stored as inherit");
+        assert!(!sent_contains(&sent, "SetTicketTier"), "a card picks no tier");
         app.mode = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace: None,
@@ -23903,6 +23820,21 @@ mod tests {
             app.mode
         );
         assert!(app.status.starts_with("deep"), "{}", app.status);
+        ctrl_shift_r(&mut app);
+        assert!(matches!(
+            &app.mode,
+            Mode::Input { purpose: InputPurpose::Create { tier: Some(t), .. }, .. } if t == "01QUICK"
+        ));
+        app.rich_keys = false;
+        ctrl_shift_r(&mut app);
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Create { tier: Some(t), .. }, .. }
+                    if t == "01QUICK"
+            ),
+            "no kitty tier, no ^R"
+        );
     }
 
     /// The tiers list makes a tier and its page edits it: a name typed in
@@ -26070,6 +26002,54 @@ mod tests {
         assert!(sent_contains(&sent, "01QUICK"), "{:?}", sent.borrow());
         assert_eq!(app.status, "restarted agent ∙ asked ∙ on quick");
         assert!(app.refused.is_none(), "the card does not shake");
+    }
+
+    /// T-1269: with `^r` gone from the board and the page, a blank Enter in
+    /// the ask field that carries a pick is the switch alone — in the field
+    /// and in the grown room — where it was "nothing to send" and the pick
+    /// was lost. The card names the tier from the first frame (T-1131).
+    #[test]
+    fn a_blank_ask_with_a_tier_pick_switches_the_seat_alone() {
+        use mesimon_core::board::AgentProvider;
+        use mesimon_core::tier::{Effort, Tier};
+        for grown in [false, true] {
+            let mut b = board_three_columns();
+            b.sessions.push(mesimon_core::board::SessionRecord::new(
+                uuid::Uuid::from_u128(7),
+                SessionKind::Claude,
+                ulid::Ulid(1),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            ));
+            b.tiers.push(Tier {
+                id: "01QUICK".into(),
+                name: "quick".into(),
+                provider: AgentProvider::ClaudeCode,
+                model: "sonnet".into(),
+                effort: Effort::High,
+                description: String::new(),
+            });
+            let (mut app, sent) = App::for_test_logged(b, theme(), false);
+            app.rich_keys = true;
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert!(app.ctx().prompting);
+            if grown {
+                app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+                assert!(matches!(app.mode, Mode::Editor(_)), "{:?}", app.mode);
+            }
+            app.handle_key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+            if grown {
+                app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+            } else {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            }
+            assert_eq!(app.mode, Mode::Normal, "grown: {grown}");
+            assert!(sent_contains(&sent, "SetTicketTier"), "{:?}", sent.borrow());
+            assert!(!sent_contains(&sent, "PromptSession"), "no words go: {:?}", sent.borrow());
+            assert!(app.status.contains("quick ∙ switches"), "{}", app.status);
+            assert_eq!(app.card_tier_word(ulid::Ulid(1)).as_deref(), Some("quick"));
+        }
     }
 
     /// T-434: `^p` in the composer — one-line and grown — starts the new

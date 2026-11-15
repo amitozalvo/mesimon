@@ -13401,8 +13401,7 @@ fn golden_tiers_list_both_scopes_and_a_page() {
     golden("tier_edit_model_name_120x30", &rows);
 }
 
-/// The ticket page says what the ticket runs on, beside the key that picks
-/// the next, and its empty seat's preview starts on it; a seat owed a
+/// The ticket page says what the ticket runs on (no key: T-1269), and its empty seat's preview starts on it; a seat owed a
 /// switch says from what to what, and on the board the open card wears the
 /// tier and the switch it owes.
 #[test]
@@ -13410,7 +13409,8 @@ fn golden_the_ticket_and_the_card_wear_the_tier() {
     let mut app = tier_app();
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("on coder ∙ ^r next")), "{rows:?}");
+    assert!(rows.iter().any(|r| r.contains("on coder")), "{rows:?}");
+    assert!(!rows.iter().any(|r| r.contains("^r")), "no tier key off the field: {rows:?}");
     assert!(rows.iter().any(|r| r.contains("starts on coder")), "{rows:?}");
     golden("ticket_tier_120x30", &rows);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };

@@ -45959,3 +45959,29 @@ nothing.
 Run: `node --test state.test.js assets.test.js` (68 passed); `ux.test.js` on chromium and webkit
 at desktop, tablet and phone, all passed. The first full run's shell was killed partway through
 chromium phone; that size was rerun alone and passed (named as a rerun, not a defect).
+
+## `^r` picks a tier only in the ask field and the editor (T-1269, 2026-11-15, the author: "mistakenly pressing ^r can switch tier silently and it's also not reliable as it can switch tiers while the user intention is to continue walk the tiers")
+
+- **What changed.** The board's and the ticket page's `TierNext`/`TierPrev` bindings are gone;
+  `^r`/`^R` live in the composer, the ask field and the editor, where they always were a pick
+  riding the words. `cycle_tier` became `App::apply_field_tier`: a blank Enter in the ask field
+  (or `^s` in the grown room) that carries a pick on a seated ticket is the switch alone
+  (`SetTicketTier`, the seat words, the card's 1 s tier flash), where it said `nothing to send`
+  and lost the pick. An empty or unprompted seat still starts on its brief with the pick.
+  `tier_cycle_ctx` is false outside a field.
+- **The hint shows only while prompting** (the author, on the proposal): the page's state row
+  drops `∙ ^r next`; the Settings Default tier and Tiers details, doctor's advice and the daemon's
+  crown-only tier refusal no longer name `^r`. The tour's Agent tiers lesson picks the tier in
+  the composer (`o`, a title, `^r`, Enter); the toy keeps a `CreateTicket*` tier.
+  `docs/REMOTE-CONTROL.md` says the ask field's `^r`. The phone already picked in its composer.
+- **Why.** A press on a card wrote the ticket at once: a stray `^r` moved the tier, and a walk
+  that paused past `TIER_SETTLE_MS` relaunched a live seat on a tier passed on the way.
+- **Refuted.** Keeping a board `^r` for empty seats only: one key with two reaches by seat state,
+  and the author asked for none outside the field.
+- **Checks.** `cargo ut` (72 + 17 + 773 + 877 + 24 + 1,470 passed, 0 failed);
+  `crown_e2e::the_crown_picks_a_tier_by_the_persons_words` (the refusal's literal). New
+  `app::a_blank_ask_with_a_tier_pick_switches_the_seat_alone` (field and room); keymap and app
+  tier tests now assert the board and page are inert. Goldens moved by words only:
+  `ticket_tier_120x30`, `settings_agents_120x30`, `settings_agents_60x20`. Not run: `tier_e2e`
+  (no daemon tier logic changed); the post-merge full suite (the `server.rs` change is the
+  refusal literal only, T-1192's precedent); no rig run (no agent-facing behaviour changed).

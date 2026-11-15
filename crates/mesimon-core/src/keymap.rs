@@ -860,9 +860,9 @@ pub enum Verb {
     DefaultTier,
     /// The Settings door to the tiers list (T-443).
     Tiers,
-    /// `^r` (T-443): the ticket's next agent tier — on the board and the
-    /// ticket page at once, in the composer and the ask field as a pick
-    /// that rides the draft or the words, like `^p`.
+    /// `^r` (T-443): the ticket's next agent tier, in the composer, the ask
+    /// field and the editor only (T-1269): a pick that rides the draft or
+    /// the words, like `^p`.
     TierNext,
     /// `^R` (T-1242): `TierNext` the other way round the ring, wherever
     /// `^r` is — off the legacy floor, so only where the terminal tells
@@ -2842,42 +2842,6 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // The ticket's next agent tier (T-443, user: "cycle them on ticket
-        // ... switch agent tier for each ticket without entering the
-        // session"). A Ctrl-letter because the same key works inside the
-        // ask field and the composer, which swallow every plain letter;
-        // `^r` (T-1192: `^n ^p` are the link walk's, the pair every list
-        // takes); `^R` below goes back (T-1242), where the terminal can
-        // spell it — on the legacy floor the ring only wraps. Applies
-        // at once: an empty seat starts on it, a parked one wakes on it, a
-        // live one switches at its next idle. Overlay-only on the board, the
-        // crown's reason: the open card wears the tier, and the status line
-        // says what the press did.
-        keys: &[Key::Ctrl('r')],
-        verb: Verb::TierNext,
-        show: "^r",
-        hint: |_| "tier",
-        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 0,
-    },
-    Binding {
-        // `^r` the other way round the ring (T-1242). Off the legacy floor
-        // on `^S`'s clause: a terminal without the kitty tier sends the bare
-        // `^r`, which steps forward — the same ring, the long way.
-        keys: &[Key::Ctrl('R')],
-        verb: Verb::TierPrev,
-        show: "^R",
-        hint: |_| "tier back",
-        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle && c.rich_keys,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 0,
-    },
-    Binding {
         // `Tab` on a card is the composer's `Tab` a ticket late: the card
         // grows into the description editor, the same dialog over the board
         // (2026-09-03, T-163). It took `needs you`'s key — the attention
@@ -3611,34 +3575,6 @@ static TICKET: &[Binding] = &[
         avail: |c| c.has_ticket && !c.ticket_archived && c.mcp_tools,
         class: Class::Plain,
         group: Group::Ticket,
-        mutates: true,
-        prio: 0,
-    },
-    Binding {
-        // The board's `^r` on the ticket page (T-443): same verb, same
-        // press. Drawn beside the tier on the state row, where it operates,
-        // so overlay-only in the footer.
-        keys: &[Key::Ctrl('r')],
-        verb: Verb::TierNext,
-        show: "^r",
-        hint: |_| "tier",
-        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 0,
-    },
-    Binding {
-        // `^r` the other way round the ring (T-1242). Off the legacy floor
-        // on `^S`'s clause: a terminal without the kitty tier sends the bare
-        // `^r`, which steps forward — the same ring, the long way.
-        keys: &[Key::Ctrl('R')],
-        verb: Verb::TierPrev,
-        show: "^R",
-        hint: |_| "tier back",
-        avail: |c| c.has_ticket && !c.ticket_archived && c.tier_cycle && c.rich_keys,
-        class: Class::Plain,
-        group: Group::Sessions,
         mutates: true,
         prio: 0,
     },
@@ -5972,7 +5908,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 format!("{here} ∙ machine: {} ∙ {}", c.tier_machine_default, c.tier_default_summary)
             } else if !c.pref_scope_board {
                 format!(
-                    "what a ticket starts on unless ^r picks its own ∙ {}",
+                    "what a ticket starts on unless it picks its own ∙ {}",
                     c.tier_default_summary
                 )
             } else {
@@ -5989,8 +5925,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             if c.pref_scope_board {
                 "this board's tiers, and its own versions of the machine's".into()
             } else {
-                "a name for a launch: provider, model, effort ∙ ^r cycles a ticket through them"
-                    .into()
+                "a name for a launch: provider, model, effort".into()
             }
         },
         avail: always,
@@ -9675,19 +9610,13 @@ mod tests {
     #[test]
     fn ctrl_shift_r_is_inert_without_rich_keys() {
         ambiguous_atoms_are_inert_without_rich_keys(Key::Ctrl('R'));
-        let tiers =
-            Ctx { has_ticket: true, tier_cycle: true, rich_keys: true, ..Default::default() };
-        for scope in [Scope::Board, Scope::Ticket] {
-            assert_eq!(resolve(scope, Key::Ctrl('R'), &tiers), Some(Verb::TierPrev), "{scope:?}");
-            assert_eq!(resolve(scope, Key::Ctrl('r'), &tiers), Some(Verb::TierNext), "{scope:?}");
-            let legacy = Ctx { rich_keys: false, ..tiers.clone() };
-            assert_eq!(resolve(scope, Key::Ctrl('r'), &legacy), Some(Verb::TierNext), "{scope:?}");
-            let archived = Ctx { ticket_archived: true, ..tiers.clone() };
-            assert_eq!(resolve(scope, Key::Ctrl('R'), &archived), None, "{scope:?}");
-        }
         let field =
             Ctx { prompting: true, tier_cycle: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Ctrl('R'), &field), Some(Verb::TierPrev));
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('r'), &field), Some(Verb::TierNext));
+        let legacy = Ctx { rich_keys: false, ..field.clone() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('R'), &legacy), None);
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('r'), &legacy), Some(Verb::TierNext));
         let room = Ctx {
             editing: true,
             editor_composing: true,
@@ -12223,10 +12152,15 @@ mod tests {
         assert_eq!(resolve(Scope::Ticket, Key::Ctrl('n'), &page), Some(Verb::LinkNext));
         assert_eq!(resolve(Scope::Ticket, Key::Ctrl('p'), &page), Some(Verb::LinkPrev));
         assert_ne!(resolve(Scope::Ticket, Key::Tab, &page), Some(Verb::LinkNext));
-        let tiers = Ctx { has_ticket: true, tier_cycle: true, ..Default::default() };
+        // A tier is picked only where words are typed (T-1269): every press
+        // on the board or the page switched the ticket at once, so a stray
+        // `^r` moved it and a walk to the third tier relaunched on the second.
+        let tiers =
+            Ctx { has_ticket: true, tier_cycle: true, rich_keys: true, ..Default::default() };
         for scope in [Scope::Board, Scope::Ticket] {
-            assert_eq!(resolve(scope, Key::Ctrl('r'), &tiers), Some(Verb::TierNext), "{scope:?}");
-            assert_ne!(resolve(scope, Key::Ctrl('n'), &tiers), Some(Verb::TierNext), "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('r'), &tiers), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('R'), &tiers), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::TierNext, &tiers), None, "{scope:?}");
         }
         let field = Ctx { prompting: true, tier_cycle: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Ctrl('r'), &field), Some(Verb::TierNext));

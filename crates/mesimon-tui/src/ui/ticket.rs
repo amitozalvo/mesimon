@@ -447,15 +447,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         ident_spans.extend(words.into_iter().map(|(t, st)| Span::styled(t, st)));
     }
     // The agent tier (T-443): what the ticket runs on, and while a switch is
-    // owed, from what to what — with the key that picks the next one beside
-    // it, where it operates.
+    // owed, from what to what. The key that picks one is the ask field's
+    // alone (T-1269), and named there.
     if !ticket.is_archived() {
         if let Some(clause) = app.tier_clause(ticket.id) {
-            let key =
-                keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::TierNext, &app.frame_ctx())
-                    .map(|(show, _)| format!(" ∙ {show} next"))
-                    .unwrap_or_default();
-            ident_spans.push(Span::styled(format!("{clause}{key}"), d2));
+            ident_spans.push(Span::styled(clause, d2));
         }
     }
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the

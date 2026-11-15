@@ -652,7 +652,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         "default tier",
         format!("{} ∙ {}", default.name, default.summary()),
     )
-    .advice("Settings > Agents > Default tier picks what a ticket starts on; ^r on a ticket picks its own. Existing and sleeping sessions keep their original provider.")];
+    .advice("Settings > Agents > Default tier picks what a ticket starts on. Existing and sleeping sessions keep their original provider.")];
     if let Some(line) = tiers_line(&book) {
         records.push(rec(Level::Note, "tiers", line));
     }

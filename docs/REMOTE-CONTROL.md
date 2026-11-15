@@ -190,9 +190,9 @@ out of reach. Its receipt uses the same ticks: a clock while your terminal start
 taken its first prompt. If the answer is lost, the browser asks what became of it and
 never starts it again.
 
-The start sheet lists the board's **agent tiers**, the ones **^r** cycles at your
-terminal, with the ticket's own picked and the picked one's model and effort under them.
-Pick another and the ticket keeps it, as **^r** does, and the agent starts on it. A
+The start sheet lists the board's **agent tiers**, the ones **^r** cycles in your
+terminal's ask field, with the ticket's own picked and the picked one's model and effort
+under them. Pick another and the ticket keeps it, and the agent starts on it. A
 sleeping agent is offered its own provider's tiers only.
 
 Your terminal refuses a start, and the page says why, when the ticket already has an
