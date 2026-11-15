@@ -7,7 +7,7 @@ import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
-import { foldWords, groupRows, mergePage, stepParts, tailAsk, withLines } from "./transcript.js";
+import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withLines } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { keyboardUp, viewportVars } from "./viewport.js";
@@ -1144,6 +1144,41 @@ test("news lines sit after what was held when they were said", () => {
   assert.deepEqual(names(withLines({ ...chat, floor: 0 }, [line(6, -1), line(7, 20)])), ["r0", "r10", "l7", "r20"]);
   assert.equal(withLines(undefined, [line(8, 0)]).length, 0);
   assert.equal(withLines(chat, []), chat.rows);
+});
+
+// T-1264: the crown's acts sit in the conversation by their time, as the
+// ticket page places them (T-1162); words the crown carried sit over their
+// prompt; one dated before an unread earlier page waits for it.
+test("the crown's acts sit among the rows by their time", () => {
+  const row = (at, ms, kind = "reply") => ({ at, ms, kind, text: `r${at}` });
+  const act = (ms, text, prompt = false) => ({ ms, text, ...(prompt ? { prompt } : {}) });
+  const names = (out) => out.map((r) => (r.kind === "act" ? r.act.text : r.kind === "said" ? r.line.text : r.text));
+  const chat = { conversation: "a", rows: [row(0, 100), row(10, 200, "prompt"), row(20, undefined, "tool"), row(30, 400)], floor: null };
+  const said = { kind: "said", line: { text: "l1" } };
+  const rows = [...chat.rows.slice(0, 3), said, chat.rows[3]];
+  assert.deepEqual(names(withActs({ ...chat, acts: [act(50, "a0"), act(150, "a1"), act(250, "a2"), act(500, "a3")] }, rows)),
+    ["a0", "r0", "a1", "r10", "r20", "l1", "a2", "r30", "a3"]);
+  // Words the act carried: over the first prompt dated at or after it,
+  // the clocks' slack allowed; with none held, by its time.
+  assert.deepEqual(names(withActs({ ...chat, acts: [act(120, "asked", true)] }, chat.rows)), ["r0", "asked", "r10", "r20", "r30"]);
+  assert.deepEqual(names(withActs({ ...chat, acts: [act(100000, "asked", true)] }, chat.rows)), ["r0", "r10", "r20", "r30", "asked"]);
+  assert.deepEqual(names(withActs({ ...chat, acts: [act(100000, "asked", true)] }, [...chat.rows, row(40, 96000, "prompt")])),
+    ["r0", "r10", "r20", "r30", "asked", "r40"], "the clocks' slack");
+  // An earlier page not read yet: an act before what is held waits.
+  assert.deepEqual(names(withActs({ ...chat, floor: 0, acts: [act(50, "a0"), act(150, "a1")] }, chat.rows)), ["r0", "a1", "r10", "r20", "r30"]);
+  assert.equal(withActs({ ...chat, acts: [] }, chat.rows), chat.rows);
+  assert.equal(withActs(chat, chat.rows), chat.rows, "an older host's page has none");
+});
+
+// T-1264: a page's acts replace what was held; an older host's keep none.
+test("each page brings the crown's acts whole", () => {
+  const acts = [{ ms: 1, text: "crown moved this ticket" }];
+  let chat = mergePage(undefined, {}, { conversation: "a", rows: [], from: 0, end: 0 });
+  assert.equal(chat.acts, undefined);
+  chat = mergePage(chat, tailAsk(chat), { conversation: "a", rows: [], from: 0, end: 0, acts });
+  assert.deepEqual(chat.acts, acts);
+  assert.deepEqual(mergePage(chat, tailAsk(chat), { conversation: "a", rows: [], from: 0, end: 0 }).acts, acts, "kept within the conversation");
+  assert.equal(mergePage(chat, tailAsk(chat), { conversation: "b", rows: [], from: 0, end: 0 }).acts, undefined, "not across one");
 });
 
 // T-626: the conversation's pages join by byte offset.

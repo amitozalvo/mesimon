@@ -14,21 +14,25 @@ const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", min
 // What the page holds of one conversation: its rows oldest first, where the
 // held part ends (`end`) and where the page before it does (`floor`, null at
 // the file's start).
+// The crown's acts on the ticket (T-1264) come whole with every page from
+// a host that reads them, and replace what was held; an older host's page
+// has none, and `acts` stays undefined.
 export function mergePage(chat, asked, reply) {
   const rows = Array.isArray(reply.rows) ? reply.rows : [];
   const floor = Number.isInteger(reply.next_before) ? reply.next_before : null;
   const same = chat && chat.conversation === reply.conversation;
+  const acts = Array.isArray(reply.acts) ? reply.acts : same ? chat.acts : undefined;
   if (asked.before != null) {
     // An earlier page joins only where the held part begins.
     if (!same || reply.end !== chat.floor) return chat;
-    return { ...chat, rows: [...rows, ...chat.rows], floor };
+    return { ...chat, rows: [...rows, ...chat.rows], floor, acts };
   }
   // What was written since: the rows past `from` are replaced, the rest kept.
   if (same && asked.after != null && reply.from <= chat.end)
-    return { ...chat, rows: [...chat.rows.filter((r) => r.at < reply.from), ...rows], end: reply.end };
+    return { ...chat, rows: [...chat.rows.filter((r) => r.at < reply.from), ...rows], end: reply.end, acts };
   // A new conversation, or more written than one page holds: start over at
   // the tail, and earlier pages are asked again as the reader scrolls.
-  return { conversation: reply.conversation, rows, end: reply.end, floor };
+  return { conversation: reply.conversation, rows, end: reply.end, floor, acts };
 }
 
 // The ask for the tail: only what was written since what is held.
@@ -131,6 +135,56 @@ export function withLines(chat, lines) {
   return out;
 }
 
+// How long before an act a prompt it carried may be dated: the act's time
+// is the host's clock, the row's the transcript's (T-1162's slack).
+export const ACT_SLACK_MS = 5000;
+
+// The crown's acts among the rows (T-1264), placed as the ticket page places
+// them (T-1162): each before the first row dated after it, one that carried
+// words before the first prompt dated at or after it, one dated after every
+// row at the end. One dated before what is held waits until the start of
+// the conversation is.
+export function withActs(chat, rows) {
+  const acts = chat?.acts;
+  if (!acts?.length) return rows;
+  // Each row's time: its own, else the one before it's. A news line keeps
+  // its place among the rows and dates nothing.
+  let last = -Infinity;
+  const times = rows.map((r) => (r.kind === "said" ? last : (last = r.ms ?? last)));
+  const first = times.find((t) => t > -Infinity);
+  const at = [];
+  acts.forEach((act, n) => {
+    if (chat.floor != null && !(first <= act.ms)) return;
+    const after = (i) => rows[i].kind !== "said" && times[i] > act.ms;
+    const prompt = (i) => rows[i].kind === "prompt" && times[i] + ACT_SLACK_MS >= act.ms;
+    let i = act.prompt ? rows.findIndex((_, i) => prompt(i)) : -1;
+    if (i < 0) i = rows.findIndex((_, i) => after(i));
+    at.push({ i: i < 0 ? rows.length : i, item: { kind: "act", act, n } });
+  });
+  if (!at.length) return rows;
+  at.sort((a, b) => a.i - b.i || a.item.n - b.item.n);
+  const out = [];
+  let k = 0;
+  rows.forEach((row, i) => {
+    for (; k < at.length && at[k].i === i; k++) out.push(at[k].item);
+    out.push(row);
+  });
+  for (; k < at.length; k++) out.push(at[k].item);
+  return out;
+}
+
+// What the crown did, in the crown's ink (T-1264): the ticket page's row,
+// its mark, its sentence and its time, then the crown's own words where it
+// answered, and what started its turn on a quiet line.
+const capital = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+function Act({ act }) {
+  return html`<div class=${`chat-row chat-act${act.road ? " chat-act-road" : ""}`}>
+    <p dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><time datetime=${new Date(act.ms).toISOString()}>${clock(act.ms)}</time></p>
+    ${act.body && html`<p class="chat-act-body" dir="auto">${act.body}</p>`}
+    ${act.cause && html`<p class="chat-act-cause" dir="auto">${capital(act.cause)}</p>`}
+  </div>`;
+}
+
 // One line of news: its words, its tick, its time, and a button while it
 // is offered. A start's line reads off the start as it goes.
 function Said({ store, line }) {
@@ -183,7 +237,7 @@ export function Chat({ store, entry, doing, tail }) {
   });
   useLayoutEffect(() => keepAtEnd(ref.current, () => entry?.chatFollowing !== false));
   const held = chat?.rows || [];
-  const rows = withLines(chat, store.linesOf(store.board?.current));
+  const rows = withActs(chat, withLines(chat, store.linesOf(store.board?.current)));
   // Away (T-698), the conversation is what this page last held or the
   // shelf's newest page: earlier pages wait for the terminal.
   const away = !store.live;
@@ -204,6 +258,7 @@ export function Chat({ store, entry, doing, tail }) {
     ${empty && html`<p class="chat-empty">${empty}</p>`}
     ${groupRows(rows).map((item) => {
       if (item.row?.kind === "said") return html`<${Said} key=${`said:${item.row.line.id}`} store=${store} line=${item.row.line} />`;
+      if (item.row?.kind === "act") return html`<${Act} key=${`act:${item.row.act.ms}.${item.row.n}`} act=${item.row.act} />`;
       const key = rowKey(rows, item.i);
       if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
       const shown = open.has(key);

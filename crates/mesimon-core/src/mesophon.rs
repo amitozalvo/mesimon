@@ -881,6 +881,66 @@ impl TranscriptRow {
     }
 }
 
+/// One thing the crown did, as a conversation says it (T-1264): the ticket
+/// page's line (`crownact::Line`) in a phone's words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActRow {
+    /// When it was done, epoch ms, the host's clock.
+    pub ms: u64,
+    /// The sentence: `crown moved this ticket to REVIEW`.
+    pub text: String,
+    /// Words across boards, which wear the bolt instead of the crown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub road: bool,
+    /// Words the act carried into this conversation: the row sits over the
+    /// prompt that holds them, the first one dated at or after it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prompt: bool,
+    /// Words the act carries itself: the crown's answer.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    /// What started the crown's turn: `after you asked the crown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+}
+
+/// The most a page's acts carry, serialized (T-1264): the newest that fit,
+/// beside a page of rows (`TRANSCRIPT_PAGE_BYTES`) under a sealed answer's
+/// 48 KiB.
+pub const TRANSCRIPT_ACTS_BYTES: usize = 8 * 1024;
+
+impl ActRow {
+    /// A conversation's acts as a phone is sent them: scrubbed, each part
+    /// capped, the newest that fit in `TRANSCRIPT_ACTS_BYTES`, oldest first.
+    pub fn page(lines: &[crate::crownact::Line]) -> Vec<Self> {
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        for l in lines.iter().rev() {
+            let Some(text) = step_line(&l.head) else { continue };
+            let row = ActRow {
+                ms: l.ms,
+                text,
+                road: l.road,
+                prompt: l.words.is_some(),
+                body: crate::text::cap_bytes(
+                    &crate::text::scrub_lines(&l.body),
+                    crate::crownact::DETAIL_BYTES,
+                )
+                .trim()
+                .to_string(),
+                cause: l.cause.as_deref().and_then(step_line),
+            };
+            bytes += serde_json::to_string(&row).map_or(usize::MAX, |s| s.len() + 1);
+            if bytes > TRANSCRIPT_ACTS_BYTES {
+                break;
+            }
+            out.push(row);
+        }
+        out.reverse();
+        out
+    }
+}
+
 /// The tool a step's line names (`Read src/main.rs`, `Bash(cargo test)`).
 pub fn step_tool(text: &str) -> &str {
     let end = text
@@ -971,6 +1031,13 @@ pub enum Reply {
         end: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_before: Option<u64>,
+        /// What the crown did to the ticket (T-1264), every one the board
+        /// keeps, oldest first, as the ticket page's conversation says them
+        /// (T-1162): the page places each by its time. Present, empty or
+        /// not, on every page a host reads live; absent from an older host
+        /// and from a page the shelf kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acts: Option<Vec<ActRow>>,
     },
     /// Where a command stands. A dialog answer (T-567) waits at
     /// `awaiting_delivery` until it settles as `answered` (the hook edge said
@@ -1432,6 +1499,43 @@ mod tests {
     /// The projection's newer facts are absent unless there is something to
     /// say, so an older browser reads the same bytes as before; and a reply
     /// without them, from an older host, still parses.
+    #[test]
+    fn a_page_s_acts_are_the_newest_that_fit_scrubbed_and_absent_from_an_older_host() {
+        use crate::crownact::Line;
+        let line = |ms: u64, head: &str| Line {
+            ms,
+            head: head.into(),
+            road: false,
+            body: String::new(),
+            cause: None,
+            words: None,
+        };
+        let mut lines: Vec<Line> =
+            (0..400).map(|n| line(n, &format!("crown moved this ticket to C{n}"))).collect();
+        lines.push(Line {
+            body: "yes\u{1b}[31m, go".into(),
+            cause: Some("after you asked the crown".into()),
+            words: Some(7),
+            ..line(400, "crown answered this ticket's question")
+        });
+        let rows = ActRow::page(&lines);
+        let bytes = serde_json::to_string(&rows).unwrap().len();
+        assert!(bytes <= TRANSCRIPT_ACTS_BYTES + 2, "{bytes}");
+        assert!(rows.len() < lines.len() && rows.windows(2).all(|w| w[0].ms < w[1].ms));
+        let last = rows.last().unwrap();
+        assert_eq!((last.ms, last.prompt, last.body.as_str()), (400, true, "yes[31m, go"));
+        assert_eq!(last.cause.as_deref(), Some("after you asked the crown"));
+        // The quiet fields are left out, and a page from an older host
+        // (or the shelf) reads with no acts at all.
+        let first = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(first.as_object().unwrap().len(), 2, "{first}");
+        let old: Reply = serde_json::from_str(
+            r#"{"result":"transcript","conversation":"c","rows":[],"from":0,"end":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(old, Reply::Transcript { acts: None, .. }));
+    }
+
     #[test]
     fn a_ticket_carries_tags_pickup_and_the_agent_s_step_only_when_known() {
         let bare = Ticket {

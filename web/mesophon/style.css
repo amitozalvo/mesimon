@@ -2966,6 +2966,41 @@ select {
   font-variant-numeric: tabular-nums;
   color: var(--ink4);
 }
+/* What the crown did (T-1264), in the conversation as on the ticket page
+   (T-1162): the news lane's size, in the crown's ink, its time quiet, the
+   crown's answer and what started its turn under it. */
+.chat-act {
+  align-self: center;
+  max-width: 92%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.75rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.chat-act > p:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px 6px;
+  color: var(--tag-5);
+}
+.chat-act time {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink4);
+}
+.chat-act-body {
+  color: var(--ink2);
+  white-space: pre-wrap;
+}
+.chat-act-cause {
+  color: var(--ink3);
+}
 .chat-said-err {
   color: var(--err);
 }

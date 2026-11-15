@@ -168,6 +168,77 @@ pub fn is_board_road(act: &CrownAct) -> bool {
     matches!(act.act.as_str(), ASKED_BOARD | REPLIED_BOARD | BOARD_ASKED | BOARD_REPLIED)
 }
 
+/// One crown act as a conversation places it (T-1162).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Line {
+    pub ms: u64,
+    pub head: String,
+    pub road: bool,
+    /// Words the act carries itself (the crown's answer), else empty.
+    pub body: String,
+    pub cause: Option<String>,
+    /// The key of the words it put in a conversation: that prompt is
+    /// marked, and the act is no row of its own.
+    pub words: Option<u64>,
+}
+
+/// The acts `ticket`'s conversation says (T-1162), oldest first: on a
+/// worker's, what the crown did to it and why; on the crown's own, what it
+/// did to every other ticket and the words the board carried into it.
+pub fn lines_of(
+    board: &crate::board::Board,
+    tiers: &crate::tier::Book,
+    acts: &[CrownAct],
+    ticket: ulid::Ulid,
+) -> Vec<Line> {
+    let mut out = Vec::new();
+    for a in acts {
+        let own = a.crown == ticket;
+        if !own && a.ticket != ticket {
+            continue;
+        }
+        // A start names its tier (T-1263): a line written before the
+        // daemon wrote the name holds the tier's id, which is named here,
+        // or left unsaid when this machine has no such tier.
+        let named;
+        let a = if a.act == "started" && a.detail.parse::<ulid::Ulid>().is_ok() {
+            named = CrownAct {
+                detail: tiers.get(&a.detail).map(|t| t.name).unwrap_or_default(),
+                ..a.clone()
+            };
+            &named
+        } else {
+            a
+        };
+        let (name, owns);
+        let subject = if own && a.ticket != ticket {
+            let Some(t) = board.ticket(a.ticket) else { continue };
+            name = format!("{} “{}”", t.short_key, t.title);
+            owns = format!("{name}'s");
+            Subject { name: &name, own: &owns }
+        } else {
+            Subject { name: "this ticket", own: "this ticket's" }
+        };
+        let head = match a.words.and(words_head(a)) {
+            Some(head) => head,
+            None => match sentence(a, &subject) {
+                Some(s) => s,
+                None => continue,
+            },
+        };
+        out.push(Line {
+            ms: a.at_ms,
+            head,
+            road: is_board_road(a),
+            body: body(a).unwrap_or_default().to_string(),
+            // The crown's own conversation says what started its turn.
+            cause: a.cause.as_ref().filter(|_| !own).map(cause_line),
+            words: a.words,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

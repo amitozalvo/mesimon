@@ -404,6 +404,17 @@ pub(super) struct Control {
 /// The most transcript pages read at once (T-626): a phone asks one at a
 /// time, so this is several phones, and a further ask is refused.
 const READING_MAX: usize = 4;
+
+/// A transcript page read off the main thread (T-626), and the crown's acts
+/// on its ticket read beside it (T-1264), said on the main thread.
+pub(super) struct TranscriptRead {
+    pub peer: String,
+    pub grant: BoardId,
+    pub command: u64,
+    pub reply: Reply,
+    pub ticket: ulid::Ulid,
+    pub acts: Vec<mesimon_core::crownact::CrownAct>,
+}
 /// How long a pane takes no other phone key after a phone's Escape
 /// (T-1218). An Escape followed closely by more bytes is one key to the
 /// agent's input decoder: Escape then `[Z` is Shift+Tab, which cycles
@@ -4704,44 +4715,58 @@ impl Daemon {
         if authorize(by, &Action::Read, &Resource::Session { id: rec.id }).denied() {
             return Some(Reply::Revoked);
         }
-        let Some(path) = crate::cost::transcript_of(rec).map(|(p, _)| p) else {
-            // Nothing written yet: an empty page, and the next ask reads on.
-            return Some(Reply::Transcript {
-                conversation: String::new(),
-                rows: Vec::new(),
-                from: 0,
-                end: 0,
-                next_before: None,
-            });
-        };
         if self.control.reading >= READING_MAX {
             return Some(Reply::Rejected { message: "transcript busy; try again".into() });
         }
         self.control.reading += 1;
+        let path = crate::cost::transcript_of(rec).map(|(p, _)| p);
         let (peer, grant, command) = (asker.0.to_string(), asker.1, asker.2);
         let (kind, tx) = (rec.kind, self.control.tx.clone());
+        let (ticket, acts_file) = (rec.ticket, self.paths.crown_acts_file());
         std::thread::spawn(move || {
-            let reply =
-                crate::agents::read_transcript_reply(kind, &path, ask, conversation.as_deref())
-                    .unwrap_or_else(|| Reply::Rejected {
-                        message: "transcript unavailable".into(),
-                    });
-            let _ = tx.send(Msg::TranscriptRead(peer, grant, command, reply));
+            let reply = match path {
+                Some(path) => {
+                    crate::agents::read_transcript_reply(kind, &path, ask, conversation.as_deref())
+                        .unwrap_or_else(|| Reply::Rejected {
+                            message: "transcript unavailable".into(),
+                        })
+                }
+                // Nothing written yet: an empty page, and the next ask reads on.
+                None => Reply::Transcript {
+                    conversation: String::new(),
+                    rows: Vec::new(),
+                    from: 0,
+                    end: 0,
+                    next_before: None,
+                    acts: None,
+                },
+            };
+            // The crown's acts on this ticket, or by it (T-1264): the page
+            // says them beside the rows, as the ticket page does (T-1162).
+            let acts = crate::crownacts::read(&acts_file)
+                .into_iter()
+                .filter(|a| a.ticket == ticket || a.crown == ticket)
+                .collect();
+            let read = Box::new(TranscriptRead { peer, grant, command, reply, ticket, acts });
+            let _ = tx.send(Msg::TranscriptRead(read));
         });
         None
     }
     /// A transcript page landed (T-626): answered to the peer that asked,
     /// while its grant still stands. Not kept as a receipt: a read is asked
     /// again, and a page is the largest answer there is.
-    pub(super) fn control_transcript_read(
-        &mut self,
-        peer: &str,
-        grant: BoardId,
-        command: u64,
-        reply: Reply,
-    ) {
+    pub(super) fn control_transcript_read(&mut self, read: TranscriptRead) {
+        let TranscriptRead { peer, grant, command, mut reply, ticket, acts } = read;
+        let peer = peer.as_str();
         self.control.reading = self.control.reading.saturating_sub(1);
         let Some(p) = self.control.peers.get(peer).filter(|p| p.grant == grant) else { return };
+        // Sentences need the board (a ticket's key and title, a tier's
+        // name), so they are said here, as the ticket page says them.
+        if let Reply::Transcript { acts: said, .. } = &mut reply {
+            let lines =
+                mesimon_core::crownact::lines_of(&self.board, &self.tier_book(), &acts, ticket);
+            *said = Some(api::ActRow::page(&lines));
+        }
         let reply = if self.control_granted(grant, p.device) { reply } else { Reply::Revoked };
         self.control.answer(peer, command, reply);
     }

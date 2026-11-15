@@ -241,6 +241,9 @@ function fixture() {
     // A transcript as the host reads it (T-626): rows oldest first, `at`
     // ten bytes apart, eight to a page; held asks wait for `releaseTranscript`.
     transcript: [],
+    // The crown's acts on the ticket (T-1264), sent whole with each page;
+    // undefined is an older host's page, which carries none.
+    acts: undefined,
     conversation: "conversation-a",
     transcriptAsks: [],
     transcriptHold: false,
@@ -253,7 +256,7 @@ function fixture() {
       const rows = within.slice(-8);
       const from = within.length > 8 ? rows[0].at : floor;
       return { result: "transcript", conversation: this.conversation, rows, from, end: top,
-        ...(from > 0 ? { next_before: from } : {}) };
+        ...(from > 0 ? { next_before: from } : {}), ...(this.acts ? { acts: this.acts } : {}) };
     },
     releaseTranscript() {
       for (const release of this.heldTranscript.splice(0)) release();
@@ -2931,6 +2934,46 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => document.querySelector("#chat").textContent.includes("Fresh start"));
     assert.equal(await rowCount(), 2);
     assert((await chat.textContent()).includes("Start of the conversation"));
+    // The crown's acts (T-1264): an older host's page says the crown's last
+    // touch over the conversation; one that reads the acts says each in the
+    // conversation at its time, as the ticket page does, and no banner.
+    await page.evaluate(() => {
+      fixture.tickets[0].crowned = { action: "moved", by: "T-3", at: Date.now() - 60000 };
+      fixture.update();
+    });
+    await page.locator("#crown-line").waitFor();
+    await page.evaluate(() => {
+      const t0 = Date.now() - 600000;
+      fixture.conversation = "conversation-c";
+      fixture.transcript = [
+        { at: 0, kind: "notice", text: "conversation cleared", ms: t0 },
+        { at: 10, kind: "prompt", text: "Crown's words", ms: t0 + 60000 },
+        { at: 20, kind: "reply", text: "On it", ms: t0 + 120000 },
+      ];
+      fixture.acts = [
+        { ms: t0 + 30000, text: "crown started this ticket's agent on Opus", cause: "after you asked the crown" },
+        { ms: t0 + 50000, text: "crown asked", prompt: true },
+        { ms: Date.now() - 60000, text: "crown moved this ticket to REVIEW" },
+      ];
+    });
+    await until(page, () => document.querySelectorAll("#chat .chat-act").length === 3);
+    assert.equal(await page.locator("#crown-line").count(), 0, "no banner over a conversation that says it");
+    assert.deepEqual(
+      await chat.locator(".chat-row:not(.chat-doing)").evaluateAll((rows) => rows.map((r) => r.querySelector("span")?.textContent ?? r.textContent)),
+      ["conversation cleared", "Crown started this ticket's agent on Opus", "Crown asked", "Crown's words", "On it", "Crown moved this ticket to REVIEW"],
+    );
+    assert.equal(await chat.locator(".chat-act-cause").first().textContent(), "After you asked the crown");
+    assert.equal(
+      await chat.locator(".chat-act > p:first-child").first().evaluate((n) => getComputedStyle(n).color),
+      await chat.locator(".chat-act .icon").first().evaluate((n) => getComputedStyle(n).color),
+      "the crown's ink, its mark and its words",
+    );
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-crown-acts.png`) });
+    await page.evaluate(() => {
+      delete fixture.tickets[0].crowned;
+      fixture.acts = undefined;
+      fixture.update();
+    });
     // The raw view is the pane's screen, the Terminal tab (T-1208); the
     // choice is remembered.
     assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true");

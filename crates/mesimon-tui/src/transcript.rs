@@ -76,81 +76,13 @@ pub(crate) struct Crowned {
     pub cause: Option<String>,
 }
 
-/// One crown act as a conversation places it (T-1162).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ActLine {
-    pub ms: u64,
-    pub head: String,
-    pub road: bool,
-    /// Words the act carries itself (the crown's answer), else empty.
-    pub body: String,
-    pub cause: Option<String>,
-    /// The key of the words it put in a conversation: that prompt is
-    /// marked, and the act is no row of its own.
-    pub words: Option<u64>,
-}
+// One crown act as a conversation places it (T-1162): core's, shared
+// with the phone's conversation (T-1264).
+pub(crate) use mesimon_core::crownact::{lines_of as acts_of, Line as ActLine};
 
 /// How long before an act a prompt it carried may be dated: the two
 /// clocks are the daemon's and the transcript's.
 const ACT_SLACK_MS: u64 = 5_000;
-
-/// The acts `ticket`'s conversation says (T-1162), oldest first: on a
-/// worker's, what the crown did to it and why; on the crown's own, what it
-/// did to every other ticket and the words the board carried into it.
-pub(crate) fn acts_of(
-    board: &mesimon_core::board::Board,
-    tiers: &mesimon_core::tier::Book,
-    acts: &[mesimon_core::crownact::CrownAct],
-    ticket: ulid::Ulid,
-) -> Vec<ActLine> {
-    use mesimon_core::crownact::{self as ca, Subject};
-    let mut out = Vec::new();
-    for a in acts {
-        let own = a.crown == ticket;
-        if !own && a.ticket != ticket {
-            continue;
-        }
-        // A start names its tier (T-1263): a line written before the
-        // daemon wrote the name holds the tier's id, which is named here,
-        // or left unsaid when this machine has no such tier.
-        let named;
-        let a = if a.act == "started" && a.detail.parse::<ulid::Ulid>().is_ok() {
-            named = ca::CrownAct {
-                detail: tiers.get(&a.detail).map(|t| t.name).unwrap_or_default(),
-                ..a.clone()
-            };
-            &named
-        } else {
-            a
-        };
-        let (name, owns);
-        let subject = if own && a.ticket != ticket {
-            let Some(t) = board.ticket(a.ticket) else { continue };
-            name = format!("{} “{}”", t.short_key, t.title);
-            owns = format!("{name}'s");
-            Subject { name: &name, own: &owns }
-        } else {
-            Subject { name: "this ticket", own: "this ticket's" }
-        };
-        let head = match a.words.and(ca::words_head(a)) {
-            Some(head) => head,
-            None => match ca::sentence(a, &subject) {
-                Some(s) => s,
-                None => continue,
-            },
-        };
-        out.push(ActLine {
-            ms: a.at_ms,
-            head,
-            road: ca::is_board_road(a),
-            body: ca::body(a).unwrap_or_default().to_string(),
-            // The crown's own conversation says what started its turn.
-            cause: a.cause.as_ref().filter(|_| !own).map(ca::cause_line),
-            words: a.words,
-        });
-    }
-    out
-}
 
 /// A raised hand among the messages (T-1155).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -300,7 +232,7 @@ pub(crate) struct Page {
 fn read(kind: SessionKind, path: &Path, ask: Ask, conv: Option<&str>) -> Option<Page> {
     let ask = Ask { row_max: Some(ROW_MAX), ..ask };
     match mesimon_daemon::agents::read_transcript_reply_at(kind, path, ask, conv)? {
-        Reply::Transcript { conversation, rows, from, end, next_before } => {
+        Reply::Transcript { conversation, rows, from, end, next_before, .. } => {
             Some(Page { conversation, rows, from, end, next_before })
         }
         _ => None,

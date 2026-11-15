@@ -228,6 +228,7 @@ pub fn read_transcript_reply_at(
         from: page.from,
         end: page.end,
         next_before: page.next_before,
+        acts: None,
     })
 }
 

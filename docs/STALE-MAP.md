@@ -45798,3 +45798,46 @@ name already did (`crown moved T-437 “Fix login” to DONE`): a bare key reads
 Tests: `the_crown_s_page_names_the_ticket_and_the_worker_s_says_why` (a named id, an unknown id,
 the titled possessive). Run: `cargo ut`, `cargo build --workspace`, `crown_e2e::`. `server.rs`
 changed outside tests, so the full suite owes one run after the merge.
+
+## Remote Control says the crown's acts in the conversation, not a banner over it (T-1264, 2026-11-15, the author: "Remote control still shows a banner instead of transcript line like ticket page does")
+
+The phone's ticket page opened its conversation under one `#crown-line` banner (T-623: the crown's
+latest touch, "T-132's agent started this agent · 1m ago", for an hour), while the terminal's
+ticket page says every crown act as a row of the conversation at its time (T-1162). T-1254's
+"Left" named why: the phone never received the acts.
+
+**The wire.** `Reply::Transcript` carries `acts: Option<Vec<ActRow>>` (`ActRow { ms, text, road,
+prompt, body, cause }`, the quiet fields skipped), the ticket's acts whole on every page a host
+reads live, oldest first, the newest that fit in `TRANSCRIPT_ACTS_BYTES` (8 KiB, beside the
+rows' 32 KiB under the sealed answer's 48 KiB). Absent from an older host and from a page the
+shelf kept, so the page can tell "none" from "not said". The reader thread reads
+`crown-acts.jsonl` beside the transcript and keeps the acts on or by the ticket
+(`server/mesophon.rs::TranscriptRead`, now one boxed `Msg::TranscriptRead`); the main thread says
+them with the board and the tier book. The sentences are the ticket page's own: `acts_of` and
+`ActLine` moved from the TUI to `core::crownact::lines_of` / `Line`, and the TUI re-exports them
+under the old names. A page with nothing written yet is read on the thread too, so its acts come
+with it. No relay change: the answer is sealed.
+
+**The page.** `transcript.js::withActs` places each act as the ticket page does: before the first
+row dated after it (a row's `ms`, else the one before it's), one that carried words over the first
+prompt dated at or after it less `ACT_SLACK_MS` (T-1162's 5 s), one after every row at the end;
+one dated before an unread earlier page waits for it. Drawn `.chat-act`: the crown (or the bolt
+for words across boards), the sentence capitalised, its clock, the crown's answer and the cause on
+quiet lines, the news lane's size in the crown's ink (`--tag-5`). `#crown-line` stays only where no
+conversation says the acts: an empty seat, a Terminal tab, a host without them. The card's word
+(`♛ moved · 2m`) is unchanged.
+
+**Left as the ticket page has it, not mirrored:** marking the prompt itself as the crown's (the
+phone sets the act's line over it instead), and the bolt.
+
+Tests: core `a_page_s_acts_are_the_newest_that_fit_scrubbed_and_absent_from_an_older_host`;
+`state.test.js` "the crown's acts sit among the rows by their time", "each page brings the crown's
+acts whole"; `ux.test.js` chatFlow (an older host's banner, then the acts in place and no banner).
+Run: `cargo ut`, `cargo build --workspace`, the browser suites. No e2e names the phone's
+transcript road. `server.rs` changed outside tests (`Msg::TranscriptRead`), so the full suite owes
+one run after the merge.
+
+**Owed:** a CHANGELOG line at the next bump — **Changed:** on a phone, what the crown did to a
+ticket reads in its conversation at the time it happened, as on the terminal's ticket page,
+instead of a banner over it — and the relay's `ship.sh` after it merges, since the hosted relay
+serves this page.

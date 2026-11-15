@@ -557,10 +557,13 @@ export function crownSentence(touch) {
   return touch.by ? `${touch.by}’s agent ${did}` : `The crown ${did}`;
 }
 
-// A ticket the crown touched says what it did, at the transcript's top (T-623).
+// A ticket the crown touched says what it did, at the transcript's top (T-623),
+// where no conversation says it: a conversation from a host that reads the
+// crown's acts says each at its time (T-1264).
 function CrownLine({ store, ticket }) {
   const touch = ticket && crownTouch(store.board, ticket);
   if (!touch) return null;
+  if (ticket.agent && store.chatShown && store.entry?.chat?.acts) return null;
   const ago = agoWords(store.board, touch.at);
   return html`<div id="crown-line" class="crown-line">
     <${Icon} name="crown" size=${15} width=${2.2} />
