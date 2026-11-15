@@ -45936,3 +45936,26 @@ stays in the phone's list, so a turn that ends while the phone is in a pocket is
 the person opens, dismisses or swipes them: those are calls for the person, and a finished turn is
 news. The browser check runs at the phone size only (it waits ~11 s; the timer does not depend on
 size). Mesophon is served by the relay, so the hosted page changes with the relay's next ship.
+
+## Remote Control's Enter sends on a computer (T-1267, 2026-11-15, "remote control input return key creates new line instead of sending")
+
+**What changed.** In the conversation's prompt box and the Start/Wake sheet's first prompt, Enter
+sends on a computer and Shift+Enter breaks the line; on a phone Return still breaks the line and
+Send sends. Ctrl/Cmd+Enter sends on both, as before. One rule, `enterSends` in
+`web/mesophon/viewport.js`: a computer is a page whose primary pointer is fine (`(pointer:
+fine)`), so an iPad with a trackpad sends on Enter and one without keeps Return. An IME's
+committing Enter never sends (`isComposing`, and Safari's keyCode 229 after it). The ticket's
+details and the note sheet keep Enter as a new line: they are Markdown documents, and their
+Ctrl/Cmd+Enter is unchanged.
+
+**Refuted.** Telling a computer by viewport width (a narrow desktop window would lose Enter, a
+landscape tablet would gain it). `enterkeyhint="send"` on the prompt (a phone's Return would
+read Send and still break the line).
+
+**Tests.** Unit: `Enter sends a message on a computer, and Return breaks the line on a phone`.
+Browser: the per-size ticket flow now breaks a line with Shift+Enter and sends with Enter;
+`keyboardFlow` runs on a touch context (`hasTouch`) and checks that Return adds a line and sends
+nothing.
+Run: `node --test state.test.js assets.test.js` (68 passed); `ux.test.js` on chromium and webkit
+at desktop, tablet and phone, all passed. The first full run's shell was killed partway through
+chromium phone; that size was rerun alone and passed (named as a rerun, not a defect).

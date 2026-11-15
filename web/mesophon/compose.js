@@ -6,6 +6,7 @@ import { Icon, Tick } from "./icons.js";
 import { PictureBar, pastePictures } from "./notepad.js";
 import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
 import { worktreeWords } from "./lists.js";
+import { enterSends } from "./viewport.js";
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
 // through the relay's mailbox while the terminal is away, or kept in this
@@ -244,7 +245,7 @@ export function StartSheet({ store }) {
           placeholder=${asleep ? "What to say when it wakes." : "What to do first. Empty sends the title and details."}
           value=${ask.text} onInput=${(e) => store.setStartText(e.currentTarget.value)}
           onKeyDown=${(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+            if (enterSends(e)) {
               e.preventDefault();
               e.currentTarget.form.requestSubmit();
             }

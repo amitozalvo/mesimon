@@ -10,7 +10,7 @@ import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFiel
 import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withLines } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
-import { keyboardUp, viewportVars } from "./viewport.js";
+import { enterSends, keyboardUp, viewportVars } from "./viewport.js";
 const ticket = (id, session) => ({
   id,
   key: id,
@@ -1397,6 +1397,23 @@ test("the shin's animation follows the agent's state, a tool in flight apart fro
   assert.equal(animOf({ state: "rate limited" }), "throttled");
   assert.equal(animOf({ state: "idle" }), "idle");
   assert.equal(animOf({ state: "unknown" }), "idle");
+});
+test("Enter sends a message on a computer, and Return breaks the line on a phone (T-1267)", () => {
+  const computer = { matchMedia: (q) => ({ matches: q === "(pointer: fine)" }) };
+  const phone = { matchMedia: () => ({ matches: false }) };
+  const key = (more) => ({ key: "Enter", ...more });
+  assert.equal(enterSends(key({}), computer), true);
+  assert.equal(enterSends(key({ shiftKey: true }), computer), false, "Shift+Enter breaks the line");
+  assert.equal(enterSends(key({ altKey: true }), computer), false);
+  assert.equal(enterSends(key({}), phone), false, "a phone's Return is its only new line");
+  assert.equal(enterSends(key({ shiftKey: true }), phone), false);
+  for (const win of [computer, phone]) {
+    assert.equal(enterSends(key({ ctrlKey: true }), win), true);
+    assert.equal(enterSends(key({ metaKey: true }), win), true);
+    assert.equal(enterSends(key({ isComposing: true }), win), false, "an IME's Enter commits its text");
+    assert.equal(enterSends(key({ keyCode: 229 }), win), false, "Safari's late IME Enter");
+  }
+  assert.equal(enterSends({ key: "a" }, computer), false);
 });
 test("the bottom inset goes while the visible area is shorter than the window: a keyboard", () => {
   assert.equal(keyboardUp({ height: 508 }, 844), true);

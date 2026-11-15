@@ -4109,7 +4109,8 @@ async function forgetFlow(browser, engineName) {
 // The page follows it, height and offset both, so the board stays in view with
 // the keyboard up and comes back whole when it goes.
 async function keyboardFlow(browser, engineName) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  // A touch screen: its primary pointer is coarse.
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     class Visual extends EventTarget {
@@ -4158,6 +4159,13 @@ async function keyboardFlow(browser, engineName) {
     assert(prompt.y >= 336 && prompt.y + prompt.height <= 844, `the composer is in view: ${JSON.stringify(prompt)}`);
     const back = await page.locator("#back").boundingBox();
     assert(back && back.y >= 336, `the page's top is in view: ${JSON.stringify(back)}`);
+    // A phone's Return is its only new line (T-1267): it never sends; Send does.
+    const sent = await page.evaluate(() => fixture.prompts.length);
+    await page.locator("#prompt").fill("one");
+    await page.locator("#prompt").press("Enter");
+    await page.locator("#prompt").press("t");
+    assert.equal(await page.locator("#prompt").inputValue(), "one\nt");
+    assert.equal(await page.evaluate(() => fixture.prompts.length), sent, "Return sent nothing");
     await page.evaluate(() => window.visualViewport.keyboard(false));
     assert.deepEqual(await body(), { top: 0, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.dataset.keyboard), undefined);
@@ -4718,8 +4726,9 @@ try {
           assert.equal(await page.locator("#prompt").inputValue(), "");
           assert.equal(await page.evaluate(() => fixture.prompts.length), 1);
           // Lost receipt: retain text, query once connected, never replay input.
+          // On a computer Shift+Enter breaks the line and Enter sends (T-1267).
           await page.locator("#prompt").fill("uncertain delivery");
-          await page.locator("#prompt").press("Enter");
+          await page.locator("#prompt").press("Shift+Enter");
           assert.equal(
             await page.locator("#prompt").inputValue(),
             "uncertain delivery\n",
@@ -4728,7 +4737,7 @@ try {
             fixture.disposition = "disconnect";
             fixture.receipt = "unknown";
           });
-          await page.locator("#prompt").press("Control+Enter");
+          await page.locator("#prompt").press("Enter");
           await until(page, () =>
             document
               .querySelector("#delivery")

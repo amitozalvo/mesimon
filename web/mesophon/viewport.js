@@ -79,3 +79,17 @@ export function keepAtEnd(node, following) {
   for (const child of node.children) watch.observe(child);
   return () => watch.disconnect();
 }
+
+// Whether a key in a message field sends it (T-1267). On a computer Enter
+// sends and Shift+Enter breaks the line, as at the agent's own prompt. On a
+// phone or a tablet without a mouse, Return is the keyboard's only way to a
+// new line, so it stays one and the Send button sends. Ctrl or Cmd+Enter
+// sends on both. A computer is a page whose primary pointer is fine: a mouse
+// or a trackpad. An Enter that commits an IME's text is never a send; Safari
+// reports that one as keyCode 229 with `isComposing` already false.
+export function enterSends(event, win = window) {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return false;
+  if (event.ctrlKey || event.metaKey) return true;
+  if (event.shiftKey || event.altKey) return false;
+  return !!win.matchMedia?.("(pointer: fine)").matches;
+}

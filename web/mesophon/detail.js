@@ -16,7 +16,7 @@ import { DetailsPane } from "./compose.js";
 import { letterWords } from "./letters.js";
 import { KEYS_TEXT_MAX_BYTES } from "./store.js";
 import { swipePanes } from "./swipe.js";
-import { keepAtEnd } from "./viewport.js";
+import { enterSends, keepAtEnd } from "./viewport.js";
 
 // The pane's width in cells, for drawing its lines as the screen they came
 // from (T-506). An older host names none: the longest line stands in, which
@@ -354,7 +354,7 @@ function Composer({ store, ticket, entry, live }) {
           onPaste=${(e) => pastePictures(e, pictures, (files, at) => store.addPromptPictures(files, at), caret)}
           onKeyDown=${(e) => {
             mark(e);
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+            if (enterSends(e)) {
               e.preventDefault();
               e.currentTarget.form.requestSubmit();
             }
