@@ -17001,9 +17001,8 @@ fn a_draft_in_the_box_holds_shift_enter_and_the_title_does_not() {
 
     // The press is refused, not dropped (T-1258): no field opens, and the
     // rule's key cap shakes off its place, then settles back.
-    let cap_col = |lines: &[String]| {
-        lines.iter().find_map(|l| l.find(" shift+enter ")).expect("the cap")
-    };
+    let cap_col =
+        |lines: &[String]| lines.iter().find_map(|l| l.find(" shift+enter ")).expect("the cap");
     let settled = cap_col(&lines);
     app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
     assert_eq!(app.mode, Mode::Normal, "no field over a held box");
@@ -17170,6 +17169,40 @@ fn a_long_queued_ask_shows_three_rows_and_the_cut() {
     let short_y = one.iter().position(|l| l.starts_with(" ❯  commit it")).expect("one row");
     assert_eq!(short_y, y + 2, "two rows more than one row of words: {lines:#?}");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A draft kept by `^]` (T-1262) fills the closed box as a queued ask does,
+/// in the live window and on the seat's box: its words where the field
+/// types them, `draft ∙ not sent` under them, no send or take-back keys.
+/// A queued ask outranks it.
+#[test]
+fn a_kept_draft_shows_in_the_closed_box() {
+    let draft = |text: &str| crate::app::PageDraft { text: text.into(), images: Vec::new() };
+    let (mut app, path) = app_live("tlive-draft", false);
+    app.rich_keys = true;
+    app.page_drafts.insert(ulid_n(3), draft("look at the diff first"));
+    let lines = render(&app, 120, 30);
+    let y = lines
+        .iter()
+        .position(|l| l.starts_with(" ❯  look at the diff first"))
+        .unwrap_or_else(|| panic!("the words in the box: {lines:#?}"));
+    assert!(lines[y - 1].starts_with(" -- shift+enter "), "the closed rule: {lines:#?}");
+    assert!(lines[y + 1].starts_with(" -- draft ∙ not sent --"), "{lines:#?}");
+    app.pending = vec![queued_words(3, &["T-3"], "commit it")];
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.starts_with(" ❯  commit it")), "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("look at the diff")), "{lines:#?}");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let plain = render(&app, 120, 30);
+    app.page_drafts.insert(ulid_n(1), draft("write the tests first"));
+    let lines = render(&app, 120, 30);
+    let rule = box_rule(&plain).expect("the seat's box");
+    assert!(lines[rule + 1].starts_with("   › write the tests first"), "{lines:#?}");
+    assert!(lines[rule + 2].starts_with("   -- draft ∙ not sent"), "{lines:#?}");
 }
 
 /// What does not go in the box (T-1189): a held ask — the crown's words,

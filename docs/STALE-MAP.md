@@ -45734,3 +45734,23 @@ Copy menu for a selection a tap made, so the span was selected and stuck.
 
 Tests: `chatFlow` (a table's inline code and a step's argument reach a stubbed clipboard whole,
 the span marked copied); run on WebKit phone and Chromium desktop.
+
+## `^]` leaves the ticket page mid-ask and keeps the words (T-1262, 2026-11-15, the author: "^] / ^5 during ticket page ask agent input is open closes the ticket page and keeps the input text draft, opening the ticket page again will show collapsed input and shift+enter will edit the draft")
+
+**Changed.** `^]` (both spellings) in the ticket page's ask field (`InputPurpose::Prompt`,
+`AskTarget::Ticket`) did nothing: the field typed no control chord. It now closes the field and
+runs the page's own `^]` (`Verb::Back`), keeping the words and pictures in `App::page_drafts`
+(memory only, by ticket). The page's closed box draws a kept draft as it draws a queued ask
+(`ui/ticket.rs::BoxedAsk`, `queued_box`): the words where the field types them, `draft ∙ not
+sent` on the rule under them, no send or take-back keys. A queued ask fills the box first, and a
+draft leaves the branch row's pending words where they were. The page's next Shift+Enter that
+opens a blank field puts the draft back, lines kept (`App::restore_page_draft`), and stops keeping
+it; Esc then drops it as before. A blank field left with `^]` keeps nothing.
+
+**Not changed.** Esc in the field still closes it and drops the words. The board's field (a
+card's, a column's) neither takes nor shows a page draft. The ask room (`Mode::Editor`, `^]` is
+its two-press discard) keeps nothing.
+
+Tests: `app::tests::ctrl_bracket_leaves_the_page_and_keeps_the_ask` (both spellings; the board's
+field ignores it; Shift+Enter restores; Esc drops); `ui::tests::a_kept_draft_shows_in_the_closed_box`
+(live window and seat box; a queued ask outranks it). Run: `cargo ut`. TUI-only, no e2e reaches it.

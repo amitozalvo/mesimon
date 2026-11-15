@@ -589,7 +589,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // (T-1189), and not here as well.
     let row = app.rail_rows(ticket_id).get(rail_idx).copied();
     let ask_boxed = ask_in_box(app, ticket.id, area.width >= TWO_ZONE_MIN_W, row);
-    if let Some(row) = app.pending_row(ticket.id).filter(|_| ask_boxed.is_none()) {
+    if let Some(row) =
+        app.pending_row(ticket.id).filter(|_| ask_boxed.as_ref().is_none_or(|a| a.draft))
+    {
         let text = if wt_spans.is_empty() { format!(" {row}") } else { format!(" ∙ {row}") };
         wt_spans.push(Span::styled(text, d2));
         // The send and the take-back beside the words, in the keymap's own
@@ -1147,7 +1149,7 @@ fn draw_preview(
     seat: Option<ulid::Ulid>,
     launch: Option<&Launch>,
     shin_on_rail: bool,
-    ask_boxed: Option<&(&str, String)>,
+    ask_boxed: Option<&BoxedAsk<'_>>,
 ) -> (usize, Option<Composer>) {
     let theme = &app.theme;
     let session = record.map(|s| s.id);
@@ -2218,8 +2220,7 @@ fn closed_cap(app: &App, width: usize) -> (Vec<Span<'static>>, usize) {
     } else {
         return (Vec::new(), 0);
     };
-    let Some((mut spans, used)) = cap_spans(theme, cap, cap_style, said, said_style, width)
-    else {
+    let Some((mut spans, used)) = cap_spans(theme, cap, cap_style, said, said_style, width) else {
         return (Vec::new(), 0);
     };
     // A refused press shakes the cap within its rule (T-1258): the lead
@@ -2269,11 +2270,16 @@ fn ask_in_box<'a>(
     ticket: ulid::Ulid,
     two_zone: bool,
     row: Option<RailRow<'_>>,
-) -> Option<(&'a str, String)> {
+) -> Option<BoxedAsk<'a>> {
     if !two_zone {
         return None;
     }
-    let ask = app.boxed_ask(ticket)?;
+    // A queued ask fills the box before a kept draft (T-1262), whose
+    // words wait for the page's next Shift+Enter.
+    let ask = match app.boxed_ask(ticket) {
+        Some((words, row)) => BoxedAsk { words, row, draft: false },
+        None => BoxedAsk { words: app.page_draft(ticket)?, row: DRAFT_ROW.into(), draft: true },
+    };
     let boxed = match row {
         Some(RailRow::NewAgent) => true,
         Some(RailRow::Session(s)) if launch::booting(s) => true,
@@ -2289,6 +2295,18 @@ fn ask_in_box<'a>(
     boxed.then_some(ask)
 }
 
+/// What the closed box holds (T-1189, T-1262): a queued ask's words and
+/// the row that says when they go, or the words `^]` kept when the page
+/// was left mid-ask, which go nowhere until the field sends them.
+pub(super) struct BoxedAsk<'a> {
+    words: &'a str,
+    row: String,
+    draft: bool,
+}
+
+/// The lower rule's words under a kept draft (T-1262).
+const DRAFT_ROW: &str = "draft ∙ not sent";
+
 /// The closed box with a queued ask in it (T-1189): the rule with the key
 /// that opens it, the prompt mark (`mark`, the pane's own in the live
 /// window, else the page's), the ask's words in the quiet ink from
@@ -2298,7 +2316,7 @@ fn ask_in_box<'a>(
 /// The ask is `ask_in_box`'s: its words, and the row that says when they go.
 fn queued_box(
     app: &App,
-    (words, row): &(&str, String),
+    ask: &BoxedAsk<'_>,
     lead: usize,
     width: usize,
     words_col: usize,
@@ -2307,7 +2325,7 @@ fn queued_box(
     let theme = &app.theme;
     let mark = mark.unwrap_or_else(|| glyphs::prompt_mark(theme.glyph_tier())).to_string();
     let room = (lead + width).saturating_sub(words_col);
-    let rows = crate::peek::wrap(&crate::peek::sanitize(words), room, QUEUED_ROWS);
+    let rows = crate::peek::wrap(&crate::peek::sanitize(ask.words), room, QUEUED_ROWS);
     if rows.is_empty() || words_col < lead + mark.width() + 1 {
         return None;
     }
@@ -2327,12 +2345,18 @@ fn queued_box(
         spans.push(Span::styled(words, theme.dim1()));
         out.push(Line::from(spans));
     }
+    // A draft's keys are the top rule's: the send and take-back are a
+    // queued ask's.
     let ctx = app.frame_ctx();
-    let keys: String = super::ask_keys(app, &ctx)
-        .iter()
-        .map(|b| format!(" ∙ {} {}", b.show, (b.hint)(&ctx)))
-        .collect();
-    out.push(said_rule(app, lead, width, &format!("{row}{keys}")));
+    let keys: String = if ask.draft {
+        String::new()
+    } else {
+        super::ask_keys(app, &ctx)
+            .iter()
+            .map(|b| format!(" ∙ {} {}", b.show, (b.hint)(&ctx)))
+            .collect()
+    };
+    out.push(said_rule(app, lead, width, &format!("{}{keys}", ask.row)));
     Some(out)
 }
 

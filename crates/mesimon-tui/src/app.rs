@@ -936,6 +936,13 @@ fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
 /// holds lines since T-1191 (until then they were spaces here). The board's
 /// field is one line (T-1212), so there they are spaces again; `Tab` opens
 /// the composer on them.
+/// A ticket page's ask kept when the page was left mid-ask (T-1262).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageDraft {
+    pub text: String,
+    pub images: Vec<crate::image_paste::DraftImage>,
+}
+
 fn history_field(text: &str, one_line: bool) -> EditBuffer {
     let mut buf = EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES);
     buf.paste_lines(text);
@@ -2121,6 +2128,10 @@ pub struct App {
     /// (T-1258): the closed rule's key cap shakes for `SHAKE_OFFSETS` from
     /// that instant, where the press was looking, not the title.
     pub box_refused: Option<Instant>,
+    /// The ticket page's ask field left with `^]` (T-1262): its words and
+    /// pictures by ticket, drawn in the page's closed box and put back in
+    /// the field by the page's next Shift+Enter. Memory only.
+    pub page_drafts: std::collections::HashMap<ulid::Ulid, PageDraft>,
     /// The keyboard's last letter was not a Latin one (T-458): outside a
     /// text field every character but an English letter or a digit is
     /// dropped, and the footer says why, until an English letter or Esc.
@@ -2704,6 +2715,7 @@ impl App {
             tier_flash: None,
             refused: None,
             box_refused: None,
+            page_drafts: Default::default(),
             layout_pause: None,
             layout_flash: None,
             status_flash: None,
@@ -7977,6 +7989,33 @@ impl App {
         self.owed_words(ticket, false)
     }
 
+    /// The page's ask field just opened blank on `id` (T-1262): the words
+    /// `^]` kept when the page was left go back in, lines and pictures
+    /// with them, and are no longer kept. A field that opened on words (a
+    /// queued ask) leaves the draft kept.
+    fn restore_page_draft(&mut self, id: ulid::Ulid) {
+        if !matches!(self.screen, Screen::Ticket { .. }) || !self.page_drafts.contains_key(&id) {
+            return;
+        }
+        let Mode::Input { purpose: InputPurpose::Prompt { target, images, .. }, buffer } =
+            &mut self.mode
+        else {
+            return;
+        };
+        if *target != AskTarget::Ticket(id) || !buffer.as_str().is_empty() || !images.is_empty() {
+            return;
+        }
+        let Some(draft) = self.page_drafts.remove(&id) else { return };
+        *buffer = history_field(&draft.text, false);
+        *images = draft.images;
+    }
+
+    /// The draft the ticket page's closed box shows (T-1262): words `^]`
+    /// kept, while no queued ask fills the box.
+    pub(crate) fn page_draft(&self, ticket: ulid::Ulid) -> Option<&str> {
+        self.page_drafts.get(&ticket).map(|d| d.text.as_str())
+    }
+
     /// A person's queued ask as the ticket page's closed box shows it
     /// (T-1189): its words, and `pending_row`'s, which the box carries in
     /// place of the page's branch row. None for a held ask (the crown's
@@ -10992,6 +11031,7 @@ impl App {
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     }
+                    self.restore_page_draft(id);
                 }
             }
             Verb::Sleep => self.sleep_verb(scope, ctx)?,
@@ -13755,6 +13795,25 @@ impl App {
             }
         }
         let key = crate::keys::to_key_text(code, mods);
+        // `^]` (both spellings) in the ticket page's ask field leaves the
+        // page, as it does with no field open, and keeps the words (T-1262):
+        // the closed box shows them and the page's Shift+Enter puts them
+        // back. Esc still closes the field and drops them.
+        if let (
+            Some(Key::Ctrl(']' | '5')),
+            Screen::Ticket { .. },
+            InputPurpose::Prompt { target: AskTarget::Ticket(id), images, .. },
+        ) = (key, &self.screen, &purpose)
+        {
+            let text = buffer.as_str().to_string();
+            if text.trim().is_empty() && images.is_empty() {
+                self.page_drafts.remove(id);
+            } else {
+                self.page_drafts.insert(*id, PageDraft { text, images: images.clone() });
+            }
+            self.mode = Mode::Normal;
+            return self.handle_key_inner(code, mods);
+        }
         let ctx = self.ctx();
         let mut verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
         // The board's ask field is one line (T-1212): its Shift+Enter is
@@ -26692,6 +26751,53 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "shi!p it\\nnowone\\ntwo"), "{:?}", sent.borrow());
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// `^]` in the ticket page's ask field leaves the page and keeps the
+    /// words (T-1262); the page's next Shift+Enter puts them back, lines
+    /// and all, and Esc then drops them. Both spellings of the key.
+    #[test]
+    fn ctrl_bracket_leaves_the_page_and_keeps_the_ask() {
+        let field = |app: &App| match &app.mode {
+            Mode::Input { buffer, .. } => buffer.as_str().to_string(),
+            other => panic!("not in the field: {other:?}"),
+        };
+        for key in [']', '5'] {
+            let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+            let id = app.board.tickets[0].id;
+            let page = Screen::Ticket { ticket: id, rail_idx: 0 };
+            app.screen = page.clone();
+            app.rich_keys = true;
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            for c in "ship".chars() {
+                press(&mut app, c);
+            }
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            press(&mut app, 'x');
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.screen, Screen::Board, "^{key} leaves the page");
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(app.page_draft(id), Some("ship\nx"));
+            assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+            // The board's own field on the card does not take it.
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert_eq!(field(&app), "");
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.page_draft(id), Some("ship\nx"));
+            // Back on the page, Shift+Enter opens on the words.
+            app.screen = page.clone();
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert_eq!(field(&app), "ship\nx");
+            assert_eq!(app.page_draft(id), None, "the field holds them now");
+            // Esc drops them, as it always has.
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert_eq!(field(&app), "");
+            // A blank field left with `^]` keeps nothing.
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.screen, Screen::Board);
+            assert_eq!(app.page_draft(id), None);
+        }
     }
 
     /// The board's ask field is one line (T-1212): Shift+Enter on a blank
