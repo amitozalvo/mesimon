@@ -17373,3 +17373,106 @@ fn a_task_notification_inside_the_notice_turn_keeps_it_the_notice_s() {
     absence_window(1500);
     assert_eq!(c.board().ticket(w).unwrap().column, "DONE", "nor does its end");
 }
+
+/// T-1290's hook-set stub: Claude Code's composer paints three seconds after
+/// the pane starts, so a start's brief waits for it past the `SessionStart`.
+const LATE_BOX_STUB: &str = "#!/bin/sh\nsleep 3\n";
+
+/// T-1290 (simbly's T-470, 2026-11-16): the crown starts an agent and asks
+/// it at once, deliver now. The seat is idle at its `SessionStart` with the
+/// start's brief still owed: on the mod road its bridge has not polled, on
+/// the hook set its composer has not painted. The ask is refused before any
+/// key and kept, the crown told the brief is ahead of it (before, "a person
+/// has its pane open"). The brief goes in, and its prompt is the board's
+/// own: the ask survives it and goes in at the brief's turn's end (before,
+/// it was dropped as a person's prompt typed ahead of it).
+#[test]
+fn a_crown_ask_at_a_start_waits_for_the_brief_on_the_mod_road() {
+    an_ask_at_a_start("crown_brief_mod", true);
+}
+
+#[test]
+fn a_crown_ask_at_a_start_waits_for_the_brief_on_the_hook_set() {
+    an_ask_at_a_start("crown_brief_hooks", false);
+}
+
+fn an_ask_at_a_start(name: &str, by_mod: bool) {
+    let late_box = format!("{LATE_BOX_STUB}{COMPOSER}{}", &RECORDING_STUB["#!/bin/sh\n".len()..]);
+    let road = if by_mod { "mod" } else { "hooks" };
+    let env = [
+        ("MESIMON_NO_TAG_SEED", "1"),
+        ("MESIMON_PANE_QUIET_MS", "600000"),
+        ("MESIMON_CLAUDE_ROAD", road),
+    ];
+    let h = if by_mod {
+        Harness::boot_with_env(name, Some(RECORDING_STUB), &env)
+    } else {
+        Harness::boot_bare(name, Some(&late_box), &env)
+    };
+    let Some(h) = h else { return };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client(name);
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1290 worker");
+    let kw = c.key_of(w);
+    let sa = c.spawn_claude(a);
+    if by_mod {
+        mod_up(&h, sa);
+    }
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    settle_for(500);
+    h.one_turn(&mut c, sa);
+    // The worker's bridge polls three seconds after its engine starts.
+    if by_mod {
+        std::fs::write(h.dir.join("mod-late"), "3000").unwrap();
+    }
+    match c.crown_start(sa, &kw, "shared_checkout") {
+        Response::AgentStarted { session_started: true, .. } => {}
+        other => panic!("start_agent {kw}: {other:?}"),
+    }
+    let ws = c.board().live_agent(w).expect("W holds a seat").id;
+    hook_send_with(
+        &h.paths.hook_sock(),
+        &ws.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t-1290.jsonl","cwd":"/tmp"}"#,
+    );
+    c.await_state(ws, "idle at its SessionStart", |s| matches!(s, SessionState::Idle { .. }));
+
+    // The crown asks at once, the brief still owed.
+    match c.crown_ask(sa, &kw, "mesimon-probe-1290 the word is teal", Deliver::Now, None) {
+        Response::Err { message } => {
+            assert!(message.contains("its start's brief has not gone in yet"), "{message}");
+            assert!(message.contains("the words stay queued"), "{message}");
+            assert!(!message.contains("person"), "no person is at the pane: {message}");
+        }
+        other => panic!("ask_agent at a start: {other:?}"),
+    }
+    let kept = || -> Vec<String> {
+        h.feed().lines().filter(|l| l.contains("\"queued_ask_kept\"")).map(String::from).collect()
+    };
+    wait_until(std::time::Duration::from_secs(5), "the kept line", || !kept().is_empty());
+    let kept = kept();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].contains("brief") && !kept[0].contains("a_person_attached"), "{kept:?}");
+
+    // The brief goes in, and its prompt is acked.
+    wait_until(std::time::Duration::from_secs(15), "the brief to reach W", || {
+        !lines_with("mesimon-probe-1290 worker").is_empty()
+    });
+    h.prompt_turn(&mut c, ws);
+    settle_for(500);
+    let feed = h.feed();
+    assert!(!feed.contains("queued_ask_dropped_by_hand"), "the brief is no person's prompt");
+    assert!(!feed.contains("crown_ask_dropped_by_hand"), "the brief is no person's prompt");
+    assert!(lines_with("mesimon-probe-1290 the word is teal").is_empty(), "behind the brief");
+
+    // The brief's turn ends: the ask goes in.
+    h.end_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the ask to reach W", || {
+        lines_with("mesimon-probe-1290 the word is teal").len() == 1
+    });
+}

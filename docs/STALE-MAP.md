@@ -46640,3 +46640,50 @@ oldest first. Seen nowhere yet; claiming newest first would close it.
 **Tests.** `transcript::tests::a_crown_ask_no_prompt_holds_says_its_sentence`, on rows shaped as
 the board wrote them (fields, times and act lines kept, words replaced): it read `crown asked`
 over nothing before the fix. No golden moved.
+
+## An ask sent seconds after a start waits for the brief, and the crown is told so (T-1290, 2026-11-16, simbly's T-470)
+
+- **What was wrong.** On simbly's T-470, the crown ran `start_agent` and then, 5 s later,
+  `ask_agent` with deliver now. The seat had just said `SessionStart`, and its brief was still
+  parked because the mod's bridge had not polled. `paste_at` refused the send before any key
+  (T-961's `PROMPT_WAITING`), and the queue road kept the entry. Two faults followed:
+  - **A false reason.** `send_queued_ask` took the refusal's reason from the message with
+    `NOT_SENT` stripped and fell back to `PERSON_AT_PANE` when there was no suffix. The crown read
+    "a person has its pane open, so the board typed nothing into it ∙ the words stay queued", and
+    told the person to close a pane they did not have open. `queue_kept`'s feed line always said
+    `a_person_attached`. `BOX_NOT_DRAWN`'s refusal had the same fallback. Both date from T-958,
+    T-961 and T-966 (2026-10-25).
+  - **The ask was dropped.** Three seconds later the brief went down the `submit`. Its
+    `UserPromptSubmit` acked the launch entry, and `ack_owed`'s `forget_queued_before` dropped
+    every queued ask from before the words went in (T-894's cutoff). The crown's ask was
+    `queued_ask_dropped_by_hand`: the board's own brief was read as a person's prompt, the same
+    class as T-1287. T-1287 did not touch this path. It skips `ack_owed` only for a
+    `<task-notification>`, and this bug is older (T-894, 2026-10-22).
+- **The fix.**
+  - **A brief alone forgets no queued ask.** In `ack_owed`, an entry whose sent words are the
+    brief alone (`brief`, empty `text`) skips the queue forget. A start carrying a person's words
+    under the brief (T-294) is theirs and still talks past the ask, as does a person's prompt
+    ahead of the brief that is still parked (`ahead_of_launch`, sent `None`). The kept ask goes at
+    the brief's turn's end, as any queued ask does.
+  - **The reason is the refusal's own.** A parked brief refuses with `BRIEF_WAITING` ("its
+    start's brief has not gone in yet"), and other parked words keep `PROMPT_WAITING`.
+    `refuse_before_keys` stores its outcome (`refused_why`), and `queue_kept`'s feed line carries
+    that outcome. `send_queued_ask` passes the message through, so the crown reads "its start's
+    brief has not gone in yet ∙ the words stay queued behind the brief's turn".
+- **Stated limit, unchanged.** A person who types into the pane after the brief went in, before
+  the brief's `UserPromptSubmit`, has their prompt taken as the brief's ack, so it drops nothing.
+- **Tests.**
+  - **Unit:** `server/brief_owed.rs`, on the mod road and the hook set: the refusal's words and
+    the kept line, the ask surviving the brief's prompt, and a person's prompt still dropping it.
+    A second case checks that a start with a person's words still talks past the ask. With the
+    `ack_owed` half off, the first case fails.
+  - **E2e:** `crown_e2e::a_crown_ask_at_a_start_waits_for_the_brief_on_the_{mod_road,hook_set}`.
+    On the mod road the bridge is late (`mod-late`); on the hook set the stub paints its composer
+    3 s late. With the `ack_owed` half off, both fail.
+  - **Rig:** case AS1, one live run (Opus 5.5 high, Claude Code 2.1.325, run 20261116-192729),
+    which was inconclusive on the fixed path. The bridge had polled and the brief gone in 0.8 s
+    before the crown's ask (`prompt_by_mod` at 47.0 s, `ask_agent` at 47.8 s), so the ask went
+    into the brief's turn as a steer (`ModFill`) and nothing was kept (`fed:queued_ask_kept`×0).
+    Every other check passed: one ask, nothing dropped, woken `answered`, replies `ready` then
+    `as1-teal`, and the crown's line named no person. The real engine cannot hold back its own
+    bridge, so the kept road is proven by the two e2es, not by the rig.

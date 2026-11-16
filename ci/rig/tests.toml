@@ -2708,3 +2708,16 @@ checks = ["road:mod", "started_by_crown", "hand:rh6-amber", "woke:raised", "told
   [[test.steps]]
   crown = "RH6: call get_ticket with key {key}, then end your turn with the single line: RH6 hand: and the word of the day its told hand names, or none if it carries no told hand."
   until = { crown_only = true }
+
+[[test]]
+id = "AS1"
+title = "AS1 · an ask sent seconds after the start waits for the brief: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "T-1290, simbly 2026-11-16: the crown starts the worker and, in the same turn, asks it with ask_agent deliver now. The start's brief has usually not gone in yet (the mod's bridge polls seconds after the SessionStart): the board refuses the send before any key, keeps the words queued (queued_ask_kept) and tells the crown the start's brief is ahead of them. The brief goes in and its prompt is the board's own, so the queued words survive it (never queued_ask_dropped_by_hand) and go in at the brief's turn's end; the worker replies ready, then as1-teal, and the crown is woken with the answer. The crown asks once and never tells the person to close a pane or that a person has it open (before T-1290 it was told a person had the pane open, and the brief's prompt dropped the words). A run where the brief went in before the ask reads fed:queued_ask_kept failing alone: inconclusive, not a regression."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent=1", "fed:queued_ask_kept", "not_fed:queued_ask_dropped_by_hand", "not_fed:crown_ask_dropped_by_hand", "woke:answered", "crown_line:AS1 asked:!person", "replies:ready,as1-teal"]
+
+  [[test.steps]]
+  crown = "AS1: call start_agent for {key} with workspace worktree, no tier and no plan, and straight after it, before anything else, call ask_agent for {key} with deliver now and the text: Reply with the single word as1-teal and end your turn. Then end your turn with the single line: AS1 asked: and, in a few words, what the board said of your words. When the board wakes you for {key}, end your turn with the single line: AS1 seen."
+  until = { stops = 2, state = "idle" }
+  wake = true

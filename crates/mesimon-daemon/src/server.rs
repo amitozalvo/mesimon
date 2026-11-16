@@ -103,6 +103,8 @@ mod arrival_tests;
 mod asynchooks;
 mod attachments;
 mod bridge;
+#[cfg(test)]
+mod brief_owed;
 mod crownask;
 mod crownexpect;
 mod crownhold;
@@ -266,6 +268,9 @@ const NOT_SENT: &str = " ∙ the words were not sent";
 /// Why words for a seat are refused while another's still wait to go in
 /// (T-961): the seat holds one owed entry, and it is not replaced.
 const PROMPT_WAITING: &str = "a prompt is already waiting for this session";
+/// The same refusal when the words waiting are a start's brief (T-1290):
+/// no person is at the pane, the board's own launch is ahead of them.
+const BRIEF_WAITING: &str = "its start's brief has not gone in yet";
 /// Why a command is refused on a young seat whose box is not drawn (T-961).
 const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
 /// Why an agy start or wake is refused where its switch is off (T-1225).
@@ -1110,6 +1115,9 @@ pub struct Daemon {
     /// the sender's, which a queue road reads (`took_person_refusal`) to
     /// keep its entry. Set and read in one writer turn.
     refused_for_person: Option<uuid::Uuid>,
+    /// Why `refuse_before_keys` last refused (its feed outcome): what
+    /// `queue_kept` says kept the entry (T-1290), never a person by default.
+    refused_why: &'static str,
     /// A Claude seat's failed turn, by when the board saw it fail (T-936):
     /// what a refined reason names, while the seat stays failed.
     failing: HashMap<uuid::Uuid, String>,
@@ -2200,6 +2208,7 @@ impl Daemon {
             crown_submit_refused: Default::default(),
             crown_wake_failed_on: None,
             refused_for_person: None,
+            refused_why: A_PERSON_ATTACHED,
             lingered: Default::default(),
             tasks_since: HashMap::new(),
             turn_since: HashMap::new(),
@@ -6287,6 +6296,11 @@ impl Daemon {
         self.owed.get(&id).is_some_and(|o| o.parked.is_some())
     }
 
+    /// The words still parked for this pane are a start's brief (T-1290).
+    fn brief_parked(&self, id: uuid::Uuid) -> bool {
+        self.owed.get(&id).and_then(|o| o.parked.as_ref()).is_some_and(|p| p.brief)
+    }
+
     /// A `fill` is down the session's mod and its report not yet in: the
     /// words are on their way to the box, and a send that replaced the
     /// entry now would leave them there with no key and no one owing them.
@@ -7138,6 +7152,14 @@ impl Daemon {
         // follow-up the ack must not take with it (T-894 review: a person
         // queued words behind a `/compact`, and its ack deleted them).
         let sent_at = self.owed.get(&id).and_then(|o| o.sent_at);
+        // A start's brief alone went in (T-1290): the board's own words,
+        // not a person's, so they talk past no queued ask. One with a
+        // person's words under it (T-294) is theirs, and does.
+        let boards_own = self
+            .owed
+            .get(&id)
+            .and_then(|o| o.sent.as_ref())
+            .is_some_and(|p| p.brief && p.text.is_empty());
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -7243,7 +7265,7 @@ impl Daemon {
             }
             changed = true;
         }
-        if command {
+        if command || boards_own {
             return changed;
         }
         changed
@@ -15167,8 +15189,9 @@ impl Daemon {
 
     /// `paste_at` refused before any key reached the pane: a queue road
     /// keeps the entry it took (`refused_for_person`), and the feed says why.
-    fn refuse_before_keys(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, outcome: &str) {
+    fn refuse_before_keys(&mut self, id: uuid::Uuid, ticket: ulid::Ulid, outcome: &'static str) {
         self.refused_for_person = Some(id);
+        self.refused_why = outcome;
         self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), outcome);
     }
 
@@ -15206,8 +15229,9 @@ impl Daemon {
         // pane: the words stay with whoever sent them, a queue road keeps its
         // entry, and the parked words keep theirs and their receipt.
         if self.parked(id) || self.fill_pending(id) {
-            self.refuse_before_keys(id, ticket, PROMPT_WAITING);
-            return Err(PROMPT_WAITING.into());
+            let why = if self.brief_parked(id) { BRIEF_WAITING } else { PROMPT_WAITING };
+            self.refuse_before_keys(id, ticket, why);
+            return Err(why.into());
         }
         let immediately = immediately && !self.session_idle(id);
         // A shell line (T-876) is the box's: `!` switches Claude Code into
@@ -17754,7 +17778,7 @@ impl Daemon {
         }
         self.queued.insert(i.min(self.queued.len()), entry);
         self.persist_queue();
-        self.feed.board_outcome("daemon", "queued_ask_kept", Some(ticket), A_PERSON_ATTACHED);
+        self.feed.board_outcome("daemon", "queued_ask_kept", Some(ticket), self.refused_why);
     }
 
     fn send_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
@@ -17800,13 +17824,15 @@ impl Daemon {
             self.queue_kept(i, kept);
             self.broadcast();
             // Why, as `paste_at` said it: a client at the pane, the draft
-            // an idle one left, or a box not read empty (T-966).
+            // an idle one left, or a box not read empty (T-966); or words
+            // of the board's still waiting to go in, a start's brief
+            // (T-1290), which no person typed.
             let why = match &response {
-                Response::Err { message } => message.strip_suffix(NOT_SENT),
-                _ => None,
+                Response::Err { message } => message.strip_suffix(NOT_SENT).unwrap_or(message),
+                _ => PERSON_AT_PANE,
             };
-            let why = why.unwrap_or(PERSON_AT_PANE);
-            return Response::Err { message: format!("{why} ∙ the words stay queued") };
+            let tail = if why == BRIEF_WAITING { " behind the brief's turn" } else { "" };
+            return Response::Err { message: format!("{why} ∙ the words stay queued{tail}") };
         }
         // The crown's words, sent by a person or on its say-so: the record
         // reads `sent` once the dispatch went through (T-938), and the
