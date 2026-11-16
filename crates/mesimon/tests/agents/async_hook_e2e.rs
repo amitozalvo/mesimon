@@ -18,7 +18,15 @@ subprocess.Popen(['python3','-c','import time; time.sleep(120)'])
 print('❯',flush=True)
 (root/('ready-'+key)).touch()
 child=None
+watch=None
 while True:
+    # A background watch the agent started (T-1292): its command, read from
+    # the file, runs as `sh -c` in a session of its own, as Claude's Bash does.
+    if watch is None and (root/('watch-'+key)).exists():
+        watch=subprocess.Popen(['/bin/sh','-c',(root/('watch-'+key)).read_text()], start_new_session=True)
+        (root/('watching-'+key)).write_text(str(watch.pid))
+    if watch is not None:
+        watch.poll()
     if child is None and (root/('go-'+key)).exists():
         child=subprocess.Popen(['python3','-c',
             'import time,sys; from pathlib import Path; p=Path(sys.argv[1]); '\
@@ -117,6 +125,9 @@ impl Case {
             event,
             r#"{"background_tasks":[],"stop_hook_active":false}"#,
         );
+    }
+    fn send_with(&self, event: &str, payload: &str) {
+        hook_send(&self.h.paths.hook_sock(), &self.sid.to_string(), event, payload);
     }
     fn feed(&self) -> String {
         std::fs::read_to_string(self.h.paths.activity_log()).unwrap_or_default()
@@ -251,4 +262,68 @@ fn a_never_ending_child_releases_at_the_named_cap_and_records_it() {
     assert!(t.feed().contains("async_hook_cap"));
     assert!(t.feed().contains("4000 ms elapsed"));
     t.release();
+}
+
+/// T-1292: a background watch the agent started is no async hook, at its
+/// turn's `Stop` or any later one. Its command has an indented line, as the
+/// simbly crown's Monitor watch did: `ps` writes it `\012    `, the daemon's
+/// reader folds the spaces, and every `Stop` of that seat was held for the
+/// cap with its wakes behind it. An async hook beside the watch still holds.
+#[test]
+fn a_listed_watch_releases_each_stop_and_a_hook_beside_it_still_holds() {
+    let Some(mut t) = Case::boot("async-watch", "600000") else { return };
+    let stop = t.dir.join(format!("release-{}", t.key));
+    let command = format!(
+        "while [ ! -e '{}' ]; do python3 -c \"\nimport time\nfor i in [1]:\n    time.sleep(.2)\n\"; done",
+        stop.display()
+    );
+    std::fs::write(t.dir.join(format!("watch-{}", t.key)), &command).unwrap();
+    wait_until(Duration::from_secs(10), "watch", || {
+        t.dir.join(format!("watching-{}", t.key)).exists()
+    });
+    let listed = serde_json::json!({
+        "stop_hook_active": false,
+        "background_tasks": [{"id": "w1", "type": "shell", "status": "running",
+            "description": "watch", "command": command}],
+    })
+    .to_string();
+    // The tool result that started it, as Claude's Bash reports one.
+    t.send_with(
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"w1"}}"#,
+    );
+    let background = SessionState::Idle { stop_reason: StopReason::Background };
+    for turn in 1..=2 {
+        if turn > 1 {
+            t.send("UserPromptSubmit");
+            t.c.await_state(t.sid, "working", |s| *s == SessionState::Running);
+        }
+        let stopped = Instant::now();
+        t.send_with("Stop", &listed);
+        t.c.await_state(t.sid, "idle with the watch", |s| *s == background);
+        assert!(
+            stopped.elapsed() < Duration::from_secs(8),
+            "turn {turn}'s Stop was held by the watch:\n{}",
+            t.feed()
+        );
+        assert!(t.c.board().live_agent(t.worker).unwrap().hook_wait.is_none());
+    }
+    assert!(!t.feed().contains("async_hook_wait"), "{}", t.feed());
+
+    // An async hook beside the watch is counted alone, and holds.
+    t.send("UserPromptSubmit");
+    t.c.await_state(t.sid, "working", |s| *s == SessionState::Running);
+    t.child();
+    t.send_with("Stop", &listed);
+    wait_until(Duration::from_secs(8), "the hook holds the Stop", || {
+        t.feed().contains("async_hook_wait")
+    });
+    let seat = t.c.board().live_agent(t.worker).unwrap().clone();
+    assert_eq!(seat.state, SessionState::Running);
+    assert_eq!(seat.hook_wait.unwrap().count, 1, "the hook alone, never the watch");
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(t.c.board().live_agent(t.worker).unwrap().state, SessionState::Running);
+    t.release();
+    t.c.await_state(t.sid, "released after the hook", |s| *s == background);
+    assert!(!t.feed().contains("async_hook_cap"));
 }

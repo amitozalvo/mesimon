@@ -46687,3 +46687,52 @@ over nothing before the fix. No golden moved.
     Every other check passed: one ask, nothing dropped, woken `answered`, replies `ready` then
     `as1-teal`, and the crown's line named no person. The real engine cannot hold back its own
     bridge, so the kept road is proven by the two e2es, not by the rig.
+
+## A watch with an indented line is no hook child, and a later Stop that lists a kept child forgives it (T-1292, 2026-11-17, the person: "even though it is not running (it has a shell and a monitor), should be ready to receive wakes")
+
+**Seen** on the simbly board's crown (T-132, Claude Code 2.1.325, classic mod road, daemon on
+`7070e440`, which had both T-1259 fixes). The card read `crown wakes ∙ after its turn` and a wake
+waited. The live pane's children were a Monitor watch (born 00:26:34) and a background deploy
+(born 00:36:21). Read off the feed:
+
+- Before the watch, every `Stop` read `async_hook_wait` **1** child and released in about 3.5 s.
+  That child is the person's own async Stop hook (`security_reminder_hook.py`, a plugin's). A
+  headless probe's Stop hook dumped `ps` and showed it beside every `Stop`. This is the case the
+  hold exists for, and it worked.
+- The first `Stop` after the watch started (22:26:37Z) read **2**, and no `Stop` of that seat
+  released after it.
+- The probe (2.1.325 headless, Stop payload dumped) lists a Bash background command and a
+  Monitor watch both as `type: "shell"` with their `command`. The payload was not at fault.
+
+**Cause.** `parse_ps_rows` rejoins argv with single spaces. The watch's Python had an indented
+line: `ps` writes it as `\012    if j[…]`, and the daemon reads `\012 if j[…]`. `on_argv` looked
+for the command's run with its four leading spaces, missed, and counted the watch as hook work.
+`known` then kept the pid across every later `Stop` and never checked it against those `Stop`s'
+lists.
+
+**Shipped** (`asynchooks.rs`):
+- `on_argv` folds each run's spaces to one, and argv's too, before matching.
+- `known.retain` drops a kept child that the current `Stop` lists, so a misreading at one `Stop`
+  cannot outlive the next. An async hook is never listed, so it stays held until it exits, plus
+  the grace. T-1044's case is unchanged.
+
+**Refuted:** "the Stop does not list a Monitor's watch or a shell from an earlier turn" (the
+probe lists both, every `Stop`), and "the argv is clipped" (`ps axww`, read whole).
+**Not traced:** T-1281's eleven-minute hold and T-1274's lost `and finished its turn` happened
+on another board, from a worker's background suite. Either cause fits, but neither was read.
+
+**No rig case.** No text, tool or road the crown reads changed: the fix is in how the daemon
+reads the process table. A rig crown's `sleep 300` would have passed before the fix. The
+real-process e2e uses the measured argv shape and fails without the fix.
+
+Tests: `asynchooks::a_reported_watch_with_an_indented_line_is_not_hook_work` (through
+`parse_ps_rows`), `listed_shells_release_every_stop_and_an_async_hook_still_holds` (a watch kept
+from an unlisted `Stop`, then a watch and a deploy over two `Stop`s, then a hook beside them that
+holds), `async_hook_e2e::a_listed_watch_releases_each_stop_and_a_hook_beside_it_still_holds` (a
+real `sh -c` watch with an indented line under the pane: `Idle{Background}` at two `Stop`s, then
+a real hook child holds alone). Each fails with its half of the fix reverted. Run: `cargo ut`,
+`--test agents async_hook_e2e::` (4 of 4), and
+`--test crown crown_e2e::a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told`.
+The first run of the new e2e failed on the test's own assumptions (a `Monitoring` state, a
+delivery wake, which T-599 owes only after the task ends); those were fixed in the test, not the
+product.

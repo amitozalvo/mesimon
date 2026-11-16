@@ -80,16 +80,23 @@ fn accounted(argv: &str, shells: &[String]) -> bool {
 /// at once: `ps` writes a newline or a tab its own way (`\012` on macOS),
 /// and Claude Code caps a listed command at 1000 characters and ends a
 /// clipped one `… [+N chars]`. So the command's runs of printable ASCII,
-/// the cap's marker dropped, are found on `argv` in order.
+/// the cap's marker dropped, are found on `argv` in order. Each run is
+/// read with its spaces folded to one, as `parse_ps_rows` rejoins argv
+/// (T-1292): a watch's indented line, `\012    if …` to `ps`, is `\012 if …`.
 fn on_argv(argv: &str, command: &str) -> bool {
     let command = command
         .rsplit_once("… [+")
         .filter(|(_, n)| n.strip_suffix(" chars]").is_some_and(|n| n.parse::<u32>().is_ok()))
         .map_or(command, |(kept, _)| kept);
-    let mut rest = argv;
+    let argv = argv.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut rest = argv.as_str();
     let mut found = false;
-    for run in command.split(|c: char| !(' '..='~').contains(&c)).filter(|r| !r.trim().is_empty()) {
-        let Some(at) = rest.find(run) else { return false };
+    for run in command.split(|c: char| !(' '..='~').contains(&c)) {
+        let run = run.split_whitespace().collect::<Vec<_>>().join(" ");
+        if run.is_empty() {
+            continue;
+        }
+        let Some(at) = rest.find(&run) else { return false };
         rest = &rest[at + run.len()..];
         found = true;
     }
@@ -292,13 +299,16 @@ impl Daemon {
             let (Some(pane), Ok(rows)) = (pane, rows) else { continue };
             let known = self.async_hooks.known.entry(*id).or_default();
             let before = known.len();
+            // A child kept from an earlier Stop is read against this one's
+            // list too (T-1292): a background shell or watch this Stop lists
+            // is the agent's, whatever an earlier reading made of it. An
+            // async hook is never listed, so it stays held.
             known.retain(|pid, born| {
                 rows.iter().any(|r| {
                     r.pid == *pid
                         && r.ppid == pane.pane_pid
                         && same_process(r, *born)
-                        && !r.argv.contains("<defunct>")
-                        && !r.argv.starts_with('(')
+                        && !accounted(&r.argv, &pending.shells)
                 })
             });
             for row in rows.iter().filter(|r| r.ppid == pane.pane_pid) {
@@ -624,6 +634,126 @@ mod tests {
         assert!(!accounted(argv, &[other.into()]));
         // A blank command names nothing.
         assert!(!accounted(argv, &["\n \t".into()]));
+    }
+
+    /// T-1292: the simbly crown's watch, a Python script with an indented
+    /// line, as the daemon reads it: `parse_ps_rows` folds argv's spaces, so
+    /// `\012    if` is `\012 if` there. Its every `Stop` was held for the cap.
+    #[test]
+    fn a_reported_watch_with_an_indented_line_is_not_hook_work() {
+        let command = "while true; do out=$(glab api jobs | python3 -I -c \"\nimport json,sys\n\
+                       for j in json.load(sys.stdin):\n    if j['name'] in ('a','b'): \
+                       print(j['name']+': '+j['status'])\n\" | sort); sleep 60; done";
+        let line = concat!(
+            "90809 73462 05:00 /bin/zsh -c source /home/me/.claude/shell-snapshots/snapshot-zsh-1-a.sh ",
+            r#"2>/dev/null || true && eval 'while true; do out=$(glab api jobs | python3 -I -c ""#,
+            r#"\012import json,sys\012for j in json.load(sys.stdin):\012    if j['"'"'name'"'"'] "#,
+            r#"in ('"'"'a'"'"','"'"'b'"'"'): print(j['"'"'name'"'"']+'"'"': '"'"'+j['"'"'status'"'"'])"#,
+            r#"\012" | sort); sleep 60; done' < /dev/null && pwd -P >| /tmp/claude-0a7c-cwd"#,
+        );
+        let rows = mesimon_core::board::parse_ps_rows(line);
+        assert!(accounted(&rows[0].args, &[command.into()]), "{}", rows[0].args);
+        // The words still have to be the command's, in its order.
+        assert!(!accounted(&rows[0].args, &["for j in x:\n    if k".into()]));
+    }
+
+    /// T-1292: a held Stop across a seat's turns. A watch counted at a Stop
+    /// that did not list it (the indented line above, before its fix) is the
+    /// agent's at the next Stop that does, as is a background command; an
+    /// async hook no Stop lists is held until it exits and the grace passes.
+    #[test]
+    fn listed_shells_release_every_stop_and_an_async_hook_still_holds() {
+        let dir = std::env::temp_dir()
+            .join(format!("msmn-hks-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        let (mut d, sid, _rx) = crate::server::queued_person_push_tests::daemon(&dir);
+        let id = d.board.sessions[0].id;
+        let rec = &mut d.board.sessions[0];
+        rec.state = SessionState::Running;
+        rec.pane_key = Some("1:%0".into());
+        rec.launched_at = Some(0);
+        d.machines.insert(id, Machine::new(SessionState::Running, 0));
+        let mut facts = vec![pane(false)];
+        facts[0].session_name = sid;
+        let watch = "while true; do echo tick; sleep 30; done";
+        let deploy = "~/deploy.sh 2>&1 | tail -40";
+        let wrap = |c: &str| {
+            format!("/bin/zsh -c source /s.sh 2>/dev/null || true && eval '{c}' < /dev/null")
+        };
+        let row =
+            |pid, born, argv: String| HookProcess { pid, ppid: 10, pgid: pid, born_ms: born, argv };
+        let claude =
+            || HookProcess { pid: 10, ppid: 1, pgid: 10, born_ms: 0, argv: "claude".into() };
+        let stop = |d: &mut Daemon, listed: &[&str], at: u64| {
+            let tasks: Vec<_> = listed
+                .iter()
+                .map(|c| serde_json::json!({"id": "t", "type": "shell", "status": "running", "command": c}))
+                .collect();
+            let frame = HookFrame {
+                session: id.to_string(),
+                event: "Stop".into(),
+                reason: None,
+                pane: None,
+                road: Road::Mod,
+                payload: serde_json::json!({ "background_tasks": tasks }),
+            };
+            let sig = Signal::Stop {
+                stop_hook_active: false,
+                has_agent_id: false,
+                blocking_tasks: false,
+                monitoring_tasks: !listed.is_empty(),
+                teammates: 0,
+            };
+            d.hold_async_stop(id, sig, &frame, None, at);
+        };
+
+        // A Stop that does not list the watch counts it, and a prompt opens
+        // the next turn over the hold: the watch stays known.
+        stop(&mut d, &[], 1_000);
+        let rows = vec![claude(), row(20, 900, wrap(watch))];
+        d.sample_async_stops(Some(&facts), Ok(&rows), 1_001);
+        assert!(d.async_hooks.known[&id].contains_key(&20));
+        let frame = HookFrame {
+            session: id.to_string(),
+            event: "UserPromptSubmit".into(),
+            reason: None,
+            pane: None,
+            road: Road::Mod,
+            payload: serde_json::json!({}),
+        };
+        d.hold_async_stop(id, Signal::UserPromptSubmit, &frame, None, 5_000);
+        assert!(!d.async_stop_pending(id));
+
+        // Its next Stop lists the watch, and a deploy started in this turn.
+        stop(&mut d, &[watch, deploy], 10_000);
+        let both = || vec![claude(), row(20, 900, wrap(watch)), row(21, 9_000, wrap(deploy))];
+        let rows = both();
+        d.sample_async_stops(Some(&facts), Ok(&rows), 10_001);
+        assert!(d.async_stop_pending(id), "the scan window first");
+        d.sample_async_stops(Some(&facts), Ok(&rows), 10_000 + SCAN_MS);
+        assert!(!d.async_stop_pending(id), "both listed: released after the scan");
+        assert!(d.async_hooks.known[&id].is_empty());
+
+        // And the one after, both still running: released again.
+        stop(&mut d, &[watch, deploy], 20_000);
+        d.sample_async_stops(Some(&facts), Ok(&rows), 20_000 + SCAN_MS);
+        assert!(!d.async_stop_pending(id), "a second Stop over the same shells");
+
+        // An async hook beside them is no listed shell: held while it runs,
+        // and through the rewake grace after it exits.
+        stop(&mut d, &[watch, deploy], 30_000);
+        let hook = row(30, 30_050, "python3 /plugin/review.py".into());
+        let mut with_hook = both();
+        with_hook.push(hook);
+        d.sample_async_stops(Some(&facts), Ok(&with_hook), 30_001);
+        d.sample_async_stops(Some(&facts), Ok(&with_hook), 30_000 + SCAN_MS + 5_000);
+        assert!(d.async_stop_pending(id), "the hook holds its Stop");
+        assert_eq!(d.async_hooks.known[&id].len(), 1, "the hook alone is counted");
+        d.sample_async_stops(Some(&facts), Ok(&rows), 40_000);
+        assert!(d.async_stop_pending(id), "the rewake grace after it exits");
+        d.sample_async_stops(Some(&facts), Ok(&rows), 40_000 + REWAKE_MS);
+        assert!(!d.async_stop_pending(id));
+        drop(d);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Claude Code lists at most 1000 characters of a command and marks the
