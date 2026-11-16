@@ -46077,3 +46077,50 @@ chromium phone; that size was rerun alone and passed (named as a rerun, not a de
   saying so. The third run **passed 2/2**: the refusal "T-5 changed since it was read: its notes
   changed (now in TODO, agent no agent)", no read after it. `--reset` after it. Owed after the
   merge: one full workspace suite, since `server.rs` changed outside its tests (T-1194).
+
+## A merge or deploy arrival waits for the ticket's own work (T-1275, 2026-11-16, the simbly crown: "the FIRST MR's deployed to production moved the card IN PROGRESS → PRODUCTION while its worker was awake on a SECOND MR")
+
+- **Confirmed on simbly's feed (T-467).** The crown's `ask_agent` started the worker's turn at
+  10:13:49; at 10:18:21 `forge_arrivals` moved the card IN PROGRESS → PRODUCTION on !86's
+  deployment, mid-turn; the crown's `move_ticket` back was refused `ping_pong` six seconds later;
+  !87 opened at 10:20:18 and merged at 10:21. So at the edge no second PR existed and no gate
+  could have read one.
+- **The rule** (`Daemon::arrival_stay`). A finished arrival, `Arrival::Merged` or `Deployed`, is
+  held while (a) the ticket's agent is working (`quiet::is_working`, the merge gate's reading), or
+  (b) a touched, sampled leg's tip is carried by no PR of the set: merged as `fold_set` folds it,
+  or open at that tip (committed work no PR holds). (c) An open sibling PR needs no rule: since
+  T-768/T-801 `arrived_envs` is empty and `merged` false while any PR is open, so the edge never
+  comes. All three were asked; (a) is the one that would have caught simbly, (b) catches the same
+  thing after the turn (work committed, no PR yet), and both read state the daemon already holds.
+  PR-opened and pipeline-passes arrivals are not held: they describe the open PR, the work in
+  flight itself, and T-780 already refuses a pass on a head the branch left.
+- **The skipped arrival** is kept, `forge.deferred` (`forge::Deferred`: the merge and the
+  environments), in `forge.json` too (`#[serde(default)]`, no schema bump), since the edge that
+  brought it is never seen again. Each pass's `release_arrivals` takes those whose stay ended,
+  rechecks them against the set as it stands (`Deferred::still`: every PR merged; the set reached
+  that environment as a whole), and moves the card on them: **no second deployment edge is
+  needed**. A turn's end therefore moves the card on the next forge read (≤ 60 s, 15 s warm).
+  A later PR opened meanwhile empties `still`, so the hold is dropped (feed `deferred arrival
+  dropped`) and that PR's own merge and deployment are the edges that move the card. A released
+  arrival only moves a card right: it may have gone on since (the turn's end automove, a hand),
+  and an old merge is no reason to take it back. The feed says `deferred: agent working` or
+  `deferred: branch ahead` with the column it was held from.
+- **Not changed, the question stands:** whether a crown may undo an automation's move as a
+  person's hand does is the move gate's principals (`movegate.rs`), the person's decision.
+- **Refuted.** Holding every arrival kind while the agent works: an agent that opens its PR mid-turn
+  would wait for its own turn's end to reach a PR-opened column. Dropping the held edge instead of
+  keeping it: a turn that ends with no new PR (the second round found nothing) would leave the
+  card short of where its deployed work is, until a person moves it.
+- **Checks.** `cargo ut` (72 + 17 + 773 + 884 + 24 + 1,470 passed, 0 failed); new
+  `server::arrival_tests` (working agent held then released into PRODUCTION from REVIEW and the
+  hold through `forge.json`; a later PR opened drops it and its own deploy moves the card; branch
+  ahead held until the tip is the merged head; open sibling PR is no edge; a released merge never
+  moves a card left), each failing on the old rule where it asserts a stay. E2e `--test git
+  forge_e2e::` (42 passed). Its first run failed two, `a_deployed_arrival_waits_for_every_repositorys_pr`
+  and `an_open_mrs_state_is_read_from_the_mr_itself`, on the new rule (`deferred: agent
+  working`): their stub Claude never sends `SessionStart` and sat at `Spawning` through the
+  merge. The rule is right for them, so they now park the stub after the cut (`quiet`), as a real
+  agent has ended its turn when its PR merges; the other arrival tests already ran it through a
+  turn to idle. Those two rerun alone, then the file once more. No rig run: no word an agent or
+  the crown reads changed (the feed's outcome only). Owed: the post-merge full suite
+  (`daemon/src/server.rs` outside its tests).

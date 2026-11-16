@@ -98,6 +98,8 @@ impl Mint {
     }
 }
 
+#[cfg(test)]
+mod arrival_tests;
 mod asynchooks;
 mod attachments;
 mod bridge;
@@ -20492,6 +20494,7 @@ impl Daemon {
             }
         }
         changed |= self.forge_arrivals(arrivals);
+        changed |= self.release_arrivals();
         if edged {
             self.forge_acted_ms = mesimon_core::clock::now_ms();
             changed = true;
@@ -20557,47 +20560,138 @@ impl Daemon {
     /// to an automove. Which column, when one pass saw several, is
     /// `board::arrival_dest`'s: the furthest stage, the right-most of
     /// equals, and never a deploy column left of the ticket's own (T-891).
-    /// True when a ticket moved.
+    /// A merge or a deployment the ticket's work is not (`arrival_stay`,
+    /// T-1275) takes it nowhere yet: it is kept (`forge.deferred`) for
+    /// `release_arrivals`, and only an opening or a pass may move the card
+    /// meanwhile. True when a ticket moved.
     fn forge_arrivals(&mut self, arrivals: Vec<(ulid::Ulid, crate::forge::Edge)>) -> bool {
-        use mesimon_core::board::Arrival;
         let mut moved = false;
         for (t, edge) in arrivals {
-            let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) else { continue };
-            // Read once, and only for a column a pass takes to (T-795).
-            let head_unread = std::cell::OnceCell::new();
-            let columns = self.board.sorted_columns();
-            let dest = mesimon_core::board::arrival_dest(&columns, &from, |c| {
-                match c.settings.arrives_on {
-                    Arrival::Deployed => c
-                        .settings
-                        .arrives_env
-                        .as_ref()
-                        .is_some_and(|env| edge.deployed.iter().any(|d| d == env)),
-                    Arrival::Merged => edge.merged,
-                    // A pass on a head the branch has left is the commit
-                    // before's (T-780).
-                    Arrival::PipelinePasses => {
-                        edge.passed
-                            && !*head_unread
-                                .get_or_init(|| self.pipeline_head_unread(t, Reading::Fresh))
-                    }
-                    Arrival::PrOpened => !edge.opened.is_empty(),
-                    Arrival::Nothing => false,
-                }
-            })
-            .map(str::to_string);
-            let Some(dest) = dest else { continue };
-            let by = Principal::Automation { rule: "forge".into() };
-            let outcome = match self.place_ticket(t, &dest, Position::Top, &by, None, "forge") {
-                Ok(_) => {
-                    moved = true;
-                    "moved".to_string()
-                }
-                Err(reason) => format!("refused: {reason}"),
-            };
-            self.feed.movement_decision(t, &from, Some(&dest), &outcome);
+            moved |= self.forge_arrival(t, &edge, false);
         }
         moved
+    }
+
+    /// One ticket's arrival on `edge`. A `released` one is a held arrival
+    /// whose stay ended: it was judged when it came, so it is not held
+    /// again, and it only ever moves the card right — the card may have
+    /// gone on since, by hand or by a later edge, and an old merge is no
+    /// reason to take it back.
+    fn forge_arrival(&mut self, t: ulid::Ulid, edge: &crate::forge::Edge, released: bool) -> bool {
+        use mesimon_core::board::Arrival;
+        let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) else { return false };
+        let stay = if released { None } else { self.arrival_stay(t) };
+        let (dest, held) = {
+            // Read once, and only for a column a pass takes to (T-795).
+            let head_unread = std::cell::OnceCell::new();
+            let satisfied = |c: &mesimon_core::board::Column| match c.settings.arrives_on {
+                Arrival::Deployed => c
+                    .settings
+                    .arrives_env
+                    .as_ref()
+                    .is_some_and(|env| edge.deployed.iter().any(|d| d == env)),
+                Arrival::Merged => edge.merged,
+                // A pass on a head the branch has left is the commit
+                // before's (T-780).
+                Arrival::PipelinePasses => {
+                    edge.passed
+                        && !*head_unread
+                            .get_or_init(|| self.pipeline_head_unread(t, Reading::Fresh))
+                }
+                Arrival::PrOpened => !edge.opened.is_empty(),
+                Arrival::Nothing => false,
+            };
+            let finished =
+                |c: &mesimon_core::board::Column| c.settings.arrives_on >= Arrival::Merged;
+            let columns = self.board.sorted_columns();
+            let held = stay
+                .and_then(|_| {
+                    mesimon_core::board::arrival_dest(&columns, &from, |c| {
+                        finished(c) && satisfied(c)
+                    })
+                })
+                .map(str::to_string);
+            let at = columns.iter().position(|c| c.name == from);
+            let dest = mesimon_core::board::arrival_dest(&columns, &from, |c| {
+                (stay.is_none() || !finished(c)) && satisfied(c)
+            })
+            .filter(|d| !released || columns.iter().position(|c| c.name == *d) > at)
+            .map(str::to_string);
+            (dest, held)
+        };
+        if let (Some(why), Some(to)) = (stay, &held) {
+            self.forge.deferred.entry(t).or_default().add(edge);
+            self.feed.movement_decision(t, &from, Some(to), &format!("deferred: {why}"));
+        }
+        let Some(dest) = dest else { return false };
+        let by = Principal::Automation { rule: "forge".into() };
+        let (moved, outcome) = match self.place_ticket(t, &dest, Position::Top, &by, None, "forge")
+        {
+            Ok(_) => (true, "moved".to_string()),
+            Err(reason) => (false, format!("refused: {reason}")),
+        };
+        self.feed.movement_decision(t, &from, Some(&dest), &outcome);
+        moved
+    }
+
+    /// Why a merge or a deployment that reached a ticket's whole set is not
+    /// its work yet (T-1275), or `None` where it is. Its agent working: a
+    /// turn under way is work the forge has not seen (the simbly board's
+    /// T-467, its worker asked a second round when the first MR deployed,
+    /// the second MR opened two minutes later). Or a leg's branch past the
+    /// set: committed work no PR of the set carries, merged as
+    /// `forge_fold_legs` folds the set in or open at the leg's tip. An open PR of the set needs no
+    /// reason here: the set is then not merged and reached nowhere
+    /// (`forge::arrived_envs`, T-768).
+    fn arrival_stay(&self, t: ulid::Ulid) -> Option<&'static str> {
+        if self.board.sessions.iter().any(|s| s.ticket == t && mesimon_core::quiet::is_working(s)) {
+            return Some("agent working");
+        }
+        let set = self.forge.sets.get(&t)?;
+        let mut legs = self.wt_repos.get(&t)?.clone();
+        self.fold_set(set, &mut legs);
+        // A tip an open PR carries is the set's work, which the open PR
+        // already holds back.
+        let opened = |tip: &str| set.iter().any(|p| p.state.is_open() && p.lands(tip));
+        legs.iter()
+            .any(|l| {
+                l.touched() && !l.merged && !l.unchecked && l.trouble.is_none() && !opened(&l.tip)
+            })
+            .then_some("branch ahead")
+    }
+
+    /// The held arrivals whose stay ended (T-1275), each rechecked against
+    /// its ticket's set as it stands (`Deferred::still`) and taken as a
+    /// released arrival: the card moves on the hold's own edge, no second
+    /// deployment needed. One the set no longer stands on (a later PR
+    /// opened) is dropped; that PR's merge and deployment are edges of
+    /// their own. True when a ticket moved or a hold went.
+    fn release_arrivals(&mut self) -> bool {
+        let ready: Vec<ulid::Ulid> = self
+            .forge
+            .deferred
+            .keys()
+            .copied()
+            .filter(|t| self.board.ticket(*t).is_none() || self.arrival_stay(*t).is_none())
+            .collect();
+        let mut changed = false;
+        for t in ready {
+            let Some(held) = self.forge.deferred.remove(&t) else { continue };
+            changed = true;
+            let Some(set) = self.forge.sets.get(&t) else { continue };
+            let edge = held.still(set);
+            if edge.any() {
+                self.forge_arrival(t, &edge, true);
+            } else if let Some(from) = self.board.ticket(t).map(|x| x.column.clone()) {
+                self.feed.movement_decision(
+                    t,
+                    &from,
+                    None,
+                    "deferred arrival dropped: set moved on",
+                );
+            }
+        }
+        changed
     }
 
     /// The merged clause the forge adds to a ticket's legs (T-739): a leg

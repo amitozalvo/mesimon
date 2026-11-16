@@ -1970,6 +1970,13 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
     let wt = wait_attached(&mut c, id);
     let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(names, ["api", "web"]);
+    // The stub never starts its turn, so it reads working, and a working
+    // agent holds a deployed arrival (T-1275): the ticket's agent is done.
+    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
+        c.board().sessions.iter().any(|s| s.ticket == id)
+    });
+    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
+    quiet(&mut c, id, sid);
     let container = PathBuf::from(wt.path.clone().expect("a path"));
     let tip = |name: &str| git(&container.join(name), &["rev-parse", "HEAD"]).trim().to_string();
     let (api_tip, web_tip) = (tip("api"), tip("web"));
@@ -3593,7 +3600,10 @@ fn an_open_mrs_state_is_read_from_the_mr_itself() {
         c.request(Command::SetColumnSettings { name: "DONE".into(), settings: done }),
         Response::Ok
     ));
-    let (id, _sid, branch, path) = ready(&mut c, "alpha");
+    let (id, sid, branch, path) = ready(&mut c, "alpha");
+    // A working agent holds a merged arrival (T-1275); the stub never
+    // starts its turn, so it would read working.
+    quiet(&mut c, id, sid);
     let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
     let at_tip = PathBuf::from(format!("{}.{tip}", pipelines.display()));
     write(&at_tip, r#"[{"id":1,"status":"running"}]"#);

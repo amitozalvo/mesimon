@@ -511,6 +511,52 @@ fn arrived_envs(set: &[Pr]) -> Vec<String> {
     first.deployed.iter().filter(|e| rest.iter().all(|p| p.deployed.contains(e))).cloned().collect()
 }
 
+/// Every PR of the set merged, and one at least (T-768): a closed PR is no
+/// PR to wait for (T-797).
+fn all_merged(set: &[Pr]) -> bool {
+    set.iter().any(|p| p.state == PrState::Merged) && !set.iter().any(|p| p.state.is_open())
+}
+
+/// A finished arrival a pass held back (T-1275): the merge, and the
+/// environments, an edge brought while the ticket's own work was not what
+/// arrived — its agent working, or a leg's branch past what the set
+/// carries. Kept, in `forge.json` too, until that stops; then it is
+/// rechecked against the set as it stands (`still`), so a later PR opened
+/// meanwhile drops it, and the later PR's own merge and deployment are new
+/// edges that need nothing kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Deferred {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub merged: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deployed: Vec<String>,
+}
+
+impl Deferred {
+    /// The finished part of `edge`, added to what was already held.
+    pub fn add(&mut self, edge: &Edge) {
+        self.merged |= edge.merged;
+        for env in &edge.deployed {
+            if !self.deployed.contains(env) {
+                self.deployed.push(env.clone());
+            }
+        }
+    }
+
+    /// The held arrival as an edge, where `set` still stands on it: every
+    /// PR merged for the merge, the set reached as a whole for each
+    /// environment (`arrived_envs`).
+    pub fn still(&self, set: &[Pr]) -> Edge {
+        let reached = arrived_envs(set);
+        Edge {
+            merged: self.merged && all_merged(set),
+            deployed: self.deployed.iter().filter(|e| reached.contains(e)).cloned().collect(),
+            ..Edge::default()
+        }
+    }
+}
+
 /// The edge between two reads of one ticket's set. `held` is every PR, by
 /// repository and number, the ticket's reads held before this one
 /// (`State::held`): an open PR outside it is newly bound, and brings its
@@ -524,10 +570,6 @@ pub fn edge(old: &[Pr], new: &[Pr], held: &[(String, u64)], reads_envs: bool) ->
         .iter()
         .filter(|p| p.state.is_open() && !held.iter().any(|(r, n)| *r == p.repo && *n == p.number))
         .collect();
-    // A closed PR stays in the set (T-797) and waits for nothing.
-    let all_merged = |s: &[Pr]| {
-        s.iter().any(|p| p.state == PrState::Merged) && !s.iter().any(|p| p.state.is_open())
-    };
     let before = arrived_envs(old);
     let (then, now) = (forge::pipeline_of(old), forge::pipeline_of(new));
     // The open PRs' own wait; a merged PR's is said per PR (T-782).
@@ -1856,6 +1898,10 @@ pub struct State {
     /// the busy cadence (`busy`). Memory only: a restart's first pass reads
     /// everything, and what changed while it was down warms again.
     pub warm: HashMap<ulid::Ulid, u64>,
+    /// Each ticket's finished arrival held back (T-1275), until its work is
+    /// what arrived. In `forge.json`: the edge that brought it is not seen
+    /// again.
+    pub deferred: HashMap<ulid::Ulid, Deferred>,
 }
 
 impl State {
@@ -2118,6 +2164,7 @@ impl State {
         self.quiet.retain(|t, _| live.contains(t));
         self.unfound.retain(|t, _| live.contains(t));
         self.warm.retain(|t, _| live.contains(t));
+        self.deferred.retain(|t, _| live.contains(t));
         // And the merge commits no kept set names (T-838): the two maps
         // grew by every PR ever merged, were written whole to `forge.json`
         // and copied into every pass's and burst's query.
@@ -2367,6 +2414,10 @@ pub struct ForgeFile {
     /// none, and a clear of a conflict it said is then silent.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub conflicts: BTreeMap<ulid::Ulid, Vec<(String, u64)>>,
+    /// `State::deferred` (T-1275), for tickets with a set. An older file has
+    /// none: nothing was held.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub deferred: BTreeMap<ulid::Ulid, Deferred>,
 }
 
 impl ForgeFile {
@@ -2410,7 +2461,13 @@ impl ForgeFile {
                 (!kept.is_empty()).then_some((*t, kept))
             })
             .collect();
-        ForgeFile { schema_version: FORGE_SCHEMA, sets, commits, conflicts }
+        let deferred = state
+            .deferred
+            .iter()
+            .filter(|(t, _)| state.sets.contains_key(t))
+            .map(|(t, d)| (*t, d.clone()))
+            .collect();
+        ForgeFile { schema_version: FORGE_SCHEMA, sets, commits, conflicts, deferred }
     }
 
     /// No sets, at this build's schema: what an absent file reads as.
@@ -2450,6 +2507,11 @@ impl State {
         for (t, said) in file.conflicts {
             if self.sets.contains_key(&t) {
                 self.conflicted.insert(t, said);
+            }
+        }
+        for (t, held) in file.deferred {
+            if self.sets.contains_key(&t) {
+                self.deferred.insert(t, held);
             }
         }
         for c in file.commits {
