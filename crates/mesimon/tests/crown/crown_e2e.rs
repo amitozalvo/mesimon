@@ -17225,3 +17225,151 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
         "the crown's pane names the kept worker alone: {got_crown}"
     );
 }
+
+/// A background task's `<task-notification>`, as Claude Code fires it: the
+/// `prompt` of a `UserPromptSubmit` (T-135).
+const TASK_NOTIFICATION: &str = r#"{"prompt":"<task-notification>\n<task-id>bqvffdb91</task-id>\n<status>completed</status>\n<summary>Background command \"cargo ut\" completed (exit code 0)</summary>\n</task-notification>"}"#;
+
+/// T-1287 (T-1196, T-1208 on this board's feed): the worker's own
+/// background command ends inside its turn, and Claude Code fires a prompt
+/// frame for its notification. It is nobody's prompt: the crown's ask queued
+/// behind the turn still waits for its end and then goes in, and the hand
+/// the crown was told of stays its to read. Before, the ask was dropped as
+/// typed ahead ("a person took them back") and the told hand forgotten.
+#[test]
+fn a_worker_s_own_task_notification_keeps_the_crown_s_ask_and_told_hand() {
+    let Some(h) =
+        Harness::boot_with_env("crown_notified", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_notified");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1287 runs cargo in the background");
+    let kw = c.key_of(w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = crown_idle(&h, &mut c, a);
+    let (ws, _, _) = crown_starts_on_worktree(&mut c, sa, w, &kw);
+    settle_for(500);
+    let worker = format!("{kw} \"mesimon-probe-1287 runs cargo in the background\"");
+
+    // The worker's turn runs; it raises its hand mid-turn, and the crown is
+    // told (the card's hand goes down as it is told, T-861).
+    h.prompt_turn(&mut c, ws);
+    match c.send(
+        Principal::Agent { session: ws },
+        Command::AgentRaiseHand { reason: "mesimon-probe-1287 ship is yours".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the hand's wake", || {
+        !lines_with(&format!("{worker} raised its hand")).is_empty()
+    });
+    h.one_turn(&mut c, sa);
+    // The crown's ask waits for the turn's end.
+    match c.crown_ask(sa, &kw, "mesimon-probe-1287 the word is teal", Deliver::Idle, None) {
+        Response::AgentAsked { .. } => {}
+        other => panic!("ask_agent: {other:?}"),
+    }
+    settle_for(300);
+    assert!(lines_with("mesimon-probe-1287 the word is teal").is_empty(), "held for the turn");
+
+    // The worker's own background command ends inside the turn.
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", TASK_NOTIFICATION);
+    settle_for(500);
+    let told = c.agent_read(sa, &kw).unwrap().told_hand.map(|h| h.reason);
+    assert_eq!(told.as_deref(), Some("mesimon-probe-1287 ship is yours"), "the told hand stands");
+    let feed = h.feed();
+    assert!(!feed.contains("queued_ask_dropped_by_hand"), "no ask dropped by a person");
+    assert!(!feed.contains("crown_ask_dropped_by_hand"), "no ask dropped by a person");
+
+    // The turn ends: the ask goes in, as it was asked to.
+    h.end_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the ask to reach the worker", || {
+        lines_with("mesimon-probe-1287 the word is teal").len() == 1
+    });
+}
+
+/// T-1287 (21 of 113 notice turns on this board's feed held a notification):
+/// the merged notice's turn backgrounds a build and parks on it, and the
+/// build's notification wakes the seat. That turn is still the notice's
+/// (T-1247): DONE's `on_working` does not take the card to IN PROGRESS.
+/// Before, the notification's prompt took the mark, as a person's does.
+#[test]
+fn a_task_notification_inside_the_notice_turn_keeps_it_the_notice_s() {
+    use mesimon_core::board::StopReason;
+    let Some(h) =
+        Harness::boot_with_env("crown_notice_task", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("crown_notice_task");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+    let send = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&hook_sock, &sid.to_string(), event, body);
+    };
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1287 notice");
+    let kw = c.key_of(w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = crown_idle(&h, &mut c, a);
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
+    settle_for(500);
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: true }),
+        Response::Ok
+    ));
+    commit(&path, "one.txt");
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the train to merge it", || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", &branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
+        lines_with("has been merged").len() == 1
+    });
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE");
+
+    // The notice's turn: a notification mid-turn, a park on a background
+    // build, and the build's notification waking the seat.
+    h.prompt_turn(&mut c, ws);
+    send(ws, "UserPromptSubmit", TASK_NOTIFICATION);
+    send(
+        ws,
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"build1"}}"#,
+    );
+    send(
+        ws,
+        "Stop",
+        r#"{"stop_hook_active":false,"background_tasks":[{"id":"build1","type":"shell","status":"running"}]}"#,
+    );
+    c.await_state(ws, "parked on its build", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Background }
+    });
+    send(ws, "UserPromptSubmit", TASK_NOTIFICATION);
+    c.await_state(ws, "woken by the build's end", |s| *s == SessionState::Running);
+    absence_window(1500);
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE", "the notice's turn moves no card");
+    h.end_turn(&mut c, ws);
+    absence_window(1500);
+    assert_eq!(c.board().ticket(w).unwrap().column, "DONE", "nor does its end");
+}

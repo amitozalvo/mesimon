@@ -517,6 +517,18 @@ def hand_wake(rows, key):
     return "", []
 
 
+def told_hand_read(rows, key, word):
+    """(ok, observed) for the crown's last `get_ticket` keyed to `key`
+    (T-1287): its result carries `told_hand`, the reason holding `word`."""
+    texts_ = [c.text for c in calls(rows) if c.tool == "get_ticket" and c.key == key and c.text]
+    if not texts_:
+        return False, "no get_ticket keyed to the ticket"
+    m = re.search(r'"told_hand"\s*:\s*\{\s*"reason"\s*:\s*"((?:[^"\\]|\\.)*)"', texts_[-1])
+    if not m:
+        return False, "the last keyed read carries no told_hand"
+    return word.lower() in m.group(1).lower(), f"told_hand {m.group(1)[:120]!r}"
+
+
 def wake_said(rows, key, words):
     """(ok, observed) for the board's sentences to the crown about `key`
     (T-1278): some prompt of the crown's naming the ticket holds `words`."""
@@ -5017,6 +5029,11 @@ Reply with the single word ready and end your turn."""
                 said, reads = hand_wake(crown_rows, key)
                 check(c, bool(said) and not reads,
                       f"read after the wake: {reads}" if said else "no prompt says the hand")
+            elif name == "told_hand":
+                # `told_hand:<word>` (RH6, T-1287): the crown's last keyed
+                # get_ticket still carries the hand it was told of.
+                ok, seen = told_hand_read(crown_all, key, arg)
+                check(c, ok, seen)
             elif name == "wake_said":
                 # `wake_said:<words>` (T-1278): a sentence the board woke the
                 # crown with about the ticket holds <words>.

@@ -115,6 +115,8 @@ mod crownwake;
 mod eviction;
 mod mcpcompat;
 mod mesophon;
+#[cfg(test)]
+mod notified;
 mod peer;
 mod shelf;
 mod shells;
@@ -6041,7 +6043,23 @@ impl Daemon {
                 }
                 _ => {}
             }
-            if matches!(sig, Signal::UserPromptSubmit) {
+            // A background task's `<task-notification>` fires this hook too
+            // (T-135), into a running turn or waking an idle seat: the
+            // harness's words, never a person's (T-1287). The machine still
+            // takes the edge, since an idle seat's turn does begin. No reader
+            // that stands for a person counts it: no queued or parked ask
+            // dropped, no paste acked, no hand lowered, no drag guard cleared,
+            // no dialog spoken past.
+            let notified = matches!(sig, Signal::UserPromptSubmit)
+                && self
+                    .frame_words
+                    .as_deref()
+                    .is_some_and(mesimon_core::adopt::is_task_notification);
+            if notified {
+                if let Some(t) = self.board.session(id).map(|s| s.ticket) {
+                    self.crown_notified(t, id);
+                }
+            } else if matches!(sig, Signal::UserPromptSubmit) {
                 // Read by a live seat's id alone, so a gone seat's rows are
                 // pruned when a new seat first prompts, not on every prompt.
                 if !self.prompts_heard.contains_key(&id) {
@@ -7543,7 +7561,16 @@ impl Daemon {
                 .screen_since(&sid16, after)
                 .is_some_and(|screen| crate::agents::read_box(kind, screen) == Composer::Empty);
             if taken {
+                // A person's own line from the board answers a raised hand
+                // as their prompt would (T-1287): no `UserPromptSubmit` comes
+                // for it, and the notification of a `!` run Claude Code put in
+                // the background no longer stands in for one.
+                let person = self.owed.get(&id).map(|o| (o.ticket, o.ack.word == Ack::PROMPT.word));
                 changed |= self.ack_owed(id);
+                if let Some((ticket, true)) = person {
+                    changed |= self.lower_hand_on(ticket);
+                    self.forget_told_hand(ticket);
+                }
             }
         }
         let due: Vec<uuid::Uuid> = self
@@ -8059,8 +8086,12 @@ impl Daemon {
                 reason: Reason::Question | Reason::Plan | Reason::Permission | Reason::Elicitation
             }
         );
-        let turn_began =
-            matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        // A turn a background task's notification began (T-1287) is nobody's
+        // answer: the agent woke on its own work, and the hand stays up.
+        let notified =
+            self.frame_words.as_deref().is_some_and(mesimon_core::adopt::is_task_notification);
+        let turn_began = !notified
+            && matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn });
         let held_stop = self.async_stop_pending(id);
         if !held_stop
             && change.confidence == Confidence::High
@@ -10272,6 +10303,20 @@ impl Daemon {
             }
             _ => Some(mesimon_core::crownact::Cause::Person),
         };
+    }
+
+    /// A background task's notification reached `ticket`'s seat `id`
+    /// (T-1287). On the crown's seat it is nobody's cause: inside a turn the
+    /// turn's own stands, and a turn it begins on an idle seat has none. A
+    /// wake's words still owed wait for their own prompt.
+    fn crown_notified(&mut self, ticket: ulid::Ulid, id: uuid::Uuid) {
+        if self.board.crown_holder().map(|t| t.id) != Some(ticket) {
+            return;
+        }
+        let open = self.board.session(id).is_some_and(|s| crownexpect::turn_open(&s.state));
+        if !open {
+            self.crown_cause = None;
+        }
     }
 
     /// Words went between the crown and `ticket`'s agent (T-783): the card

@@ -46520,3 +46520,72 @@ needs a rig base the train may merge into, as T-1203 found.
   the incident's refusal ("T-2 changed since it was read: a prompt the crown did not send (now
   in IN PROGRESS, agent working)"). No reruns. Owed after the merge: nothing beyond this. The
   diff touches neither `server.rs` nor a schema.
+
+## A background task's notification is no person's prompt (T-1287, 2026-11-16, the author chose the whole proposal)
+
+- **What was wrong.** Claude Code fires `UserPromptSubmit` for a `<task-notification>`, both
+  inside a running turn and when one wakes an idle seat (T-135). The arm in `hook_frame` read it
+  as a person's prompt in every reader but T-1285's receipt. The feed from 2026-11-07 to 11-16
+  held 210 such frames: 167 inside a turn and 43 that woke an idle seat. Measured harm:
+  - **T-1196, 11-10 22:03:01:** a queued ask was dropped 2.9 s after it was queued
+    (`queued_ask_dropped_by_hand`), when the worker's own `cargo` run ended.
+  - **T-1208's crown seat, 11-13:** "Ship is yours" came down 9 min after it went up, mid-turn,
+    when its own test run ended. The person had not shipped, and the hand was raised again
+    82 min later.
+  - **T-1204, 11-11:** a subagent's report on an idle seat took a hand down after 76 s.
+  - **Latent:** 21 of 113 merged-notice turns held a notification mid-turn, which cleared the
+    T-1247 mark. Three crown acts on 11-13 were journaled `person` after a notification woke the
+    crown.
+
+  `PROMPT_AHEAD_OF_ASK` (the parked crown ask) never fired; the drop came through the ticket's
+  queue (`forget_queued_before`). Proposal page: claude.ai/artifact/9TCVwKdxaeApBDMbgbB4wG.
+- **The fix.** One flag at the arm, `notified` (`frame_words` is `adopt::is_task_notification`).
+  The machine still takes `Signal::UserPromptSubmit`, so an idle seat's turn begins and
+  automove's on_working still moves the card (T-128's case).
+  - **Skipped when `notified`:** `ack_owed` (queue drop, parked crown ask, an owed paste's ack,
+    `unsent`, the notice mark; the receipt already returned early), `lower_hand_on`,
+    `forget_told_hand`, `moves.asked_by_hand` and the `prompts_heard` count.
+  - **`crown_notified`** replaces `crown_prompted` for the frame. Inside a turn
+    (`crownexpect::turn_open`) the turn's cause and the owed wake cause stand; on an idle crown
+    seat the turn has no cause (`None`, no new variant).
+  - **`apply_change`:** T-311's turn-start lowering skips a turn a notification began.
+  - **What keeps T-1270's shape lowering:** a `!` or `/` line sent from the board, once the
+    screen shows it was taken (`settle_owed`), lowers the hand and forgets the told hand when its
+    ack is the person's (`Ack::PROMPT`). Before, nothing lowered it until that command's own
+    notification did.
+- **Unchanged words.** The crown's rules say `told_hand` lasts "until the worker's next turn
+  begins" (`mcp.rs`). A turn a notification begins no longer ends it. The words were kept: they
+  only make the reason last longer, and changing crown text needs a blind before/after judgement.
+  `docs/USING.md` ("comes down when you open its ticket or send it a prompt") now matches the
+  behaviour exactly.
+- **Seen, not fixed.** Two turn-structure readers also take the frame, and neither was in the
+  approved proposal:
+  - `releases_permission` closes a pending `mesimon approve` wait on any `UserPromptSubmit`; one
+    notification on 11-13 14:56 came while a permission dialog stood.
+  - `hold_async_stop` lifts a held Stop on it.
+- **Tests.**
+  - **Unit** (`server/notified.rs`, five cases): each sends a notification, then a person's
+    prompt. Covered: mid-turn; the idle-seat wake; the move guard; the crown's cause (mid-turn
+    and idle); a board `!` line's screen ack. With the fix switched off, all five fail.
+  - **E2e:**
+    - `crown_e2e::a_worker_s_own_task_notification_keeps_the_crown_s_ask_and_told_hand`.
+    - `crown_e2e::a_task_notification_inside_the_notice_turn_keeps_it_the_notice_s`: a notice
+      turn parks on a build and the build's notification wakes it. With the fix off, the card
+      went DONE → IN PROGRESS: the latent harm made real.
+    - `hook_e2e::a_task_notification_leaves_a_raised_hand_up`.
+
+    The two crown e2es failed with the fix off.
+  - **Rig:** QN1 (an ask queued behind the worker's own background task) and RH6 (a told hand
+    outlives it; new check `told_hand:<word>`, `told_hand_read`).
+- **Validation.**
+  - `cargo ut` green: 72, 17, 775, 903, 24, 1,470.
+  - `--test agents hook_e2e:: ask_queue_e2e:: prompt_e2e:: bash_mode_e2e::` 21/21.
+  - `--test crown crown_e2e::` 121/121.
+  - The three new e2es on `MESIMON_TEST_ROAD=mod`: 3/3.
+  - Rig, crown on claude-opus-5-5, workers on the rig's Sonnet: RH6, SP1, BG1 and RH2 passed.
+  - QN1's first design failed on its own terms: its second ask came while the crown's first was
+    still out, and the board refuses that (T-938, as A2 measures), so nothing was queued.
+    Redesigned with the long turn as the start's brief, it passed once (the ask queued at
+    60.6 s, the notification's frame at 150.2 s, the ask delivered after the Stop).
+  - No reruns; no before-fix rig run. The diff changes `daemon/src/server.rs` outside its tests:
+    the full workspace suite runs once after the merge.

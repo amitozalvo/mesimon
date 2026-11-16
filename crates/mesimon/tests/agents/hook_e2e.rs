@@ -544,3 +544,46 @@ fn m2_attention_headless() {
         "feed must carry automoves"
     );
 }
+
+/// T-1287: a background task's `<task-notification>` fires Claude Code's
+/// `UserPromptSubmit` (T-135), inside a turn or waking an idle seat. Neither
+/// answers a hand the agent raised for the person: the hand stays lit until
+/// a person's prompt. Before, the first notification took it down (T-1208's
+/// crown seat, 2026-11-13: nine minutes after it went up, unseen).
+#[test]
+fn a_task_notification_leaves_a_raised_hand_up() {
+    use mesimon_core::Principal;
+    let Some(h) = Harness::boot("hook_notified", None) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("hook_notified");
+    let t = c.create_ticket("mesimon-probe-1287 raises its hand");
+    let s = c.spawn_claude(t);
+    let notification = r#"{"prompt":"<task-notification>\n<task-id>b9v95z8qk</task-id>\n<status>completed</status>\n</task-notification>"}"#;
+    let hand_up = |c: &mut TestClient| c.board().ticket(t).unwrap().hand_raised();
+
+    h.prompt_turn(&mut c, s);
+    match c.send(
+        Principal::Agent { session: s },
+        Command::AgentRaiseHand { reason: "mesimon-probe-1287 run the ship".into() },
+    ) {
+        Response::AgentRaised { .. } => {}
+        other => panic!("raise_hand: {other:?}"),
+    }
+    assert!(hand_up(&mut c));
+    // Its own background command ends inside the turn.
+    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", notification);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(hand_up(&mut c), "a notification inside the turn answers no hand");
+    // The turn ends; another ends while the seat rests and wakes it.
+    h.end_turn(&mut c, s);
+    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", notification);
+    c.await_state(s, "woken by its own task", |st| *st == SessionState::Running);
+    assert!(hand_up(&mut c), "a turn the agent's own work began answers no hand");
+    h.end_turn(&mut c, s);
+    // A person's prompt does.
+    h.prompt_turn(&mut c, s);
+    assert!(!hand_up(&mut c), "a person's prompt answers the hand");
+}

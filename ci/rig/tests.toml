@@ -136,6 +136,8 @@
 #              saying the ticket raised its hand holds <word> in the
 #              reason's quotes; from that prompt on the crown made no
 #              get_ticket or read_note keyed to the ticket),
+#              told_hand:<word> (T-1287: the crown's last get_ticket keyed
+#              to the ticket carries told_hand, its reason holding <word>),
 #              keyed:<tool>:<ok|refused> (T-1089: a call of the worker's
 #              <tool> keyed to the crown's ticket was answered, or refused
 #              in the crown's words),
@@ -2667,3 +2669,42 @@ checks = ["road:mod", "started_by_crown", "woke:delivered", "fed:pr_merge_seen",
 
   [[test.steps]]
   rig = "forge_off"
+
+# T-1287: a background task's `<task-notification>` fires Claude Code's
+# UserPromptSubmit, and the board read it as a person's prompt: on 2026-11-10
+# a worker's own cargo run ending dropped the ask queued behind its turn, and
+# on 2026-11-13 the crown's own test run took its hand down mid-turn.
+[[test]]
+id = "QN1"
+title = "QN1 · an ask queued behind a turn outlives the worker's own background task: do the steps below"
+workspace = "worktree"
+brief = "Run the shell command `sleep 40` with the Bash tool in the background, without waiting for it. Then run the shell command `python3 -c 'import time; time.sleep(90)'` with the Bash tool in the foreground and wait for it to finish. Then reply with the single word waited and end your turn. Read no file and run no other command."
+expect = "the worker's first turn starts `sleep 40` in the background and waits 90 seconds in the foreground. While it waits the crown asks with ask_agent (deliver idle), and the words queue behind the turn. The background command ends inside the turn and Claude Code fires a prompt frame for its notification; the queued words still wait, go in at the turn's end (queued_ask_delivered, never queued_ask_dropped_by_hand) and the worker replies with the word they carry. The crown is woken with ended its turn after your ask, never told the words were dropped (before T-1287 they were, as a person's talking ahead of them)."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent=1", "fed:queued_ask_delivered", "not_fed:queued_ask_dropped_by_hand", "not_fed:crown_ask_dropped_by_hand", "woke:answered", "crown_line:QN1 seen:qn1-teal", "replies:waited,qn1-teal"]
+
+  [[test.steps]]
+  crown = "QN1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: QN1 started."
+  until = { events = ["UserPromptSubmit"], state = "working" }
+  settle = false
+
+  [[test.steps]]
+  crown = "QN1, {key}'s agent is in a long command: call ask_agent for {key} with the text: Reply with the single word qn1-teal and end your turn. Then end your turn with the single line: QN1 queued. When the board wakes you for {key}, end your turn with the single line: QN1 seen: and the word {key}'s agent last replied."
+  until = { stops = 2, state = "idle" }
+  wake = true
+
+[[test]]
+id = "RH6"
+title = "RH6 · a hand told to the crown outlives the worker's own background task: do the steps below"
+workspace = "worktree"
+brief = "Call the raise_hand tool on this ticket with the reason: Nothing is needed from you; the word of the day is rh6-amber. Then run the shell command `sleep 20` with the Bash tool in the background, without waiting for it. Then run the shell command `python3 -c 'import time; time.sleep(45)'` with the Bash tool in the foreground and wait for it to finish. Then reply with the single word waited and end your turn. Read no file and run no other command."
+expect = "the worker raises its hand and keeps working: the board wakes the crown, raised its hand, the reason in quotes, and lowers the card's hand as it tells the crown. The worker's background command ends inside its turn and Claude Code fires a prompt frame for its notification; then the turn ends. Asked afterwards for the ticket's told hand, the crown reads get_ticket keyed to it, which still carries told_hand (before T-1287 the notification forgot it), and names the word."
+checks = ["road:mod", "started_by_crown", "hand:rh6-amber", "woke:raised", "told_hand:rh6-amber", "crown_line:RH6 hand:rh6-amber", "replies:waited"]
+
+  [[test.steps]]
+  crown = "RH6: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: RH6 started. When the board wakes you because {key}'s agent raised its hand, end your turn with the single line: RH6 heard. When the board wakes you because {key}'s agent finished its turn, end your turn with the single line: RH6 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "RH6: call get_ticket with key {key}, then end your turn with the single line: RH6 hand: and the word of the day its told hand names, or none if it carries no told hand."
+  until = { crown_only = true }
