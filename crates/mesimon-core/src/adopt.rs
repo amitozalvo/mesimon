@@ -502,7 +502,7 @@ pub enum Said {
 /// arriving mid-turn, as a queued command's prompt (T-1172: the ticket page
 /// drew the queued one as the person's, tags and all).
 pub fn user_said(text: &str) -> Option<Said> {
-    if text.trim_start().starts_with(TASK_NOTIFICATION_TAG) {
+    if is_task_notification(text) {
         return None;
     }
     if let Some(command) = command_words(text) {
@@ -515,6 +515,13 @@ pub fn user_said(text: &str) -> Option<Said> {
         return None;
     }
     Some(Said::Words(unwrap_pasted(text)))
+}
+
+/// A background task's wake-up (`<task-notification>`), the harness's words
+/// and never a person's: in a transcript record, a queued command's prompt,
+/// or the `prompt` of the `UserPromptSubmit` Claude Code fires for it.
+pub fn is_task_notification(text: &str) -> bool {
+    text.trim_start().starts_with(TASK_NOTIFICATION_TAG)
 }
 
 /// The opening tags of the records that carry a command's output.

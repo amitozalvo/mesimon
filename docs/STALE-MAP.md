@@ -46482,3 +46482,41 @@ notice turn. The rules the crown reads are unchanged ("finishes a turn with noth
 it"; a merge is told at its notice turn's end). What changed is whether the board sends a line
 it already promised, which is wire, not words. `merged since` is the one new phrase. A case
 needs a rig base the train may merge into, as T-1203 found.
+
+## A background task's notification no longer revokes the crown's receipt (T-1285, 2026-11-16, this board's crown)
+
+- **What was wrong.** The crown's `start_agent` receipt on T-1283 was refused twenty minutes
+  later as "a prompt the crown did not send". The ticket suspected the deferred launch's brief.
+  **Refuted** by the activity feed and the worker's transcript: the brief went down the mod
+  (`prompt_by_mod` 12:39:03.706Z), its `UserPromptSubmit` matched `Prompt::Launch`, and the
+  deferred seat held (`seat_holds`'s `(None, Some(seat))` arm). Two `UserPromptSubmit`s came
+  later in that same turn with no send of the board's (12:50:08Z, 12:56:22Z), each at the
+  transcript's `queue-operation remove` of a `<task-notification>`: the worker's background
+  `cargo` runs ending. Claude Code fires the hook for a notification it folds into a running
+  turn (measured for the hook set in T-135). `ack_owed` → `receipt_prompt` found nothing owed and
+  revoked. T-1282's ask came two minutes after its start, before any task of its own ended.
+- **The fix.** `receipt_prompt` returns at once when the frame's prompt (`frame_words`) is a
+  task notification (`adopt::is_task_notification`, the test `user_said` already made, now
+  named and shared). It takes no allowance and revokes nothing. Still revoked: a person's
+  prompt, and a turn a notification begins on an idle seat (`receipt_state`'s "a turn the crown
+  did not start", unchanged). The refusal's words are unchanged, so no rig run.
+- **Seen, not fixed.** The `UserPromptSubmit` arm in `hook_frame` treats a task notification as
+  a person's prompt everywhere else too. It goes through `ack_owed` (on a Claude seat a parked
+  crown ask is dropped as typed ahead, `PROMPT_AHEAD_OF_ASK`), `lower_hand_on`,
+  `moves.asked_by_hand` and `prompts_heard`. T-128 accepted the move case, and the rest were never
+  weighed. That is its own ticket's.
+- **Tests.** Unit: `crownreceipt::a_start_s_receipt_outlives_its_agent_s_own_task_notifications`
+  (the deferred start, the brief on the seat's `UserPromptSubmit`, two notifications mid-turn,
+  then a person's prompt refused; a second case: a notification waking an idle seat still
+  refuses as a turn the crown did not start). It was red before the fix with the incident's
+  words. E2e: `crown_e2e::a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move`
+  now sends a notification's prompt frame inside the worker's first turn before the ask on the
+  start's stamp.
+- **Validation.** `cargo test -p mesimon-daemon --lib crownreceipt` 13/13, `cargo ut` green on
+  every crate (72, 17, 775, 898, 24, 1,470). On the hook road the receipt e2es
+  (`a_start_s_receipt_stamp…`, every `a_receipt_stamp_expires_on_…`, `an_ask_s_receipt_stamp…`)
+  passed 12/12. On the mod road (`MESIMON_TEST_ROAD=mod`, the incident's road) the start e2e and
+  the person's-prompt e2e passed 2/2. With the early return disabled, the start e2e failed with
+  the incident's refusal ("T-2 changed since it was read: a prompt the crown did not send (now
+  in IN PROGRESS, agent working)"). No reruns. Owed after the merge: nothing beyond this. The
+  diff touches neither `server.rs` nor a schema.

@@ -16232,6 +16232,16 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
         Some(start.as_str()),
         "the read's stamp moved with the seat and the column"
     );
+    // A background task the agent started ends inside that turn (T-1285):
+    // Claude Code fires a prompt frame for its `<task-notification>`, which
+    // is the agent's own work and no prompt the crown did not send.
+    hook_send(
+        &hook_sock,
+        &ws.to_string(),
+        "UserPromptSubmit",
+        r#"{"prompt":"<task-notification>\n<task-id>b67k5e8hn</task-id>\n<status>completed</status>\n</task-notification>"}"#,
+    );
+    settle_for(300);
 
     // The ask with the start's stamp is taken: none of that is news to the
     // crown. The ask's own receipt is good for the call after it.

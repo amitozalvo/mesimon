@@ -256,7 +256,15 @@ impl Daemon {
 
     /// The same attribution that settles the owed words: a prompt ahead of
     /// a parked delivery is the person's. Every allowance is consumed once.
+    /// A background task's `<task-notification>` (T-1285) is no one's
+    /// prompt: Claude Code fires `UserPromptSubmit` for it as it folds the
+    /// notification into the running turn or wakes an idle seat with it. It
+    /// takes no allowance and revokes nothing; a turn it begins is still
+    /// one the crown did not start (`receipt_state`).
     pub(super) fn receipt_prompt(&mut self, session: uuid::Uuid, ahead: bool) {
+        if self.frame_words.as_deref().is_some_and(mesimon_core::adopt::is_task_notification) {
+            return;
+        }
         let Some(s) = self.board.sessions.iter().find(|s| s.id == session && s.kind.is_agent())
         else {
             return;
@@ -681,6 +689,92 @@ mod tests {
             d.board.ticket_mut(id).unwrap().title = "a person's edit".into();
             let refused = d.check_seen(id, Some(&read)).unwrap_err();
             assert!(refused.contains("changed since it was read (now in"), "a read names no part");
+        });
+    }
+
+    /// T-1285, T-1283's sequence: the crown's start on a ticket whose
+    /// worktree is still being cut (no seat at the write), the brief the
+    /// board sends down the seat's mod once it is, the turn it begins, and
+    /// two background tasks ending inside that turn. Claude Code fires a
+    /// `UserPromptSubmit` for each `<task-notification>` it folds in, with
+    /// no words of anyone's owed; the receipt was revoked there as "a prompt
+    /// the crown did not send". A person's prompt still revokes it.
+    #[test]
+    fn a_start_s_receipt_outlives_its_agent_s_own_task_notifications() {
+        with_ticket(|d, id| {
+            d.queued.clear();
+            let mut crown = d.board.tickets[0].clone();
+            crown.id = ulid::Ulid::new();
+            crown.short_key = "T-0".into();
+            let mut crown_seat = d.board.sessions[0].clone();
+            crown_seat.id = uuid::Uuid::new_v4();
+            crown_seat.ticket = crown.id;
+            d.board.crown = Some(crown.id);
+            d.board.tickets.push(crown.clone());
+            // The start is written before the worktree is cut: no seat yet.
+            let mut worker = d.board.sessions.remove(0);
+            d.board.sessions.push(crown_seat);
+            let seen = d.seen_token(id);
+            let write = d.receipt_write(id, Some(&seen));
+            let started = d.receipt_seen(id, Some(write));
+            d.allow_receipt_prompt(id, Prompt::Launch { crown: crown.id });
+            // The worktree is cut and the crown's seat comes up.
+            let sid = worker.id;
+            let start = SessionState::Idle { stop_reason: StopReason::Unknown };
+            worker.started_by = Some(crown.id);
+            worker.state = start.clone();
+            worker.pane_key = Some("1:%1".into());
+            d.board.sessions.push(worker);
+            d.machines.insert(sid, Machine::new(start, 1_000));
+            assert!(d.check_seen(id, Some(&started)).is_ok(), "the seat is the start's");
+            let prompt = |text: &str| HookFrame {
+                session: sid.to_string(),
+                event: "UserPromptSubmit".into(),
+                reason: None,
+                pane: None,
+                road: Road::Hooks,
+                payload: serde_json::json!({ "prompt": text }),
+            };
+            let brief = Parked { text: String::new(), brief: true, title: true };
+            d.owed.insert(sid, Owed::submitted(id, brief, "f1".into(), Ack::PROMPT, now_ms()));
+            d.on_hook(prompt("worker"));
+            assert_eq!(d.board.session(sid).unwrap().state, SessionState::Running);
+            assert!(d.check_seen(id, Some(&started)).is_ok(), "the brief is the start's own");
+            for task in ["b67k5e8hn", "b15tfxlui"] {
+                d.on_hook(prompt(&format!(
+                    "<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n\
+                     <summary>Background command \"cargo ut\" completed (exit code 0)</summary>\n\
+                     </task-notification>"
+                )));
+                let held = d.check_seen(id, Some(&started));
+                assert!(held.is_ok(), "a task notification is the agent's own: {held:?}");
+            }
+            d.on_hook(prompt("a person's words"));
+            let refused = d.check_seen(id, Some(&started)).unwrap_err();
+            assert!(refused.contains(": a prompt the crown did not send ("), "{refused}");
+        });
+        // A notification that wakes an idle seat begins a turn the crown did
+        // not start, and that still revokes an ordinary chain.
+        with_ticket(|d, id| {
+            d.queued.clear();
+            let sid = d.board.sessions[0].id;
+            let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+            d.board.sessions[0].pane_key = Some("1:%0".into());
+            d.machines.insert(sid, Machine::new(idle, 1_000));
+            let seen = d.seen_token(id);
+            let receipt = rename(d, id, &seen, "own write");
+            d.on_hook(HookFrame {
+                session: sid.to_string(),
+                event: "UserPromptSubmit".into(),
+                reason: None,
+                pane: None,
+                road: Road::Hooks,
+                payload: serde_json::json!({
+                    "prompt": "<task-notification><task-id>x</task-id></task-notification>"
+                }),
+            });
+            let refused = d.check_seen(id, Some(&receipt)).unwrap_err();
+            assert!(refused.contains(": a turn the crown did not start ("), "{refused}");
         });
     }
 
