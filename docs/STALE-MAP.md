@@ -46300,3 +46300,84 @@ Researched read-only first (proposal artifact), then built on the person's go.
   the park) but a check counting owed wakes; run 4 **passed** SP1 with `wake_count`. `--reset`
   after. Owed after the merge: one full workspace suite, since `server.rs` changed outside its
   tests (T-1194).
+
+## The crown's keyed read says what is settled in fewer words, tool results are one-line JSON, and a restart that changed nothing re-sends no rules (T-1279, 2026-11-16, reported by the simbly board's crown)
+
+**Measured first** (the proposal artifact on the ticket; the simbly crown's transcript, 15 Nov
+00:00 to 16 Nov 09:37, beta.19 → beta.20, 13 repositories): 244 keyed non-`full` reads, mean
+4,023 B, about 1,850 tokens (0.37 to 0.46 tokens a byte of pretty JSON over 569 reads). Opus
+5.5's own count of T-427's read, by usage deltas: 3,320 tokens as sent, 2,685 compact, 935 with
+the cuts. Shares of the keyed bytes: `repos` 31.0% (its clean legs 20.5%), `notes` 18.5%,
+`summary` 17.3% (ticked rows 3.4%), whitespace 25.7%. The rules rode 12 results in about 30
+hours, 10,896 B and 3,415 tokens each: six after a compaction, six after a daemon restart.
+
+**Built.**
+- **One-line JSON** from the shim (`mcp.rs::text`, every tool result on every road: native,
+  hook set, the mod's per-call `mesimon mcp --call`, Codex). One unit test read the pretty form.
+- **`AgentTicketView::compact()`** (the crown's keyed read without `full`): a workspace leg
+  reading `clean` is named in `repos_clean`; a ticked summary box is counted in
+  `summary.ticked`; `worktree_init` only where this ticket has a `last` run; `automove` only
+  where the column has a rule or a held move (`automove` is now `Option`, every other read
+  carries it). `full` carries all of it; `get_ticket`'s description says so ("ticked boxes,
+  clean repos", 810 of 820 bytes).
+- **The rules across a restart** (`crownrules::Told` in `crown.json`'s `rules`, same schema):
+  each told session under `digest(crown_view())` (FNV-1a, stable across builds), when the reply
+  went, and a Codex seat's thread and compaction count. `restore_crown` takes one back only
+  under the same digest, on the crown's own seat, not compacting, and where a Claude seat's
+  transcript shows no main-chain `compact_boundary` since the telling and reaches back to it
+  (`tail::compacted_since`, `None` read as compacted), or a Codex seat's first snapshot matches
+  what was kept.
+
+**Kept, as proposed and as the go said.** The rules whole after a compaction: the six
+compaction summaries that day (18 to 24 KB) carry none of them, so a pointer would need a
+crown that knows what it lost. `told_hand` (T-922), `asked` (T-568, T-938, T-974), notes' `by`
+(a person's note from a worker's). No separate brief mode.
+
+**Refuted while building.** Dropping notes' `edited_at` (2.9%): `AgentNoteView.edited_at` is a
+required field in every shim from beta.14 to beta.20, and a hook-set or Codex stdio shim alive
+across `U` parses the daemon's answer with it, so the crown's keyed read would come back
+`unreadable daemon response`. A protocol bump would instead refuse every mod-road call between a
+rebuild and `U` (a beta.20 daemon answers protocol 2 with REFRESH). Everything shipped is an
+omission of an `Option`/defaulted field or a new defaulted field, so an older shim drops
+`repos_clean` and `ticked` and parses the rest.
+
+**Left for others.** T-1281: asks still `handed` 23 hours after their turns ended (57 of 134
+reads carried `earlier`). T-427's three repeated Summary notes are a worker's writing.
+
+**Tests.** `command::tests::a_compact_read_says_what_is_settled_in_fewer_words` (and an older
+reader's shape parses it); `crownrules::tests::a_restart_keeps_told_only_under_the_same_rules_and_context`,
+`the_digest_is_stable_and_tells_texts_apart`; `tail::tests::compacted_since_reads_a_main_chain_boundary_after_the_stamp`;
+`crown_rules_e2e::the_crown_is_told_its_rules_once_per_crowning`'s restart section (no
+transcript: told again; a transcript dated before the telling: nothing sent; a compaction
+appended while no daemon ran: told again); `mcp_e2e::crown_ticket_reply_sizes` (a ticked box
+reads `{"ticked": 1}`, `full` lists it) and `forge_e2e::a_folder_workspaces_leg_reads_ahead…`
+(`web` in `repos_clean`), both changed by this decision.
+
+**Blind rig, before and after** (`ci/rig.py --no-build --only <id>`, one fresh crown per
+sample, Claude Code 2.1.325, crown `claude-opus-5-5` high, workers `claude-sonnet-5-5` low; arm
+A the binary of main at b0ded729 built in a scratch worktree, arm B this branch, one rig and
+one `tests.toml` for both; three samples per case per arm, fixed before the runs). Bytes are the
+crown's tool results less the one result carrying the rules:
+
+| case | A (main) | B (branch) |
+|---|---|---|
+| CR1 (T-1031's brief read, note, rename, start; blind) | 3/3 · 3,822 / 3,972 / 3,903 B · 11, 10, 8 calls | 3/3 · 3,709 / 3,206 / 3,463 B · 9, 8, 10 calls |
+| CR2 (new: what is left, how much is done; blind) | 3/3 · 2,219 / 2,830 / 2,219 B | 3/3 · 1,581 / 1,582 / 1,931 B |
+
+Every B crown answered CR2 with the open box and "2 of 3" from `ticked`. No regression; N = 3
+sees only large effects. **Every run as it came, the faults the rig's:**
+- B CR1, first attempt: the start could not cut its worktree, `msmn/T-3-cr1-receipt-check`
+  already existing (T-1031's rig runs left nine `msmn/T-*-cr1-receipt-check` branches at
+  b9e95420, a main commit, with no worktree; CR1 renames its ticket before the start, so a
+  rig key reused collides). The crown raised its hand on the person's branch, rightly. The
+  nine were deleted; the sample was rerun and is the one counted.
+- B CR2, first three samples (2 pass, 1 fail): the brief wrote the Summary as markdown, so the
+  description note carried the boxes too and the card counted 4 of 6; the failing crown said
+  "4 of its steps are done", which is what the board said. The brief now says the boxes in
+  words; both arms ran CR2 again under it.
+- A, first six samples: no crown ran. The arm's binary was copied over the branch's in place
+  and macOS killed it at exec (status 137, a signature cached for the old file), so the rig's
+  daemon never opened its socket. A swap is `rm` then `cp`.
+
+**Not rig-run:** the restart's kept rules. The text a crown reads does not change there, only
+whether a second copy is sent; `crown_rules_e2e` proves each arm of it on the wire.
