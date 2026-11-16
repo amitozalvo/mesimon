@@ -1001,8 +1001,9 @@ pub(super) fn found_dead_at_launch(was_live: bool, rec: &SessionRecord) -> bool 
 /// worker's delivery only when a turn of its ran (T-1146): the restart's
 /// look judged every parked worker on the checkout against the HEAD the
 /// crown last heard for it, and one commit by another ticket "delivered"
-/// five long-done tickets at once. A worktree branch moves by its worker
-/// alone, and keeps its tip as the one proof.
+/// five long-done tickets at once. A worktree branch keeps its tip as the
+/// proof here; the restart's look, where no turn ran, takes a moved tip out
+/// (`unturned`, T-1276), since a crown or a person moves a parked branch too.
 pub(super) fn verdict(
     before: Option<&Told>,
     now: &Told,
@@ -1238,6 +1239,30 @@ pub(super) fn merge_verdict(started: bool, heard: &Heard, now: &Told) -> Option<
     let known = told.is_some_and(Told::mergeable)
         && [told, heard.judged.as_ref()].into_iter().flatten().any(|t| t.tip == now.tip);
     Some(if known { WakeCause::Merged } else { WakeCause::Delivered })
+}
+
+/// The restart's look at a worker no turn of whose ran since the last
+/// daemon judged it (T-1276): it says what a running daemon would have
+/// said, a merge the crown was not told of, and nothing about a tip that
+/// moved with no turn behind it. On a pull-request board a crown
+/// fast-forwards a merged ticket's clean legs to their deploy branch so the
+/// DONE gate takes it; the ticket stays merged at a new tip, which no live
+/// reading hears (no turn ended, no leg landed), and the restart's look
+/// called that tip a delivery: 23 parked tickets at once on the simbly
+/// board, `delivered (merge_state merged, after a restart)`. So a branch
+/// the crown was told merged is no news while it reads merged, and a tip
+/// moved while unmerged is no delivery (`verdict` still says one where a
+/// turn ran). The baseline moves either way.
+pub(super) fn unturned(
+    cause: Option<WakeCause>,
+    told: Option<&Told>,
+    now: &Told,
+) -> Option<WakeCause> {
+    let merged = |t: &Told| t.merge == Some("merged");
+    match cause {
+        Some(WakeCause::Delivered) if !merged(now) || told.is_some_and(merged) => None,
+        cause => cause,
+    }
 }
 
 /// What changed between what the crown last heard and now, in words:
@@ -2131,6 +2156,9 @@ impl Daemon {
         let before = heard.judged.replace(now.clone());
         let held = heard.deferred.as_ref().map(|h| h.cause);
         let mut cause = verdict(before.as_ref(), &now, answered, merge_step, fresh).max(landed);
+        if restart && !fresh {
+            cause = unturned(cause, heard.told.as_ref(), &now);
+        }
         // Work the merged notice's turn left on the branch (T-1203): a fix
         // forward after the merge, which a rebase turn's new tip is not.
         // The crown was told this branch merged, and it is ahead again.
@@ -5461,6 +5489,56 @@ pub(in crate::server) mod tests {
         // A turn that ran across the restart and left the same tip did
         // finish (T-591), and says so once.
         assert_eq!(verdict(h.judged.as_ref(), &landed, false, false, true), FINISHED);
+    }
+
+    /// T-1276, the simbly board: a crown fast-forwarded parked, merged
+    /// tickets' clean legs to their deploy branch, and the next restart's
+    /// look told it 23 of them `delivered (merge_state merged, after a
+    /// restart)`, and one that read `ahead` before and after `delivered
+    /// (merge: forge, …)`. With no turn of the worker's behind it, a moved
+    /// tip is no news; the same look with a turn behind it, and a merge the
+    /// crown was not told of, are said as before.
+    #[test]
+    fn a_tip_moved_with_no_turn_is_silent_after_a_restart() {
+        fn look(tip: &str, merged: bool, ahead: u32) -> BranchLook {
+            BranchLook { tip: tip.into(), ahead, merged, ..BranchLook::default() }
+        }
+        let said = |name: &str, told: Told, found: BranchLook, fresh: bool| {
+            let mut b = watched_bed(name, Some(told));
+            b.d.board.sessions.clear();
+            b.d.crown_heard.get_mut(&b.worker).unwrap().restored = true;
+            b.d.crown_heard.get_mut(&b.worker).unwrap().looks = 1;
+            let gen = b.d.merge_target_gen;
+            b.d.on_turn_probed(TurnProbe {
+                worker: b.worker,
+                crown: b.crown,
+                why: ProbeWhy::Restart { asked: None, fresh },
+                gen,
+                found: Found::Branch(found.clone()),
+            });
+            let judged = b.d.crown_heard[&b.worker].judged.as_ref().map(|j| j.tip.clone());
+            assert_eq!(judged.as_deref(), Some(found.tip.as_str()), "{name}: the baseline moves");
+            owed_for(&b.d, b.worker).map(|w| (w.cause, w.changed()))
+        };
+        let merged_a = branch("a+x", "merged", 0, "TODO");
+        let ahead_a = branch("a+x", "ahead", 1, "TODO");
+        assert_eq!(said("ff-merged", merged_a.clone(), look("a+y", true, 0), false), None);
+        assert_eq!(said("ff-ahead", ahead_a.clone(), look("a+y", false, 1), false), None);
+        assert_eq!(said("same-tip", merged_a.clone(), look("a+x", true, 0), false), None);
+        // A turn ran in the gap: what it left is the worker's, as before.
+        let turn = said("ff-turn", merged_a, look("a+y", true, 0), true);
+        assert_eq!(turn.map(|t| t.0), DELIVERED);
+        // A merge the crown was not told of is the look's to say (T-602).
+        let landed = said("landed", ahead_a.clone(), look("a+x", true, 0), false);
+        assert_eq!(
+            landed,
+            Some((
+                WakeCause::Merged,
+                vec!["merge_state ahead → merged".into(), "after a restart".into()]
+            ))
+        );
+        let squashed = said("landed-moved", ahead_a, look("a+y", true, 0), false);
+        assert_eq!(squashed.map(|t| t.0), DELIVERED, "merged at a tip never told");
     }
 
     /// A delivery held for the train (T-554) survives the restart as the

@@ -46124,3 +46124,42 @@ chromium phone; that size was rerun alone and passed (named as a rerun, not a de
   turn to idle. Those two rerun alone, then the file once more. No rig run: no word an agent or
   the crown reads changed (the feed's outcome only). Owed: the post-merge full suite
   (`daemon/src/server.rs` outside its tests).
+
+## A restart's look says nothing of a tip moved with no turn behind it (T-1276, 2026-11-16, reported by the simbly crown)
+
+**Seen.** A `U` onto beta.20 on the simbly board (13-repository workspace, GitLab MRs) at
+00:52 local told its crown `delivered (merge_state merged, after a restart)` for 23 parked,
+crown-started tickets in PRODUCTION and STAGING (one alone, then 22 in one prompt), and
+`delivered (merge: forge, after a restart)` for T-458. Every one had been told delivered and
+merged before. The board's restarts at 14:56 and 19:27 the same day were silent for the same
+tickets, and none of them had a wake between 19:27 and 00:52.
+
+**Cause, from the board's own files.** At 23:32 the simbly crown fast-forwarded each merged
+ticket's clean worktree legs to `gitlab/<deploy>` (`git merge gitlab/main`, in the legs' reflogs),
+which its memory records as how it gets a ticket past DONE's "worktree unmerged" gate. A
+ticket's tip is every leg's tip joined, so the joined tip moved while the ticket stayed merged.
+No live reading hears that: no turn ended, and `hear_merges` hears a landing edge only. The
+restart's look then judged `told: merged @A` against `merged @B`: `merge_verdict` calls a
+merged tip the crown was not told of a delivery, and `verdict` calls a moved tip on a branch
+still `ahead` one too (T-458). T-1146 had kept "a worktree branch moves by its worker alone";
+on this board it does not. DONE tickets stayed silent because DONE frees their trees, so the
+look found nothing (`Found::Unknown`). Refuted: a parked seat's `Heard` missing from
+`crown.json` (T-433's was there, at the old tip), and the forge's merged clause folding after
+the look (the fold moves `merged_oid`, never a leg's tip).
+
+**Fix.** `unturned` (crownwake): a restart's look at a worker no turn of whose ran (`fresh`
+false) says only a merge the crown was not told of. A branch told merged that reads merged is
+silent at any tip, and a tip moved while unmerged is no delivery. The baseline (`judged`)
+moves either way. A turn that ran in the gap still says what it left, and T-602's merge in the
+window is still said once. The look now says what a running daemon would have said.
+
+**Lost on purpose.** Commits a person makes by hand in a parked worktree are no longer said at
+the next restart. A running daemon never said them either; the crown reads them on `get_ticket`.
+
+**Tests.** `a_tip_moved_with_no_turn_is_silent_after_a_restart` drives `on_turn_probed` with a
+Restart probe. Merged then ff'd, ahead then moved, and the same tip are silent; a turn in the
+gap delivers; ahead then merged says `merged (merge_state ahead → merged, after a restart)`;
+merged at a never-told tip delivers. With the call taken out it fails with the reported line,
+`Delivered, ["merge_state merged", "after a restart"]`. No rig run: the change only removes
+restart-only wakes that a running daemon never sends, so there is no new text for a crown to
+read.
