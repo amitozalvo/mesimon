@@ -176,6 +176,10 @@ pub struct Line {
     /// The other ticket's title as `head` spells it, the part a narrow row
     /// shortens (T-1263); empty where the head names none.
     pub title: String,
+    /// The act's sentence, which a row of its own says where no prompt
+    /// held the words (T-1289): `crown asked this ticket's agent`; `head`
+    /// where the act carried none.
+    pub alone: String,
     pub road: bool,
     /// Words the act carries itself (the crown's answer), else empty.
     pub body: String,
@@ -224,22 +228,25 @@ pub fn lines_of(
         } else {
             Subject { name: "this ticket", own: "this ticket's" }
         };
-        let (head, title) = match a.words.and(words_head(a)) {
+        // Words this conversation holds: an ask into this ticket's, a road's
+        // into the crown's own. The crown's ask to another ticket went into
+        // that one's conversation, not its own (T-1289).
+        let words = a.words.filter(|_| a.ticket == ticket);
+        let Some(said) = sentence(a, &subject) else { continue };
+        let (head, title) = match words.and(words_head(a)) {
             Some(head) => (head, String::new()),
-            None => match sentence(a, &subject) {
-                Some(s) => (s, title),
-                None => continue,
-            },
+            None => (said.clone(), title),
         };
         out.push(Line {
             ms: a.at_ms,
             head,
             title,
+            alone: said,
             road: is_board_road(a),
             body: body(a).unwrap_or_default().to_string(),
             // The crown's own conversation says what started its turn.
             cause: a.cause.as_ref().filter(|_| !own).map(cause_line),
-            words: a.words,
+            words,
         });
     }
     out

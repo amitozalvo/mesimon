@@ -489,8 +489,15 @@ impl Transcript {
         // act whose words no prompt holds asks every later one.
         let mut keys: HashMap<usize, u64> = HashMap::new();
         for (i, a) in self.acts.iter().enumerate() {
-            let crowned = |act| Crowned {
-                head: a.head.clone(),
+            // Before what is held, while the earlier pages are still
+            // landing: its prompt may be among them, and a later prompt of
+            // the same words is another act's (T-1289: the same wake twice).
+            let unheld = self.floor.is_some();
+            if unheld && a.ms + ACT_SLACK_MS < first_ms {
+                continue;
+            }
+            let crowned = |head: &String, act| Crowned {
+                head: head.clone(),
                 title: a.title.clone(),
                 road: a.road,
                 act,
@@ -506,11 +513,11 @@ impl Transcript {
                             == w
                 });
                 if let Some(j) = carried {
-                    out[j].crown = Some(crowned(None));
+                    out[j].crown = Some(crowned(&a.head, None));
                     continue;
                 }
             }
-            if (a.ms < first_ms && self.floor.is_some()) || (a.ms > last_ms && !self.newest) {
+            if (a.ms < first_ms && unheld) || (a.ms > last_ms && !self.newest) {
                 continue;
             }
             let at = out.iter().rposition(|m| m.ms.is_some_and(|ms| ms <= a.ms));
@@ -538,7 +545,9 @@ impl Transcript {
                     steps: 0,
                     tools: Vec::new(),
                     hand: None,
-                    crown: Some(crowned(Some(i))),
+                    // No prompt held its words: the act's sentence, not
+                    // a head over nothing (T-1289).
+                    crown: Some(crowned(&a.alone, Some(i))),
                 },
             );
         }
@@ -956,6 +965,142 @@ pub(crate) mod tests {
         // Opened with the hand up, the dialog is on it.
         let t = Transcript::open(&rec(&path), Some(hand)).expect("a conversation");
         assert!(t.message().is_some_and(|m| m.hand.is_some()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1289, from a board's files (words replaced, fields as written):
+    /// the crown's ask to a worker, the worker's prompt of it on the mod's
+    /// fill road, and a wake the board sent the crown twice in a day.
+    const ASKED_AT: u64 = 1_794_848_150_974;
+    const ASK: &str = "Crown — last retarget tonight: the owner approved two more.\n\n\
+        1. Wait for the new build.\n2. Run the dialog checks again.\n\nReport as before.";
+    const WAKE: &str = "T-472 \"Group by\" merged (merge_state ahead → merged) ∙ \
+        get_ticket key=T-472 for state and notes";
+
+    fn said_at(ts: &str, kind: &str, text: &str, extra: serde_json::Value) -> String {
+        let mut v = match kind {
+            "user" => serde_json::json!({
+                "type": "user",
+                "message": { "role": "user", "content": text },
+            }),
+            _ => serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": text }] },
+            }),
+        };
+        v["uuid"] = format!("{kind}-{ts}").into();
+        v["timestamp"] = ts.into();
+        v["isSidechain"] = false.into();
+        v["userType"] = "external".into();
+        if let (Some(v), Some(extra)) = (v.as_object_mut(), extra.as_object()) {
+            v.extend(extra.clone());
+        }
+        format!("{v}\n")
+    }
+
+    /// The crown's ask is the worker's prompt, headed as the crown's; where
+    /// no prompt holds it (the crown's own page, which holds the call and
+    /// not the words, or a worker's before the words land) the row says the
+    /// act's sentence, never a bare head over nothing. A wake sent twice
+    /// marks its own prompt, not the other's.
+    #[test]
+    fn a_crown_ask_no_prompt_holds_says_its_sentence() {
+        use mesimon_core::crownact::{words_key, Cause, CrownAct, WOKE_CROWN};
+        let crown = ulid::Ulid(1);
+        let worker = ulid::Ulid(479);
+        let mut board = mesimon_core::board::Board::default();
+        for (id, key, title) in [(crown, "T-1", "Crown"), (worker, "T-479", "Staging tester")] {
+            board.tickets.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "short_key": key, "title": title, "column": "TODO",
+                    "order": "a", "created_at": "@1",
+                }))
+                .expect("a ticket"),
+            );
+        }
+        let act = |at_ms, ticket, act: &str, detail: &str, words, cause| CrownAct {
+            at_ms,
+            crown,
+            ticket,
+            act: act.into(),
+            detail: detail.into(),
+            words,
+            cause,
+        };
+        let acts = [
+            act(1_794_836_565_418, crown, WOKE_CROWN, "T-472 merged", Some(words_key(WAKE)), None),
+            act(1_794_847_835_692, crown, WOKE_CROWN, "T-472 merged", Some(words_key(WAKE)), None),
+            act(1_794_848_133_400, worker, "tagged", "MAINTENANCE", None, Some(Cause::Person)),
+            act(ASKED_AT, worker, "asked", "", Some(words_key(ASK)), Some(Cause::Person)),
+        ];
+        let tiers = mesimon_core::tier::MachineTiers::default();
+        let book = mesimon_core::tier::Book::new(&tiers, &board);
+        let heads = |t: &Transcript| -> Vec<(String, String)> {
+            let ms = t.messages().iter();
+            ms.filter_map(|m| Some((m.crown.as_ref()?.head.clone(), t.text(m).to_string())))
+                .collect()
+        };
+        let dir = scratch("crown-ask");
+
+        // The worker's page, its prompt landed: the crown's, with its words.
+        let prompt = serde_json::json!({
+            "origin": { "kind": "human" }, "promptSource": "typed", "turnOrigin": "human",
+            "turnPosition": { "promptIndex": 2, "turnIndex": 8 }, "entrypoint": "cli",
+        });
+        let before =
+            said_at("2026-11-16T16:50:24.765Z", "a", "Selectors noted.", Default::default());
+        let after =
+            said_at("2026-11-16T16:56:02.286Z", "a", "Watching for the build.", Default::default());
+        let path = dir.join("worker.jsonl");
+        let whole = [
+            before.clone(),
+            said_at("2026-11-16T16:55:51.062Z", "user", ASK, prompt),
+            after.clone(),
+        ]
+        .concat();
+        std::fs::write(&path, whole).unwrap();
+        let mut t = Transcript::open(&rec(&path), None).expect("a conversation");
+        t.set_acts(acts_of(&board, &book, &acts, worker), true);
+        let tagged = ("crown tagged this ticket MAINTENANCE".to_string(), String::new());
+        assert_eq!(heads(&t), [tagged.clone(), ("crown asked".into(), ASK.into())]);
+
+        // Before the words land: the act's sentence, its cause under it.
+        std::fs::write(&path, [before, after].concat()).unwrap();
+        let mut t = Transcript::open(&rec(&path), None).expect("a conversation");
+        t.set_acts(acts_of(&board, &book, &acts, worker), true);
+        assert_eq!(heads(&t), [tagged, ("crown asked this ticket's agent".into(), String::new())]);
+        let row = t.messages().iter().find_map(|m| m.crown.as_ref().filter(|c| c.act.is_some()));
+        assert_eq!(row.and_then(|c| c.cause.as_deref()), Some("after you asked the crown"));
+
+        // The crown's page holds its call, not the words: the sentence,
+        // naming the ticket. The day's first wake is in a page not yet
+        // landed; the second marks its own prompt.
+        let wake = serde_json::json!({
+            "origin": { "kind": "plugin", "name": "mesimon", "asUser": true },
+            "promptSource": "system", "turnOrigin": "system", "queuePriority": "later",
+        });
+        let path = dir.join("crown.jsonl");
+        let crown_file = [
+            said_at("2026-11-16T13:42:45.579Z", "user", WAKE, wake.clone()),
+            said_at("2026-11-16T13:42:50.000Z", "a", "No action.", Default::default()),
+            said_at("2026-11-16T16:50:35.704Z", "user", WAKE, wake),
+            said_at("2026-11-16T16:55:34.984Z", "a", "Merged; retargeting.", Default::default()),
+            said_at("2026-11-16T16:55:56.499Z", "a", "All three are merged.", Default::default()),
+        ]
+        .concat();
+        std::fs::write(&path, crown_file).unwrap();
+        let mut t = Transcript::open(&rec(&path), None).expect("a conversation");
+        t.set_acts(acts_of(&board, &book, &acts, crown), true);
+        let _earlier = t.hold_back(2);
+        let woke = "the board woke the crown".to_string();
+        let tagged = "crown tagged T-479 “Staging tester” MAINTENANCE".to_string();
+        let asked = "crown asked T-479 “Staging tester”'s agent".to_string();
+        assert_eq!(
+            heads(&t),
+            [(woke, WAKE.into()), (tagged, String::new()), (asked, String::new())],
+            "{:?}",
+            t.messages()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

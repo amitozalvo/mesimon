@@ -46610,3 +46610,33 @@ absent (T-1208).
 **Tests.** `state.test.js` "words that begin with ! are a shell line", `ux.test.js` tierFlow (the
 note hidden for an inner `!`, shown with the border and label for `!git log -1`, sent as typed,
 gone once the field empties; shot `composer-shell`).
+
+## A crown act whose words no prompt holds says its sentence, not a bare head (T-1289, 2026-11-16, the author's screenshot: "♛ crown asked 18:55" with nothing under it)
+
+**What failed.** The screenshot was the crown's own page, not the worker's (the ticket's brief
+guessed the worker's; that page placed all four of the evening's asks on their prompts, read
+from the real files). Two causes, both reproduced from a board's `crown-acts.jsonl` and
+transcripts. (1) `crownact::lines_of` gave every act with `words` the words head (`crown asked`)
+and kept its key, on the crown's page too, where an ask to another ticket's agent is a tool call
+and its words are that ticket's prompt: no prompt matched, so the row was the head over an empty
+body, with no cause line (the crown's own page says none). (2) `place_acts` searched prompts for
+an act before what was held while earlier pages were still landing: the morning's `T-472 merged`
+wake (same words as the evening's, on a 267 MB file) took the evening's prompt, and the evening's
+wake became an empty `the board woke the crown` row.
+
+**What changed.** `lines_of` keeps `words` and the words head only where the words went into
+this conversation (`a.ticket == ticket`: an ask on the worker's page, a road's words on the
+crown's); the crown's page now reads `crown asked T-479 “…”'s agent`. `Line::alone` carries the
+act's sentence, which a row of its own says where no prompt held the words (`crown asked this
+ticket's agent`, its cause under it): no new element, no restyle. An act more than `ACT_SLACK_MS`
+before the held window searches no prompt while `floor` is set; within the slack it still does
+(the evening's wake was 12 ms before its prompt, the window's first message). The phone gets (1)
+through `lines_of`; it places acts above prompts by time, not by key, so (2) is the TUI's alone.
+
+**Not fixed.** With the whole file held, an act whose prompt never landed (a wake absorbed
+mid-turn, not written as a prompt) can still take a later prompt of the same words: acts claim
+oldest first. Seen nowhere yet; claiming newest first would close it.
+
+**Tests.** `transcript::tests::a_crown_ask_no_prompt_holds_says_its_sentence`, on rows shaped as
+the board wrote them (fields, times and act lines kept, words replaced): it read `crown asked`
+over nothing before the fix. No golden moved.

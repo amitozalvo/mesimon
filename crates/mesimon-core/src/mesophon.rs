@@ -1506,6 +1506,7 @@ mod tests {
             ms,
             head: head.into(),
             title: String::new(),
+            alone: head.into(),
             road: false,
             body: String::new(),
             cause: None,
