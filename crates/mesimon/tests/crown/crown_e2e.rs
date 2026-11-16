@@ -6321,10 +6321,43 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     settle();
     assert_eq!(asked(&mut c).unwrap().status, out_word, "the tick leaves it to the turn's end");
     refused(ask(&mut c, "mesimon-probe-9745 idle", Deliver::Idle), &carried.ask);
+    // T-1282: no hook of the agent's has spoken in this turn since the
+    // restart, so a steer is refused, naming the restart and the step that
+    // lifts it, not the first ask's wait. The agent's own next tool step
+    // proves the turn running, and the steer goes in beside the ask.
+    match ask(&mut c, "mesimon-probe-9761 steer unseen", Deliver::Immediately) {
+        Response::Err { message } => assert!(
+            message.contains(&carried.ask)
+                && message.contains("has not seen its turn running since the board restarted")
+                && message.contains("next tool step")
+                && !message.contains("plugin's prompt"),
+            "{message}"
+        ),
+        other => panic!("a steer into a turn unseen since the restart: {other:?}"),
+    }
+    hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
+    wait_until(std::time::Duration::from_secs(10), "the agent's step proves its turn", || {
+        c.board()
+            .live_agent(w)
+            .is_some_and(|s| s.state == SessionState::Running && s.confidence == Confidence::High)
+    });
+    let seen = receipt(ask(&mut c, "mesimon-probe-9762 steer seen", Deliver::Immediately));
+    let earlier: Vec<_> =
+        seen.earlier.iter().map(|e| (e.ask.as_str(), e.status.as_str())).collect();
+    assert_eq!(earlier, [(carried.ask.as_str(), out_word)], "beside the kept ask");
+    wait_until(std::time::Duration::from_secs(5), "the steer's send-now", || {
+        sent_now("mesimon-probe-9762 steer seen")
+    });
+    assert!(!landed("mesimon-probe-9761"), "a refused steer sent nothing");
     stop(&mut c, ws);
     wake_for(&carried.ask);
     if mod_road {
-        assert_eq!(asked(&mut c).unwrap().status, "taken");
+        // `asked` is the steer now; the carried ask is beside it.
+        let after = asked(&mut c).unwrap();
+        assert_eq!(after.ask, seen.ask);
+        let kept: Vec<_> =
+            after.earlier.iter().map(|e| (e.ask.as_str(), e.status.as_str())).collect();
+        assert_eq!(kept, [(carried.ask.as_str(), "taken")], "{after:?}");
     }
     assert_eq!(read_got().matches("mesimon-probe-9744").count(), 1, "nothing resent");
     let next = receipt(ask(&mut c, "mesimon-probe-9746 after", Deliver::Idle));

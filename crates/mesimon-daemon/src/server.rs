@@ -8885,7 +8885,8 @@ impl Daemon {
                 // a person's send-now on its say-so, admitted beside the ask
                 // still out as its own (`steer_admits`).
                 if !self.steer_admits(&seat, deliver, sends) {
-                    if let Some(message) = self.crown_ask_blocks(target, &key) {
+                    let unseen = self.steer_unseen(&seat, deliver, sends);
+                    if let Some(message) = self.crown_ask_blocks(target, &key, unseen) {
                         return Response::Err { message };
                     }
                 }

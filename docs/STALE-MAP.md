@@ -46163,3 +46163,59 @@ merged at a never-told tip delivers. With the call taken out it fails with the r
 `Delivered, ["merge_state merged", "after a restart"]`. No rig run: the change only removes
 restart-only wakes that a running daemon never sends, so there is no new text for a crown to
 read.
+
+## A turn running across a restart is re-asserted by the agent's own step, and a steer refused for it says so (T-1282, 2026-11-16, simbly's crown)
+
+**The report.** simbly's T-412, a standing watcher on the mod road, ran ONE turn from ~06:12
+on the crown's ask. `ask_agent` deliver now steered it five times before a `U` at 12:16, and was
+refused after it for 40 minutes in the first ask's words ("Claude Code runs a plugin's prompt
+when the running turn ends"). The brief guessed one long wait; the crown corrected it: a loop of
+short tool calls, dozens since the restart.
+
+**Measured in simbly's feed (read-only).** The restart's tail put the seat at `Running`, Low.
+After it, 36 `PostToolUse` frames arrived by the mod road in 35 minutes, and every one reads
+`state_decision … ToolCompleted, no_transition_rule`, confidence still Low. So hooks on the mod
+road do reach the new daemon at each tool step; the attention machine dropped them.
+`ToolCompleted` / `ToolStarted` at `Running` had no rule ("mid-turn Running needs no
+re-assert"), and inside a turn no `UserPromptSubmit` comes to raise it. A turn that STARTS after
+a restart is High from its prompt, which is why the earlier restarts never showed it. T-974's
+`steer_admits` (Running and not `crownwake::guessed`) was right to wait for a hook; the hook was
+there and never counted. `sample_agent`'s missing `turn_secs` is by design (`turn_since` is
+memory only, nothing guessed), not part of the fault.
+
+**The change.**
+- **core `attention`:** the lead's own `ToolCompleted` or `ToolStarted` at a `Running` below High
+  with no leave settling (`Machine::re_asserts`) re-asserts it at High (`confidence_raised`). A
+  nested frame (a subagent's) does not; a High run is untouched; a `Stop` settling is not
+  cancelled by a straggler. Every reader that waits for a hook's word after a restart (the
+  steer, automove's `insufficient_confidence`) now has it at the agent's next tool step.
+- **The refusal.** A steer refused only because the board has not seen the turn since its
+  restart (`steer_unseen`: `now`/`immediately`, a road the crown sends, the seat `Running` and
+  guessed or `Unknown{DaemonRestarted}`) names that, the ask still out, and the agent's next
+  tool step as what shows the turn (`CrownAsk::unseen_refusal`). Every other second ask keeps
+  T-938's words.
+
+**Refuted / not done.** Admitting a steer on the guess itself, or on `sample_agent`'s tool in
+flight off the tail: T-756's case is a tail that reads a worker between two tool calls wrongly,
+and a steer into a turn that has in fact ended is a second copy of words for its idle. The
+engine's own proof was already arriving each step; trusting it is the smaller change. The
+`crownexpect` turn-id precedent was not needed. **What stays refused:** an agent inside one tool
+call longer than the wait (a 20-minute `cargo`) after a restart is steerable only at that call's
+end, and the refusal says so.
+
+**Tests.** `attention::tests::a_guessed_run_is_re_asserted_by_the_lead_s_own_step` (fails
+without the rule: no change at the lead's step); `crownask::ledger_tests::a_steer_into_a_
+restored_turn_waits_for_the_agent_s_own_step` (Running Low on the mod road: refused with the new
+words, `Unknown{DaemonRestarted}` the same and `NoSignal` not; a subagent's `PostToolUse` by
+`on_mod_hook` moves nothing, the agent's own admits); `crown_e2e::a_crown_steer_goes_beside_its_
+ask_out_and_a_restart_keeps_the_ask`'s restart section, both roads (a steer after the restart
+refused naming the restart and the next step and sending nothing; a `PostToolUse` raises the
+seat to High; the steer goes in beside the kept ask; the end still wakes the crown for it).
+Rig `ST3` (blind): twelve 20 s waits on the crown's ask, the rig restarts the daemon mid-turn,
+the crown is told the worker is outside its brief and must steer it; `steered:taken:220`,
+`replies_never:slept`.
+Live, Opus 5.5 crown, Claude Code 2.1.325, PASS in 2.9 min: the seat came back `running` from
+the tail at Low, the worker's next `PostToolUse` raised it to High 19 s later, and the crown's
+`immediately` 6 s after that was admitted beside the handed ask; the end woke the crown with the
+first ask `taken` at +58 s. That crown sent after the step, so the new refusal's words were
+proven by the e2e, not read by a model.

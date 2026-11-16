@@ -980,6 +980,13 @@ impl Machine {
         Change { from, to, attention_added, confidence }
     }
 
+    /// Whether the lead's own tool frame re-asserts a `Running` it is in
+    /// (T-1282): only one held below High, with no leave settling. A High
+    /// run needs no re-assert, and a nested frame is a subagent's.
+    fn re_asserts(&self, nested: bool) -> bool {
+        !nested && self.confidence != Confidence::High && self.pending.is_none()
+    }
+
     /// The 11 §11.7.3 transition table, restricted to the M2 registered set.
     /// `None` = the signal produces no top-level transition from this state.
     fn target(&self, sig: &Signal) -> Option<(SessionState, Confidence)> {
@@ -1182,6 +1189,15 @@ impl Machine {
                 // on "idle" while PostToolUse frames streamed in).
                 S::Idle { .. } if self.confidence != Confidence::High => t(S::Running),
                 S::Unknown { .. } => t(S::Running),
+                // A `Running` only guessed (the restart's tail, Low) is
+                // re-asserted by the lead's own step (T-1282): a turn that
+                // was running across a restart sends no `UserPromptSubmit`,
+                // so without this its tool frames streamed past a Low
+                // `Running` for as long as the turn ran, and every reader
+                // that waits for a hook's word (the crown's steer, automove)
+                // waited with them. Not past a leave already settling: a
+                // straggler there must not cancel a `Stop`'s end.
+                S::Running if self.re_asserts(*nested) => t(S::Running),
                 _ => None,
             },
             // The model cannot call a tool while its own dialog is open: the
@@ -1204,6 +1220,7 @@ impl Machine {
                 S::Idle { .. } if !nested => t(S::Running),
                 S::Idle { .. } if self.confidence != Confidence::High => t(S::Running),
                 S::Unknown { .. } => t(S::Running),
+                S::Running if self.re_asserts(*nested) => t(S::Running),
                 _ => None,
             },
             Signal::DialogEnded { interrupted } => {
@@ -1950,6 +1967,50 @@ mod tests {
         // ...and the next Stop ends it as any turn ends.
         assert!(m.apply(&stop, 9_000).is_none());
         let c = m.tick(9_000 + SETTLE_MS).expect("settle to end_turn again");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+    }
+
+    /// A turn running across a restart sends no `UserPromptSubmit` (T-1282,
+    /// simbly 2026-11-16: 36 `PostToolUse` frames in 35 minutes, each
+    /// `no_transition_rule`, past a tail's Low `Running`), so the lead's own
+    /// step is what re-asserts it, at High. A subagent's step does not, a
+    /// High run is left alone, and a leave already settling is not
+    /// cancelled by a straggler.
+    #[test]
+    fn a_guessed_run_is_re_asserted_by_the_lead_s_own_step() {
+        for sig in [Signal::ToolCompleted { nested: false }, Signal::ToolStarted { nested: false }]
+        {
+            let mut m = Machine::restore(
+                SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+                Confidence::High,
+                0,
+            );
+            m.apply(&Signal::TranscriptHint { kind: TailHint::ToolInFlight }, 100).expect("tail");
+            assert_eq!((m.state(), m.confidence()), (&SessionState::Running, Confidence::Low));
+            assert!(m.apply(&Signal::ToolCompleted { nested: true }, 200).is_none());
+            assert!(m.apply(&Signal::ToolStarted { nested: true }, 200).is_none());
+            assert_eq!(m.confidence(), Confidence::Low, "a subagent's step");
+            let (c, d) = m.apply_explained(&sig, 300);
+            let c = c.expect("the lead's step re-asserts the run");
+            assert_eq!(
+                (c.from, c.to, c.confidence),
+                (SessionState::Running, SessionState::Running, Confidence::High)
+            );
+            assert_eq!(d.outcome, "confidence_raised");
+            assert!(m.apply(&sig, 400).is_none(), "a High run needs no re-assert");
+        }
+        // A Low run with a Stop settling keeps its leave.
+        let mut m = Machine::restore(SessionState::Running, Confidence::Low, 0);
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        assert!(m.apply(&stop, 1_000).is_none());
+        assert!(m.apply(&Signal::ToolCompleted { nested: false }, 1_100).is_none());
+        let c = m.tick(1_000 + SETTLE_MS).expect("the Stop still ends the turn");
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 

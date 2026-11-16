@@ -1040,6 +1040,33 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered:taken:200"
   wake = true
 
 [[test]]
+id = "ST3"
+title = "ST3 · the crown keeps a worker to its brief across a board restart while an earlier ask is out: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command unless the crown asks for one."
+expect = "T-1282, simbly 2026-11-16: the crown starts the worker and asks it to run twelve short foreground waits in a row, the ask out (handed) in that one turn; the rig restarts the board's daemon mid-turn, so the board holds the turn as the transcript's guess until one of the agent's own hooks speaks. Told only that the worker is spending its time outside its brief, the crown steers it with ask_agent deliver now or immediately. The agent's next tool step (at most 20 s on) re-asserts the turn and the steer is admitted beside the earlier ask; a steer sent before that step is refused in words naming the restart and the next tool step, never the plugin prompt's wait, and the crown sends it again rather than waiting for the turn's end. The turn's end, well before the twelve waits' 240 s, wakes the crown naming the earlier ask taken; the worker replies ready, then stopped. Before T-1282 the agent's steps moved nothing, every steer was refused until the turn ended, and the worker replied slept."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "steered:taken:220", "replies:ready,stopped", "replies_never:slept"]
+
+  [[test.steps]]
+  crown = "ST3: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: ST3 started. When the board wakes you for {key}, end your turn with the single line: ST3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "ST3: call ask_agent for {key} with the text: Run the shell command `python3 -c 'import time; time.sleep(20)'` with the Bash tool in the foreground, twelve times one after another, each as its own call, waiting for each. Then reply with the single word slept and end your turn. Then end your turn with the single line: ST3 asked."
+  until = { events = ["PostToolUse"], state = "working" }
+  settle = false
+
+  [[test.steps]]
+  rig = "restart"
+
+  [[test.steps]]
+  crown = "ST3: the board's daemon restarted. {key}'s agent is spending its time outside its brief: its ticket needs only the word ready, and the waits it runs are not needed. Have it stop and reply with the single word stopped. Then end your turn with the single line: ST3 steered. When the board wakes you for {key}, end your turn with the single line: ST3 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+[[test]]
 id = "NW1"
 title = "NW1 · the crown's now reaches a worker at its running turn's next tool step: do the steps below"
 workspace = "worktree"

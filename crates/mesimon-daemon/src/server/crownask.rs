@@ -200,6 +200,21 @@ impl CrownAsk {
             self.stage.word(),
         )
     }
+
+    /// A steer's refusal at a turn the board has not seen running since
+    /// it restarted (T-1282). The first ask's own wait is not the reason:
+    /// before the restart the same steer went in beside it.
+    pub(super) fn unseen_refusal(&self, key: &str, now: u64) -> String {
+        let secs = now.saturating_sub(self.since_ms) / 1000;
+        format!(
+            "{key}'s agent has ask {} ({}, {secs}s) out, and the board has not seen its turn \
+             running since the board restarted: deliver now or immediately passes an ask still \
+             out only into a turn the board has seen running. The agent's next tool step shows \
+             it.",
+            self.id,
+            self.stage.word(),
+        )
+    }
 }
 
 /// What a restored ledger's ask comes back as (T-938): its turn was kept,
@@ -889,11 +904,41 @@ impl Daemon {
                 .any(|s| s.id == *id && s.state == SessionState::Running && !crownwake::guessed(s))
     }
 
+    /// Whether an ask would be a steer but for the turn it goes into
+    /// (T-1282): the board has not heard the agent's own hooks in it since
+    /// it restarted, its `Running` the tail's guess or still `Unknown`.
+    /// The refusal then names that, and the agent's next tool step, which
+    /// re-asserts the turn, as what lifts it.
+    pub(super) fn steer_unseen(&self, seat: &QueuedSeat, deliver: Deliver, sends: bool) -> bool {
+        let QueuedSeat::Pane(id) = seat else { return false };
+        sends
+            && deliver.at_once()
+            && self.board.sessions.iter().any(|s| {
+                s.id == *id
+                    && match s.state {
+                        SessionState::Running => crownwake::guessed(s),
+                        SessionState::Unknown { reason } => {
+                            reason == UnknownReason::DaemonRestarted
+                        }
+                        _ => false,
+                    }
+            })
+    }
+
     /// The second ask's refusal, while the first is out: the oldest ask
-    /// that still blocks is the one it names.
-    pub(super) fn crown_ask_blocks(&self, target: ulid::Ulid, key: &str) -> Option<String> {
+    /// that still blocks is the one it names. `unseen`: a steer refused
+    /// for a turn the board has not seen since its restart
+    /// (`steer_unseen`), which the refusal says in place of the first
+    /// ask's wait.
+    pub(super) fn crown_ask_blocks(
+        &self,
+        target: ulid::Ulid,
+        key: &str,
+        unseen: bool,
+    ) -> Option<String> {
         let list = self.crown_asks.get(&target)?;
-        list.iter().find(|a| a.blocks()).map(|a| a.refusal(key, now_ms()))
+        let a = list.iter().find(|a| a.blocks())?;
+        Some(if unseen { a.unseen_refusal(key, now_ms()) } else { a.refusal(key, now_ms()) })
     }
 }
 
@@ -1463,7 +1508,7 @@ pub(in crate::server) mod ledger_tests {
         b.d.mark_turn(b.worker, TurnAsk::Asked { crown, ask: first, said: Said::Handed });
         let steer = b.ask(Stage::Sent, false);
         assert_eq!(b.d.crown_asks[&b.worker].len(), 2, "the first stays beside the steer");
-        let refusal = b.d.crown_ask_blocks(b.worker, "T-2").unwrap();
+        let refusal = b.d.crown_ask_blocks(b.worker, "T-2", false).unwrap();
         assert!(refusal.contains(&first.to_string()), "the oldest out is named: {refusal}");
         // The steer's prompt hook: a mark, which leaves the turn the first's.
         b.d.crown_ask_acked(b.worker, b.seat, steer, None);
@@ -1481,7 +1526,11 @@ pub(in crate::server) mod ledger_tests {
         let said = b.d.crown_ask_turn_ended(b.worker, asked);
         assert_eq!(said, Some(TurnAsk::Asked { crown, ask: first, said: Said::Taken }));
         assert_eq!((b.word_of(first), b.word_of(steer)), ("taken", "sent"));
-        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None, "the steer went into that turn");
+        assert_eq!(
+            b.d.crown_ask_blocks(b.worker, "T-2", false),
+            None,
+            "the steer went into that turn"
+        );
         // The next ask drops what no longer blocks.
         let next = b.ask(Stage::Queued, false);
         let ids: Vec<_> = b.d.crown_asks[&b.worker].iter().map(|a| a.id).collect();
@@ -1516,7 +1565,7 @@ pub(in crate::server) mod ledger_tests {
         let said = b.d.crown_ask_turn_ended(b.worker, asked);
         assert_eq!(said, Some(TurnAsk::Asked { crown, ask: held, said: Said::Taken }));
         assert_eq!((b.word_of(held), b.word_of(steer)), ("taken", "sent"));
-        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None);
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2", false), None);
         // A handed submit under another own-turn ask's mark is taken at
         // the end too, never left blocking.
         let a1 = b.ask(Stage::Handed, true);
@@ -1525,7 +1574,7 @@ pub(in crate::server) mod ledger_tests {
         let mark = Some(TurnAsk::Asked { crown, ask: a2, said: Said::Handed });
         b.d.crown_ask_turn_ended(b.worker, mark);
         assert_eq!((b.word_of(a1), b.word_of(a2)), ("taken", "taken"));
-        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2"), None);
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2", false), None);
     }
 
     /// The asks still out ride `crown.json` at their word and come back so
@@ -1594,7 +1643,7 @@ pub(in crate::server) mod ledger_tests {
         set(&mut b, SessionState::Running, Confidence::High);
         assert!(admits(&b, Deliver::Now) && admits(&b, Deliver::Immediately));
         assert!(!admits(&b, Deliver::Idle), "idle keeps the rule");
-        assert!(b.d.crown_ask_blocks(b.worker, "T-2").is_some(), "the submit is out");
+        assert!(b.d.crown_ask_blocks(b.worker, "T-2", false).is_some(), "the submit is out");
         set(&mut b, SessionState::Running, Confidence::Low);
         assert!(!admits(&b, Deliver::Now), "a run guessed off the tail");
         for state in [
@@ -1618,6 +1667,70 @@ pub(in crate::server) mod ledger_tests {
         b.d.crown_watched.insert(b.worker);
         assert!(admits(&b, Deliver::Now), "a watched person's agent");
         assert!(admits(&b, Deliver::Immediately), "a watched person's agent");
+    }
+
+    /// T-1282, simbly 2026-11-16: a watcher's one long turn ran across a
+    /// restart on the mod road. The tail brought it back `Running` at Low,
+    /// no `UserPromptSubmit` comes inside a turn, and the agent's own
+    /// `PostToolUse` frames moved nothing, so every steer was refused for
+    /// 40 minutes in the first ask's words ("a plugin's prompt when the
+    /// running turn ends"), which were not the reason. Unproven, the steer
+    /// is refused naming the restart and the step that lifts it; the
+    /// agent's own next tool step (here relayed by its mod) proves the turn
+    /// and admits it; a subagent's does not.
+    #[test]
+    fn a_steer_into_a_restored_turn_waits_for_the_agent_s_own_step() {
+        let mut b = bed("restored-turn");
+        b.d.board.crown_mode = CrownMode::Autonomous;
+        let seat = b.seat;
+        let rec = &mut b.d.board.sessions[0];
+        rec.started_by = Some(b.crown);
+        rec.road = Road::Mod;
+        rec.state = SessionState::Running;
+        rec.confidence = Confidence::Low;
+        b.d.machines.insert(seat, Machine::restore(SessionState::Running, Confidence::Low, 1_000));
+        let mut a = CrownAsk::queued(b.crown, 1);
+        a.stage = Stage::Handed;
+        a.submit = true;
+        a.session = Some(b.seat);
+        b.d.crown_asks.insert(b.worker, vec![a]);
+        let verdict = |b: &Bed, deliver: Deliver| {
+            let seat = b.d.seat_of(b.worker);
+            let sends = b.d.crown_ask_hold(b.crown, b.worker, &seat).is_none();
+            (b.d.steer_admits(&seat, deliver, sends), b.d.steer_unseen(&seat, deliver, sends))
+        };
+        assert_eq!(verdict(&b, Deliver::Now), (false, true));
+        assert_eq!(verdict(&b, Deliver::Immediately), (false, true));
+        assert_eq!(verdict(&b, Deliver::Idle), (false, false), "idle is a resend");
+        let refusal = b.d.crown_ask_blocks(b.worker, "T-2", true).unwrap();
+        assert!(refusal.contains("has not seen its turn running since the board restarted"));
+        assert!(refusal.contains("next tool step"), "{refusal}");
+        assert!(!refusal.contains("plugin's prompt"), "{refusal}");
+        // `Unknown` after a restart reads the same; a stale demotion's does not.
+        b.d.board.sessions[0].state =
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted };
+        assert_eq!(verdict(&b, Deliver::Now), (false, true));
+        b.d.board.sessions[0].state = SessionState::Unknown { reason: UnknownReason::NoSignal };
+        assert_eq!(verdict(&b, Deliver::Now), (false, false));
+        b.d.board.sessions[0].state = SessionState::Running;
+        let step = |b: &mut Bed, payload: serde_json::Value| {
+            b.d.on_mod_hook(HookFrame {
+                session: seat.to_string(),
+                event: "PostToolUse".into(),
+                reason: None,
+                pane: None,
+                road: Road::Mod,
+                payload,
+            });
+        };
+        step(&mut b, serde_json::json!({ "tool_name": "Bash", "agent_id": "sub-1" }));
+        assert_eq!(b.d.board.sessions[0].confidence, Confidence::Low, "a subagent's step");
+        assert_eq!(verdict(&b, Deliver::Now), (false, true));
+        step(&mut b, serde_json::json!({ "tool_name": "Bash" }));
+        let rec = &b.d.board.sessions[0];
+        assert_eq!((&rec.state, rec.confidence), (&SessionState::Running, Confidence::High));
+        assert_eq!(verdict(&b, Deliver::Now), (true, false), "the agent's own step proves it");
+        assert_eq!(verdict(&b, Deliver::Immediately), (true, false));
     }
 
     /// A watch ends at the merge (T-712), and a branch an earlier PR merged
