@@ -141,7 +141,14 @@ struct Line {
 
 /// A character as the matcher compares it under `CaseMatching::Ignore` and
 /// `Normalization::Smart`: lowercased, then its diacritics shed (`É` → `e`).
+/// An ASCII character skips the matcher's tables (T-1293), which fold it to
+/// its ASCII lowercase all the same (`ascii_folds_as_the_matcher_does`):
+/// 88 % of the author's note lines are ASCII, and the tables were 1 s of a
+/// debug build's first keystroke over 52,000 lines.
 fn fold(c: char) -> char {
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
     nucleo_matcher::chars::normalize(nucleo_matcher::chars::to_lower_case(c))
 }
 
@@ -566,6 +573,18 @@ mod tests {
 
     fn pr(ticket: u128, text: &str) -> PullRequest {
         PullRequest { ticket: ulid_n(ticket), text: text.into() }
+    }
+
+    /// The precheck is a necessary condition only while `fold` is the
+    /// matcher's own fold: every ASCII character, taken the short way,
+    /// lands where the matcher's tables put it (T-1293).
+    #[test]
+    fn ascii_folds_as_the_matcher_does() {
+        for c in (0u8..128).map(char::from) {
+            let tables = nucleo_matcher::chars::normalize(nucleo_matcher::chars::to_lower_case(c));
+            assert_eq!(fold(c), tables, "{c:?}");
+        }
+        assert_eq!("Café ÉTÉ".chars().map(fold).collect::<String>(), "cafe ete");
     }
 
     #[test]

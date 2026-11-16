@@ -1460,6 +1460,30 @@ impl mesimon_core::search::Bodies for Corpus {
     }
 }
 
+/// The corpus's `ReadNotes` in flight (T-1293): the notes it asked for, at
+/// the revs asked, and the bodies a thread prepares from the answer, `None`
+/// for a refusal. A board's worth was 2,528 notes and 52,000 lines on the
+/// author's board, 1.3 s to split and fold in a debug build: on the thread
+/// that draws, the first letter typed froze the picker for that long.
+struct CorpusAsk {
+    wanted: Vec<(NoteRef, u64)>,
+    bodies: Receiver<Option<Vec<(ulid::Ulid, u64, mesimon_core::search::Body)>>>,
+}
+
+/// `ReadNotes`' answer as the corpus holds it, prepared off the board's
+/// thread: each body split, scrubbed and folded once.
+fn prepare_bodies(
+    reply: Result<Response>,
+) -> Option<Vec<(ulid::Ulid, u64, mesimon_core::search::Body)>> {
+    let Ok(Response::Notes { notes }) = reply else { return None };
+    Some(
+        notes
+            .into_iter()
+            .map(|n| (n.note, n.rev, mesimon_core::search::Body::new(&n.text)))
+            .collect(),
+    )
+}
+
 /// One note's body as last fetched (`Command::ReadNote`). Keyed on the
 /// note's `rev`, so a snapshot carrying a newer one reads as stale.
 pub struct NoteText {
@@ -2109,6 +2133,9 @@ pub struct App {
     /// When a daemon last refused `ReadNotes`; asked again after
     /// `CORPUS_BACKOFF`, never on every keystroke.
     corpus_refused: Option<Instant>,
+    /// The corpus's ask in flight (T-1293), landed by `land_bodies`. One
+    /// at a time: a keystroke under it asks nothing more.
+    corpus_asked: Option<CorpusAsk>,
     /// A quick-tag digit holds the card it tagged open for a moment (the
     /// ticket it landed on, and when). The stripe is one cell at rest and
     /// carries no words — it can say "two tags, these hues" and nothing
@@ -2711,6 +2738,7 @@ impl App {
             searcher: std::cell::RefCell::new(None),
             corpus: Corpus::default(),
             corpus_refused: None,
+            corpus_asked: None,
             tag_flash: None,
             tier_flash: None,
             refused: None,
@@ -5114,6 +5142,8 @@ impl App {
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
         // knows what an agent said, only its transcript does.
         dirty |= self.poll_spoke();
+        // The picker's notes, prepared on their thread (T-1293).
+        dirty |= self.poll_corpus();
         // What the notification thread could not do (T-291), said once. The
         // thread has no status line; this is the only thing it asks of the
         // board's own loop.
@@ -8509,6 +8539,18 @@ impl App {
     /// stays, since one archived or restored in between is the snapshot's.
     /// They are laid into the board, where every reader finds them.
     pub(crate) fn poll_archive(&mut self) -> bool {
+        let laid = self.ask_archive_now();
+        if laid {
+            // An open picker ranks what it has: the archived rows join it now.
+            self.research(true);
+        }
+        laid
+    }
+
+    /// `poll_archive` without its rank, for a caller that ranks next
+    /// itself (the picker's keystroke and its opening): one rank a
+    /// keystroke, never two (T-1293).
+    fn ask_archive_now(&mut self) -> bool {
         if !self.wants_archive(&self.board) {
             self.archive = None;
             return false;
@@ -8523,8 +8565,6 @@ impl App {
         };
         Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets);
         self.transcript_links_dirty();
-        // An open picker ranks what it has: the archived rows join it now.
-        self.research(true);
         true
     }
 
@@ -11447,7 +11487,10 @@ impl App {
                 self.mode = Mode::Search(Search::new());
                 // The archived tickets rank too (T-842): asked for now, so
                 // the first frame has them.
-                self.poll_archive();
+                self.ask_archive_now();
+                // And the notes start coming now (T-1293), on their thread,
+                // so the first letter typed rarely finds them still out.
+                self.poll_bodies(true);
                 // Open on the whole board: an empty query matches everything
                 // at score 0, so the first frame is the list the reader is
                 // about to narrow rather than an empty box.
@@ -14151,7 +14194,7 @@ impl App {
         self.mode = Mode::Search(s);
         if requery {
             // The archived half, toggled in, is asked for now (T-842).
-            self.poll_archive();
+            self.ask_archive_now();
             // A narrower query means a different best match, so the cursor
             // goes back to the top — telescope's rule, and the one that makes
             // typing read as narrowing rather than as scrolling.
@@ -14168,6 +14211,12 @@ impl App {
     /// it all held. A daemon that knows no such command (older than this
     /// build) is asked again after `CORPUS_BACKOFF`; until then the picker
     /// searches rows alone, as it always did.
+    ///
+    /// The ask goes on a connection of its own and its answer is prepared
+    /// on a thread (T-1293): the picker ranks rows while the bodies come,
+    /// and `land_bodies` lays them in. An answer already there when asked
+    /// (a fake's, the tour's toy) is laid in at once, so the rank that
+    /// follows has it.
     fn poll_bodies(&mut self, archived: bool) {
         let mut wanted: Vec<(NoteRef, u64)> = Vec::new();
         let mut on_board: std::collections::HashSet<ulid::Ulid> = Default::default();
@@ -14181,24 +14230,69 @@ impl App {
             }
         }
         self.corpus.0.retain(|id, _| on_board.contains(id));
-        if wanted.is_empty() || self.corpus_refused.is_some_and(|t| t.elapsed() < CORPUS_BACKOFF) {
+        if wanted.is_empty()
+            || self.corpus_asked.is_some()
+            || self.corpus_refused.is_some_and(|t| t.elapsed() < CORPUS_BACKOFF)
+        {
             return;
         }
         let refs = wanted.iter().map(|(r, _)| *r).collect();
-        match self.req(Command::ReadNotes { notes: refs }) {
-            Response::Notes { notes } => {
+        let reply = self.client.request_detached(Command::ReadNotes { notes: refs });
+        let (tx, bodies) = std::sync::mpsc::channel();
+        match reply.try_recv() {
+            Ok(got) => {
+                let _ = tx.send(prepare_bodies(got));
+            }
+            Err(TryRecvError::Empty) => {
+                std::thread::spawn(move || {
+                    let got = reply.recv().unwrap_or_else(|_| Err(anyhow::anyhow!("lost")));
+                    let _ = tx.send(prepare_bodies(got));
+                });
+            }
+            Err(TryRecvError::Disconnected) => {
+                let _ = tx.send(None);
+            }
+        }
+        self.corpus_asked = Some(CorpusAsk { wanted, bodies });
+        self.land_bodies();
+    }
+
+    /// The corpus's ask, laid in once its bodies are prepared (T-1293):
+    /// true when it landed, refused or not.
+    fn land_bodies(&mut self) -> bool {
+        let Some(ask) = self.corpus_asked.as_ref() else { return false };
+        let got = match ask.bodies.try_recv() {
+            Ok(got) => got,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let Some(ask) = self.corpus_asked.take() else { return false };
+        match got {
+            Some(bodies) => {
                 // Every note asked for gets an entry at the rev asked: one
                 // the daemon left out is not asked again until it changes.
-                for (r, rev) in wanted {
+                for (r, rev) in ask.wanted {
                     self.corpus.0.insert(r.note, (rev, Default::default()));
                 }
-                for n in notes {
-                    self.remember_body(n.note, n.rev, &n.text);
+                for (id, rev, body) in bodies {
+                    self.corpus.0.insert(id, (rev, body));
                 }
                 self.corpus_refused = None;
             }
-            _ => self.corpus_refused = Some(Instant::now()),
+            None => self.corpus_refused = Some(Instant::now()),
         }
+        true
+    }
+
+    /// The tick's half of `land_bodies`: an open picker ranks the notes
+    /// that just came, the cursor held on its ticket (a person walking the
+    /// rows while they came must not be thrown back to the top).
+    fn poll_corpus(&mut self) -> bool {
+        if !self.land_bodies() {
+            return false;
+        }
+        self.research(true);
+        matches!(self.mode, Mode::Search(_))
     }
 
     /// One note's body into the picker's corpus, as a fetch lands it.
@@ -21991,6 +22085,71 @@ mod tests {
         assert_eq!(keys, ["T-1", "T-2", "T-3"]);
         assert_eq!(search(&app).idx, 0);
         assert!(search(&app).archived, "archived tickets are in by default");
+    }
+
+    /// The notes come on their own thread (T-1293): opening the picker asks
+    /// for them once, a keystroke while they are out ranks the rows and asks
+    /// nothing more, and their landing puts the note hit in on the tick.
+    #[test]
+    fn a_keystroke_never_waits_for_the_notes() {
+        type Held = std::rc::Rc<std::cell::RefCell<Vec<std::sync::mpsc::Sender<Result<Response>>>>>;
+        struct HeldNotes {
+            inner: Box<dyn Transport>,
+            held: Held,
+        }
+        impl Transport for HeldNotes {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                assert!(!matches!(command, Command::ReadNotes { .. }), "asked on the board's thread");
+                self.inner.request(command)
+            }
+            fn request_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+                let (tx, rx) = std::sync::mpsc::channel();
+                match command {
+                    Command::ReadNotes { .. } => self.held.borrow_mut().push(tx),
+                    other => {
+                        let _ = tx.send(self.inner.request(other));
+                    }
+                }
+                rx
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let mut b = board_three_columns();
+        b.tickets[0].title = "Fix auth redirect".into();
+        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        let mut app = App::for_test(b, theme());
+        let held = Held::default();
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        app.client = Box::new(HeldNotes { inner, held: held.clone() });
+
+        press(&mut app, '/');
+        assert_eq!(held.borrow().len(), 1, "opening the picker asks for the notes");
+        typed(&mut app, "promo");
+        assert!(search(&app).hits.is_empty(), "no row says promo, and the notes are out");
+        assert_eq!(held.borrow().len(), 1, "a keystroke under the ask asks nothing more");
+
+        let reply = Response::Notes {
+            notes: vec![mesimon_core::command::NoteBody {
+                note: ulid::Ulid(90),
+                rev: 1,
+                text: "Access codes\nthe promo codes for friends".into(),
+            }],
+        };
+        held.borrow_mut().remove(0).send(Ok(reply)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.poll_corpus() {
+            assert!(Instant::now() < deadline, "the prepared notes never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let hits = &search(&app).hits;
+        assert_eq!(hits.iter().map(|h| h.key.text.as_str()).collect::<Vec<_>>(), ["T-1"]);
+        let line = hits[0].excerpt.as_ref().map(|e| e.line.text.as_str());
+        assert_eq!(line, Some("the promo codes for friends"));
+        typed(&mut app, " c");
+        assert!(held.borrow().is_empty(), "the corpus is held: nothing is asked again");
+        assert_eq!(search(&app).hits.len(), 1);
     }
 
     #[test]

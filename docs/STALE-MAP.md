@@ -46736,3 +46736,37 @@ a real hook child holds alone). Each fails with its half of the fix reverted. Ru
 The first run of the new e2e failed on the test's own assumptions (a `Monitoring` state, a
 delivery wake, which T-599 owes only after the task ends); those were fixed in the test, not the
 product.
+
+## The first letter in search never waits for the notes (T-1293, 2026-11-17, "first character in search hangs")
+
+**Cause, measured on the author's board** (1,133 tickets, 2,528 notes, 52,145 lines, 6.9 MB;
+T-882 was tuned on 703 notes): the picker's first keystroke of a run sent `ReadNotes` for every
+note on the board, archive included (search opens with it in, and 96 % of the notes are
+archived), and split, scrubbed and folded every line on the thread that draws. A debug build,
+which is what the author's board runs, timed by a scratch harness over the real
+`.mesimon/board`: serialize 110 ms, parse 31 ms, `Body::new` 1,300 ms (up to 4.8 s under other
+agents' load), of which the fold through nucleo's tables was 1,030 ms, then a one-letter rank of
+up to 220 ms. Release: about 0.2 s in all. The daemon never logged the request as a slow turn.
+
+**Built, three changes:**
+- **The notes come on their own thread.** `poll_bodies` asks with `Transport::request_detached`
+  (a connection of its own, T-431's road) and a thread prepares the `Body`s (`prepare_bodies`);
+  `land_bodies` lays them in and the tick's `poll_corpus` re-ranks with the cursor held. One ask
+  at a time (`App::corpus_asked`): a keystroke under it asks nothing more. The ask starts when
+  the picker opens, not at the first letter, so it is usually in before anyone types. Rows rank
+  at once; note hits join when the bodies land, as archived rows already did. An answer already
+  in the channel when asked (the fakes', the tour's toy) is laid in at once, so they behave as
+  before.
+- **ASCII skips the matcher's tables in `search::fold`.** Output was identical on all 52,145
+  lines, and 88 % of them are ASCII. `ascii_folds_as_the_matcher_does` pins every ASCII char to
+  the tables' answer, which is what keeps the precheck a necessary condition.
+- **One rank a keystroke.** `poll_archive` ranked after a fetch, then `key_search` and the
+  picker's opening ranked again. They call `ask_archive_now`, the fetch without its rank.
+
+**Not done:** the archive fetch itself is still synchronous on a keystroke that follows a
+snapshot (1,081 tickets, 1.1 MB, ~45 ms in debug). Optimised dependencies in the dev profile
+were offered and not taken: one full dependency rebuild, and slower builds in every worktree.
+
+Tests: `a_keystroke_never_waits_for_the_notes` (a daemon that holds the answer: a keystroke
+ranks rows, asks nothing more, and the landing adds the note hit; a `ReadNotes` on the board's
+own connection panics it), `ascii_folds_as_the_matcher_does`; `cargo ut`, `notes_e2e`.
