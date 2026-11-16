@@ -276,9 +276,9 @@ pub const CROWN_WAKES: &str = concat!(
      ends, that call moved to the background and not stopped; a Claude agent only. Neither \
      goes while the agent stands at a dialog. The receipt's asked and get_ticket's say \
      where the words stand: queued, sent (out, no receipt of the agent's yet), handed (the \
-     agent's own receipt named them), taken (the turn they started ended), dropped (by a \
-     person, the agent's side or the board, with why) or unknown (with why), none of \
-     them resent. A new ask replaces the crown's last on that ticket while it is queued; with \
+     agent's own receipt named them), taken (the turn they started or were handed into \
+     ended), dropped (by a person, the agent's side or the board, with why) or unknown \
+     (with why), none of them resent. A new ask replaces the crown's last on that ticket while it is queued; with \
      deliver idle it is refused while that one is out (sent or handed, before the turn it went \
      into ends), and with deliver now or immediately into a running turn it goes beside it as an \
      ask of its own, asked then reading it and earlier the one still out. A steer leaves an \

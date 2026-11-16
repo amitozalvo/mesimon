@@ -3070,7 +3070,7 @@ pub struct AgentNeedsYouView {
 ///   hook names none, so a paste stays `sent`);
 /// - `handed`: a receipt that names them came: the mod's `entered` for
 ///   their frame, a Codex steer or launch counted;
-/// - `taken`: the turn these words started has ended;
+/// - `taken`: the turn these words started, or were handed into, has ended;
 /// - `dropped`: confirmed not to go, `by` whom: `person` (words of their
 ///   own over the crown's, taken back, or talked past in the pane),
 ///   `board` (the seat was gone when the queue reached it) or `agent` (its

@@ -6286,11 +6286,13 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     assert_eq!(line["beside"], serde_json::json!([format!("{} {out_word}", first.ask)]), "{line}");
     // Idle still keeps the one-ask rule, naming the first.
     refused(ask(&mut c, "mesimon-probe-9743 idle", Deliver::Idle), &first.ask);
-    // The steer's own prompt hook takes the turn from nobody.
-    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", r#"{"prompt":"x"}"#);
+    // The steer's own prompt hook, naming its words (T-1025), hands it and
+    // takes the turn from nobody.
+    let named_hook = r#"{"prompt":"mesimon-probe-9742 steer"}"#;
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", named_hook);
     settle();
     let now = asked(&mut c).unwrap();
-    assert_eq!(now.ask, steer.ask);
+    assert_eq!((now.ask.as_str(), now.status.as_str()), (steer.ask.as_str(), "handed"));
     let earlier: Vec<_> = now.earlier.iter().map(|e| (e.ask.as_str(), e.status.as_str())).collect();
     assert_eq!(earlier, [(first.ask.as_str(), out_word)], "the steer's ack moved nothing");
     stop(&mut c, ws);
@@ -6308,6 +6310,8 @@ fn a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask() {
     let after = asked(&mut c).unwrap();
     let first_word = if mod_road { "taken" } else { "sent" };
     assert_eq!(after.earlier[0].status, first_word, "{after:?}");
+    // T-1281: the steer was handed into that turn, and it ended.
+    assert_eq!((after.ask.as_str(), after.status.as_str()), (steer.ask.as_str(), "taken"));
     assert!(!landed("mesimon-probe-9743"), "a refused ask sent nothing");
     h.one_turn(&mut c, sa);
 

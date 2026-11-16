@@ -18,10 +18,11 @@
 //!   to, or the Codex steer or launch counted. A Claude prompt hook names no
 //!   words, so a paste is never handed: its ack only marks the turn, and
 //!   the ask stays `sent`;
-//! - **taken** — the turn these words started has ended. It says nothing
-//!   of absorption inside a turn already running (words that went into one
-//!   stay `handed`), and an end, normal or not, says nothing of whether the
-//!   work succeeded;
+//! - **taken** — the turn these words started, or were handed into, has
+//!   ended (T-1281: a steer handed into a running turn read `handed` for
+//!   good). The wake at that end keeps the turn's own word, `handed` for
+//!   words that did not start it, and an end, normal or not, says nothing
+//!   of whether the work succeeded;
 //! - **dropped** — a refusal or a cancellation confirmed before the agent
 //!   had them, and by whom: a person's take-back or replacement, the
 //!   board's seat gone, or the mod's own `refused`, `dropped` or `rejected`;
@@ -750,15 +751,15 @@ impl Daemon {
                 continue;
             }
             if let (true, Some(TurnAsk::Asked { crown, ask, .. })) = (mine, asked) {
-                let word = end_said(&a.stage, a.own_turn);
-                if word == Some(Said::Taken) {
-                    a.set(Stage::Taken, now);
-                }
-                said = word.map(|said| TurnAsk::Asked { crown, ask, said });
-            } else if a.stage == Stage::Handed && a.own_turn {
-                // Handed words that started a turn of their own, under
-                // another ask's mark (round 1): that turn began before this
-                // proven end, so it has ended. The wake is the mark's.
+                said =
+                    end_said(&a.stage, a.own_turn).map(|said| TurnAsk::Asked { crown, ask, said });
+            }
+            // Handed words have ended with this proven end (T-1281): words
+            // that started a turn of their own, under this mark or another's
+            // (round 1), or words handed into the turn already running, a
+            // steer, whose wake keeps the turn's own word, `handed`. Left
+            // `handed`, a steer read so for good and rode `crown.json`.
+            if a.stage == Stage::Handed {
                 a.set(Stage::Taken, now);
             }
             if a.blocks() && !a.submit {
@@ -1535,6 +1536,41 @@ pub(in crate::server) mod ledger_tests {
         let next = b.ask(Stage::Queued, false);
         let ids: Vec<_> = b.d.crown_asks[&b.worker].iter().map(|a| a.id).collect();
         assert_eq!(ids, [next]);
+    }
+
+    /// T-1281, T-1274's and T-1282's asks on 2026-11-16: words handed into a
+    /// turn already running read `taken` once that turn ends, whether the
+    /// turn carries them (the one ask out) or another ask beside them. The
+    /// wake keeps the turn's own word, `handed`: the words did not start
+    /// it. Before, the record was released and read `handed` for good, and
+    /// `crown.json` kept it.
+    #[test]
+    fn a_steer_handed_into_a_running_turn_is_taken_at_that_turn_s_end() {
+        let mut b = bed("steer-taken");
+        let crown = b.crown;
+        // The one ask out, steered into the running turn and handed there.
+        let steer = b.ask(Stage::Sent, false);
+        assert!(b.d.crown_ask_handed(b.worker, steer));
+        assert_eq!(
+            b.d.turn_asks.get(&b.worker),
+            Some(&TurnAsk::Asked { crown, ask: steer, said: Said::Handed })
+        );
+        let asked = b.d.turn_asks.remove(&b.worker);
+        let said = b.d.crown_ask_turn_ended(b.worker, asked);
+        assert_eq!(said, Some(TurnAsk::Asked { crown, ask: steer, said: Said::Handed }));
+        assert_eq!(b.word_of(steer), "taken", "the turn it went into ended");
+        assert_eq!(b.d.crown_ask_blocks(b.worker, "T-2", false), None);
+        assert!(b.d.kept_crown_asks().is_empty(), "nothing out is kept");
+        // A steer handed beside the ask the turn carries is taken with it.
+        let first = b.ask(Stage::Handed, true);
+        b.d.mark_turn(b.worker, TurnAsk::Asked { crown, ask: first, said: Said::Handed });
+        let beside = b.ask(Stage::Sent, false);
+        assert!(b.d.crown_ask_handed(b.worker, beside));
+        let asked = b.d.turn_asks.remove(&b.worker);
+        let said = b.d.crown_ask_turn_ended(b.worker, asked);
+        assert_eq!(said, Some(TurnAsk::Asked { crown, ask: first, said: Said::Taken }));
+        assert_eq!((b.word_of(first), b.word_of(beside)), ("taken", "taken"));
+        assert!(b.d.kept_crown_asks().is_empty());
     }
 
     /// Round 1, ST2's sequence on the real mod: a held submit out, a steer

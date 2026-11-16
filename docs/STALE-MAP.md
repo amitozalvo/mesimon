@@ -46381,3 +46381,39 @@ sees only large effects. **Every run as it came, the faults the rig's:**
 
 **Not rig-run:** the restart's kept rules. The text a crown reads does not change there, only
 whether a second copy is sent; `crown_rules_e2e` proves each arm of it on the wire.
+
+## A steer handed into a running turn reads taken once that turn ends (T-1281, 2026-11-16, filed by the crown from T-1279's research)
+
+**Seen.** simbly: crown asks read `handed` in `get_ticket`'s `asked` 23 h after their turns
+ended. This board: T-1274's ask `01M7HSXB…` and T-1282's `01M7HZSZ…`, both `deliver now` into
+the worker's running first turn, read `handed` (`since_secs` 1456 and 4452) after that turn,
+the merge and a later full turn.
+
+**Cause, confirmed.** Both are steers: words handed into a turn they did not start
+(`own_turn` false). `crown_ask_turn_ended` set `released` on them (no longer a block) but left
+the stage `Handed`; only an own-turn `Handed` became `Taken`. T-938's doctrine said so ("words
+that went into one stay `handed`"), and nothing later moved them. `KeptAsk::of` kept them in
+`crown.json` too, since it keeps every `Handed`.
+
+**Shipped.** At a proven end, every `Handed` record on the ticket reads `taken`: own turn or
+steer, under this turn's mark or beside it. The wake keeps the turn's own word (`end_said`
+unchanged), so a steer's end still says `handed`, the words did not start it. `taken`'s
+definition widened in `crownask`'s doctrine, `AgentAskedView` and the crown rules: "the turn
+they started or were handed into ended". A `sent` steer (no receipt named its words) is
+released and still reads `sent`, as T-938 chose; not changed here.
+
+**Refuted.**
+- *A stuck `handed` refused a later ask.* No: `blocks()` is false once `released`, which the
+  same end set, and `released` rides `crown.json`. Only a turn whose end the board never proves
+  keeps an ask out, by design (T-938).
+- *A stuck `handed` counted as words pending and swallowed T-1282's 13:32 finished wake (the
+  ticket's second note).* No: `pending_on` reads no crown ask. That turn ran on the merged
+  notice, tagged `TurnAsk::Merge` (`server.rs`, T-469), and `verdict` gives a merge step that
+  leaves nothing new no wake. T-1274's post-merge wake that did arrive was not traced.
+
+**Tests.** `crownask` `a_steer_handed_into_a_running_turn_is_taken_at_that_turn_s_end` (failed
+before the fix: `handed`): the one ask out, and a steer beside an own-turn ask, both `taken`,
+nothing blocking, nothing kept. `crown_e2e::a_crown_steer_goes_beside_its_ask_out_and_a_restart_keeps_the_ask`:
+the steer's prompt hook now names its words (T-1025), so it reads `handed`, then `taken` at the
+stop, on both roads. No rig case: the board's refusals and wakes are unchanged, and only a read
+word after a turn's end moved.
