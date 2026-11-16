@@ -585,8 +585,11 @@ fn put<T: serde::Serialize>(body: &mut Value, key: &str, v: Option<T>) {
     }
 }
 
+/// A result's JSON as one line (T-1279): the reader is a model, which reads
+/// no indentation, and on a crown's keyed `get_ticket` the pretty form's
+/// whitespace was a quarter of the bytes (simbly, 244 reads, 15 Nov 2026).
 fn text<T: serde::Serialize>(v: &T) -> Value {
-    let body = serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into());
+    let body = serde_json::to_string(v).unwrap_or_else(|_| "{}".into());
     json!({ "content": [{ "type": "text", "text": body }], "isError": false })
 }
 
@@ -719,7 +722,7 @@ mod tests {
         assert_eq!(r["content"][0]["text"], "# Why\n\nbecause");
         assert_eq!(r["isError"], false);
         let r = render(Response::NoteWritten { note: None });
-        assert!(r["content"][0]["text"].as_str().unwrap().contains("\"deleted\": true"));
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("\"deleted\":true"));
     }
 
     /// Answering a notification is a protocol error. `notifications/initialized`

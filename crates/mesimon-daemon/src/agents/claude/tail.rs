@@ -174,6 +174,30 @@ pub fn prompted_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// Has the conversation been compacted at or after `since` (epoch ms)? A
+/// restart asks it of a crown told its rules (T-1279): a compaction while
+/// no daemon listened left them out of its context. Reads the last
+/// `PROMPT_WINDOW` bytes, newest first: `Some(true)` at a main-chain
+/// `compact_boundary` dated at or after `since` (or undated), met before
+/// any dated record older than it,
+/// `Some(false)` at that older record, and `None` where the window ends
+/// first or there is no file, which the caller reads as compacted.
+pub fn compacted_since(path: &Path, since: u64) -> Option<bool> {
+    use serde_json::Value;
+    for v in tail_records_in(path, PROMPT_WINDOW)? {
+        if record_ms(&v).is_some_and(|at| at < since) {
+            return Some(false);
+        }
+        if v.get("type").and_then(Value::as_str) == Some("system")
+            && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+            && !v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
+        {
+            return Some(true);
+        }
+    }
+    None
+}
+
 /// A plan or question dialog the transcript says is still open: the
 /// interaction tool's call, its `tool_use` id (the hook frames'
 /// `tool_use_id`) and its input.
@@ -1130,6 +1154,39 @@ mod tests {
         assert!(prompted_since(&p, go + 1));
         assert!(!prompted_since(&p, go + 300_001), "a prompt older than the stamp");
         assert!(!prompted_since(Path::new("/nonexistent/x.jsonl"), 0));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// T-1279: a restart keeps a crown told its rules only where the
+    /// transcript shows no compaction since the telling and reaches back
+    /// to it; a side chain's boundary is not the conversation's.
+    #[test]
+    fn compacted_since_reads_a_main_chain_boundary_after_the_stamp() {
+        let p = tmp("compacted");
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u0\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:50:00.000Z\",\"message\":{\"content\":\"go\"}}\n\
+             {\"uuid\":\"u1\",\"type\":\"assistant\",\"timestamp\":\"2026-09-05T16:52:00.000Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        )
+        .unwrap();
+        let told = 1_788_627_060_000; // 16:51
+        assert_eq!(compacted_since(&p, told), Some(false), "nothing since but a reply");
+        assert_eq!(
+            compacted_since(&p, 1_788_626_000_000),
+            None,
+            "the window starts after the stamp"
+        );
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(f, "{{\"uuid\":\"s1\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"isSidechain\":true,\"timestamp\":\"2026-09-05T16:53:00.000Z\"}}").unwrap();
+        assert_eq!(compacted_since(&p, told), Some(false), "a side chain's compaction");
+        writeln!(f, "{{\"uuid\":\"s2\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"isSidechain\":false,\"timestamp\":\"2026-09-05T16:54:00.000Z\",\"compactMetadata\":{{\"trigger\":\"manual\"}}}}").unwrap();
+        assert_eq!(compacted_since(&p, told), Some(true));
+        assert_eq!(
+            compacted_since(&p, 1_788_627_300_000),
+            Some(false),
+            "a compaction before the telling"
+        );
+        assert_eq!(compacted_since(Path::new("/nonexistent/x.jsonl"), 0), None);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

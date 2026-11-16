@@ -1081,9 +1081,15 @@ fn crown_ticket_reply_sizes() {
         );
         assert_ne!(updated["seen"], written["seen"]);
         let fresh = shim.call_ok("get_ticket", json!({"key": key}));
-        if i < 2 {
-            assert_eq!(fresh["summary"]["rows"][0]["done"], i == 1);
+        if i == 0 {
+            assert_eq!(fresh["summary"]["rows"][0]["done"], false);
             assert!(fresh["summary"].get("about").is_none());
+        }
+        // A ticked box is counted on a routine read, and listed on full (T-1279).
+        if i == 1 {
+            assert_eq!(fresh["summary"], json!({"ticked": 1}));
+            let full = shim.call_ok("get_ticket", json!({"key": key, "full": true}));
+            assert_eq!(full["summary"]["rows"][0]["done"], true);
         }
     }
 

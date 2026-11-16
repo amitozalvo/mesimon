@@ -4,7 +4,8 @@
 //! started comes back with them beside the call's own answer, whichever
 //! tool it is, and every later call comes back without them. The crown's
 //! own `get_ticket` carries them always, so that read is the telling and
-//! adds nothing. A session counts as told only once a reply carrying them
+//! adds nothing. A restart tells again only where the rules text or the
+//! seat's context may have moved since (T-1279). A session counts as told only once a reply carrying them
 //! was written to its connection, and a compaction forgets them at either
 //! edge of its window, so nothing said inside it counts. A person may crown
 //! an agent already at work, uncrown it and crown it again; each crowning
@@ -135,11 +136,54 @@ fn the_crown_is_told_its_rules_once_per_crowning() {
         other => panic!("explicit rules: {other:?}"),
     }
 
-    // ---- a restart: every crown is told again ------------------------------
+    // ---- a restart keeps them where nothing moved (T-1279) ------------------
+    // With no transcript to read, the restart cannot say the context held:
+    // the crown is told again.
     drop(c);
     h.restart();
     let mut c = h.client("crown-rules-after");
-    assert_eq!(listed(&mut c, sa), Some(crown_view()), "a new daemon tells the crown again");
+    assert_eq!(listed(&mut c, sa), Some(crown_view()), "no transcript: told again");
+    assert_eq!(listed(&mut c, sa), None);
+    // A transcript whose last record predates the telling: the same rules
+    // in the same context, so the new daemon sends nothing.
+    let transcript = h.repo.join("crown-transcript.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"uuid\":\"u0\",\"type\":\"user\",\"timestamp\":\"2020-01-01T00:00:00.000Z\",\"message\":{\"content\":\"go\"}}\n",
+    )
+    .unwrap();
+    let payload = format!(
+        r#"{{"source":"resume","session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
+        transcript.display()
+    );
+    hook_send(&hook_sock, &sa.to_string(), "SessionStart", &payload);
+    wait_until(secs, "the transcript path", || {
+        c.sessions_of(a).first().and_then(|r| r.transcript_path.clone()).as_deref()
+            == transcript.to_str()
+    });
+    assert_eq!(listed(&mut c, sa), None, "a resume keeps them");
+    // Told again, so the record holds a telling after the transcript's line.
+    assert!(matches!(c.request(Command::Uncrown), Response::Ok));
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    assert_eq!(listed(&mut c, sa), Some(crown_view()));
+    drop(c);
+    h.restart();
+    let mut c = h.client("crown-rules-kept");
+    assert_eq!(listed(&mut c, sa), None, "a restart that changed nothing tells nothing");
+    // A compaction while no daemon listened: told again.
+    drop(c);
+    h.restart_after(|| {
+        use std::io::Write as _;
+        let stamp = iso_ms(now_ms());
+        let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        writeln!(
+            f,
+            r#"{{"uuid":"c1","type":"system","subtype":"compact_boundary","isSidechain":false,"timestamp":"{stamp}"}}"#
+        )
+        .unwrap();
+    });
+    let mut c = h.client("crown-rules-compacted");
+    assert_eq!(listed(&mut c, sa), Some(crown_view()), "compacted while down: told again");
     assert_eq!(listed(&mut c, sa), None);
 }
 

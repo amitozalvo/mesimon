@@ -123,6 +123,13 @@ pub(super) struct Ledger {
     /// carried schema 2, so none reads a wake it cannot parse.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     expects: BTreeMap<ulid::Ulid, Expect>,
+    /// `Daemon::crown_rules` (T-1279): the crown's sessions told its rules,
+    /// under the rules text's digest, so a restart that changed neither the
+    /// text nor the seat's context sends them no second time. Same schema,
+    /// no bump: a build that drops the field tells every crown again at its
+    /// start, as before.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    rules: BTreeMap<uuid::Uuid, crownrules::Told>,
 }
 
 /// Startup loader: the ledger, any notices, and whether writes are barred.
@@ -177,6 +184,7 @@ impl Daemon {
         taken: crown_wakes_taken => self.crown_wakes_taken.to_vec(),
         out_asks: crown_asks => self.kept_crown_asks(),
         expects: crown_expects => self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
+        rules: crown_rules => self.crown_rules.kept(&mesimon_core::mcp::crown_view()),
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -321,6 +329,30 @@ impl Daemon {
             self.crown_recheck.entry(worker).or_default();
             self.crown_heard.entry(worker).or_default().restored = true;
         }
+        // The rules told under this text come back where nothing says the
+        // seat's context moved since (T-1279): a Claude seat's transcript
+        // shows no compaction after the telling and none is under way, or
+        // a Codex seat's first snapshot will be compared with what it kept.
+        let still = |id: &uuid::Uuid, told: &crownrules::Told| {
+            let Some(seat) = self.board.sessions.iter().find(|s| s.id == *id) else {
+                return false;
+            };
+            if seat.compacting || seat.ticket != crown {
+                return false;
+            }
+            match seat.kind {
+                SessionKind::Codex => told.codex.is_some(),
+                SessionKind::Claude => seat.transcript_path.as_deref().is_some_and(|p| {
+                    crate::agents::claude::tail::compacted_since(
+                        std::path::Path::new(p),
+                        told.told_ms,
+                    ) == Some(false)
+                }),
+                _ => false,
+            }
+        };
+        let rules = mesimon_core::mcp::crown_view();
+        self.crown_rules.restore(ledger.rules, &rules, still);
         self.crown_recheck_until = now_ms() + recheck_ms();
         // The crown's asks still out come back at their word (T-974); one a
         // turn rode that no kept record names comes back `unknown` (T-938).

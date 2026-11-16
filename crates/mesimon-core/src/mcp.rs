@@ -603,7 +603,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "get_ticket",
-            "description": "Returns this session's brief, or with key a ticket's facts (crown only): title, column, workspace, branch, who merges (merge), PRs, notes, the summary, state, context and cost (crown only: Crown reads context / cost), and seen. With key, full adds the description, the columns move_ticket accepts and what each is for, allowed_tags and field explanations. On the crown's own read, full repeats its rules. The prompt is often the title alone; notes hold the rest of the brief. The first note is the description.",
+            "description": "Returns this session's brief, or with key a ticket's facts (crown only): title, column, workspace, branch, who merges (merge), PRs, notes, the summary, state, context and cost (crown only: Crown reads context / cost), and seen. With key, full adds the description, ticked boxes, clean repos, the columns move_ticket accepts and what each is for, allowed_tags and field explanations. On the crown's own read, full repeats its rules. The prompt is often the title alone; notes hold the rest of the brief. The first note is the description.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

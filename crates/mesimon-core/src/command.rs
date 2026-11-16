@@ -2613,7 +2613,13 @@ pub enum AgentTicketChange {
 
 impl AgentTicketView {
     /// Routine crown reads retain ticket facts; the brief, vocabulary and
-    /// explanations remain available through `full: true` (T-1031).
+    /// explanations remain available through `full: true` (T-1031). Since
+    /// T-1279 they also say what is settled in fewer words: a workspace
+    /// leg reading `clean` by its name alone (`repos_clean`), a ticked
+    /// summary box as a count (`summary.ticked`), the init script only
+    /// where this ticket ran it, and the column's automove only where it
+    /// has a rule or a held move. Only omissions and new defaulted fields,
+    /// so a shim from before them still reads the answer.
     pub fn compact(&mut self) {
         self.description = None;
         self.description_cut = None;
@@ -2628,8 +2634,21 @@ impl AgentTicketView {
         if let Some(init) = &mut self.worktree_init {
             init.about.clear();
         }
+        if self.worktree_init.as_ref().is_some_and(|init| init.last.is_none()) {
+            self.worktree_init = None;
+        }
+        if self.automove.as_ref().is_some_and(AgentAutomoveView::is_empty) {
+            self.automove = None;
+        }
+        let (clean, legs): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.repos).into_iter().partition(|r| r.merge_state == "clean");
+        self.repos = legs;
+        self.repos_clean = clean.into_iter().map(|r| r.name).collect();
         if let Some(summary) = &mut self.summary {
             summary.about.clear();
+            let before = summary.rows.len();
+            summary.rows.retain(|r| !r.done);
+            summary.ticked = (before - summary.rows.len()) as u32;
         }
     }
 }
@@ -2679,6 +2698,10 @@ pub struct AgentTicketView {
     /// single repo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<AgentRepoView>,
+    /// On the crown's routine keyed read (T-1279), the legs `repos` leaves
+    /// out because they read `clean`, by name; their base is on `full`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos_clean: Vec<String>,
     /// Who merges this branch when it is ready (T-613), beside
     /// `merge_state`: the merge train, the crown or a person, with the one
     /// clause that decides it, and nobody once it is merged (T-772).
@@ -2733,8 +2756,10 @@ pub struct AgentTicketView {
     /// agent that sees `on_done: "REVIEW"` knows ending its turn IS the move,
     /// and a `move_ticket` is for what these rules do not do. Data only; the
     /// rules themselves live in `core::automove` and are not changed here.
-    #[serde(default)]
-    pub automove: AgentAutomoveView,
+    /// Absent on the crown's routine keyed read where the column has no
+    /// rule and no move is held (T-1279); `full` carries it always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automove: Option<AgentAutomoveView>,
     /// The tags this ticket wears, one per group at most, in group order.
     #[serde(default)]
     pub tags: Vec<AgentTagView>,
@@ -2875,6 +2900,17 @@ pub struct AgentAutomoveView {
     /// move gate refused (T-749), in the refusal's words, while it stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+}
+
+impl AgentAutomoveView {
+    /// No rule on the column and no move held: what the board does to the
+    /// ticket on its own is nothing.
+    pub fn is_empty(&self) -> bool {
+        self.on_working.is_none()
+            && self.on_done.is_none()
+            && self.on_merged.is_none()
+            && self.held.is_none()
+    }
 }
 
 /// A ticket's agent as its card shows it (T-411). Words, never a session:
@@ -3291,6 +3327,10 @@ pub struct AgentSummaryView {
     pub about: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<AgentSummaryRow>,
+    /// On the crown's routine keyed read (T-1279), how many ticked boxes
+    /// `rows` leaves out; `full` lists them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ticked: u32,
 }
 
 /// One row of the summary: the note it is in (what `read_note` and
@@ -4490,6 +4530,94 @@ mod tests {
         }
     }
 
+    /// T-1279: the crown's routine keyed read names a clean leg and counts
+    /// a ticked box, keeps every other leg and open box whole, and leaves
+    /// out an unrun init script and a column with no rule; a shim from
+    /// before it (no `repos_clean`, no `ticked`, `automove` defaulted)
+    /// still reads the answer.
+    #[test]
+    fn a_compact_read_says_what_is_settled_in_fewer_words() {
+        let leg = |name: &str, state: &str| AgentRepoView {
+            name: name.into(),
+            base: "main".into(),
+            merge_state: state.into(),
+            ahead: u32::from(state == "ahead"),
+            merged_in: None,
+        };
+        let row = |text: &str, done: bool| AgentSummaryRow {
+            note: ulid::Ulid::nil(),
+            text: text.into(),
+            done,
+        };
+        let json = serde_json::json!({"key": "T-1", "title": "t", "column": "PRODUCTION",
+            "workspace": "worktree"});
+        let mut t: AgentTicketView = serde_json::from_value(json).unwrap();
+        t.repos = vec![leg("root", "clean"), leg("web", "merged"), leg("api", "ahead")];
+        t.repos.push(leg("infra", "clean"));
+        t.summary = Some(AgentSummaryView {
+            about: "how".into(),
+            rows: vec![row("cause", true), row("merge MR 53", false), row("tests", true)],
+            ticked: 0,
+        });
+        t.worktree_init = Some(AgentWorktreeInitView {
+            script: ".mesimon-worktree-init.sh".into(),
+            present: false,
+            about: "what".into(),
+            last: None,
+        });
+        t.automove = Some(AgentAutomoveView::default());
+        let mut lean = t.clone();
+        lean.compact();
+        let names: Vec<_> = lean.repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["web", "api"]);
+        assert_eq!(lean.repos_clean, ["root", "infra"]);
+        let summary = lean.summary.as_ref().unwrap();
+        assert_eq!(
+            summary.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["merge MR 53"]
+        );
+        assert_eq!(summary.ticked, 2);
+        assert!(lean.worktree_init.is_none() && lean.automove.is_none());
+        let wire = serde_json::to_value(&lean).unwrap();
+        assert!(wire.get("automove").is_none() && wire.get("worktree_init").is_none());
+        assert_eq!(
+            wire["summary"],
+            serde_json::json!({"rows": [{"note": ulid::Ulid::nil().to_string(),
+            "text": "merge MR 53", "done": false}], "ticked": 2})
+        );
+        // What it keeps: a run of the script, and a column's rule.
+        let mut ran = t.clone();
+        ran.worktree_init.as_mut().unwrap().last = Some("failed ∙ 3 s".into());
+        ran.automove =
+            Some(AgentAutomoveView { on_done: Some("REVIEW".into()), ..Default::default() });
+        ran.compact();
+        assert_eq!(ran.worktree_init.unwrap().last.as_deref(), Some("failed ∙ 3 s"));
+        assert_eq!(ran.automove.unwrap().on_done.as_deref(), Some("REVIEW"));
+        // A reader from before T-1279: the same fields with none of the new.
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Old {
+            repos: Vec<AgentRepoView>,
+            #[serde(default)]
+            automove: OldAutomove,
+            summary: Option<OldSummary>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        #[allow(dead_code)]
+        struct OldAutomove {
+            on_working: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OldSummary {
+            #[serde(default)]
+            rows: Vec<AgentSummaryRow>,
+        }
+        let old: Old = serde_json::from_value(wire).unwrap();
+        assert_eq!(old.repos.len(), 2);
+        assert_eq!(old.summary.unwrap().rows.len(), 1);
+    }
+
     /// `get_ticket`'s answer from before T-376 carried no `automove`; it
     /// parses as a column with no rules, which is what an older daemon meant.
     #[test]
@@ -4499,9 +4627,11 @@ mod tests {
         let r: Response = serde_json::from_str(old).unwrap();
         match r {
             Response::AgentTicket { ticket } => {
-                assert_eq!(ticket.automove, AgentAutomoveView::default());
-                assert_eq!(ticket.automove.on_working, None);
-                assert_eq!(ticket.automove.on_done, None);
+                // Absent reads as no rule, as on a crown's read since T-1279.
+                let automove = ticket.automove.unwrap_or_default();
+                assert!(automove.is_empty());
+                assert_eq!(automove.on_working, None);
+                assert_eq!(automove.on_done, None);
                 assert!(ticket.repos.is_empty());
             }
             other => panic!("expected agent_ticket, got {other:?}"),
@@ -4561,6 +4691,7 @@ mod tests {
             merge_state: Some("ahead".into()),
             merged_in: None,
             repos: vec![],
+            repos_clean: vec![],
             merge: None,
             held: None,
             prs_about: None,
@@ -4569,7 +4700,7 @@ mod tests {
             worktree_error: None,
             allowed_columns: Some(vec![]),
             column_descriptions: Default::default(),
-            automove: AgentAutomoveView::default(),
+            automove: Some(AgentAutomoveView::default()),
             tags: vec![],
             allowed_tags: Some(vec![]),
             board_version: 1,

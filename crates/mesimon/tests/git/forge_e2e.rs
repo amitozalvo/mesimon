@@ -474,7 +474,7 @@ fn a_ticket_with_no_pull_request_enters_and_one_opened_here_waits() {
     assert_eq!(held_of(&mut c), [(pr_id, words.to_string())]);
     match c.send(Principal::Agent { session: pr_sid }, Command::AgentGetTicket { full: false }) {
         Response::AgentTicket { ticket } => {
-            assert_eq!(ticket.automove.held.as_deref(), Some(words))
+            assert_eq!(ticket.automove.and_then(|a| a.held).as_deref(), Some(words))
         }
         other => panic!("get_ticket: {other:?}"),
     }
@@ -1453,7 +1453,9 @@ fn a_folder_workspaces_leg_reads_ahead_and_a_gitlab_squash_lands_as_its_merge_co
     assert_eq!((merge.by.as_str(), merge.why.as_str()), ("nobody", "already merged"));
     let names: Vec<(&str, Option<&str>)> =
         view.repos.iter().map(|r| (r.name.as_str(), r.merged_in.as_deref())).collect();
-    assert_eq!(names, [("api", Some("main (MR !1)")), ("web", None)]);
+    assert_eq!(names, [("api", Some("main (MR !1)"))]);
+    // A leg that reads clean is named alone on a routine read (T-1279).
+    assert_eq!(view.repos_clean, ["web"]);
     // T-1130: the commit's own pipeline passed, and a definitions
     // repository's trigger then ran at the same sha on `deploy`, a branch
     // kept at main's head. The card says passed: the push on main, never

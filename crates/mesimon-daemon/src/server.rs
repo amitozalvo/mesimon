@@ -1863,7 +1863,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::TranscriptRead(read) => d.control_transcript_read(*read),
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
             Msg::AgentSampled(id, read) => d.sample_landed(id, *read),
-            Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen),
+            Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen, now_ms()),
             Msg::Request(env, protocol, reply, stream) => {
                 // The mod's bridge poll is no tool call, so it tells no crown.
                 let caller = match (&env.principal, &env.command) {
@@ -8304,7 +8304,8 @@ impl Daemon {
     /// A crowned session's reply, as it is emitted (deferred ones too), with
     /// the crown's rules beside it until a reply carrying them has reached
     /// that session's connection since it was crowned, compacted or cleared,
-    /// or since the daemon started (T-930), whichever tool it called: a
+    /// or since the daemon started where the start could not keep what an
+    /// earlier daemon told it (T-930, T-1279), whichever tool it called: a
     /// person may crown an agent mid-run, which never read them. Its own
     /// `get_ticket` receives them in `crown` once; other calls receive a
     /// separate block. An explicit `full` own read always carries them.
@@ -11984,6 +11985,7 @@ impl Daemon {
                 .filter(|m| !m.is_empty())
                 .map(|m| mesimon_core::text::scrub_text(&m)),
             repos: self.agent_repo_views(id),
+            repos_clean: Vec::new(),
             merge: self.merge_state_word(id).is_some().then(|| self.merge_by(id)),
             held: self.train_hold_word(id).map(str::to_string),
             // What the board does with them (T-895): reads the forge on its
@@ -12043,16 +12045,21 @@ impl Daemon {
             }),
             allowed_columns: Some(self.agent_allowed_columns(id)),
             column_descriptions: self.agent_column_descriptions(),
-            automove: self
-                .board
-                .column(&t.column)
-                .map(|c| AgentAutomoveView {
-                    on_working: c.settings.on_working.clone(),
-                    on_done: c.settings.on_done.clone(),
-                    on_merged: c.settings.on_merged.clone(),
-                    held: self.held_items().into_iter().find(|h| h.ticket == id).map(|h| h.words),
-                })
-                .unwrap_or_default(),
+            automove: Some(
+                self.board
+                    .column(&t.column)
+                    .map(|c| AgentAutomoveView {
+                        on_working: c.settings.on_working.clone(),
+                        on_done: c.settings.on_done.clone(),
+                        on_merged: c.settings.on_merged.clone(),
+                        held: self
+                            .held_items()
+                            .into_iter()
+                            .find(|h| h.ticket == id)
+                            .map(|h| h.words),
+                    })
+                    .unwrap_or_default(),
+            ),
             tags: t
                 .tags
                 .iter()
@@ -12100,6 +12107,7 @@ impl Daemon {
                             .collect::<Vec<_>>()
                     })
                     .collect(),
+                ticked: 0,
             }),
             // On the crowned ticket alone; a session's read of its own
             // ticket says it either way (`AgentGetTicket`), and the crown's

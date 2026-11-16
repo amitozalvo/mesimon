@@ -2449,6 +2449,23 @@ checks = ["road:mod", "started_by_crown", "crown:write_note", "crown:rename_tick
   until = { stops = 1, state = "idle" }
   wake = true
 
+# T-1279: the crown's routine keyed read lists the open summary boxes and
+# counts the ticked ones (`summary.ticked`); asked in a person's words what is
+# left and how much is done, the crown answers both from the board.
+[[test]]
+id = "CR2"
+title = "CR2 · do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Write one note on this ticket with write_note whose text is exactly these four lines:\n## Summary\n- [x] cause found in the feed's paging\n- [x] fix written and tested\n- [ ] the person merges the pull request\nThen reply with the single word noted and end your turn. Run no command and change no file."
+expect = "the worker's Summary holds two ticked boxes and one open; asked in a person's words what is still open on the ticket and how much of it is done, the crown names the open box (the person merges the pull request) and says two of the three steps are done, from what the board says of the ticket."
+checks = ["road:mod", "started_by_crown", "summary:2/3", "reply:noted", "crown_line:CR2 left:merge", "crown_line:CR2 left:two,2 of,2/3"]
+
+  [[test.steps]]
+  crown = "Have {key}'s own agent carry out its brief in its own worktree. Once it has finished, tell me in one line beginning CR2 left: what is still open on {key} and how many of its steps are done."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
 # T-1035: a receipt's stamp outlives what the write itself set in motion.
 [[test]]
 id = "SE1"
