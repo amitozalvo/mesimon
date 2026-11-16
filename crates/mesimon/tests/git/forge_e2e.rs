@@ -3737,7 +3737,12 @@ fn a_merged_pr_whose_head_carries_the_tip_lands_and_one_that_does_not_holds_done
     assert!(!wt_of(&mut c, b).unwrap().merged, "a head that does not carry the tip lands nothing");
     match c.request(Command::MoveTicket { id: b, column: "DONE".into(), before: None }) {
         Response::Err { message } => {
-            assert_eq!(message, "worktree unmerged — merge before DONE")
+            // The leg and the commits its local base lacks (T-1274).
+            assert!(
+                message.starts_with("worktree unmerged — merge before DONE (")
+                    && message.ends_with(" not in local main)"),
+                "{message}"
+            )
         }
         other => panic!("DONE with the tip not landed: {other:?}"),
     }

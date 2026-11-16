@@ -11601,11 +11601,6 @@ impl Daemon {
             .collect()
     }
 
-    /// The ticket holds a worktree branch that has not landed on the base.
-    fn ticket_unmerged(&self, id: ulid::Ulid) -> bool {
-        self.worktrees.get(&id).is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id))
-    }
-
     /// Who merges `id`'s branch when it is ready (T-613), and the one
     /// clause that decides it — `get_ticket`'s `merge` and the delivered
     /// wake's word. A person's: crown mode supervised, or a ticket whose
@@ -12300,7 +12295,7 @@ impl Daemon {
     /// What the column `dest` refuses `id` for on the way in, in the words
     /// the mover hears (T-749 reads it again to clear a held line).
     fn column_gate(&self, id: ulid::Ulid, dest: &str) -> Option<String> {
-        self.gate_with(id, dest, || self.ticket_unmerged(id), Reading::Fresh)
+        self.gate_with(id, dest, || self.unmerged_detail(id), Reading::Fresh)
     }
 
     /// `column_gate` with the merge clause's reading given and the
@@ -12310,7 +12305,7 @@ impl Daemon {
         &self,
         id: ulid::Ulid,
         dest: &str,
-        unmerged: impl Fn() -> bool,
+        unmerged: impl Fn() -> Option<String>,
         read: Reading,
     ) -> Option<String> {
         // M4 DONE gate (author rule 3), now the column's `requires_merge`
@@ -12325,8 +12320,16 @@ impl Daemon {
             if let Some(why) = self.open_pr_refusal(id) {
                 return Some(format!("{why} before {dest}"));
             }
-            if unmerged() {
-                return Some(format!("worktree unmerged — merge before {dest}"));
+            // The unmerged clause, with the leg it objects to where known
+            // (T-1274).
+            match unmerged() {
+                Some(why) if why.is_empty() => {
+                    return Some(format!("worktree unmerged — merge before {dest}"))
+                }
+                Some(why) => {
+                    return Some(format!("worktree unmerged — merge before {dest} ({why})"))
+                }
+                None => {}
             }
         }
         // Its pipeline twin (T-739): unknown is never green, and a ticket
@@ -12486,7 +12489,10 @@ impl Daemon {
         };
         self.held.standing(
             |t| self.board.ticket(t).is_some(),
-            |t, dest| self.gate_with(t, dest, || unmerged_cached(t), Reading::Cached).is_some(),
+            |t, dest| {
+                self.gate_with(t, dest, || unmerged_cached(t).then(String::new), Reading::Cached)
+                    .is_some()
+            },
         )
     }
 
@@ -14237,46 +14243,112 @@ impl Daemon {
         if b.branch.is_empty() {
             return false;
         }
+        self.unlanded_leg(id, b).is_none()
+    }
+
+    /// The first leg `ticket_merged` objects to, with the branch's tip
+    /// there, or `None` when every leg it judges has landed.
+    ///
+    /// It judges the legs `worktree::aggregate` judges (T-1274): the touched
+    /// ones, or every leg when none is touched. An untouched leg has nothing
+    /// to land, and asking it anyway refused DONE on a ticket the card and
+    /// `get_ticket` called merged: a leg cut from a fetched remote base
+    /// sits past a local base checkout that is behind it.
+    fn unlanded_leg(
+        &self,
+        id: ulid::Ulid,
+        b: &worktree::Binding,
+    ) -> Option<(worktree::Leg, String)> {
         let single_base = self
             .worktree_base_cached()
             .or_else(|| worktree::default_branch(&self.paths.repo_root).ok())
             .unwrap_or_default();
-        let legs = self.binding_legs_at(b, &single_base);
-        legs.iter().all(|leg| {
-            // Fresh check on gate paths (the 10 s cache may lag a just-made
-            // merge).
-            if !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base) {
+        let legs: Vec<(worktree::Leg, String)> = self
+            .binding_legs_at(b, &single_base)
+            .into_iter()
+            .map(|leg| {
+                let tip = worktree::branch_tip(&leg.repo, &b.branch);
+                (leg, tip)
+            })
+            .collect();
+        // `RepoFlags::touched`'s rule: a branch git no longer has is touched.
+        let any_touched = legs.iter().any(|(leg, tip)| *tip != leg.base_oid);
+        legs.into_iter()
+            .filter(|(leg, tip)| !any_touched || *tip != leg.base_oid)
+            .find(|(leg, tip)| !self.leg_landed(id, b, leg, tip))
+    }
+
+    /// One leg's landing, by the three clauses below, at the branch's tip
+    /// `tip` as read for this call.
+    fn leg_landed(
+        &self,
+        id: ulid::Ulid,
+        b: &worktree::Binding,
+        leg: &worktree::Leg,
+        tip: &str,
+    ) -> bool {
+        // Fresh check on gate paths (the 10 s cache may lag a just-made
+        // merge).
+        if !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base) {
+            return true;
+        }
+        // The forge's word (T-739), at the branch's tip as it stands: a
+        // merged head that is the tip, or carries it (T-799), where the
+        // branch has work of its own: a tip still at its cut lands
+        // nothing, whatever PR names it (T-796).
+        if let Some(Some(_)) = self.forge.remotes.get(&leg.repo) {
+            if tip != leg.base_oid && self.forge.merged_at(id, &leg.repo, tip).is_some() {
                 return true;
             }
-            // The forge's word (T-739), at the branch's tip as it stands: a
-            // merged head that is the tip, or carries it (T-799), where the
-            // branch has work of its own: a tip still at its cut lands
-            // nothing, whatever PR names it (T-796).
-            if let Some(Some(_)) = self.forge.remotes.get(&leg.repo) {
-                let tip = worktree::branch_tip(&leg.repo, &b.branch);
-                if tip != leg.base_oid && self.forge.merged_at(id, &leg.repo, &tip).is_some() {
-                    return true;
-                }
-            }
-            // A PR squashed into the base is the SAMPLE's answer (T-267):
-            // the patch scan behind it is too big for a keypress. An ff
-            // merge made here is caught fresh above; a squash made here is a
-            // bucket's wait, never a wrong answer. The branch tip is re-read
-            // so a commit since the verdict drops it, and the target can
-            // only ever gain commits, so a stale tip there cannot turn a
-            // merge back into a non-merge. The gates and the card must
-            // answer alike: a ticket the board calls merged must not then be
-            // refused DONE.
-            self.wt_repos
-                .get(&id)
-                .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
-                .and_then(|l| l.content.as_ref())
-                .is_some_and(|seen| {
-                    seen.merged
-                        && !seen.branch_tip.is_empty()
-                        && seen.branch_tip == worktree::branch_tip(&leg.repo, &b.branch)
-                })
-        })
+        }
+        // A PR squashed into the base is the SAMPLE's answer (T-267):
+        // the patch scan behind it is too big for a keypress. An ff
+        // merge made here is caught fresh above; a squash made here is a
+        // bucket's wait, never a wrong answer. The branch tip is re-read
+        // so a commit since the verdict drops it, and the target can
+        // only ever gain commits, so a stale tip there cannot turn a
+        // merge back into a non-merge. The gates and the card must
+        // answer alike: a ticket the board calls merged must not then be
+        // refused DONE.
+        self.wt_repos
+            .get(&id)
+            .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
+            .and_then(|l| l.content.as_ref())
+            .is_some_and(|seen| {
+                seen.merged && !seen.branch_tip.is_empty() && seen.branch_tip == tip
+            })
+    }
+
+    /// The ticket holds a worktree branch that has not landed, with what the
+    /// DONE gate says of it (T-1274): the
+    /// leg it objects to, by name on a workspace, and the branch's commits
+    /// that leg's local base lacks, so the mover knows which repository to
+    /// look at. Empty where an open PR is the reason (the gate names it).
+    fn unmerged_detail(&self, id: ulid::Ulid) -> Option<String> {
+        let b = self.worktrees.get(&id).filter(|b| !b.branch.is_empty())?;
+        if self.open_pr(id).is_some() {
+            return Some(String::new());
+        }
+        let (leg, tip) = self.unlanded_leg(id, b)?;
+        let at = if b.is_workspace() {
+            format!("{}: ", worktree::leg_word(&leg.name))
+        } else {
+            String::new()
+        };
+        let detail = if tip.is_empty() {
+            format!("{at}no branch {} there", b.branch)
+        } else if leg.base.is_empty() {
+            format!("{at}no base branch known")
+        } else {
+            let n = worktree::ahead_count(
+                &leg.repo,
+                &format!("refs/heads/{}", b.branch),
+                &format!("refs/heads/{}", leg.base),
+            );
+            let s = if n == 1 { "" } else { "s" };
+            format!("{at}{n} commit{s} not in local {}", leg.base)
+        };
+        Some(mesimon_core::text::scrub_text(&detail))
     }
 
     /// The ticket's open PR its merge waits on (`forge::holding`, T-774):
@@ -23881,6 +23953,102 @@ mod shell_archive_regressions {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod done_gate_leg_tests {
+    use super::*;
+
+    /// A workspace ticket on `topic` in `api` and `web` (T-1274): `api`
+    /// carries one commit and `web` none, its branch cut from a `main` that
+    /// was the remote's, a commit past the local `main` (a checkout behind
+    /// its remote). Returns the daemon, the ticket, and api's cut.
+    fn two_legs(
+        dir: &std::path::Path,
+    ) -> (Daemon, ulid::Ulid, String, std::sync::mpsc::Receiver<Msg>) {
+        let (mut d, _, rx) = queued_person_push_tests::daemon(dir);
+        let root = d.paths.repo_root.clone();
+        let (api, web) = (root.join("api"), root.join("web"));
+        let rev = |repo: &std::path::Path, r: &str| {
+            crate::testrepo::read(repo, &["rev-parse", r]).trim().to_string()
+        };
+        crate::testrepo::init(&api, "server.ts", "one\n");
+        let api_cut = rev(&api, "main");
+        crate::testrepo::run(&api, &["checkout", "-q", "-b", "topic"]);
+        crate::testrepo::commit(&api, "server.ts", "two\n", "ticket work");
+        let api_tip = rev(&api, "topic");
+        crate::testrepo::run(&api, &["checkout", "-q", "main"]);
+        crate::testrepo::init(&web, "page.tsx", "hello\n");
+        let behind = rev(&web, "main");
+        crate::testrepo::commit(&web, "page.tsx", "pulled\n", "on the remote");
+        let web_cut = rev(&web, "main");
+        crate::testrepo::run(&web, &["branch", "topic"]);
+        crate::testrepo::run(&web, &["reset", "-q", "--hard", &behind]);
+        let ticket = match d.create_ticket(
+            &Principal::Local,
+            "TODO".into(),
+            "two legs".into(),
+            Some(WorkspaceStrategy::Worktree),
+            None,
+        ) {
+            Response::Created { id } => id,
+            other => panic!("ticket creation failed: {other:?}"),
+        };
+        d.board.ticket_mut(ticket).unwrap().column = "REVIEW".into();
+        let mut b = worktree::Binding::new(
+            root.join(".wt/two-legs"),
+            "topic".into(),
+            String::new(),
+            String::new(),
+            worktree::BindingStatus::Attached,
+        );
+        b.repos = vec![
+            worktree::RepoBinding {
+                name: "api".into(),
+                base: "main".into(),
+                default_base: String::new(),
+                base_oid: api_cut.clone(),
+                branch_oid: api_tip,
+            },
+            worktree::RepoBinding {
+                name: "web".into(),
+                base: "main".into(),
+                default_base: String::new(),
+                base_oid: web_cut.clone(),
+                branch_oid: web_cut,
+            },
+        ];
+        d.worktrees.insert(ticket, b);
+        (d, ticket, api_cut, rx)
+    }
+
+    #[test]
+    fn an_untouched_leg_behind_its_cut_does_not_refuse_done() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (d, ticket, _, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        crate::testrepo::run(&api, &["merge", "-q", "--ff-only", "topic"]);
+        // The aggregate judges the touched leg alone; the gate must too.
+        assert!(d.ticket_merged(ticket), "web has no work to land");
+        assert_eq!(d.column_gate(ticket, "DONE"), None);
+    }
+
+    #[test]
+    fn a_merge_refusal_names_the_leg_its_count_and_its_base() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (d, ticket, _, _rx) = two_legs(dir.path());
+        assert!(!d.ticket_merged(ticket));
+        assert_eq!(
+            d.column_gate(ticket, "DONE").as_deref(),
+            Some("worktree unmerged — merge before DONE (api: 1 commit not in local main)"),
+        );
     }
 }
 

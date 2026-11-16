@@ -3726,7 +3726,12 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     };
     match to_done(&mut c) {
         Response::Err { message } => {
-            assert_eq!(message, "worktree unmerged — merge before DONE")
+            // The leg and the commits its local base lacks (T-1274).
+            assert!(
+                message.starts_with("worktree unmerged — merge before DONE (")
+                    && message.ends_with(" not in local main)"),
+                "{message}"
+            )
         }
         other => panic!("DONE before the merge: {other:?}"),
     }

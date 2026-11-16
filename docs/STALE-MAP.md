@@ -45985,3 +45985,35 @@ chromium phone; that size was rerun alone and passed (named as a rerun, not a de
   `ticket_tier_120x30`, `settings_agents_120x30`, `settings_agents_60x20`. Not run: `tier_e2e`
   (no daemon tier logic changed); the post-merge full suite (the `server.rs` change is the
   refusal literal only, T-1192's precedent); no rig run (no agent-facing behaviour changed).
+
+## The DONE gate judges the legs the card judges (T-1274, 2026-11-16, the simbly crown: `move_ticket` → DONE refused "worktree unmerged" while `get_ticket` read `merged`, 13 repos, merging through GitLab MRs)
+
+- **Confirmed.** `ticket_merged` asked every leg of a workspace binding to be an ancestor of
+  its LOCAL base (`refs/heads/<base>`), while `worktree::aggregate` judges the touched legs
+  alone. An untouched leg cut from a fetched remote base, past a local base checkout behind
+  its remote (simbly: infra `master` 8 behind, backend `simbly-v2` 2, and three more), failed
+  every clause: not an ancestor locally, the forge clause skips a tip at its cut, no squash
+  verdict. The failing test came first: `done_gate_leg_tests::an_untouched_leg_behind_its_cut_does_not_refuse_done`
+  (api landed, web untouched with local `main` one behind the cut) failed at `ticket_merged`.
+  It explains the field record too: tickets that passed that hour had no worktree, or were cut
+  days earlier from points the local bases already held; fast-forwarding the local bases
+  lifted it on 13–14 Nov.
+- **What changed.** `ticket_merged` → `unlanded_leg`: aggregate's rule (`RepoFlags::touched`,
+  tip ≠ cut; a missing branch is touched), the touched legs or every leg when none is, then
+  the three clauses per leg (`leg_landed`, unchanged, one tip read per leg). The delete gate,
+  the archive reclaim and `m`'s already-merged check share it; `merge_legs` already skipped
+  untouched legs. The DONE gate's merge clause now names what it objects to:
+  `worktree unmerged — merge before DONE (api: 1 commit not in local main)`, the leg word on a
+  workspace (`root` for the meta leg), the commits `refs/heads/<base>` lacks, the base by name,
+  scrubbed. `local` because the count is against the local ref, which is the case a crown
+  could not see. `ticket_unmerged` is gone (`unmerged_detail`); the held-line reading keeps the
+  cached flags and only asks whether it still refuses.
+- **Refuted.** Judging untouched legs against the remote base instead: it keeps a leg that has
+  nothing to land in the verdict, and the card would still disagree whenever the remote moves.
+- **Checks.** `cargo ut` (72 + 17 + 773 + 879 + 24 + 1,470 passed, 0 failed); new
+  `done_gate_leg_tests` (both cases, the second pins the words); e2e `--test git`
+  `workspace_e2e`, `forge_e2e`, `column_reclaim_e2e`, `pr_merge_e2e`, `worktree_e2e` (52
+  passed) and `--test crown crown_e2e` (117 passed), the two exact-text asserts now pin the
+  prefix and `not in local main)`. No reruns. No rig run: the refusal's road (merge, then DONE)
+  is unchanged; it gains the repository's name. Owed: the post-merge full suite
+  (`daemon/src/server.rs` outside its tests).
