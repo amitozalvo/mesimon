@@ -46417,3 +46417,68 @@ nothing blocking, nothing kept. `crown_e2e::a_crown_steer_goes_beside_its_ask_ou
 the steer's prompt hook now names its words (T-1025), so it reads `handed`, then `taken` at the
 stop, on both roads. No rig case: the board's refusals and wakes are unchanged, and only a read
 word after a turn's end moved.
+
+## A crown's read mid-notice-turn keeps that turn's end owed (T-1283, 2026-11-16, filed by the crown on T-1273)
+
+**Seen.** Three workers the crown asked with `ask_agent` (T-1282, T-1278, T-1279) ended their
+turns ahead, and the train merged each in the same pass and pasted its notice
+(`merge_train_merged`, then `crown_wake_deferred:merge_step`, the same second as the answer's
+wake). The answer's line read `merge_state clean → ahead, merge: nobody`. Where the crown then
+called the keyed `get_ticket` (it read `merged`) while the notice turn ran, nothing came at that
+turn's end. T-1282's turn was a 22-minute post-merge suite, found by `sample_agent` 34 minutes
+later. T-1279's crown only sampled, and it got `merged and finished its turn`.
+
+**Cause.** `crown_observed` (T-1036) consumes every turn-news wake a `merged` read covers, and
+that includes `Heard.stepped`, the landing held for the notice turn with `finished` set. The
+read saw the merge and could not see the end still to come. Once `stepped` was gone,
+`hear_stepped` had nothing to release. T-1203 fixed this for the crown's own merge
+(`Heard.notice`) and left it on purpose for the train's ("there the crown's read did see the
+merge"). That covered the merge and missed the turn. `merge: nobody` was `merge_by` read when
+the line was written, after the train merged, beside the turn's own look at the branch.
+**Not the cause:** the ask's stuck `handed` (T-1282 had it, T-1278 read `taken`, and both lost
+the end). Nor any of the day's merges. On beta.20 T-1274's merge was held the same way
+(`crown_wake_deferred:merge_step` 11:23:09), but no crown read fell inside 11:23–11:34, so the
+held line went out. In the three failing cases the read came because the answer's wake went out
+at the merge.
+
+**Shipped.**
+- `crown_observed`: while the merge step is pending (`pending_on(..).merge_step`: the notice on
+  its way or its turn running), a read sets `notice` in two cases. Either it takes a held
+  landing saying a merge with `finished`, or it is where the crown first hears the merge: the
+  read came before the tick's `hear_merges` held it (the e2e's order), and the crown hears the
+  worker. The end is said as after the crown's own merge: `merged and finished its turn` with no
+  `merge_state`, because the read saw it. A read with no step pending is unchanged (T-1036's
+  cases). Feed: `crown_wake_deferred:merge_step` on the second road.
+- `crown_wake_events`: a line whose branch merged since its look says `merged since` where
+  `merge: <who>` went. The merge's own line comes at the notice turn's end.
+
+**Design, not a change to what the crown is told.** `verdict` gives a merge-step turn no wake
+of its own (T-469) because its end rides the landing held for it (T-596: "merged, told, its
+turn ended", `and finished its turn`). The crown's T-1281 case agrees. Its delivery was held
+for the train, then for the notice turn (`crown_wake_deferred:merge_step` 14:51:33). The notice
+turn's Stop was held by async hooks until 15:02:18, and the held landing went out then as
+`delivered (merge_state merged)`. The `finished its turn (nothing new to merge)` at 15:03:03 is
+a later turn's end (it began 15:02:48, no merge step), not the notice turn's. All four cases:
+T-1279 and T-1281 kept the held landing to the end, and T-1282 and T-1278 lost it to a read.
+**Seen, not fixed:** T-1281's and T-1274's held lines lack `and finished its turn`. Both notice
+turns' Stops were held by the async-hook wait. Untraced: probably that release reads as an end
+not proven (`unproven_step`).
+**Seen, not fixed:** this ticket's start receipt was refused to the crown as "a prompt the
+crown did not send". The only prompt the session had then was the brief the board sent on the
+crown's `start_agent`; no person typed. T-1277's revocation counting the start's own brief is
+its own ticket's.
+
+**Tests.** `crownwake::a_read_mid_notice_turn_keeps_that_turns_end`: the ticket's sequence (the
+ask's turn ahead, train merge held for the notice turn, keyed read, the turn's end). It also
+checks `merged since` in place of `merge: nobody`, the read-before-the-tick order, and a read
+with no step pending owing nothing. With the `notice` line removed it fails at the end's
+`hear_stepped`. `crown_e2e::a_crown_read_mid_notice_turn_keeps_its_end` runs the same
+order on a real daemon: train merge, notice, turn begun, the crown's `get_ticket` reads
+`merged`, then the turn's end and one `merged and finished its turn` line. Its first run, with only the
+held-landing road fixed, timed out waiting for that line: the read had come before the tick.
+**No rig case**, for T-1203's reason. The rig's train lands on the ticket branch running it, so
+its blocker file refuses every fast-forward and `merge_notice` is off: no rig case has a merged
+notice turn. The rules the crown reads are unchanged ("finishes a turn with nothing pending on
+it"; a merge is told at its notice turn's end). What changed is whether the board sends a line
+it already promised, which is wire, not words. `merged since` is the one new phrase. A case
+needs a rig base the train may merge into, as T-1203 found.

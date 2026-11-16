@@ -7257,6 +7257,79 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     );
 }
 
+/// T-1283: the crown's keyed read while the merged notice's turn runs sees
+/// the merge, never that turn's end. On this board on 2026-11-16, three
+/// train merges whose crown read `merged` mid-turn were never told the
+/// turn ended (a post-merge suite's result among them); one with no read
+/// was. The read takes the held merge; the turn's end still wakes the
+/// crown, once, as `merged and finished its turn`.
+#[test]
+fn a_crown_read_mid_notice_turn_keeps_its_end() {
+    let Some(h) =
+        Harness::boot_with_env("crown_notice_read", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
+    else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("crown_notice_read");
+    let got = h.dir.join("got.txt");
+    let lines_with = |needle: &str| lines_in(&got, needle);
+
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1283 notified");
+    let kw = c.key_of(w);
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: w, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    let sa = crown_idle(&h, &mut c, a);
+    match c.crown_start(sa, &kw, "worktree") {
+        Response::AgentStarted { .. } => {}
+        other => panic!("start_agent: {other:?}"),
+    }
+    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
+    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
+        c.board().live_agent(w).is_some()
+    });
+    let ws = c.board().live_agent(w).unwrap().id;
+    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    settle_for(500);
+    let worker = format!("{kw} \"mesimon-probe-1283 notified\"");
+    let merged = || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&h.repo)
+            .args(["merge-base", "--is-ancestor", &branch, "main"])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: true }),
+        Response::Ok
+    ));
+    commit(&path, "one.txt");
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(15), "the train to merge it", merged);
+    wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
+        lines_with("has been merged").len() == 1
+    });
+    h.prompt_turn(&mut c, ws);
+    // The crown reads the ticket while the notice turn runs.
+    let v = c.agent_read(sa, &kw).unwrap();
+    assert_eq!(v.merge_state.as_deref(), Some("merged"));
+    absence_window(2000);
+    assert!(lines_with(&worker).is_empty(), "held while the notice turn runs");
+    h.end_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+        lines_with(&worker).len() == 1
+    });
+    let line = lines_with(&worker).pop().unwrap();
+    assert!(line.contains(&format!("{worker} merged and finished its turn ∙")), "{line}");
+    assert!(!line.contains("merge_state"), "the read saw the merge: {line}");
+    absence_window(2000);
+    assert_eq!(lines_with(&worker).len(), 1, "once");
+}
+
 /// T-566: a worker stopped on `AskUserQuestion` reads `needs-you` with the
 /// stop's reason and the question on `get_ticket` — off the projection
 /// Remote Control draws, on a board with no phone paired — and the crown's
@@ -10595,7 +10668,7 @@ fn the_crown_merges_where_the_train_will_not() {
         lines_with(&worker).len() == 5
     });
     let line = lines_with(&worker)[4].clone();
-    assert!(line.starts_with(&format!("{worker} merged and finished its turn")), "{line}");
+    assert!(line.contains(&format!("{worker} merged and finished its turn ∙")), "{line}");
     assert!(!line.contains("merge_state"), "the receipt said the merge: {line}");
     assert!(line.ends_with(&format!("get_ticket key={kw} for state and notes")), "{line}");
     absence_window(1500);

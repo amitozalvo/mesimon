@@ -1421,8 +1421,9 @@ pub(super) struct Heard {
     /// line as it will be said; `told` already moved to it.
     #[serde(skip_serializing_if = "Option::is_none")]
     stepped: Option<CrownWake>,
-    /// The crown merged this worker itself and its notice went (T-1203):
-    /// the receipt told the merge, and the notice turn's end is still owed,
+    /// The crown merged this worker itself and its notice went (T-1203), or
+    /// a keyed read saw a merge held for its notice turn while that turn
+    /// ran (T-1283): the merge is told, and the notice turn's end is owed,
     /// said by `hear_stepped` as `merged and finished its turn`. A keyed
     /// read cannot observe an end still to come, so only that end clears
     /// it: its line, a held landing that says it, or a delivery the turn
@@ -3258,15 +3259,31 @@ impl Daemon {
     /// A successful keyed ticket read observes this ticket's pending turn
     /// and branch news (T-1036). Board listings and narrow writes do not.
     pub(super) fn crown_observed(&mut self, worker: ulid::Ulid, merge: Option<&str>) {
-        if self.board.crown.is_none() || self.board.crown == Some(worker) {
-            return;
-        }
+        let Some(crown) = self.board.crown.filter(|c| *c != worker) else { return };
+        let now = (merge == Some("merged")).then(|| self.sampled_merged_told(worker)).flatten();
+        // The merge's notice on its way or its turn running (T-1283): the
+        // read sees the merge and never that turn's end, which is the
+        // crown's to hear as after its own merge (T-1203, `notice`). Three
+        // train merges whose crown read `merged` mid-turn were never told
+        // the turn ended, a post-merge suite's result among them. Either a
+        // landing held for that turn is the read's to take, or the read
+        // came before the tick held it and is where the crown hears it.
+        let stepping = self.pending_on(worker, None).merge_step;
+        let h = self.crown_heard.get(&worker);
+        let held = h.and_then(|h| h.stepped.as_ref());
+        let told = h.and_then(|h| h.told.as_ref());
+        let took_held = stepping && held.is_some_and(|w| w.finished && w.says_merge());
+        let first_heard = stepping
+            && held.is_none()
+            && now.as_ref().is_some_and(|n| {
+                !told.is_some_and(|t| t.merge == Some("merged") && t.tip == n.tip)
+            })
+            && (h.is_some_and(|h| h.deferred.is_some()) || self.crown_hears(worker, crown));
         self.consume_crown_news(worker, |w| {
             w.turn_news()
                 && (merge == Some("merged")
                     || w.to.as_ref().is_none_or(|to| to.merge != Some("merged")))
         });
-        let now = (merge == Some("merged")).then(|| self.sampled_merged_told(worker)).flatten();
         if now.as_ref().is_some_and(|t| t.merge == Some("merged"))
             && self.crown_landed.contains(&worker)
         {
@@ -3278,6 +3295,13 @@ impl Daemon {
             h.deferred = None;
             if let Some(now) = now {
                 h.told = Some(now);
+            }
+        }
+        if let Some(h) = self.crown_heard.get_mut(&worker).filter(|_| took_held || first_heard) {
+            // `notice_over` says it only while the crown was told merged.
+            h.notice |= h.stepped.is_none();
+            if first_heard {
+                self.feed.board("automation", "crown_wake_deferred:merge_step", Some(worker));
             }
         }
         self.persist_crown();
@@ -3416,7 +3440,14 @@ impl Daemon {
             let asked_and_ahead = w.cause == WakeCause::Answered
                 && w.to.as_ref().is_some_and(|to| to.merge.is_some() && to.mergeable());
             if (w.cause == WakeCause::Delivered && unmerged_branch) || asked_and_ahead {
-                let word = format!("merge: {}", self.merge_by(w.worker).by);
+                // Merged since the turn's look (T-1283): the train lands a
+                // branch in the pass its turn's end reaches, and `merge:
+                // nobody` beside `merge_state ahead` read as a contradiction.
+                // The merge's own line comes at its notice turn's end.
+                let word = match self.merge_state_word(w.worker).as_deref() {
+                    Some("merged") => "merged since".to_string(),
+                    _ => format!("merge: {}", self.merge_by(w.worker).by),
+                };
                 let at =
                     changed.iter().position(|c| c.starts_with("merge_state")).map_or(0, |i| i + 1);
                 changed.insert(at, word);
@@ -5072,6 +5103,80 @@ pub(in crate::server) mod tests {
         b.d.enter_wake(b.crown, w, WakeCause::Answered, Some(from), Some(to), Owed::default());
         let news = b.d.crown_wake_news();
         assert!(!news.contains("merge: "), "{news}");
+    }
+
+    /// T-1283, three workers on this board on 2026-11-16: a crown ask's
+    /// turn ended with the branch ahead, the train merged it in the same
+    /// pass and pasted its notice, and the answer's line read `merge_state
+    /// clean → ahead, merge: nobody`. The crown read the ticket (`merged`)
+    /// while the notice turn ran a post-merge suite, and that read took the
+    /// merge held for the turn, so the turn's end was never said. The line
+    /// says the merge came since, and the end is said after the read.
+    #[test]
+    fn a_read_mid_notice_turn_keeps_that_turns_end() {
+        let mut b = crate::server::crownask::ledger_tests::bed("read-notice-turn");
+        let w = b.worker;
+        b.d.board.sessions[0].started_by = Some(b.crown);
+        let clean = branch("aaa", "clean", 0, "IN PROGRESS");
+        b.d.crown_heard.insert(w, heard(Some(clean.clone()), Some(clean.clone())));
+        sampled_branch(&mut b, "bbb", false);
+        // The ask's turn ends ahead; the train merges at once, its notice
+        // taken by a turn that runs on.
+        let ahead = branch("bbb", "ahead", 1, "REVIEW");
+        b.d.crown_heard.get_mut(&w).unwrap().told = Some(ahead.clone());
+        b.d.enter_wake(b.crown, w, WakeCause::Answered, Some(clean), Some(ahead), Owed::default());
+        sampled_branch(&mut b, "bbb", true);
+        b.d.turn_asks.insert(w, TurnAsk::Merge);
+        b.d.crown_landed.push(w);
+        assert!(!b.d.hear_merges(), "held for the notice turn");
+        let news = b.d.crown_wake_news();
+        assert!(news.contains("merge_state clean → ahead, merged since"), "{news}");
+        assert!(!news.contains("merge: nobody"), "{news}");
+        b.d.crown_wakes.clear();
+        // The crown reads the ticket mid-turn: the merge is seen, the end is not.
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        assert_eq!(view.merge_state.as_deref(), Some("merged"));
+        b.d.crown_reads(&mut view, w);
+        assert!(!b.d.hear_stepped(), "the notice turn still runs");
+        assert!(owed_for(&b.d, w).is_none());
+        // Its end, a suite's result, is the crown's to hear, once.
+        b.d.turn_asks.remove(&w);
+        assert!(b.d.hear_stepped());
+        let wake = owed_for(&b.d, w).expect("the notice turn's end");
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        assert!(!wake.changed().iter().any(|c| c.starts_with("merge_state")), "read already");
+        b.d.crown_wakes.clear();
+        assert!(!b.d.hear_stepped(), "said once");
+
+        // The read before the tick held the merge (the e2e's order): the
+        // read is where the crown hears it, and the end is still owed.
+        let mut b = crate::server::crownask::ledger_tests::bed("read-notice-early");
+        let w = b.worker;
+        b.d.board.sessions[0].started_by = Some(b.crown);
+        let ahead = branch("bbb", "ahead", 1, "REVIEW");
+        b.d.crown_heard.insert(w, heard(Some(ahead.clone()), Some(ahead)));
+        sampled_branch(&mut b, "bbb", true);
+        b.d.turn_asks.insert(w, TurnAsk::Merge);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        b.d.crown_landed.push(w);
+        assert!(!b.d.hear_merges(), "the read heard the merge");
+        assert!(!b.d.hear_stepped(), "the notice turn still runs");
+        b.d.turn_asks.remove(&w);
+        assert!(b.d.hear_stepped());
+        let wake = owed_for(&b.d, w).expect("the notice turn's end");
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        // A read with no merge step pending owes no end (T-1036).
+        let mut b = crate::server::crownask::ledger_tests::bed("read-no-step");
+        let w = b.worker;
+        b.d.board.sessions[0].started_by = Some(b.crown);
+        let ahead = branch("bbb", "ahead", 1, "REVIEW");
+        b.d.crown_heard.insert(w, heard(Some(ahead.clone()), Some(ahead)));
+        sampled_branch(&mut b, "bbb", true);
+        let mut view = b.d.agent_ticket_view(w).unwrap();
+        b.d.crown_reads(&mut view, w);
+        assert!(!b.d.hear_stepped());
+        assert!(owed_for(&b.d, w).is_none());
     }
 
     #[test]
