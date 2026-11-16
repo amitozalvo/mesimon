@@ -131,6 +131,7 @@ case "$1 $2" in
   "pr list") cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
   "pr view") cat "$(dirname "$MSMN_GH_PRS")/view.$3.json" 2>/dev/null || { echo "no pull requests found for $3" >&2; exit 1; } ;;
   "pr review"|"pr comment") exit 0 ;;
+  "pr merge") cp "$(dirname "$0")/merged.json" "$(dirname "$0")/prs.json" 2>/dev/null; exit 0 ;;
   "pr diff") echo "diff --git a/README.md b/README.md"; echo "+reviewed" ;;
   "pr checks") echo "All checks were successful" ;;
   api\\ *)
@@ -514,6 +515,36 @@ def hand_wake(rows, key):
             return said, [c.tool for c in calls(rows[i:])
                           if c.tool in ("get_ticket", "read_note") and c.key == key]
     return "", []
+
+
+def wake_said(rows, key, words):
+    """(ok, observed) for the board's sentences to the crown about `key`
+    (T-1278): some prompt of the crown's naming the ticket holds `words`."""
+    seen = []
+    for row in rows:
+        if row.get("type") != "user" or row.get("isMeta"):
+            continue
+        said = "\n".join(texts(row)).strip()
+        if f'{key} "' in said:
+            seen.append(said[:240])
+            if words in said:
+                return True, said[:240]
+    return False, f"woken with {seen}" if seen else "no prompt names the ticket"
+
+
+def wake_count(rows, key, words):
+    """How many of the board's sentences the crown took about `key` hold
+    `words` (T-1278): the sentences it was given, where the feed's
+    `crown_wake` lines count wakes owed, some of which a later act took
+    back before they went in."""
+    n = 0
+    for row in rows:
+        if row.get("type") != "user" or row.get("isMeta"):
+            continue
+        said = "\n".join(texts(row)).strip()
+        if f'{key} "' in said and words in said:
+            n += 1
+    return n
 
 
 def tool_calls(rows):
@@ -2184,6 +2215,10 @@ class Rig:
         # `{crown}` is the rig's crown's own key (T-908: a note there is
         # another ticket's to a worker).
         keys = {"key": test["key"], "crown": self.crown_key}
+        if "{stub}" in "".join(s.get("crown", "") for s in test["steps"]):
+            # The stub forge's folder (T-1278), for a crown step that runs
+            # its gh: a crown's pane predates the stub's PATH.
+            keys["stub"] = self.forge_stub()
         for i, (_, k, _) in enumerate(test.get("others", []), start=2):
             keys[f"key{i}"] = k
         return keys
@@ -2196,7 +2231,7 @@ class Rig:
         for step in test["steps"]:
             if "crown" in step:
                 said = step["crown"].format(key="this ticket", key2="the second", key3="the third",
-                                            crown="the crown's ticket")
+                                            crown="the crown's ticket", stub="the stub forge")
                 lines.append(f"- the crown is told: “{said}”")
             else:
                 lines.append(f"- the rig: `{step['rig']}`")
@@ -3595,6 +3630,18 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the board never woke the crown for the passed pipeline")
                 return False
             return self.crown_turn_on(wake, record)
+        if what == "forge_merge_ready":
+            # The stub's `pr merge` (T-1278) lands PR 42 at the branch's tip:
+            # the file it copies over prs.json, written now, so the merge is
+            # the forge's the moment the crown's command returns.
+            d = self.forge_stub()
+            row = pr_json(42, self.forge_branch, self.tip(self.forge_branch), "MERGED",
+                          ROLLUPS["passed"])
+            path = os.path.join(d, "merged.json")
+            with open(path + ".tmp", "w") as f:
+                f.write("[" + row + "]")
+            os.replace(path + ".tmp", path)
+            return True
         if what == "forge_merge":
             # PR 42 merges on the forge at the branch's tip (T-757): the
             # forge folds it into the flags, which wake the crown with the
@@ -4202,7 +4249,8 @@ Reply with the single word ready and end your turn."""
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing", "title_words", "title_never",
                                             "title_is", "title_match", "described", "create_start",
-                                            "hand_said", "hand_unread", "refusal_named"):
+                                            "hand_said", "hand_unread", "refusal_named", "wake_said",
+                                            "wake_count"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -4969,6 +5017,17 @@ Reply with the single word ready and end your turn."""
                 said, reads = hand_wake(crown_rows, key)
                 check(c, bool(said) and not reads,
                       f"read after the wake: {reads}" if said else "no prompt says the hand")
+            elif name == "wake_said":
+                # `wake_said:<words>` (T-1278): a sentence the board woke the
+                # crown with about the ticket holds <words>.
+                ok, seen = wake_said(crown_rows, key, arg)
+                check(c, ok, seen)
+            elif name == "wake_count":
+                # `wake_count:<words>=<n>` (SP1, T-1278): exactly <n> of the
+                # sentences the crown took about the ticket hold <words>.
+                words, _, want = arg.rpartition("=")
+                got = wake_count(crown_rows, key, words)
+                check(c, got == int(want), f"{got} sentences hold {words!r}")
             elif name == "woke_once":
                 # `woke_once:<cause>` (LD1, T-1220): that wake for the ticket
                 # exactly once, where `woke` is membership.

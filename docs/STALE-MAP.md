@@ -46219,3 +46219,84 @@ the tail at Low, the worker's next `PostToolUse` raised it to High 19 s later, a
 `immediately` 6 s after that was admitted beside the handed ask; the end woke the crown with the
 first ask `taken` at +58 s. That crown sent after the step, so the new refusal's words were
 proven by the e2e, not read by a model.
+
+## Crown wakes count the tasks an answer left, drop a park's echo, and read a forge merge as merged (T-1278, 2026-11-16, the simbly board's crown)
+
+The simbly crown (0.1.0-beta.20, Merge into: pull requests) reported three lines that misled it,
+and this board's crown saw the first (T-1274's answer, `get_ticket` 3 s later `background: 1`).
+Researched read-only first (proposal artifact), then built on the person's go.
+
+- **An answer given with tasks running read as a finish.** The line is owed only from
+  `answered_with_tasks` (`apply_change`), the turn's own `Stop` edge into a park on tasks, so the
+  count is exact there on both Claude roads: the hook set's `background_tasks` and the mod's list
+  from `$.agent.list()` at `turn.complete` both cross `signal_with_background`. `turn_ended` now
+  reads `background_tasks.count()` at that edge and the probe carries it (`ProbeWhy::Turn::tasks`
+  → `Owed::tasks` → `CrownWake::tasks`, `#[serde(default)]`), because the line can go out 15 s
+  (`FORGE_WAIT_MS`) or a busy crown's minutes later. The clause on an answer alone: `ended its turn
+  after your ask went in, with 1 background task still running`, the unconfirmed form `ended a
+  turn after ask X was sent, with 3 background tasks still running; receipt unconfirmed`, and
+  `with background tasks still running` where a restart lost the count. On a fold a later turn's
+  end replaces the count, `None` included (`Owed::turn_end`); other news keeps it. Codex keeps no
+  task registry and a live child holds its seat working (T-848), so its lines never carry it.
+- **The Monitor gap (found on the way, in the proposal the go covered).** `answered_with_tasks`
+  asked `Idle{Background}` alone, so a turn that took the crown's ask and ended on a Monitor's
+  watch (`Idle{Monitoring}`) was no end: the ask was kept and only the 30-minute lingering wake
+  ever reached the crown. It now asks `on_tasks()`, T-944's rule that either park is one.
+- **The park's echo.** `sleep_agent` is no turn's end (`park_record` sets `Sleeping` directly),
+  but a turn that ended before it, typically the turn a finished background command started,
+  reached the crown after the park: its probe still out (it lands to `Sleeping`, nothing pending)
+  or its wake queued while the crown was busy. The seat was idle at the park, so every such end
+  came before it and the crown's act decided what comes next. `crown_touched(.., "parked")` now
+  calls `crown_parked`: queued, forge-held and entering wakes whose cause is exactly `Finished`
+  go (`consume_crown_news`), a `Finished` held for the train goes, and `Heard::parked` drops a
+  later-landing probe's `Finished` until the seat's next `Running` (`crown_turn_began`). Kept: a
+  delivery, an answer, a merge (and a delivery or merge carrying `finished`), forge, hand, limit,
+  failure.
+- **A forge merge read `ahead`.** Not a slow forge read: the turn-end look (`Look::run`) aggregated
+  git legs alone, while the tick's sample folds the forge's merged PR in (`forge_fold_legs`,
+  T-739), and nothing fetches after a forge merge. A crown's `gh pr merge` also owed a read for
+  the crown's own ticket only, so the worker's turn end never waited. Now: `Found::Branch` carries
+  its legs and `judge_probe` folds the forge set into them, then judges a fold that reads merged
+  with `merge_verdict` as the restart's look does (`delivered (merge_state merged)`, or `merged`
+  where the crown heard the delivery), the wake saying the merge (`Owed::merge`); a PostToolUse
+  `gh pr merge 42` / `glab mr merge !42` from any session (`forge::pr_merge_number`) owes a read for
+  every ticket whose own open PR has that number (`pr_merge_acted`, feed `pr_merge_seen`), so a
+  turn's end there waits for it (T-773); and `hear_forged` re-reads a held wake's branch from the
+  folded flags at the same tip, a held `Finished` becoming `merged and finished its turn`.
+- **Refuted / not done.** Skipping the crown's own forge merge as an echo: the forge keeps no
+  `merged_by` and every agent shares one login; the ledger's `pr_acted` proves a command ran, not
+  that the PR merged (`--auto`, a merge queue), and the crown needs the confirmed merge for the
+  DONE gate and deploy columns, as its own `merge_ticket` is still heard. A reviewed PR of the same
+  number in another repository costs one more read, nothing else. A returned Codex wake
+  (`restore_wakes`) keeps the earlier count.
+- **Text.** `CROWN_WAKES` gains two sentences: the answer's count (`get_ticket`'s `background`
+  is the count now) and the park (`one that ended before sleep_agent parked its agent is not told,
+  though a delivery or an answer still is`). T-1279 changes `get_ticket` for a crown at the same
+  time; no sentence is shared.
+- **Tests.** Units: `an_answer_with_tasks_left_running_says_how_many`,
+  `the_crowns_park_takes_a_finished_turn_and_leaves_a_delivery`,
+  `a_turns_end_reads_a_pr_the_forge_merged_as_merged`, `a_held_turns_end_says_the_merge_its_read_found`,
+  `forge::pr_merge_number` in the forge tests. E2e:
+  `crown_e2e::a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told` asserts the
+  count on the answer and gains a stage 4 (an answer ending on a Monitor's watch alone wakes the
+  crown, `with 1 background task still running`). Rig (new `wake_said` check, `{stub}` in a crown
+  step, the stub's `pr merge`, the `forge_merge_ready` step): `BG1` (blind: the crown answers no,
+  the worker is not done), `SP1` (the crown parks while the worker's post-task turn is owed, and
+  takes exactly one finished line: `wake_count`, since the feed's `crown_wake` counts a wake owed
+  and then taken back), `F14` (the crown merges PR 42 on the stub itself and names merged).
+- **Validation and reruns.** `cargo ut` green (1,470, 892, 774, 72, 24, 17). The e2e files the diff
+  reaches, `crown_e2e`, `forge_e2e` and `mcp_e2e`, in one nextest run: 163/164;
+  `forge_e2e::a_watched_tickets_later_pr_merge_wakes_the_crown` timed out in its step 1 (a plain
+  `git merge --ff-only` whose flags flip never came, load average ~12) and passed alone: a rerun,
+  left. `ci/rig_test.py` 81/81. Rig, crown `claude-opus-5-5`, Claude Code 2.1.325, mod road, four
+  runs: run 1 failed all three on case design (the default `until` waited for the worker's
+  background task to end, so SP1's post-task finish reached an idle crown and BG1's check read the
+  crown's later line; F14's `forge_off` restarted the daemon before the crown's turn on its wake);
+  run 2 passed BG1 (`BG1 done, no` on `… with 1 background task still running`) and F14 (one line,
+  `ended its turn after your ask went in (ask …: taken, merge_state ahead → merged)`, `pr_merge_seen`
+  fed, `F14 heard, merged`); SP1 failed there because Claude Code blocks a standalone `sleep 90` in
+  the crown's Bash, which the crown rightly refused to work around (now a Python wait, as worker
+  cases use), and run 3 showed the echo dropped (the crown took finished, the answer, nothing after
+  the park) but a check counting owed wakes; run 4 **passed** SP1 with `wake_count`. `--reset`
+  after. Owed after the merge: one full workspace suite, since `server.rs` changed outside its
+  tests (T-1194).

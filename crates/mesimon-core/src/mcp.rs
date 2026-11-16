@@ -188,7 +188,8 @@ pub const CROWN_WAKES: &str = concat!(
      the ticket and what changed arrives as this session's next prompt, once it is idle. A turn \
      that opened a pull request says so in its line (opened #42), and that line waits for the \
      board's read of the forge, so get_ticket already lists the PR. A finished turn that left nothing new to \
-     merge says so. A start_agent whose worktree could not be cut (a repository with no \
+     merge says so; one that ended before sleep_agent parked its agent is not told, though a delivery \
+     or an answer still is. A start_agent whose worktree could not be cut (a repository with no \
      commits yet, a checkout on no branch) wakes it too: could not start, with the reason and \
      its fix, which get_ticket on that ticket also carries (worktree_error). A fix outside \
      the ticket's brief is the person's, and start_agent once it is made tries again. So \
@@ -218,7 +219,9 @@ pub const CROWN_WAKES: &str = concat!(
      idle with N background tasks), and get_ticket on it carries background (tasks, \
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
      and the board cannot tell which, so it merges, parks and ends nothing for it; ask_agent \
-     reaches the worker while its tasks run. \
+     reaches the worker while its tasks run. A turn the crown's ask rode that ended with tasks still \
+     running says how many its end left (with 1 background task still running); get_ticket's \
+     background is the count now. \
      start_agent's and ask_agent's expect_secs is how long the turn their words start is \
      expected to take: past it, with the agent still working, this session is woken once \
      (has run its turn N min, past the M it expected), and get_ticket on it carries overrun \

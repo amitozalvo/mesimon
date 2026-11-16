@@ -309,6 +309,20 @@ pub(super) fn leg_aheads(legs: &[worktree::RepoFlags]) -> Vec<(String, u32)> {
 }
 
 impl BranchLook {
+    /// The legs folded into one look.
+    fn of(legs: &[worktree::RepoFlags]) -> BranchLook {
+        let a = worktree::aggregate(legs);
+        BranchLook {
+            tip: a.tip,
+            base_tip: a.base_tip,
+            ahead: a.ahead,
+            legs: leg_aheads(legs),
+            merged: a.merged,
+            needs_rebase: a.needs_rebase,
+            conflict: a.conflict,
+        }
+    }
+
     fn told(&self, column: String) -> Told {
         Told {
             tip: self.tip.clone(),
@@ -476,6 +490,12 @@ pub(super) struct CrownWake {
     /// sentence went still says why it was raised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hand: Option<String>,
+    /// The background tasks still running when the turn this wake is about
+    /// ended (T-1278), as that end listed them: `Some(0)` where the seat
+    /// was parked on tasks with the registry's count lost (a restart).
+    /// Said on an answer alone (`with 1 background task still running`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tasks: Option<usize>,
 }
 
 /// One failed turn (T-936): the seat, the turn (Codex's own turn id; on
@@ -509,6 +529,12 @@ pub(super) struct Owed {
     /// `merged !N`, or a landing held for its merge step that was one. What
     /// ends a watch; the branch's standing `merged` does not.
     pub(super) merge: bool,
+    /// `CrownWake::tasks`: what a turn's end left running (T-1278).
+    pub(super) tasks: Option<usize>,
+    /// This is a turn's end's wake: its `tasks` replaces the one owed
+    /// before, `None` included, since a later end proves the earlier
+    /// end's tasks no longer the last word. Any other news keeps it.
+    pub(super) turn_end: bool,
 }
 
 /// What a sentence to the crown tells it (`Daemon::telling`), kept until
@@ -735,15 +761,21 @@ pub(super) const LINGER_MS: u64 = 30 * 60 * 1000;
 /// card's sentence whole, a later stage's git text cut where it runs long.
 const UNSTARTED_MAX_BYTES: usize = 240;
 
+/// `3 background tasks`, `1 background task`, and with the count lost (a
+/// restart empties the registry) `background tasks`.
+fn tasks_words(n: usize) -> String {
+    match n {
+        0 => "background tasks".to_string(),
+        1 => "1 background task".to_string(),
+        n => format!("{n} background tasks"),
+    }
+}
+
 /// The lingering clause: `has been idle with 3 background tasks for 30
 /// min`, the count left out where the registry lost it (a restart starts
 /// it empty), the hours said past two of them.
 pub(super) fn lingering_clause(l: Linger) -> String {
-    let tasks = match l.tasks {
-        0 => "background tasks".to_string(),
-        1 => "1 background task".to_string(),
-        n => format!("{n} background tasks"),
-    };
+    let tasks = tasks_words(l.tasks);
     let time = if l.minutes >= 120 {
         format!("{} h", l.minutes / 60)
     } else {
@@ -832,7 +864,7 @@ impl CrownWake {
         to: Option<Told>,
         owed: Owed,
     ) -> CrownWake {
-        let Owed { finished, linger, late, ask, overrun, merge } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge, tasks, .. } = owed;
         CrownWake {
             worker,
             cause,
@@ -848,20 +880,21 @@ impl CrownWake {
             merge,
             promotion: None,
             hand: None,
+            tasks,
         }
     }
 
     /// What rides this wake, as `owe_wake` would fold it into another.
     fn owed(&self) -> Owed {
-        let CrownWake { finished, linger, late, ask, overrun, merge, .. } = *self;
-        Owed { finished, linger, late, ask, overrun, merge }
+        let CrownWake { finished, linger, late, ask, overrun, merge, tasks, .. } = *self;
+        Owed { finished, linger, late, ask, overrun, merge, tasks, turn_end: false }
     }
 
     /// `fold`, with what rides the second event: a flag either set stays
-    /// set, a lingering wake's numbers stay the first's, and the latest
-    /// ask and overrun win.
+    /// set, a lingering wake's numbers stay the first's, the latest ask
+    /// and overrun win, and a turn's end's tasks replace the earlier end's.
     fn absorb(&mut self, cause: WakeCause, from: Option<Told>, to: Option<Told>, owed: Owed) {
-        let Owed { finished, linger, late, ask, overrun, merge } = owed;
+        let Owed { finished, linger, late, ask, overrun, merge, tasks, turn_end } = owed;
         self.fold(cause, from, to);
         self.finished |= finished;
         self.merge |= merge;
@@ -869,6 +902,9 @@ impl CrownWake {
         self.late |= late;
         self.ask = ask.or(self.ask);
         self.overrun = overrun.or(self.overrun);
+        if turn_end {
+            self.tasks = tasks;
+        }
     }
 
     /// A second event on the same worker before delivery: the stronger
@@ -916,10 +952,22 @@ impl CrownWake {
         }
         // An ask no receipt named (T-938): the turn ended after it went out,
         // and that is all the end proves.
+        // The tasks the answering turn left running (T-1278): an answer is
+        // not a finish, and the crown is told what the end saw.
+        let left = match (self.cause, self.tasks) {
+            (WakeCause::Answered, Some(n)) => format!(", with {} still running", tasks_words(n)),
+            _ => String::new(),
+        };
         if let (WakeCause::Answered, Some(a)) = (self.cause, self.ask) {
             if !a.said.received() {
-                return format!("ended a turn after ask {} was sent; receipt unconfirmed", a.ask);
+                return format!(
+                    "ended a turn after ask {} was sent{left}; receipt unconfirmed",
+                    a.ask
+                );
             }
+        }
+        if !left.is_empty() {
+            return format!("{}{left}", self.cause.clause());
         }
         let clause = self.cause.clause();
         if self.finished && matches!(self.cause, WakeCause::Merged | WakeCause::Delivered) {
@@ -1403,6 +1451,13 @@ pub(super) struct Heard {
     /// owed now may be late, and says `after a restart`.
     #[serde(skip)]
     pub(super) restored: bool,
+    /// The crown parked this worker (`sleep_agent`, T-1278) and no turn of
+    /// its has begun since: a turn's end still on its way (a probe out, a
+    /// forge read awaited) that left nothing new to merge is the park's
+    /// echo, since the seat was idle when the crown chose to park it. A
+    /// delivery or an answer is still news.
+    #[serde(skip)]
+    parked: bool,
 }
 
 /// A raised hand the crown was told of, kept for its reason (T-922). The
@@ -1582,8 +1637,9 @@ fn say_first(to: &mut Option<Told>, words: String) {
 pub(super) enum ProbeWhy {
     /// A worker's turn ended, having taken these words. `fresh`: a turn
     /// ran since the last end looked at (`Daemon::turns_open`), so this
-    /// end is a finished turn and not an idle re-entered (T-591).
-    Turn { asked: Option<TurnAsk>, fresh: bool },
+    /// end is a finished turn and not an idle re-entered (T-591). `tasks`:
+    /// what the end left running, where it parked on them (T-1278).
+    Turn { asked: Option<TurnAsk>, fresh: bool, tasks: Option<usize> },
     /// The first look at a worker after a daemon restart (T-602), for the
     /// turn the last daemon did not judge, if any: what changed while no
     /// daemon was looking — a merge among it — is said once, `after a
@@ -1612,7 +1668,9 @@ enum Look {
 /// The work as git saw it; the column is added on landing.
 #[derive(Clone, Debug)]
 pub(super) enum Found {
-    Branch(BranchLook),
+    /// The look and the legs it was folded from: the forge's merged PR is
+    /// folded into the legs on landing (T-1278), where the forge's set is.
+    Branch(BranchLook, Vec<worktree::RepoFlags>),
     Checkout {
         head: String,
     },
@@ -1671,16 +1729,7 @@ impl Look {
                 if legs.is_empty() {
                     return Found::Unknown;
                 }
-                let a = worktree::aggregate(&legs);
-                Found::Branch(BranchLook {
-                    tip: a.tip,
-                    base_tip: a.base_tip,
-                    ahead: a.ahead,
-                    legs: leg_aheads(&legs),
-                    merged: a.merged,
-                    needs_rebase: a.needs_rebase,
-                    conflict: a.conflict,
-                })
+                Found::Branch(BranchLook::of(&legs), legs)
             }
             Look::Checkout(cwd) => {
                 let head = crate::git::git(&cwd)
@@ -1853,6 +1902,9 @@ impl Daemon {
             s.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
         });
         let settles = ended || interrupted;
+        // What the end left running, read at the edge as the end listed
+        // them (T-1278): the line may go out minutes later.
+        let tasks = seat.filter(|s| s.state.on_tasks()).map(|s| s.background_tasks.count());
         // Read before it is taken, so an edge that keeps the ask, or finds
         // none, leaves the ledger unmarked (T-839).
         let asked = self.turn_asks.get(&worker).copied();
@@ -1887,7 +1939,7 @@ impl Daemon {
         }
         if end_turn {
             let fresh = self.turns_open.remove(&worker);
-            self.probe_turn(worker, ProbeWhy::Turn { asked, fresh });
+            self.probe_turn(worker, ProbeWhy::Turn { asked, fresh, tasks });
         }
     }
 
@@ -2054,7 +2106,7 @@ impl Daemon {
         };
         let heard = self.crown_heard.entry(worker).or_default();
         heard.looks += 1;
-        if let ProbeWhy::Turn { asked, fresh } | ProbeWhy::Restart { asked, fresh } = why {
+        if let ProbeWhy::Turn { asked, fresh, .. } | ProbeWhy::Restart { asked, fresh } = why {
             let u = Unjudged { asked, fresh };
             heard.unjudged = Some(heard.unjudged.map_or(u, |o| o.join(u)));
         }
@@ -2112,16 +2164,27 @@ impl Daemon {
         let Some(column) = self.board.ticket(p.worker).map(|t| t.column.clone()) else {
             return;
         };
-        let (asked, fresh, restart) = match p.why {
-            ProbeWhy::Turn { asked, fresh } => (asked, fresh, false),
-            ProbeWhy::Restart { asked, fresh } => (asked, fresh, true),
-            ProbeWhy::Baseline => (None, false, false),
+        let (asked, fresh, restart, tasks) = match p.why {
+            ProbeWhy::Turn { asked, fresh, tasks } => (asked, fresh, false, tasks),
+            ProbeWhy::Restart { asked, fresh } => (asked, fresh, true, None),
+            ProbeWhy::Baseline => (None, false, false, None),
         };
         let answered = asked.and_then(TurnAsk::crown) == Some(p.crown);
         let said = AskSaid::of(asked);
         let merge_step = asked == Some(TurnAsk::Merge);
+        // A PR the forge says merged at this tip is a merge the git road may
+        // not see for lack of a fetch (T-739), as the tick's sample folds it
+        // (T-1278): the crown that merged on the forge itself read `ahead`.
+        let mut folded = false;
         let (now, branch) = match p.found {
-            Found::Branch(look) => (look.told(column), Some(look)),
+            Found::Branch(mut look, mut legs) => {
+                if self.forge_fold_legs(p.worker, &mut legs) {
+                    let again = BranchLook::of(&legs);
+                    folded = again.merged && !look.merged;
+                    look = again;
+                }
+                (look.told(column), Some(look))
+            }
             Found::Checkout { head } => (
                 Told { tip: head, merge: None, ahead: 0, legs: Vec::new(), column, forge: None },
                 None,
@@ -2130,10 +2193,15 @@ impl Daemon {
                 // Git could not say what the turn left — nothing seen is
                 // nothing to merge — but an answer is still an answer, and
                 // a finished turn still finished.
-                let cause = verdict(None, &Told::default(), answered, merge_step, fresh);
+                let cause =
+                    verdict(None, &Told::default(), answered, merge_step, fresh).filter(|c| {
+                        *c != WakeCause::Finished
+                            || !self.crown_heard.get(&p.worker).is_some_and(|h| h.parked)
+                    });
                 if let Due::Wake(cause) = due(cause, None, &self.pending_on(p.worker, None)) {
                     if self.crown_claims(p.worker, p.crown, cause) {
-                        self.owe_turn_end(p.crown, p.worker, cause, None, None, said);
+                        let end = Owed { ask: said, tasks, ..Owed::default() };
+                        self.owe_turn_end(p.crown, p.worker, cause, None, None, end);
                     }
                 }
                 return;
@@ -2148,7 +2216,7 @@ impl Daemon {
         // A merge no daemon was there to read (T-602) is the restart's to
         // say, judged as the flags would have (T-527) before the baseline
         // moves to it.
-        let landed = if restart {
+        let landed = if restart || folded {
             merge_verdict(started || heard.deferred.is_some(), heard, &now)
         } else {
             None
@@ -2158,6 +2226,9 @@ impl Daemon {
         let mut cause = verdict(before.as_ref(), &now, answered, merge_step, fresh).max(landed);
         if restart && !fresh {
             cause = unturned(cause, heard.told.as_ref(), &now);
+        }
+        if heard.parked && cause == Some(WakeCause::Finished) {
+            cause = None;
         }
         // Work the merged notice's turn left on the branch (T-1203): a fix
         // forward after the merge, which a rebase turn's new tip is not.
@@ -2197,7 +2268,11 @@ impl Daemon {
         // Held, so the claim was judged when it was: the seat may have gone
         // since.
         if held.is_some() || self.crown_claims(p.worker, p.crown, cause) {
-            self.owe_turn_end(p.crown, p.worker, cause, from, Some(now), said);
+            // A merge the forge's fold found says so (T-1278), as the flags'
+            // landing does: it ends a watch and is the merge's line.
+            let merge = folded && landed.is_some();
+            let end = Owed { ask: said, tasks, merge, ..Owed::default() };
+            self.owe_turn_end(p.crown, p.worker, cause, from, Some(now), end);
         }
     }
 
@@ -2211,14 +2286,15 @@ impl Daemon {
         cause: WakeCause,
         from: Option<Told>,
         mut to: Option<Told>,
-        ask: Option<AskSaid>,
+        end: Owed,
     ) {
         let heard = self.crown_heard.entry(worker).or_default();
         if let Some(words) = heard.opening.take() {
             say_first(&mut to, words);
         }
+        let end = Owed { turn_end: true, ..end };
         if !self.forge.awaited(worker) {
-            self.owe_wake(crown, worker, cause, from, to, Owed { ask, ..Owed::default() });
+            self.owe_wake(crown, worker, cause, from, to, end);
             return;
         }
         let heard = self.crown_heard.entry(worker).or_default();
@@ -2227,20 +2303,15 @@ impl Daemon {
                 // The older turn was observed. This end is new news, with
                 // its own forge wait; it must not inherit the placeholder's
                 // stronger Forge cause and be discarded as an empty read.
-                f.wake = CrownWake::new(
-                    worker,
-                    cause,
-                    from,
-                    to,
-                    Owed { ask, late: heard.restored, ..Owed::default() },
-                );
+                f.wake =
+                    CrownWake::new(worker, cause, from, to, Owed { late: heard.restored, ..end });
                 f.since_ms = now_ms();
                 return;
             }
-            f.wake.absorb(cause, from, to, Owed { ask, ..Owed::default() });
+            f.wake.absorb(cause, from, to, end);
             return;
         }
-        let owed = Owed { late: heard.restored, ask, ..Owed::default() };
+        let owed = Owed { late: heard.restored, ..end };
         let wake = CrownWake::new(worker, cause, from, to, owed);
         heard.forging = Some(Forging { wake, since_ms: now_ms() });
         self.feed.board("automation", "crown_wake_deferred:forge", Some(worker));
@@ -2285,6 +2356,8 @@ impl Daemon {
             .collect();
         let mut woke = false;
         for worker in over {
+            // The flags as the read that let this wake go folded them.
+            let sample = self.sampled(worker).filter(|l| l.merged);
             let Some(h) = self.crown_heard.get_mut(&worker) else { continue };
             let Some(Forging { wake, .. }) = h.forging.take() else { continue };
             // A keyed observation consumed the turn, but kept the slot for
@@ -2295,11 +2368,35 @@ impl Daemon {
             let Some(column) = self.board.ticket(worker).map(|t| t.column.clone()) else {
                 continue;
             };
-            let owed = Owed { linger: None, overrun: None, merge: false, ..wake.owed() };
+            // A turn's end's wake: its tasks are the last word (T-1278).
+            let mut owed =
+                Owed { linger: None, overrun: None, merge: false, turn_end: true, ..wake.owed() };
+            let mut cause = wake.cause;
             // The column the read's arrival left the card in.
             let mut to = wake.to;
+            // The read this wake waited for found its PR merged on the forge
+            // at the tip the turn left (T-1278): the line says the merge,
+            // not the branch ahead of a base no fetch has moved.
+            if let (Some(look), Some(t)) = (sample, to.as_mut()) {
+                if t.merge.is_some_and(|m| m != "merged") && t.tip == look.tip {
+                    let words = t.forge.take();
+                    *t = look.told(std::mem::take(&mut t.column));
+                    t.forge = words;
+                    owed.merge = true;
+                    if cause == WakeCause::Finished {
+                        let known =
+                            wake.from.as_ref().is_some_and(|f| f.mergeable() && f.tip == look.tip);
+                        cause = if known { WakeCause::Merged } else { WakeCause::Delivered };
+                        owed.finished = known;
+                    }
+                    let mut heard_now = t.clone();
+                    heard_now.forge = None;
+                    h.judged = Some(heard_now.clone());
+                    h.told = Some(heard_now);
+                }
+            }
             h.land(&mut to, column);
-            self.enter_wake(crown, worker, wake.cause, wake.from, to, owed);
+            self.enter_wake(crown, worker, cause, wake.from, to, owed);
             woke = true;
         }
         woke
@@ -3122,6 +3219,33 @@ impl Daemon {
         Some(look.told(self.board.ticket(worker)?.column.clone()))
     }
 
+    /// The crown parked `worker` (`sleep_agent`, T-1278): a turn's end
+    /// owed for it that left nothing new to merge goes, queued, held for
+    /// the forge or for the train, and one still on its way is dropped when
+    /// it lands (`Heard::parked`). The seat was idle at the park, so every
+    /// such end came before it, and the crown's act already decided what
+    /// comes next. A wake of any other cause, and a delivery or a merge
+    /// that carries the turn's end, stays.
+    pub(super) fn crown_parked(&mut self, worker: ulid::Ulid) {
+        self.consume_crown_news(worker, |w| w.cause == WakeCause::Finished);
+        // A probe out has its entry already (`probe_turn`): none is made
+        // for a worker the crown never heard of.
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            if h.deferred.as_ref().is_some_and(|d| d.cause == WakeCause::Finished) {
+                h.deferred = None;
+            }
+            h.parked = true;
+        }
+        self.persist_crown();
+    }
+
+    /// A turn of `worker`'s began: its end is news again (T-1278).
+    pub(super) fn crown_turn_began(&mut self, worker: ulid::Ulid) {
+        if let Some(h) = self.crown_heard.get_mut(&worker) {
+            h.parked = false;
+        }
+    }
+
     pub(super) fn crown_observed_merge(&mut self, worker: ulid::Ulid) {
         let Some(now) = self.sampled_merged_told(worker) else { return };
         self.consume_merge_news(worker, &now.tip);
@@ -3347,9 +3471,9 @@ pub(in crate::server) mod tests {
         b.d.on_turn_probed(TurnProbe {
             worker: b.worker,
             crown: b.crown,
-            why: ProbeWhy::Turn { asked: None, fresh: true },
+            why: ProbeWhy::Turn { asked: None, fresh: true, tasks: None },
             gen: b.d.merge_target_gen.wrapping_sub(1),
-            found: Found::Branch(BranchLook::default()),
+            found: Found::Branch(BranchLook::default(), Vec::new()),
         });
         assert!(b.d.crown_wakes.is_empty());
         let heard = &b.d.crown_heard[&b.worker];
@@ -3367,13 +3491,16 @@ pub(in crate::server) mod tests {
         b.d.on_turn_probed(TurnProbe {
             worker: b.worker,
             crown: b.crown,
-            why: ProbeWhy::Turn { asked: None, fresh: true },
+            why: ProbeWhy::Turn { asked: None, fresh: true, tasks: None },
             gen,
-            found: Found::Branch(BranchLook {
-                tip: "captured-worker-commit".into(),
-                ahead: 1,
-                ..BranchLook::default()
-            }),
+            found: Found::Branch(
+                BranchLook {
+                    tip: "captured-worker-commit".into(),
+                    ahead: 1,
+                    ..BranchLook::default()
+                },
+                Vec::new(),
+            ),
         });
         let wake = owed_for(&b.d, b.worker).expect("the captured delivery is still news");
         assert_eq!(wake.cause, WakeCause::Delivered);
@@ -3415,6 +3542,8 @@ pub(in crate::server) mod tests {
                 ask: Some(ask),
                 overrun: Some(overrun),
                 merge: false,
+                tasks: None,
+                turn_end: false,
             },
         );
         newer.unstarted = Some("new start failure".into());
@@ -4659,6 +4788,202 @@ pub(in crate::server) mod tests {
         d.crown_wakes.iter().find(|w| w.worker == worker)
     }
 
+    /// T-1278, case 1: an answer given with tasks still running says how
+    /// many its end left, the count lost after a restart says none, an
+    /// unconfirmed receipt says it before the receipt's words, and no other
+    /// cause says it. A later turn's end replaces the count (none, here);
+    /// other news folded in keeps it.
+    #[test]
+    fn an_answer_with_tasks_left_running_says_how_many() {
+        let w = ulid::Ulid(1278);
+        let ask = |said| AskSaid { ask: ulid::Ulid(7), said };
+        let wake = |cause, said, tasks| {
+            let owed = Owed { ask: Some(ask(said)), tasks, turn_end: true, ..Owed::default() };
+            CrownWake::new(w, cause, None, Some(branch("aaa", "clean", 0, "IN PROGRESS")), owed)
+        };
+        let one = wake(WakeCause::Answered, Said::Handed, Some(1));
+        assert_eq!(
+            one.clause(),
+            "ended its turn after your ask went in, with 1 background task still running"
+        );
+        assert_eq!(one.changed()[0], format!("ask {}: handed", ulid::Ulid(7)));
+        assert_eq!(
+            wake(WakeCause::Answered, Said::Taken, Some(0)).clause(),
+            "ended its turn after your ask went in, with background tasks still running"
+        );
+        assert_eq!(
+            wake(WakeCause::Answered, Said::Sent, Some(3)).clause(),
+            format!(
+                "ended a turn after ask {} was sent, with 3 background tasks still running; \
+                 receipt unconfirmed",
+                ulid::Ulid(7)
+            )
+        );
+        assert_eq!(
+            wake(WakeCause::Answered, Said::Handed, None).clause(),
+            "ended its turn after your ask went in"
+        );
+        assert_eq!(wake(WakeCause::Finished, Said::Handed, Some(2)).clause(), "finished its turn");
+
+        let mut kept = one.clone();
+        let forge = Owed { merge: true, ..Owed::default() };
+        kept.absorb(WakeCause::Forge, None, Some(branch("aaa", "clean", 0, "REVIEW")), forge);
+        assert_eq!(kept.tasks, Some(1), "other news keeps the end's count");
+        let mut later = one;
+        let end = Owed { turn_end: true, ..Owed::default() };
+        later.absorb(WakeCause::Finished, None, Some(branch("aaa", "clean", 0, "REVIEW")), end);
+        assert_eq!(later.cause, WakeCause::Answered);
+        assert_eq!(later.tasks, None, "a later end with none running is the last word");
+        assert_eq!(later.clause(), "ended its turn after your ask went in");
+    }
+
+    /// T-1278, case 2: the crown's park takes a finished turn owed for its
+    /// worker, queued or on its way in a probe, and never a delivery; a
+    /// turn begun after the park is news again.
+    #[test]
+    fn the_crowns_park_takes_a_finished_turn_and_leaves_a_delivery() {
+        let ahead = branch("aaa", "ahead", 1, "REVIEW");
+        let mut b = watched_bed("parked-finish", Some(ahead.clone()));
+        b.d.board.sessions.clear();
+        let w = b.worker;
+        let probe = |b: &mut crate::server::crownask::ledger_tests::Bed, tip: &str, ahead| {
+            b.d.crown_heard.get_mut(&b.worker).unwrap().looks = 1;
+            b.d.on_turn_probed(TurnProbe {
+                worker: b.worker,
+                crown: b.crown,
+                why: ProbeWhy::Turn { asked: None, fresh: true, tasks: None },
+                gen: b.d.merge_target_gen,
+                found: Found::Branch(
+                    BranchLook { tip: tip.into(), ahead, ..BranchLook::default() },
+                    Vec::new(),
+                ),
+            });
+        };
+        // Queued before the park: it goes at the park.
+        b.d.enter_wake(b.crown, w, WakeCause::Finished, None, Some(ahead.clone()), Owed::default());
+        b.d.crown_parked(w);
+        assert!(owed_for(&b.d, w).is_none(), "the park took the queued finish");
+        // On its way when the park landed: dropped as it lands.
+        probe(&mut b, "aaa", 1);
+        assert!(owed_for(&b.d, w).is_none(), "the probe's finish is the park's echo");
+        // A delivery is news the park did not answer.
+        probe(&mut b, "bbb", 2);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Delivered));
+        b.d.crown_parked(w);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Delivered), "kept");
+        // A turn begun after the park: its finish is told.
+        b.d.crown_wakes.clear();
+        b.d.crown_turn_began(w);
+        probe(&mut b, "bbb", 2);
+        assert_eq!(owed_for(&b.d, w).map(|o| o.cause), Some(WakeCause::Finished));
+    }
+
+    fn merged_pr(head: &str) -> mesimon_core::forge::Pr {
+        use mesimon_core::forge::{Forge, Pipeline, Pr, PrState};
+        Pr {
+            forge: Forge::GitHub,
+            repo: "o/r".into(),
+            number: 42,
+            title: String::new(),
+            url: "https://github.com/o/r/pull/42".into(),
+            state: PrState::Merged,
+            head_oid: head.into(),
+            head_ref: "b".into(),
+            target_ref: "main".into(),
+            merge_oid: "squash".into(),
+            conflict: false,
+            review: Default::default(),
+            pipeline: Pipeline::Passed,
+            pipeline_run: 0,
+            updated_ms: 2,
+            merged_ms: 2,
+            deployed: Vec::new(),
+            landed_tips: Vec::new(),
+            reviewed: false,
+        }
+    }
+
+    /// T-1278, case 3: the crown merged the worker's PR on the forge and no
+    /// fetch moved the base, so git reads the branch ahead. The turn's end
+    /// folds the forge's merge in as the tick's sample does, and says one
+    /// line: the delivery with its merge.
+    #[test]
+    fn a_turns_end_reads_a_pr_the_forge_merged_as_merged() {
+        let mut b = watched_bed("forge-merged-probe", None);
+        b.d.board.sessions.clear();
+        let w = b.worker;
+        let root = b.d.paths.repo_root.clone();
+        let remote = mesimon_core::forge::Remote { host: "github.com".into(), path: "o/r".into() };
+        b.d.forge.remotes.insert(root, Some(remote));
+        b.d.forge.sets.insert(w, vec![merged_pr("h1")]);
+        let leg = crate::worktree::RepoFlags {
+            base_oid: "base".into(),
+            tip: "h1".into(),
+            base: "main".into(),
+            ahead: 1,
+            ..Default::default()
+        };
+        b.d.crown_heard.get_mut(&w).unwrap().looks = 1;
+        b.d.on_turn_probed(TurnProbe {
+            worker: w,
+            crown: b.crown,
+            why: ProbeWhy::Turn { asked: None, fresh: true, tasks: None },
+            gen: b.d.merge_target_gen,
+            found: Found::Branch(BranchLook::of(std::slice::from_ref(&leg)), vec![leg]),
+        });
+        let wake = owed_for(&b.d, w).expect("the turn's end is news");
+        assert_eq!(wake.cause, WakeCause::Delivered);
+        assert_eq!(wake.to.as_ref().unwrap().merge, Some("merged"));
+        assert_eq!(wake.changed()[0], "merge_state merged");
+        assert!(wake.says_merge());
+    }
+
+    /// T-1278, case 3 with the read late: a turn's end held for the forge
+    /// read its crown's `gh pr merge` owed, let go by the read that folded
+    /// the merge into the flags, says the merge at that tip.
+    #[test]
+    fn a_held_turns_end_says_the_merge_its_read_found() {
+        let ahead = branch("h1", "ahead", 1, "REVIEW");
+        let mut b = watched_bed("forge-merged-held", Some(ahead.clone()));
+        let w = b.worker;
+        b.d.board.sessions.clear();
+        b.d.worktrees.insert(
+            w,
+            Binding::new(
+                b.d.paths.repo_root.join("wt"),
+                "msmn/worker".into(),
+                "base".into(),
+                "h1".into(),
+                BindingStatus::Attached,
+            ),
+        );
+        b.d.wt_agg.insert(
+            w,
+            worktree::Aggregate {
+                tip: "h1".into(),
+                base_tip: "base".into(),
+                merged: true,
+                ..Default::default()
+            },
+        );
+        let wake = CrownWake::new(
+            w,
+            WakeCause::Finished,
+            Some(ahead.clone()),
+            Some(ahead),
+            Owed { turn_end: true, ..Owed::default() },
+        );
+        b.d.crown_heard.get_mut(&w).unwrap().forging = Some(Forging { wake, since_ms: 0 });
+        assert!(b.d.hear_forged(HashMap::new()));
+        let wake = owed_for(&b.d, w).expect("let go");
+        assert_eq!(wake.cause, WakeCause::Merged);
+        assert_eq!(wake.clause(), "merged and finished its turn");
+        assert_eq!(wake.changed()[0], "merge_state ahead → merged");
+        let told = b.d.crown_heard[&w].told.clone().unwrap();
+        assert_eq!(told.merge, Some("merged"), "the flags' merge is heard already");
+        assert_eq!(merge_verdict(true, &b.d.crown_heard[&w], &told), None);
+    }
+
     #[test]
     fn an_answer_reporting_the_merge_consumes_its_held_merge_wake() {
         let mut b = watched_bed("answered-merge", Some(branch("aaa", "ahead", 1, "REVIEW")));
@@ -4873,10 +5198,24 @@ pub(in crate::server) mod tests {
         );
         b.d.forge.looking.insert(w);
         let state = branch("aaa", "ahead", 1, "REVIEW");
-        b.d.owe_turn_end(b.crown, w, WakeCause::Finished, None, Some(state.clone()), None);
+        b.d.owe_turn_end(
+            b.crown,
+            w,
+            WakeCause::Finished,
+            None,
+            Some(state.clone()),
+            Owed::default(),
+        );
         let mut view = b.d.agent_ticket_view(w).unwrap();
         b.d.crown_reads(&mut view, w);
-        b.d.owe_turn_end(b.crown, w, WakeCause::Finished, Some(state.clone()), Some(state), None);
+        b.d.owe_turn_end(
+            b.crown,
+            w,
+            WakeCause::Finished,
+            Some(state.clone()),
+            Some(state),
+            Owed::default(),
+        );
         b.d.forge.looking.remove(&w);
         assert!(b.d.hear_forged(HashMap::new()), "the new end survives a read with no opening");
         assert_eq!(owed_for(&b.d, w).unwrap().cause, WakeCause::Finished);
@@ -5514,7 +5853,7 @@ pub(in crate::server) mod tests {
                 crown: b.crown,
                 why: ProbeWhy::Restart { asked: None, fresh },
                 gen,
-                found: Found::Branch(found.clone()),
+                found: Found::Branch(found.clone(), Vec::new()),
             });
             let judged = b.d.crown_heard[&b.worker].judged.as_ref().map(|j| j.tip.clone());
             assert_eq!(judged.as_deref(), Some(found.tip.as_str()), "{name}: the baseline moves");

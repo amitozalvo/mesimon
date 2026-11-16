@@ -10096,6 +10096,9 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     wait_until(std::time::Duration::from_secs(10), "the answer's wake", || {
         ask_ends(&worker).iter().any(|l| !lines_with(l).is_empty())
     });
+    // An answer is not a finish (T-1278): the line says what its end left.
+    let answer = ask_ends(&worker).iter().flat_map(|l| lines_with(l)).next().unwrap();
+    assert!(answer.contains(", with 3 background tasks still running"), "{answer}");
     send(sa, "UserPromptSubmit", r#"{"prompt":"wake"}"#);
     c.await_state(sa, "running", |s| *s == SessionState::Running);
     send(sa, "Stop", r#"{"stop_hook_active":false}"#);
@@ -10123,6 +10126,37 @@ fn a_worker_idle_with_background_tasks_takes_words_and_the_crown_is_told() {
     );
     let view = c.agent_read(sa, &kw).unwrap().background.expect("still background");
     assert!(view.since_secs.is_some_and(|s| s >= 6), "{view:?}");
+
+    // ---- 4. an answer that ends on a Monitor's watch alone wakes it ---------
+    // (T-1278) Before, `Idle{Monitoring}` was no end for the crown's ask,
+    // and only the lingering wake ever reached the crown.
+    match c.crown_ask(sa, &kw, "mesimon-probe-94 crown: watch it", Deliver::Idle, None) {
+        Response::AgentAsked { held_for_person: false, .. } => {}
+        other => panic!("ask_agent: {other:?}"),
+    }
+    wait_until(std::time::Duration::from_secs(10), "the second ask to land", || {
+        !lines_with("mesimon-probe-94 crown: watch it").is_empty()
+    });
+    send(ws, "UserPromptSubmit", r#"{"prompt":"watch it"}"#);
+    c.await_state(ws, "running", |s| *s == SessionState::Running);
+    send(
+        ws,
+        "PostToolUse",
+        r#"{"tool_name":"Monitor","tool_response":{"taskId":"watch1","timeoutMs":0,"persistent":true}}"#,
+    );
+    send(
+        ws,
+        "Stop",
+        r#"{"stop_hook_active":false,"background_tasks":[{"id":"watch1","type":"monitor","status":"running"}]}"#,
+    );
+    c.await_state(ws, "idle on its watch", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::Monitoring }
+    });
+    wait_until(std::time::Duration::from_secs(10), "the watch's answer wake", || {
+        ask_ends(&worker).iter().map(|l| lines_with(l).len()).sum::<usize>() == 2
+    });
+    let answer = ask_ends(&worker).iter().flat_map(|l| lines_with(l)).last().unwrap();
+    assert!(answer.contains(", with 1 background task still running"), "{answer}");
 }
 
 /// A worker whose only work is a background command (T-944): the command

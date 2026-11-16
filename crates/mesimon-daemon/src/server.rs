@@ -5929,6 +5929,23 @@ impl Daemon {
                 self.pr_created(t);
             }
         }
+        // A `gh pr merge 42` any session ran (T-1278), a crown's on its
+        // worker's PR the common case: the forge is asked now for each
+        // ticket whose own open PR has that number, so the merge is read
+        // in seconds and a turn's end on that ticket waits for the read
+        // instead of saying the branch ahead. A number another repository
+        // also uses costs one more read, nothing else.
+        if frame.event == "PostToolUse"
+            && frame.payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("Bash")
+        {
+            let merged = frame.payload["tool_input"]
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .and_then(mesimon_core::forge::pr_merge_number);
+            if let Some(n) = merged {
+                self.pr_merge_acted(n);
+            }
+        }
         let now = now_ms();
         let mut observation = self
             .board
@@ -8071,6 +8088,9 @@ impl Daemon {
         // (T-599): the next one is new, and may wake the crown again.
         if change.to == SessionState::Running {
             self.lingered.remove(&id);
+            if snapshot.kind.is_agent() {
+                self.crown_turn_began(snapshot.ticket);
+            }
             // A prompt went in: the mod's next submit may be taken (T-936).
             // A held Stop only keeps work open; it is not a new prompt.
             if !held_stop {
@@ -8099,8 +8119,10 @@ impl Daemon {
             // A turn that took the crown's ask and ended with background
             // tasks still running answered it (T-599): the crown asked
             // whether the wait is the work, and the words are the answer.
-            let answered_with_tasks = change.to
-                == (SessionState::Idle { stop_reason: StopReason::Background })
+            // Either park on tasks is one (T-944): a turn that ended on a
+            // Monitor's watch alone answered too (T-1278), where before only
+            // the 30-minute lingering wake ever reached the crown.
+            let answered_with_tasks = change.to.on_tasks()
                 && self.turn_asks.get(&snapshot.ticket).is_some_and(|a| a.crown().is_some())
                 && matches!(change.confidence, Confidence::High | Confidence::Medium);
             if answered_with_tasks {
@@ -10113,6 +10135,9 @@ impl Daemon {
         self.crown_mark(own, target, action);
         if action == "merged" {
             self.crown_observed_merge(target);
+        }
+        if action == "parked" {
+            self.crown_parked(target);
         }
         Some(self.receipt_seen(target, Some(write)))
     }
@@ -20013,6 +20038,33 @@ impl Daemon {
         self.feed.board("forge", "pr_create_seen", Some(ticket));
         self.cost_due = true;
         self.owe_forge_read(ticket);
+    }
+
+    /// A session ran a merge of PR `n` (T-1278): a read is owed for every
+    /// ticket whose own open PR carries that number.
+    fn pr_merge_acted(&mut self, n: u64) {
+        if !self.through_prs() {
+            return;
+        }
+        let open = |pr: &mesimon_core::forge::Pr| {
+            pr.number == n
+                && !pr.reviewed
+                && matches!(
+                    pr.state,
+                    mesimon_core::forge::PrState::Open | mesimon_core::forge::PrState::Draft
+                )
+        };
+        let owed: Vec<ulid::Ulid> = self
+            .forge
+            .sets
+            .iter()
+            .filter(|(_, set)| set.iter().any(open))
+            .map(|(t, _)| *t)
+            .collect();
+        for t in owed {
+            self.feed.board("forge", "pr_merge_seen", Some(t));
+            self.owe_forge_read(t);
+        }
     }
 
     /// The turn's end's road (`Msg::ForgeBurst`) for `only`'s repositories,

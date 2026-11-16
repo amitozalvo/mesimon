@@ -1664,6 +1664,23 @@ pub fn pr_act(command: &str) -> Option<String> {
     }
 }
 
+/// The number of the PR a `gh pr merge` / `glab mr merge` in the command
+/// merges (T-1278), read as `pr_act` reads a subject from that call on: a
+/// URL's, else `#42` / `!42` / `42` alone or after `-R`. `None` where no
+/// merge call names one (`gh pr merge` on the current branch).
+pub fn pr_merge_number(command: &str) -> Option<u64> {
+    let words = shell_words(command);
+    let at = words.windows(3).position(|w| {
+        ((is_bin(&w[0], "gh") && w[1] == "pr") || (is_bin(&w[0], "glab") && w[1] == "mr"))
+            && w[2] == "merge"
+    })?;
+    let entry = pr_act(&words[at..].join(" "))?;
+    if let Some((_, n)) = pr_number_of(&entry) {
+        return Some(n);
+    }
+    entry.rsplit(['#', '!']).next()?.parse().ok()
+}
+
 /// A command line as the shell would split it: blanks separate, single
 /// quotes keep everything, double quotes keep everything but a
 /// backslash-escaped character, a bare backslash escapes the next.
@@ -2759,6 +2776,14 @@ mod tests {
         );
         assert!(pr_create_line("not json", &mut pending).is_empty());
         assert!(is_pr_create("/usr/local/bin/gh pr create -t x"));
+        // The PR a merge call merges (T-1278), and none for any other act.
+        assert_eq!(pr_merge_number("gh pr merge 42 --squash"), Some(42));
+        assert_eq!(pr_merge_number("gh pr merge -R o/r 42"), Some(42));
+        assert_eq!(pr_merge_number("gh pr merge https://github.com/o/r/pull/7"), Some(7));
+        assert_eq!(pr_merge_number("cd x && glab mr merge !9 --yes"), Some(9));
+        assert_eq!(pr_merge_number("gh pr comment 41 -b hi && gh pr merge 42"), Some(42));
+        assert_eq!(pr_merge_number("gh pr comment 41 -b merge"), None);
+        assert_eq!(pr_merge_number("gh pr merge --squash"), None);
         assert!(!is_pr_create("gh pr list"));
         // T-895 review: the shell's words, never a quoted mention, and a
         // `create` that opens nothing.

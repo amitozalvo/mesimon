@@ -2576,3 +2576,75 @@ checks = ["road:mod", "started_by_crown", "tools:help", "reply:Workspace", "repl
   crown = "HP2: start {key}'s agent with workspace worktree, no tier and no plan, then end your turn with the single line: HP2 started. When the board wakes you for it, end your turn with the single line: HP2 seen."
   until = { stops = 1, state = "idle" }
   wake = true
+
+[[test]]
+id = "BG1"
+title = "BG1 · an answer given with a background task still running is not a finish: do the steps below"
+blind = true
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the worker's first turn finishes and the crown hears it. Asked to have the worker start a five-minute command in the background, the crown sends the words with ask_agent; the worker starts it and ends its turn while it runs, and the board wakes the crown with ended its turn after your ask went in, with 1 background task still running (T-1278; before, the line read as a finish). Asked whether the worker has finished all its work, the crown answers no, from the line or from get_ticket's background."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent", "woke:answered", "wake_said:with 1 background task still running", "crown_line:BG1 done:no", "replies:ready,started"]
+
+  [[test.steps]]
+  crown = "BG1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: BG1 started. When the board wakes you for {key}, end your turn with the single line: BG1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "BG1: have {key}'s agent start the shell command `sleep 300` in the background, without waiting for it, and then reply with the single word started and end its turn. End your turn with the single line: BG1 asked. When the board next wakes you for {key}, end your turn with the single line: BG1 done, then yes if {key}'s agent has finished all its work, or no if it has not. If it wakes you for {key} after that, end your turn with the single line: BG1 later."
+  until = { stops = 1, state = "working" }
+  wake = true
+
+[[test]]
+id = "SP1"
+title = "SP1 · a turn that ended before the crown parked its worker is not told after the park: do the steps below"
+workspace = "worktree"
+brief = "Reply with the single word ready and end your turn. Read no file and run no command."
+expect = "the worker's first turn finishes and the crown hears it once. On the crown's ask the worker starts `sleep 40` in the background and ends its turn (the answer's wake). While the crown runs a 90-second foreground command, the background command ends and the worker's next turn finishes with nothing new to merge: its wake is owed while the crown is busy. The crown then parks the worker, and the board does not wake it with that finished turn after its own turn ends (T-1278: the park's echo, `finished its turn (nothing new to merge)` on the simbly board); the crown took exactly one finished line, the first turn's (the feed's crown_wake lines count the echo owed and then taken back)."
+checks = ["road:mod", "started_by_crown", "crown:sleep_agent=1", "woke:answered", "wake_count:finished its turn=1", "replies:ready,started,over"]
+
+  [[test.steps]]
+  crown = "SP1: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: SP1 started. When the board wakes you for {key}, end your turn with the single line: SP1 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "SP1: call ask_agent for {key} with the text: Run the shell command `sleep 40` with the Bash tool in the background, without waiting for it, then reply with the single word started and end your turn. When it has finished, reply with the single word over and end your turn. Then end your turn with the single line: SP1 asked. When the board wakes you for {key}, end your turn with the single line: SP1 seen."
+  until = { stops = 1, state = "working" }
+  wake = true
+
+  [[test.steps]]
+  crown = "SP1: this step needs this session busy for 90 seconds while {key}'s agent finishes its command. Run `python3 -c 'import time; time.sleep(90)'` with the Bash tool in the foreground and wait for it, then call sleep_agent for {key}, then end your turn with the single line: SP1 parked. If the board wakes you for {key} after that, end your turn with the single line: SP1 woken."
+  until = { crown_only = true }
+
+[[test]]
+id = "F14"
+title = "F14 · the crown merges a pull request on the forge itself and hears it merged, not ahead: do the steps below"
+workspace = "worktree"
+brief = "Write the word f14 into a new file F14.txt, commit it with git, then reply with the single word done and end your turn. Read no other file."
+expect = "the worker commits and the crown hears it delivered; its PR 42 binds off a stub forge at the branch's tip. The crown merges PR 42 itself with the stub's `gh pr merge` (the board's feed says pr_merge_seen for the ticket: the forge is asked now) and asks the worker for one word; the turn's end, the crown's or the forge's merge wake, says the branch went ahead → merged (T-1278: no fetch moved the base, and the turn's look folds the forge's merge in as the board's sample does; before, the simbly crown read delivered (merge_state ahead)). The crown names merged."
+checks = ["road:mod", "started_by_crown", "woke:delivered", "fed:pr_merge_seen", "wake_said:ahead → merged", "crown_line:F14 heard:merged", "replies:done,landed"]
+
+  [[test.steps]]
+  crown = "F14: call start_agent for {key} with workspace worktree, no tier and no plan, then end your turn with the single line: F14 started. When the board wakes you because {key}'s agent delivered, end your turn with the single line: F14 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "forge_pr"
+
+  [[test.steps]]
+  rig = "forge_merge_ready"
+
+  [[test.steps]]
+  crown = "F14: {key}'s pull request 42 is approved. Merge it on the forge yourself by running `{stub}/gh pr merge 42 --squash` (that gh in place of gh), then call ask_agent for {key} with the text: Reply with the single word landed and end your turn. Then end your turn with the single line: F14 merged. When the board wakes you for {key}, end your turn with the single line: F14 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "F14: what merge_state does the board's last line about {key} give it? Read nothing and change nothing. End your turn with the single line: F14 heard, then that word."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "forge_off"
