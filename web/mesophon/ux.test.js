@@ -2083,6 +2083,25 @@ async function tierFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#prompt").value);
     assert.equal(await page.locator(".composer-pics").count(), 0, "a taken prompt lets its pictures go");
 
+    // Words that begin with `!` (T-1284) run as a shell command in the
+    // agent's box: the field says so before the send, and sends them as
+    // they are. A `!` further in is plain words.
+    await page.locator("#prompt").fill("what about !42?");
+    assert(await page.locator("#shell-note").isHidden(), "a `!` past the first word is a plain message");
+    await page.locator("#prompt").fill("!git log -1");
+    await page.locator("#shell-note").waitFor();
+    assert.match(await page.locator("#shell-note").textContent(), /Shell command/);
+    assert.equal(await page.locator(".composer").getAttribute("data-shell"), "true");
+    assert.match(await page.locator("#send").getAttribute("aria-label"), /shell command$/);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await shot("composer-shell");
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#send").click();
+    await until(page, () => fixture.prompts.length === 4);
+    assert.equal(await page.evaluate(() => fixture.prompts[3].text), "!git log -1");
+    await until(page, () => !document.querySelector("#prompt").value);
+    assert(await page.locator("#shell-note").isHidden(), "an empty field marks nothing");
+
     // An older host is offered no tier and sent none.
     await page.evaluate(() => {
       fixture.features = fixture.features.filter((f) => f !== "tiers");

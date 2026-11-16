@@ -46589,3 +46589,24 @@ needs a rig base the train may merge into, as T-1203 found.
     60.6 s, the notification's frame at 150.2 s, the ask delivered after the Stop).
   - No reruns; no before-fix rig run. The diff changes `daemon/src/server.rs` outside its tests:
     the full workspace suite runs once after the merge.
+
+## A `!` line on the phone says it is a shell command (T-1284, 2026-11-16, "make ! prompts obvious shell from remote control … I accidently used it without knowing it will arive as shell command when asking about a MR (!X)")
+
+**What changed.** Mesophon's prompt field, and the start sheet's first prompt, mark words whose
+first character past any blank is `!` (`queue.js::shellLine`, the daemon's `road::is_shell` after
+`sanitize_prompt` and the TUI's `App::shell_line`, T-1211): a line over the words, a bold `!` in
+`--err` and "Shell command · runs as typed, the agent reads its output" (`compose.js::ShellNote`,
+`#shell-note` / `#start-shell`), the composer's border in `--err`, the words in the mono face,
+and the arrow's label "Queue shell command" or "Run shell command". A `!` further in (`what about
+!42?`) is plain words. The note is a line of its own, not the Queue/Steer help, because a phone
+hides `.mode-help`. Rendering only: what is sent is unchanged.
+
+**Refused.** Colouring the `!` inside the field, as the TUI does: a `<textarea>` draws one ink,
+and an overlay would have to track its scroll and wrap on both engines. **Not chosen:** refusing
+or confirming a `!` send; the TUI runs one on Enter, and the person asked to see it, not to stop it.
+The class is `shell-note`, not `shell-mark`: that name is the old card shell glyph a test asserts
+absent (T-1208).
+
+**Tests.** `state.test.js` "words that begin with ! are a shell line", `ux.test.js` tierFlow (the
+note hidden for an inner `!`, shown with the border and label for `!git log -1`, sent as typed,
+gone once the field empties; shot `composer-shell`).

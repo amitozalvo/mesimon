@@ -3346,6 +3346,31 @@ select {
   border-radius: 20px;
   background: var(--s1);
 }
+/* Words that begin with `!` (T-1284): the box runs them as a shell
+   command. The field's border and a line over it say so in the `err` red
+   the TUI gives the `!` (T-1211), and the words set in the mono face. */
+.composer[data-shell="true"],
+.composer[data-shell="true"]:focus-within {
+  border-color: color-mix(in srgb, var(--err) 70%, transparent);
+}
+.composer[data-shell="true"] #prompt,
+#start-prompt[data-shell="true"] {
+  font-family: var(--mono);
+}
+.shell-note {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding-top: 2px;
+  color: var(--ink2);
+  font-size: 0.75rem;
+}
+.shell-note b {
+  color: var(--err);
+  font-family: var(--mono);
+  font-weight: 700;
+}
 .composer-bar {
   min-width: 0;
   display: flex;

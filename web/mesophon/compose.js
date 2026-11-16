@@ -7,6 +7,15 @@ import { PictureBar, pastePictures } from "./notepad.js";
 import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
 import { worktreeWords } from "./lists.js";
 import { enterSends } from "./viewport.js";
+import { shellLine } from "./queue.js";
+
+// The mark over words that begin with `!` (T-1284): the agent's box runs
+// them as a shell command, so the page says so before the send, as the
+// TUI's ask field draws its red `!` (T-1211).
+export function ShellNote({ id, text }) {
+  return html`<p id=${id} class="shell-note" role="status" hidden=${!shellLine(text)}>
+    <b aria-hidden="true">!</b><span>Shell command · runs as typed, the agent reads its output</span></p>`;
+}
 
 // Where the ticket is going, and how it gets there from here (T-497): live,
 // through the relay's mailbox while the terminal is away, or kept in this
@@ -241,7 +250,7 @@ export function StartSheet({ store }) {
       <div class="compose-body">
         <p class="start-title" dir="auto">${ticket.title}</p>
         <label class="field"><span>First prompt <span class="muted">(optional)</span></span><textarea id="start-prompt"
-          rows="4" dir="auto" maxlength=${PROMPT_MAX_BYTES} autofocus
+          rows="4" dir="auto" maxlength=${PROMPT_MAX_BYTES} autofocus data-shell=${String(shellLine(ask.text))}
           placeholder=${asleep ? "What to say when it wakes." : "What to do first. Empty sends the title and details."}
           value=${ask.text} onInput=${(e) => store.setStartText(e.currentTarget.value)}
           onKeyDown=${(e) => {
@@ -250,6 +259,7 @@ export function StartSheet({ store }) {
               e.currentTarget.form.requestSubmit();
             }
           }}></textarea></label>
+        <${ShellNote} id="start-shell" text=${ask.text} />
         ${fresh && html`<p class="field-note start-fresh-note">A new agent, with a new conversation. ${ticket.agent.provider}’s last conversation is left behind: Resume, not this, picks it up.</p>`}
         <p class="field-note">${asleep
           ? "Empty wakes it and says nothing."

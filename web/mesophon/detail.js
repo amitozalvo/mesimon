@@ -10,9 +10,9 @@ import { CrownMark, StartButton, StartReceipt, WorktreeMark, agoWords, crownTouc
 import { NotePane, NotesList, PictureList, PicturePick, pastePictures } from "./notepad.js";
 import { receiptTick, sentPrompt } from "./sessions.js";
 import { startWaiting } from "./starts.js";
-import { modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { modeHelp, queueWords, sendRefused, shellLine, waitsOnYou } from "./queue.js";
 import { Chat } from "./transcript.js";
-import { DetailsPane } from "./compose.js";
+import { DetailsPane, ShellNote } from "./compose.js";
 import { letterWords } from "./letters.js";
 import { KEYS_TEXT_MAX_BYTES } from "./store.js";
 import { swipePanes } from "./swipe.js";
@@ -296,6 +296,8 @@ function Composer({ store, ticket, entry, live }) {
   // as small pills, the arrow at the bar's end. Why Steer is off is said
   // once there are words.
   const open = !!entry?.draft;
+  // Words that begin with `!` run as a shell command (T-1284).
+  const shell = shellLine(entry?.draft);
   // The field grows to its words (`field-sizing: content`); an engine
   // without it is measured by hand.
   const field = useRef();
@@ -342,7 +344,8 @@ function Composer({ store, ticket, entry, live }) {
         : starts
           ? `${asleep ? `Wake ${ticket.agent.provider}` : "Start an agent"} on ${ticket.key} with the first prompt`
           : "No agent selected"}</p>
-      <div class="composer" data-starts=${String(starts)}>
+      <div class="composer" data-starts=${String(starts)} data-shell=${String(shell)}>
+        <${ShellNote} id="shell-note" text=${entry?.draft} />
         <textarea id="prompt" ref=${field} aria-label=${starts ? "First prompt" : "Prompt"} aria-describedby="target" rows="1" dir="auto"
           placeholder=${entry?.why && agent ? "Say what to do differently…" : mails ? `Message ${agent.provider} · it waits for your terminal…` : stopping ? `${agent.provider} is stopping · words wait here…` : agent ? `Message ${agent.provider}…` : starts ? (stopped && store.resumes ? `Resume ${ticket.agent.provider} with these words…` : startPlaceholder(store, ticket, asleep)) : "No agent to message"}
           required=${!starts} disabled=${fieldOff}
@@ -397,7 +400,7 @@ function Composer({ store, ticket, entry, live }) {
           <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
             onClick=${() => store.stopTurn()}><${Icon} name="stop" size=${16} /></button>
           <button id="send" type="submit" class="send" hidden=${stops} disabled=${sendOff}
-            aria-label=${starts ? startLabel(store, ticket, asleep, stopped, !!entry?.draft.trim()) : mails ? "Queue for when your terminal is back" : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
+            aria-label=${starts ? startLabel(store, ticket, asleep, stopped, !!entry?.draft.trim()) : mails ? "Queue for when your terminal is back" : shell ? (mode === "steer" ? "Run shell command" : "Queue shell command") : mode === "steer" ? "Send prompt" : "Queue prompt"}>${starts
             ? html`<${Icon} name="play" size=${16} />`
             : html`<${Icon} name="up" size=${18} width=${2.2} />`}</button>
         </div>

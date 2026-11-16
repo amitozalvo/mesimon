@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Sessions, answerBusy, answerWords, ghostOf, landed, receiptTick, reasonText } from "./sessions.js";
-import { afterWords, harnessName, modeHelp, queueWords, sendRefused, waitsOnYou } from "./queue.js";
+import { afterWords, harnessName, modeHelp, queueWords, sendRefused, shellLine, waitsOnYou } from "./queue.js";
 import { BoardState, RECENT_MS, digestOf, digestWords, omittedWords, refusedBoardWords, stoppedUnasked } from "./board.js";
 import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
@@ -337,6 +337,15 @@ test("the help line says when each delivery reaches the agent, Codex's steer at 
   assert.equal(harnessName("codex"), "Codex");
   assert.equal(harnessName("claude"), "Claude Code");
   assert.equal(modeHelp("steer", { provider: "agy" }), "Goes in now, mid-turn.");
+});
+
+test("words that begin with ! are a shell line, past a blank as the daemon trims them (T-1284)", () => {
+  assert.equal(shellLine("!git log -1"), true);
+  assert.equal(shellLine("  !ls"), true);
+  assert.equal(shellLine("!"), true);
+  assert.equal(shellLine("what about !42?"), false);
+  assert.equal(shellLine(""), false);
+  assert.equal(shellLine(undefined), false);
 });
 
 test("Steer and Send now wait while the agent waits on you; Queue does not (T-568)", () => {

@@ -14,6 +14,12 @@ export const waitsOnYou = (agent) =>
 export const harnessName = (provider) =>
   ({ claude: "Claude Code", codex: "Codex", agy: "Antigravity" })[provider] || "the agent";
 
+// Words that run as a shell command (T-1284): a first `!` past any blank,
+// as the daemon trims them (`road::is_shell` after `sanitize_prompt`) and
+// the TUI's ask field reads them (T-1211). Claude Code and Codex run one in
+// their shell mode; the agent reads its output.
+export const shellLine = (text) => /^\s*!/.test(text || "");
+
 // What each delivery does, under the Queue / Steer row. Codex reads a
 // steer at the turn's next step, a running command left to finish (T-845,
 // measured on 0.163): it says so rather than claim "now".
