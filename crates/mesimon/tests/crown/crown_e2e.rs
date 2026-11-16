@@ -16793,6 +16793,80 @@ fn an_ask_s_receipt_stamp_expires_on_a_later_person_s_turn() {
     receipt_boundary("ask_then_person");
 }
 
+/// T-1277: a receipt with no allowance — the crown's move of a worker a
+/// person started — outlives that worker's own turn ending and the board's
+/// `on_done` after it. A person's rename then refuses it, naming the title.
+#[test]
+fn a_move_s_receipt_stamp_outlives_the_agent_going_idle() {
+    let Some(h) = Harness::boot_with_env(
+        "receipt_idle",
+        Some(RECORDING_STUB_PER_TICKET),
+        &[("MESIMON_NO_TAG_SEED", "1"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    let mut c = h.client("receipt_idle");
+    let a = c.create_ticket("coordinate");
+    let w = c.create_ticket("mesimon-probe-1277 worker");
+    let kw = c.key_of(w);
+    let sa = c.spawn_claude(a);
+    assert!(matches!(c.request(Command::CrownTicket { id: a }), Response::Ok));
+    let ws = c.spawn_claude(w);
+    let hook = |sid: uuid::Uuid, event: &str, body: &str| {
+        hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
+    };
+    settle_for(500);
+    hook(sa, "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "crown running", |s| *s == SessionState::Running);
+    hook(ws, "UserPromptSubmit", r#"{"prompt":"a person's words"}"#);
+    c.await_state(ws, "worker running", |s| *s == SessionState::Running);
+    let read = c.agent_read(sa, &kw).unwrap().seen;
+    let receipt = match c.send(
+        Principal::Agent { session: sa },
+        Command::AgentMoveTicket {
+            to_column: "IN PROGRESS".into(),
+            idempotency_key: None,
+            key: Some(kw.clone()),
+            before: None,
+            seen: read,
+        },
+    ) {
+        Response::AgentMoved { seen: Some(seen), .. } => seen,
+        other => panic!("move: {other:?}"),
+    };
+    hook(ws, "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(ws, "worker idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(std::time::Duration::from_secs(10), "the board's on_done", || {
+        c.board().ticket(w).unwrap().column == "REVIEW"
+    });
+    let rename = |c: &mut TestClient, seen: String| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentRenameTicket {
+                key: kw.clone(),
+                title: "mesimon-probe-1277 worker".into(),
+                seen: Some(seen),
+            },
+        )
+    };
+    let receipt = match rename(&mut c, receipt) {
+        Response::AgentTicketUpdated { seen, .. } => seen,
+        other => panic!("the move's stamp after the turn's end: {other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::RenameTicket { id: w, title: "a person's title".into() }),
+        Response::Ok
+    ));
+    match rename(&mut c, receipt) {
+        Response::Err { message } => assert!(
+            message.contains("changed since it was read: its title changed (now in REVIEW"),
+            "{message}"
+        ),
+        other => panic!("a person's rename: {other:?}"),
+    }
+}
+
 /// T-1072: the crown's `create_ticket` hands back the new ticket's stamp,
 /// so its `start_agent` needs no read. The stamp is a receipt, strict as a
 /// read's: a person's edit after the filing refuses it as stale. A replay

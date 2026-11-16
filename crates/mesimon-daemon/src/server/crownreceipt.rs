@@ -16,12 +16,31 @@ pub(super) struct Write {
     seat: Option<uuid::Uuid>,
 }
 
+/// What a receipt saw of its ticket, part by part, for the words of a
+/// refusal (T-1277): `word_parts`, the count of moves by hand, the column,
+/// and whether its agent had a pane.
+#[derive(Clone, Default)]
+pub(super) struct Parts {
+    words: Vec<(&'static str, u64)>,
+    moves: u64,
+    column: String,
+    pane: Option<bool>,
+}
+
+/// A revoked chain's stamps and what revoked it (T-1277).
+pub(super) struct Revoked {
+    stamps: Vec<String>,
+    why: &'static str,
+}
+
 pub(super) struct Receipt {
     stamp: String,
     superseded: Vec<String>,
     owner: Option<uuid::Uuid>,
-    full: String,
     words: String,
+    /// The parts at the mint, for a refusal's words; their `pane` is also
+    /// what an ordinary chain holds the seat to (T-1277).
+    parts: Parts,
     /// The live seat the receipt saw (T-1035, second commit).
     seat: Option<uuid::Uuid>,
     /// This chain set work in motion; its normal end and automatic moves
@@ -47,10 +66,106 @@ impl Daemon {
         self.receipts.get(&id).is_some_and(|r| {
             (r.stamp == seen || r.superseded.iter().any(|s| s == seen))
                 && r.owner == self.receipt_owner()
-                && r.words == self.words_token(id)
-                && self.seat_holds(id, r.seat)
-                && (r.full == self.seen_token(id) || r.active)
+                && self.receipt_current(id, r)
         })
+    }
+
+    /// The chain still stands as its last write left it (T-1035, T-1277):
+    /// nobody's words, no move by hand, the same seat, and — unless the
+    /// chain set work in motion — its agent still with or without a pane.
+    /// What the agent does inside its pane (a turn ending, a background
+    /// park) and the board's rules moving the card after it are not news;
+    /// the news a seat can carry (a person's prompt, a dialog, a failure,
+    /// a later turn) revokes the receipt as it lands, in `receipt_state`.
+    fn receipt_current(&self, id: ulid::Ulid, r: &Receipt) -> bool {
+        r.words == self.words_token(id)
+            && self.seat_holds(id, r.seat)
+            && (r.active || r.parts.pane == self.seat_pane(id))
+    }
+
+    fn seat_pane(&self, id: ulid::Ulid) -> Option<bool> {
+        self.board.agent_or_corpse(id).map(|s| s.state.has_pane())
+    }
+
+    fn parts(&self, id: ulid::Ulid) -> Parts {
+        let t = self.board.ticket(id);
+        Parts {
+            words: self.word_parts(id),
+            moves: self.moved_by_hand.get(&id).copied().unwrap_or_default(),
+            column: t.map(|t| t.column.clone()).unwrap_or_default(),
+            pane: self.seat_pane(id),
+        }
+    }
+
+    /// What a refused stamp missed (T-1277), when it is a receipt's: the
+    /// parts that changed since the receipt, or what revoked its chain.
+    /// `None` for a read's stamp, a bare hash with nothing kept beside it.
+    pub(super) fn receipt_news(&self, id: ulid::Ulid, seen: &str) -> Option<Vec<String>> {
+        let Some(r) = self
+            .receipts
+            .get(&id)
+            .filter(|r| r.stamp == seen || r.superseded.iter().any(|s| s == seen))
+        else {
+            let revoked = self.receipts_revoked.get(&id)?;
+            return revoked.stamps.iter().any(|s| s == seen).then(|| vec![revoked.why.to_string()]);
+        };
+        let now = self.parts(id);
+        let mut news: Vec<String> = Vec::new();
+        if r.owner != self.receipt_owner() {
+            news.push("another crown session".into());
+        }
+        for ((word, was), (_, is)) in r.parts.words.iter().zip(&now.words) {
+            if was != is {
+                news.push(format!("{word} changed"));
+            }
+        }
+        if r.parts.moves != now.moves {
+            let who = self.moved_by.get(&id).map(String::as_str).unwrap_or("someone");
+            if r.parts.column != now.column {
+                news.push(format!("moved to {} by {who}", now.column));
+            } else {
+                news.push(format!("reordered in {} by {who}", now.column));
+            }
+        }
+        if !self.seat_holds(id, r.seat) {
+            news.push("another agent seat".into());
+        } else if !r.active && r.parts.pane != now.pane {
+            news.push(match now.pane {
+                Some(true) => "its agent woke".into(),
+                Some(false) => "its agent parked or exited".into(),
+                None => "its agent left".into(),
+            });
+        }
+        (!news.is_empty()).then_some(news)
+    }
+
+    /// A chain ends: its stamps refuse from here on, naming `why`.
+    pub(super) fn revoke_receipt(&mut self, ticket: ulid::Ulid, why: &'static str) {
+        if let Some(r) = self.receipts.remove(&ticket) {
+            let mut stamps = r.superseded;
+            stamps.push(r.stamp);
+            self.receipts_revoked.insert(ticket, Revoked { stamps, why });
+        }
+    }
+
+    /// Who moved a ticket, in a refusal's words (T-1277).
+    pub(super) fn mover_word(&self, id: ulid::Ulid, by: &Principal) -> String {
+        match by {
+            Principal::Local | Principal::Paired { .. } => "a person",
+            Principal::Remote { .. } => "a teammate",
+            Principal::Peer { .. } => "another board",
+            Principal::Automation { .. } => "the board",
+            Principal::Agent { session } => {
+                if self.board.live_agent(id).is_some_and(|s| s.id == *session) {
+                    "its agent"
+                } else if self.receipt_owner() == Some(*session) {
+                    "the crown"
+                } else {
+                    "another agent"
+                }
+            }
+        }
+        .into()
     }
 
     /// A receipt follows the record it saw. Before a deferred launch has
@@ -87,16 +202,18 @@ impl Daemon {
     pub(super) fn receipt_seen(&mut self, target: ulid::Ulid, write: Option<Write>) -> String {
         let board = &self.board;
         self.receipts.retain(|t, _| board.ticket(*t).is_some());
+        self.receipts_revoked.retain(|t, _| board.ticket(*t).is_some());
         self.moved_by_hand.retain(|t, _| board.ticket(*t).is_some());
-        let full = self.seen_token(target);
+        self.moved_by.retain(|t, _| board.ticket(*t).is_some());
         let words = self.words_token(target);
+        let parts = self.parts(target);
         let owner = self.receipt_owner();
         let prior = self.receipts.remove(&target).filter(|r| {
             r.owner == owner
                 && self.seat_holds(target, r.seat)
                 && match &write {
                     Some(w) => w.prior.as_deref() == Some(r.stamp.as_str()),
-                    None => r.words == words && (r.full == full || r.active),
+                    None => self.receipt_current(target, r),
                 }
         });
         let keep_input = write.as_ref().is_some_and(|w| {
@@ -117,8 +234,8 @@ impl Daemon {
                 stamp: stamp.clone(),
                 superseded,
                 owner,
-                full,
                 words,
+                parts,
                 seat,
                 active,
                 next,
@@ -167,7 +284,7 @@ impl Daemon {
             r.seat = Some(s.id);
             r.beginning = s.state != SessionState::Running;
         } else {
-            self.receipts.remove(&ticket);
+            self.revoke_receipt(ticket, "a prompt the crown did not send");
         }
     }
 
@@ -180,20 +297,27 @@ impl Daemon {
             // crown's allowance for the turn its own write started (T-1044).
             return;
         }
-        let Some(r) = self.receipts.get_mut(&s.ticket) else { return };
-        let needs_you = matches!(
-            change.to,
-            SessionState::RequiresAction { .. }
-                | SessionState::Throttled
-                | SessionState::Failed { .. }
-        );
+        let Some(beginning) = self.receipts.get(&s.ticket).map(|r| r.beginning) else { return };
         let dialog_left = matches!(change.from, SessionState::RequiresAction { .. })
             && change.to == SessionState::Running;
         let began = crownexpect::turn_begins(&change.from, &change.to);
-        if needs_you || dialog_left || !change.to.has_pane() || (began && !r.beginning) {
-            self.receipts.remove(&s.ticket);
+        let why = match &change.to {
+            SessionState::RequiresAction { reason: Reason::Plan } => Some("a plan"),
+            SessionState::RequiresAction { reason: Reason::Question } => Some("a question"),
+            SessionState::RequiresAction { .. } => Some("a dialog"),
+            SessionState::Throttled => Some("a usage limit"),
+            SessionState::Failed { .. } => Some("a failed turn"),
+            _ if dialog_left => Some("an answer to its dialog"),
+            to if !to.has_pane() => Some("its agent parked or exited"),
+            _ if began && !beginning => Some("a turn the crown did not start"),
+            _ => None,
+        };
+        if let Some(why) = why {
+            self.revoke_receipt(s.ticket, why);
         } else if began || !crownexpect::turn_open(&change.to) {
-            r.beginning = false;
+            if let Some(r) = self.receipts.get_mut(&s.ticket) {
+                r.beginning = false;
+            }
         }
     }
 }
@@ -315,7 +439,11 @@ mod tests {
                 if edit {
                     d.board.ticket_mut(id).unwrap().title = "a person's edit".into();
                 } else {
+                    // A person's move; the board's own rule moves leave a
+                    // receipt good (T-1035, restored for every receipt by
+                    // T-1277), and no rule moves an agentless filing.
                     d.board.ticket_mut(id).unwrap().column = "REVIEW".into();
+                    d.note_hand_move(id, &Principal::Local);
                 }
                 assert!(d.check_seen(id, Some(&filed)).is_err());
             });
@@ -455,15 +583,104 @@ mod tests {
         }
     }
 
+    /// T-1277: a receipt with no allowance (a move's, a rename's) went
+    /// stale when its seat only ended its turn. The seat's own motion is
+    /// not news; a person's edit after it still is.
+    #[test]
+    fn an_ordinary_receipt_outlives_its_seat_s_own_state_motion() {
+        with_ticket(|d, id| {
+            let seen = d.seen_token(id);
+            rename(d, id, &seen, "own write");
+            assert!(!d.receipts[&id].active);
+            for (to, at) in [
+                (SessionState::Running, 100),
+                (SessionState::Idle { stop_reason: StopReason::EndTurn }, 200),
+            ] {
+                let from = d.board.sessions[0].state.clone();
+                let rec = &mut d.board.sessions[0];
+                rec.set_state(to.clone());
+                rec.state_changed_at = Some(at);
+                let rec = rec.clone();
+                if to == SessionState::Running {
+                    // Its turn was running when the crown wrote.
+                    let fresh = d.seen_token(id);
+                    rename(d, id, &fresh, "own write again");
+                    continue;
+                }
+                d.receipt_state(
+                    &rec,
+                    &Change { from, to, attention_added: false, confidence: Confidence::High },
+                );
+            }
+            let receipt = d.receipts[&id].stamp.clone();
+            assert!(d.check_seen(id, Some(&receipt)).is_ok(), "the turn's own end");
+            assert!(d.check_seen(id, Some(&seen)).is_ok(), "the chain's first input too");
+            // The board's `on_done` after it, a rule's move, is not news.
+            d.board.ticket_mut(id).unwrap().column = "REVIEW".into();
+            d.note_hand_move(id, &Principal::Automation { rule: "automove".into() });
+            assert!(d.check_seen(id, Some(&receipt)).is_ok(), "the board's own move");
+            d.board.ticket_mut(id).unwrap().title = "a person's edit".into();
+            let refused = d.check_seen(id, Some(&receipt)).unwrap_err();
+            assert!(refused.contains("its title"), "{refused}");
+        });
+    }
+
+    /// The seat's own motion inside its pane no longer stales an ordinary
+    /// chain (T-1277); a park or wake by a road no state change reports
+    /// still does, and a deferred receipt cannot revive it.
     #[test]
     fn a_deferred_receipt_cannot_revive_stamps_after_foreign_state_motion() {
         with_ticket(|d, id| {
             let seen = d.seen_token(id);
             rename(d, id, &seen, "own write");
             d.board.sessions[0].state_changed_at = Some(123);
+            assert!(d.receipt_holds(id, &seen), "the seat's own motion");
+            let was = d.board.sessions[0].state.clone();
+            d.board.sessions[0].set_state(SessionState::Sleeping);
             assert!(!d.receipt_holds(id, &seen), "an ordinary chain stays strict");
+            let refused = d.check_seen(id, Some(&seen)).unwrap_err();
+            assert!(refused.contains("its agent parked or exited"), "{refused}");
             d.receipt_seen(id, None);
+            d.board.sessions[0].set_state(was);
             assert!(!d.receipt_holds(id, &seen));
+        });
+    }
+
+    /// T-1277: a refusal of a receipt names what revoked or changed it.
+    #[test]
+    fn a_refused_receipt_names_what_changed() {
+        with_ticket(|d, id| {
+            let seen = d.seen_token(id);
+            let receipt = rename(d, id, &seen, "own write");
+            let t = d.board.ticket_mut(id).unwrap();
+            t.column = "REVIEW".into();
+            d.note_hand_move(id, &Principal::Local);
+            let refused = d.check_seen(id, Some(&receipt)).unwrap_err();
+            assert!(refused.contains(": moved to REVIEW by a person (now in REVIEW"), "{refused}");
+        });
+        with_ticket(|d, id| {
+            let seen = d.seen_token(id);
+            let receipt = rename(d, id, &seen, "own write");
+            let seat = d.board.sessions[0].clone();
+            d.receipt_state(
+                &seat,
+                &Change {
+                    from: SessionState::Idle { stop_reason: StopReason::EndTurn },
+                    to: SessionState::Running,
+                    attention_added: false,
+                    confidence: Confidence::High,
+                },
+            );
+            for stamp in [&receipt, &seen] {
+                let refused = d.check_seen(id, Some(stamp)).unwrap_err();
+                assert!(refused.contains(": a turn the crown did not start ("), "{refused}");
+            }
+        });
+        with_ticket(|d, id| {
+            let read = d.seen_token(id);
+            d.board.ticket_mut(id).unwrap().title = "a person's edit".into();
+            let refused = d.check_seen(id, Some(&read)).unwrap_err();
+            assert!(refused.contains("changed since it was read (now in"), "a read names no part");
         });
     }
 
@@ -506,8 +723,8 @@ mod tests {
                 stamp: "own-write".into(),
                 superseded: vec![],
                 owner: None,
-                full: String::new(),
                 words: String::new(),
+                parts: Parts::default(),
                 seat: Some(id),
                 active: true,
                 next: vec![],

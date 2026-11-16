@@ -587,6 +587,25 @@ def receipt_ask_outcome(rows, key):
         f"answered {'stale' if stale else 'taken' if taken else said[:120]!r}")
 
 
+def refusal_named_outcome(rows, key, word):
+    """(ok, observed) for the crown's stale refusal on `key` (T-1277): the
+    first keyed write refused as changed since it was read names `word` in
+    its own words, and no get_ticket of `key` follows it, so what changed
+    came from the refusal alone."""
+    refused, reads = None, 0
+    for c in calls(rows):
+        if c.key != key:
+            continue
+        if refused is None and c.tool != "get_ticket" and STALE_SEEN_MARK in (c.text or ""):
+            refused = c.text or ""
+        elif refused is not None and c.tool == "get_ticket":
+            reads += 1
+    if refused is None:
+        return False, "no keyed write refused as stale"
+    named = word.lower() in refused.lower()
+    return named and reads == 0, f"refused {refused[:160]!r}, {reads} read(s) after"
+
+
 def create_start_outcome(rows):
     """(ok, observed) for the crown's first create_ticket and the first
     start_agent on the key it returned (T-1072): the start carries the seen
@@ -2564,6 +2583,12 @@ Reply with the single word ready and end your turn."""
             self.wait_for("crown", lambda: self.crown_settled(after_ms=wake["at_ms"], quiet=0)
                           if wake else self.crown_settled(), STEP_TIMEOUT, self.watch)
             return True
+        if what == "person_note":
+            # A person's note on the test's ticket (SE2, T-1277): the edit a
+            # receipt the crown holds does not cover.
+            note = self.wire.write_note(test["ticket"], step["text"])
+            self.log(f"the person wrote a note on {test['key']}: {note}")
+            return True
         if what == "person_start":
             # The person starts the test's agent themselves (W1, T-734): the
             # composer's Shift+Enter, in the test's workspace, and the step
@@ -4177,7 +4202,7 @@ Reply with the single word ready and end your turn."""
                                             "crown", "crown_board", "peer_fed", "board_exchange", "filed",
                                             "crown_wrote_nothing", "title_words", "title_never",
                                             "title_is", "title_match", "described", "create_start",
-                                            "hand_said", "hand_unread"):
+                                            "hand_said", "hand_unread", "refusal_named"):
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -4921,6 +4946,11 @@ Reply with the single word ready and end your turn."""
                 # so a read between the filing and the start fails too.
                 ok, seen = create_start_outcome(crown_all)
                 check(c, ok and arg == "accepted", seen)
+            elif name == "refusal_named":
+                # `refusal_named:<word>` (T-1277): read off the crown's own
+                # calls, so a re-read after the refusal fails too.
+                ok, seen = refusal_named_outcome(crown_all, key, arg)
+                check(c, ok, seen)
             elif name == "receipt_ask":
                 # `receipt_ask:accepted` (T-1035): read off the crown's own
                 # calls and results, so a re-read before the ask fails too.

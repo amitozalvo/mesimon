@@ -46017,3 +46017,63 @@ chromium phone; that size was rerun alone and passed (named as a rerun, not a de
   prefix and `not in local main)`. No reruns. No rig run: the refusal's road (merge, then DONE)
   is unchanged; it gains the repository's name. Owed: the post-merge full suite
   (`daemon/src/server.rs` outside its tests).
+
+## A crown's receipt outlives its agent's own turn ending, and a refusal says what changed (T-1277, 2026-11-16, the simbly board's crown)
+
+- **What was wrong.** The crown's `move_ticket` receipt was refused minutes later as "changed since
+  it was read (now in IN PROGRESS, agent idle)": only the agent's turn had ended. Confirmed by
+  `crownreceipt::an_ordinary_receipt_outlives_its_seat_s_own_state_motion`, red before the fix.
+  T-1042 kept T-1035's tolerance for chains that set work in motion (`active`: a start, an ask, a
+  merge's notice) and made every other receipt hold only while the full read hash still matched,
+  and that hash carries the agent's state word and its moment. A move, rename, note, tag or hold
+  receipt therefore died at the seat's next state change, its own turn end included, and the
+  crown re-applied a tag just to get a fresh `seen`.
+- **The fix, kept narrow.** `receipt_current` (shared by `receipt_holds` and a deferred
+  `receipt_seen`) asks for the words half and the seat, as before, plus, for a chain that is not
+  `active`, only whether the agent has a pane, where it used to ask for the full hash. The
+  agent's motion inside its pane (a turn ending, a background park) and the board's rule moves
+  after it (`on_done`, counted out of `moved_by_hand` since T-1035) no longer stale it. Still
+  stale: a person's or another principal's word edit, a move by hand (with who moved it), another
+  seat, another crown session. A park or wake by a road no state change reports changes the pane
+  bit. The news a seat carries still revokes the chain as it lands (`receipt_state`): a prompt the
+  crown did not send, a turn it did not start, a plan, a question, a dialog and its answer, a
+  usage limit, a failed turn, a park the crown did not make.
+- **The refusal names what changed.** A receipt keeps its `Parts` (each `word_parts` hash, the
+  count of moves by hand, the column, the pane bit), and a revoked chain leaves its stamps and the
+  reason in `receipts_revoked`. `check_seen` adds them: "T-9 changed since it was read: its title
+  changed (now in REVIEW, agent idle); read it again with get_ticket", "…: moved to REVIEW by a
+  person (…)", "…: a turn the crown did not start (…)". `moved_by` remembers the last mover
+  (a person, a teammate, its agent, another agent, the crown, the board, a person's sort or column
+  rename). `hash_words` now hashes `word_parts`, so the two cannot drift apart.
+- **Not done, on purpose.** A read's stamp (`get_ticket`) stays a bare hash and still goes stale
+  on the agent's state (T-1190's corpse in the stamp); its refusal names no parts, since nothing
+  is kept beside it. The crown hit the receipt case, not this one.
+- **Refuted.** Comparing the full hash with the state reduced to the pane bit but keeping the
+  column: the default board's `on_done` moves the card to REVIEW as the turn ends, so the reported
+  case would still refuse there. T-1072's filing test now models its column edit as a person's
+  move, since no rule moves an agentless filing.
+- **Tests.** Unit: the red-then-green case above (an ordinary chain through a running then idle
+  seat and the board's own move, then refused naming the title), `a_refused_receipt_names_what_changed`
+  (a person's move, a foreign turn on both the receipt and its input read, a read naming nothing),
+  and `a_deferred_receipt_cannot_revive_stamps_after_foreign_state_motion` changed by this
+  decision (a bare `state_changed_at` bump now holds; a side-road park stales and is named).
+  E2e: `crown_e2e::a_move_s_receipt_stamp_outlives_the_agent_going_idle` (a person's worker, the
+  crown's move, its Stop and `on_done`, a rename on the move's stamp taken, a person's rename then
+  refused naming the title). Rig `SE2` (new `person_note` step, `refusal_named` check): the
+  crown's second rename on its first rename's stamp is refused naming the person's note, and the
+  crown says so without reading the ticket again.
+- **Validation and reruns.** `cargo test -p mesimon-daemon --lib crownreceipt` 12/12. The
+  receipt, stamp, seen and stale e2es 23/23 (one LEAK warning on
+  `a_receipt_stamp_expires_on_a_failed_turn`, output pipes held past exit; it passed). Then
+  `crown_e2e`, `crown_hold_e2e`, `mcp_e2e` and `told_hand_e2e` in full: 131/131. `cargo ut` was
+  run twice: the first run's per-crate lines were cut off by a `tail`; the second showed
+  `ui::tests::a_moving_card_is_one_row_and_opens_once_landed` red (an animation-timing TUI test
+  this diff does not touch). Run alone it passed, so it is named as a rerun and left alone. Every
+  other crate was green (72, 17, 773, 879, 24, 1,469). `python3 -B ci/rig_test.py` 81/81. Rig
+  `SE2`, crown `claude-opus-5-5`, Claude Code 2.1.325, mod road: the first attempt hung after
+  step 1 on a wrong `until` of mine (it waited on a worker the case never starts; now
+  `crown_only`), and the second failed on the rig's guard for agentless checks (`refusal_named`
+  was added to it). The crown's behaviour was right in both: refused, the note named, its line
+  saying so. The third run **passed 2/2**: the refusal "T-5 changed since it was read: its notes
+  changed (now in TODO, agent no agent)", no read after it. `--reset` after it. Owed after the
+  merge: one full workspace suite, since `server.rs` changed outside its tests (T-1194).

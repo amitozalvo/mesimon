@@ -2213,7 +2213,7 @@ impl Daemon {
         let order = shared.order.clone();
         // A teammate's reorder is a move by hand (T-1035).
         if self.board.ticket(id).is_some_and(|t| t.order != order) {
-            self.hand_moved(id);
+            self.hand_moved(id, "a teammate");
         }
         let title = sanitize_title(&shared.title);
         let notes = shared.notes.clone();

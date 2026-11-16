@@ -702,6 +702,35 @@ class CreateStartTests(unittest.TestCase):
 
 
 
+class RefusalNamedTests(unittest.TestCase):
+    """T-1277: SE2's acceptance, off the crown's own calls and results."""
+
+    use = staticmethod(CreateStartTests.use)
+    said = staticmethod(CreateStartTests.said)
+
+    def rename(self, i, body):
+        return [self.use(i, "rename_ticket", {"key": "T-9", "seen": "receipt:a"}),
+                self.said(i, body)]
+
+    STALE = "T-9 changed since it was read: its notes changed (now in TODO, agent no agent)"
+
+    def test_a_refusal_naming_the_note_with_no_read_after_passes(self):
+        rows = self.rename("r1", "{}") + self.rename("r2", self.STALE)
+        ok, observed = rig.refusal_named_outcome(rows, "T-9", "its notes changed")
+        self.assertTrue(ok, observed)
+
+    def test_a_read_after_a_bare_refusal_or_none_fails(self):
+        read = [self.use("g", "get_ticket", {"key": "T-9"}), self.said("g", "{}")]
+        bare = "T-9 changed since it was read (now in TODO, agent no agent)"
+        for rows in (
+            self.rename("r2", self.STALE) + read,
+            self.rename("r2", bare),
+            self.rename("r1", "{}"),
+        ):
+            ok, observed = rig.refusal_named_outcome(rows, "T-9", "its notes changed")
+            self.assertFalse(ok, observed)
+
+
 class FindingsFirstTests(unittest.TestCase):
     """AH1 (T-1075): the findings turn ends before the board delivers."""
 

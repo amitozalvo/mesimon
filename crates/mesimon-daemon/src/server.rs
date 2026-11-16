@@ -997,6 +997,13 @@ pub struct Daemon {
     /// words count in place of the column, so a rule's move after the
     /// crown's write does not stale its stamp and a person's does.
     moved_by_hand: HashMap<ulid::Ulid, u64>,
+    /// Who last moved or reordered each ticket, a rule included, in the
+    /// words a stale receipt's refusal names them by (T-1277).
+    moved_by: HashMap<ulid::Ulid, String>,
+    /// The stamps of each ticket's last revoked receipt chain and what
+    /// revoked it, for the refusal's words (T-1277). Replaced by the next
+    /// revocation; in memory, like the receipts.
+    receipts_revoked: HashMap<ulid::Ulid, crownreceipt::Revoked>,
     /// The crown's asks to each ticket's agent (T-568, T-938), by the
     /// ticket they were for, oldest first: the latest is the record the
     /// ask's receipt and the crown's `get_ticket` on it (`asked`) both read,
@@ -2163,6 +2170,8 @@ impl Daemon {
             crown_cause_owed: None,
             receipts: HashMap::new(),
             moved_by_hand: HashMap::new(),
+            moved_by: HashMap::new(),
+            receipts_revoked: HashMap::new(),
             crown_asks: Tracked::default(),
             links: peer::MachineLinksCache::new(crate::paths::machine_links_file().ok()),
             board_touches: Vec::new(),
@@ -9959,32 +9968,63 @@ impl Daemon {
     /// hand, the train hold and the hand the crown was told of.
     fn hash_words(&self, id: ulid::Ulid, h: &mut impl std::hash::Hasher) {
         use std::hash::Hash;
-        if let Some(t) = self.board.ticket(id) {
-            t.title.hash(h);
-            for r in &t.tags {
-                r.group.hash(h);
-                r.name.hash(h);
-            }
-            for n in &t.notes {
-                n.id.to_string().hash(h);
-                n.rev.hash(h);
-            }
-            t.workspace_strategy().word().hash(h);
-            t.is_archived().hash(h);
-            t.raised.as_ref().map(|r| r.reason.as_str()).hash(h);
+        for (_, part) in self.word_parts(id) {
+            part.hash(h);
+        }
+    }
+
+    /// `hash_words`, part by part with the words a refusal names each by
+    /// (T-1277), so a stale receipt says what changed instead of asking
+    /// for a read to find out.
+    fn word_parts(&self, id: ulid::Ulid) -> Vec<(&'static str, u64)> {
+        use std::hash::{Hash, Hasher};
+        let Some(t) = self.board.ticket(id) else { return Vec::new() };
+        let one = |f: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f(&mut h);
+            h.finish()
+        };
+        vec![
+            ("its title", one(&|h| t.title.hash(h))),
+            (
+                "its tags",
+                one(&|h| {
+                    for r in &t.tags {
+                        r.group.hash(h);
+                        r.name.hash(h);
+                    }
+                }),
+            ),
+            (
+                "its notes",
+                one(&|h| {
+                    for n in &t.notes {
+                        n.id.to_string().hash(h);
+                        n.rev.hash(h);
+                    }
+                }),
+            ),
+            ("its workspace", one(&|h| t.workspace_strategy().word().hash(h))),
+            ("its archive", one(&|h| t.is_archived().hash(h))),
+            ("its raised hand", one(&|h| t.raised.as_ref().map(|r| r.reason.as_str()).hash(h))),
             // The train hold and whose it is (T-919): a person's `t` after
             // the crown's read makes the crown's next edit stale.
-            self.train_hold_word(id).hash(h);
+            ("its train hold", one(&|h| self.train_hold_word(id).hash(h))),
             // The hand the crown was told of (T-922), by its words and the
             // moment of its telling: a second hand told inside the same
             // turn leaves everything above as the first read saw it, and
             // an answer to the first must not pass for one to the second.
             // The same words told again are another hand.
-            if let Some(told) = self.crown_hands.get(&id) {
-                told.reason.hash(h);
-                told.told_ms.hash(h);
-            }
-        }
+            (
+                "the hand the crown was told of",
+                one(&|h| {
+                    if let Some(told) = self.crown_hands.get(&id) {
+                        told.reason.hash(h);
+                        told.told_ms.hash(h);
+                    }
+                }),
+            ),
+        ]
     }
 
     fn check_seen(&self, id: ulid::Ulid, seen: Option<&str>) -> std::result::Result<(), String> {
@@ -10000,8 +10040,12 @@ impl Daemon {
                 .agent_state_view(id)
                 .map(|s| s.state)
                 .unwrap_or_else(|| "no agent".to_string());
+            // A receipt's refusal names what changed (T-1277); a read's
+            // stamp is a bare hash, so it says only where the ticket is.
+            let what = self.receipt_news(id, seen).map(|w| format!(": {}", w.join(", ")));
+            let what = what.unwrap_or_default();
             return Err(format!(
-                "{key} changed since it was read (now in {col}, agent {state}); read it again with get_ticket"
+                "{key} changed since it was read{what} (now in {col}, agent {state}); read it again with get_ticket"
             ));
         }
         Ok(())
@@ -12464,15 +12508,19 @@ impl Daemon {
     /// place of the column (`words_token`), so the board's own move after
     /// the crown's write leaves it good and anyone's makes it stale.
     fn note_hand_move(&mut self, id: ulid::Ulid, by: &Principal) {
-        if !matches!(by, Principal::Automation { .. }) {
-            self.hand_moved(id);
+        let who = self.mover_word(id, by);
+        if matches!(by, Principal::Automation { .. }) {
+            self.moved_by.insert(id, who);
+        } else {
+            self.hand_moved(id, who);
         }
     }
 
     /// Someone moved or reordered `id` by a road that is not
     /// `place_ticket`'s: a column's sort, its rename, a teammate's order.
-    fn hand_moved(&mut self, id: ulid::Ulid) {
+    fn hand_moved(&mut self, id: ulid::Ulid, who: impl Into<String>) {
         *self.moved_by_hand.entry(id).or_default() += 1;
+        self.moved_by.insert(id, who.into());
     }
 
     /// The held lines still standing (T-749): a column rule's until the
@@ -18677,7 +18725,7 @@ impl Daemon {
             if let Some(t) = self.board.ticket(id) {
                 let _ = store::save_ticket(&self.paths, t);
             }
-            self.hand_moved(id);
+            self.hand_moved(id, "a person's column rename");
         }
         self.moves.rename_column(name, &to);
         for g in self.grace.values_mut() {
@@ -18781,7 +18829,7 @@ impl Daemon {
             if let Some(t) = self.board.ticket(id) {
                 let _ = store::save_ticket(&self.paths, t);
             }
-            self.hand_moved(id);
+            self.hand_moved(id, "a person's sort");
         }
         self.broadcast();
         Response::Ok
@@ -21892,17 +21940,19 @@ impl Daemon {
                 let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
             }
         }
-        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+        if let Some(ticket) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
             if park == Park::Crown {
                 // The checked write owns this park (T-1050). Keep its
                 // chain identity for receipt_seen, but no prompt or turn
                 // remains owed by the seat it just stopped.
-                if let Some(r) = self.receipts.get_mut(&rec.ticket) {
+                if let Some(r) = self.receipts.get_mut(&ticket) {
                     r.park();
                 }
             } else {
-                self.receipts.remove(&rec.ticket);
+                self.revoke_receipt(ticket, "a park the crown did not make");
             }
+        }
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.set_state(SessionState::Sleeping);
             if rec.kind == SessionKind::Codex {
                 rec.codex_stopping = true;

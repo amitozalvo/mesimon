@@ -245,6 +245,8 @@
 #              paragraph written after the filler, so a fact can sit last.
 #   rig steps  W1 adds `person_start` (the person starts the test's agent
 #              in its workspace; the step ends at its first turn's end).
+#              SE2 adds `person_note` (the person writes `text` as a new
+#              note on the test's ticket).
 #              The turn roads add: `prompt` (the person's words to the
 #              worker while its turn runs, `text`, sent once it has worked
 #              `after` seconds), `press_enter` (the person answers the
@@ -2438,6 +2440,28 @@ checks = ["road:mod", "started_by_crown", "crown:start_agent=1", "crown:ask_agen
   crown = "SE1: call ask_agent for {key} with deliver idle, the seen that start_agent's receipt returned (call get_ticket neither before nor after), and the text: Reply with the single word fig and end your turn. Read no file and run no command. Then end your turn with two lines: SE1 asked, followed by accepted or refused as the call answered; and SE1 reason, followed by the refusal's words where it was refused. When the board wakes you for {key}, end your turn with the single line: SE1 seen."
   until = { stops = 2, state = "idle" }
   wake = true
+
+# T-1277: a refused receipt names what changed, so the crown need not read
+# the ticket again to learn it.
+[[test]]
+id = "SE2"
+title = "SE2 · a refused receipt says what changed: do the steps below"
+workspace = "worktree"
+brief = "Nothing starts on this ticket: the steps are the crown's."
+expect = "the crown reads {key} and renames it, keeping the seen the rename's receipt returned; a person then writes a note on the ticket; asked to rename it again with that seen and to say what changed without reading the ticket again, the crown's second rename is refused as changed since it was read, the refusal itself naming its notes, and the crown's line says the note, with no get_ticket of {key} after the refusal."
+checks = ["refusal_named:its notes changed", "crown_line:SE2 changed:note"]
+
+  [[test.steps]]
+  crown = "SE2: read {key} with get_ticket, rename it to SE2 first with the seen that read returned, and end your turn with the single line: SE2 renamed."
+  until = { crown_only = true }
+
+  [[test.steps]]
+  rig = "person_note"
+  text = "A person's note, written after the crown's rename."
+
+  [[test.steps]]
+  crown = "SE2: rename {key} to SE2 second, using the seen that your rename's receipt returned; call get_ticket neither before nor after. Then end your turn with two lines: SE2 answer, followed by accepted or refused; and SE2 changed, followed by what the board said changed on the ticket, or nothing."
+  until = { crown_only = true }
 
 # T-1072: a bare ask to file and start; create_ticket's receipt carries the
 # new ticket's seen, so the start needs no read (CROWN_ROLE says so once).
