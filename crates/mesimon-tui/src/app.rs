@@ -14295,7 +14295,9 @@ impl App {
         matches!(self.mode, Mode::Search(_))
     }
 
-    /// One note's body into the picker's corpus, as a fetch lands it.
+    /// For a test: one note's body into the picker's corpus, as if a fetch
+    /// had landed it (the fetch lays its own in, `land_bodies`).
+    #[cfg(test)]
     pub(crate) fn remember_body(&mut self, id: ulid::Ulid, rev: u64, text: &str) {
         self.corpus.0.insert(id, (rev, mesimon_core::search::Body::new(text)));
     }
