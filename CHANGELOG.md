@@ -10,6 +10,40 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.21 — 2026-11-17
+
+Search answers on the first letter, words typed during a compaction go in, and
+a crown keeps its footing across restarts and background tasks. Nothing
+changes a state file's format.
+
+### Added
+
+- **Remote Control marks a shell command before you send it.** Words that start
+  with `!` get a red line over the field saying they run as typed, as the
+  ticket page's ask field does.
+
+### Changed
+
+- **Search ranks on the first letter you type.** Matches in notes join the
+  list as soon as they are read, instead of the first keystroke waiting for
+  them.
+- **Words you send while an agent compacts go in at once** and run after the
+  compaction, instead of being held until it ends.
+
+### Fixed
+
+- **A card no longer reads compacting for good** after its agent was killed,
+  parked, woken or relaunched mid-compaction.
+- A merge or deployment no longer moves a card on while its agent is still
+  working, or while its branch has commits no pull request carries yet.
+- A merged ticket is no longer refused DONE over a repository its work never
+  touched.
+- A crown can steer a working agent right after a restart, and a finished
+  background task no longer lowers a raised hand or cancels a crown's queued
+  ask.
+- A background watch whose command spans several lines no longer keeps a card
+  on working after its turn ended.
+
 ## v0.1.0-beta.20 — 2026-11-15
 
 An ask you leave half-written on the ticket page is kept, and Remote Control
