@@ -346,6 +346,7 @@ while the window is still open (`sent_in_compaction`, T-1297: no road holds word
 and that Claude Code runs it once, after the `PostCompact` (`held_by_compaction`, which fails a
 prompt queued outside the window as unexercised), that the worker answers after the compaction, and that the crown's own
 `/compact` gives its seat the same frames (`crown_rules_after_compact`: the last board result before
-the boundary carries no rules and the first after it does); NX1 that doctor's road line warns that
-compactions are unseen. An automatic compaction is not measured: it cannot be triggered on purpose,
+the boundary carries no rules and the first after it does); NX1 that doctor's road line warns of compaction
+(`compactions unseen` on a release read as passing it over, `compaction coverage unknown` past the
+last one read). An automatic compaction is not measured: it cannot be triggered on purpose,
 and on such a road it reaches neither the mod nor the board.

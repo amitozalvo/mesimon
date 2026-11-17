@@ -2340,8 +2340,8 @@ id = "NX1"
 title = "NX1 · a typed /compact on the native road, session.compact passed over (simulated): do the steps below"
 workspace = "worktree"
 brief = "Read the first 1500 lines of docs/STALE-MAP.md with the Read tool, then reply with the single word done and end your turn. Run no command."
-expect = "on the native road with session.compact passed over (simulated), the crown's ask_agent /compact reaches the worker's box (command_sent) and Claude Code compacts it; the mod relays no compaction frame and the worker's record never reads compacting (T-1297: the board opens no window it cannot close there); the worker answers the crown's next ask after the compaction; doctor's road line warns that compactions are unseen."
-checks = ["road:mod", "native", "started_by_crown", "doctor:compactions unseen", "fed:command_sent", "compacted:manual", "compaction_frames:none", "never_compacting", "reply:after"]
+expect = "on the native road with session.compact passed over (simulated), the crown's ask_agent /compact reaches the worker's box (command_sent) and Claude Code compacts it; the mod relays no compaction frame and the worker's record never reads compacting (T-1297: the board opens no window it cannot close there); the worker answers the crown's next ask after the compaction; doctor's road line warns of compaction (compactions unseen on 2.1.299–2.1.312, compaction coverage unknown past the last release read)."
+checks = ["road:mod", "native", "started_by_crown", "doctor:∙ compaction", "fed:command_sent", "compacted:manual", "compaction_frames:none", "never_compacting", "reply:after"]
 
   [[test.steps]]
   rig = "crown_road"

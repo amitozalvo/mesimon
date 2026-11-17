@@ -46882,3 +46882,15 @@ now Claude Code's hold. Tests: `quiet`'s word hold (a compacting seat takes word
 line (no "held back"), `compact_e2e` (a queued ask goes in with the window open; the follow-up
 behind a `/compact` goes once the command is acked, not dropped), `ci/rig_test.py`;
 `cargo ut`, `agents compact_e2e::`, `crown crown_e2e::`, `mods mod_turns_e2e::`.
+
+**Rig, live** (`ci/rig.py --only NX1,NX2`, run 20261117-160437, 5.0 min; Claude Code 2.1.326, crown
+`claude-opus-5-5` high, workers `claude-sonnet-5-5` low, build `44725504`). A first start stopped
+before any case: NX1's simulation anchored its switch on `typedCompact`, which round 1 removed; it
+is anchored on `boardAnswered` now. Then, every check as it came:
+- NX2 PASS: frames `PreCompact → SessionStart → PostCompact`; the queued prompt sent by the board
+  1.8 s into a 13.3 s window (`sent_in_compaction`), entered at the close, once; reply `after`; the
+  crown's own compaction three frames and its rules after it.
+- NX1 FAIL on `doctor:compactions unseen` alone: 2.1.326 is past the last release read, and doctor
+  said `compaction coverage unknown`, which is right. The check now reads `∙ compaction`, which
+  either tag carries; not rerun. Its other checks passed: `compaction_frames:none`,
+  `never_compacting`, a manual boundary, reply `after`.

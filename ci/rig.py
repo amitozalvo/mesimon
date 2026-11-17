@@ -1949,12 +1949,12 @@ class Rig:
         event on before it reads it, as a seated security default's
         `next.to(e, "append")` keeps it from a person's mod."""
         head = "  on('session.compact', async ($, e, next) => {\n"
-        anchor = "let typedCompact: { closed: boolean } | undefined\n"
+        anchor = "const boardAnswered = new Set<string>()\n"
         return self.patched_mod("mod-compact-passed-over", [
             (head, head + "    if (RIG_PASSED_OVER) return next(e)\n",
              "the mod's session.compact hook moved: the NX simulation cannot be patched in"),
             (anchor, anchor + "const RIG_PASSED_OVER = true\n",
-             "the mod's typedCompact moved: the NX simulation's switch cannot be declared"),
+             "the mod's boardAnswered moved: the NX simulation's switch cannot be declared"),
         ], "the NX simulation's mod")
 
     def drop_mod(self):
