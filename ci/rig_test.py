@@ -616,6 +616,16 @@ class CompactionWindowTests(unittest.TestCase):
         open_only = [self.frame("PreCompact", 1_000)]
         self.assertFalse(rig.held_by_compaction(open_only, 4_000, [("after", self.iso(10_200))], "after")[0])
 
+    def test_words_the_board_sent_inside_the_window_were_not_held_by_it(self):
+        sent = lambda at, ticket="T": {"kind": "board", "cmd": "prompt_by_mod", "ticket": ticket, "at_ms": at}  # noqa: E731
+        ok, seen = rig.sent_in_compaction(self.window(), [sent(4_100)], "T")
+        self.assertTrue(ok, seen)
+        for lines in ([sent(10_300)], [sent(4_100, "other")], [sent(500)], []):
+            ok, seen = rig.sent_in_compaction(self.window(), lines, "T")
+            self.assertFalse(ok, f"{lines}: {seen}")
+        open_only = [self.frame("PreCompact", 1_000)]
+        self.assertFalse(rig.sent_in_compaction(open_only, [sent(4_100)], "T")[0])
+
     def crown_rows(self, before_rules, after_rules, boundary=True):
         def call(i, ms, rules):
             text = (rig.CROWN_RULES_MARK + " …") if rules else "receipt"

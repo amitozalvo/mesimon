@@ -986,7 +986,7 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
             return rec(Level::Ok, "claude road", value)
                 .advice(format!("Nothing is needed from you: {road} {advice}"));
         };
-        let unseen = "no compaction is seen, automatic or a /compact typed in the session or sent from the board: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards.";
+        let unseen = "no compaction is seen, automatic or a /compact typed in the session or sent from the board: while Claude Code compacts, the session's card keeps the state it had, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards.";
         let (tag, limit) = match compaction {
             NativeCompaction::PassedOver => (
                 "compactions unseen",
@@ -1790,7 +1790,6 @@ mod tests {
         assert!(advice.contains("keeps compaction from a person's plugins too, so no compaction is seen, automatic or a /compact typed in the session or sent from the board"), "{advice}");
         for consequence in [
             "the session's card keeps the state it had",
-            "are not held back until it ends",
             "auto-park may put the session to sleep",
             "a crown is not given the board's rules again",
             "No setting in mesimon changes",
@@ -1811,6 +1810,7 @@ mod tests {
         );
         assert!(advice.contains("If it does, no compaction is seen"), "{advice}");
         assert!(!advice.contains("still seen"), "T-1297: a typed /compact is not seen there: {advice}");
+        assert!(!advice.contains("held back"), "T-1297: no road holds words for a compaction: {advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

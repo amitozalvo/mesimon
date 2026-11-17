@@ -237,23 +237,20 @@ fn a_compaction_is_painted_and_moves_nothing() {
     assert_eq!(column(&mut c), "REVIEW");
     assert_eq!(settled_moves(), moved, "an interrupted compaction made no move");
 
-    // A queued ask waits out a compaction (T-894: the crown's `ask_agent`
-    // went down mid-compaction and was refused). It goes when the window
-    // closes, whole.
+    // A queued ask goes into a compaction (T-1297): Claude Code takes the
+    // words while it compacts and runs them after it (2.1.326, measured on
+    // every road the board sends by). T-894 held them, on a refusal that
+    // was a person's Esc out of `/compact`. The window stays painted.
     pre(&h, "manual");
     wait_until(Duration::from_secs(5), "the window opens", || rec(&mut c).compacting);
-    let words = "mesimon-894 after the squeeze";
-    assert!(
-        matches!(ask(&mut c, ticket, words, true), Response::Queued { .. }),
-        "an ask at a compacting seat queues"
-    );
-    std::thread::sleep(Duration::from_millis(1_200));
-    assert!(!h.got().contains(words), "nothing goes into a compaction");
-    assert_eq!(pending_of(&mut c, Some(ticket)).len(), 1, "the ask waits");
-    post(&h, "manual");
-    wait_until(Duration::from_secs(8), "the ask goes once the window closes", || {
+    let words = "mesimon-1297 into the squeeze";
+    let _ = ask(&mut c, ticket, words, true);
+    wait_until(Duration::from_secs(8), "the ask goes while the seat compacts", || {
         h.got().contains(words)
     });
+    assert!(rec(&mut c).compacting, "the words went in with the window still open");
+    post(&h, "manual");
+    wait_until(Duration::from_secs(5), "the window closes", || !rec(&mut c).compacting);
 
     // A vetoed compaction fires `PreCompact` alone (nothing to compact):
     // the next prompt closes the window, and the turn it begins is a turn.
@@ -308,14 +305,14 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
     assert!(!rec.pending_submit);
     assert_eq!(feed_count(&h, "paste_unacked", ticket), 0);
-    // The ack took the command and nothing else: the follow-up waits out
-    // the window, and goes when it closes.
-    std::thread::sleep(Duration::from_millis(600));
-    assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", h.feed());
-    assert_eq!(pending_of(&mut c, Some(ticket)).len(), 1, "the follow-up waits");
-    assert!(!h.got().contains(words));
-    post(&h, "manual");
-    wait_until(Duration::from_secs(8), "the follow-up goes once the window closes", || {
+    // The ack took the command and nothing else: the follow-up, which
+    // waited for the command's ack, goes into the compaction (T-1297: no
+    // road holds words for one; Claude Code runs them after it).
+    wait_until(Duration::from_secs(8), "the follow-up goes behind the command", || {
         h.got().contains(words)
     });
+    assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", h.feed());
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
+    assert!(rec.compacting, "the window is still open");
+    post(&h, "manual");
 }

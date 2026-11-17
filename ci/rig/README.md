@@ -341,9 +341,10 @@ road's baseline.
   and the public build ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`; no managed machine is involved,
   and nothing here proves what a managed machine does beyond what its binary's table says.
 
-NX2 checks that a person's prompt queued once the worker's `PreCompact` came is held until the
-`PostCompact` and taken once after it (`held_by_compaction`, which fails a prompt queued outside the
-window as unexercised), that the worker answers after the compaction, and that the crown's own
+NX2 checks that a person's prompt queued once the worker's `PreCompact` came is sent by the board
+while the window is still open (`sent_in_compaction`, T-1297: no road holds words for a compaction)
+and that Claude Code runs it once, after the `PostCompact` (`held_by_compaction`, which fails a
+prompt queued outside the window as unexercised), that the worker answers after the compaction, and that the crown's own
 `/compact` gives its seat the same frames (`crown_rules_after_compact`: the last board result before
 the boundary carries no rules and the first after it does); NX1 that doctor's road line warns that
 compactions are unseen. An automatic compaction is not measured: it cannot be triggered on purpose,

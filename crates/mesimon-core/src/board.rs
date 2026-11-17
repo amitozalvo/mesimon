@@ -611,7 +611,8 @@ pub struct SessionRecord {
     /// `PostCompact`. The state is whatever it was — a compaction moves
     /// nothing — and the card paints the window: a slow glyph in place of
     /// the state's own, and `compacting the conversation` on its activity
-    /// row, and the queue holds words against it (`quiet::holds_against_words`).
+    /// row. Words are not held against it (T-1297): Claude Code takes them
+    /// during one and runs them after it.
     /// Set by the daemon as the window opens and closes, from the machine;
     /// a restart's machine starts with none, and the record is reset with it.
     #[serde(default, skip_serializing_if = "is_false")]

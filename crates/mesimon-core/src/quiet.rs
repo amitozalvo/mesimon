@@ -73,10 +73,11 @@ pub fn holds_against_words(s: &SessionRecord) -> bool {
             && s.state == (SessionState::Idle { stop_reason: StopReason::Background })
             && !s.pending_submit))
         || (s.kind.is_agent() && s.state.stopped_on_limit())
-        // A seat compacting its conversation (T-894) takes no words until
-        // the window closes: the queue holds them, where a submit into it
-        // was refused and dropped.
-        || (s.kind == SessionKind::Claude && s.compacting && s.state.has_pane())
+    // A compaction holds no words (T-1297). Claude Code takes them during
+    // one and runs them after it, the compaction kept, by the mod's submit,
+    // a paste and its Enter, a fill and either key (2.1.326, measured):
+    // T-894's hold was built on a refusal that followed a person's Esc out
+    // of `/compact`, not on words sent into one still running.
 }
 
 /// A seat whose next words go in now: idle at its composer, or `Failed` —
@@ -526,13 +527,12 @@ mod tests {
         }
         s.state = SessionState::Idle { stop_reason: StopReason::EndTurn };
         assert!(!holds_against_words(&s));
-        // A compaction in flight holds words (T-894) and is no turn: the
-        // working set does not take it; a parked record's flag holds none.
+        // A compaction in flight holds no words (T-1297: Claude Code takes
+        // them and runs them after it) and is no turn.
         s.compacting = true;
-        assert!(holds_against_words(&s), "a compacting seat takes no words");
+        assert!(!holds_against_words(&s), "a compacting seat takes words");
+        assert!(takes_words(&s));
         assert!(!is_working(&s));
-        s.state = SessionState::Sleeping;
-        assert!(!holds_against_words(&s));
     }
 
     #[test]

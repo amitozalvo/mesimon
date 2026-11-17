@@ -46824,3 +46824,61 @@ on the native road (passed over: nothing during or after; still delivered: the c
 frames once, a veto the `PreCompact` alone, a subagent's with its id); doctor's road line;
 `ci/rig_test.py`; `cargo ut`, `mods mod_plugin::`, `agents compact_e2e::`,
 `crown crown_rules_e2e::`.
+
+## No road holds words for a compaction (T-1297 round 2, 2026-11-17)
+
+The person, after round 1: "no need to hold back anything, claude code will not interrupt
+compaction so there's no reason to hold it back in the first place", then "at least not for
+"immediately" prompts".
+
+**T-894's hold was built on the Esc case.** Its block measured a refusal ("the session was stopped
+and nobody has sent input since") after a person's Esc out of `/compact`; no measurement of words
+sent into a compaction still running was found.
+
+**Measured** on Claude Code 2.1.326 (this Mac), a scratch tmux pane, Haiku 5.5, a tracer mod logging
+`session.compact` and the classic hooks, one turn and then a typed `/compact` (5–8 s each). Words
+were sent 1.6–1.8 s in, the `Compacting conversation…` line still up, by each road the board
+sends by:
+- the mod's `$.prompt.submit({asUser})` (the mod road's queue, idle sends, the crown's wake);
+- a bracketed paste and Enter (the hook set, every fallback);
+- a paste and the send-now keys `C-x C-s` (`immediately` on the hook set);
+- the mod's `$.prompt.fill` and Enter (`now` into a turn on the mod road, T-1148);
+- the mod's `fill` and `C-x C-s` (`immediately` on the mod road).
+
+On all five the compaction ran to its end (`PostCompact`, a manual `compact_boundary`), and the
+words entered once 30–170 ms after `PostCompact` (`UserPromptSubmit` comes only then, none at the
+enqueue), ran as a turn on the compacted conversation and were answered; the submit resolved
+`entered`, the fill `isFilled`. Nothing was lost and nothing stopped the compaction.
+With an Esc 1.5 s after the words: the paste road's words ran at once as a turn, the compaction
+stopped (no `PostCompact`); the mod's submit resolved `{drop: "the prompt was removed from the
+queue before it ran"}` and the box read `/compact` again. That drop is T-1025's road (a crown ask
+queued again once, a person's words kept unsent for their resend), and with the hold the same Esc
+ended the same way: the held words met the stopped seat with `/compact` in its box and were kept
+unsent. An automatic compaction was not measured (it cannot be triggered on purpose).
+
+**Built.**
+1. *Part 1, send-now:* nothing to change. `deliver now` and `immediately` (the crown's `ask_agent`,
+   a person's send) went past the hold already: `send_queued_ask` and `prompt_session` reach
+   `deliver` without `session_takes_words`. At an idle compacting seat `paste_at` reads it idle,
+   so `immediately` goes as `now` there, as at any idle.
+2. *Part 2, every road:* the compaction clause is gone from `quiet::holds_against_words`, so a
+   queued prompt, an ask with deliver idle and the crown's wake go into a compaction and Claude Code
+   runs them after it. A paste's ack is that late `UserPromptSubmit`: a compaction past
+   `INFLIGHT_MS` (10 s) costs a `paste_unacked` feed line and the checkout's hold on the paste,
+   never an unsent mark (`Owed::pasted` has no presses); a mod submit's take is its delivery and a
+   taken crown wake waits for its `entered` with no clock (T-990).
+3. *Kept:* the card's compacting paint, auto-park held off in a window (`park_inactive`), the
+   crown's rules owed again at both edges, the rules kept across a restart only with no window
+   (`crownledger`), and T-894's empty-box rule for a submit refused after an Esc.
+4. *Doctor:* the managed seat's paragraph no longer lists words not held back as a loss: no seat
+   holds them.
+
+**Refuted, from round 1's block:** the two un-awaited relays cannot land out of order: the mod
+chains every relay on the one before (`runAfter`, T-577). Round 1 named it as unproven.
+
+No agent- or crown-facing text says words wait for a compaction, so none changed. Rig: NX2 adds
+`sent_in_compaction` (the board's `prompt_by_mod` inside the window), beside `held_by_compaction`,
+now Claude Code's hold. Tests: `quiet`'s word hold (a compacting seat takes words), doctor's road
+line (no "held back"), `compact_e2e` (a queued ask goes in with the window open; the follow-up
+behind a `/compact` goes once the command is acked, not dropped), `ci/rig_test.py`;
+`cargo ut`, `agents compact_e2e::`, `crown crown_e2e::`, `mods mod_turns_e2e::`.

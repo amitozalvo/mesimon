@@ -6110,8 +6110,8 @@ impl Daemon {
             let crashed = SessionState::Exited { reason: ExitReason::Crashed };
             let crashed_now = change.as_ref().is_some_and(|c| c.to == crashed && c.from != c.to);
             // A compaction window's edge moves no state (T-894), and the
-            // record carries the window: the card paints it, and the queue
-            // holds words against it (`quiet::holds_against_words`).
+            // record carries the window: the card paints it, and auto-park
+            // waits it out.
             if decision.before.compacting != decision.after.compacting {
                 // A compaction keeps no tool result whole (T-930): at either
                 // edge, finished or abandoned, the crown is told its rules on

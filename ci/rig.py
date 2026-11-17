@@ -898,6 +898,27 @@ def held_by_compaction(hook_lines, queued_ms, prompts, words):
                 f"entered {(entered[0] - post) / 1000:+.1f} s from its close")
 
 
+def sent_in_compaction(hook_lines, board_lines, ticket):
+    """T-1297: (ok, observed) for the board sending a session's words while
+    its compaction window was open: a `prompt_by_mod` line for the ticket
+    after its first `PreCompact` and before the `PostCompact` that closed
+    it. `held_by_compaction` then says Claude Code ran them after it; this
+    says the board did not hold them."""
+    pre = next((l["at_ms"] for l in hook_lines if l.get("event") == "PreCompact"), None)
+    post = next((l["at_ms"] for l in hook_lines if l.get("event") == "PostCompact"
+                 and pre is not None and l["at_ms"] >= pre), None)
+    if pre is None or post is None:
+        return False, f"no closed window: PreCompact at {pre}, PostCompact at {post}"
+    sent = [l["at_ms"] for l in board_lines if l.get("kind") == "board"
+            and l.get("cmd") == "prompt_by_mod" and l.get("ticket") == ticket
+            and l.get("at_ms", 0) >= pre]
+    if not sent:
+        return False, "the board never sent the words after the window opened"
+    at = sent[0]
+    where = f"sent {(at - pre) / 1000:.1f} s into a window open {(post - pre) / 1000:.1f} s"
+    return at < post, where if at < post else f"sent {(at - post) / 1000:+.1f} s after the close"
+
+
 def rules_after_compaction(rows, since_ms):
     """T-1069: (ok, observed) from the crown's transcript since `since_ms`:
     its first compact boundary, the last board tool result before it (the
@@ -4649,6 +4670,9 @@ Reply with the single word ready and end your turn."""
                 got = compaction_frames([l for l in mine if l.get("kind") == "hook"])
                 want = [] if arg == "none" else arg.split(",")
                 check(c, got == want, " → ".join(got) or "none")
+            elif name == "sent_in_compaction":
+                ok, seen = sent_in_compaction([l for l in mine if l.get("kind") == "hook"], lines, tid)
+                check(c, ok, seen)
             elif name == "never_compacting":
                 # T-1297: no board read during `await_compaction` found the
                 # worker's record compacting.
