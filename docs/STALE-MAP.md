@@ -46894,3 +46894,39 @@ is anchored on `boardAnswered` now. Then, every check as it came:
   said `compaction coverage unknown`, which is right. The check now reads `∙ compaction`, which
   either tag carries; not rerun. Its other checks passed: `compaction_frames:none`,
   `never_compacting`, a manual boundary, reply `after`.
+
+## A ticket with no commits holds nothing, and the refusal counts the ticket's own (T-1300, 2026-11-17, the simbly crown: research, review and tester tickets refused DONE, `backend: 6 commits not in local simbly-v2`)
+
+- **Confirmed.** T-1274's `unlanded_leg` judged the touched legs, *or every leg when none is
+  touched*. A ticket with no commits touches none, so every leg was asked `leg_landed`, and a leg
+  cut from a fetched remote base past a local checkout behind it failed all three clauses (not an
+  ancestor of local `refs/heads/<base>`, the forge clause skips a tip at its cut, no squash
+  verdict). `unmerged_detail` then counted `refs/heads/<base>..branch`, the upstream commits, as
+  the ticket's. The simbly crown got past it only by fast-forwarding the person's checkouts.
+  Red first: `done_gate_leg_tests::a_ticket_with_no_commits_cut_past_its_local_bases_moves_to_done`
+  (refused) and `a_refusal_counts_the_ticket_s_commits_not_the_upstream_s` (said 2, not 1).
+- **What changed.** `unlanded_leg` judges touched legs alone, always: a leg at its cut holds no
+  DONE, delete or archive reclaim (the three `ticket_merged` gates; `m` refuses an untouched
+  ticket before asking it, "no commits on the branch yet"). It is not read as merged work
+  (T-796): no forge word is asked of it, the card's `aggregate` still calls such a ticket not
+  merged, and the gate's `true` only means nothing is unlanded. A branch git no longer has is
+  still touched and judged (`a_lost_branch_still_holds_done`). The refusal's count is
+  `worktree::own_commits`: `rev-list --count branch --not <local base> <base_oid>`, the
+  ticket's commits past its cut that the local base lacks; a cut git cannot read (empty, not an
+  oid, gone) falls back to the base alone. Chosen over `base_oid..branch` alone so commits the
+  local base already took (a partial merge) are not named.
+- **The card agrees.** `aggregate`'s `ahead` sums touched legs only: an untouched leg's count
+  was the cut's upstream commits, so a no-commit ticket on a non-forge leg read `ahead` in
+  `merge_state` and, by `ahead > 0`, looked mergeable to the train view while `m` refused it.
+  It now reads `clean`. A no-commit ticket whose base moved still reads `needs_rebase` (the
+  single-repo parity `aggregate` keeps); the gate does not hold it.
+- **Not changed.** A touched leg's card count (`compute_flags`' `ahead`) is still against the
+  local base or the forge's upstream, so on a non-forge leg cut past a stale local base the card
+  can show more than the refusal names. Narrowing it moves the train's counts; not asked here.
+  A merge request closed unmerged that holds DONE is T-1301, the person's question.
+- **Checks.** `cargo ut` (72 + 17 + 776 + 911 + 24 + 1,472 passed, 0 failed); the three new
+  `done_gate_leg_tests` and the widened `aggregate_judges_touched_legs_and_sums_ahead`; e2e
+  `--test git` `workspace_e2e`, `forge_e2e`, `column_reclaim_e2e`, `pr_merge_e2e`,
+  `worktree_e2e` (52 passed) and `--test crown crown_e2e` (123 passed). No reruns. No rig run:
+  no agent-facing words changed. Owed: the post-merge full suite (`daemon/src/server.rs`
+  outside its tests).

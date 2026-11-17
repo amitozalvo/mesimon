@@ -1349,6 +1349,20 @@ pub fn ahead_count(repo: &Path, branch: &str, base: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// The branch's commits its local `base` lacks, less what its cut `cut`
+/// already held (T-1300): the ticket's own, never the upstream commits a
+/// cut from a fetched remote base carries past a local base behind it. A
+/// cut git cannot read (empty, or gone) counts against the base alone, as
+/// before.
+pub fn own_commits(repo: &Path, branch: &str, base: &str, cut: &str) -> u32 {
+    let (branch, base) = (format!("refs/heads/{branch}"), format!("refs/heads/{base}"));
+    (!cut.is_empty() && cut.bytes().all(|c| c.is_ascii_hexdigit()))
+        .then(|| git_read(repo, &["rev-list", "--count", &branch, "--not", &base, cut]).ok())
+        .flatten()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| ahead_count(repo, &branch, &base))
+}
+
 pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
     crate::git::git(repo)
         .args(["--no-optional-locks", "merge-base", "--is-ancestor", branch, base])
@@ -2435,7 +2449,10 @@ pub struct Aggregate {
 /// never see a commit, and one whose base moved on has nothing to rebase.
 /// With no leg touched every leg judges, which is exactly the single-leg
 /// answer (`compute_flags` calls a fresh branch not merged: no work yet).
-/// `ahead` sums every leg; `tip` and `base_tip` join the legs' with `+`, so
+/// `ahead` sums the touched legs (T-1300): an untouched leg's count is
+/// commits its cut carried past a base checkout behind it, never the
+/// ticket's, and a ticket with no commits reads `clean`, not `ahead`, as the
+/// DONE gate holds nothing for it. `tip` and `base_tip` join the legs' with `+`, so
 /// a change in any leg is a change in the key the train and the refusal
 /// memo hang off.
 pub fn aggregate(legs: &[RepoFlags]) -> Aggregate {
@@ -2448,7 +2465,7 @@ pub fn aggregate(legs: &[RepoFlags]) -> Aggregate {
         .or_else(|| judged.iter().find(|l| !l.merged_in.is_empty()));
     Aggregate {
         merged,
-        ahead: legs.iter().map(|l| l.ahead).sum(),
+        ahead: legs.iter().filter(|l| l.touched()).map(|l| l.ahead).sum(),
         needs_rebase: judged.iter().any(|l| l.needs_rebase),
         conflict: legs.iter().any(|l| l.conflict),
         tip: legs.iter().map(|l| l.tip.as_str()).collect::<Vec<_>>().join("+"),
@@ -4673,6 +4690,13 @@ mod tests {
         let fresh = leg_flags("api", "a0", "a0", 0, false, false);
         let a = aggregate(&[fresh, web_stale]);
         assert!(!a.merged && a.needs_rebase, "single-repo stale parity");
+        // An untouched leg cut past a local base behind it (T-1300): its
+        // count is upstream commits, never the ticket's.
+        let cut_ahead = leg_flags("web", "w0", "w0", 6, false, false);
+        let a = aggregate(std::slice::from_ref(&cut_ahead));
+        assert_eq!((a.merged, a.ahead), (false, 0));
+        assert_eq!(merge_word(a.merged, a.needs_rebase, a.ahead), "clean");
+        assert_eq!(aggregate(&[api.clone(), cut_ahead]).ahead, 3);
         // `merged_in`: the root's, else the first leg with one.
         let mut root = leg_flags("", "r0", "r1", 1, true, false);
         root.merged_in = "origin/master".into();

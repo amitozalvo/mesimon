@@ -14416,11 +14416,13 @@ impl Daemon {
     /// The first leg `ticket_merged` objects to, with the branch's tip
     /// there, or `None` when every leg it judges has landed.
     ///
-    /// It judges the legs `worktree::aggregate` judges (T-1274): the touched
-    /// ones, or every leg when none is touched. An untouched leg has nothing
-    /// to land, and asking it anyway refused DONE on a ticket the card and
-    /// `get_ticket` called merged: a leg cut from a fetched remote base
-    /// sits past a local base checkout that is behind it.
+    /// It judges the touched legs alone (T-1274, T-1300): an untouched leg,
+    /// its tip still at its cut, has nothing to land, whether or not another
+    /// leg is touched. Asking it anyway refused DONE on a ticket with no
+    /// commits whose legs were cut from a fetched remote base past a local
+    /// base checkout behind it. Such a leg is never merged work either (the
+    /// card and `merge_state` call it clean, T-796); it only holds nothing.
+    /// A branch git no longer has is touched, and judged.
     fn unlanded_leg(
         &self,
         id: ulid::Ulid,
@@ -14430,18 +14432,14 @@ impl Daemon {
             .worktree_base_cached()
             .or_else(|| worktree::default_branch(&self.paths.repo_root).ok())
             .unwrap_or_default();
-        let legs: Vec<(worktree::Leg, String)> = self
-            .binding_legs_at(b, &single_base)
+        self.binding_legs_at(b, &single_base)
             .into_iter()
             .map(|leg| {
                 let tip = worktree::branch_tip(&leg.repo, &b.branch);
                 (leg, tip)
             })
-            .collect();
-        // `RepoFlags::touched`'s rule: a branch git no longer has is touched.
-        let any_touched = legs.iter().any(|(leg, tip)| *tip != leg.base_oid);
-        legs.into_iter()
-            .filter(|(leg, tip)| !any_touched || *tip != leg.base_oid)
+            // `RepoFlags::touched`'s rule: a branch git no longer has is touched.
+            .filter(|(leg, tip)| *tip != leg.base_oid)
             .find(|(leg, tip)| !self.leg_landed(id, b, leg, tip))
     }
 
@@ -14491,6 +14489,8 @@ impl Daemon {
     /// leg it objects to, by name on a workspace, and the branch's commits
     /// that leg's local base lacks, so the mover knows which repository to
     /// look at. Empty where an open PR is the reason (the gate names it).
+    /// The count is the ticket's own commits past its cut (T-1300): the
+    /// upstream commits a cut from a fetched remote base carries are not.
     fn unmerged_detail(&self, id: ulid::Ulid) -> Option<String> {
         let b = self.worktrees.get(&id).filter(|b| !b.branch.is_empty())?;
         if self.open_pr(id).is_some() {
@@ -14507,11 +14507,7 @@ impl Daemon {
         } else if leg.base.is_empty() {
             format!("{at}no base branch known")
         } else {
-            let n = worktree::ahead_count(
-                &leg.repo,
-                &format!("refs/heads/{}", b.branch),
-                &format!("refs/heads/{}", leg.base),
-            );
+            let n = worktree::own_commits(&leg.repo, &b.branch, &leg.base, &leg.base_oid);
             let s = if n == 1 { "" } else { "s" };
             format!("{at}{n} commit{s} not in local {}", leg.base)
         };
@@ -24394,6 +24390,77 @@ mod done_gate_leg_tests {
         assert_eq!(
             d.column_gate(ticket, "DONE").as_deref(),
             Some("worktree unmerged — merge before DONE (api: 1 commit not in local main)"),
+        );
+    }
+
+    /// A research ticket with no commits (T-1300), every leg cut from a
+    /// fetched remote base a commit past its local checkout: nothing is to
+    /// land, so nothing holds DONE, delete or the archive's reclaim.
+    #[test]
+    fn a_ticket_with_no_commits_cut_past_its_local_bases_moves_to_done() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, api_cut, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        // api's branch back at a cut the local `main` lacks, no commit of its own.
+        crate::testrepo::run(&api, &["checkout", "-q", "topic"]);
+        crate::testrepo::run(&api, &["reset", "-q", "--hard", &api_cut]);
+        crate::testrepo::commit(&api, "notes.md", "upstream\n", "on the remote");
+        let cut = crate::testrepo::read(&api, &["rev-parse", "HEAD"]).trim().to_string();
+        crate::testrepo::run(&api, &["checkout", "-q", "main"]);
+        let b = d.worktrees.get_mut(&ticket).unwrap();
+        b.repos[0].base_oid = cut.clone();
+        b.repos[0].branch_oid = cut;
+        assert!(d.ticket_merged(ticket), "no leg has work to land");
+        assert_eq!(d.column_gate(ticket, "DONE"), None);
+        assert!(matches!(d.delete_ticket(ticket, false), Response::Ok));
+    }
+
+    /// The refusal counts the ticket's own commits (T-1300): api's cut is a
+    /// commit past the local `main` and the branch adds one, and that one is
+    /// all the gate names.
+    #[test]
+    fn a_refusal_counts_the_ticket_s_commits_not_the_upstream_s() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, api_cut, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        crate::testrepo::run(&api, &["checkout", "-q", "topic"]);
+        crate::testrepo::run(&api, &["reset", "-q", "--hard", &api_cut]);
+        crate::testrepo::commit(&api, "notes.md", "upstream\n", "on the remote");
+        let cut = crate::testrepo::read(&api, &["rev-parse", "HEAD"]).trim().to_string();
+        crate::testrepo::commit(&api, "server.ts", "two\n", "ticket work");
+        let tip = crate::testrepo::read(&api, &["rev-parse", "HEAD"]).trim().to_string();
+        crate::testrepo::run(&api, &["checkout", "-q", "main"]);
+        let b = d.worktrees.get_mut(&ticket).unwrap();
+        b.repos[0].base_oid = cut;
+        b.repos[0].branch_oid = tip;
+        assert!(!d.ticket_merged(ticket));
+        assert_eq!(
+            d.column_gate(ticket, "DONE").as_deref(),
+            Some("worktree unmerged — merge before DONE (api: 1 commit not in local main)"),
+        );
+    }
+
+    /// A branch git no longer has stays touched and judged (T-1300 keeps
+    /// T-1274's rule): the gate refuses and says so.
+    #[test]
+    fn a_lost_branch_still_holds_done() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (d, ticket, _, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        crate::testrepo::run(&api, &["branch", "-q", "-D", "topic"]);
+        assert!(!d.ticket_merged(ticket));
+        assert_eq!(
+            d.column_gate(ticket, "DONE").as_deref(),
+            Some("worktree unmerged — merge before DONE (api: no branch topic there)"),
         );
     }
 }
