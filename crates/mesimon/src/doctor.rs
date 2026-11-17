@@ -978,17 +978,18 @@ fn claude_road(paths: &mesimon_daemon::Paths) -> Record {
         let road = "Claude Code has mods turned off, or keeps hook events from a person's plugins (a Team or Enterprise account, or managed settings). With mods off, the hook set reports each session as it did before 2.1.287. With hook events kept, the mod still loads: it reports each session from Claude Code's own events and carries the prompts and the board's tools, and one hook beside it reports permission requests. mesimon asks again at its next start and every 6 hours.";
         // What a native launch may not hear (T-1069): from 2.1.299 Claude Code
         // keeps compaction from a person's plugins too, and a release not read
-        // is not known. Only a typed `/compact` leaves the mod a trace, so an
-        // automatic compaction is lost to everything the board does around
-        // one, not only to the card.
+        // is not known. There no compaction leaves the mod a trace, a typed
+        // `/compact` included (T-1297: its `command.run` stand-in left a
+        // managed seat reading compacting), so a compaction is lost to
+        // everything the board does around one, not only to the card.
         let Some(compaction) = v.native_compaction else {
             return rec(Level::Ok, "claude road", value)
                 .advice(format!("Nothing is needed from you: {road} {advice}"));
         };
-        let unseen = "an automatic compaction is not seen: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards. A /compact typed in the session or sent from the board is still seen: its card shows it, words for the session wait until it ends, auto-park leaves the session alone, and a crown is given the board's rules again afterwards.";
+        let unseen = "no compaction is seen, automatic or a /compact typed in the session or sent from the board: while Claude Code compacts, the session's card keeps the state it had, words for the session (a queued prompt, or the crown's ask or wake) are not held back until it ends, though Claude Code has refused words sent during one, auto-park may put the session to sleep in the middle of it, and a crown is not given the board's rules again afterwards.";
         let (tag, limit) = match compaction {
             NativeCompaction::PassedOver => (
-                "automatic compactions unseen",
+                "compactions unseen",
                 format!("This Claude Code keeps compaction from a person's plugins too, so {unseen}"),
             ),
             NativeCompaction::Unread | NativeCompaction::Heard => (
@@ -1782,17 +1783,16 @@ mod tests {
             (probe, super::claude_road(&paths))
         };
         let (probe, r) = native("2.1.312", NativeCompaction::PassedOver);
-        assert_eq!(r.value, format!("mod ∙ {probe} ∙ automatic compactions unseen"));
+        assert_eq!(r.value, format!("mod ∙ {probe} ∙ compactions unseen"));
         assert!(matches!(r.level, super::Level::Warn), "a degraded road is no ok");
         let advice = r.advice.unwrap_or_default();
         assert!(!advice.contains("Nothing is needed"), "{advice}");
-        assert!(advice.contains("keeps compaction from a person's plugins too, so an automatic compaction is not seen"), "{advice}");
+        assert!(advice.contains("keeps compaction from a person's plugins too, so no compaction is seen, automatic or a /compact typed in the session or sent from the board"), "{advice}");
         for consequence in [
             "the session's card keeps the state it had",
             "are not held back until it ends",
             "auto-park may put the session to sleep",
             "a crown is not given the board's rules again",
-            "A /compact typed in the session or sent from the board is still seen: its card shows it, words for the session wait until it ends, auto-park leaves the session alone, and a crown is given the board's rules again afterwards.",
             "No setting in mesimon changes",
         ] {
             assert!(advice.contains(consequence), "{consequence}: {advice}");
@@ -1809,7 +1809,8 @@ mod tests {
             advice.contains("is not known: 2.1.287 to 2.1.296 do not, 2.1.299 to 2.1.312 do"),
             "{advice}"
         );
-        assert!(advice.contains("If it does, an automatic compaction is not seen"), "{advice}");
+        assert!(advice.contains("If it does, no compaction is seen"), "{advice}");
+        assert!(!advice.contains("still seen"), "T-1297: a typed /compact is not seen there: {advice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

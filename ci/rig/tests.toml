@@ -2325,17 +2325,18 @@ checks = ["road:mod", "started_by_crown", "fed:command_sent", "compacted:manual"
 # with what the board does around the compaction window: words held for it,
 # and the crown's rules owed again after its own. NX1 simulates a seated
 # security default passing session.compact over (the mod's own hook made to
-# pass it on unread, so the shipped fallback, command.run, is all that is
-# left); NX2 is the same native road with session.compact still arriving, as
-# on any unmanaged account. Neither is a managed machine. CX2 is the ordinary
-# mod road's baseline.
+# pass it on unread); since T-1297 nothing reports that compaction, the
+# typed command included, and NX1 checks that no window opens. NX2 is the
+# same native road with session.compact still arriving, as on any unmanaged
+# account. Neither is a managed machine. CX2 is the ordinary mod road's
+# baseline.
 [[test]]
 id = "NX1"
 title = "NX1 · a typed /compact on the native road, session.compact passed over (simulated): do the steps below"
 workspace = "worktree"
 brief = "Read the first 1500 lines of docs/STALE-MAP.md with the Read tool, then reply with the single word done and end your turn. Run no command."
-expect = "on the native road with session.compact passed over (simulated), the crown's ask_agent /compact reaches the worker's box (command_sent) and Claude Code compacts it; the mod's command.run fallback alone relays PreCompact and PostCompact (no SessionStart{compact}); the person's prompt queued inside that window is held until it closes and then taken once, and the worker replies after; the crown's own /compact is the same two frames, and its next board tool result carries the board's rules again; doctor's road line warns that automatic compactions are unseen."
-checks = ["road:mod", "native", "started_by_crown", "doctor:automatic compactions unseen", "fed:command_sent", "compacted:manual", "compaction_frames:PreCompact,PostCompact", "held_by_compaction:Reply with the single word after and end your turn.", "prompt_once:Reply with the single word after and end your turn.", "reply:after", "crown_compaction_frames:PreCompact,PostCompact", "crown_rules_after_compact"]
+expect = "on the native road with session.compact passed over (simulated), the crown's ask_agent /compact reaches the worker's box (command_sent) and Claude Code compacts it; the mod relays no compaction frame and the worker's record never reads compacting (T-1297: the board opens no window it cannot close there); the worker answers the crown's next ask after the compaction; doctor's road line warns that compactions are unseen."
+checks = ["road:mod", "native", "started_by_crown", "doctor:compactions unseen", "fed:command_sent", "compacted:manual", "compaction_frames:none", "never_compacting", "reply:after"]
 
   [[test.steps]]
   rig = "crown_road"
@@ -2351,20 +2352,17 @@ checks = ["road:mod", "native", "started_by_crown", "doctor:automatic compaction
   wake = true
 
   [[test.steps]]
-  crown = "NX1: call ask_agent for {key} with the text /compact and no other words, deliver idle, then end your turn with the single line: NX1 compacting. When the board next wakes you because {key}'s agent finished, end your turn with the single line: NX1 seen again."
-  until = { events = ["PreCompact"], state = "idle" }
+  crown = "NX1: call ask_agent for {key} with the text /compact and no other words, deliver idle, then end your turn with the single line: NX1 compacting."
+  until = { fed = "command_sent", state = "idle" }
   settle = false
 
   [[test.steps]]
-  rig = "queue_in_compaction"
-  text = "Reply with the single word after and end your turn."
+  rig = "await_compaction"
 
   [[test.steps]]
-  rig = "crown_compact"
-
-  [[test.steps]]
-  crown = "NX1: call get_ticket for {key}, then end your turn with the single line: NX1 read."
-  until = { crown_only = true }
+  crown = "NX1: call ask_agent for {key} with the text: Reply with the single word after and end your turn. Then end your turn with the single line: NX1 asked. When the board wakes you because {key}'s agent finished, end your turn with the single line: NX1 seen again."
+  until = { stops = 1, state = "idle" }
+  wake = true
 
   [[test.steps]]
   rig = "crown_road"
@@ -2375,7 +2373,7 @@ id = "NX2"
 title = "NX2 · a typed /compact on the native road, session.compact arriving: do the steps below"
 workspace = "worktree"
 brief = "Read the first 1500 lines of docs/STALE-MAP.md with the Read tool, then reply with the single word done and end your turn. Run no command."
-expect = "on the native road where session.compact still reaches the mod (this account seats no security default), a typed /compact is relayed once in the hook set's order, PreCompact, SessionStart{compact}, PostCompact, with no frame twice from the command.run fallback beside it; the person's prompt queued inside the window is held until it closes and taken once; the worker replies after; the crown's own /compact is the same three frames, and its next board tool result carries the board's rules again."
+expect = "on the native road where session.compact still reaches the mod (this account seats no security default), a typed /compact is relayed once in the hook set's order, PreCompact, SessionStart{compact}, PostCompact, from session.compact alone (T-1297 retired the command.run fallback); the person's prompt queued inside the window is held until it closes and taken once; the worker replies after; the crown's own /compact is the same three frames, and its next board tool result carries the board's rules again."
 checks = ["road:mod", "native", "started_by_crown", "fed:command_sent", "compacted:manual", "compaction_frames:PreCompact,SessionStart,PostCompact", "held_by_compaction:Reply with the single word after and end your turn.", "prompt_once:Reply with the single word after and end your turn.", "reply:after", "crown_compaction_frames:PreCompact,SessionStart,PostCompact", "crown_rules_after_compact"]
 
   [[test.steps]]

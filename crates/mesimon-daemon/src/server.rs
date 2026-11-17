@@ -4083,21 +4083,12 @@ impl Daemon {
         self.want_codex_inputs();
         let mut changed = self.drive_codex_inputs(now);
         changed |= self.tick_async_stops(now);
-        // A compaction window past `COMPACT_STALE_MS` closes (T-894): the
-        // record stops carrying it.
-        let mut expired = Vec::new();
-        for (id, m) in self.machines.iter_mut() {
-            if m.expire_compaction(now) {
-                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
-                    rec.compacting = false;
-                }
-                expired.push(*id);
-                changed = true;
-            }
+        // A compaction window past `COMPACT_STALE_MS` closes (T-894), and
+        // the record stops carrying any window its machine no longer has.
+        for m in self.machines.values_mut() {
+            m.expire_compaction(now);
         }
-        for id in expired {
-            self.crown_rules.forget(Some(id));
-        }
+        changed |= self.release_stranded_compactions();
         for (id, change) in fired {
             changed |= stage!(self, "apply_change", self.apply_change(id, &change, None, None));
         }
@@ -7450,6 +7441,31 @@ impl Daemon {
         for sid16 in due {
             self.pane_due.screen(&sid16);
         }
+    }
+
+    /// The record's `compacting` is the machine's window, or nothing
+    /// (T-1297). The card paints the record and the queue holds words
+    /// against it, while every close (a `PostCompact`, the screen, the
+    /// stale clock) reaches the machine alone. A machine minted again
+    /// (a kill, a park, a wake, a launch, the server guard) starts with no
+    /// window, and a recovery read that closes one goes past the hook
+    /// road's sync. Either left the flag with nothing to clear it: a
+    /// managed seat read compacting past ten minutes and across `x x`.
+    fn release_stranded_compactions(&mut self) -> bool {
+        let stranded: Vec<uuid::Uuid> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.compacting && !self.machines.get(&r.id).is_some_and(Machine::compacting))
+            .map(|r| r.id)
+            .collect();
+        for id in &stranded {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
+                rec.compacting = false;
+            }
+            self.crown_rules.forget(Some(*id));
+        }
+        !stranded.is_empty()
     }
 
     /// Close a compaction window whose pane shows its composer and no
@@ -24083,6 +24099,60 @@ mod restart_preview_tests {
         let rec = &d.board.sessions[0];
         assert_ne!(rec.state, SessionState::Running);
         assert_eq!(rec.detail.as_deref(), Some("API Error: Rate limit reached"));
+    }
+}
+
+#[cfg(test)]
+mod stranded_compaction_tests {
+    use super::*;
+
+    /// T-1297: a managed seat read compacting past ten minutes and across
+    /// `x x`. The card and the queue read the record's flag; the closes
+    /// reach the machine. A kill or a relaunch mints a machine with no
+    /// window, and a recovery read closes one past the hook road's sync:
+    /// each left the flag with no machine window for the screen or the
+    /// stale clock to close. The tick releases it, and only it.
+    #[test]
+    fn a_compacting_flag_no_machine_window_holds_is_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let id = d.board.sessions[0].id;
+        let open = |d: &mut Daemon, state: SessionState| {
+            let mut m = Machine::new(state, now_ms());
+            m.apply(&Signal::PreCompact { manual: true }, now_ms());
+            assert!(m.compacting());
+            d.machines.insert(id, m);
+            d.board.sessions[0].compacting = true;
+        };
+        let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+
+        // An open window stays: the machine still holds it.
+        open(&mut d, idle.clone());
+        assert!(!d.release_stranded_compactions());
+        assert!(d.board.sessions[0].compacting);
+
+        // A recovery read closes the machine's window (the status probe's
+        // `Ready`), through `observe_signal`, which syncs no record.
+        let _ = d.observe_signal(id, &Signal::Ready, now_ms(), "status");
+        assert!(!d.machines[&id].compacting());
+        assert!(d.board.sessions[0].compacting, "the road this test is about");
+        assert!(!d.settle_compactions(now_ms() + attention::COMPACT_STALE_MS));
+        for m in d.machines.values_mut() {
+            assert!(!m.expire_compaction(now_ms() + attention::COMPACT_STALE_MS));
+        }
+        assert!(d.release_stranded_compactions());
+        assert!(!d.board.sessions[0].compacting);
+
+        // `x x`: the kill mints an `Exited` machine, then the relaunch a
+        // `Spawning` one, and the record, back on a pane, would paint and
+        // hold words again.
+        open(&mut d, idle);
+        let _ = d.kill_session(id);
+        d.machines.insert(id, Machine::new(SessionState::Spawning, now_ms()));
+        d.board.sessions[0].set_state(SessionState::Spawning);
+        assert!(d.board.sessions[0].compacting);
+        assert!(d.release_stranded_compactions());
+        assert!(!d.board.sessions[0].compacting, "a relaunched seat is not compacting");
     }
 }
 

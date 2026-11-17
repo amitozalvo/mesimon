@@ -330,19 +330,21 @@ says an enterprise account, so the probe's own verdict is classic-off. CX2 is th
 road's baseline.
 
 - **NX2** is that native road as it stands on an unmanaged account: Claude Code still hands the mod
-  `session.compact`, beside the `command.run` fallback. Its frames are `PreCompact`,
-  `SessionStart{compact}`, `PostCompact`, once each.
+  `session.compact`. Its frames are `PreCompact`, `SessionStart{compact}`, `PostCompact`, once each.
 - **NX1** is a **simulation** of a seated security default: `passed_over = true` loads a copy of
-  the mod whose `session.compact` hook passes the event on unread, so the shipped `command.run`
-  fallback is all that reports the compaction (`PreCompact`, `PostCompact`). A person's plugin
-  cannot stand in for the real seat (`next.to` loads only in a managed plugin), and the public build
-  ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`; no managed machine is involved, and nothing here
-  proves what a managed machine does beyond what its binary's table says.
+  the mod whose `session.compact` hook passes the event on unread. Since T-1297 nothing then reports
+  the compaction, the typed `/compact` included (T-1069's `command.run` fallback left a managed seat
+  reading compacting long after it ended), and NX1 checks that: the worker's transcript shows the
+  manual boundary (`await_compaction`), no compaction frame came (`compaction_frames:none`), its
+  record never read compacting on the way (`never_compacting`), and it answers the crown's next ask.
+  A person's plugin cannot stand in for the real seat (`next.to` loads only in a managed plugin),
+  and the public build ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`; no managed machine is involved,
+  and nothing here proves what a managed machine does beyond what its binary's table says.
 
-Both check that a person's prompt queued once the worker's `PreCompact` came is held until the
+NX2 checks that a person's prompt queued once the worker's `PreCompact` came is held until the
 `PostCompact` and taken once after it (`held_by_compaction`, which fails a prompt queued outside the
-window as unexercised), that the worker answers after the compaction, that the crown's own `/compact`
-gives its seat the same frames (`crown_rules_after_compact`: the last board result before the
-boundary carries no rules and the first after it does), and NX1 that doctor's road line warns of
-automatic compactions. An automatic compaction is not measured: it cannot be triggered on purpose,
+window as unexercised), that the worker answers after the compaction, and that the crown's own
+`/compact` gives its seat the same frames (`crown_rules_after_compact`: the last board result before
+the boundary carries no rules and the first after it does); NX1 that doctor's road line warns that
+compactions are unseen. An automatic compaction is not measured: it cannot be triggered on purpose,
 and on such a road it reaches neither the mod nor the board.

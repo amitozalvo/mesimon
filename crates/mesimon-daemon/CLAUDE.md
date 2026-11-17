@@ -110,8 +110,9 @@ the file's. Classic-road, native-road and Codex sessions have no such report.
   2.1.297 and 2.1.298 were never published, and no managed machine was traced), and
   `session.append` on its `attachment`, `hook-context` and `compaction` doors; a task
   notification is door `delivery` and still arrives. A typed `/compact` is
-  `command.run{command: "compact"}`, which resolves after the compaction: the native road's one
-  compaction trace. Managed `allowedMcpServers` refuses a person's `$.tool.register`. The public
+  `command.run{command: "compact"}`, which resolves after the compaction; T-1069 relayed it as the
+  window and T-1297 retired it (a managed seat read compacting past ten minutes): there no
+  compaction is reported. Managed `allowedMcpServers` refuses a person's `$.tool.register`. The public
   build ignores `CLAUDE_CODE_MANAGED_SETTINGS_PATH`, and `next.to` loads only in a managed
   plugin (a person's plugin that spells it loses its whole hooks module), so neither can stand
   in for the seat in a test.

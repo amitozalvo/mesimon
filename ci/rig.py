@@ -3009,6 +3009,25 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown did not settle")
                 return False
             return True
+        if what == "await_compaction":
+            # T-1297: the worker's `/compact` on a road that reports none,
+            # watched off its transcript: the step ends at its manual compact
+            # boundary and an idle worker, and every board read on the way
+            # notes whether its record ever read compacting.
+            rec = self.agent_of(self.board(), test["ticket"])
+            record.setdefault("compacting_seen", 0)
+            def done():
+                now = self.agent_of(self.board(), test["ticket"]) or {}
+                if now.get("compacting"):
+                    record["compacting_seen"] += 1
+                boundary = any(r.get("type") == "system" and r.get("subtype") == "compact_boundary"
+                               and (r.get("compactMetadata") or {}).get("trigger") == "manual"
+                               for r in transcript(rec))
+                return boundary and word_of(now.get("state")) == "idle"
+            if not self.wait_for("the worker's compaction", done, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the worker's transcript never showed its compaction")
+                return False
+            return True
         if what == "crown_compact":
             # T-1069: the crown's own `/compact`, sent as a person's prompt to
             # its seat (a slash command takes the paste road), and its
@@ -4628,7 +4647,14 @@ Reply with the single word ready and end your turn."""
                       f"{'in' if '--settings' in rec['argv'] else 'not in'} argv")
             elif name == "compaction_frames":
                 got = compaction_frames([l for l in mine if l.get("kind") == "hook"])
-                check(c, got == arg.split(","), " → ".join(got) or "none")
+                want = [] if arg == "none" else arg.split(",")
+                check(c, got == want, " → ".join(got) or "none")
+            elif name == "never_compacting":
+                # T-1297: no board read during `await_compaction` found the
+                # worker's record compacting.
+                seen = record.get("compacting_seen")
+                check(c, seen == 0, "never read compacting" if seen == 0 else
+                      f"read compacting {seen}×" if seen else "await_compaction never ran")
             elif name == "held_by_compaction":
                 ok, seen = held_by_compaction([l for l in mine if l.get("kind") == "hook"],
                                               record.get("queued_ms"), user_prompts(rows, at=True), arg)

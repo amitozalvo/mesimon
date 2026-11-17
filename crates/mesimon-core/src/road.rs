@@ -103,14 +103,14 @@ pub fn has_mods(version: (u32, u32, u32)) -> bool {
     version >= MOD_FLOOR
 }
 
-/// Whether a native launch (T-658) hears an automatic compaction, by the
+/// Whether a native launch (T-658) hears a compaction, by the
 /// Claude Code it runs (T-1069): whether that release's security default,
 /// where it is seated, hands `session.compact` past a person's plugins. Read
 /// off the binary (its registration table), not off a managed machine, in
 /// the darwin-arm64 build of every release npm has from the mod floor to
 /// [`COMPACT_READ_THROUGH`]; 2.1.297 and 2.1.298 were never published, and a
-/// release past the last one read is not known. A typed `/compact` is heard
-/// on every release, by its `command.run`.
+/// release past the last one read is not known. Where it is passed over, no
+/// compaction is heard, a typed `/compact` included (T-1297).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeCompaction {

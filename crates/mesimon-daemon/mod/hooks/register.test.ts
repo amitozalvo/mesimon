@@ -1239,7 +1239,10 @@ test('native: a compaction is PreCompact, SessionStart{compact} and PostCompact 
   expect(eventsOf(runs).length).toBe(4)
 })
 
-test('native: a typed /compact whose session.compact passes over the mod is PreCompact before and PostCompact after (T-1069)', async ($, on) => {
+test('native: a typed /compact whose session.compact passes over the mod relays nothing, during it or after (T-1297)', async ($, on) => {
+  // T-1069 relayed the command as the window; on a managed seat it read
+  // compacting long after the compaction ended, and the person's word was
+  // to open no window where the close cannot be trusted.
   const runs = nativeSession(on)
   let release = () => {}
   const held = new Promise<void>(resolve => (release = resolve))
@@ -1248,18 +1251,15 @@ test('native: a typed /compact whose session.compact passes over the mod is PreC
     return { text: 'Compacted' } as any
   })
   const run: any = $.command.run({ command: 'compact', args: '' } as any)
-  // While the compaction runs: the first event reads the variables first.
-  for (let i = 0; i < 100 && runs.length === 0; i++) await settle()
-  expect(eventsOf(runs)).toEqual(['PreCompact'])
-  expect(bodyOf(runs[0])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual' })
+  for (let i = 0; i < 20; i++) await settle()
+  expect(eventsOf(runs)).toEqual([])
   release()
   expect((await run).text).toBe('Compacted')
   await settle()
-  expect(eventsOf(runs)).toEqual(['PreCompact', 'PostCompact'])
-  expect(bodyOf(runs[1])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual' })
+  expect(eventsOf(runs)).toEqual([])
 })
 
-test('native: a typed /compact whose session.compact still comes is relayed once, in the hook set\'s order; a vetoed one is closed by the command (T-1069)', async ($, on) => {
+test('native: a typed /compact whose session.compact still comes is the compaction\'s own frames, once; a vetoed one is the PreCompact alone; a subagent\'s carries its id (T-1297)', async ($, on) => {
   const runs = nativeSession(on)
   let veto = false
   let release = () => {}
@@ -1282,46 +1282,13 @@ test('native: a typed /compact whose session.compact still comes is relayed once
   release()
   await run
   await settle()
-  expect(eventsOf(runs).slice(3)).toEqual(['PreCompact', 'PostCompact'])
-})
-
-test('native: a typed /compact the engine abandons still closes, and the failure reaches the caller as it came (T-1069)', async ($, on) => {
-  const runs = nativeSession(on)
-  on('command.run', async () => {
-    throw new Error('interrupted')
-  })
-  let failed: unknown
-  try {
-    await $.command.run({ command: 'compact', args: '' } as any)
-  } catch (err) {
-    failed = err
-  }
-  // The engine's own words for a host that failed; the mod adds none.
-  expect(failed).toBeDefined()
-  await settle()
-  expect(eventsOf(runs)).toEqual(['PreCompact', 'PostCompact'])
-})
-
-test('native: a subagent\'s own compaction inside a typed /compact is its own frames and leaves the typed one open (T-1069)', async ($, on) => {
-  const runs = nativeSession(on)
-  let release = () => {}
-  on('command.run', async () => {
-    await new Promise<void>(resolve => (release = resolve))
-    return { text: 'Compacted' } as any
-  })
-  on('session.compact', () => ({ messages: MESSAGES, tokensBefore: 9, tokensAfter: 3 }) as any)
-  const run: any = $.command.run({ command: 'compact', args: '' } as any)
-  await settle()
+  expect(eventsOf(runs).slice(3)).toEqual(['PreCompact'])
+  veto = false
   await $.session.compact({ trigger: 'manual', agentId: 'a7', messages: MESSAGES } as any)
   await settle()
-  expect(eventsOf(runs)).toEqual(['PreCompact', 'PreCompact', 'PostCompact'])
-  expect(bodyOf(runs[1])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual', agent_id: 'a7' })
-  expect(bodyOf(runs[2])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual', agent_id: 'a7' })
-  release()
-  await run
-  await settle()
-  expect(eventsOf(runs).slice(3)).toEqual(['PostCompact'])
-  expect(bodyOf(runs[3])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual' })
+  expect(eventsOf(runs).slice(4)).toEqual(['PreCompact', 'PostCompact'])
+  expect(bodyOf(runs[4])).toEqual({ hook_event_name: 'PreCompact', trigger: 'manual', agent_id: 'a7' })
+  expect(bodyOf(runs[5])).toEqual({ hook_event_name: 'PostCompact', trigger: 'manual', agent_id: 'a7' })
 })
 
 test('a typed /compact off the native road, and any other command, relays nothing', async ($, on) => {
@@ -1333,7 +1300,7 @@ test('a typed /compact off the native road, and any other command, relays nothin
   expect(runs.filter(r => r.argv.includes('PreCompact') || r.argv.includes('PostCompact'))).toEqual([])
 })
 
-test('native: a command other than /compact never reaches the hook', async ($, on) => {
+test('native: a command other than /compact relays nothing', async ($, on) => {
   const runs = nativeSession(on)
   on('command.run', () => ({ text: 'done' }) as any)
   await $.command.run({ command: 'context', args: '' } as any)

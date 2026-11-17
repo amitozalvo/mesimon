@@ -40,9 +40,7 @@ pub const PARK_STALE_MS: u64 = 10 * 60 * 1000;
 /// The clock is the only close a veto gets: the hook set fires nothing for
 /// "nothing to compact", and the mod's `session.compact` sees the skip but
 /// speaks the hook set's names alone, so a vetoed `/compact` reads
-/// compacting, and holds off auto-park, for this long. On the native road
-/// a typed `/compact`'s `command.run` closes it when the command ends
-/// (T-1069).
+/// compacting, and holds off auto-park, for this long.
 pub const COMPACT_STALE_MS: u64 = 10 * 60 * 1000;
 /// How long after a `PostCompact` a `SessionStart{compact}` is that same
 /// compaction's, arriving late: the two are relayed on their own and
@@ -1823,11 +1821,11 @@ mod tests {
         assert_eq!(m.confidence(), Confidence::High);
     }
 
-    /// A typed `/compact` on the native road under a seated security default
-    /// (T-1069) is `PreCompact{manual}` and `PostCompact{manual}` alone, no
-    /// `SessionStart{compact}` between: the window opens and closes on the
-    /// two and moves no state, at rest or inside a turn, at the confidence
-    /// it had.
+    /// A compaction relayed as `PreCompact{manual}` and `PostCompact{manual}`
+    /// alone, no `SessionStart{compact}` between (T-1069's typed `/compact`
+    /// on the native road, retired by T-1297; a start lost to a hook that
+    /// failed open): the window opens and closes on the two and moves no
+    /// state, at rest or inside a turn, at the confidence it had.
     #[test]
     fn a_typed_compaction_with_no_start_between_opens_and_closes_the_window() {
         let done = SessionState::Idle { stop_reason: StopReason::EndTurn };

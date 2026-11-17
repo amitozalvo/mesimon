@@ -46770,3 +46770,57 @@ were offered and not taken: one full dependency rebuild, and slower builds in ev
 Tests: `a_keystroke_never_waits_for_the_notes` (a daemon that holds the answer: a keystroke
 ranks rows, asks nothing more, and the landing adds the note hit; a `ReadNotes` on the board's
 own connection panics it), `ascii_folds_as_the_matcher_does`; `cargo ut`, `notes_e2e`.
+
+## A compacting card no machine window holds is released; the native road opens no window (T-1297, 2026-11-17)
+
+A managed work Mac (the seated security default, Claude Code 2.1.326, `native_compaction:
+unread`) typed `/compact` in a ticket's pane; the card read compacting for over ten minutes (the
+person's estimate), and still did after `x x` restarted the agent. The person's direction: where
+the mod road is not reliable, do not start the compacting indication at all.
+
+**Proven from the code.** The card's paint (`glyphs::is_compacting`) and the word holds
+(`quiet::holds_against_words`) read the record's `compacting`; every close (the hook road's
+`PostCompact`, the screen's `settle_compactions`, the stale clock `expire_compaction`) acts on the
+machine's window, and only the hook road (`on_hook`'s before/after) copied the machine's edge to
+the record. Machines are minted again with no window on a kill (`kill_session`, the `x` of `x x`),
+a park, a wake, a resume launch, the server guard and a Codex restore, and a recovery read (the
+status probe's `Ready`, a tail's `TurnEnded`) closes a window through `observe_signal`, which syncs
+no record. Each left `compacting: true` with no machine window: `settle_compactions` skips it
+(its `filter_map` wants the machine's `compacting_since`), the clock has nothing to expire, and a
+fresh launch's `SessionStart{startup}` moves no edge. That accounts for past ten minutes and for
+the restart: the kill hides the paint (no pane), the relaunch shows it again.
+
+**Not proven.** Which road first stranded the flag on that machine (a recovery read, or the
+mod's two un-awaited relays landing `PostCompact` first and the late `PreCompact` opening a
+window), and whether the screen close reads 2.1.326's pane at all: that machine was not
+reached. The hypothesis that the launch opens a window is refuted on the native road: its
+`session.start` always relays `SessionStart{startup}`, which closes one.
+
+**Built.**
+1. *The tick releases a stranded flag* (`release_stranded_compactions`, every tick after the stale
+   clock): a record compacting whose machine holds no window stops, and the crown's rules are owed
+   again as at any edge. The clock's own record write is folded into it.
+2. *The native road opens no window for a typed `/compact`.* T-1069's `command.run` relay is
+   removed from the mod; `session.compact` alone reports a compaction there, with `typedCompact`
+   gone. The roads: every native launch (`SessionRecord::native`, the seated security default).
+   Where `road::native_compaction` is `PassedOver` (2.1.299–2.1.312) nothing reports a compaction,
+   typed or board-sent included; where `Unread` (2.1.326 on that machine) it is whatever
+   `session.compact` does there; where `Heard` the engine's own frames, as before T-1069. What such
+   a seat gives up for a typed `/compact`, as it already had for an automatic one: the card's
+   compacting paint, words held against the window (a queued ask, the crown's ask and its wake
+   go in, though Claude Code has refused words sent into one, T-894), auto-park held off, and the
+   crown's rules owed again at both edges. This reverses T-1069's decision 1.
+3. *Doctor's `claude road` paragraph says so*: the tag is `compactions unseen`, and the paragraph
+   says no compaction is seen, automatic or typed or sent from the board; "still seen" is gone.
+
+**Rig.** NX1 (the simulated passed-over seat) now checks the absence: the worker's manual
+boundary in its transcript (`await_compaction`), `compaction_frames:none`, `never_compacting`,
+and its answer to the crown's next ask. NX2's wording drops the fallback. Not run live here.
+
+Tests: `a_compacting_flag_no_machine_window_holds_is_released` (a window the machine still holds
+stays; one a recovery `Ready` closed is not closed by the screen or the clock and is released by
+the tick; one stranded by a kill and a relaunch is released); the mod's two typed `/compact` tests
+on the native road (passed over: nothing during or after; still delivered: the compaction's own
+frames once, a veto the `PreCompact` alone, a subagent's with its id); doctor's road line;
+`ci/rig_test.py`; `cargo ut`, `mods mod_plugin::`, `agents compact_e2e::`,
+`crown crown_rules_e2e::`.
