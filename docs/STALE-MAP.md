@@ -46973,13 +46973,14 @@ is anchored on `boardAnswered` now. Then, every check as it came:
 
 - **What changed.** `tab` on the ticket page folds the description band to its first row (the
   cut's `~`, a step quieter) and opens it whole again: `Verb::FoldDescription`, overlay-only
-  (prio 0), live while `Ctx::page_desc_folds`. The hint ends the title row (`∙ tab hide` /
-  `∙ tab show`, spelled by `chrome::hint_spans`, so clickable), and the title's truncation
-  leaves it room. The choice is one for every ticket and the machine's alone: the
+  (prio 0), live while `Ctx::page_desc_folds`. The hint ends the description's first row,
+  folded or whole (`∙ tab hide` / `∙ tab show`, spelled by `chrome::hint_spans`, so
+  clickable); a first row too full to leave it room is clipped (`rich::clip`) to a `~`. The choice is one for every ticket and the machine's alone: the
   `ticket_page_description` key in `prefs.json` (`PrefKey::PageDescription`, default shown, no
   Settings row: the key is the setting, as `P` is for the replies).
-- **Refuted in the proposal.** A hint row under the description (author: "put hint on end of
-  title, to not waste vertical space"); a per-ticket choice (author: "one choice for every
+- **Refuted.** A hint row under the description (author: "put hint on end of title, to not
+  waste vertical space"); then the end of the title, shipped first and moved after the merge
+  (author: "hint should be first line of the description, not the title"); a per-ticket choice (author: "one choice for every
   ticket"). A description that renders to one row neither folds nor hints: nothing to give up.
 - **Kept from T-344.** The fold is decided whatever rail row holds the cursor, so `extra` (what
   the rail is placed under) does not move as the cursor walks into the notes; only the key and
@@ -46987,7 +46988,8 @@ is anchored on `boardAnswered` now. Then, every check as it came:
   the fact draw-side (`App::set_page_desc_folds`, dirtying the frame's cached `Ctx` on a change).
 - **Checks.** `golden_ticket_description_folded_120` (fold, unfold, another ticket opens
   folded, note row inert and rail still) and `a_one_row_description_neither_folds_nor_hints`;
-  `page_description_default_shown_and_round_trip`. Nine ticket goldens gained `∙ tab hide` on
-  the title row and nothing else (read by eye). `cargo ut` (1,475 + 913 + 777 + 72 + 24 + 17
+  `page_description_default_shown_and_round_trip`, `a_full_first_row_is_cut_for_the_hint`.
+  Ten ticket goldens carry the hint on the description's first row and nothing else changed
+  (read by eye). `cargo ut` (1,475 + 913 + 777 + 72 + 24 + 17
   passed, 0 failed), `cargo build --workspace`. No e2e names a changed command or function; no
   post-merge suite owed (TUI and core keymap/prefs only).

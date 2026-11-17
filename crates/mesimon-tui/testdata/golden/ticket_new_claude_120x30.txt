@@ -1,9 +1,9 @@
  TICKET (T-1)   mesimon › kanban-tui
 
- Decay treatments ∙ tab hide
+ Decay treatments
  TODO for >1y ∙ created >1y ago
 
- ▎ What changed
+ ▎ What changed ∙ tab hide
  ▎
  ▎ The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
  ▎

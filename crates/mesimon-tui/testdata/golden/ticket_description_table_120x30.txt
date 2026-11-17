@@ -1,9 +1,9 @@
  TICKET (T-3)   mesimon › kanban-tui
 
- Fix OSC-11 detection ∙ tab hide
+ Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
 
- ▎ Tables render in columns now.
+ ▎ Tables render in columns now. ∙ tab hide
  ▎
  ▎ file        lines   why
  ▎ rich.rs       212   a delimiter row under a pipe row makes a table, and each cell reads inline

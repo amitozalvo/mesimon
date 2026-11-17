@@ -1616,7 +1616,7 @@ fn push_text(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
 }
 
 /// Trim a rendered line to `cells`, dropping whole graphemes off the tail.
-fn clip(spans: &mut Vec<Span<'static>>, cells: usize) {
+pub(crate) fn clip(spans: &mut Vec<Span<'static>>, cells: usize) {
     let mut used = 0usize;
     let mut keep = 0usize;
     for (i, s) in spans.iter().enumerate() {

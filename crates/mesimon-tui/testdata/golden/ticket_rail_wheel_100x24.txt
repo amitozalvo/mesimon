@@ -1,9 +1,9 @@
  TICKET (T-3)   mesimon › kanban-tui
 
- Fix OSC-11 detection ∙ tab hide
+ Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
 
- ▎ The rail cuts a long notes list at its height.
+ ▎ The rail cuts a long notes list at its height. ∙ tab hide
  ▎
  ▎ One note per run.
 

@@ -690,20 +690,25 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }
         }
     }
-    // The fold's hint ends the title row, beside the band it folds, and
-    // never while the title is being typed.
-    let fold_hint: Vec<Span<'static>> = if folds && editing.is_none() {
-        let ctx = app.frame_ctx();
-        keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::FoldDescription, &ctx)
-            .map(|b| {
-                let mut v = vec![Span::styled(" ∙ ".to_string(), Style::default().fg(ink.dim3))];
-                v.extend(chrome::hint_spans(&[b], &ctx, ink, title_budget));
-                v
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // The fold's hint ends the description's first row, folded or whole
+    // (author: "hint should be first line of the description, not the
+    // title"); a first row too long to leave it room is cut to the `~`.
+    let ctx = app.frame_ctx();
+    let fold_hint = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::FoldDescription, &ctx)
+        .filter(|_| folds);
+    if let (Some(b), Some(first)) = (fold_hint, desc.first_mut()) {
+        let width = (area.width as usize).saturating_sub(4);
+        let mut hint = vec![Span::styled(" ∙ ".to_string(), Style::default().fg(ink.dim3))];
+        hint.extend(chrome::hint_spans(&[b], &ctx, ink, width));
+        let hint_w = super::spans_width(&hint);
+        if super::spans_width(&first.spans) + hint_w > width {
+            crate::rich::clip(&mut first.spans, width.saturating_sub(hint_w + 1));
+            first.spans.push(Span::styled("~".to_string(), Style::default().fg(ink.dim2)));
+        }
+        if super::spans_width(&first.spans) + hint_w <= width {
+            first.spans.extend(hint);
+        }
+    }
     // The description's rows plus its bottom pad; the blank over it is the
     // band's own last fixed row. `extra` is the room the block OWNS — what
     // the rail is placed under, drawn or not — and `shown` is what the band
@@ -728,8 +733,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             } else {
                 String::new()
             };
-            let room = title_budget.saturating_sub(mark.width() + super::spans_width(&fold_hint));
-            let title = truncate(&ticket.title, room);
+            let title = truncate(&ticket.title, title_budget.saturating_sub(mark.width()));
             let mut spans = vec![Span::raw(" ".repeat(pad))];
             // The holder's title rests in the crown's tint, as its card's does
             // (T-442), and `^o` here sweeps it there from the plain ink on the
@@ -764,7 +768,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                     spans.push(Span::styled(title, rest));
                 }
             }
-            spans.extend(fold_hint);
             Line::from(spans)
         }
     };

@@ -9257,7 +9257,8 @@ fn golden_ticket_description_120() {
 /// opens it again (T-1302), one choice for every ticket, its hint at the
 /// end of the title row. The rows the band gives up go to the zones; on a
 /// note row the band gives its rows up anyway (T-344), so the key and the
-/// hint stand down there and the rail stays where it was.
+/// hint stand down there and the rail stays where it was. The hint ends
+/// the description's first row, folded or whole.
 #[test]
 fn golden_ticket_description_folded_120() {
     let row_of = |lines: &[String], what: &str| {
@@ -9267,13 +9268,14 @@ fn golden_ticket_description_folded_120() {
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let open = render(&app, 120, 30);
     let title = row_of(&open, "Fix OSC-11 detection");
-    assert!(open[title].ends_with("∙ tab hide"), "the hint ends the title: {:?}", open[title]);
+    let first = row_of(&open, "What changed");
+    assert!(!open[title].contains("tab"), "the title row holds no hint: {:?}", open[title]);
+    assert!(open[first].ends_with("What changed ∙ tab hide"), "{:?}", open[first]);
     app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
     assert!(!app.prefs.page_description, "tab folds it");
     app.status.clear();
     let folded = render(&app, 120, 30);
-    assert!(folded[title].ends_with("∙ tab show"), "{:?}", folded[title]);
-    assert!(folded.iter().any(|l| l.contains("What changed~")), "the first row, cut: {folded:?}");
+    assert!(folded[first].ends_with("What changed~ ∙ tab show"), "{:?}", folded[first]);
     assert!(!folded.iter().any(|l| l.contains("OSC-11 query now runs")), "{folded:?}");
     assert!(row_of(&folded, "SESSIONS") < row_of(&open, "SESSIONS"), "the zones take the rows");
     golden("ticket_description_folded_120x30", &folded);
@@ -9294,7 +9296,7 @@ fn golden_ticket_description_folded_120() {
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: note_row };
     let reading = render(&app, 120, 30);
     assert_eq!(row_of(&reading, "SESSIONS"), sessions, "{reading:?}");
-    assert!(!reading[title].contains("tab show"), "{:?}", reading[title]);
+    assert!(!reading.iter().any(|l| l.contains("tab show")), "{reading:?}");
     app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
     assert!(!app.prefs.page_description, "tab is inert where nothing folds");
     // Back on a session row it opens again.
@@ -9306,8 +9308,22 @@ fn golden_ticket_description_folded_120() {
     assert_eq!(render(&app, 120, 30), open);
 }
 
-/// A description of one row has nothing to fold (T-1302): no hint on the
-/// title row, and `tab` changes nothing.
+/// A first row too long to leave the hint room is cut to the `~`, and the
+/// hint still ends it inside the band (T-1302).
+#[test]
+fn a_full_first_row_is_cut_for_the_hint() {
+    let mut app = app_noted();
+    let long = format!("{}\n\nsecond paragraph", "word ".repeat(60));
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(&long)));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    let first = lines.iter().find(|l| l.contains("tab hide")).expect("the hint");
+    assert!(first.ends_with("~ ∙ tab hide"), "{first:?}");
+    assert!(first.width() <= 120, "{first:?}");
+}
+
+/// A description of one row has nothing to fold (T-1302): no hint, and
+/// `tab` changes nothing.
 #[test]
 fn a_one_row_description_neither_folds_nor_hints() {
     let mut app = app_noted();

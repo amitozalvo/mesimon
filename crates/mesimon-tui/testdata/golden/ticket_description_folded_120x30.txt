@@ -1,9 +1,9 @@
  TICKET (T-3)   mesimon › kanban-tui
 
- Fix OSC-11 detection ∙ tab show
+ Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
 
- ▎ What changed~
+ ▎ What changed~ ∙ tab show
 
 
   PREVIEW                                                                                  SESSIONS                  2
