@@ -46930,3 +46930,41 @@ is anchored on `boardAnswered` now. Then, every check as it came:
   `worktree_e2e` (52 passed) and `--test crown crown_e2e` (123 passed). No reruns. No rig run:
   no agent-facing words changed. Owed: the post-merge full suite (`daemon/src/server.rs`
   outside its tests).
+
+## A PR closed without merging gives up its head, and DONE takes it (T-1301, 2026-11-17, the simbly crown: T-381's automations MR !4 closed as unneeded, DONE refused `automations: 1 commit not in local master`)
+
+- **Decided by the person (2026-11-17 20:10).** A leg whose branch tip is the head of a PR the
+  forge reports closed and not merged counts as given up and does not hold DONE, for the crown
+  and a person alike; reopened, it holds again as an open PR does. Not chosen: a person-only
+  pass, a flag or confirm on the move, the archive as the only exit.
+- **What changed.** `forge::closed_at` (core): an own PR, `Closed`, in the leg's repository,
+  `head_oid == tip` exactly (a full oid). `Daemon::leg_given_up` asks it for a touched leg on a
+  forge-read repository. `unlanded_leg` takes `given_up`: the DONE gate's `unmerged_detail`
+  passes such a leg, `ticket_merged` does not. The held line's cached clause
+  (`given_up_cached`, off `wt_repos` and the set, no fork) answers as the gate does, so a held
+  DONE line clears with it. A move refused on an open PR owes the forge a read
+  (`owe_forge_read`, the burst's worker, nothing on the writer): the report's few seconds of
+  `MR !4 open … before DONE` after the close were the last read's, and the next move hears it.
+- **Settled in the build.** *Safe first*: the closed PR's head is on the forge (GitLab's
+  `refs/merge-requests/N/head`, GitHub's `refs/pull/N/head`, both outlive the branch); a tip
+  with commits past that head is on no PR and still holds, counted
+  (`a_commit_past_the_closed_head_still_holds_done`). *What the card and `merge_state` read*:
+  unchanged. `merge_state` stays `ahead` (true: the commits are not in the base), the PR row
+  reads `closed`, `merge.why` on an all-closed set already says `its pull requests were closed
+  unmerged on the forge`. Nothing reads `merged`, so no new word and no crown-facing text
+  changed; no rig case. *`m`, delete, archive*: they keep `ticket_merged`, which a given-up
+  leg does not satisfy. `m` never says `already merged` of it (on a pull-request board it hears
+  `MR !4 closed unmerged — reopen it on GitLab`), the delete gate asks for a discard, and the
+  archive keeps the tree, as for any unlanded work. That loses nothing: nothing is removed. Its
+  cost is a tree on disk until a delete with discard. *One merged and one closed*: each leg is
+  judged alone; a leg the merged PR lands is landed, a leg at the closed head is given up, and
+  DONE takes the ticket. A single repository whose MR !3 merged and whose later tip is a closed
+  MR !4's head passes the same way: !3's commits merged, the rest are on !4's head.
+- **Checks.** Red first with the report's refusal:
+  `done_gate_leg_tests::a_closed_mr_at_the_tip_does_not_hold_done` (it also pins the reopened
+  refusal, `!ticket_merged` and the held line's cached reading). Its guard,
+  `a_commit_past_the_closed_head_still_holds_done`, passed before as after; core
+  `forge::tests::a_closed_pr_gives_up_its_head_alone`. `cargo ut` (72 + 17 + 777 + 910 + 24 +
+  1,472 passed, 0 failed); `--test git` `forge_e2e`, `workspace_e2e`, `pr_merge_e2e`,
+  `column_reclaim_e2e` (48 passed). No reruns. No rig run: no crown-facing text changed. Owed:
+  the post-merge full suite (`daemon/src/server.rs` outside its tests).

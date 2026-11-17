@@ -1130,6 +1130,19 @@ pub fn merged_at<'a>(set: &'a [Pr], repos: &[String], tip: &str) -> Option<&'a P
     own(set).find(|p| repos.contains(&p.repo) && p.state == PrState::Merged && p.lands(tip))
 }
 
+/// The set's PR for one repository closed without merging at exactly the
+/// leg's tip (T-1301): the team gave that work up on the forge, which keeps
+/// the head (its PR ref outlives the branch), so the DONE gate lets the leg
+/// pass. A tip past the head is work no PR names and still holds; a
+/// reopened PR is open again and holds as any open one (`holding`). Never
+/// a reviewed PR: it is another ticket's work.
+pub fn closed_at<'a>(set: &'a [Pr], repos: &[String], tip: &str) -> Option<&'a Pr> {
+    if !is_oid(tip) {
+        return None;
+    }
+    own(set).find(|p| repos.contains(&p.repo) && p.state == PrState::Closed && p.head_oid == tip)
+}
+
 /// A merged PR whose head may carry the leg's tip without being it
 /// (T-799), which only ancestry says: one from the ticket's own branch, its
 /// head and the tip both known and different. A reviewer's commit on the
@@ -2370,6 +2383,32 @@ mod tests {
             .replace(r#""draft":false"#, r#""draft":true"#);
         pr.take_read(&parse_glab_mr("o/api", &draft).unwrap().pr);
         assert_eq!(pr.state, PrState::Draft, "a read says draft as the list does");
+    }
+
+    /// T-1301: a PR closed unmerged gives up the work at its head, exactly:
+    /// a commit past it, an open or reopened PR, another repository or a
+    /// reviewed PR gives nothing up.
+    #[test]
+    fn a_closed_pr_gives_up_its_head_alone() {
+        let head = "a".repeat(40);
+        let past = "b".repeat(40);
+        let here = vec!["o/r".to_string()];
+        let closed = pr("o/r", 4, PrState::Closed, &head, 10);
+        assert_eq!(closed_at(&[closed.clone()], &here, &head).map(|p| p.number), Some(4));
+        assert_eq!(closed_at(&[closed.clone()], &here, &past), None, "a commit past the head");
+        assert_eq!(closed_at(&[closed.clone()], &["o/x".into()], &head), None, "another repo");
+        assert_eq!(closed_at(&[closed.clone()], &here, ""), None, "no tip gives up nothing");
+        let reopened = pr("o/r", 4, PrState::Open, &head, 20);
+        assert_eq!(closed_at(&[reopened], &here, &head), None, "reopened holds again");
+        let mut reviewed = closed.clone();
+        reviewed.reviewed = true;
+        assert_eq!(closed_at(&[reviewed], &here, &head), None, "another ticket's PR");
+        let merged = pr("o/r", 3, PrState::Merged, &head, 5);
+        assert_eq!(
+            closed_at(&[merged, closed], &here, &head).map(|p| p.number),
+            Some(4),
+            "a merged PR beside it is merged_at's to answer"
+        );
     }
 
     /// T-784, C2: staging deployed 5 s before production, and the wake said

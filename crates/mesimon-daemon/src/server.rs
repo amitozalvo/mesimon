@@ -12554,6 +12554,14 @@ impl Daemon {
             return Ok(from);
         }
         if let Some(refusal) = self.column_gate(id, dest) {
+            // An open PR's refusal is the last read's (T-1301): a PR closed
+            // since read open for up to a minute. The forge is asked now, on
+            // the burst's worker, so the next move hears the close.
+            if self.open_pr(id).is_some()
+                && self.board.column(dest).is_some_and(|c| c.settings.requires_merge)
+            {
+                self.owe_forge_read(id);
+            }
             self.held.refused(id, dest, &refusal, by, true, now_ms());
             return Err(refusal);
         }
@@ -12651,7 +12659,9 @@ impl Daemon {
         // per held line.
         let unmerged_cached = |t: ulid::Ulid| {
             self.worktrees.get(&t).is_some_and(|b| {
-                !b.branch.is_empty() && !self.wt_agg.get(&t).is_some_and(|a| a.merged)
+                !b.branch.is_empty()
+                    && !self.wt_agg.get(&t).is_some_and(|a| a.merged)
+                    && !self.given_up_cached(t)
             })
         };
         self.held.standing(
@@ -14402,6 +14412,11 @@ impl Daemon {
     /// landed (T-774): the ticket reads unmerged until the forge merges it,
     /// so a follow-up MR after the branch landed holds DONE as it holds the
     /// train.
+    ///
+    /// A leg given up on the forge (`leg_given_up`, T-1301) has not landed
+    /// here: `m` must not call it merged, and the delete gate and the
+    /// archive's reclaim keep its tree as they keep any unlanded work. Only
+    /// the DONE gate lets it pass (`unmerged_detail`).
     fn ticket_merged(&self, id: ulid::Ulid) -> bool {
         if self.open_pr(id).is_some() {
             return false;
@@ -14410,7 +14425,7 @@ impl Daemon {
         if b.branch.is_empty() {
             return false;
         }
-        self.unlanded_leg(id, b).is_none()
+        self.unlanded_leg(id, b, false).is_none()
     }
 
     /// The first leg `ticket_merged` objects to, with the branch's tip
@@ -14423,10 +14438,14 @@ impl Daemon {
     /// base checkout behind it. Such a leg is never merged work either (the
     /// card and `merge_state` call it clean, T-796); it only holds nothing.
     /// A branch git no longer has is touched, and judged.
+    ///
+    /// With `given_up`, a leg the forge holds as a closed PR's head
+    /// (`leg_given_up`) is not objected to: the DONE gate's reading.
     fn unlanded_leg(
         &self,
         id: ulid::Ulid,
         b: &worktree::Binding,
+        given_up: bool,
     ) -> Option<(worktree::Leg, String)> {
         let single_base = self
             .worktree_base_cached()
@@ -14440,7 +14459,47 @@ impl Daemon {
             })
             // `RepoFlags::touched`'s rule: a branch git no longer has is touched.
             .filter(|(leg, tip)| *tip != leg.base_oid)
-            .find(|(leg, tip)| !self.leg_landed(id, b, leg, tip))
+            .find(|(leg, tip)| {
+                !self.leg_landed(id, b, leg, tip)
+                    && !(given_up && self.leg_given_up(id, &leg.repo, &leg.base_oid, tip).is_some())
+            })
+    }
+
+    /// The ticket's PR closed without merging whose head is this leg's tip
+    /// (T-1301, the person's rule of 2026-11-17): the team gave the work up
+    /// on the forge, which keeps that head, so the leg does not hold DONE,
+    /// for the crown and a person alike. A tip at its cut has nothing to
+    /// give up, a tip past the head is work no PR names and still holds,
+    /// and a reopened PR holds again as any open one (`open_pr`).
+    fn leg_given_up(
+        &self,
+        id: ulid::Ulid,
+        repo: &std::path::Path,
+        base_oid: &str,
+        tip: &str,
+    ) -> Option<&mesimon_core::forge::Pr> {
+        if tip.is_empty()
+            || tip == base_oid
+            || !matches!(self.forge.remotes.get(repo), Some(Some(_)))
+        {
+            return None;
+        }
+        self.forge.closed_at(id, repo, tip)
+    }
+
+    /// `leg_given_up` over the cached flags, for what the snapshot shows
+    /// (the held line): whether every touched leg unmerged is given up, as
+    /// the gate judges them (T-1300), with no PR open. Never a git fork.
+    fn given_up_cached(&self, id: ulid::Ulid) -> bool {
+        if self.open_pr(id).is_some() {
+            return false;
+        }
+        let Some(legs) = self.wt_repos.get(&id) else { return false };
+        let mut unmerged = legs.iter().filter(|l| l.touched() && !l.merged).peekable();
+        unmerged.peek().is_some()
+            && unmerged.all(|l| {
+                self.leg_given_up(id, &self.leg_dir(&l.name), &l.base_oid, &l.tip).is_some()
+            })
     }
 
     /// One leg's landing, by the three clauses below, at the branch's tip
@@ -14491,12 +14550,13 @@ impl Daemon {
     /// look at. Empty where an open PR is the reason (the gate names it).
     /// The count is the ticket's own commits past its cut (T-1300): the
     /// upstream commits a cut from a fetched remote base carries are not.
+    /// A leg given up on the forge passes (`leg_given_up`, T-1301).
     fn unmerged_detail(&self, id: ulid::Ulid) -> Option<String> {
         let b = self.worktrees.get(&id).filter(|b| !b.branch.is_empty())?;
         if self.open_pr(id).is_some() {
             return Some(String::new());
         }
-        let (leg, tip) = self.unlanded_leg(id, b)?;
+        let (leg, tip) = self.unlanded_leg(id, b, true)?;
         let at = if b.is_workspace() {
             format!("{}: ", worktree::leg_word(&leg.name))
         } else {
@@ -24461,6 +24521,103 @@ mod done_gate_leg_tests {
         assert_eq!(
             d.column_gate(ticket, "DONE").as_deref(),
             Some("worktree unmerged — merge before DONE (api: no branch topic there)"),
+        );
+    }
+
+    /// api's MR at `head`, in `state`, the ticket's one PR, and api's
+    /// repository read by GitLab.
+    fn bind_mr(
+        d: &mut Daemon,
+        ticket: ulid::Ulid,
+        state: mesimon_core::forge::PrState,
+        head: &str,
+    ) {
+        use mesimon_core::forge::{Forge, Pipeline, Pr, Remote};
+        let api = d.paths.repo_root.join("api");
+        d.forge
+            .remotes
+            .insert(api, Some(Remote { host: "gitlab.com".into(), path: "g/api".into() }));
+        let pr = Pr {
+            forge: Forge::GitLab,
+            repo: "g/api".into(),
+            number: 4,
+            title: String::new(),
+            url: "https://gitlab.com/g/api/-/merge_requests/4".into(),
+            state,
+            head_oid: head.into(),
+            head_ref: "topic".into(),
+            target_ref: "main".into(),
+            merge_oid: String::new(),
+            conflict: false,
+            review: Default::default(),
+            pipeline: Pipeline::None,
+            pipeline_run: 0,
+            updated_ms: 1,
+            merged_ms: 0,
+            deployed: Vec::new(),
+            landed_tips: Vec::new(),
+            reviewed: false,
+        };
+        d.forge.sets.insert(ticket, vec![pr]);
+    }
+
+    /// T-1301 (the simbly board's T-381, automations MR !4): the one
+    /// unlanded leg's tip is the head of an MR closed without merging.
+    /// The team gave that work up on the forge, so DONE takes it; reopened
+    /// it holds again; `m`, the delete gate and the archive still call it
+    /// unmerged, since it did not land.
+    #[test]
+    fn a_closed_mr_at_the_tip_does_not_hold_done() {
+        if !worktree::have_git() {
+            return;
+        }
+        use mesimon_core::forge::PrState;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, api_cut, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        let tip = worktree::branch_tip(&api, "topic");
+        bind_mr(&mut d, ticket, PrState::Closed, &tip);
+        assert_eq!(d.column_gate(ticket, "DONE"), None, "given up on the forge");
+        assert!(!d.ticket_merged(ticket), "given up is not merged");
+        // The held line's cached reading answers as the gate does.
+        let flags = |name: &str, base_oid: &str, tip: &str| worktree::RepoFlags {
+            name: name.into(),
+            base: "main".into(),
+            base_oid: base_oid.into(),
+            tip: tip.into(),
+            ..Default::default()
+        };
+        d.wt_repos.insert(ticket, vec![flags("api", &api_cut, &tip), flags("web", "w", "w")]);
+        assert!(d.given_up_cached(ticket));
+        d.wt_repos.insert(ticket, vec![flags("api", &api_cut, &"c".repeat(40))]);
+        assert!(!d.given_up_cached(ticket), "a tip past the head");
+        bind_mr(&mut d, ticket, PrState::Open, &tip);
+        assert_eq!(
+            d.column_gate(ticket, "DONE").as_deref(),
+            Some("MR !4 open — merge it on GitLab before DONE"),
+            "reopened, it holds again"
+        );
+    }
+
+    /// T-1301: a commit past the closed MR's head is work no PR names, on
+    /// no forge: it still holds DONE, with the commits counted.
+    #[test]
+    fn a_commit_past_the_closed_head_still_holds_done() {
+        if !worktree::have_git() {
+            return;
+        }
+        use mesimon_core::forge::PrState;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, _, _rx) = two_legs(dir.path());
+        let api = d.paths.repo_root.join("api");
+        let head = worktree::branch_tip(&api, "topic");
+        bind_mr(&mut d, ticket, PrState::Closed, &head);
+        crate::testrepo::run(&api, &["checkout", "-q", "topic"]);
+        crate::testrepo::commit(&api, "server.ts", "three\n", "after the close");
+        crate::testrepo::run(&api, &["checkout", "-q", "main"]);
+        assert_eq!(
+            d.column_gate(ticket, "DONE").as_deref(),
+            Some("worktree unmerged — merge before DONE (api: 2 commits not in local main)"),
         );
     }
 }

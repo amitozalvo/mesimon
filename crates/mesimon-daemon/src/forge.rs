@@ -2247,6 +2247,13 @@ impl State {
         self.sets.get(&ticket).and_then(|s| forge::merged_at(s, &paths, tip))
     }
 
+    /// The ticket's PR for the repository at `dir` closed unmerged at
+    /// exactly `tip` (`forge::closed_at`, T-1301).
+    pub fn closed_at(&self, ticket: ulid::Ulid, dir: &Path, tip: &str) -> Option<&Pr> {
+        let paths = self.repo_paths(dir);
+        self.sets.get(&ticket).and_then(|s| forge::closed_at(s, &paths, tip))
+    }
+
     /// The one line the advisory row says while a host is read by no CLI
     /// (T-798, T-810: its sign-in failed or no CLI is on PATH, with the fix)
     /// or a repository cannot be read; `ForgeStatus.trouble` carries it to
