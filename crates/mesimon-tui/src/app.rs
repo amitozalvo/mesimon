@@ -2226,6 +2226,10 @@ pub struct App {
     /// Whether the last ticket page drew its two zones (the terminal wide
     /// enough): the live window has nowhere to stand otherwise.
     pub page_zone: std::cell::Cell<bool>,
+    /// Whether the last ticket page drew a description with more than one
+    /// row (T-1302): the only band `tab` can fold, and the only one that
+    /// wears its hint.
+    pub page_desc_folds: std::cell::Cell<bool>,
     /// The zone's picked link (`^n`): the session it belongs to and the
     /// link's place, so a conversation that grows under it keeps it.
     pub page_link: std::cell::RefCell<Option<(uuid::Uuid, LinkAt)>>,
@@ -2765,6 +2769,7 @@ impl App {
             page_link: std::cell::RefCell::new(None),
             link_ack: None,
             page_zone: std::cell::Cell::new(true),
+            page_desc_folds: std::cell::Cell::new(false),
             terminals: Vec::new(),
             crown_touches: Vec::new(),
             links: Vec::new(),
@@ -4718,6 +4723,15 @@ impl App {
     /// frame's cached `Ctx` goes with the old value.
     pub(crate) fn preview_measured(&self) {
         self.ctx_dirty();
+    }
+
+    /// Draw-side write of whether the page's description has rows to fold
+    /// (`Ctx::page_desc_folds`, T-1302); the cached `Ctx` goes only when it
+    /// changed, so the hint drawn after it reads this frame's answer.
+    pub(crate) fn set_page_desc_folds(&self, folds: bool) {
+        if self.page_desc_folds.replace(folds) != folds {
+            self.ctx_dirty();
+        }
     }
 
     /// Draw-side write of the diff screen's breakpoint (`Ctx::two_pane`).
@@ -8898,6 +8912,9 @@ impl App {
             ticket_archived: subject
                 .and_then(|t| self.board.ticket(t))
                 .is_some_and(|t| t.is_archived()),
+            page_desc_folds: matches!(self.screen, Screen::Ticket { .. })
+                && self.page_desc_folds.get(),
+            page_desc_folded: !self.prefs.page_description,
             // Enter goes to the agent only while the setting leaves it
             // there (T-1173): on, Enter is the page and `space` falls silent.
             ticket_hot: !self.prefs.enter_ticket_page && sessions.iter().any(|s| is_hot(s)),
@@ -10687,6 +10704,12 @@ impl App {
                     "a moved card is simply where it went"
                 };
                 self.set_pref(word, |p| p.card_moves = on);
+            }
+            // T-1302. Read on every frame; nothing to push.
+            Verb::FoldDescription => {
+                let on = !self.prefs.page_description;
+                let word = if on { "description shown" } else { "description folded" };
+                self.set_pref(word, |p| p.page_description = on);
             }
             // T-1135. Read on every frame; nothing to push.
             Verb::ColumnWidths => {

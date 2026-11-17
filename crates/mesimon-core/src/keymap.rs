@@ -1048,6 +1048,10 @@ pub enum Verb {
     /// ticket's description. In the ask field (T-380): the same room on the
     /// prompt, cursor at its end, where Enter is a line break and `^s` sends.
     Describe,
+    /// `Tab` on the ticket page (T-1302): the description band folds to its
+    /// first row, or opens whole again. One choice for every ticket, kept
+    /// in `prefs.json`.
+    FoldDescription,
     // ---- editor ----
     /// `^s`: save. Composing, the description is kept and the dialog folds
     /// back into the one-line composer it grew out of, where Enter mints. In
@@ -1321,6 +1325,11 @@ pub struct Ctx {
     pub ticket_awake: bool,
     /// The selected ticket is archived.
     pub ticket_archived: bool,
+    /// The ticket page's description band has more than one row to fold
+    /// (T-1302), as the last frame drew it: `tab` folds or opens it.
+    pub page_desc_folds: bool,
+    /// The ticket page folds its description to its first row (T-1302).
+    pub page_desc_folded: bool,
     /// A running or waiting claude — Enter would focus it rather than open
     /// the ticket page.
     pub ticket_hot: bool,
@@ -3594,6 +3603,21 @@ static TICKET: &[Binding] = &[
         group: Group::Worktree,
         mutates: true,
         prio: 64,
+    },
+    Binding {
+        // The description's fold (T-1302): the board's `tab` reads a card's
+        // description, the page's shows or hides it. Hinted at the end of
+        // the title row, beside the band it folds, and only while the band
+        // has more than one row to give up; never in the footer.
+        keys: &[Key::Tab],
+        verb: Verb::FoldDescription,
+        show: "tab",
+        hint: |c| if c.page_desc_folded { "show" } else { "hide" },
+        avail: |c| c.page_desc_folds,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('r')],

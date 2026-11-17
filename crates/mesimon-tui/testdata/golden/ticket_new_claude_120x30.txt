@@ -1,6 +1,6 @@
  TICKET (T-1)   mesimon › kanban-tui
 
- Decay treatments
+ Decay treatments ∙ tab hide
  TODO for >1y ∙ created >1y ago
 
  ▎ What changed

@@ -9253,6 +9253,73 @@ fn golden_ticket_description_120() {
     golden("ticket_description_120x30", &lines);
 }
 
+/// `tab` on the ticket page folds the description to its first row and
+/// opens it again (T-1302), one choice for every ticket, its hint at the
+/// end of the title row. The rows the band gives up go to the zones; on a
+/// note row the band gives its rows up anyway (T-344), so the key and the
+/// hint stand down there and the rail stays where it was.
+#[test]
+fn golden_ticket_description_folded_120() {
+    let row_of = |lines: &[String], what: &str| {
+        lines.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("{what}: {lines:?}"))
+    };
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let open = render(&app, 120, 30);
+    let title = row_of(&open, "Fix OSC-11 detection");
+    assert!(open[title].ends_with("∙ tab hide"), "the hint ends the title: {:?}", open[title]);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    assert!(!app.prefs.page_description, "tab folds it");
+    app.status.clear();
+    let folded = render(&app, 120, 30);
+    assert!(folded[title].ends_with("∙ tab show"), "{:?}", folded[title]);
+    assert!(folded.iter().any(|l| l.contains("What changed~")), "the first row, cut: {folded:?}");
+    assert!(!folded.iter().any(|l| l.contains("OSC-11 query now runs")), "{folded:?}");
+    assert!(row_of(&folded, "SESSIONS") < row_of(&open, "SESSIONS"), "the zones take the rows");
+    golden("ticket_description_folded_120x30", &folded);
+    // Another ticket's page opens folded too: the choice is the machine's.
+    let mut other = app_noted();
+    other.seed_pref(|p| p.page_description = false);
+    other.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert_eq!(render(&other, 120, 30), folded);
+    // On the description's own rail row the zone holds it whole: no hint,
+    // no fold, and the rail does not move as the cursor walks in.
+    let sessions = row_of(&folded, "SESSIONS");
+    let note_row = (0..6)
+        .find(|&i| {
+            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: i };
+            render(&app, 120, 30).iter().any(|l| l.contains("DESCRIPTION"))
+        })
+        .expect("a rail row reads the description");
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: note_row };
+    let reading = render(&app, 120, 30);
+    assert_eq!(row_of(&reading, "SESSIONS"), sessions, "{reading:?}");
+    assert!(!reading[title].contains("tab show"), "{:?}", reading[title]);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    assert!(!app.prefs.page_description, "tab is inert where nothing folds");
+    // Back on a session row it opens again.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    render(&app, 120, 30);
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    assert!(app.prefs.page_description, "tab opens it");
+    app.status.clear();
+    assert_eq!(render(&app, 120, 30), open);
+}
+
+/// A description of one row has nothing to fold (T-1302): no hint on the
+/// title row, and `tab` changes nothing.
+#[test]
+fn a_one_row_description_neither_folds_nor_hints() {
+    let mut app = app_noted();
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize("One line is the whole brief.")));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("One line is the whole brief.")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("tab hide")), "{lines:?}");
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    assert!(app.prefs.page_description, "nothing to fold");
+}
+
 /// A description that is a table (T-487): set in columns on the band — its
 /// pipes and delimiter row gone, the header in weight, a cell's code on the
 /// page ground — and, read whole in the narrower zone, its widest column

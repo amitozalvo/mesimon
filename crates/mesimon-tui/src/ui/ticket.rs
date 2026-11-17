@@ -331,62 +331,6 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // `a` refused here too (T-423): the title row is the page's card, and it
     // shakes within its band — the pad before the title is what moves.
     let pad = (1 + i32::from(app.shake_dx(ticket_id))).clamp(0, 2) as usize;
-    let title_row = match editing {
-        Some(buf) => {
-            let budget = title_budget.saturating_sub(1);
-            let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-            let at = (area.x + (1 + cx).min(area.width - 1), area.y + 2);
-            f.set_cursor_position(at);
-            super::field_spot(app, area, at);
-            Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
-        }
-        None => {
-            // The holder wears the crown's mark before its title, as its card
-            // does (T-597) — the page's only word on the crown.
-            let crowned = app.board.is_crowned(ticket_id);
-            let mark = if crowned {
-                format!("{} ", crate::glyphs::crown(theme.glyph_tier()))
-            } else {
-                String::new()
-            };
-            let title = truncate(&ticket.title, title_budget.saturating_sub(mark.width()));
-            let mut spans = vec![Span::raw(" ".repeat(pad))];
-            // The holder's title rests in the crown's tint, as its card's does
-            // (T-442), and `^o` here sweeps it there from the plain ink on the
-            // band's ground. Below TrueColor the tint is the quiet grey, so
-            // the title keeps its ink and only the head walks it.
-            let holder =
-                crowned && !app.doomed(ticket_id) && !app.archiving(ticket_id) && !snoozing;
-            let rest = if holder && theme.paints_tags() {
-                theme.crown_text().add_modifier(Modifier::BOLD)
-            } else {
-                title_style
-            };
-            let cs = theme.crown_text();
-            match app.crowning_ms(ticket_id) {
-                // One run, mark and title, so the glow crosses the gap.
-                Some(elapsed) if holder => {
-                    let run = CrownSweep {
-                        elapsed,
-                        cells: mark.width() + title.width(),
-                        before: title_style,
-                        after: rest,
-                        surface: band.bg.or(theme.bg),
-                    };
-                    let mark_run = CrownSweep { before: cs, after: cs, ..run };
-                    spans.extend(super::card::swept_spans(theme, &mark_run, &mark, 0));
-                    spans.extend(super::card::swept_spans(theme, &run, &title, mark.width()));
-                }
-                _ => {
-                    if crowned {
-                        spans.push(Span::styled(mark, cs));
-                    }
-                    spans.push(Span::styled(title, rest));
-                }
-            }
-            Line::from(spans)
-        }
-    };
 
     // ---- row 3: the STATE line — the ticket's TAGS, then its column, the
     // time in that column (the card's own age, `Ticket::column_since`) and
@@ -711,26 +655,119 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     app.page_zone.set(two_zone);
     let reading_note = two_zone && matches!(row, Some(RailRow::Note(_)));
     let body_rows = (area.height as usize).saturating_sub(7 + wt_row as usize);
-    let desc: Vec<Line<'static>> = ticket
-        .description()
-        .and_then(|m| Some((m, app.note_text(m)?)))
-        .map(|(meta, text)| {
-            let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
-            let surface = if theme.selected_bg.is_some() {
-                crate::rich::Surface::Elevated
-            } else {
-                crate::rich::Surface::Ground
-            };
-            let width = (area.width as usize).saturating_sub(4);
-            crate::rich::render_on(text, width, cap, theme, surface, Newline::of_note(meta))
-        })
-        .unwrap_or_default();
+    // `tab` folds the description to its first row (T-1302), one choice
+    // for every ticket: the cut's `~` says there is more, and the row goes
+    // a step quieter, the band's context rather than its body. A
+    // description of one row has nothing to give up, so it neither folds
+    // nor wears the hint.
+    let render_desc = |cap: usize| -> Vec<Line<'static>> {
+        ticket
+            .description()
+            .and_then(|m| Some((m, app.note_text(m)?)))
+            .map(|(meta, text)| {
+                let surface = if theme.selected_bg.is_some() {
+                    crate::rich::Surface::Elevated
+                } else {
+                    crate::rich::Surface::Ground
+                };
+                let width = (area.width as usize).saturating_sub(4);
+                crate::rich::render_on(text, width, cap, theme, surface, Newline::of_note(meta))
+            })
+            .unwrap_or_default()
+    };
+    // The fold is the ticket's whatever row the rail holds: on a note row
+    // the band gives its rows up (T-344) and the rail must stay where it
+    // was, so only the key and its hint stand down there.
+    let mut desc = render_desc(DESC_MAX_ROWS.min(body_rows / 3).max(1));
+    let can_fold = desc.len() > 1;
+    let folds = can_fold && !reading_note;
+    app.set_page_desc_folds(folds);
+    if can_fold && !app.prefs.page_description {
+        desc = render_desc(1);
+        for row in &mut desc {
+            for span in &mut row.spans {
+                span.style = span.style.fg(ink.dim2);
+            }
+        }
+    }
+    // The fold's hint ends the title row, beside the band it folds, and
+    // never while the title is being typed.
+    let fold_hint: Vec<Span<'static>> = if folds && editing.is_none() {
+        let ctx = app.frame_ctx();
+        keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::FoldDescription, &ctx)
+            .map(|b| {
+                let mut v = vec![Span::styled(" ∙ ".to_string(), Style::default().fg(ink.dim3))];
+                v.extend(chrome::hint_spans(&[b], &ctx, ink, title_budget));
+                v
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     // The description's rows plus its bottom pad; the blank over it is the
     // band's own last fixed row. `extra` is the room the block OWNS — what
     // the rail is placed under, drawn or not — and `shown` is what the band
     // spends of it this frame.
     let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
     let shown = if reading_note { 0 } else { extra };
+    let title_row = match editing {
+        Some(buf) => {
+            let budget = title_budget.saturating_sub(1);
+            let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+            let at = (area.x + (1 + cx).min(area.width - 1), area.y + 2);
+            f.set_cursor_position(at);
+            super::field_spot(app, area, at);
+            Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
+        }
+        None => {
+            // The holder wears the crown's mark before its title, as its card
+            // does (T-597) — the page's only word on the crown.
+            let crowned = app.board.is_crowned(ticket_id);
+            let mark = if crowned {
+                format!("{} ", crate::glyphs::crown(theme.glyph_tier()))
+            } else {
+                String::new()
+            };
+            let room = title_budget.saturating_sub(mark.width() + super::spans_width(&fold_hint));
+            let title = truncate(&ticket.title, room);
+            let mut spans = vec![Span::raw(" ".repeat(pad))];
+            // The holder's title rests in the crown's tint, as its card's does
+            // (T-442), and `^o` here sweeps it there from the plain ink on the
+            // band's ground. Below TrueColor the tint is the quiet grey, so
+            // the title keeps its ink and only the head walks it.
+            let holder =
+                crowned && !app.doomed(ticket_id) && !app.archiving(ticket_id) && !snoozing;
+            let rest = if holder && theme.paints_tags() {
+                theme.crown_text().add_modifier(Modifier::BOLD)
+            } else {
+                title_style
+            };
+            let cs = theme.crown_text();
+            match app.crowning_ms(ticket_id) {
+                // One run, mark and title, so the glow crosses the gap.
+                Some(elapsed) if holder => {
+                    let run = CrownSweep {
+                        elapsed,
+                        cells: mark.width() + title.width(),
+                        before: title_style,
+                        after: rest,
+                        surface: band.bg.or(theme.bg),
+                    };
+                    let mark_run = CrownSweep { before: cs, after: cs, ..run };
+                    spans.extend(super::card::swept_spans(theme, &mark_run, &mark, 0));
+                    spans.extend(super::card::swept_spans(theme, &run, &title, mark.width()));
+                }
+                _ => {
+                    if crowned {
+                        spans.push(Span::styled(mark, cs));
+                    }
+                    spans.push(Span::styled(title, rest));
+                }
+            }
+            spans.extend(fold_hint);
+            Line::from(spans)
+        }
+    };
     let mut rows = vec![Line::default(), title_row, ident];
     rows.extend(workspace);
     rows.extend(pr_rows);

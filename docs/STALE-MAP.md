@@ -46968,3 +46968,26 @@ is anchored on `boardAnswered` now. Then, every check as it came:
   1,472 passed, 0 failed); `--test git` `forge_e2e`, `workspace_e2e`, `pr_merge_e2e`,
   `column_reclaim_e2e` (48 passed). No reruns. No rig run: no crown-facing text changed. Owed:
   the post-merge full suite (`daemon/src/server.rs` outside its tests).
+
+## Tab folds the ticket page's description (T-1302, 2026-11-17)
+
+- **What changed.** `tab` on the ticket page folds the description band to its first row (the
+  cut's `~`, a step quieter) and opens it whole again: `Verb::FoldDescription`, overlay-only
+  (prio 0), live while `Ctx::page_desc_folds`. The hint ends the title row (`∙ tab hide` /
+  `∙ tab show`, spelled by `chrome::hint_spans`, so clickable), and the title's truncation
+  leaves it room. The choice is one for every ticket and the machine's alone: the
+  `ticket_page_description` key in `prefs.json` (`PrefKey::PageDescription`, default shown, no
+  Settings row: the key is the setting, as `P` is for the replies).
+- **Refuted in the proposal.** A hint row under the description (author: "put hint on end of
+  title, to not waste vertical space"); a per-ticket choice (author: "one choice for every
+  ticket"). A description that renders to one row neither folds nor hints: nothing to give up.
+- **Kept from T-344.** The fold is decided whatever rail row holds the cursor, so `extra` (what
+  the rail is placed under) does not move as the cursor walks into the notes; only the key and
+  the hint stand down on a note row, where the zone reads the description whole. The page sets
+  the fact draw-side (`App::set_page_desc_folds`, dirtying the frame's cached `Ctx` on a change).
+- **Checks.** `golden_ticket_description_folded_120` (fold, unfold, another ticket opens
+  folded, note row inert and rail still) and `a_one_row_description_neither_folds_nor_hints`;
+  `page_description_default_shown_and_round_trip`. Nine ticket goldens gained `∙ tab hide` on
+  the title row and nothing else (read by eye). `cargo ut` (1,475 + 913 + 777 + 72 + 24 + 17
+  passed, 0 failed), `cargo build --workspace`. No e2e names a changed command or function; no
+  post-merge suite owed (TUI and core keymap/prefs only).

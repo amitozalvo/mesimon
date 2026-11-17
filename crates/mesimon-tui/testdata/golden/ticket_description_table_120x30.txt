@@ -1,6 +1,6 @@
  TICKET (T-3)   mesimon › kanban-tui
 
- Fix OSC-11 detection
+ Fix OSC-11 detection ∙ tab hide
  IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
 
  ▎ Tables render in columns now.

@@ -467,6 +467,10 @@ pub(crate) struct Prefs {
     /// glyph until the cursor rests on it. ON by default; per machine,
     /// as the crown's lightning is — motion is about the person watching.
     pub card_moves: bool,
+    /// The ticket page shows its description whole (T-1302); off folds it
+    /// to its first row. ON by default; `tab` on the page flips it, for
+    /// every ticket. Per machine, as the card moves are.
+    pub page_description: bool,
     /// Column widths (T-1135): the columns' `Width` rows and the cursor
     /// grow apply. OFF by default; per machine, as the card moves are — it
     /// is about the person reading.
@@ -554,6 +558,7 @@ impl Default for Prefs {
             peek: PeekLevel::Cursor,
             crown_lightning: true,
             card_moves: true,
+            page_description: true,
             column_widths: false,
             cursor_grow: false,
             mouse: true,
@@ -612,6 +617,7 @@ const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 const PEEK_KEY: &str = PrefKey::Peek.name();
 const CROWN_LIGHTNING_KEY: &str = PrefKey::CrownLightning.name();
 const CARD_MOVES_KEY: &str = PrefKey::CardMoves.name();
+const PAGE_DESCRIPTION_KEY: &str = PrefKey::PageDescription.name();
 const COLUMN_WIDTHS_KEY: &str = PrefKey::ColumnWidths.name();
 const CURSOR_GROW_KEY: &str = PrefKey::CursorGrow.name();
 const MOUSE_KEY: &str = PrefKey::Mouse.name();
@@ -860,6 +866,7 @@ impl Prefs {
             PrefKey::Peek => self.peek.key(),
             PrefKey::CrownLightning => onoff(self.crown_lightning),
             PrefKey::CardMoves => onoff(self.card_moves),
+            PrefKey::PageDescription => onoff(self.page_description),
             PrefKey::ColumnWidths => onoff(self.column_widths),
             PrefKey::CursorGrow => onoff(self.cursor_grow),
             PrefKey::Mouse => onoff(self.mouse),
@@ -940,6 +947,7 @@ impl Prefs {
         doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         doc.insert(CROWN_LIGHTNING_KEY.into(), Value::from(self.crown_lightning));
         doc.insert(CARD_MOVES_KEY.into(), Value::from(self.card_moves));
+        doc.insert(PAGE_DESCRIPTION_KEY.into(), Value::from(self.page_description));
         doc.insert(COLUMN_WIDTHS_KEY.into(), Value::from(self.column_widths));
         doc.insert(CURSOR_GROW_KEY.into(), Value::from(self.cursor_grow));
         doc.insert(MOUSE_KEY.into(), Value::from(self.mouse));
@@ -1455,6 +1463,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify_dock_bounce = flag(NOTIFY_DOCK_BOUNCE_KEY, false);
     let crown_lightning = flag(CROWN_LIGHTNING_KEY, true);
     let card_moves = flag(CARD_MOVES_KEY, true);
+    let page_description = flag(PAGE_DESCRIPTION_KEY, true);
     let column_widths = flag(COLUMN_WIDTHS_KEY, false);
     let cursor_grow = flag(CURSOR_GROW_KEY, false);
     let mouse = flag(MOUSE_KEY, true);
@@ -1562,6 +1571,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         peek,
         crown_lightning,
         card_moves,
+        page_description,
         column_widths,
         cursor_grow,
         mouse,
@@ -2215,6 +2225,24 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["card_moves"], false);
         assert!(!PrefKey::CardMoves.board_overridable());
+    }
+
+    /// The ticket page's description fold (T-1302): absent is shown, a fold
+    /// round-trips, and a board cannot take it, the card moves' rule.
+    #[test]
+    fn page_description_default_shown_and_round_trip() {
+        let p = scratch("page-description");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.page_description, "absent is the default: shown");
+        l.prefs.page_description = false;
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.page_description);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["ticket_page_description"], false);
+        assert!(!PrefKey::PageDescription.board_overridable());
     }
 
     /// Column widths and the cursor's grown column (T-1135): absent is off,
