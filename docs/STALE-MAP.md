@@ -47203,4 +47203,7 @@ Tests: `ux.test.js` terminalFlow holds the fixture's upload answers (`holdUpload
 at 0, fills after the first of two pieces, no remove button and no `#delivery` meanwhile; then a
 rejected prompt reads as `.chat-said-err` in the conversation with the words back in the field.
 The tier and dialog flows read the option labels in place of `#steer-why`. Run: `node --test
-state.test.js assets.test.js`, `node ux.test.js` (every engine and size). No Rust changed: no cargo.
+state.test.js assets.test.js`, `node ux.test.js` (chromium and webkit, every size): all passed.
+Rerun named: the first full run failed once at webkit tablet notesFlow on a page error, "ResizeObserver
+loop completed with undelivered notifications"; webkit's rerun at every size passed. No Rust
+changed: no cargo.
