@@ -3181,6 +3181,36 @@ select {
   background: var(--s2);
   object-fit: cover;
 }
+/* A picture going up (T-1312): the thumbnail dimmed under a ring that fills
+   as its pieces are taken; one waiting its turn shows the track alone. */
+.note-pic-going {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--s1) 55%, transparent);
+  transform: translateX(-50%);
+}
+.note-pic-going .ring-track,
+.note-pic-going .ring-arc {
+  fill: none;
+  stroke-width: 3;
+}
+.note-pic-going .ring-track {
+  stroke: color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.note-pic-going .ring-arc {
+  stroke: var(--ink);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 120ms linear;
+}
+.note-pic[data-up="waiting"] .ring-arc {
+  stroke: none;
+}
 .note-pic-name {
   color: var(--ink3);
   font-family: var(--mono);
@@ -3526,11 +3556,6 @@ select {
   border: 0;
   border-radius: 14px;
   background: var(--s2);
-}
-.steer-why {
-  margin: 0 2px 2px;
-  color: var(--ink3);
-  font-size: 0.75rem;
 }
 .mode-help {
   flex: 1;

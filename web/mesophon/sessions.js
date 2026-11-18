@@ -171,6 +171,7 @@ export class Sessions {
     const said = receipt === entry.latest;
     if (reply.result === "taken_back") {
       receipt.waiting = receipt.unresolved = false;
+      receipt.taken = true;
       if (said) entry.delivery = "Taken back. Edit or discard the prompt.";
       const target = JSON.stringify([entry.board, entry.ticket]);
       const current = this.entries.get(this.targets.get(target)) || entry;

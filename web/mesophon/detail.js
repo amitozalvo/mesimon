@@ -292,12 +292,14 @@ function Composer({ store, ticket, entry, live }) {
   const attaches = !!entry && !fieldOff && (pictures || !!agent || starts);
   const tick = receiptTick(entry?.latest?.status);
   // In the conversation a sent prompt is its ghost, then its own row
-  // (T-626): no line says it was submitted.
+  // (T-626): no line says it was submitted. Nothing reads under the field
+  // there (T-1312): a picture going up is a ring on its thumbnail, and the
+  // rest is said in the conversation (`store.tell`).
   const ghost = store.chatShown && !!sentPrompt(entry) && entry.latest === entry.receipt;
+  const chat = !!ticket && store.chatOnScreen(entry?.board, ticket.id);
   // The field over its bar (T-1208): the picture, the delivery and the tier
-  // as small pills, the arrow at the bar's end. Why Steer is off is said
-  // once there are words.
-  const open = !!entry?.draft;
+  // as small pills, the arrow at the bar's end. Why Steer is off is the
+  // Steer option's own words, and a tier switch's the tier's (T-1312).
   // Words that begin with `!` run as a shell command (T-1284).
   const shell = shellLine(entry?.draft);
   // The field grows to its words (`field-sizing: content`); an engine
@@ -392,11 +394,11 @@ function Composer({ store, ticket, entry, live }) {
             : html`<label class="chip-pick mode-pick"><span class="sr-only">Delivery</span>
               <select id="prompt-mode" value=${mode} disabled=${!agent} onChange=${(e) => store.setDelivery(e.currentTarget.value)}>
                 <option value="queue">Queue</option>
-                <option value="steer" disabled=${steerOff}>Steer</option>
+                <option value="steer" disabled=${steerOff}>${steerOff ? `Steer · ${switching ? "after the restart" : "answer first"}` : "Steer"}</option>
               </select></label>`}
           ${tiers.length > 0 && !mails && html`<label class="chip-pick tier-pick"><span class="sr-only">Agent tier</span>
             <select id="prompt-tier" value=${pick} onChange=${(e) => store.setPromptTier(e.currentTarget.value)}>
-              ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${t.name}</option>`)}
+              ${tiers.map((t) => html`<option key=${t.id} value=${t.id}>${switching && t.id === pick ? `${t.name} · at the turn’s end` : t.name}</option>`)}
             </select></label>`}
           ${!starts && !mails && html`<p class="mode-help">${modeHelp(mode, agent)}</p>`}
           <button id="stop" type="button" class="send send-stop" hidden=${!stops} aria-label="Stop the turn"
@@ -406,13 +408,8 @@ function Composer({ store, ticket, entry, live }) {
             ? html`<${Icon} name="play" size=${16} />`
             : html`<${Icon} name="up" size=${18} width=${2.2} />`}</button>
         </div>
-        <p id="steer-why" class="steer-why" hidden=${!(steerOff || stopping) || !open || mails}>${stopping
-          ? `${agent.provider} is stopping: these words wait here until it has stopped.`
-          : switching
-          ? `Restarts on ${store.board?.tierNamed(pick)?.name || pick} when the turn ends, then sends.`
-          : "Steer is off while the agent waits on you · answer it first. Queue still works."}</p>
       </div>
-      <p id="delivery" role="status" hidden=${!sending && !entry?.error && (ghost || (!tick && !entry?.delivery))}>${!sending && !entry?.error && tick && html`<${Tick} state=${tick} />`}<span>${entry?.sending || entry?.error || entry?.delivery || ""}</span></p>
+      <p id="delivery" role="status" hidden=${chat || sending || (!entry?.error && (ghost || (!tick && !entry?.delivery)))}>${!entry?.error && tick && html`<${Tick} state=${tick} />`}<span>${entry?.error || entry?.delivery || ""}</span></p>
     </form>
   </footer>`;
 }

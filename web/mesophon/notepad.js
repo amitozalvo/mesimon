@@ -200,17 +200,36 @@ export function PictureBar({ id, can, draft, caret, onAdd, onRemove }) {
 }
 
 // The pictures a draft holds, each with its number and a remove button.
+// While they go up (T-1312) each wears a ring that fills as its pieces are
+// taken, in place of the remove button, and says nothing under the field.
 export function PictureList({ draft, onRemove }) {
   if (!draft.pictures.length) return null;
   const busy = !!draft.sending;
   return html`<ul class="note-pic-list" aria-label="Pictures">
-    ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic">
+    ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic" data-up=${p.up === undefined ? undefined : String(p.up >= 1 ? "done" : p.up > 0 ? "going" : "waiting")}>
       <${Thumb} bitmap=${p.thumb} />
+      ${p.up !== undefined && html`<${Going} n=${p.n} up=${p.up} />`}
       <span class="note-pic-name">Image #${p.n}</span>
-      <button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
-        onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>
+      ${p.up === undefined && html`<button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
+        onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>`}
     </li>`)}
   </ul>`;
+}
+
+// How much of a picture went, as a ring over its thumbnail: the track, and
+// the arc from the top, clockwise. A picture waiting its turn shows the
+// track alone.
+const RING = 2 * Math.PI * 11;
+function Going({ n, up }) {
+  const done = Math.max(0, Math.min(1, up));
+  return html`<span class="note-pic-going" role="progressbar" aria-label=${`Sending Image #${n}`}
+      aria-valuemin="0" aria-valuemax="100" aria-valuenow=${Math.round(done * 100)}>
+    <svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true">
+      <circle class="ring-track" cx="14" cy="14" r="11" />
+      <circle class="ring-arc" cx="14" cy="14" r="11" transform="rotate(-90 14 14)"
+        stroke-dasharray=${RING.toFixed(2)} stroke-dashoffset=${(RING * (1 - done)).toFixed(2)} />
+    </svg>
+  </span>`;
 }
 
 // The file input that picks pictures into a draft, dressed as a button:

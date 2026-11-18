@@ -47169,3 +47169,38 @@ fast-forwarded into a moving upstream stays merged; the whitelist's refusals);
 commit in the reflog wakes merged). T-740's test unchanged and green. The look's re-cut has no
 test of its own (it needs a real repository under `Look::run`); `crown_e2e` covers the look's
 other readings. No rig case: no words a crown or agent reads changed.
+
+## Nothing reads under the phone's prompt field in the conversation (T-1312, 2026-11-18, the person: "remote control chat shows info below input instead of investing in better UI … uploading an image shows a hint after sending below the input field until it's uploaded. instead it should show a circular progress on that image")
+
+Each thing the composer's lines said moved to what it is about:
+
+- **A picture going up** wears a ring over its thumbnail that fills piece by piece (`sendPictures`
+  keeps `up`, 0 to 1, on each picture; `uploadPicture` reports each piece taken); the ring takes
+  the remove button's place. `PictureList` (`notepad.js`) is shared, so the note and New ticket
+  sheets show it too; their own "Sending picture…" words are untouched. `#delivery` no longer says
+  `entry.sending` anywhere (it hides while pictures go).
+- **`#delivery`** hides while the conversation is on screen (`chatOnScreen`). What it would have
+  said becomes a conversation line (`Store.tell`, T-1245's `addLine`): one line per receipt,
+  updated in place as the receipt moves (an answer's "not confirmed yet" turns into "Answered"),
+  in the error ink for rejected and unknown. What the conversation already shows says nothing: a
+  prompt on its way or in (its ghost), plain queued words (their row), an answer still going (its
+  card), words taken back (the field holds them). Local refusals (32 KiB, pictures offline, too
+  long to wait, could not seal, no connection, a picture the browser cannot read or the host
+  refused) go through `Store.refuse`: the line in the conversation, or `#delivery` elsewhere.
+  `addLine` now returns the line it kept.
+- **`#steer-why` is gone.** Steer's option says why it is off ("Steer · answer first", "Steer ·
+  after the restart"); a tier switch's picked tier reads "coder · at the turn's end"; a stopping
+  agent was already said by `#stopping-line` above the field and the placeholder.
+
+Left as they are: `.mode-help` (in the bar, desktop only), `#away-what` (the bar's own words when
+the terminal is away), the shell note (above the field, T-1284), `#session-warning` and the
+retained-text row (each carries its action).
+
+Refuted: a receipt drawn at the conversation's foot (it would sit under replies that came after
+it); a toast for failures (gone in 3 s while the words wait back in the field).
+
+Tests: `ux.test.js` terminalFlow holds the fixture's upload answers (`holdUploads`): the ring shows
+at 0, fills after the first of two pieces, no remove button and no `#delivery` meanwhile; then a
+rejected prompt reads as `.chat-said-err` in the conversation with the words back in the field.
+The tier and dialog flows read the option labels in place of `#steer-why`. Run: `node --test
+state.test.js assets.test.js`, `node ux.test.js` (every engine and size). No Rust changed: no cargo.

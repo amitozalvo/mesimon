@@ -73,6 +73,8 @@ function fixture() {
     prompts: [],
     requests: [],
     uploads: {},
+    holdUploads: false,
+    heldUploads: [],
     creates: [],
     answers: {},
     disposition: "submitted",
@@ -549,16 +551,18 @@ function fixture() {
             answer(state.writeNote(request));
           }
           // The host's upload (T-629): pieces in order, each answered
-          // with the upload it belongs to.
+          // with the upload it belongs to; held while `holdUploads`, each
+          // answer waiting in `heldUploads` (T-1312).
           if (request.op === "upload") {
             const id = request.upload || `pic-${Object.keys(state.uploads).length}`;
             const u = (state.uploads[id] ||= { bytes: 0, pieces: 0, complete: false });
+            const reply = (body) => (state.holdUploads ? state.heldUploads.push(() => answer(body)) : answer(body));
             if (request.offset !== u.bytes || u.complete)
-              answer({ result: "rejected", message: "attachment upload offset mismatch" });
+              reply({ result: "rejected", message: "attachment upload offset mismatch" });
             else {
               Object.assign(u, { bytes: u.bytes + atob(request.data).length, pieces: u.pieces + 1, complete: request.complete,
                 ticket: request.ticket });
-              answer({ result: "uploaded", upload: id });
+              reply({ result: "uploaded", upload: id });
             }
           }
           if (request.op === "tell_agent") {
@@ -2048,16 +2052,18 @@ async function tierFlow(browser, engineName, size, viewport) {
     await pick.waitFor();
     assert.deepEqual(await pick.locator("option").allTextContents(), ["claude", "coder"]);
     assert.equal(await pick.inputValue(), "claude");
-    assert(await page.locator("#steer-why").isHidden());
+    assert.equal(await page.locator("#steer-why").count(), 0, "nothing reads under the field (T-1312)");
     await page.locator("#send").click();
     await until(page, () => fixture.prompts.length === 1);
     assert.equal(await page.evaluate(() => fixture.prompts[0].tier), undefined);
     await until(page, () => !document.querySelector("#send").disabled || !document.querySelector("#prompt").value);
     await page.locator("#prompt").fill("on coder");
     await pick.selectOption("01K");
-    await until(page, () => !document.querySelector("#steer-why").hidden);
-    assert.match(await page.locator("#steer-why").textContent(), /Restarts on coder when the turn ends/);
+    // A switch restarts the agent at its turn's end: the tier's own pill
+    // says when, and Steer why it is off (T-1312), with no line under them.
+    await until(page, () => document.querySelector("#prompt-tier option:checked")?.textContent === "coder · at the turn’s end");
     assert(await page.locator('#prompt-mode option[value="steer"]').evaluate((n) => n.disabled));
+    assert.equal(await page.locator('#prompt-mode option[value="steer"]').textContent(), "Steer · after the restart");
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await shot("tier-composer");
     await page.locator("#prompt").fill("now on coder");
@@ -3631,6 +3637,47 @@ async function terminalFlow(browser, engineName, size, viewport) {
     assert.match(again.prompt, /^Again, with the shot/);
     await overview();
 
+    // T-1312: in the conversation nothing reads under the field. A picture
+    // going up wears a ring on its thumbnail that fills piece by piece, in
+    // place of its remove button; words the host refuses are said in the
+    // conversation, and come back to the field.
+    await page.locator('.ticket[data-id="ticket-0"]').first().click();
+    await page.locator("#chat").waitFor();
+    await until(page, () => !document.querySelector("#prompt").disabled);
+    const told = await page.evaluate(() => fixture.prompts.length);
+    await page.locator("#prompt").fill("Look at this");
+    await page.locator("#prompt-picture").setInputFiles({ name: "ring.png", mimeType: "image/png", buffer: noisePng(240, 160) });
+    await page.locator(".composer-pics .note-pic").first().waitFor();
+    await page.evaluate(() => (fixture.holdUploads = true));
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#send").click();
+    const ring = page.locator('.composer-pics [role="progressbar"]');
+    await ring.waitFor();
+    assert.equal(await ring.getAttribute("aria-valuenow"), "0");
+    assert(await page.locator("#delivery").isHidden(), "no line under the field while it goes up");
+    assert.equal(await page.locator(".composer-pics .note-pic-drop").count(), 0, "the ring takes the remove button's place");
+    await until(page, () => fixture.heldUploads.length === 1);
+    await page.evaluate(() => fixture.heldUploads.shift()());
+    await until(page, () => Number(document.querySelector('.composer-pics [role="progressbar"]')?.getAttribute("aria-valuenow")) > 0);
+    assert(Number(await ring.getAttribute("aria-valuenow")) < 100, "a picture of several pieces fills as they go");
+    await shot("picture-going");
+    await page.evaluate(() => {
+      fixture.holdUploads = false;
+      while (fixture.heldUploads.length) fixture.heldUploads.shift()();
+    });
+    await until(page, (n) => fixture.prompts.length === n, told + 1);
+    assert.equal((await page.evaluate(() => fixture.prompts.at(-1))).uploads?.length, 1);
+    await until(page, () => !document.querySelector(".composer-pics"));
+    await page.evaluate(() => (fixture.disposition = "rejected"));
+    await page.locator("#prompt").fill("Not this one");
+    await page.locator("#send").click();
+    await until(page, () => /Rejected: Session is no longer promptable/.test(document.querySelector("#chat .chat-said-err")?.textContent || ""));
+    assert(await page.locator("#delivery").isHidden(), "said in the conversation, not under the field");
+    assert.equal(await page.locator("#prompt").inputValue(), "Not this one", "the words come back to the field");
+    await page.evaluate(() => (fixture.disposition = "submitted"));
+    await page.locator("#prompt").fill("");
+    await overview();
+
     // The Terminal tab: the screen, a key bar and a typed line, all into
     // the agent's own pane.
     await page.locator('.ticket[data-id="ticket-0"]').first().click();
@@ -4924,14 +4971,16 @@ try {
             "newer draft",
           );
           // T-568: at a stop a steer would be the dialog's answer: Steer is
-          // off and says why, until the agent works again.
-          assert(await page.locator('#prompt-mode option[value="steer"]').evaluate((n) => n.disabled));
-          assert(await page.locator("#steer-why").isVisible());
+          // off and says why in its own words (T-1312), until the agent
+          // works again.
+          const steer = page.locator('#prompt-mode option[value="steer"]');
+          assert(await steer.evaluate((n) => n.disabled));
+          assert.equal(await steer.textContent(), "Steer · answer first");
           await page.evaluate(() => {
             fixture.tickets[1].agent.state = "working";
             fixture.update();
           });
-          await until(page, () => document.querySelector("#steer-why").hidden);
+          await until(page, () => document.querySelector('#prompt-mode option[value="steer"]').textContent === "Steer");
           await delivery("steer");
           // This seat is Codex's, whose steer waits for the turn's next
           // step (T-845); the line says so, and Queue's says its own.
@@ -5362,7 +5411,7 @@ try {
           });
           await until(page, () => document.querySelector("#attention").textContent.includes("Which shade?"));
           await page.locator("#prompt").fill("after the answer");
-          assert(await page.locator("#steer-why").isVisible());
+          assert.equal(await page.locator('#prompt-mode option[value="steer"]').textContent(), "Steer · answer first");
           await page.locator("#send").click();
           await page.locator("#queued-row").waitFor({ state: "visible" });
           assert.equal(await page.evaluate(() => fixture.prompts.at(-1).queued), true);

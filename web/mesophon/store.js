@@ -3,7 +3,7 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState, digestOf, refusedBoardWords } from "./board.js";
-import { Sessions, answerBusy, answerWords, dropPictures, landed } from "./sessions.js";
+import { Sessions, answerBusy, answerWords, dropPictures, landed, receiptTick } from "./sessions.js";
 import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
@@ -638,6 +638,7 @@ export class Store {
         if (!receipt?.unresolved) continue;
         if (receipt.incarnation !== c.incarnation) {
           this.sessions.reply(session, { result: "delivery", status: "unknown" }, receipt.id);
+          this.tell(session);
         } else if (
           ![...c.pending.entries()].some(
             ([id, p]) =>
@@ -1626,7 +1627,8 @@ export class Store {
   // after what the page held of the conversation: `after` is its end, -1
   // before any of it was written, undefined when none was read yet
   // (`placeLines` sets it at the first read). A start's line holds the
-  // start and reads as it goes. False, and nothing kept, when not seen.
+  // start and reads as it goes. The line kept, or false, and nothing kept,
+  // when not seen.
   addLine(about, text, tick, action) {
     const board = about.board || this.active?.pin.board;
     if (!board) return false;
@@ -1638,7 +1640,7 @@ export class Store {
     let tickets = this.lines.get(board);
     if (!tickets) this.lines.set(board, (tickets = new Map()));
     const list = tickets.get(about.ticket) || [];
-    list.push({
+    const line = {
       id: ++this.lineId,
       at,
       // A line from another conversation than the one shown leads it: an
@@ -1651,11 +1653,39 @@ export class Store {
       start: about.start,
       action,
       until: action ? at + LINE_ACTION_MS : 0,
-    });
+    };
+    list.push(line);
     if (list.length > LINES_KEPT) list.splice(0, list.length - LINES_KEPT);
     tickets.set(about.ticket, list);
     if (action) setTimeout(() => this.emit(), LINE_ACTION_MS);
-    return true;
+    return line;
+  }
+  // What the composer's line would say, said in the conversation instead
+  // while that is on screen (T-1312): nothing reads under the field there.
+  // A receipt keeps one line, which reads on as the receipt moves; what
+  // the conversation already shows says nothing: a prompt on its way or
+  // in is its ghost, queued words their row, an answer going in its card,
+  // words taken back the field holding them again.
+  tell(entry) {
+    const receipt = entry?.latest;
+    if (!receipt || !this.chatOnScreen(entry.board, entry.ticket)) return;
+    const status = receipt.status;
+    const prompt = ["prompt", "send_now"].includes(receipt.op);
+    const shown = status === "awaiting_delivery" || (prompt && ["submitted", "input_sent"].includes(status)) ||
+      (status === "queued" && !receipt.replaced) || receipt.op === "take_back" || receipt.taken;
+    if (shown || !entry.delivery) return;
+    const err = ["rejected", "unknown"].includes(status);
+    const tick = err ? null : receiptTick(status);
+    const kept = receipt.line && this.linesOf(this.board?.current).includes(receipt.line);
+    if (kept) Object.assign(receipt.line, { text: entry.delivery, tick, err });
+    else receipt.line = this.addLine({ board: entry.board, ticket: entry.ticket, err }, entry.delivery, tick) || undefined;
+  }
+  // Words that did not go, and why: under the field, or in the
+  // conversation while that is on screen (T-1312).
+  refuse(entry, words) {
+    entry.delivery = words;
+    if (this.chatOnScreen(entry.board, entry.ticket)) this.addLine({ board: entry.board, ticket: entry.ticket, err: true }, words);
+    this.sync();
   }
   linesOf(ticket) {
     const board = this.active?.pin.board;
@@ -1729,7 +1759,14 @@ export class Store {
   async addPromptPictures(files, at) {
     const entry = this.entry;
     if (!entry || !this.canAskPictures) return;
-    return this.readPictures(entry, "draft", files, at, () => this.entry === entry);
+    const placed = await this.readPictures(entry, "draft", files, at, () => this.entry === entry);
+    // A picture this browser cannot read is said where the words' news is.
+    if (entry.error) {
+      const words = entry.error;
+      entry.error = "";
+      this.refuse(entry, words);
+    }
+    return placed;
   }
   removePromptPicture(n) {
     this.dropPicture(this.entry, "draft", n);
@@ -1996,8 +2033,8 @@ export class Store {
     });
   }
   // One picture's pieces in order, for a note on `ticket`, or with none
-  // for a ticket not filed yet (T-670).
-  async uploadPicture(bytes, ticket, current) {
+  // for a ticket not filed yet (T-670). `went` hears each piece taken.
+  async uploadPicture(bytes, ticket, current, went = () => {}) {
     let upload;
     let offset = 0;
     while (offset < bytes.length) {
@@ -2008,21 +2045,29 @@ export class Store {
       if (reply.result !== "uploaded") throw new Error(reply.message || "the terminal refused it");
       upload = reply.upload;
       offset = end;
+      went(offset / bytes.length);
     }
     return upload;
   }
   // `pictures` up one by one, saying so on `draft`: their host ids by
-  // number, or nothing once one failed, which the draft says.
+  // number, or nothing once one failed, which the draft says. Each picture
+  // holds how much of it went (`up`, 0 to 1) while they go (T-1312): its
+  // thumbnail draws that as a ring.
   async sendPictures(draft, pictures, ticket, current) {
     const ids = new Map();
+    for (const p of pictures) p.up = 0;
     try {
       for (const [i, p] of pictures.entries()) {
         draft.sending = pictures.length > 1 ? `Sending picture ${i + 1} of ${pictures.length}…` : "Sending picture…";
         this.emit();
-        ids.set(p.n, await this.uploadPicture(p.bytes, ticket, current));
+        ids.set(p.n, await this.uploadPicture(p.bytes, ticket, current, (up) => {
+          p.up = up;
+          this.emit();
+        }));
       }
     } catch (e) {
       draft.sending = "";
+      for (const p of pictures) delete p.up;
       if (current()) {
         draft.error = `Picture not sent: ${e.message}.`;
         this.emit();
@@ -2030,6 +2075,7 @@ export class Store {
       return undefined;
     }
     draft.sending = "";
+    for (const p of pictures) delete p.up;
     return ids;
   }
   // The pictures the words name go up one by one, then the note that
@@ -2458,6 +2504,7 @@ export class Store {
     this.asking?.(new Error("the connection dropped"));
     this.asking = undefined;
     this.sessions.lost();
+    for (const entry of this.sessions.entries.values()) this.tell(entry);
     // Whatever took, the next board says; nothing is sent again.
     this.edits.lost();
     this.sync();
@@ -2571,9 +2618,10 @@ export class Store {
         : original?.body.op === "status"
           ? original.body.command
           : undefined;
-      if (command !== undefined && [session?.receipt, session?.answer].some((r) => r?.id === command))
+      if (command !== undefined && [session?.receipt, session?.answer].some((r) => r?.id === command)) {
         this.sessions.reply(session, reply, command);
-      else if (reply.result === "rejected" && original?.body.op === "transcript" && session) {
+        this.tell(session);
+      } else if (reply.result === "rejected" && original?.body.op === "transcript" && session) {
         session.chatOlder = false;
         if (!session.chat) session.chatError = `Conversation unavailable: ${reply.message}`;
       } else if (reply.result === "rejected" && original?.body.op === "preview" && session) {
@@ -2686,7 +2734,7 @@ export class Store {
       return;
     const id = this.connection.request({ op, ticket: entry.ticket, session: entry.session }, entry.key);
     if (id !== undefined) this.sessions.sent(entry, id, this.connection.incarnation, op, current.queued);
-    else entry.delivery = "Delivery unknown. Check the agent before trying again.";
+    else return this.refuse(entry, "Delivery unknown. Check the agent before trying again.");
     this.sync();
   }
   swapReturned() {
@@ -2725,8 +2773,7 @@ export class Store {
     const pictures = unlinked(entry.draft).filter((n) => held.has(n)).map((n) => held.get(n));
     if (pictures.length) {
       if (!this.canAskPictures) {
-        entry.delivery = "Pictures need your terminal online.";
-        this.sync();
+        this.refuse(entry, "Pictures need your terminal online.");
         return;
       }
       this.sendPicturedPrompt(entry, pictures, starts);
@@ -2738,6 +2785,11 @@ export class Store {
     const words = entry.draft;
     const current = () => this.entry === entry && entry.draft === words;
     const ids = await this.sendPictures(entry, pictures, entry.ticket, current);
+    if (!ids && current() && entry.error) {
+      const words = entry.error;
+      entry.error = "";
+      return this.refuse(entry, words);
+    }
     this.sync();
     if (!ids || !current()) return;
     this.sendPrompt(entry, linked(words, ids), [...ids.values()], starts);
@@ -2747,8 +2799,7 @@ export class Store {
   // draft's own words, so a refusal gives them back pictures and all.
   sendPrompt(entry, text, uploads, starts) {
     if (new TextEncoder().encode(text).length > PROMPT_MAX_BYTES) {
-      entry.delivery = "Prompt must fit in 32 KiB.";
-      this.sync();
+      this.refuse(entry, "Prompt must fit in 32 KiB.");
       return;
     }
     if (starts) {
@@ -2779,7 +2830,7 @@ export class Store {
       this.sessions.sent(entry, id, this.connection.incarnation, "prompt", entry.draft);
       // The pick is the ticket's now; the next board says so.
       entry.tier = undefined;
-    } else entry.delivery = "Delivery unknown. Check the agent before sending again.";
+    } else return this.refuse(entry, "Delivery unknown. Check the agent before sending again.");
     this.sync();
   }
 
@@ -2801,15 +2852,13 @@ export class Store {
     const ticket = this.board?.current;
     if (!this.mailsPrompt(ticket) || this.letterOf(ticket)) return;
     if (entry.pictures.length) {
-      entry.delivery = "Pictures need your terminal online.";
-      this.sync();
+      this.refuse(entry, "Pictures need your terminal online.");
       return;
     }
     // Too long to wait is said before the sheet explains waiting.
     const bytes = new TextEncoder().encode(entry.draft).length;
     if (bytes > MAIL_PROMPT_MAX_BYTES) {
-      entry.delivery = tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES);
-      this.sync();
+      this.refuse(entry, tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES));
       return;
     }
     // The first one says where the words go, and when, before they go.
@@ -2837,8 +2886,7 @@ export class Store {
     if (!text.trim() || this.letterOf(ticket)) return;
     const bytes = new TextEncoder().encode(text).length;
     if (bytes > MAIL_PROMPT_MAX_BYTES) {
-      entry.delivery = tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES);
-      this.sync();
+      this.refuse(entry, tooLongToWait(bytes - MAIL_PROMPT_MAX_BYTES));
       return;
     }
     const { session, provider } = ticket.agent;
@@ -2847,8 +2895,7 @@ export class Store {
       const body = { kind: "prompt", ticket: ticket.id, session, text, written_at: Date.now() };
       envelope = JSON.parse(this.crypto.mail(JSON.stringify(this.active.pin), JSON.stringify(body)));
     } catch {
-      entry.delivery = "Could not seal the message in this browser.";
-      this.sync();
+      this.refuse(entry, "Could not seal the message in this browser.");
       return;
     }
     // Checked as sealed, as a ticket's is: escaping can grow a text past
@@ -2856,8 +2903,7 @@ export class Store {
     // by how much this text grew.
     const sealed = JSON.stringify(envelope).length;
     if (sealed > MAIL_BYTES) {
-      entry.delivery = tooLongToWait(Math.ceil(((sealed - MAIL_BYTES) * bytes) / sealed));
-      this.sync();
+      this.refuse(entry, tooLongToWait(Math.ceil(((sealed - MAIL_BYTES) * bytes) / sealed)));
       return;
     }
     const board = this.active.pin.board;
