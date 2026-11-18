@@ -47089,3 +47089,18 @@ in step for one source).
 Tests: `ux.test.js` notesFlow dispatches a bubbling `cancel` on `#new-picture` and checks the
 sheet and its title stay; it failed without the fix (chromium phone). Run: `node ux.test.js`
 at phone size, chromium and webkit, all passed. No Rust changed: no cargo.
+
+## The phone's Notes tab opens a ticket's only note, with no list in between (T-1306, 2026-11-18, the person: "should just show the description note when entering notes when there's only one note instead of showing the notes list")
+
+`detail.js` `TicketTabs`: with one note (the description, a note on its way, or the not yet read
+"1 note · loading…" pane) the Notes tab shows that pane (`showPane(ticket, 1)`); with two or more
+it opens T-1208's list as before, and with none it still opens the description sheet. The pane's
+bar goes back to the transcript, and the tab stays lit on the note as it does for any note pane.
+
+Refuted: keeping the list for its Summary card. With one note the boxes are that note's own
+lines, read in its pane; the list's card only earns its place gathering boxes across notes.
+
+Tests: `ux.test.js` start-from-a-note (ticket-7, one note: the tab shows it and no list is drawn),
+the shelf flow (one note read while away), and the notes walk's `next()` (skips the row press on a
+one-note ticket). Run: `node --test state.test.js assets.test.js`, `node ux.test.js`. No Rust
+changed: no cargo.

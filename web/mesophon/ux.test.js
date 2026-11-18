@@ -1148,11 +1148,13 @@ async function notesFlow(browser, engineName, size, viewport) {
   const paneAt = () => page.evaluate(() => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane"));
   const at = (n) => until(page, (n) => document.querySelector("#detail .pane-track")?.style.getPropertyValue("--pane") === String(n), n);
   // From the transcript the Notes tab is the list (T-1208), whose first row
-  // opens the description; from a note the bar goes to the next.
+  // opens the description, or with one note that note (T-1306); from a
+  // note the bar goes to the next.
   const next = async () => {
     if ((await paneAt()) !== "0") return page.locator("#pane-next").click();
+    const one = (await page.locator("#tab-notes .tab-count").textContent()) === "1";
     await page.locator("#tab-notes").click();
-    await page.locator("#notes-list .note-row").first().click();
+    if (!one) await page.locator("#notes-list .note-row").first().click();
   };
   const back = () => page.locator("#pane-name").click();
   const named = async () => ((await paneAt()) === "0" ? "Transcript" : page.locator("#pane-name").textContent());
@@ -1922,9 +1924,10 @@ async function startFlow(browser, engineName, size, viewport) {
     });
     await connected();
     await open("ticket-7");
+    // One note: the tab opens it, with no list to pick from (T-1306).
     await page.locator("#tab-notes").click();
-    await page.locator("#notes-list .note-row").first().click();
     await until(page, () => /No agent here/.test(document.querySelector('.pane-note[aria-hidden="false"]')?.textContent || ""));
+    assert.equal(await page.locator("#notes-list").count(), 0);
     assert.equal(await page.locator("#tab-notes").getAttribute("aria-selected"), "true");
     assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "false");
     assert(await page.locator("#send").isEnabled(), "the press under a note starts too");
@@ -3127,8 +3130,6 @@ async function shelfFlow(browser, engineName, size, viewport) {
     if (await page.locator("#back").isVisible()) await page.locator("#back").click();
     await page.locator('.ticket[data-id="shelf-1"]').locator("visible=true").click();
     await page.locator("#tab-notes").click();
-    await until(page, () => /Shelf description canary/.test(document.querySelector("#notes-list .note-row")?.textContent || ""));
-    await page.locator("#notes-list .note-row").first().click();
     await until(page, () => document.querySelector('.pane-note[aria-hidden="false"]')?.textContent.includes("Shelf description canary"));
     assert.match(await page.locator('.pane-note[aria-hidden="false"] .note-pane-meta').textContent(), /as of/);
     await page.locator("#pane-name").click();

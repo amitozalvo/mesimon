@@ -46,7 +46,8 @@ function TicketTabs({ store, ticket, panes, at }) {
   const notes = panes.length - 1;
   const screen = store.screenShown(ticket);
   // Details and the Notes list (T-1208) are views of their own over the
-  // panes: the list opens a note's pane, and the tab is the way back.
+  // panes: the list opens a note's pane, and the tab is the way back. A
+  // ticket with one note has no list to pick from: the tab opens it (T-1306).
   const view = store.viewOf(ticket);
   const details = view === "details";
   const listed = view === "notes";
@@ -59,7 +60,7 @@ function TicketTabs({ store, ticket, panes, at }) {
   return html`<nav id="ticket-tabs" class="ticket-tabs" role="tablist" aria-label="Ticket">
     ${store.chatCapable && tab("tab-chat", !view && at === 0 && chat, "Chat", () => show("chat"))}
     ${tab("tab-terminal", !view && at === 0 && !chat, "Terminal", () => show("raw"), !screen && store.chatCapable)}
-    ${tab("tab-notes", listed || (!view && at > 0), "Notes", () => (notes ? store.showView(ticket.id, "notes") : store.editNote(ticket.id)),
+    ${tab("tab-notes", listed || (!view && at > 0), "Notes", () => (notes > 1 ? store.showView(ticket.id, "notes") : notes ? store.showPane(ticket.id, 1) : store.editNote(ticket.id)),
       !notes && !store.canWriteNotes, notes || "")}
     ${tab("tab-details", details, "Details", () => store.showView(ticket.id, "details"))}
   </nav>`;
