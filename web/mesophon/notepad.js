@@ -214,12 +214,15 @@ export function PictureList({ draft, onRemove }) {
 }
 
 // The file input that picks pictures into a draft, dressed as a button:
-// the picture icon and whatever `children` says beside it.
+// the picture icon and whatever `children` says beside it. A picker the
+// person dismisses fires a `cancel` that bubbles, and every sheet it sits
+// in takes a `cancel` for Escape and closes (T-1307): it stops here.
 export function PicturePick({ id, draft, caret, onAdd, label, capture, children }) {
   const busy = !!draft.sending;
   return html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}
     aria-label=${label}>
     <input id=${id} type="file" accept="image/*" multiple=${!capture} capture=${capture} class="sr-only" disabled=${busy}
+      onCancel=${(e) => e.stopPropagation()}
       onChange=${async (e) => {
         const files = [...e.currentTarget.files];
         e.currentTarget.value = "";

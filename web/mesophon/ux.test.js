@@ -1427,6 +1427,12 @@ async function notesFlow(browser, engineName, size, viewport) {
     await composer.waitFor({ state: "visible" });
     await page.locator("#new-title").fill("Pictured ticket");
     await page.locator("#new-description").fill("Looks like this:\n\n");
+    // A dismissed picker fires a bubbling `cancel` on its input, which
+    // left the sheet closed and the words gone (T-1307).
+    await page.evaluate(() =>
+      document.querySelector("#new-picture").dispatchEvent(new Event("cancel", { bubbles: true })));
+    assert(await composer.isVisible(), "a dismissed picker keeps the New ticket sheet open");
+    assert.equal(await page.locator("#new-title").inputValue(), "Pictured ticket");
     const before = Object.keys(await page.evaluate(() => fixture.uploads)).length;
     await page.locator("#new-picture").setInputFiles({ name: "filed.png", mimeType: "image/png", buffer: png });
     await composer.locator(".note-pic").first().waitFor();

@@ -47074,3 +47074,18 @@ back. No rig case times a peer's words into a crown's running turn: what a model
 read at a turn's next step is `ST1`'s measure, and the road here is the e2e's. `core/src/mcp.rs`
 changed, so the full suite is owed once, on the merged notice. `cargo fmt` also re-wrapped three
 test asserts in `tui/src/app.rs` and `mesimon/src/doctor.rs`.
+
+## A dismissed picture picker keeps the phone's sheet open (T-1307, 2026-11-18)
+
+Remote Control's picture button is an `<input type="file">`; dismissing the system picker fires a
+`cancel` event that bubbles (Chromium 113+, Safari 16.4+). Every sheet is a `<dialog>` whose
+`onCancel` is its Escape road and closes it, so backing out of the picker shut the New ticket
+sheet and lost its words; the note sheet and the prompt's attach menu share the same picker.
+`PicturePick` (`notepad.js`) now stops the event on the input, one place for all three.
+
+Refuted: guarding each dialog's `onCancel` with `e.target === e.currentTarget` (six sheets to keep
+in step for one source).
+
+Tests: `ux.test.js` notesFlow dispatches a bubbling `cancel` on `#new-picture` and checks the
+sheet and its title stay; it failed without the fix (chromium phone). Run: `node ux.test.js`
+at phone size, chromium and webkit, all passed. No Rust changed: no cargo.
