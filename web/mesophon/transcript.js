@@ -40,10 +40,14 @@ export const tailAsk = (chat) => (chat ? { after: chat.end, conversation: chat.c
 
 // A row's key: its record's offset and its place among that record's rows,
 // so a page put on top re-keys nothing below it.
-const rowKey = (rows, i) => {
+// Its kind and its conversation are in it too: a key that came back as
+// another kind of row (another conversation's offset, a hand whose call
+// landed with an earlier page) was redrawn in place and could land below
+// the rows after it.
+const rowKey = (rows, i, conversation) => {
   let n = 0;
   while (i - n - 1 >= 0 && rows[i - n - 1].at === rows[i].at) n++;
-  return `${rows[i].at}.${n}`;
+  return `${conversation}|${rows[i].kind}:${rows[i].at}.${n}`;
 };
 
 // A step's line, as the host spells it (`Read src/main.rs`, `Bash(cargo
@@ -135,6 +139,46 @@ export function withLines(chat, lines) {
   return out;
 }
 
+// Whether a step names mesimon's `raise_hand`, as Claude Code
+// (`mcp__mesimon__raise_hand`) or Codex spells it (core's `is_raise_hand`).
+const isRaiseHand = (name) => name === "raise_hand" || name.endsWith("__raise_hand") || name.endsWith(".raise_hand");
+const words = (s) => (s || "").split(/\s+/).filter(Boolean).join(" ");
+
+// The raised hands among the rows (T-1304), as the ticket page draws them
+// (T-1155): a `raise_hand` call's reason (the agent's words right after the
+// call, in the same record) is a hand, lowered unless the board's `hand` is
+// up with its words, where the newest such is up. A hand up whose call is not
+// among the rows (a Codex call from a code cell, an earlier page still to
+// come) is placed by its time: after the last row dated in or before its
+// second, and that row's record; last in a conversation with no clock, and
+// nowhere when every row is later.
+export function withHand(rows, hand) {
+  let newest = -1;
+  const out = rows.map((row, i) => {
+    const step = rows[i - 1];
+    if (row.kind !== "reply" || step?.kind !== "tool" || step.at !== row.at || !isRaiseHand(stepParts(step.text).name))
+      return row;
+    newest = i;
+    return { ...row, kind: "hand", up: false };
+  });
+  if (!hand?.reason) return newest < 0 ? rows : out;
+  if (newest >= 0 && words(out[newest].text) === words(hand.reason)) {
+    out[newest] = { ...out[newest], up: true };
+    return out;
+  }
+  const upTo = hand.ms + 999;
+  let before = -1;
+  for (let i = out.length - 1; i >= 0; i--) if (out[i].ms != null && out[i].ms <= upTo) { before = i; break; }
+  if (before < 0) {
+    if (!out.length || out.some((r) => r.ms != null)) return out;
+    before = out.length - 1;
+  }
+  let at = before;
+  while (at + 1 < out.length && out[at + 1].at === out[before].at) at++;
+  out.splice(at + 1, 0, { at: out[before].at, kind: "hand", up: true, board: true, ms: hand.ms, text: hand.reason });
+  return out;
+}
+
 // How long before an act a prompt it carried may be dated: the act's time
 // is the host's clock, the row's the transcript's (T-1162's slack).
 export const ACT_SLACK_MS = 5000;
@@ -195,6 +239,17 @@ function Said({ store, line }) {
     html`<button type="button" class="chat-said-act" onClick=${() => store.lineAction(line)}>${line.action.label}</button>`}</p>`;
 }
 
+// A raised hand (T-1304), as the ticket page draws it (T-1155): who raised
+// it over the words, in the needs-you colour while it is up and quiet once
+// it is down, so that colour never outlives the need.
+function Hand({ row, provider }) {
+  return html`<div class=${`chat-row chat-hand${row.up ? " chat-hand-up" : ""}`} aria-label=${row.up ? "Raised hand, waiting on you" : "Raised hand"}>
+    <p class="chat-hand-head" dir="auto"><${Icon} name="hand" size=${13} width=${2.2} /><span>${provider || "claude"} raised a hand</span>${row.ms != null &&
+      html`<time datetime=${new Date(row.ms).toISOString()}>${clock(row.ms)}</time>`}</p>
+    <p class="chat-hand-body" dir="auto"><${Linked} text=${row.text} /></p>
+  </div>`;
+}
+
 function Step({ text }) {
   const { name, arg } = stepParts(text);
   // The space between the spans keeps the line's text one line.
@@ -214,7 +269,7 @@ function Row({ row }) {
 // Newest at the bottom. Scrolling near the top asks for the page before; a
 // page put on top keeps the rows under the reader's eye where they were.
 // `tail` is drawn after the rows: the dialog waiting on you (T-701).
-export function Chat({ store, entry, doing, tail }) {
+export function Chat({ store, entry, doing, hand, provider, tail }) {
   const ref = useRef();
   const seen = useRef({});
   // The runs unfolded by a press, by their first row's key.
@@ -237,7 +292,9 @@ export function Chat({ store, entry, doing, tail }) {
   });
   useLayoutEffect(() => keepAtEnd(ref.current, () => entry?.chatFollowing !== false));
   const held = chat?.rows || [];
-  const rows = withActs(chat, withLines(chat, store.linesOf(store.board?.current)));
+  // Away, the hand the board last said is not known to be up.
+  const handed = chat && { ...chat, rows: withHand(held, store.live ? hand : null) };
+  const rows = withActs(chat, withLines(handed, store.linesOf(store.board?.current)));
   // Away (T-698), the conversation is what this page last held or the
   // shelf's newest page: earlier pages wait for the terminal.
   const away = !store.live;
@@ -259,12 +316,14 @@ export function Chat({ store, entry, doing, tail }) {
     ${groupRows(rows).map((item) => {
       if (item.row?.kind === "said") return html`<${Said} key=${`said:${item.row.line.id}`} store=${store} line=${item.row.line} />`;
       if (item.row?.kind === "act") return html`<${Act} key=${`act:${item.row.act.ms}.${item.row.n}`} act=${item.row.act} />`;
-      const key = rowKey(rows, item.i);
+      if (item.row?.board) return html`<${Hand} key=${`${chat?.conversation}|hand:board`} row=${item.row} provider=${provider} />`;
+      const key = rowKey(rows, item.i, chat?.conversation);
+      if (item.row?.kind === "hand") return html`<${Hand} key=${key} row=${item.row} provider=${provider} />`;
       if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
       const shown = open.has(key);
       return html`<button key=${`run:${key}`} type="button" class="chat-row chat-run" aria-expanded=${String(shown)}
         onClick=${() => toggle(key)}><${Icon} name=${shown ? "chevronDown" : "chevronRight"} size=${12} width=${2.4} /><span>${foldWords(item.run)}</span></button>
-        ${shown && item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n)} row=${row} />`)}`;
+        ${shown && item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n, chat?.conversation)} row=${row} />`)}`;
     })}
     ${ghost && html`<div class="chat-row chat-prompt chat-ghost" aria-label="Sent, not yet in the conversation">
       <p dir="auto">${ghost.text}</p><${Tick} state=${receiptTick(ghost.status) || "clock"} /></div>`}

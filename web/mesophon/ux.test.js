@@ -2993,6 +2993,41 @@ async function chatFlow(browser, engineName, size, viewport) {
       fixture.acts = undefined;
       fixture.update();
     });
+    // A raised hand (T-1304), as the ticket page draws it (T-1155): each
+    // raise_hand call's reason under "claude raised a hand", in the
+    // needs-you colour only while the board's hand is up with its words.
+    await page.evaluate(() => {
+      const t0 = Date.now() - 300000;
+      fixture.conversation = "conversation-d";
+      fixture.transcript = [
+        { at: 0, kind: "prompt", text: "Ship it", ms: t0 },
+        { at: 10, kind: "tool", text: "mcp__mesimon__raise_hand", ms: t0 + 1000 },
+        { at: 10, kind: "reply", text: "Old ask", ms: t0 + 1000 },
+        { at: 20, kind: "reply", text: "Back at it", ms: t0 + 2000 },
+        { at: 30, kind: "tool", text: "mcp__mesimon__raise_hand", ms: t0 + 3000 },
+        { at: 30, kind: "reply", text: "Pick a name", ms: t0 + 3000 },
+      ];
+      fixture.tickets[0].agent.hand = { ms: t0 + 3000, reason: "Pick a name" };
+      fixture.update();
+    });
+    await until(page, () => document.querySelectorAll("#chat .chat-hand").length === 2);
+    assert.deepEqual(await chat.locator(".chat-hand-head span").allTextContents(), ["claude raised a hand", "claude raised a hand"]);
+    assert.deepEqual(await chat.locator(".chat-hand-body").allTextContents(), ["Old ask", "Pick a name"]);
+    assert.equal(await chat.locator(".chat-hand-up .chat-hand-body").textContent(), "Pick a name");
+    const attn = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--attn").trim());
+    const ink = (sel) => chat.locator(sel).first().evaluate((n) => getComputedStyle(n).color);
+    assert.equal(await ink(".chat-hand-up .chat-hand-head"),
+      await page.evaluate((c) => { const n = document.createElement("i"); n.style.color = c; document.body.append(n); const v = getComputedStyle(n).color; n.remove(); return v; }, attn),
+      "an up hand is in the needs-you colour");
+    assert.notEqual(await ink(".chat-hand:not(.chat-hand-up) .chat-hand-head"), await ink(".chat-hand-up .chat-hand-head"));
+    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-hand.png`) });
+    // Lowered: every hand stays, none in the needs-you colour.
+    await page.evaluate(() => {
+      delete fixture.tickets[0].agent.hand;
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector("#chat .chat-hand-up"));
+    assert.equal(await chat.locator(".chat-hand").count(), 2);
     // The raw view is the pane's screen, the Terminal tab (T-1208); the
     // choice is remembered.
     assert.equal(await page.locator("#tab-chat").getAttribute("aria-selected"), "true");

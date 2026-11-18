@@ -782,6 +782,20 @@ pub struct Agent {
     /// host from before says nothing and the page judges by the shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_answers: Option<bool>,
+    /// The ticket's raised hand, while it is up and this agent raised it
+    /// (T-1304): the conversation draws it as the ticket page does (T-1155).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hand: Option<Hand>,
+}
+
+/// A raised hand as a phone reads it (T-1304): its words, the board's own
+/// (`board::Raised::reason`, already one capped line), and when it went up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hand {
+    /// Milliseconds since the epoch, the host's clock: the board's stamp is
+    /// whole seconds.
+    pub ms: u64,
+    pub reason: String,
 }
 
 /// The page a pairing QR opens (T-497): the relay's browser origin with the
@@ -1563,6 +1577,7 @@ mod tests {
                 exit: None,
                 card_answers: None,
                 dialog_omitted: false,
+                hand: None,
             }),
             tags: vec![],
             picked: None,
@@ -1603,6 +1618,7 @@ mod tests {
                 doing: Some("Bash(cargo test)".into()),
                 said: Some("Fixed.".into()),
                 tier: Some("claude".into()),
+                hand: Some(Hand { ms: 1_790_000_000_000, reason: "Pick a name".into() }),
                 ..a
             }),
             ..bare
@@ -1626,6 +1642,13 @@ mod tests {
             (agent.since, agent.doing.as_deref(), agent.said.as_deref()),
             (Some(1_790_000_000_000), Some("Bash(cargo test)"), Some("Fixed."))
         );
+        assert_eq!(
+            agent.hand.clone().map(|h| (h.ms, h.reason)),
+            Some((1_790_000_000_000, "Pick a name".into()))
+        );
+        // No hand up, no field: an older page reads the same agent.
+        let quiet = serde_json::to_value(Agent { hand: None, ..agent }).unwrap();
+        assert!(quiet.get("hand").is_none(), "{quiet}");
     }
 
     /// A phone gets one plain row of a reply: markers, emphasis and hazards

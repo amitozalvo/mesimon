@@ -3001,6 +3001,50 @@ select {
 .chat-act-cause {
   color: var(--ink3);
 }
+/* A raised hand (T-1304), as the ticket page draws it (T-1155): the
+   agent's words under who raised it, the head in the needs-you colour
+   while the hand is up and quiet once it is down. */
+.chat-hand {
+  max-width: 62ch;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 11px;
+  border-left: 2px solid var(--line);
+}
+.chat-hand-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink3);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.chat-hand-head time {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink4);
+}
+.chat-hand-body {
+  margin: 0;
+  color: var(--ink2);
+  font-size: 1rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-hand-up {
+  border-left-color: var(--attn);
+}
+.chat-hand-up .chat-hand-head {
+  color: var(--attn);
+}
+.chat-hand-up .chat-hand-body {
+  color: var(--ink);
+}
 .chat-said-err {
   color: var(--err);
 }

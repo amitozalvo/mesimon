@@ -46993,3 +46993,39 @@ is anchored on `boardAnswered` now. Then, every check as it came:
   (read by eye). `cargo ut` (1,475 + 913 + 777 + 72 + 24 + 17
   passed, 0 failed), `cargo build --workspace`. No e2e names a changed command or function; no
   post-merge suite owed (TUI and core keymap/prefs only).
+
+## A raised hand reads in the phone's conversation (T-1304, 2026-11-18, "show raise hand in remote control transcript")
+
+The person: "just like in ticket page". The phone's conversation draws each `raise_hand` call's
+reason (the `Reply` right after the call's step in the same record, T-1155's two rows) as a hand:
+a hand mark and `claude raised a hand` with its time over the words, left at the reply's measure
+behind a rule. While the board's hand is up, the newest such reason whose words match it
+(whitespace-blind, as `same_words`) is up: its head, mark and rule in `--attn`, its words in the
+page ink. Every other hand is quiet (`--ink3` head, `--ink2` words), so the needs-you colour
+never outlives the need. A hand up whose call the held rows lack (a Codex cell's call, an earlier
+page) is placed by its time as `place_hand` places it (`withHand`). The call's step stays a step.
+
+The phone learns the hand from the board: `Agent.hand` (`{ms, reason}`, `#[serde(default)]`,
+skipped when absent) on the agent that raised it (`phone_hand`, `hand_of`'s rule: another agent's
+hand is not its conversation's), its words through `scrub_text`. Up to 400 bytes per lit ticket
+against the 48 KiB board. Away from the terminal the remembered board keeps no hand, so every hand
+there reads lowered: the board's last word is not known to still stand. An older host sends none,
+and its hands all read lowered; an older page ignores the field.
+
+**Fixed on the way:** a row's key was its offset and place in its record alone, so a new
+conversation (`/clear`, offsets from 0 again) or an earlier page landing in a record's middle gave
+a key back as another kind of row (a prompt's key to a step). Preact redrew it in place and put it
+after the rows below it, under the working line. The key now carries the conversation and the
+row's kind (`rowKey`).
+
+Refuted: drawing hands from the rows alone (no wire change). Every hand would be quiet, the one
+the person still owes an answer included, which is the thing the ticket page lights.
+
+Tests: `state.test.js` "raised hands sit in the conversation, up only while the board's is";
+`ux.test.js` chatFlow (two hands, the newest in `--attn` while up, both quiet once lowered);
+daemon `a_raised_hand_rides_the_agent_that_raised_it`; core's phone ticket round trip carries the
+hand and leaves the field off when none is up. Run: `cargo ut` (1,476 + 914 + 777 + 72 + 24 + 17
+passed, 0 failed), `node --test state.test.js assets.test.js` (71), `node ux.test.js` (84 groups,
+chromium and webkit, three sizes). No e2e names a changed command or function (`raise_hand_e2e`
+covers the hand's own road, untouched); no post-merge suite owed (`core/src/mesophon.rs` and
+`server/mesophon.rs` are outside its list).

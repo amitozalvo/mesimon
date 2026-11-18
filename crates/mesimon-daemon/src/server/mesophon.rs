@@ -4448,6 +4448,7 @@ impl Daemon {
             promptable: self.control_target(&t.id.to_string(), &s.id.to_string()).is_some(),
             exit: agent_exit(s).filter(|_| !s.codex_stopping),
             card_answers: self.control_dialog_of(s).map(|d| dialog_card_answers(s.kind, d)),
+            hand: phone_hand(t, s),
         }
     }
 
@@ -5218,6 +5219,18 @@ fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
     };
     let reason = reason.ok()?.as_str()?.to_string();
     Some(api::AgentExit { reason, at: s.state_changed_at })
+}
+
+/// The ticket's raised hand for a phone (T-1304), on the agent that raised
+/// it, as the ticket page reads it (`transcript::hand_of`): another agent's
+/// hand is not this conversation's.
+fn phone_hand(t: &Ticket, s: &SessionRecord) -> Option<api::Hand> {
+    let raised = t.raised.as_ref()?;
+    if raised.by.strip_prefix("agent:").is_some_and(|by| by != s.id.to_string()) {
+        return None;
+    }
+    let secs = mesimon_core::board::stamp_secs(&raised.at)?;
+    Some(api::Hand { ms: secs * 1000, reason: mesimon_core::text::scrub_text(&raised.reason) })
 }
 
 /// A permission as a phone draws it (T-1218): every string in the tool's
@@ -7439,6 +7452,7 @@ mod tests {
                     exit: None,
                     card_answers: None,
                     dialog_omitted: false,
+                    hand: None,
                 }),
                 tags: Vec::new(),
                 picked: None,
@@ -9970,6 +9984,37 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
 mod board_fit_tests {
     use super::*;
     use mesimon_core::board::Reason;
+
+    /// T-1304: a phone's conversation hears the ticket's raised hand on the
+    /// agent that raised it, as the ticket page does (`transcript::hand_of`),
+    /// its words scrubbed and its second in ms; never on another agent.
+    #[test]
+    fn a_raised_hand_rides_the_agent_that_raised_it() {
+        let mut t = ticket(1, "TODO");
+        let seat = |t: &Ticket| {
+            let state = SessionState::Running;
+            SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Claude,
+                t.id,
+                Vec::new(),
+                "/".into(),
+                state,
+            )
+        };
+        let (s, other) = (seat(&t), seat(&t));
+        assert_eq!(phone_hand(&t, &s), None, "no hand up");
+        t.raised = Some(mesimon_core::board::Raised {
+            at: "@1790000000".into(),
+            by: format!("agent:{}", s.id),
+            reason: "pick a name\u{202e}".into(),
+        });
+        let hand = phone_hand(&t, &s).expect("its own hand");
+        assert_eq!(hand.ms, 1_790_000_000_000);
+        assert!(!hand.reason.contains('\u{202e}'), "{:?}", hand.reason);
+        assert!(hand.reason.starts_with("pick a name"));
+        assert_eq!(phone_hand(&t, &other), None, "another agent's hand");
+    }
 
     fn ticket(n: u128, column: &str) -> Ticket {
         Ticket {

@@ -7,7 +7,7 @@ import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
-import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withLines } from "./transcript.js";
+import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withHand, withLines } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { enterSends, keyboardUp, viewportVars } from "./viewport.js";
@@ -1185,6 +1185,41 @@ test("the crown's acts sit among the rows by their time", () => {
   assert.deepEqual(names(withActs({ ...chat, floor: 0, acts: [act(50, "a0"), act(150, "a1")] }, chat.rows)), ["r0", "a1", "r10", "r20", "r30"]);
   assert.equal(withActs({ ...chat, acts: [] }, chat.rows), chat.rows);
   assert.equal(withActs(chat, chat.rows), chat.rows, "an older host's page has none");
+});
+
+// T-1304: a raised hand reads in the phone's conversation as on the ticket
+// page (T-1155): every raise_hand call's reason is a hand, the newest whose
+// words the board's hand says is up, and a hand the rows lack is placed by
+// its time.
+test("raised hands sit in the conversation, up only while the board's is", () => {
+  const row = (at, ms, kind, text) => ({ at, ms, kind, text });
+  const rows = [
+    row(0, 1000, "prompt", "go"),
+    row(10, 2000, "tool", "mcp__mesimon__raise_hand"),
+    row(10, 2000, "reply", "need a  decision"),
+    row(20, 3000, "tool", "Read a.rs"),
+    row(20, 3000, "reply", "not a hand"),
+    row(30, 4000, "tool", "raise_hand"),
+    row(30, 4000, "reply", "pick one"),
+  ];
+  const marks = (out) => out.map((r) => (r.kind === "hand" ? (r.up ? `UP:${r.text}` : `down:${r.text}`) : r.text));
+  assert.deepEqual(marks(withHand(rows, null)),
+    ["go", "mcp__mesimon__raise_hand", "down:need a  decision", "Read a.rs", "not a hand", "raise_hand", "down:pick one"]);
+  // The board's hand up with the newest call's words: that one lights.
+  assert.deepEqual(marks(withHand(rows, { ms: 4000, reason: "pick one" })).filter((m) => /:/.test(m)),
+    ["down:need a  decision", "UP:pick one"]);
+  // Words no held call says (an earlier page, a Codex cell): placed after
+  // the record written in or before its second.
+  const placed = withHand(rows, { ms: 2000, reason: "from the board" });
+  assert.deepEqual(marks(placed).slice(1, 5), ["mcp__mesimon__raise_hand", "down:need a  decision", "UP:from the board", "Read a.rs"]);
+  assert.equal(placed[3].board, true);
+  // Every row later than the hand: this page never held its ask.
+  assert.equal(withHand(rows, { ms: 0, reason: "earlier" }).some((r) => r.board), false);
+  // A conversation with no clock has it last; nothing to draw keeps the rows.
+  const bare = [row(0, undefined, "reply", "hi")];
+  assert.equal(withHand(bare, { ms: 5, reason: "ask" }).at(-1).board, true);
+  assert.equal(withHand(bare, null), bare);
+  assert.deepEqual(withHand([], { ms: 5, reason: "ask" }), []);
 });
 
 // T-1264: a page's acts replace what was held; an older host's keep none.
