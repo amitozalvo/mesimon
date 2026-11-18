@@ -47063,3 +47063,14 @@ Refuted: sending at once whatever the crown's state (a wake of a parked crown, o
 idle one while another agent works in its checkout, would pass the queue's one-writer gate on
 another board's say-so); `immediately` (it backgrounds the crown's running tool call, more than
 the person asked).
+
+**Tests.** `boardlink_e2e` gains the mid-turn step: A's crown is `Running`, B's words read
+`sent_now`, nothing waits on A's card and the words land in its pane with no `Stop` (before: the
+receipt read `queued` and they never landed). Run: `cargo ut` (777 + 914 + 1,476 + 72 + 24 + 17
+passed, 0 failed), `boardlink_e2e` on the hook set and on the mod road (`MESIMON_TEST_ROAD=mod`),
+`cargo build --workspace`, `ci/rig_test.py` (82). Rig `X1` once live (claude 2.1.327, crown
+`claude-opus-5-5`, PASS in 32 s): the reworded `ask_board` still gets one call and the reply read
+back. No rig case times a peer's words into a crown's running turn: what a model does with words
+read at a turn's next step is `ST1`'s measure, and the road here is the e2e's. `core/src/mcp.rs`
+changed, so the full suite is owed once, on the merged notice. `cargo fmt` also re-wrapped three
+test asserts in `tui/src/app.rs` and `mesimon/src/doctor.rs`.
