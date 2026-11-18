@@ -47104,3 +47104,68 @@ Tests: `ux.test.js` start-from-a-note (ticket-7, one note: the tab shows it and 
 the shelf flow (one note read while away), and the notes walk's `next()` (skips the row press on a
 one-note ticket). Run: `node --test state.test.js assets.test.js`, `node ux.test.js`. No Rust
 changed: no cargo.
+
+## A branch with no commits moved onto its base's upstream is cut there, not merged (T-1311, 2026-11-18, the simbly crown: T-521 and T-544 woke it `delivered (merge_state merged)` in their first turn)
+
+**Seen.** On a forge board (Merge into: pull requests, local `main` behind `gitlab/main`) a
+worker in its first turn ran `git fetch` and moved its untouched branch onto the upstream
+(`reset: moving to gitlab/main` in T-544's frontend-v2 reflog; T-521 rebased onto its deploy
+branches). The tip is not an ancestor of the local base, so the upstream road (`content_verdict`,
+target `gitlab/main`) read it merged by plain ancestry, `merged_in = "gitlab/main"`. T-740's
+`came_to_base` asks for `merged_in` empty and a base tip that stood still, so it said no; the
+card read merged, DONE was admitted and `hear_merges` woke the crown with a delivery.
+
+**Decided: the branch's own reflog tells a move from a landing, not the base or the upstream.**
+T-740 kept "a base that moved in the same window" as a merge, which is right for the local base:
+on a board whose train merges locally, the base moves only by a merge. It does not hold for an
+upstream: a worker's `git fetch && git reset --hard origin/main` moves the upstream in the same
+window as the branch (one Bash call, well inside a sample's window), and on a forge board the
+counts' `base_tip` *is* the upstream's tip. In git the two graphs are the same (an untouched
+branch fast-forwarded onto `origin/main`, and a commit pushed and fast-forward merged on the
+forge, both leave the tip an ancestor of the upstream). What differs is whether a commit was made
+on the branch since it was last read untouched, and that is what `refs/heads/<branch>`'s reflog
+records. `own_commits` (T-1300) was refuted as the test: it counts the upstream's commits past
+the local base in both cases.
+
+**Built.**
+- `FlagInput::was`: `wt_queries` passes the leg's last sampled tip where that sample read it
+  untouched, unmerged and readable, else empty.
+- `compute_flags_on`: where `was` is set, the tip moved, and the leg is merged by ancestry
+  (no `merged_oid`, so a squash's patch-id verdict never asks), one fork reads the reflog
+  (`only_moved`: `log -g -n 64 --format=%H%x09%gs`) back to the entry at `was`. `moves_only`
+  is a whitelist of git's own (untranslated) step words: `reset: moving to`, `branch: Reset to` /
+  `Created from`, any `rebase`, and a fast-forward `merge` or `pull` (or `pull --rebase`'s
+  finish). A commit, cherry-pick, merge commit, an unknown or empty step, a reflog that does not
+  reach `was` or cannot be read keeps the reading as before. The answer is `Flags::moved_only`,
+  carried on `RepoFlags`, with `Flags::ff` (the counts' fast-forward answer).
+- `RepoFlags::came_to_base`: old untouched and unmerged, tip moved, merged by ancestry, then
+  `moved_only` (any base or upstream movement) **or** T-740's rule unchanged (local base, base
+  tip still, nothing ahead) for a repository with no reflog. `rebase_on_tip` now also forgets
+  `merged_in`, `merged_oid` and the content memo, and takes `needs_rebase` from `!ff` (the same
+  answer as T-740's `tip != base_tip` there, right on an upstream too). The fold in `server.rs`
+  is unchanged in shape: the re-cut lands in `worktrees.json`'s `base_oid`, so a restart agrees.
+- No fork on the writer (T-857): the reflog is read on the sampler, and only for a leg last
+  read untouched whose tip has just moved onto a ref, once per such move.
+- The crown's turn-end look (`Look::run`) builds its legs from the same queries, so it carries
+  `moved_only` and re-cuts such a leg in its own copy: T-740's "right once the sample has moved
+  the base and not before" no longer holds for a move the reflog proves. The look writes
+  nothing; the next sample's fold writes the binding.
+
+**Kept.** A branch with work still reads merged by ancestry, by the upstream road and by a forge
+PR at its tip: its reflog holds the commit. `fold_forge_merge` already refuses an untouched leg
+(T-796). T-1276's `unturned` and T-1300/T-1301's DONE gate are untouched code; the gate now
+simply sees the re-cut leg untouched. **What it cannot see:** a move made while no daemon ran
+(no previous sample, as T-740), a commit made on a detached HEAD and the branch reset onto it
+after a push (a move by its reflog), and a repository with `core.logAllRefUpdates=false`, which
+falls back to T-740's rule.
+
+**Tests.** `worktree::tests::a_branch_moved_onto_its_upstream_is_cut_there_again` (reset,
+rebase, `merge --ff-only`, `pull --ff-only`, each with the forge's counts and without, the
+upstream moved in the same window: merged into `origin/main`, `moved_only`, re-cut, the next
+sample unmerged); `work_merged_into_the_upstream_in_one_window_still_reads_merged` (a commit
+fast-forwarded into a moving upstream stays merged; the whitelist's refusals);
+`crownwake::tests::a_branch_moved_onto_its_upstream_wakes_no_delivery` (the fold and
+`hear_merges`: no wake, aggregate unmerged, binding `base_oid` moved; the same sample with a
+commit in the reflog wakes merged). T-740's test unchanged and green. The look's re-cut has no
+test of its own (it needs a real repository under `Look::run`); `crown_e2e` covers the look's
+other readings. No rig case: no words a crown or agent reads changed.

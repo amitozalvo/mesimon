@@ -19972,16 +19972,22 @@ impl Daemon {
                 if leg.base.is_empty() && workspace {
                     continue;
                 }
-                let seen = self
-                    .wt_repos
-                    .get(&t)
-                    .and_then(|legs| legs.iter().find(|l| l.name == leg.name))
-                    .and_then(|l| l.content.clone());
+                let last =
+                    self.wt_repos.get(&t).and_then(|legs| legs.iter().find(|l| l.name == leg.name));
+                let seen = last.and_then(|l| l.content.clone());
+                // A leg last read untouched and unmerged: if its tip moves
+                // onto a ref, the sampler asks the reflog whether it only
+                // moved (T-1311).
+                let was = last
+                    .filter(|l| !l.touched() && !l.merged && l.trouble.is_none())
+                    .map(|l| l.tip.clone())
+                    .unwrap_or_default();
                 let input = worktree::FlagInput {
                     ticket: t,
                     branch: branch.clone(),
                     base_oid: leg.base_oid.clone(),
                     seen,
+                    was,
                 };
                 if let Some(q) =
                     queries.iter_mut().find(|q| q.name == leg.name && q.base == leg.base)
@@ -21317,9 +21323,10 @@ impl Daemon {
             if legs.is_empty() {
                 continue;
             }
-            // A branch that came to its base with no work of its own is cut
-            // there again, on disk too, so the card, the DONE gate, the train
-            // and the crown all read it unmerged (T-740).
+            // A branch that came to its base, or the base's upstream, with no
+            // work of its own is cut there again, on disk too, so the card,
+            // the DONE gate, the train and the crown all read it unmerged
+            // (T-740, T-1311).
             let mut moved: Vec<(String, String)> = Vec::new();
             if let Some(old) = self.wt_repos.get(&t) {
                 for n in &mut legs {

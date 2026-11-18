@@ -1724,7 +1724,14 @@ impl Look {
                         let s =
                             samples.iter().find(|s| s.name == leg.name && s.base == leg.base)?;
                         let f = s.flags.flags.iter().find(|f| f.ticket == worker)?;
-                        Some(worktree::RepoFlags::of(leg, s, f, &binding.branch))
+                        let mut l = worktree::RepoFlags::of(leg, s, f, &binding.branch);
+                        // The reflog's proof of a move is the sample's own
+                        // (T-1311): the look reads it as the fold will, so a
+                        // turn's end before the next sample says no merge.
+                        if l.moved_only {
+                            l.rebase_on_tip();
+                        }
+                        Some(l)
                     })
                     .collect();
                 if legs.is_empty() {
@@ -4967,6 +4974,81 @@ pub(in crate::server) mod tests {
         assert_eq!(wake.to.as_ref().unwrap().merge, Some("merged"));
         assert_eq!(wake.changed()[0], "merge_state merged");
         assert!(wake.says_merge());
+    }
+
+    /// T-1311, the simbly crown's case: a worker in its first turn fetched
+    /// and moved its untouched branch onto `origin/main`, ahead of the local
+    /// base, in one sample window. The sample reads it merged into the
+    /// upstream; with the reflog saying it only moved, the fold cuts it there
+    /// again, on the binding too, and the crown hears nothing. The same
+    /// sample with a commit in the reflog is a landing, and wakes it.
+    #[test]
+    fn a_branch_moved_onto_its_upstream_wakes_no_delivery() {
+        for moved_only in [true, false] {
+            let mut b = watched_bed(&format!("t1311-{moved_only}"), None);
+            let w = b.worker;
+            b.d.base_branch = Some("main".into());
+            b.d.worktrees.insert(
+                w,
+                Binding::new(
+                    b.d.paths.repo_root.join("wt"),
+                    "msmn/worker".into(),
+                    "cut".into(),
+                    "cut".into(),
+                    BindingStatus::Attached,
+                ),
+            );
+            let leg = crate::worktree::RepoFlags {
+                base: "main".into(),
+                base_tip: "up0".into(),
+                counted: "origin/main".into(),
+                base_oid: "cut".into(),
+                tip: "cut".into(),
+                needs_rebase: true,
+                ..Default::default()
+            };
+            b.d.wt_repos.insert(w, vec![leg]);
+            b.d.wt_answered.insert(w, false);
+            // The fetch moved the upstream to `up1`, and the branch with it.
+            let sample = crate::worktree::RepoSample {
+                name: String::new(),
+                base: "main".into(),
+                flags: crate::worktree::WtFlags {
+                    base: "main".into(),
+                    base_tip: "up1".into(),
+                    counted: "origin/main".into(),
+                    flags: vec![crate::worktree::Flags {
+                        ticket: w,
+                        merged: true,
+                        ahead: 0,
+                        needs_rebase: false,
+                        tip: "up1".into(),
+                        merged_in: "origin/main".into(),
+                        merged_oid: String::new(),
+                        seen: None,
+                        unchecked: false,
+                        trouble: None,
+                        ff: true,
+                        moved_only,
+                    }],
+                    conflicts: Vec::new(),
+                },
+            };
+            let seq = b.d.wt_seq.wrapping_add(1);
+            b.d.absorb_worktree_flags(vec![sample], seq, None);
+            let woke = b.d.hear_merges();
+            if moved_only {
+                assert!(!woke && owed_for(&b.d, w).is_none(), "a move is no delivery");
+                assert!(!b.d.wt_agg[&w].merged, "and no merge: DONE is not admitted by it");
+                assert_eq!(b.d.worktrees[&w].base_oid, "up1", "cut there again, on disk too");
+                assert!(b.d.wt_repos[&w][0].merged_in.is_empty());
+            } else {
+                assert!(woke, "a commit merged into the upstream is a landing");
+                let wake = owed_for(&b.d, w).expect("the merge is news");
+                assert_eq!(wake.to.as_ref().unwrap().merge, Some("merged"));
+                assert_eq!(b.d.worktrees[&w].base_oid, "cut");
+            }
+        }
     }
 
     /// T-1278, case 3 with the read late: a turn's end held for the forge

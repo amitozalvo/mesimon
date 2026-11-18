@@ -1607,6 +1607,10 @@ pub struct FlagInput {
     pub branch: String,
     pub base_oid: String,
     pub seen: Option<ContentSeen>,
+    /// The leg's tip at its last sample where that sample read it untouched
+    /// and unmerged, else empty (T-1311): the one case whose move the
+    /// sampler asks the branch's reflog about (`Flags::moved_only`).
+    pub was: String,
 }
 
 /// Whether a branch's work is on the ref a merge would land it in — asked
@@ -1654,6 +1658,14 @@ pub struct Flags {
     /// first line. A leg that failed to sample is never a clean leg; the
     /// ticket page says this beside the branch.
     pub trouble: Option<String>,
+    /// Nothing the counted ref has is missing from the branch: a
+    /// fast-forward of the branch onto it is possible.
+    pub ff: bool,
+    /// The leg was untouched at its last sample (`FlagInput::was`), its tip
+    /// has moved onto a ref that holds it whole, and the branch's reflog
+    /// since says every step was a move, not a commit (T-1311): it came to
+    /// its base or the base's upstream with nothing of its own.
+    pub moved_only: bool,
 }
 
 /// Every binding's flags, sampled together, plus the base branch they were
@@ -1957,6 +1969,13 @@ fn compute_flags_on(
                 }
             }
             let merged = ancestor || !merged_in.is_empty();
+            // Asked only of a leg last read untouched whose tip has moved
+            // onto a ref by ancestry: one fork, once per such move.
+            let moved_only = merged
+                && merged_oid.is_empty()
+                && !i.was.is_empty()
+                && tip.oid != i.was
+                && only_moved(repo, &i.branch, &i.was);
             Flags {
                 ticket: i.ticket,
                 merged,
@@ -1968,6 +1987,8 @@ fn compute_flags_on(
                 seen,
                 unchecked,
                 trouble,
+                ff,
+                moved_only,
             }
         })
         .collect();
@@ -1976,6 +1997,51 @@ fn compute_flags_on(
     // and refusals are keyed on, so a forge merge re-arms them.
     let base_tip = if counted.is_empty() { base_tip.oid } else { target_tip };
     WtFlags { base, base_tip, counted, flags, conflicts }
+}
+
+/// The branch's reflog says it only moved since it stood at `was` (T-1311):
+/// every entry newer than the one that put it there is a reset, a branch
+/// reset, a rebase, or a fast-forward pull or merge, none of which makes a
+/// commit of the branch's own. A commit, a cherry-pick, a merge commit or a
+/// step the board does not know is work, and so is a reflog that does not
+/// reach `was` or cannot be read: those keep the reading as it was. The
+/// steps' words are git's own, never translated.
+fn only_moved(repo: &Path, branch: &str, was: &str) -> bool {
+    let Ok(out) = git_read(
+        repo,
+        &[
+            "log",
+            "-g",
+            "--no-decorate",
+            "-n",
+            "64",
+            "--format=%H%x09%gs",
+            &format!("refs/heads/{branch}"),
+        ],
+    ) else {
+        return false;
+    };
+    for line in out.lines() {
+        let (oid, step) = line.split_once('\t').unwrap_or((line, ""));
+        if oid == was {
+            return true;
+        }
+        if !moves_only(step) {
+            return false;
+        }
+    }
+    false
+}
+
+/// One reflog step that moves the branch without making a commit.
+fn moves_only(step: &str) -> bool {
+    let ff = |s: &str| s.ends_with(": Fast-forward");
+    step.starts_with("reset: moving to ")
+        || step.starts_with("branch: Reset to ")
+        || step.starts_with("branch: Created from ")
+        || step.starts_with("rebase")
+        || (step.starts_with("pull") && (ff(step) || step.contains("(finish)")))
+        || (step.starts_with("merge ") && ff(step))
 }
 
 /// The ref `ahead` and `needs_rebase` are counted against where it is not
@@ -2304,6 +2370,10 @@ pub struct RepoFlags {
     /// Why the leg's last sample failed, when it did (T-754): git's words,
     /// or `not sampled` for a leg no query reached. Never a clean leg.
     pub trouble: Option<String>,
+    /// `Flags::ff`: the branch holds everything the counted ref has.
+    pub ff: bool,
+    /// `Flags::moved_only`: the reflog says the tip only moved (T-1311).
+    pub moved_only: bool,
 }
 
 impl RepoFlags {
@@ -2344,6 +2414,8 @@ impl RepoFlags {
             content: f.seen.clone(),
             unchecked: f.unchecked,
             trouble: f.trouble.clone(),
+            ff: f.ff,
+            moved_only: f.moved_only,
         }
     }
 
@@ -2351,30 +2423,45 @@ impl RepoFlags {
     /// worker's `git rebase main` or `git pull` on a branch with no commits.
     /// Ancestry reads that as merged, since the tip left the creation base,
     /// and the crown heard a delivery from a worker still in its first turn.
-    /// Between two samples the leg was untouched and nothing ahead, its tip
-    /// moved, nothing is ahead now, and the base stood still: a merge moves
-    /// the base, this moves the branch. A base that moved in the same window
-    /// is a merge this cannot tell apart, and stays one.
+    /// Between two samples the leg was untouched and unmerged, its tip moved,
+    /// and it is now merged by ancestry alone (no squash's commit), nothing
+    /// of its own ahead of the ref that holds it. Then either of two proofs:
+    ///
+    /// - the reflog's (T-1311): every step since the untouched tip was a
+    ///   move (`moved_only`), whatever the base or its upstream did in the
+    ///   window. This is the upstream form, `git fetch && git reset --hard
+    ///   origin/main`, whose fetch moves the upstream in the same window.
+    /// - T-740's, for a repository whose reflog says nothing: merged into
+    ///   the local base, which stood still. A merge moves the base, this
+    ///   moves the branch; a base that moved in the same window is a merge
+    ///   this cannot tell apart, and stays one.
     pub fn came_to_base(old: &RepoFlags, new: &RepoFlags) -> bool {
-        !old.touched()
+        let moved = !old.touched()
             && !old.merged
-            && old.ahead == 0
             && !new.tip.is_empty()
             && new.tip != old.tip
             && new.merged
+            && new.merged_oid.is_empty();
+        let local = old.ahead == 0
             && new.merged_in.is_empty()
             && new.ahead == 0
             && !old.base_tip.is_empty()
-            && new.base_tip == old.base_tip
+            && new.base_tip == old.base_tip;
+        moved && (new.moved_only || local)
     }
 
     /// Take the tip as the leg's creation base: untouched again, its flags
-    /// what a branch freshly cut there reads.
+    /// what a branch freshly cut there reads, the ref it was merged in
+    /// forgotten with the verdict that named it.
     pub fn rebase_on_tip(&mut self) {
         self.base_oid = self.tip.clone();
         self.merged = false;
         self.unchecked = false;
-        self.needs_rebase = self.tip != self.base_tip;
+        self.needs_rebase = !self.ff;
+        self.merged_in.clear();
+        self.merged_oid.clear();
+        self.content = None;
+        self.moved_only = false;
     }
 
     /// The leg landed as `pr`, merged at its tip (T-739): merged, in the
@@ -3445,6 +3532,7 @@ mod tests {
                 branch: branch.to_string(),
                 base_oid,
                 seen,
+                was: String::new(),
             }];
             let got = compute_flags(&self.dir, "main", upstream, false, &inputs);
             got.flags.into_iter().next().expect("one binding, one answer")
@@ -3508,6 +3596,7 @@ mod tests {
             branch: branch.to_string(),
             base_oid: base_oid.to_string(),
             seen,
+            was: String::new(),
         };
         let judge = |captured, i: &FlagInput| {
             compute_flags_on(&r.dir, "main", None, false, std::slice::from_ref(i), captured)
@@ -3594,6 +3683,7 @@ mod tests {
                 branch: branch.into(),
                 base_oid: base_oid.into(),
                 seen: None,
+                was: String::new(),
             }];
             let got = compute_flags(&r.dir, "main", None, false, &inputs);
             let f = &got.flags[0];
@@ -3613,6 +3703,8 @@ mod tests {
                 content: f.seen.clone(),
                 unchecked: f.unchecked,
                 trouble: None,
+                ff: f.ff,
+                moved_only: f.moved_only,
             }
         };
         // Another ticket lands; both branches are sampled behind it.
@@ -3647,6 +3739,143 @@ mod tests {
         r.run(&["rebase", "-q", "main"]);
         r.run(&["checkout", "-q", "main"]);
         assert!(!RepoFlags::came_to_base(&moved_on, &sample("work", &cut)));
+    }
+
+    /// One leg's flags judged against `main` and `origin/main`, the way the
+    /// fold keeps them, with the last sample's tip as `was` where that
+    /// sample read it untouched and unmerged (as `wt_queries` passes it).
+    fn upstream_leg(
+        r: &Repo,
+        branch: &str,
+        base_oid: &str,
+        forge: bool,
+        last: Option<&RepoFlags>,
+    ) -> RepoFlags {
+        let was =
+            last.filter(|l| !l.touched() && !l.merged).map(|l| l.tip.clone()).unwrap_or_default();
+        let inputs = vec![FlagInput {
+            ticket: ulid::Ulid(1),
+            branch: branch.into(),
+            base_oid: base_oid.into(),
+            seen: None,
+            was,
+        }];
+        let got = compute_flags(&r.dir, "main", Some("origin/main"), forge, &inputs);
+        let f = &got.flags[0];
+        RepoFlags {
+            base: "main".into(),
+            base_tip: got.base_tip.clone(),
+            counted: got.counted.clone(),
+            base_oid: base_oid.into(),
+            tip: f.tip.clone(),
+            ahead: f.ahead,
+            merged: f.merged,
+            needs_rebase: f.needs_rebase,
+            merged_in: f.merged_in.clone(),
+            merged_oid: f.merged_oid.clone(),
+            content: f.seen.clone(),
+            unchecked: f.unchecked,
+            ff: f.ff,
+            moved_only: f.moved_only,
+            ..Default::default()
+        }
+    }
+
+    /// The simbly board's case (T-1311): on a forge board whose local `main`
+    /// is behind `origin/main`, a worker in its first turn fetched and moved
+    /// its untouched branch onto the upstream, which the fetch moved in the
+    /// same window. The upstream road read it merged into `origin/main`;
+    /// the reflog says the branch only moved, so it is cut there again.
+    /// Every way a worker moves a branch onto a ref: reset, rebase, and a
+    /// fast-forward merge or pull; with the forge's counts and without.
+    #[test]
+    fn a_branch_moved_onto_its_upstream_is_cut_there_again() {
+        let Some(r) = Repo::new("moved-to-upstream") else { return };
+        let tip = |b: &str| branch_tip(&r.dir, b);
+        let up_at = |oid: &str| r.run(&["update-ref", "refs/remotes/origin/main", oid]);
+        // The forge has merged twice past the local `main`.
+        r.run(&["checkout", "-q", "-b", "forge", "main"]);
+        r.commit("f0.txt", "forge\n", "merged on the forge");
+        r.commit("f1.txt", "forge\n", "merged on the forge");
+        let up0 = tip("forge");
+        up_at(&up0);
+        r.run(&["checkout", "-q", "main"]);
+        let forms: [(&str, &[&str]); 4] = [
+            ("reset", &["reset", "-q", "--hard", "origin/main"]),
+            ("rebase", &["rebase", "-q", "origin/main"]),
+            ("merge", &["merge", "-q", "--ff-only", "origin/main"]),
+            ("pull", &["pull", "-q", "--ff-only", ".", "forge"]),
+        ];
+        for (n, (form, step)) in forms.iter().enumerate() {
+            for forge in [true, false] {
+                let branch = format!("{form}-{forge}");
+                // The worker's branch, cut from the upstream.
+                r.run(&["branch", &branch, &up0]);
+                let before = upstream_leg(&r, &branch, &up0, forge, None);
+                assert!(!before.touched() && !before.merged, "{branch}: {before:?}");
+                // In one window: the forge merges again, the worker's fetch
+                // moves `origin/main`, and the branch is moved onto it.
+                r.run(&["checkout", "-q", "forge"]);
+                r.commit(&format!("g-{n}-{forge}.txt"), "forge\n", "another ticket's MR");
+                up_at(&tip("forge"));
+                r.run(&["checkout", "-q", &branch]);
+                r.run(step);
+                r.run(&["checkout", "-q", "main"]);
+                assert_eq!(tip(&branch), tip("forge"), "{branch} moved onto the upstream");
+                let mut after = upstream_leg(&r, &branch, &up0, forge, Some(&before));
+                assert!(after.merged, "{branch}: the upstream road reads it merged: {after:?}");
+                assert_eq!(after.merged_in, "origin/main", "{branch}");
+                assert!(after.moved_only, "{branch}: the reflog says it only moved");
+                if forge {
+                    assert_ne!(after.base_tip, before.base_tip, "{branch}: the upstream moved too");
+                }
+                assert!(RepoFlags::came_to_base(&before, &after), "{branch}");
+                after.rebase_on_tip();
+                assert!(!after.merged && !after.touched(), "{branch}: {after:?}");
+                assert!(after.merged_in.is_empty() && after.content.is_none());
+                assert!(!after.needs_rebase, "{branch}: it holds the base and the upstream");
+                let next = upstream_leg(&r, &branch, &after.base_oid, forge, Some(&after));
+                assert!(
+                    !next.merged && next.merged_in.is_empty(),
+                    "{branch}: the next sample agrees"
+                );
+            }
+        }
+    }
+
+    /// The other side of T-1311: a branch whose work really landed on the
+    /// forge, inside one sample window that also moved the upstream, still
+    /// reads merged. The reflog holds the worker's commit.
+    #[test]
+    fn work_merged_into_the_upstream_in_one_window_still_reads_merged() {
+        let Some(r) = Repo::new("work-to-upstream") else { return };
+        let tip = |b: &str| branch_tip(&r.dir, b);
+        let up_at = |oid: &str| r.run(&["update-ref", "refs/remotes/origin/main", oid]);
+        r.run(&["checkout", "-q", "-b", "forge", "main"]);
+        r.commit("f0.txt", "forge\n", "merged on the forge");
+        let up0 = tip("forge");
+        up_at(&up0);
+        for forge in [true, false] {
+            let branch = format!("work-{forge}");
+            r.run(&["checkout", "-q", "-b", &branch, &up0]);
+            r.run(&["checkout", "-q", "main"]);
+            let before = upstream_leg(&r, &branch, &up0, forge, None);
+            assert!(!before.touched());
+            // Commit, push, and the forge fast-forwards it; then the fetch.
+            r.run(&["checkout", "-q", &branch]);
+            r.commit(&format!("w-{forge}.txt"), "work\n", "the ticket's work");
+            r.run(&["checkout", "-q", "main"]);
+            up_at(&tip(&branch));
+            let after = upstream_leg(&r, &branch, &up0, forge, Some(&before));
+            assert!(after.merged && after.merged_in == "origin/main", "{branch}: {after:?}");
+            assert!(!after.moved_only, "{branch}: a commit is no move");
+            assert!(!RepoFlags::came_to_base(&before, &after), "{branch}: a landing");
+            up_at(&up0);
+        }
+        // A step the board does not know is work too.
+        assert!(!moves_only("commit: x") && !moves_only("cherry-pick: x") && !moves_only(""));
+        assert!(!moves_only("merge origin/main: Merge made by the 'ort' strategy."));
+        assert!(moves_only("merge origin/main: Fast-forward") && moves_only("pull: Fast-forward"));
     }
 
     /// The other forge button: every commit replayed on the base. The
@@ -3877,6 +4106,7 @@ mod tests {
                 branch: "work".into(),
                 base_oid: up.clone(),
                 seen: None,
+                was: String::new(),
             }];
             let got = compute_flags(&r.dir, "main", Some("origin/main"), forge, &inputs);
             let f = &got.flags[0];
@@ -4012,6 +4242,7 @@ mod tests {
                 branch: b.to_string(),
                 base_oid: base_oid.clone(),
                 seen: None,
+                was: String::new(),
             })
             .collect();
         let first = compute_flags(&r.dir, "main", None, false, &inputs);
@@ -4087,6 +4318,7 @@ mod tests {
                 branch: b.to_string(),
                 base_oid: if *b == "fresh" { new_tip.clone() } else { old_tip.clone() },
                 seen: None,
+                was: String::new(),
             })
             .collect();
         let got = compute_flags(&repo, "main", None, false, &inputs);
@@ -4170,6 +4402,7 @@ mod tests {
                 branch: branch.into(),
                 base_oid: base_oid.into(),
                 seen: None,
+                was: String::new(),
             }]
         };
         let query = |name: &str, repo: PathBuf, base_oid: &str| RepoQuery {
@@ -4570,6 +4803,7 @@ mod tests {
             content: None,
             unchecked: false,
             trouble: None,
+            ..Default::default()
         }
     }
 
@@ -4751,6 +4985,7 @@ mod tests {
                     branch: b.branch.clone(),
                     base_oid: leg.base_oid.clone(),
                     seen: None,
+                    was: String::new(),
                 }],
             })
             .collect();
@@ -4777,6 +5012,7 @@ mod tests {
                     content: f.seen.clone(),
                     unchecked: f.unchecked,
                     trouble: None,
+                    ..Default::default()
                 }
             })
             .collect();
