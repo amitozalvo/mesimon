@@ -7,7 +7,7 @@ import { THEMES, barColours, paintBar, wornTheme } from "./themes.js";
 import { crownTouch, worktreeWords } from "./lists.js";
 import { crownSentence } from "./detail.js";
 import { answerable, cardAnswers, dialogForm, formAnswers, measured, requestFields } from "./dialogs.js";
-import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withHand, withLines } from "./transcript.js";
+import { foldWords, groupRows, mergePage, stepParts, tailAsk, withActs, withHand, withLines, wordsKey } from "./transcript.js";
 import { animOf } from "./shin.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { enterSends, keyboardUp, viewportVars } from "./viewport.js";
@@ -1185,6 +1185,44 @@ test("the crown's acts sit among the rows by their time", () => {
   assert.deepEqual(names(withActs({ ...chat, floor: 0, acts: [act(50, "a0"), act(150, "a1")] }, chat.rows)), ["r0", "a1", "r10", "r20", "r30"]);
   assert.equal(withActs({ ...chat, acts: [] }, chat.rows), chat.rows);
   assert.equal(withActs(chat, chat.rows), chat.rows, "an older host's page has none");
+});
+
+// T-1309: words the crown or another board's crown carried in mark the
+// prompt that holds them, by the host's key of them (core's `words_key`),
+// so the prompt reads as theirs and not the person's.
+test("the words' key is the host's", () => {
+  assert.equal(wordsKey(""), "cbf29ce484222325");
+  assert.equal(wordsKey(" fix\tthe  loop\n"), "d5981c001e96aff7");
+  assert.equal(wordsKey("שלום\u3000 עולם"), "aeedb9d4d4e97474");
+  assert.equal(wordsKey("fix\u00a0the loop"), wordsKey("fix the loop"));
+  assert.notEqual(wordsKey("fix\ufeffthe loop"), wordsKey("fix the loop"), "not a space to Rust");
+});
+
+test("a reply from another board's crown marks its prompt", () => {
+  const prompt = (at, ms, text) => ({ at, ms, kind: "prompt", text });
+  const said = "The crown of the relay board replied: cookie path stays";
+  const rows = [prompt(0, 1000, "mine"), prompt(10, 9000, said), { at: 20, ms: 9500, kind: "reply", text: "ok" }, prompt(30, 12000, said)];
+  const reply = { ms: 8000, text: "the relay board's crown replied", road: true, prompt: true, words: wordsKey(said) };
+  const chat = { conversation: "a", rows, floor: null };
+  const out = withActs({ ...chat, acts: [reply] }, rows);
+  assert.equal(out.length, rows.length, "no line of its own");
+  assert.deepEqual(out.map((r) => !!r.crown), [false, true, false, false]);
+  assert.equal(out[1].crown, reply);
+  // The same words twice: each act its own prompt, in order.
+  const twice = withActs({ ...chat, acts: [reply, { ...reply, ms: 11000 }] }, rows);
+  assert.deepEqual(twice.map((r) => !!r.crown), [false, true, false, true]);
+  // A prompt dated before the act, past the slack, is not what it carried.
+  assert.deepEqual(withActs({ ...chat, acts: [{ ...reply, ms: 20000 }] }, rows).map((r) => r.kind), ["prompt", "prompt", "reply", "prompt", "act"]);
+  // Words no prompt holds, or an older host's act with no key: the line over
+  // the first prompt after it, as before.
+  const none = withActs({ ...chat, acts: [{ ...reply, words: wordsKey("other") }] }, rows);
+  assert.deepEqual(none.map((r) => r.kind), ["prompt", "act", "prompt", "reply", "prompt"]);
+  assert.ok(none.every((r) => !r.crown));
+  const { words: _, ...old } = reply;
+  assert.deepEqual(withActs({ ...chat, acts: [old] }, rows).map((r) => r.kind), ["prompt", "act", "prompt", "reply", "prompt"]);
+  // An earlier page not read yet: an act just before the held start still
+  // finds its prompt there, inside the slack.
+  assert.equal(withActs({ ...chat, floor: 0, rows: rows.slice(1), acts: [reply] }, rows.slice(1))[0].crown, reply);
 });
 
 // T-1304: a raised hand reads in the phone's conversation as on the ticket

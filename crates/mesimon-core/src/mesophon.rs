@@ -910,6 +910,11 @@ pub struct ActRow {
     /// prompt that holds them, the first one dated at or after it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prompt: bool,
+    /// Those words' key (`crownact::words_key`, sixteen hex digits), so the
+    /// page knows the prompt that holds them for the crown's, or the other
+    /// board's crown's, not the person's (T-1309). Absent from an older host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
     /// Words the act carries itself: the crown's answer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
@@ -936,6 +941,7 @@ impl ActRow {
                 text,
                 road: l.road,
                 prompt: l.words.is_some(),
+                words: l.words.map(|w| format!("{w:016x}")),
                 body: crate::text::cap_bytes(
                     &crate::text::scrub_lines(&l.body),
                     crate::crownact::DETAIL_BYTES,
@@ -1540,6 +1546,8 @@ mod tests {
         assert!(rows.len() < lines.len() && rows.windows(2).all(|w| w[0].ms < w[1].ms));
         let last = rows.last().unwrap();
         assert_eq!((last.ms, last.prompt, last.body.as_str()), (400, true, "yes[31m, go"));
+        // The words' key as the page hashes a prompt: sixteen hex digits.
+        assert_eq!(last.words.as_deref(), Some("0000000000000007"));
         assert_eq!(last.cause.as_deref(), Some("after you asked the crown"));
         // The quiet fields are left out, and a page from an older host
         // (or the shelf) reads with no acts at all.

@@ -183,11 +183,30 @@ export function withHand(rows, hand) {
 // is the host's clock, the row's the transcript's (T-1162's slack).
 export const ACT_SLACK_MS = 5000;
 
+// Where words separate, as Rust's `split_whitespace` reads them (Unicode
+// White_Space): JS's `\s` also takes U+FEFF and leaves out U+0085.
+const SPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const MASK = 0xffffffffffffffffn;
+const utf8 = new TextEncoder();
+
+// Words' key, as the host keys the words an act carried (core's
+// `crownact::words_key`, T-1309): FNV-1a over the words joined by one
+// space, sixteen hex digits.
+export function wordsKey(text) {
+  let h = 0xcbf29ce484222325n;
+  for (const b of utf8.encode((text || "").split(SPACE).filter(Boolean).join(" ")))
+    h = ((h ^ BigInt(b)) * 0x100000001b3n) & MASK;
+  return h.toString(16).padStart(16, "0");
+}
+
 // The crown's acts among the rows (T-1264), placed as the ticket page places
 // them (T-1162): each before the first row dated after it, one that carried
 // words before the first prompt dated at or after it, one dated after every
 // row at the end. One dated before what is held waits until the start of
 // the conversation is.
+// Words whose key the host sent (T-1309) mark the prompt that holds them,
+// the first not yet marked and not dated before the act less the slack:
+// that prompt is the crown's, or another board's crown's, not the person's.
 export function withActs(chat, rows) {
   const acts = chat?.acts;
   if (!acts?.length) return rows;
@@ -196,8 +215,19 @@ export function withActs(chat, rows) {
   let last = -Infinity;
   const times = rows.map((r) => (r.kind === "said" ? last : (last = r.ms ?? last)));
   const first = times.find((t) => t > -Infinity);
+  const keys = new Map();
+  const keyOf = (i) => {
+    if (!keys.has(i)) keys.set(i, wordsKey(rows[i].text));
+    return keys.get(i);
+  };
+  const marks = new Map();
   const at = [];
   acts.forEach((act, n) => {
+    if (act.words && !(chat.floor != null && !(first <= act.ms + ACT_SLACK_MS))) {
+      const j = rows.findIndex((r, i) => r.kind === "prompt" && !marks.has(i)
+        && (r.ms == null || r.ms + ACT_SLACK_MS >= act.ms) && keyOf(i) === act.words);
+      if (j >= 0) return marks.set(j, act);
+    }
     if (chat.floor != null && !(first <= act.ms)) return;
     const after = (i) => rows[i].kind !== "said" && times[i] > act.ms;
     const prompt = (i) => rows[i].kind === "prompt" && times[i] + ACT_SLACK_MS >= act.ms;
@@ -205,13 +235,13 @@ export function withActs(chat, rows) {
     if (i < 0) i = rows.findIndex((_, i) => after(i));
     at.push({ i: i < 0 ? rows.length : i, item: { kind: "act", act, n } });
   });
-  if (!at.length) return rows;
+  if (!at.length && !marks.size) return rows;
   at.sort((a, b) => a.i - b.i || a.item.n - b.item.n);
   const out = [];
   let k = 0;
   rows.forEach((row, i) => {
     for (; k < at.length && at[k].i === i; k++) out.push(at[k].item);
-    out.push(row);
+    out.push(marks.has(i) ? { ...row, crown: marks.get(i) } : row);
   });
   for (; k < at.length; k++) out.push(at[k].item);
   return out;
@@ -226,6 +256,19 @@ function Act({ act }) {
     <p dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><time datetime=${new Date(act.ms).toISOString()}>${clock(act.ms)}</time></p>
     ${act.body && html`<p class="chat-act-body" dir="auto">${act.body}</p>`}
     ${act.cause && html`<p class="chat-act-cause" dir="auto">${capital(act.cause)}</p>`}
+  </div>`;
+}
+
+// Words mesimon carried in (T-1309), headed as the ticket page heads them
+// (T-1162): who said them over the words, in the crown's ink, and off the
+// person's bubble, since they are not the person's.
+function Crowned({ row }) {
+  const act = row.crown;
+  const ms = row.ms ?? act.ms;
+  return html`<div class=${`chat-row chat-crowned${act.road ? " chat-crowned-road" : ""}`}>
+    <p class="chat-crowned-head" dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><time datetime=${new Date(ms).toISOString()}>${clock(ms)}</time></p>
+    <p class="chat-crowned-body" dir="auto"><${Linked} text=${row.text} /></p>
+    ${act.cause && html`<p class="chat-crowned-cause" dir="auto">${capital(act.cause)}</p>`}
   </div>`;
 }
 
@@ -257,6 +300,7 @@ function Step({ text }) {
 }
 
 function Row({ row }) {
+  if (row.kind === "prompt" && row.crown) return html`<${Crowned} row=${row} />`;
   if (row.kind === "prompt")
     return html`<div class="chat-row chat-prompt"><p dir="auto"><${Linked} text=${row.text} /></p></div>`;
   if (row.kind === "reply")

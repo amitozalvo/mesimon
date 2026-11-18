@@ -47259,3 +47259,38 @@ stopped is read off its queued notification…` (64/64 under `claude plugin test
 (two commands, one kill to `Some(1)`, the last to `EndTurn`), on both roads. Run: `cargo ut`,
 `--test agents state_lab_e2e::` (7/7, mod road 2/2), `--test mods mod_plugin` (1/1). No reruns.
 No server, command, schema or harness file changed, so no suite is owed after the merge.
+
+## Remote Control heads a crown's or another board's crown's words as theirs, not yours (T-1309, 2026-11-18, the author, from the phone: "crown to crown replies show as \"you\" … it should be \"X board's crown\" in blue")
+
+T-1264 left the phone drawing words mesimon carried into a conversation (a linked board's crown's
+ask or reply, the crown's ask to a worker, the board's wake) as the person's own bubble, with the
+act's line over it; the ticket page has headed that prompt with its sender since T-1162. The phone
+now does the same.
+
+**The wire.** `ActRow` gains `words`: the act's `crownact::words_key` as sixteen hex digits (a
+`u64` is past a JS number's precision), skipped when absent. `prompt` stays for an older page.
+
+**The page.** `transcript.js::wordsKey` is core's key in JS (FNV-1a, BigInt, over UTF-8 of the
+words joined by one space, split on Rust's `White_Space` set, not JS's `\s`, which differs at
+U+FEFF and U+0085; pinned on both sides by `"שלום　 עולם"`). `withActs` marks the first
+prompt not yet marked, not dated before the act less `ACT_SLACK_MS`, whose key is the act's, as
+the ticket page's `place_acts` does; the act then has no line of its own. The marked prompt is
+`Crowned` (`.chat-crowned`): the act's sentence (`The relay board's crown replied`, the bolt for
+words across boards, the crown otherwise) and its time over the words, in the crown's ink
+(`--tag-5`), off the bubble, the cause on a quiet line under. Words no held prompt holds, and an
+older host's act with no key, keep T-1264's line over the first prompt after it.
+
+**Kept:** the ticket page's sentence for the head ("the X board's crown replied"), not a new
+"X board's crown": the two screens say it in one set of words.
+
+Tests: core `the_key_is_whitespace_blind_and_tells_words_apart` (the shared pin),
+`a_page_s_acts_are_the_newest_that_fit_scrubbed_and_absent_from_an_older_host` (the key's
+spelling); `state.test.js` "the words' key is the host's", "a reply from another board's crown
+marks its prompt"; `ux.test.js` chatFlow (the reply headed in the crown's ink, no bubble). Run:
+`cargo ut`, `node --test state.test.js`, the ux suite. No e2e names the phone's transcript road,
+and no file on the post-merge list changed.
+
+**Owed:** a CHANGELOG line at the next bump — **Fixed:** on a phone, words another board's crown
+or this board's crown sent into a conversation are headed with who sent them, as on the
+terminal's ticket page, instead of reading as yours — and the relay's `ship.sh` after it merges,
+since the hosted relay serves this page.

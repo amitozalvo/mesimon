@@ -2983,18 +2983,32 @@ async function chatFlow(browser, engineName, size, viewport) {
         { at: 0, kind: "notice", text: "conversation cleared", ms: t0 },
         { at: 10, kind: "prompt", text: "Crown's words", ms: t0 + 60000 },
         { at: 20, kind: "reply", text: "On it", ms: t0 + 120000 },
+        { at: 30, kind: "prompt", text: "Cookie path stays, the relay's crown says.", ms: t0 + 180000 },
       ];
       fixture.acts = [
         { ms: t0 + 30000, text: "crown started this ticket's agent on Opus", cause: "after you asked the crown" },
         { ms: t0 + 50000, text: "crown asked", prompt: true },
+        // Another board's crown's reply with its words' key (T-1309): the
+        // prompt that holds them is that crown's, not a bubble of yours.
+        { ms: t0 + 179000, text: "the relay board's crown replied", road: true, prompt: true, words: "898653eb37d6cc01" },
         { ms: Date.now() - 60000, text: "crown moved this ticket to REVIEW" },
       ];
     });
     await until(page, () => document.querySelectorAll("#chat .chat-act").length === 3);
+    await until(page, () => document.querySelectorAll("#chat .chat-crowned").length === 1);
     assert.equal(await page.locator("#crown-line").count(), 0, "no banner over a conversation that says it");
     assert.deepEqual(
       await chat.locator(".chat-row:not(.chat-doing)").evaluateAll((rows) => rows.map((r) => r.querySelector("span")?.textContent ?? r.textContent)),
-      ["conversation cleared", "Crown started this ticket's agent on Opus", "Crown asked", "Crown's words", "On it", "Crown moved this ticket to REVIEW"],
+      ["conversation cleared", "Crown started this ticket's agent on Opus", "Crown asked", "Crown's words", "On it",
+        "The relay board's crown replied", "Crown moved this ticket to REVIEW"],
+    );
+    const crowned = chat.locator(".chat-crowned");
+    assert.equal(await crowned.locator(".chat-crowned-body").textContent(), "Cookie path stays, the relay's crown says.");
+    assert.equal(await chat.locator(".chat-prompt", { hasText: "Cookie path" }).count(), 0, "off the person's bubble");
+    assert.equal(
+      await crowned.locator(".chat-crowned-head").evaluate((n) => getComputedStyle(n).color),
+      await chat.locator(".chat-act > p:first-child").first().evaluate((n) => getComputedStyle(n).color),
+      "the crown's ink",
     );
     assert.equal(await chat.locator(".chat-act-cause").first().textContent(), "After you asked the crown");
     assert.equal(

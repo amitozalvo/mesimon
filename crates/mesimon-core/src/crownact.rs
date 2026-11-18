@@ -278,6 +278,9 @@ mod tests {
         // Stable across builds: a line outlives the binary that wrote it.
         assert_eq!(words_key(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(words_key(" fix\tthe  loop\n"), 0xd598_1c00_1e96_aff7);
+        // UTF-8 bytes, an ideographic space between words: the phone's
+        // `wordsKey` pins the same (T-1309).
+        assert_eq!(words_key("שלום\u{3000} עולם"), 0xaeed_b9d4_d4e9_7474);
     }
 
     #[test]
