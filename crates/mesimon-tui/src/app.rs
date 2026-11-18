@@ -22124,7 +22124,10 @@ mod tests {
         }
         impl Transport for HeldNotes {
             fn request(&mut self, command: Command) -> Result<Response> {
-                assert!(!matches!(command, Command::ReadNotes { .. }), "asked on the board's thread");
+                assert!(
+                    !matches!(command, Command::ReadNotes { .. }),
+                    "asked on the board's thread"
+                );
                 self.inner.request(command)
             }
             fn request_detached(&mut self, command: Command) -> Receiver<Result<Response>> {

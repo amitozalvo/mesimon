@@ -2,7 +2,8 @@
 //! `links.toml` between them. A person links the boards from one side and
 //! both list each other; the crown of one asks the crown of the other with
 //! `ask_board`, the words land on that crown's card by the queue, wrapped in
-//! the board's `Board ask` template, and go into its pane at its idle; the
+//! the board's `Board ask` template, and go into its pane at its idle, or
+//! into its running turn (T-1305); the
 //! reply is the same tool back, read as a reply on both sides; a supervised
 //! board holds the words for a person's send; a board with no crown, or no
 //! daemon up, refuses in words; and the feed never carries the words.
@@ -206,6 +207,27 @@ fn two_crowns_reach_each_other_through_one_links_file() {
     assert!(touches_of(&mut cb).iter().any(|t| t.action == TouchAction::Replied));
     hook_send(&a.paths.hook_sock(), &sa.to_string(), "UserPromptSubmit", "{}");
     wait_until(std::time::Duration::from_secs(5), "A's queue to clear", || {
+        pending_of(&mut ca, Some(ta)).is_empty()
+    });
+
+    // A crown mid-turn (T-1305): A's turn on the reply is still running, and
+    // B's next words go into it at once. Before, they sat on A's crown's card
+    // as a queued ask until the turn ended.
+    ca.await_state(sa, "running", |s| *s == mesimon_core::board::SessionState::Running);
+    match ask_board(&mut cb, sb, &name, "mesimon-probe-737 one more thing") {
+        Response::AgentAskedBoard { asked, .. } => assert_eq!(asked.road, AskRoad::SentNow),
+        other => panic!("the ask into a running turn: {other:?}"),
+    }
+    assert!(
+        pending_of(&mut ca, Some(ta)).iter().all(|p| p.in_flight),
+        "nothing waits on A's card for its turn's end: {:?}",
+        pending_of(&mut ca, Some(ta))
+    );
+    wait_until(std::time::Duration::from_secs(10), "the words to land in A's running turn", || {
+        landed(&got_a, "mesimon-probe-737 one more thing")
+    });
+    hook_send(&a.paths.hook_sock(), &sa.to_string(), "UserPromptSubmit", "{}");
+    wait_until(std::time::Duration::from_secs(5), "A's queue to clear again", || {
         pending_of(&mut ca, Some(ta)).is_empty()
     });
 

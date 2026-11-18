@@ -47029,3 +47029,37 @@ passed, 0 failed), `node --test state.test.js assets.test.js` (71), `node ux.tes
 chromium and webkit, three sizes). No e2e names a changed command or function (`raise_hand_e2e`
 covers the hand's own road, untouched); no post-merge suite owed (`core/src/mesophon.rs` and
 `server/mesophon.rs` are outside its list).
+
+## A linked board's words go into a crown's running turn (T-1305, 2026-11-18, "it should just send itself")
+
+The person, with a picture of the crown's page: a linked board's reply sat in the ask box as
+`queued ∙ after its turn ∙ ^y send now ∙ ^u drop` while the crown worked, reading as words of
+theirs to send. `peer_ask` parked every board's words for the crown's idle (T-733's road), so a
+crown mid-turn held them on its card until the turn ended.
+
+**Now.** Under autonomous mode, words that the queue's own pass leaves behind a crown whose pane
+is `Running` (`Daemon::crown_mid_turn`) are sent by the board at once through `send_queued_ask`,
+the road `^y` on that row takes: a paste and its Enter on the hook set, a `fill` and an Enter on
+the mod road, read at the turn's next tool step. The receipt's road reads `sent_now` and
+`board_ask_received` carries it. Nothing else moved: an idle crown takes the words from the queue
+as before (`queued`), supervised still holds them for `^y`, and a parked crown or an idle one
+behind a busy shared checkout keeps the queue's gates.
+
+**The person's typing.** No key goes under their hands: `paste_at` refuses for a client at the
+pane or a draft in the box (T-958, T-966), the entry returns to the queue with its `person` word
+and the receipt reads `queued`; on the mod road the words go by `submit`, which types nothing.
+A permission dialog keeps the entry the same way.
+
+**A send that loses the words** (the seat changed, the paste failed) is refused to the asking
+crown in words (`did not take the words (…); the ask can be made again`), fed
+`board_ask_received` `failed`. So the open-ask mark (`asks_out`) is now cleared only once the
+words are taken, where a refused park used to spend it.
+
+**Crown text.** `ask_board`'s description and its receipt's `answer` said the words arrive
+"once idle"; the description drops the two words and the receipt says "in a running turn too".
+`CROWN_WAKES` and the two templates are unchanged.
+
+Refuted: sending at once whatever the crown's state (a wake of a parked crown, or words into an
+idle one while another agent works in its checkout, would pass the queue's one-writer gate on
+another board's say-so); `immediately` (it backgrounds the crown's running tool call, more than
+the person asked).

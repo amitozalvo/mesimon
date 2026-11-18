@@ -1809,8 +1809,14 @@ mod tests {
             "{advice}"
         );
         assert!(advice.contains("If it does, no compaction is seen"), "{advice}");
-        assert!(!advice.contains("still seen"), "T-1297: a typed /compact is not seen there: {advice}");
-        assert!(!advice.contains("held back"), "T-1297: no road holds words for a compaction: {advice}");
+        assert!(
+            !advice.contains("still seen"),
+            "T-1297: a typed /compact is not seen there: {advice}"
+        );
+        assert!(
+            !advice.contains("held back"),
+            "T-1297: no road holds words for a compaction: {advice}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

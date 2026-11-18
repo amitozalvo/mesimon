@@ -11,8 +11,9 @@
 //! The receiving daemon admits that one command, from a board the file pairs
 //! with its own, and parks the words on its crown's card as the crown's own
 //! asks are parked for a worker (`park_ask`): the queue sends them at the
-//! crown's idle under autonomous mode, a person's `^y` under supervised, and
-//! they go in through the board's `Board ask` template, which names the
+//! crown's idle under autonomous mode, and into its running turn where it
+//! is mid-turn (T-1305, `crown_mid_turn`); a person's `^y` under supervised.
+//! They go in through the board's `Board ask` template, which names the
 //! asking board and its crown's ticket. The reply is the same tool back: a
 //! board that holds an open ask from the other reads the next words it sends
 //! there as the answer (`asks_in`/`asks_out`), and the receiving side reads
@@ -326,7 +327,8 @@ impl Daemon {
             };
         }
         // Answering an ask this board made there is a reply, said as one.
-        let reply = self.asks_out.remove(&from).is_some();
+        // The open ask is settled once the words are taken, below.
+        let reply = self.asks_out.contains_key(&from);
         let title = mesimon_core::text::scrub_text(&crown_title);
         let words = if reply {
             self.board
@@ -349,18 +351,51 @@ impl Daemon {
             q.deliver = Deliver::Idle;
             held = q.held_for_person();
         }
-        let road = if held { AskRoad::HeldForPerson } else { AskRoad::Queued };
+        let mut road = if held { AskRoad::HeldForPerson } else { AskRoad::Queued };
+        if !held {
+            self.drain_queue();
+            // A crown mid-turn (T-1305): the queue would keep the words on
+            // its card to the turn's end, where a person read them as theirs
+            // to send. The board sends them into the running turn instead,
+            // as `^y` there would.
+            if self.crown_mid_turn(crown) {
+                match self.send_queued_ask(crown) {
+                    // No key went in (a person at the pane, a dialog, words
+                    // of the board's still going in): the entry stands, and
+                    // the queue sends it when that clears.
+                    Response::Err { .. } if self.queued.iter().any(|q| q.ticket == crown) => {}
+                    // The send took the entry and the words went nowhere:
+                    // the asking crown is told, and nothing reads as taken.
+                    Response::Err { message } => {
+                        self.feed.board_outcome(
+                            "peer",
+                            "board_ask_received",
+                            Some(crown),
+                            "failed",
+                        );
+                        self.broadcast();
+                        return Response::Err {
+                            message: format!(
+                                "{my_name}'s crown {key} did not take the words ({message}); the \
+                                 ask can be made again"
+                            ),
+                        };
+                    }
+                    _ => road = AskRoad::SentNow,
+                }
+            }
+        }
+        // The road the words took, known once they went or stayed.
         self.feed.board_outcome("peer", "board_ask_received", Some(crown), road.word());
         self.board_touched(
             &from,
             if reply { TouchAction::GotReply } else { TouchAction::Received },
             None,
         );
-        if !reply {
+        if reply {
+            self.asks_out.remove(&from);
+        } else {
             self.asks_in.insert(from, now_ms());
-        }
-        if !held {
-            self.drain_queue();
         }
         self.broadcast();
         Response::PeerAsked(PeerAnswer { road, crown: key, reply })
@@ -377,6 +412,20 @@ impl Daemon {
         from: FromBoard,
     ) -> std::result::Result<(), String> {
         self.park_ask(crown, seat, words, super::Asker::Board(from), false, false)
+    }
+
+    /// A linked board's words still queued for a crown whose pane is in a
+    /// turn (T-1305): the one wait the board ends by sending them itself.
+    /// A parked crown, an idle one behind a busy checkout and a state the
+    /// board has not resolved keep the queue's own gates.
+    fn crown_mid_turn(&self, crown: ulid::Ulid) -> bool {
+        self.queued.iter().any(|q| {
+            q.ticket == crown
+                && q.from_board.is_some()
+                && !q.held_for_person()
+                && matches!(q.seat, QueuedSeat::Pane(id)
+                    if self.board.session(id).is_some_and(|s| s.state == SessionState::Running))
+        })
     }
 
     /// Record that words went to or came from a linked board (T-733), so

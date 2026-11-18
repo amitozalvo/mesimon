@@ -431,7 +431,7 @@ fn render(resp: Response) -> Value {
                 "reply": reply,
                 "answer": format!(
                     "{board}'s crown answers with ask_board; its words arrive as this session's \
-                     next prompt once idle, beginning with the board's name"
+                     next prompt, in a running turn too, beginning with the board's name"
                 ),
             }))
         }

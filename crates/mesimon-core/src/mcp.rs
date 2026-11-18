@@ -1037,7 +1037,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Sends words to the crown of another mesimon board on this machine \
                             (crown only): one a person linked with this board, named as \
                             list_board's linked_boards names it. The words land on that \
-                            crown's card and reach it as its next prompt once idle, or wait \
+                            crown's card and reach it as its next prompt, or wait \
                             there for a person where that board is supervised; its reply \
                             comes back the same way, as this session's next prompt. Refused \
                             for a board not linked, not open, or without a crown.",
