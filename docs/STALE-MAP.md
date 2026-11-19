@@ -47680,3 +47680,14 @@ one second. These are fixture measurements, not measurements of the affected rem
 The earlier resource-count unit failure did not recur in the final required unit run; no
 resource-count repair is claimed. Full workspace verification is due after this follow-up is
 merged because production `server.rs` changed.
+
+## Unstable release preparation after the responsiveness fixes (T-1314, 2026-11-19)
+
+Bumped the seven workspace packages to `0.1.0-beta.21.unstable.2` and added release notes for
+preview cancellation, direct Enter, asynchronous text submission and peer calls, plus the
+crown-wake diagnostics, persisted park fallback and stacked-branch correction since unstable.1.
+The notes disclose the optional session-record addition. No external dependency was updated.
+The preceding single-road suite at the feature commit is not this release's stamp: the version
+bump must pass the release preparation gate on both roads with the bundled tmux. Removed
+redundant test conversions and made checked background-state invariants explicit for the
+release's all-target clippy gate; behavior is unchanged.

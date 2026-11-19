@@ -10,6 +10,33 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.21.unstable.2 — 2026-11-19
+
+An unstable build focused on board responsiveness.
+
+Session files gain an optional record of how a background task was parked.
+Existing session files remain readable.
+
+### Changed
+
+- The activity log says why a crown wake is waiting and when that hold clears.
+
+### Fixed
+
+- **Typing and navigation stay responsive while preview cleanup and ticket
+  acknowledgements are pending.** Leaving a ticket cancels its obsolete tmux
+  capture before opening another preview or entering a pane.
+- **Enter on the board respects the direct-to-agent setting again**, instead
+  of opening the ticket page and cancelling the attachment.
+- Creating a ticket and submitting a text prompt no longer blocks input while
+  the daemon answers. A delayed result leaves a newer draft intact.
+- A crown waiting for another board no longer blocks its own board or prevents
+  that board from receiving a crown request in return.
+- Restarting the daemon no longer marks an agent's turn finished while its
+  background task is still running.
+- A ticket stacked on another ticket's unmerged commit no longer reads as
+  delivered merely because that underlying commit later lands.
+
 ## v0.1.0-beta.21.unstable.1 — 2026-11-19
 
 An unstable build. Nothing changes a state file's format.

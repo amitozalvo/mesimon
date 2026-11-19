@@ -110,7 +110,7 @@ impl App {
             }
             return Ok(false);
         }
-        let follow = self.created_follow.take().unwrap();
+        let follow = self.created_follow.take().expect("follow was checked above");
         if self.input_generation == follow.generation {
             self.select_ticket(follow.id);
             if follow.start.is_none() {
@@ -154,7 +154,8 @@ impl App {
                 self.acknowledgements.active =
                     Some(((id, hand), self.client.request_detached(command)));
             }
-            let (key, rx) = self.acknowledgements.active.as_ref().unwrap();
+            let (key, rx) =
+                self.acknowledgements.active.as_ref().expect("an acknowledgement was started");
             let key = *key;
             let result = match rx.try_recv() {
                 Ok(result) => result,

@@ -19405,11 +19405,11 @@ mod tests {
         let mut app = App::for_test(board_three_columns(), theme());
         let hold = hold_background(&mut app);
         app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
-        app.on_paste("first ticket".into()).unwrap();
+        app.on_paste("first ticket").unwrap();
         app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.submission.is_some());
         app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
-        app.on_paste("next draft".into()).unwrap();
+        app.on_paste("next draft").unwrap();
         app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "next draft"));
         assert_eq!(hold.borrow().asks, 1, "second submission keeps its draft");
@@ -19449,11 +19449,11 @@ mod tests {
         app.rich_keys = true;
         let hold = hold_background(&mut app);
         app.on_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        app.on_paste("first prompt".into()).unwrap();
+        app.on_paste("first prompt").unwrap();
         app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.submission.is_some());
         app.on_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        app.on_paste("second draft".into()).unwrap();
+        app.on_paste("second draft").unwrap();
         assert!(
             matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "second draft")
         );
