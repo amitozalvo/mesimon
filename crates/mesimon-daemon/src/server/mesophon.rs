@@ -5185,7 +5185,7 @@ impl PermissionWait {
     }
 }
 
-fn permission_peer_closed(stream: &UnixStream) -> bool {
+pub(super) fn permission_peer_closed(stream: &UnixStream) -> bool {
     use std::os::fd::AsRawFd;
     let mut byte = 0u8;
     let received = unsafe {

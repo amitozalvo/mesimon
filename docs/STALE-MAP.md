@@ -47294,3 +47294,53 @@ and no file on the post-merge list changed.
 or this board's crown sent into a conversation are headed with who sent them, as on the
 terminal's ticket page, instead of reading as yours — and the relay's `ship.sh` after it merges,
 since the hosted relay serves this page.
+
+## Board freezes during terminal opening and reaping (T-1314, 2026-11-19)
+
+**Measured on the affected board, beta.21:** doctor named `request open_terminal took 4 s`,
+`request open_terminal took 12 s`, and `tick took 5 s ∙ sweep_reaping`. There were 62 tickets,
+many MRs, seven Claude sessions and other boards in tabs. Attached panes appeared responsive;
+boards froze frequently, sometimes recovering with `daemon back ∙ board refreshed`, often
+silently. A request answered before its ten-second deadline needs no recovery message.
+Doctor's three newest slow turns do not count every episode.
+
+**Changed:** reaping runs one worker batch at a time; its reservations remain until the writer
+absorbs removal/absence evidence. A wake that could reuse a session name waits until the old
+kill completes, retaining its queued words; a newer reservation cannot be cleared by an older
+result. Opening a terminal reserves focus and its worktree on the writer, performs inspection
+and shell creation on a worker, then answers the original connection. Duplicate opens cannot
+create two shells, teardown/eviction cannot take the opening's cwd, and a disconnected client
+gets no late focus grant. Status-line writes run one at a time off the writer too. Slow workers
+log their duration; terminal opening names inspection, removal and spawn separately.
+
+The TUI awaits attachment preparation on its own connection off the input thread (a temporary
+connection would drop the focus token). Navigation remains available and an abandoned grant is
+released. Background notes/summaries, shell tails and archived tickets/sessions use a separate
+kept read connection with at most one outstanding request per category. Stale note revisions
+and superseded archive/session reads are rejected. A page being archived stays until its archive
+answer lands; only rows that read supplied are replaced. Cached/ready note replies retain the
+same-frame behavior; delayed replies may finish after the navigation frame. Mutation freshness
+barriers remain synchronous.
+
+**Refuted:** moving recurring pane probes and snapshots off-thread (T-857/T-812) had not removed
+all lifecycle waits. The reaper and terminal-opening calls still ran tmux on the writer, and
+small page reads still waited on the input thread. MR network sampling was already on workers;
+ticket count alone was not evidence that GitLab blocked input. The archived-tree warning does
+not justify deletion or a broad daemon restart. The underlying cause of unusually slow tmux
+commands on that machine remains unmeasured; the isolation prevents those waits from occupying
+the board writer. Other edge actions and mutation barriers can still wait.
+
+**Verification:** `slow_tmux_e2e::terminal_open_and_reaping_leave_the_writer_free` holds real
+terminal creation and reaping at a controlled barrier while another client completes snapshots
+within one second. It covers duplicate opens, focus connection ownership, resume versus reap,
+and disconnect before opening completes. Unit cases cover teardown reservation, stale reaper
+completion, held background reads with a 62-ticket/seven-agent/MR fixture, note revision changes,
+delayed archive page retention/deletion, and abandoning an attachment. The old note-cache tests
+now advance the fake daemon's revision as well as the snapshot: returning revision 1 for a
+snapshot at revision 2 is deliberately rejected, not a valid cache-fill fixture.
+
+Final `cargo ut --no-fail-fast` and all 254 selected affected e2es passed under the
+process-owning runner; both fixture audits were clean. Initial sandbox runs could not bind
+Unix sockets or inspect owned processes, so those checks were rerun outside that sandbox.
+The two old note-cache fixtures failed on the first unrestricted unit run and passed after
+the revision correction above. Full workspace e2es wait for the merged notice (T-1194).

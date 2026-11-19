@@ -120,6 +120,7 @@ mod mesophon;
 #[cfg(test)]
 mod notified;
 mod peer;
+mod responsive;
 mod shelf;
 mod shells;
 mod teamglue;
@@ -481,6 +482,9 @@ struct ClientReply {
 }
 
 enum Msg {
+    Reaped(Vec<(String, Instant, bool)>, Duration),
+    TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
+    StatusWritten(String, bool),
     Request(Envelope, u32, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     /// A reply carrying the crown's rules reached its connection (T-930).
     CrownTold(uuid::Uuid, u64),
@@ -743,6 +747,7 @@ pub struct Daemon {
     worn_theme: Option<String>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
+    responsive: responsive::Jobs,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
     rss_cache: (u64, usize),
     /// Per-session slice of that aggregate, same bucket — feeds the sleep
@@ -1785,6 +1790,9 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
+            Msg::Reaped(..) => "reaped".into(),
+            Msg::TerminalOpened(..) => "terminal opened".into(),
+            Msg::StatusWritten(..) => "status written".into(),
             Msg::Tick => "tick".into(),
             Msg::ModHook(f) => format!("mod frame {}", f.event).into(),
             Msg::RoadProbed(_) => "claude road probed".into(),
@@ -1822,6 +1830,15 @@ pub fn run(paths: Paths) -> Result<()> {
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
+            Msg::Reaped(done, took) => d.reaped(done, took),
+            Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
+            Msg::StatusWritten(line, ok) => {
+                d.responsive.status_writing = false;
+                if ok {
+                    d.last_status_left = Some(line);
+                    d.refresh_status_line();
+                }
+            }
             Msg::Control(generation, event, ack) => {
                 d.on_control(generation, event);
                 let _ = ack.send(());
@@ -1899,6 +1916,15 @@ pub fn run(paths: Paths) -> Result<()> {
                 let reply = match (reply, d.mod_park.take()) {
                     (Some(reply), Some(park)) => d.mod_park_reply(park, reply),
                     (reply, _) => reply,
+                };
+                let reply = if d.responsive.park_terminal {
+                    d.responsive.park_terminal = false;
+                    if let Some(opening) = d.responsive.opening.as_mut() {
+                        opening.reply = reply;
+                    }
+                    None
+                } else {
+                    reply
                 };
                 if let Some(reply) = reply {
                     let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -2098,6 +2124,7 @@ impl Daemon {
             cleanup_resume_offers: HashMap::new(),
             worn_theme: None,
             reaping: HashMap::new(),
+            responsive: Default::default(),
             server_restart: None,
             rss_cache: (0, 0),
             rss_by: HashMap::new(),
@@ -4958,6 +4985,9 @@ impl Daemon {
     /// starts a fresh server.
     fn finish_server_restart(&mut self) -> bool {
         let Some(due) = self.server_restart else { return false };
+        if !self.responsive.reaping.is_empty() || self.responsive.opening.is_some() {
+            return false;
+        }
         if !self.reaping.is_empty() && Instant::now() < due {
             return false;
         }
@@ -19177,7 +19207,8 @@ impl Daemon {
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                !t.sids.iter().any(|s| self.reaping.contains_key(s))
+                !self.terminal_opening(t.ticket)
+                    && !t.sids.iter().any(|s| self.reaping.contains_key(s))
                     && !self.board.sessions.iter().any(|s| s.ticket == t.ticket && s.codex_stopping)
                     // One flight per tree: a second ask (a delete after an
                     // archive) waits for the first to land and is judged
@@ -19786,13 +19817,29 @@ impl Daemon {
         let (resumes, rest): (Vec<PendingResume>, Vec<PendingResume>) =
             self.pending_resumes.drain(..).partition(|r| r.ticket == ticket);
         self.pending_resumes = rest;
+        self.replay_resumes(resumes);
+        self.note_stage("spawn_replay", replay.elapsed());
+    }
+
+    fn replay_resumes(&mut self, resumes: Vec<PendingResume>) {
         for r in resumes {
+            let ticket = r.ticket;
             match self.resume_session_in(r.session, r.confirm, r.plan) {
                 Response::Spawned { .. } => {
                     if let Some(text) = r.prompt {
                         let words = Parked { text, brief: r.brief, title: r.brief };
                         self.park(r.session, r.ticket, words, r.ack);
                         self.crown_ask_retag(r.ticket, r.session, r.ask);
+                    }
+                }
+                Response::Provisioning => {
+                    if let Some(next) =
+                        self.pending_resumes.iter_mut().find(|next| next.session == r.session)
+                    {
+                        next.prompt = r.prompt;
+                        next.brief = r.brief;
+                        next.ack = r.ack;
+                        next.ask = r.ask;
                     }
                 }
                 Response::Err { message } => {
@@ -19808,7 +19855,6 @@ impl Daemon {
                 _ => {}
             }
         }
-        self.note_stage("spawn_replay", replay.elapsed());
     }
 
     fn on_provisioned(
@@ -21397,6 +21443,10 @@ impl Daemon {
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {
+        if self.responsive.resumes.remove(&id) {
+            self.pending_resumes.retain(|r| r.session != id);
+        }
+        self.responsive.shell_wakes.remove(&id);
         // Whether this is the ticket's agent seat, read before the kill
         // changes it (T-936): a shell, or an old corpse dismissed beside its
         // replacement, holds no turn of the agent's.
@@ -21812,6 +21862,20 @@ impl Daemon {
         }
         if let Some(message) = self.resume_board_guard(&rec) {
             return Response::Err { message };
+        }
+        if self.responsive.reaping.contains_key(&rec.sid16()) {
+            self.responsive.resumes.insert(id);
+            self.pending_resumes.push(PendingResume {
+                ticket: rec.ticket,
+                session: id,
+                confirm,
+                prompt: None,
+                brief: false,
+                plan,
+                ack: Ack::PROMPT,
+                ask: None,
+            });
+            return Response::Provisioning;
         }
         if rec.state.has_pane() && !matches!(rec.state, SessionState::Unknown { .. }) {
             // Live states keep their pane; resuming over it would double-run.
@@ -22415,6 +22479,10 @@ impl Daemon {
         if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
             return Response::Err { message: TICKET_ARCHIVED.into() };
         }
+        if rec.kind == SessionKind::Bash && self.responsive.reaping.contains_key(&rec.sid16()) {
+            self.responsive.shell_wakes.insert(id);
+            return Response::Provisioning;
+        }
         match rec.kind {
             SessionKind::Claude | SessionKind::Codex | SessionKind::Agy => {
                 self.resume_session_in(id, false, false)
@@ -22492,39 +22560,6 @@ impl Daemon {
             }
         }
         (slept, skipped)
-    }
-
-    /// The grace half of the kill ladder: SIGTERM already went out; once the
-    /// deadline passes, remove the pane (remain-on-exit keeps it visible
-    /// meanwhile, and pane-died usually beats us here).
-    fn sweep_reaping(&mut self) {
-        let now = Instant::now();
-        let due: Vec<String> =
-            self.reaping.iter().filter(|(_, t)| **t <= now).map(|(s, _)| s.clone()).collect();
-        // One listing answers every due session; taken only when a kill
-        // fails, so a quiet sweep forks nothing beyond the kills.
-        let mut panes = None;
-        for sid in due {
-            // Removing the terminal must not kill the supervisor before it
-            // proves its separate app-server and tool process group stopped.
-            if self.board.sessions.iter().any(|s| s.sid16() == sid && s.codex_stopping) {
-                continue;
-            }
-            // Sleeping precedes the signal: dropping this reservation on
-            // failure would admit a second writer beside a surviving pane.
-            // No server answer is unknown, not evidence of an absent pane.
-            let removed = self.backend.kill_session(&sid).is_ok()
-                || absence_proven(
-                    panes.get_or_insert_with(|| self.backend.panes()),
-                    &self.backend,
-                    |panes| !panes.iter().any(|pane| pane.session_name == sid),
-                );
-            if removed {
-                self.reaping.remove(&sid);
-            } else {
-                self.reaping.insert(sid, now + REAP_GRACE);
-            }
-        }
     }
 
     /// T-357: a Codex record whose ticket a person deleted, whose pane is
@@ -22829,10 +22864,14 @@ impl Daemon {
             String::new()
         };
         let line = status_left(&repo, &attn, &title, &self.focus_label);
-        if self.last_status_left.as_deref() != Some(&line)
-            && self.backend.set_status_left(&line).is_ok()
-        {
-            self.last_status_left = Some(line);
+        if self.last_status_left.as_deref() != Some(&line) && !self.responsive.status_writing {
+            self.responsive.status_writing = true;
+            let backend = self.backend.clone();
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let ok = backend.set_status_left(&line).is_ok();
+                let _ = tx.send(Msg::StatusWritten(line, ok));
+            });
         }
     }
 
@@ -22850,6 +22889,9 @@ impl Daemon {
         ticket: Option<ulid::Ulid>,
         by: &Arc<Mutex<UnixStream>>,
     ) -> Response {
+        if self.responsive.opening.is_some() {
+            return Response::Err { message: "a terminal is already opening".into() };
+        }
         if ticket.is_some_and(|id| self.tearing_down.contains(&id)) {
             return Response::Err {
                 message: "worktree is being removed — try again when ready".into(),
@@ -22874,29 +22916,7 @@ impl Daemon {
                 None => (self.paths.repo_root.clone(), Vec::new()),
             },
         };
-        let name = terminal_name(ticket);
-        let alive = self
-            .backend
-            .snapshot()
-            .map(|s| s.iter().any(|p| p.session_name == name && !p.pane_dead))
-            .unwrap_or(false);
-        if !alive {
-            let _ = self.backend.kill_session(&name);
-            let launch = self.launch(std::slice::from_ref(&self.shell), &vars);
-            if let Err(e) = self.backend.spawn(&name, &cwd, &launch) {
-                return Response::Err { message: format!("terminal spawn failed: {e}") };
-            }
-        }
-        // Listed now, not on the next poll: the ghost row (T-366) is on the
-        // rail the moment the handover returns.
-        if let std::collections::btree_map::Entry::Vacant(e) = self.terminals.entry(ticket) {
-            e.insert(None);
-            self.broadcast();
-        }
-        self.focus = Some(FocusHold { what: want, by: Arc::downgrade(by) });
-        self.focus_label = "terminal".to_string();
-        self.refresh_status_line();
-        Response::Attach { argv: self.backend.attach_argv(&name) }
+        self.begin_terminal_open(ticket, by, cwd, vars)
     }
 
     /// `Command::AdoptTerminal` (T-366): the ticket's `!` terminal becomes a
@@ -22909,6 +22929,9 @@ impl Daemon {
     /// (the pane WAS spawned by this daemon through `launch`; `Adopted` is
     /// the external drawer's word and badges `external`).
     fn adopt_terminal(&mut self, ticket: ulid::Ulid, pane_key: Option<String>) -> Response {
+        if self.terminal_opening(ticket) {
+            return Response::Err { message: "terminal is still opening".into() };
+        }
         if let Err(message) = self.open_ticket(ticket) {
             return Response::Err { message: message.into() };
         }
@@ -23752,16 +23775,26 @@ mod reaper_without_server_tests {
     #[test]
     fn a_reaper_reservation_clears_when_no_server_stands_behind_the_socket() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let (mut d, sid, rx) = queued_person_push_tests::daemon(dir.path());
+        let finish = |d: &mut Daemon| {
+            let Msg::Reaped(done, took) = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
+                panic!("reaper completion")
+            };
+            d.reaped(done, took);
+        };
         assert!(!dir.path().join("tmux.sock").exists());
         d.reaping.insert(sid.clone(), Instant::now());
         d.sweep_reaping();
+        assert!(d.reaping.contains_key(&sid), "reservation stays until the worker lands");
+        finish(&mut d);
         assert!(!d.reaping.contains_key(&sid), "no socket file: the pane is gone");
         // A stale socket file nothing listens on is a dead server too.
         drop(std::os::unix::net::UnixListener::bind(dir.path().join("tmux.sock")).unwrap());
         assert!(dir.path().join("tmux.sock").exists());
         d.reaping.insert(sid.clone(), Instant::now());
         d.sweep_reaping();
+        assert!(d.reaping.contains_key(&sid), "reservation stays until the worker lands");
+        finish(&mut d);
         assert!(!d.reaping.contains_key(&sid), "a stale socket: the pane is gone");
         // A server that exists and does not answer proves nothing, and the
         // reservation stands: `crown_checkout_e2e` drives that with a

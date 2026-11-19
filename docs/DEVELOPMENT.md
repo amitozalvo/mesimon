@@ -91,6 +91,17 @@ says `daemon slow ∙ the board is behind ∙ nothing sent`; what that landing r
 train, the status line, a parked focus) runs in the next `pump`, outside the key's wait. Only the
 keys that read nothing (navigation, the frame) never wait.
 
+**Background page reads and attachments (T-1314).** `app/background.rs` keeps one read in
+flight per category (notes, archive, archived sessions, shell tail), on the client's reusable
+read connection. A delayed reply never holds `pump`; note identity/revision and the snapshot
+sequence reject obsolete answers. The archive keeps its displayed page while that read is
+pending and replaces only rows it supplied. `GateStatus` and attachment preparation loan the
+board's own connection to a worker: the focus token belongs to that connection, so a disposable
+read connection cannot hold it. A grant arriving after navigation is released, not attached.
+The daemon's `server/responsive.rs` keeps reaping and terminal-opening reservations while tmux
+runs on workers; wake waits for an in-flight reap, teardown waits for an opening, and a lost
+client gets no late focus grant. The status-line write is also off the writer, one at a time.
+
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test
 in `daemon/src/paths.rs`), persisted state under `~/.local/state/mesimon/<proj16>/`, board data

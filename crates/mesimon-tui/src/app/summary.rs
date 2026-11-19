@@ -14,9 +14,9 @@
 use super::*;
 use mesimon_core::summary::{self, Count, Row};
 
-/// How many note bodies one tick fetches for the board's summaries. Each
-/// is one small read on the daemon's writer thread; a hundred-ticket board
-/// is whole in about a second and asks nothing again until a `rev` moves.
+/// How many missing note bodies one tick considers. The shared note read
+/// allows one request in flight; an immediately available answer can let
+/// this tick consume more. A cached revision sends nothing.
 const SUMMARY_READS_PER_TICK: usize = 8;
 
 /// One note's summary rows as last parsed, keyed on the note's `rev` like
@@ -253,8 +253,7 @@ impl App {
         }
         let mut read = false;
         for (ticket, id, rev) in wanted.into_iter().take(SUMMARY_READS_PER_TICK) {
-            self.fetch_summary_note(ticket, id, rev);
-            read = true;
+            read |= self.poll_note(ticket, id, rev);
         }
         // Pulses that have played out are dropped here, once a tick.
         let done: Vec<ulid::Ulid> = self

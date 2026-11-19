@@ -22,6 +22,120 @@ use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 
+/// Hold the exact lifecycle command while another client keeps reading the
+/// board. The marker is a barrier, not an assumption about process startup.
+#[test]
+fn terminal_open_and_reaping_leave_the_writer_free() {
+    use mesimon_tui::client::{Client, Transport};
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("msmn-lifecycle-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let marker = scratch.0.join("command");
+    let reached = scratch.0.join("reached");
+    let wrapper = scratch.0.join("tmux.sh");
+    std::fs::write(&wrapper, format!(
+        "#!/bin/sh\nif [ -f '{marker}' ]; then\nwant=$(cat '{marker}')\nfor arg do\nif [ \"$arg\" = \"$want\" ]; then\n: > '{reached}'\nn=0\nwhile [ -f '{marker}' ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done\nbreak\nfi\ndone\nfi\nexec '{tmux}' \"$@\"\n",
+        marker = marker.display(), reached = reached.display(), tmux = mesimon_backend_tmux::tmux_bin().display()
+    )).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    const STUB: &str = "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n";
+    let Some(h) = Harness::boot_with_env(
+        "slow-lifecycle",
+        Some(STUB),
+        &[("MESIMON_TMUX_BIN", wrapper.to_str().unwrap())],
+    ) else {
+        return;
+    };
+    let mut observer = h.client("responsive-observer");
+    let ticket = observer.create_ticket("reap then resume");
+    let session = observer.spawn_claude(ticket);
+    wait_until(Duration::from_secs(10), "shell environment", || h.paths.shell_env_file().exists());
+    let mut client = Client::connect_observer(&h.repo).unwrap();
+
+    let responsive = |observer: &mut TestClient| {
+        observer.read.get_ref().set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        for _ in 0..3 {
+            let began = Instant::now();
+            assert!(
+                matches!(
+                    observer.try_send(Principal::Local, Command::Snapshot),
+                    Some(Response::Board { .. })
+                ),
+                "snapshot blocked behind a lifecycle command"
+            );
+            assert!(began.elapsed() < Duration::from_secs(1));
+        }
+        observer.read.get_ref().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    };
+
+    std::fs::write(&marker, "new-session").unwrap();
+    let opening = client.request_async(Command::OpenTerminal { ticket: None });
+    wait_until(Duration::from_secs(10), "terminal spawn barrier", || reached.exists());
+    assert!(opening.try_recv().is_err(), "spawn is still held");
+    responsive(&mut observer);
+    assert!(
+        matches!(observer.request(Command::OpenTerminal { ticket: None }), Response::Err { .. }),
+        "a second open cannot create a second shell"
+    );
+    std::fs::remove_file(&marker).unwrap();
+    assert!(matches!(
+        opening.recv_timeout(Duration::from_secs(10)).unwrap().unwrap(),
+        Response::Attach { .. }
+    ));
+    // The async call kept its connection: focus is still owned after the reply.
+    assert!(matches!(observer.request(Command::FocusStart { session }), Response::Err { .. }));
+    assert!(matches!(client.request(Command::TerminalEnd).unwrap(), Response::Ok));
+
+    std::fs::remove_file(&reached).unwrap();
+    std::fs::write(&marker, "kill-session").unwrap();
+    assert!(matches!(observer.request(Command::KillSession { id: session }), Response::Ok));
+    wait_until(Duration::from_secs(15), "reaper barrier", || reached.exists());
+    responsive(&mut observer);
+    // A fresh pane may not reuse the name while the old kill is outstanding.
+    assert!(matches!(
+        observer.request(Command::ResumeSession { id: session, confirm: false }),
+        Response::Provisioning
+    ));
+    responsive(&mut observer);
+    std::fs::remove_file(&marker).unwrap();
+    wait_until(Duration::from_secs(15), "resume after reaper completion", || {
+        observer.board().session(session).is_some_and(|s| s.state.has_pane())
+    });
+    let pane = tmux(&h.paths.tmux_sock())
+        .args(["has-session", "-t", &session.simple().to_string()[..16]])
+        .status()
+        .unwrap();
+    assert!(pane.success(), "the replayed pane survived its old reaper");
+
+    // A client that disappears while its terminal opens must not receive a
+    // late focus grant. The shell may finish opening and is reusable.
+    use std::io::Write;
+    std::fs::remove_file(&reached).unwrap();
+    std::fs::write(&marker, "new-session").unwrap();
+    let mut abandoned = h.client("abandoned-open");
+    let env = mesimon_core::command::Envelope {
+        principal: Principal::Local,
+        command: Command::OpenTerminal { ticket: Some(ticket) },
+    };
+    writeln!(abandoned.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
+    wait_until(Duration::from_secs(10), "abandoned terminal spawn", || reached.exists());
+    abandoned.write.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(abandoned);
+    responsive(&mut observer);
+    std::fs::remove_file(&marker).unwrap();
+    wait_until(Duration::from_secs(10), "abandoned opening to release focus", || {
+        matches!(observer.request(Command::FocusStart { session }), Response::Attach { .. })
+    });
+    assert!(matches!(observer.request(Command::FocusEnd { session }), Response::Ok));
+    assert!(matches!(
+        observer.request(Command::OpenTerminal { ticket: Some(ticket) }),
+        Response::Attach { .. }
+    ));
+    assert!(matches!(observer.request(Command::TerminalEnd), Response::Ok));
+}
+
 /// The stages whose forks left the writer thread: none may be the slowest
 /// stage of a slow turn.
 const MOVED: [&str; 5] =

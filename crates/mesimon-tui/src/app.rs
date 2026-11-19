@@ -3,8 +3,10 @@
 //! and the M3.5 ticket screen (Enter opens it; the old session picker is its
 //! SESSIONS rail now).
 
+mod background;
 pub(crate) mod boards;
 mod images;
+use background::ReadKey;
 pub(crate) mod launch;
 mod summary;
 mod tiers;
@@ -627,6 +629,8 @@ pub(crate) struct Held {
 /// The archived tickets, asked for (T-842): the snapshot leaves them out.
 pub(crate) struct HeldArchive {
     tickets: Vec<Ticket>,
+    /// Rows supplied by this separate read, rather than the latest snapshot.
+    inserted: std::collections::HashSet<ulid::Ulid>,
     /// A snapshot landed since they were read.
     stale: bool,
 }
@@ -2615,6 +2619,8 @@ pub struct App {
     /// at a time: a push or a key that wants the board while one is out
     /// sets `snapshot_wanted`, and the landing asks once more.
     snapshot_rx: Option<(u64, Receiver<Result<Response>>)>,
+    background_reads: background::Reads,
+    focus_ask: Option<background::FocusAsk>,
     /// When the ask in flight went (`frame_wait`).
     snapshot_asked_at: Instant,
     snapshot_wanted: bool,
@@ -2902,6 +2908,8 @@ impl App {
             daemon_down: false,
             last_reconnect: None,
             snapshot_rx: None,
+            background_reads: Default::default(),
+            focus_ask: None,
             snapshot_asked_at: Instant::now(),
             snapshot_wanted: false,
             snapshot_sent: 1,
@@ -4222,6 +4230,9 @@ impl App {
             Command::MoveTicket { id, .. } => Some(*id),
             _ => None,
         };
+        if self.focus_ask.is_some() {
+            return Response::Err { message: "waiting for attachment preparation".into() };
+        }
         match self.client.request(command) {
             Ok(r) => {
                 if let Some(id) = moved.filter(|_| !matches!(r, Response::Err { .. })) {
@@ -5063,6 +5074,7 @@ impl App {
     /// this alone, since the terminal is its board's and not its own.
     pub(crate) fn pump(&mut self) -> Result<bool> {
         let mut dirty = self.poll_image_paste();
+        dirty |= self.poll_focus();
         // A transport-level advisory (build skew that would not settle) joins
         // the daemon's own notices in the advisory row.
         if let Some(n) = self.client.take_notice() {
@@ -6008,7 +6020,8 @@ impl App {
                 Command::TerminalTail { ticket: Some(ticket), lines: SHELL_TAIL_LINES }
             }
         };
-        let lines = match self.req(ask) {
+        let Some(response) = self.background_read(ReadKey::Tail(key), ask) else { return false };
+        let lines = match response {
             Response::PaneTail { lines, .. } => lines,
             // A pane that just died, or a daemon mid-reconnect: keep the last
             // good capture rather than blinking the zone empty — the rail row
@@ -6347,6 +6360,9 @@ impl App {
     /// daemon too old to know the command refuses it, and the page is open
     /// either way.
     fn poll_pickup(&mut self) {
+        if self.focus_ask.is_some() {
+            return;
+        }
         let page = self.ticket_page();
         if page == self.pickup_page {
             return;
@@ -6386,12 +6402,7 @@ impl App {
             if fresh {
                 continue;
             }
-            let text = match self.req(Command::ReadNote { ticket, note: id }) {
-                Response::Note { text, .. } => Some(crate::peek::sanitize(&text)),
-                _ => None,
-            };
-            self.remember_note(id, rev, text);
-            changed = true;
+            changed |= self.poll_note(ticket, id, rev);
         }
         changed
     }
@@ -8545,7 +8556,10 @@ impl App {
             Mode::Search(s) if s.archived => return true,
             _ => {}
         }
-        self.ticket_page().is_some_and(|t| board.ticket(t).is_none_or(|t| t.is_archived()))
+        self.ticket_page().is_some_and(|t| {
+            board.ticket(t).is_none_or(|t| t.is_archived())
+                || self.archive.as_ref().is_some_and(|a| a.stale && a.inserted.contains(&t))
+        })
     }
 
     /// Ask for the archived tickets (T-842) while something shows them:
@@ -8572,29 +8586,39 @@ impl App {
         if self.archive.as_ref().is_some_and(|a| !a.stale) {
             return false;
         }
-        let Some(tickets) = self.ask_archive() else {
-            // What the board has is the whole answer.
-            self.archive = Some(HeldArchive { tickets: Vec::new(), stale: false });
-            return false;
+        let tickets = match self.ask_archive() {
+            None => return false,
+            Some(Response::Tickets { tickets }) => tickets,
+            Some(_) => {
+                self.archive = Some(HeldArchive {
+                    tickets: Vec::new(),
+                    inserted: Default::default(),
+                    stale: false,
+                });
+                return false;
+            }
         };
         Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets);
         self.transcript_links_dirty();
+        self.clamp_screen();
         true
     }
 
-    /// The archived tickets, asked of the daemon. `None` from an older one,
-    /// which sends every ticket on the snapshot and knows no such command.
-    fn ask_archive(&mut self) -> Option<Vec<Ticket>> {
-        match self.req(Command::ArchivedTickets) {
-            Response::Tickets { tickets } => Some(tickets),
-            _ => None,
-        }
+    /// The archived tickets, asked off the input thread. `None` while pending;
+    /// an older daemon's refusal leaves its complete snapshot in place.
+    fn ask_archive(&mut self) -> Option<Response> {
+        self.background_read(ReadKey::Archive(self.landing), Command::ArchivedTickets)
     }
 
     /// Hold the asked-for archived tickets, laid into `board`.
     fn hold_archive(archive: &mut Option<HeldArchive>, board: &mut Board, tickets: Vec<Ticket>) {
+        if let Some(old) = archive {
+            board.tickets.retain(|t| !old.inserted.contains(&t.id));
+        }
+        let inserted =
+            tickets.iter().filter(|t| board.ticket(t.id).is_none()).map(|t| t.id).collect();
         Self::lay_tickets(board, &tickets);
-        *archive = Some(HeldArchive { tickets, stale: false });
+        *archive = Some(HeldArchive { tickets, inserted, stale: false });
     }
 
     /// Lay the held archived tickets into a snapshot's board (T-842) while
@@ -8607,13 +8631,29 @@ impl App {
             return;
         }
         if self.archive.is_none() {
-            if let Some(tickets) = self.ask_archive() {
+            if let Some(Response::Tickets { tickets }) = self.ask_archive() {
                 Self::hold_archive(&mut self.archive, board, tickets);
+            } else {
+                // A newly archived open page must not disappear while its
+                // separate archive read is pending.
+                let tickets: Vec<_> = self
+                    .board
+                    .tickets
+                    .iter()
+                    .filter(|t| t.is_archived() || Some(t.id) == self.ticket_page())
+                    .cloned()
+                    .collect();
+                Self::hold_archive(&mut self.archive, board, tickets);
+                if let Some(held) = self.archive.as_mut() {
+                    held.stale = true;
+                }
             }
             return;
         }
         let Some(held) = self.archive.as_mut() else { return };
         held.stale = true;
+        held.inserted =
+            held.tickets.iter().filter(|t| board.ticket(t.id).is_none()).map(|t| t.id).collect();
         Self::lay_tickets(board, &held.tickets);
     }
 
@@ -8651,7 +8691,13 @@ impl App {
         }
         // An older daemon sends every record on the snapshot and knows no
         // such command: what the board has is the whole answer.
-        let Response::Sessions { sessions } = self.req(Command::TicketSessions { ticket }) else {
+        let Some(response) = self.background_read(
+            ReadKey::Held(ticket, self.landing),
+            Command::TicketSessions { ticket },
+        ) else {
+            return false;
+        };
+        let Response::Sessions { sessions } = response else {
             self.held = Some(Held { ticket, sessions: Vec::new(), stale: false });
             return false;
         };
@@ -17120,22 +17166,7 @@ impl App {
     /// attach argv, parked for the main loop's handover with the target it
     /// holds the token on, so `after_handover` knows what to release.
     fn focus_target(&mut self, target: FocusTarget, grant: Command) {
-        match self.req(Command::GateStatus) {
-            Response::Gate { passed: true, .. } => match self.req(grant) {
-                Response::Attach { argv } => {
-                    self.pending_attach = Some(self.client_argv(argv));
-                    self.focused_session_hint = Some(target);
-                }
-                Response::Err { message } => self.status = message,
-                _ => {}
-            },
-            Response::Gate { passed: false, attach_argv: Some(argv) } => {
-                self.pending_attach = Some(self.client_argv(argv));
-                self.pending_gate_then = Some(target);
-            }
-            Response::Err { message } => self.status = message,
-            _ => {}
-        }
+        self.begin_focus(target, grant);
     }
 
     /// A daemon's attach argv as this board's terminal runs it: with the
@@ -19181,6 +19212,176 @@ mod tests {
     fn release(hold: &std::rc::Rc<std::cell::RefCell<Hold>>) {
         let (reply, tx) = hold.borrow_mut().replies.pop_front().expect("an ask to answer");
         tx.send(reply).unwrap();
+    }
+
+    struct HeldBackground {
+        inner: Box<dyn Transport>,
+        hold: std::rc::Rc<std::cell::RefCell<Hold>>,
+    }
+    impl Transport for HeldBackground {
+        fn request(&mut self, command: Command) -> Result<Response> {
+            assert!(
+                !matches!(
+                    command,
+                    Command::ReadNote { .. }
+                        | Command::ArchivedTickets
+                        | Command::TicketSessions { .. }
+                        | Command::PaneTail { .. }
+                        | Command::TerminalTail { .. }
+                        | Command::GateStatus
+                        | Command::FocusStart { .. }
+                        | Command::OpenTerminal { .. }
+                ),
+                "background operation used the input thread: {command:?}"
+            );
+            self.inner.request(command)
+        }
+        fn read_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+            let reply = self.inner.request(command);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut hold = self.hold.borrow_mut();
+            hold.asks += 1;
+            hold.replies.push_back((reply, tx));
+            rx
+        }
+        fn request_async(&mut self, command: Command) -> Receiver<Result<Response>> {
+            self.read_detached(command)
+        }
+        fn poll_event(&mut self) -> bool {
+            false
+        }
+    }
+    fn hold_background(app: &mut App) -> std::rc::Rc<std::cell::RefCell<Hold>> {
+        let hold = std::rc::Rc::new(std::cell::RefCell::new(Hold::default()));
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        app.client = Box::new(HeldBackground { inner, hold: hold.clone() });
+        hold
+    }
+
+    #[test]
+    fn background_notes_leave_keys_and_frames_free_and_drop_old_revisions() {
+        let (mut app, _) = app_with_note();
+        for n in 4..=62u128 {
+            let mut t = ticket(n, "todo", &format!("z{n:02}"));
+            t.notes.push(note_meta(100 + n, 1, "local"));
+            app.board_mut().tickets.push(t);
+        }
+        for n in 1..=7u128 {
+            app.board_mut().sessions.push(mesimon_core::board::SessionRecord::new(
+                uuid::Uuid::from_u128(n),
+                SessionKind::Claude,
+                ulid::Ulid(n),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Running,
+            ));
+        }
+        app.prs = app
+            .board
+            .tickets
+            .iter()
+            .map(|t| mesimon_core::command::PrItem {
+                ticket: t.id,
+                forge: "gitlab".into(),
+                number: 44,
+                title: "Improve caching".into(),
+                repo: "acme/api".into(),
+                state: "open".into(),
+                url: "https://gitlab.com/acme/api/-/merge_requests/44".into(),
+                ..Default::default()
+            })
+            .collect();
+        assert_eq!(app.board.tickets.len(), 62);
+        let hold = hold_background(&mut app);
+        let meta = app.board.tickets[0].notes[0].clone();
+        app.pump().unwrap();
+        assert_eq!(hold.borrow().asks, 1);
+        for _ in 0..10 {
+            app.pump().unwrap();
+        }
+        assert_eq!(hold.borrow().asks, 1, "pending reads coalesce");
+        // This key and frame complete without ever releasing the read.
+        press(&mut app, 'j');
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &app)).unwrap();
+        app.board_mut().tickets[0].notes[0].rev += 1;
+        release(&hold);
+        app.pump().unwrap();
+        assert!(app.notes.get(&meta.id).is_none(), "old revision must not land");
+        assert_eq!(hold.borrow().asks, 2, "the new revision is asked once");
+    }
+
+    #[test]
+    fn background_archive_held_and_shell_reads_are_bounded() {
+        let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
+        let hold = hold_background(&mut app);
+        let requests = [
+            (ReadKey::Archive(app.landing), Command::ArchivedTickets),
+            (
+                ReadKey::Held(ulid::Ulid(1), app.landing),
+                Command::TicketSessions { ticket: ulid::Ulid(1) },
+            ),
+            (
+                ReadKey::Tail(TailKey::Terminal(ulid::Ulid(1))),
+                Command::TerminalTail { ticket: Some(ulid::Ulid(1)), lines: 20 },
+            ),
+        ];
+        for _ in 0..4 {
+            for (key, command) in &requests {
+                assert!(app.background_read(key.clone(), command.clone()).is_none());
+            }
+        }
+        assert_eq!(hold.borrow().asks, 3);
+        press(&mut app, 'j');
+        assert_eq!(app.cursor_row, Some(1));
+        app.pump().unwrap();
+    }
+
+    #[test]
+    fn a_delayed_archive_read_keeps_the_page_until_its_answer_lands() {
+        let (mut app, _) = app_with_note();
+        let id = ulid::Ulid(1);
+        app.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+        app.client.request(Command::ArchiveTicket { id }).unwrap();
+        let hold = hold_background(&mut app);
+        app.refresh().unwrap();
+        assert_eq!(app.ticket_page(), Some(id), "pending archive must not close the page");
+        assert!(!app.poll_archive());
+        assert_eq!(hold.borrow().asks, 1);
+        release(&hold);
+        assert!(app.poll_archive());
+        assert!(app.board.ticket(id).unwrap().is_archived());
+        assert_eq!(app.ticket_page(), Some(id));
+        // Once a fresh answer actually removes that ticket, the placeholder
+        // must disappear too, rather than preserving a ghost forever.
+        app.client.request(Command::DeleteTicket { id, discard_worktree: false }).unwrap();
+        app.refresh().unwrap();
+        assert!(!app.poll_archive());
+        release(&hold);
+        assert!(app.poll_archive());
+        assert!(app.board.ticket(id).is_none());
+        assert!(matches!(app.screen, Screen::Board));
+    }
+
+    #[test]
+    fn attachment_preparation_leaves_navigation_free_and_releases_an_abandoned_grant() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        let hold = hold_background(&mut app);
+        app.focus_target(FocusTarget::Terminal, Command::OpenTerminal { ticket: None });
+        assert!(app.pending_attach.is_none());
+        release(&hold); // gate
+        app.poll_focus();
+        assert_eq!(hold.borrow().asks, 2);
+        press(&mut app, 'j');
+        assert_eq!(app.cursor_row, Some(1));
+        release(&hold); // terminal opened after the person left its card
+        app.poll_focus();
+        assert!(app.pending_attach.is_none(), "late answer must not steal the terminal");
+        assert!(sent_contains(&sent, "TerminalEnd"));
+        release(&hold);
+        app.poll_focus();
+        assert!(app.focus_ask.is_none());
     }
 
     /// A snapshot in flight blocks no key and no frame (T-812): the board
@@ -21542,6 +21743,16 @@ mod tests {
         assert!(!app.poll_notes(), "steady state asks nothing");
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 1);
         // A new revision on the snapshot is the edge.
+        // The daemon and its snapshot must agree on the revision: a stale
+        // wire response is now deliberately rejected (T-1314).
+        app.client
+            .request(Command::WriteNote {
+                ticket: ulid::Ulid(1),
+                note: Some(ulid::Ulid(90)),
+                text: "# Why\n\nupdated".into(),
+                rev: Some(1),
+            })
+            .unwrap();
         app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
@@ -21602,6 +21813,16 @@ mod tests {
         assert!(app.ticket_summarised(ulid::Ulid(1)));
         assert!(!app.ticket_summarised(ulid::Ulid(2)));
         // A new revision on the snapshot is the edge.
+        // The daemon and its snapshot must agree on the revision: a stale
+        // wire response is now deliberately rejected (T-1314).
+        app.client
+            .request(Command::WriteNote {
+                ticket: ulid::Ulid(1),
+                note: Some(ulid::Ulid(90)),
+                text: "## Summary\n- [ ] a\n- [x] b\nupdated".into(),
+                rev: Some(1),
+            })
+            .unwrap();
         app.board_mut().tickets[0].notes[0].rev = 2;
         assert!(app.poll_summaries());
         assert_eq!(reads(), 3);

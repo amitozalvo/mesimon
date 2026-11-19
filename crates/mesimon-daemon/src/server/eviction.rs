@@ -65,7 +65,8 @@ impl Daemon {
         if self.worktrees_barred {
             return Err(self.barred_message("worktrees"));
         }
-        if b.status != BindingStatus::Attached
+        if self.terminal_opening(id)
+            || b.status != BindingStatus::Attached
             || self.pending_teardown.iter().any(|t| t.ticket == id)
         {
             return Err("worktree is busy".into());

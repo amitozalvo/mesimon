@@ -31,6 +31,15 @@ pub trait Transport {
         let _ = tx.send(self.request(command));
         rx
     }
+    /// A read on a reusable, unsubscribed connection, off the input thread.
+    fn read_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+        self.request_detached(command)
+    }
+    /// Loan the owned connection to a worker. Focus belongs to this connection,
+    /// so a short-lived detached connection cannot prepare an attachment.
+    fn request_async(&mut self, command: Command) -> Receiver<Result<Response>> {
+        self.request_detached(command)
+    }
     /// The board's snapshot, answered through a channel (T-812): the real
     /// client asks it on a second connection it keeps for snapshots, from
     /// a thread of its own, so the loop that draws never waits out the
@@ -93,6 +102,8 @@ pub struct Client {
     /// the board from a thread of its own. Shared under a mutex because
     /// each ask is its own thread; the app sends one at a time.
     lane: Arc<Mutex<Option<Conn>>>,
+    reads: Arc<Mutex<Option<Conn>>>,
+    loan: Option<Receiver<Option<Conn>>>,
 }
 
 /// What a reopen thread hands back: the connection and any skew notice.
@@ -240,6 +251,10 @@ fn build_skew(d: &DaemonIdent, mine: Option<ExeStamp>) -> bool {
 
 impl Transport for Client {
     fn request(&mut self, command: Command) -> Result<Response> {
+        self.collect_loan();
+        if self.loan.is_some() {
+            return Err(anyhow!("attachment preparation in progress"));
+        }
         let res = match self.conn.as_mut() {
             Some(c) => c.request(command),
             // Only an explicit local reload uses the compatible v1 control
@@ -305,7 +320,45 @@ impl Transport for Client {
         rx
     }
 
+    fn read_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let root = self.repo_root.clone();
+        let reads = Arc::clone(&self.reads);
+        std::thread::spawn(move || {
+            let mut lane = reads.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = tx.send(ask_read_lane(&mut lane, &root, command));
+        });
+        rx
+    }
+
+    fn request_async(&mut self, command: Command) -> Receiver<Result<Response>> {
+        self.collect_loan();
+        let (tx, rx) = channel();
+        if self.loan.is_some() {
+            let _ = tx.send(Err(anyhow!("attachment preparation in progress")));
+            return rx;
+        }
+        let Some(mut conn) = self.conn.take() else {
+            let _ = tx.send(Err(Reopening.into()));
+            return rx;
+        };
+        let (returned, receive) = channel();
+        self.loan = Some(receive);
+        std::thread::spawn(move || {
+            let result = conn.request(command);
+            // Return the ownership before exposing the answer: its consumer
+            // may immediately send the next step on this same connection.
+            let _ = returned.send(result.is_ok().then_some(conn));
+            let _ = tx.send(result);
+        });
+        rx
+    }
+
     fn redial(&mut self) -> Result<bool> {
+        self.collect_loan();
+        if self.loan.is_some() {
+            return Ok(false);
+        }
         if self.conn.is_some() {
             return Ok(true);
         }
@@ -320,6 +373,7 @@ impl Transport for Client {
     }
 
     fn poll_event(&mut self) -> bool {
+        self.collect_loan();
         match self.conn.as_mut().map(|c| c.events.try_recv()) {
             Some(Ok(())) => true,
             Some(Err(TryRecvError::Disconnected)) => {
@@ -332,7 +386,8 @@ impl Transport for Client {
     }
 
     fn healthy(&mut self) -> bool {
-        self.conn.is_some()
+        self.collect_loan();
+        self.conn.is_some() || self.loan.is_some()
     }
 
     fn take_notice(&mut self) -> Option<Notice> {
@@ -345,6 +400,19 @@ impl Transport for Client {
 }
 
 impl Client {
+    fn collect_loan(&mut self) {
+        let Some(rx) = &self.loan else { return };
+        match rx.try_recv() {
+            Ok(conn) => {
+                self.conn = conn;
+                self.loan = None;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.loan = None;
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+    }
     /// The board's connection, reopened off the loop's thread (T-856).
     ///
     /// `open_current` dials, spawns a daemon that is gone, waits out a
@@ -420,6 +488,8 @@ impl Client {
                 legacy_daemon: false,
                 reopening: None,
                 lane: Default::default(),
+                reads: Default::default(),
+                loan: None,
             }),
             Err(why) => Ok(Client {
                 repo_root: repo_root.to_path_buf(),
@@ -429,6 +499,8 @@ impl Client {
                 legacy_daemon: upgradeable(&why),
                 reopening: None,
                 lane: Default::default(),
+                reads: Default::default(),
+                loan: None,
                 notice: Some(if upgradeable(&why) {
                     Notice::new(
                         "protocol_mismatch",
@@ -466,6 +538,8 @@ impl Client {
             legacy_daemon: false,
             reopening: None,
             lane: Default::default(),
+            reads: Default::default(),
+            loan: None,
         })
     }
 }
@@ -697,15 +771,19 @@ fn open_lane(repo_root: &Path) -> Result<Conn> {
 /// is safe. A timeout is not that — the daemon is up and slow, and a second
 /// wait would double it. Any failure drops the lane, so the next ask dials.
 fn ask_lane(lane: &mut Option<Conn>, repo_root: &Path) -> Result<Response> {
+    ask_read_lane(lane, repo_root, Command::Snapshot)
+}
+
+fn ask_read_lane(lane: &mut Option<Conn>, repo_root: &Path, command: Command) -> Result<Response> {
     let kept = lane.is_some();
     let first = match lane.as_mut() {
-        Some(c) => c.request(Command::Snapshot),
-        None => open_lane(repo_root).and_then(|c| lane.insert(c).request(Command::Snapshot)),
+        Some(c) => c.request(command.clone()),
+        None => open_lane(repo_root).and_then(|c| lane.insert(c).request(command.clone())),
     };
     let reply = match first {
         Err(e) if kept && outage(&e) != Outage::Slow => {
             *lane = None;
-            open_lane(repo_root).and_then(|c| lane.insert(c).request(Command::Snapshot))
+            open_lane(repo_root).and_then(|c| lane.insert(c).request(command.clone()))
         }
         other => other,
     };
@@ -1210,6 +1288,8 @@ mod tests {
             legacy_daemon: false,
             reopening: None,
             lane: Default::default(),
+            reads: Default::default(),
+            loan: None,
         };
         let wait = Duration::from_secs(5);
         for _ in 0..2 {
