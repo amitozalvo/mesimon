@@ -2185,6 +2185,9 @@ pub struct App {
     /// The live window (T-1143): the selected agent session's pane, read by
     /// a thread of this client's for as long as the cursor stays on it.
     pub live: Option<crate::live::Live>,
+    /// One retiring reader owns its fit until cleanup finishes. Neither
+    /// another preview nor an attachment may overtake it.
+    retiring_live: Option<crate::live::Live>,
     /// The private tmux server's socket, for the live window's reads. Set
     /// by `lib.rs::run`, never by `App::new`: a test app reads no pane.
     pub tmux_sock: Option<std::path::PathBuf>,
@@ -2620,6 +2623,11 @@ pub struct App {
     /// sets `snapshot_wanted`, and the landing asks once more.
     snapshot_rx: Option<(u64, Receiver<Result<Response>>)>,
     background_reads: background::Reads,
+    acknowledgements: background::Acknowledgements,
+    submission: Option<background::Submission>,
+    created_follow: Option<background::CreatedFollow>,
+    write_recovery: Option<Mode>,
+    input_generation: u64,
     focus_ask: Option<background::FocusAsk>,
     /// When the ask in flight went (`frame_wait`).
     snapshot_asked_at: Instant,
@@ -2759,6 +2767,7 @@ impl App {
             status_flash: None,
             shell_tail: None,
             live: None,
+            retiring_live: None,
             tmux_sock: None,
             live_rect: std::cell::Cell::new(None),
             live_last: std::collections::HashMap::new(),
@@ -2909,6 +2918,11 @@ impl App {
             last_reconnect: None,
             snapshot_rx: None,
             background_reads: Default::default(),
+            acknowledgements: Default::default(),
+            submission: None,
+            created_follow: None,
+            write_recovery: None,
+            input_generation: 0,
             focus_ask: None,
             snapshot_asked_at: Instant::now(),
             snapshot_wanted: false,
@@ -5075,6 +5089,8 @@ impl App {
     pub(crate) fn pump(&mut self) -> Result<bool> {
         let mut dirty = self.poll_image_paste();
         dirty |= self.poll_focus();
+        dirty |= self.poll_acknowledgements()?;
+        dirty |= self.poll_submission()?;
         // A transport-level advisory (build skew that would not settle) joins
         // the daemon's own notices in the advisory row.
         if let Some(n) = self.client.take_notice() {
@@ -5115,6 +5131,13 @@ impl App {
         // The snapshot in flight (T-812): its answer lands here, on the
         // thread that never waited for it.
         dirty |= self.poll_snapshot()?;
+        dirty |= self.poll_created()?;
+        if matches!(self.mode, Mode::Normal) {
+            if let Some(mode) = self.write_recovery.take() {
+                self.mode = mode;
+                dirty = true;
+            }
+        }
         // What a barrier's landing left to reconcile (T-812 re-review).
         if self.reconcile_due {
             self.reconcile_after_landing()?;
@@ -5237,6 +5260,7 @@ impl App {
     /// What a person did — keys, or a click (T-716) — with what any act of
     /// a person's does around it. Returns whether anything was handled.
     fn person(&mut self, act: impl FnOnce(&mut Self) -> Result<()>) -> Result<bool> {
+        self.input_generation = self.input_generation.wrapping_add(1);
         // A key is a person (T-282). It stands in for focus on a terminal
         // that reports none — after the swallow, because our own colour
         // query's late reply is the one thing on stdin that is not the user.
@@ -5915,6 +5939,7 @@ impl App {
     /// status line says when the field's limit cut it. Returns whether the
     /// screen changed.
     pub fn on_paste(&mut self, text: &str) -> Result<bool> {
+        self.input_generation = self.input_generation.wrapping_add(1);
         if let Some(t) = self.tour.as_mut().filter(|t| t.trying) {
             t.paste(text)?;
             return Ok(true);
@@ -6444,6 +6469,9 @@ impl App {
     /// under it with a pane gets a reader of its own, and leaving the row,
     /// the page or the board's socket ends it (the drop undoes its fit).
     fn poll_live(&mut self) -> bool {
+        if !self.live_stopped() || self.focus_ask.is_some() || self.pending_attach.is_some() {
+            return false;
+        }
         let want = match (&self.tmux_sock, self.rail_row()) {
             // Only while the page has its zone: a terminal too narrow for
             // it draws no window, so the pane is not held at a size.
@@ -6463,6 +6491,9 @@ impl App {
             (Some((id, _)), Some(live)) if live.session == id => live.poll(),
             (Some((id, sid16)), _) => {
                 self.park_live();
+                if !self.live_stopped() {
+                    return true;
+                }
                 let sock = self.tmux_sock.clone().expect("the socket gates the want");
                 let seed = self.live_last.get(&id).map(std::rc::Rc::clone);
                 let size = self.live_size.get();
@@ -6498,19 +6529,44 @@ impl App {
         }
     }
 
-    /// The window stops (its reader joined, its fit undone), its session's
+    /// The window starts stopping, its session's
     /// last picture and the zone's size kept: the next window starts from
     /// them, so back from the pane or back on the row the page is the one
     /// that was left until a capture at the zone's size replaces it.
     pub(crate) fn park_live(&mut self) {
-        if let Some(live) = self.live.take() {
+        if let Some(mut live) = self.live.take() {
             if let Some(shot) = live.shot.clone() {
                 self.live_last.insert(live.session, shot);
             }
             if let Some(size) = live.wished() {
                 self.live_size.set(Some(size));
             }
+            live.stop();
+            debug_assert!(self.retiring_live.is_none());
+            self.retiring_live = Some(live);
         }
+    }
+
+    /// Drop only a finished reader, whose join cannot wait on tmux. Called
+    /// by navigation and by attachment preparation before granting focus.
+    fn live_stopped(&mut self) -> bool {
+        if self.retiring_live.as_ref().is_some_and(|live| !live.stopped()) {
+            return false;
+        }
+        self.retiring_live = None;
+        true
+    }
+
+    pub(crate) fn prepare_handover(&mut self) -> bool {
+        self.park_live();
+        self.live_stopped()
+    }
+
+    /// Process exit/re-exec has no next frame to poll. Finish cleanup before
+    /// replacing the client; normal navigation never takes this road.
+    pub(crate) fn finish_live(&mut self) {
+        self.park_live();
+        self.retiring_live = None;
     }
 
     /// The zone's conversations (T-1143): the selected agent session's
@@ -8337,10 +8393,7 @@ impl App {
         if !self.board.ticket(id).is_some_and(|t| t.is_woke()) {
             return Ok(());
         }
-        if let Response::Err { message } = self.req(Command::SeenTicket { id }) {
-            self.status = message;
-        }
-        self.refresh_soon()
+        self.acknowledge(id, false)
     }
 
     /// The moves off a snapshot (T-817): each card another mover took to
@@ -8506,10 +8559,7 @@ impl App {
         if !self.board.ticket(id).is_some_and(|t| t.hand_raised()) {
             return Ok(());
         }
-        if let Response::Err { message } = self.req(Command::LowerHand { id }) {
-            self.status = message;
-        }
-        self.refresh_soon()
+        self.acknowledge(id, true)
     }
 
     /// Remember every hand `next` lowers (T-888): up on the board this one
@@ -13498,7 +13548,7 @@ impl App {
         } else if let Some(rail_idx) = hot {
             let sid = self.rail_sessions(ticket)[rail_idx].id;
             self.focus_session(sid)?;
-            if self.pending_attach.is_none() {
+            if self.pending_attach.is_none() && self.focus_ask.is_none() {
                 // Focus refused: fall open to the ticket page, where the
                 // status explains itself.
                 self.screen = Screen::Ticket { ticket, rail_idx };
@@ -13944,6 +13994,15 @@ impl App {
                 verb = Some(Verb::Describe);
                 break_line = true;
             }
+        }
+        if matches!(verb, Some(Verb::Save | Verb::SaveStart))
+            && matches!(purpose, InputPurpose::Create { .. } | InputPurpose::Prompt { .. })
+            && (self.submission.is_some()
+                || self.created_follow.is_some()
+                || self.write_recovery.is_some())
+        {
+            self.status = "previous submission is still pending ∙ draft kept".into();
+            return Ok(());
         }
         match verb {
             // `^]` in the ticket page's ask field (T-1262): the page's own
@@ -14936,6 +14995,14 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
+        if self.submission.is_some()
+            || self.created_follow.is_some()
+            || self.write_recovery.is_some()
+        {
+            self.mode = Mode::Editor(ed);
+            self.status = "previous submission is still pending ∙ draft kept".into();
+            return Ok(());
+        }
         let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
             ed.purpose.clone()
         else {
@@ -15051,6 +15118,14 @@ impl App {
     /// files nothing: the dialog stays, the cursor goes to the title, and
     /// the title row shakes where the eye is (2026-11-05, user request).
     fn mint_composed(&mut self, mut ed: Editor, start: bool) -> Result<()> {
+        if self.submission.is_some()
+            || self.created_follow.is_some()
+            || self.write_recovery.is_some()
+        {
+            self.mode = Mode::Editor(ed);
+            self.status = "previous submission is still pending ∙ draft kept".into();
+            return Ok(());
+        }
         let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose.clone() else {
             self.mode = Mode::Editor(ed);
             return Ok(());
@@ -16709,6 +16784,44 @@ impl App {
         } else {
             (description.unwrap_or_default(), Vec::new())
         };
+        if uploads.is_empty() {
+            let generation = self.input_generation;
+            self.status = "saving ticket".into();
+            return self.submit(
+                Command::CreateTicketWithNote {
+                    column,
+                    title,
+                    workspace,
+                    text,
+                    uploads,
+                    tags,
+                    tier,
+                },
+                move |app, response| {
+                    match response {
+                        Response::Created { id } => {
+                            app.refresh_soon()?;
+                            app.created_follow = Some(background::CreatedFollow {
+                                id,
+                                start,
+                                generation,
+                                after: app.need_seq,
+                            });
+                            app.poll_created()?;
+                        }
+                        response => {
+                            app.status = match response {
+                                Response::Err { message } => message,
+                                _ => "ticket save was not acknowledged".into(),
+                            };
+                            app.recover_submission(recovery);
+                            app.refresh_soon()?;
+                        }
+                    }
+                    Ok(())
+                },
+            );
+        }
         let response = self.req(Command::CreateTicketWithNote {
             column,
             title,
@@ -16849,7 +16962,7 @@ impl App {
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
         let immediately = immediately && !queued && !accept_plan;
-        let answer = self.req(Command::PromptSession {
+        let command = Command::PromptSession {
             ticket,
             text,
             queued,
@@ -16859,73 +16972,83 @@ impl App {
             tier,
             resend: false,
             uploads,
-        });
-        let refused = matches!(answer, Response::Err { .. });
-        self.status = match answer {
-            // Deliberately not "sent to the agent": what is provably
-            // true is that it went into the box and Enter was
-            // pressed. Whether the agent took it is the card's to
-            // say, seconds from now, in the only vocabulary that has
-            // ever been trusted for it — the hooks.
-            // Sending now over a waiting ask drops the waiting one:
-            // the daemon did, and the status says so.
-            Response::Ok if !queued && had => format!("{ask} ∙ queued ask dropped"),
-            // Claude Code's send-now went over the words (T-601).
-            Response::Ok if immediately => format!("{ask} immediately"),
-            // A codex pane takes `/plan` before the words (T-847).
-            Response::Ok if plan => format!("{ask}{mode}"),
-            Response::Ok => ask.into(),
-            // Parked HELD (T-565): its agent is on a question, so the words,
-            // and any accept they carry, wait for the answer and a person's
-            // send.
-            Response::Queued { held: Some(why), .. } => {
-                format!("queued ∙ held ∙ {why} ∙ answer it, then you send")
-            }
-            Response::Queued { .. } if accept_plan && blank && accept_now => {
-                "accepting plan".into()
-            }
-            Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
-            // With words (T-420): they go the moment the approval is
-            // confirmed, so the receipt is not the idle queue's.
-            Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
-            Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
-            // Parked: name what it waits on, the way the card does.
-            Response::Queued { behind, asking, .. } => {
-                queued_status(&lead, &first, &behind, &asking, &own)
-            }
-            // A parked claude: the daemon woke it and holds the
-            // words until the pane reads (2026-09-04). `fresh` is
-            // the wake road's own word — no conversation was left to
-            // resume, so a new one starts on this prompt — and it is
-            // said here for the same reason `c` says it. An empty seat
-            // reports the same way and means something else: a session
-            // that did not exist a moment ago (T-294).
-            Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ {ask}"),
-            // An idle pane parked and woken into plan mode (T-434) or onto
-            // the field's tier pick (T-1163): a pane was there, so it was
-            // restarted, not woken.
-            Response::Spawned { fresh: false, .. } if !waking => {
-                format!("restarted {word}{mode} ∙ {ask}")
-            }
-            Response::Spawned { fresh: false, .. } => format!("{woke} {word}{mode} ∙ {ask}"),
-            Response::Spawned { fresh: true, .. } => {
-                format!("nothing to resume ∙ started a fresh conversation ∙ {ask}")
-            }
-            // Its worktree is being rebuilt under the wake (T-278);
-            // the words ride the parked wake.
-            Response::Provisioning => {
-                format!("provisioning worktree ∙ {word} wakes when ready ∙ {ask}")
-            }
-            Response::Err { message } => message,
-            _ => String::new(),
         };
-        if refused {
-            self.shake(ticket);
+        let finish = move |app: &mut App, answer: Response| -> Result<()> {
+            let refused = matches!(answer, Response::Err { .. });
+            app.status = match answer {
+                // Deliberately not "sent to the agent": what is provably
+                // true is that it went into the box and Enter was
+                // pressed. Whether the agent took it is the card's to
+                // say, seconds from now, in the only vocabulary that has
+                // ever been trusted for it — the hooks.
+                // Sending now over a waiting ask drops the waiting one:
+                // the daemon did, and the status says so.
+                Response::Ok if !queued && had => format!("{ask} ∙ queued ask dropped"),
+                // Claude Code's send-now went over the words (T-601).
+                Response::Ok if immediately => format!("{ask} immediately"),
+                // A codex pane takes `/plan` before the words (T-847).
+                Response::Ok if plan => format!("{ask}{mode}"),
+                Response::Ok => ask.into(),
+                // Parked HELD (T-565): its agent is on a question, so the words,
+                // and any accept they carry, wait for the answer and a person's
+                // send.
+                Response::Queued { held: Some(why), .. } => {
+                    format!("queued ∙ held ∙ {why} ∙ answer it, then you send")
+                }
+                Response::Queued { .. } if accept_plan && blank && accept_now => {
+                    "accepting plan".into()
+                }
+                Response::Queued { .. } if accept_plan && blank => "queued ∙ accepts plan".into(),
+                // With words (T-420): they go the moment the approval is
+                // confirmed, so the receipt is not the idle queue's.
+                Response::Queued { .. } if accept_now => "accepting plan ∙ then asks".into(),
+                Response::Queued { .. } if accept_plan => "accepts plan ∙ then asks".into(),
+                // Parked: name what it waits on, the way the card does.
+                Response::Queued { behind, asking, .. } => {
+                    queued_status(&lead, &first, &behind, &asking, &own)
+                }
+                // A parked claude: the daemon woke it and holds the
+                // words until the pane reads (2026-09-04). `fresh` is
+                // the wake road's own word — no conversation was left to
+                // resume, so a new one starts on this prompt — and it is
+                // said here for the same reason `c` says it. An empty seat
+                // reports the same way and means something else: a session
+                // that did not exist a moment ago (T-294).
+                Response::Spawned { .. } if starting => format!("{word} started{mode} ∙ {ask}"),
+                // An idle pane parked and woken into plan mode (T-434) or onto
+                // the field's tier pick (T-1163): a pane was there, so it was
+                // restarted, not woken.
+                Response::Spawned { fresh: false, .. } if !waking => {
+                    format!("restarted {word}{mode} ∙ {ask}")
+                }
+                Response::Spawned { fresh: false, .. } => format!("{woke} {word}{mode} ∙ {ask}"),
+                Response::Spawned { fresh: true, .. } => {
+                    format!("nothing to resume ∙ started a fresh conversation ∙ {ask}")
+                }
+                // Its worktree is being rebuilt under the wake (T-278);
+                // the words ride the parked wake.
+                Response::Provisioning => {
+                    format!("provisioning worktree ∙ {word} wakes when ready ∙ {ask}")
+                }
+                Response::Err { message } => message,
+                _ => String::new(),
+            };
+            if refused {
+                app.shake(ticket);
+            }
+            if let Some(on) = on_tier.filter(|_| !refused && !app.status.is_empty()) {
+                app.status.push_str(&on);
+            }
+            app.refresh_soon()
+        };
+        if let Command::PromptSession { uploads, .. } = &command {
+            if !uploads.is_empty() {
+                let answer = self.req(command);
+                return finish(self, answer);
+            }
         }
-        if let Some(on) = on_tier.filter(|_| !refused && !self.status.is_empty()) {
-            self.status.push_str(&on);
-        }
-        self.refresh_soon()
+        self.status = "asking".into();
+        self.submit(command, finish)
     }
 
     /// The column field's second half (T-378): one command, one receipt,
@@ -16944,31 +17067,34 @@ impl App {
     ) -> Result<()> {
         // The receipt's `accepts` (T-429) is the plan-able seats parked
         // with the flag; which pressed now and which wait is each card's.
-        self.status = match self.req(Command::PromptColumn { column, text, queued, accept_plan }) {
-            Response::Asked { sent, woke, started, queued, skipped, failed, accepts } => {
-                let parts: Vec<String> = [
-                    (accepts, format!("accepts plan {accepts}")),
-                    (sent, format!("asked {sent}")),
-                    (woke, format!("woke {woke}")),
-                    (started, format!("started {started}")),
-                    (queued, format!("queued {queued}")),
-                    (skipped, format!("{skipped} skipped")),
-                    (failed, format!("{failed} failed")),
-                ]
-                .into_iter()
-                .filter(|(n, _)| *n > 0)
-                .map(|(_, s)| s)
-                .collect();
-                if parts.is_empty() {
-                    "nothing to ask".into()
-                } else {
-                    parts.join(" ∙ ")
+        self.status = "asking".into();
+        self.submit(Command::PromptColumn { column, text, queued, accept_plan }, |app, response| {
+            app.status = match response {
+                Response::Asked { sent, woke, started, queued, skipped, failed, accepts } => {
+                    let parts: Vec<String> = [
+                        (accepts, format!("accepts plan {accepts}")),
+                        (sent, format!("asked {sent}")),
+                        (woke, format!("woke {woke}")),
+                        (started, format!("started {started}")),
+                        (queued, format!("queued {queued}")),
+                        (skipped, format!("{skipped} skipped")),
+                        (failed, format!("{failed} failed")),
+                    ]
+                    .into_iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(_, s)| s)
+                    .collect();
+                    if parts.is_empty() {
+                        "nothing to ask".into()
+                    } else {
+                        parts.join(" ∙ ")
+                    }
                 }
-            }
-            Response::Err { message } => message,
-            _ => String::new(),
-        };
-        self.refresh_soon()
+                Response::Err { message } => message,
+                _ => String::new(),
+            };
+            app.refresh_soon()
+        })
     }
 
     /// One copy of each ask, newest last: a repeat moves to the end rather
@@ -16988,21 +17114,29 @@ impl App {
     /// The fresh-ticket Enter window is not armed either: the agent is already
     /// running, so the next Enter should mean what it always means.
     fn start_composed(&mut self, ticket: ulid::Ulid, plan: bool) {
+        if self.submission.is_some() {
+            self.status = "previous submission is still pending".into();
+            return;
+        }
         let kind = self.agent_kind_for(ticket);
         let word = keymap::AGENT_WORD;
         let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true, plan };
         let mode = if plan { " in plan mode" } else { "" };
-        match self.req(cmd) {
-            Response::Spawned { .. } => self.status = format!("{word} started on the title{mode}"),
-            // M4: the worktree is still being cut. The daemon replays the
-            // parked spawn — submit flag and all — when it lands.
-            Response::Provisioning => {
-                self.status = format!("provisioning worktree ∙ {word} starts when ready")
-            }
-            Response::Err { message } => self.refuse(ticket, message),
-            _ => self.status = String::new(),
-        };
-        let _ = self.refresh_soon();
+        let _ = self.submit(cmd, move |app, response| {
+            match response {
+                Response::Spawned { .. } => {
+                    app.status = format!("{word} started on the title{mode}")
+                }
+                // M4: the worktree is still being cut. The daemon replays the
+                // parked spawn — submit flag and all — when it lands.
+                Response::Provisioning => {
+                    app.status = format!("provisioning worktree ∙ {word} starts when ready")
+                }
+                Response::Err { message } => app.refuse(ticket, message),
+                _ => app.status = String::new(),
+            };
+            app.refresh_soon()
+        });
     }
 
     /// Live sessions of a ticket, in spawn order. `Sleeping` is live-but-parked.
@@ -19231,6 +19365,11 @@ mod tests {
                         | Command::GateStatus
                         | Command::FocusStart { .. }
                         | Command::OpenTerminal { .. }
+                        | Command::SeenTicket { .. }
+                        | Command::LowerHand { .. }
+                        | Command::CreateTicketWithNote { .. }
+                        | Command::PromptSession { .. }
+                        | Command::PromptColumn { .. }
                 ),
                 "background operation used the input thread: {command:?}"
             );
@@ -19244,6 +19383,9 @@ mod tests {
             hold.replies.push_back((reply, tx));
             rx
         }
+        fn request_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
+            self.read_detached(command)
+        }
         fn request_async(&mut self, command: Command) -> Receiver<Result<Response>> {
             self.read_detached(command)
         }
@@ -19256,6 +19398,105 @@ mod tests {
         let inner = std::mem::replace(&mut app.client, Box::new(Dead));
         app.client = Box::new(HeldBackground { inner, hold: hold.clone() });
         hold
+    }
+
+    #[test]
+    fn creating_a_ticket_waits_off_thread_and_does_not_steal_a_new_draft() {
+        let mut app = App::for_test(board_three_columns(), theme());
+        let hold = hold_background(&mut app);
+        app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        app.on_paste("first ticket".into()).unwrap();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.submission.is_some());
+        app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        app.on_paste("next draft".into()).unwrap();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "next draft"));
+        assert_eq!(hold.borrow().asks, 1, "second submission keeps its draft");
+        release(&hold);
+        app.poll_submission().unwrap();
+        app.poll_created().unwrap();
+        assert!(matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "next draft"));
+        assert!(app.just_created.is_none(), "late creation must not redirect Enter on a new draft");
+        assert!(app.board.tickets.iter().any(|t| t.title == "first ticket"));
+    }
+
+    #[test]
+    fn a_late_creation_refusal_keeps_both_drafts() {
+        let mut app = App::for_test(board_three_columns(), theme());
+        let hold = hold_background(&mut app);
+        app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        app.on_paste("refused draft").unwrap();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        app.on_paste("newer draft").unwrap();
+        hold.borrow_mut().replies.front_mut().unwrap().0 =
+            Ok(Response::Err { message: "save refused".into() });
+        release(&hold);
+        app.poll_submission().unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "newer draft")
+        );
+        assert!(
+            matches!(&app.write_recovery, Some(Mode::Input { buffer, .. }) if buffer.as_str() == "refused draft")
+        );
+        assert_eq!(app.status, "save refused");
+    }
+
+    #[test]
+    fn a_prompt_reply_does_not_block_typing_the_next_draft() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        let hold = hold_background(&mut app);
+        app.on_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.on_paste("first prompt".into()).unwrap();
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.submission.is_some());
+        app.on_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.on_paste("second draft".into()).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "second draft")
+        );
+        release(&hold);
+        app.poll_submission().unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "second draft")
+        );
+    }
+
+    #[test]
+    fn acknowledgement_waits_do_not_block_navigation_or_each_typed_character() {
+        let mut b = board_three_columns();
+        b.tickets[0].woke_at = Some("@100".into());
+        b.tickets[0].raised = Some(mesimon_core::board::Raised {
+            at: "@100".into(),
+            by: "agent:x".into(),
+            reason: "choose".into(),
+        });
+        let id = b.tickets[0].id;
+        let mut app = App::for_test(b, theme());
+        app.select_ticket(id);
+        app.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+        let hold = hold_background(&mut app);
+        app.on_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Board));
+        assert_eq!(hold.borrow().asks, 1, "one worker; the hand acknowledgement queues");
+        app.on_key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        for ch in "typing stays local".chars() {
+            app.on_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+            app.poll_acknowledgements().unwrap();
+        }
+        assert!(
+            matches!(&app.mode, Mode::Input { buffer, .. } if buffer.as_str() == "typing stays local")
+        );
+        assert_eq!(hold.borrow().asks, 1, "no acknowledgement per character");
+        release(&hold);
+        app.poll_acknowledgements().unwrap();
+        assert_eq!(hold.borrow().asks, 2, "the queued hand is sent after the first reply");
+        release(&hold);
+        app.poll_acknowledgements().unwrap();
+        assert!(!app.board.ticket(id).unwrap().hand_raised());
+        assert!(!app.board.ticket(id).unwrap().is_woke());
     }
 
     #[test]
@@ -19382,6 +19623,74 @@ mod tests {
         release(&hold);
         app.poll_focus();
         assert!(app.focus_ask.is_none());
+    }
+
+    #[test]
+    fn board_enter_waits_for_the_attachment_instead_of_cancelling_it() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let hold = hold_background(&mut app);
+        app.board_enter().unwrap();
+        assert!(matches!(app.screen, Screen::Board), "pending is not a refusal");
+        release(&hold);
+        app.poll_focus();
+        release(&hold);
+        app.poll_focus();
+        assert!(app.pending_attach.is_some(), "one Enter reaches the pane");
+    }
+
+    #[test]
+    fn leaving_a_ticket_page_does_not_join_a_blocked_preview() {
+        let (mut app, _, sid) = app_with_claude(SessionState::Running, false);
+        let (live, release) = crate::live::Live::held(sid);
+        app.live = Some(live);
+        let began = Instant::now();
+        app.to_board();
+        app.poll_live();
+        let elapsed = began.elapsed();
+        let _ = release.send(());
+        assert!(elapsed < Duration::from_millis(100), "page exit waited {elapsed:?}");
+        assert!(app.live.is_none());
+    }
+
+    #[test]
+    fn entering_a_pane_waits_off_thread_for_preview_cleanup() {
+        let (mut app, _, sid) = app_with_claude(SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        let (live, finish) = crate::live::Live::held(sid);
+        app.live = Some(live);
+        let hold = hold_background(&mut app);
+        let began = Instant::now();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(began.elapsed() < Duration::from_millis(100));
+        assert_eq!(hold.borrow().asks, 0, "cleanup precedes the focus grant");
+        assert!(!app.prepare_handover(), "the old fit still owns its size");
+        assert!(!app.poll_live(), "no replacement reader overtakes cleanup");
+        finish.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !app.live_stopped() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        app.poll_focus();
+        release(&hold);
+        app.poll_focus();
+        release(&hold);
+        app.poll_focus();
+        assert!(app.pending_attach.is_some());
+        assert!(app.prepare_handover());
+    }
+
+    #[test]
+    fn an_asynchronous_focus_refusal_opens_the_ticket_page() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, true);
+        let hold = hold_background(&mut app);
+        app.board_enter().unwrap();
+        release(&hold);
+        app.poll_focus();
+        release(&hold);
+        app.poll_focus();
+        assert_eq!(app.ticket_page(), Some(ulid::Ulid(1)));
+        assert!(app.pending_attach.is_none());
     }
 
     /// A snapshot in flight blocks no key and no frame (T-812): the board

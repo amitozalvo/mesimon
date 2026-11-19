@@ -482,6 +482,7 @@ struct ClientReply {
 }
 
 enum Msg {
+    PeerAnswered(ulid::Ulid, Result<Response, String>),
     Reaped(Vec<(String, Instant, bool)>, Duration),
     TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
     StatusWritten(String, bool),
@@ -1037,6 +1038,8 @@ pub struct Daemon {
     /// restart forgets which, and the words still go as asks.
     asks_out: HashMap<String, u64>,
     asks_in: HashMap<String, u64>,
+    peer_calls: HashMap<ulid::Ulid, peer::Outgoing>,
+    peer_wait: Option<ulid::Ulid>,
     /// The peer ask `park_ask` is parking right now (T-733), for the entry
     /// it pushes or replaces to carry; `None` at every other call.
     /// Wakes the crown is owed (T-414, T-469, T-527): one per worker that
@@ -1794,6 +1797,7 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
+            Msg::PeerAnswered(..) => "peer answered".into(),
             Msg::Reaped(..) => "reaped".into(),
             Msg::TerminalOpened(..) => "terminal opened".into(),
             Msg::StatusWritten(..) => "status written".into(),
@@ -1834,6 +1838,7 @@ pub fn run(paths: Paths) -> Result<()> {
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
+            Msg::PeerAnswered(id, answer) => d.peer_answered(id, answer),
             Msg::Reaped(done, took) => d.reaped(done, took),
             Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
             Msg::StatusWritten(line, ok) => {
@@ -1914,6 +1919,13 @@ pub fn run(paths: Paths) -> Result<()> {
                 // `sample_agent` (T-973) when its read lands off this thread.
                 let reply = match (reply, d.sample_wait.take()) {
                     (Some(reply), Some(id)) => d.sample_park_reply(id, reply),
+                    (reply, _) => reply,
+                };
+                let reply = match (reply, d.peer_wait.take()) {
+                    (Some(reply), Some(id)) => crownplan::park_in(
+                        d.peer_calls.get_mut(&id).map(|call| &mut call.reply),
+                        reply,
+                    ),
                     (reply, _) => reply,
                 };
                 // A bridge's poll and a ping wait with the mod road (T-574).
@@ -2220,6 +2232,8 @@ impl Daemon {
             board_touches: Vec::new(),
             asks_out: HashMap::new(),
             asks_in: HashMap::new(),
+            peer_calls: HashMap::new(),
+            peer_wait: None,
             crown_wakes: Default::default(),
             crown_wake_entering: Default::default(),
             crown_wakes_taken: Default::default(),
@@ -9511,7 +9525,9 @@ impl Daemon {
             // when the row is turned off, and with the crown.
             // The crown's ask to another board's crown (T-733): judged
             // against the person's links and carried to that board's daemon.
-            Command::AgentAskBoard { board, text } => self.agent_ask_board(ticket, board, text),
+            Command::AgentAskBoard { board, text } => {
+                self.agent_ask_board(session, ticket, board, text)
+            }
             Command::AgentWatchTicket { key, unwatch, seen } => {
                 let (target, write) =
                     match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {

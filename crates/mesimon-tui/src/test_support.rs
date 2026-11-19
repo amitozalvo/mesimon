@@ -6,6 +6,53 @@ use anyhow::{bail, Context, Result};
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
+/// Exercise the real preview reader and asynchronous Enter road without
+/// taking the test runner's terminal. The resulting argv is the same one
+/// the outer event loop hands to tmux.
+pub fn preview_then_enter(
+    client: Box<dyn Transport>,
+    repo: PathBuf,
+    sock: PathBuf,
+    ticket: ulid::Ulid,
+    from_board: bool,
+    marker: &str,
+) -> Result<Vec<String>> {
+    use std::time::{Duration, Instant};
+    let mut app = App::new(client, repo, Theme::new(Flavor::Graphite, Profile::Mono))?;
+    app.refresh()?;
+    app.tmux_sock = Some(sock);
+    let column = &app.board.ticket(ticket).context("ticket missing")?.column;
+    app.cursor_col = app.board.sorted_columns().iter().position(|c| &c.name == column).unwrap();
+    app.cursor_row = Some(0);
+    app.screen = Screen::Ticket { ticket, rail_idx: 0 };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        terminal.draw(|frame| crate::ui::draw(frame, &app))?;
+        app.pump()?;
+        let frame = terminal.backend().buffer();
+        let text: String = frame.content.iter().map(|cell| cell.symbol()).collect();
+        if text.contains(marker) {
+            break;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "live preview never rendered {marker}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if from_board {
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)?;
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE)?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        app.pump()?;
+        if app.pending_attach.is_some() && app.prepare_handover() {
+            return Ok(app.pending_attach.take().expect("pending above"));
+        }
+        anyhow::ensure!(Instant::now() < deadline, "Enter never attached: {}", app.status);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Drives the actual ticket-row Shift+Enter and Esc against the supplied transport.
 /// `None` selects the unadopted terminal, proving that cancellation leaves it unadopted.
 pub fn capture_then_cancel(

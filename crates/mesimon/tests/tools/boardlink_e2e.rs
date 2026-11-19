@@ -53,6 +53,88 @@ fn ask_board(c: &mut TestClient, from: uuid::Uuid, board: &str, text: &str) -> R
 }
 
 #[test]
+fn a_waiting_peer_leaves_snapshots_and_incoming_crown_asks_responsive() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let Some(a) = Harness::boot("peer-wait", Some(STUB)) else { return };
+    let remote = TestFixture::new("held-peer");
+    let repo = remote.dir.join("repo");
+    init_repo(&repo, "README", "peer fixture");
+    let paths = remote.paths(&repo);
+    std::fs::create_dir_all(paths.orch_sock().parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(paths.orch_sock()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let root = repo.canonicalize().unwrap().to_string_lossy().into_owned();
+    let mut c = a.client("peer-observer");
+    let ticket = c.create_ticket("crown stays reachable");
+    let session = c.spawn_claude(ticket);
+    assert!(matches!(c.request(Command::CrownTicket { id: ticket }), Response::Ok));
+    assert!(matches!(c.request(Command::LinkBoard { path: root.clone() }), Response::Ok));
+    let (ready, arrived) = channel();
+    let (release, wait) = channel::<Response>();
+    let peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                other => panic!("outgoing peer did not connect: {other:?}"),
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        assert!(line.contains("peer_ask"));
+        ready.send(()).unwrap();
+        let response = wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+    });
+    let mut asker = a.client("outgoing-crown");
+    let destination = root.clone();
+    let pending =
+        std::thread::spawn(move || ask_board(&mut asker, session, &destination, "first ask"));
+    arrived.recv_timeout(Duration::from_secs(5)).unwrap();
+    c.read.get_ref().set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let snapshot = c.try_send(Principal::Local, Command::Snapshot);
+    // Release even on failure, so the regression cannot strand its worker.
+    if snapshot.is_none() {
+        release.send(Response::Err { message: "test peer released".into() }).unwrap();
+        peer.join().unwrap();
+        let _ = pending.join();
+        panic!("snapshot waited behind the outgoing peer");
+    }
+    assert!(matches!(snapshot, Some(Response::Board { .. })));
+    let incoming = c.try_send(
+        Principal::Peer { board: root },
+        Command::PeerAsk {
+            crown_key: "T-1".into(),
+            crown_title: "other crown".into(),
+            text: "crossing ask".into(),
+        },
+    );
+    let response =
+        incoming.clone().unwrap_or(Response::Err { message: "test peer released".into() });
+    release.send(response).unwrap();
+    peer.join().unwrap();
+    let outbound = pending.join().unwrap();
+    assert!(matches!(incoming, Some(Response::PeerAsked(_))), "incoming ask blocked: {incoming:?}");
+    assert!(
+        matches!(
+            outbound,
+            Response::AgentAskedBoard { asked: PeerAnswer { reply: false, .. }, .. }
+        ),
+        "the crossing ask is newer than the outgoing words: {outbound:?}"
+    );
+}
+
+#[test]
 fn two_crowns_reach_each_other_through_one_links_file() {
     let Some(a) = Harness::boot("linka", Some(STUB)) else { return };
     // The second daemon shares the first's HOME, so both read one state

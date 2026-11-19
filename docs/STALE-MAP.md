@@ -47612,3 +47612,71 @@ lands, merged and no move when its own commit does); `crownwake::tests::
 a_branch_stacked_on_another_tickets_commit_wakes_no_delivery` (`wt_queries` asks a touched leg
 from its cut; the fold and `hear_merges`: no wake, aggregate unmerged, binding `base_oid` at the
 dependency; with a commit in the reflog, a merged wake). No rig case: no words changed.
+
+
+## Pane-entry regression, preview cleanup and cross-board waits (T-1314 follow-up, 2026-11-19)
+
+**Reported after the first fix:** boards still froze, especially when leaving a ticket page;
+Enter went to the page regardless of the behaviour setting; the tmux preview eventually
+appeared but was slow. The affected computer runs macOS. The person also supplied a cross-board
+`did not answer in time: Resource temporarily unavailable (os error 35)` and a separate refusal
+because an earlier plugin-submitted ask remained `sent` for over 42 minutes.
+
+**Missed by the first tests:** `board_enter` interpreted an absent immediate `pending_attach`
+as a refusal, changed the screen, and thereby cancelled its own asynchronous focus request.
+Immediate fake replies hid that bug. Enter now stays pending; a real refusal still opens the
+page. `Live::drop` joined the preview reader, including its unbounded tmux subprocess wait, on
+the UI thread. Moving daemon reads did nothing for that join. Navigation now retires one reader
+and polls completion. A replacement reader and the attachment handoff wait for that reader's
+fit restoration, off the input thread; they cannot race its late unfit. Cached pictures stay.
+Process exit/re-exec still completes cleanup before replacing the client.
+
+**Another writer stall:** `peer::call_peer` waited up to five seconds inside `agent_ask_board`.
+A busy remote daemon blocked the sender; two writers asking each other could form a timeout
+cycle. The writer now authorizes the same request and parks its reply, a worker does the socket
+wait, and the writer records completion and sends the unchanged response through `send_parked`
+(including crown-rule delivery). Reply classification belongs to the send's moment; an incoming
+ask arriving during that wait is not consumed as an earlier ask. No automatic resend and no
+clearing of the recipient's outstanding-ask guard. The timeout report identifies the socket
+wait; it does not establish why the separate 42-minute receipt was still outstanding.
+
+**Verification added:** held-response tests drive board Enter, asynchronous refusal, page exit
+with a blocked preview, and attachment waiting for preview cleanup. The real-process test drives
+the App's reader and then the built CLI through a PTY: actual tmux attachment and rendering from
+the board, detach, ticket preview, Escape while a capture is held at a barrier, preview recovery,
+attachment from the ticket page and detach. The peer test holds the outbound reply while the
+sender serves a snapshot and an incoming crown ask, then checks the crossing asks' classification.
+The existing two-board conversation and focus/transport tests remain coverage. The earlier
+claim that the original green tests established the whole UI interaction was too broad.
+
+**Typing and submission follow-up:** incidental `SeenTicket`/`LowerHand` requests ran on the
+input thread, after a key or page departure. They now share one acknowledgement worker,
+coalescing by the mark's stamp. Text-only creation, ticket/column prompts and the composed
+start receive their replies asynchronously; a second submission keeps its draft while the
+first is pending. Creation waits for its snapshot without blocking and follows the new card
+only if the person has not moved on. A creation refusal preserves both the submitted draft and any
+newer field. Upload-bearing submissions keep their existing synchronous lifetime so a caller
+cannot discard an upload before its consumer answers; this change does not claim that every
+edge action is asynchronous. Held-response tests exercise actual `on_key` routing, repeated
+characters, pending submission and the next draft. The PTY has 62 tickets and checks each
+character drawn in the new-ticket and prompt fields while capture remains held.
+
+Obsolete captures are now cancelled as well: retiring a worker alone would leave Enter waiting
+for its old read. The read-only capture owns a process group and drains its pipe without
+blocking; cancellation kills and reaps that client group, then the worker restores its fit.
+A capture still wanted by the page may finish even when it is slow; it is not discarded by an
+arbitrary latency deadline. Fit/unfit mutations retain their ordering. The PTY keeps a second
+capture held while Enter must attach within one second; it does not release the barrier to
+make attachment pass.
+
+Final verification: `cargo ut --no-fail-fast --quiet` passed 3,309 tests (12 ignored),
+fixture audit clean. Affected integration selection: 249 passed and the new PTY failed because
+its driver used Shift+Enter without advertising enhanced keys. The corrected legacy prompt
+chord, Escape+Return, passed with the same deadlines; all seven slow-tmux/terminal-adoption
+cases passed (254 distinct affected e2es covered overall), audits clean. On this Mac the
+62-ticket PTY measured new-ticket character draws at 2.5 ms mean / 4.7 ms maximum and prompt
+characters at 2.6 ms mean / 6.8 ms maximum; real attachment with capture held finished inside
+one second. These are fixture measurements, not measurements of the affected remote computer.
+The earlier resource-count unit failure did not recur in the final required unit run; no
+resource-count repair is claimed. Full workspace verification is due after this follow-up is
+merged because production `server.rs` changed.

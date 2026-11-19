@@ -19,12 +19,9 @@
 //! there as the answer (`asks_in`/`asks_out`), and the receiving side reads
 //! them as `got_reply` and renders the `Board reply` template.
 //!
-//! The call runs on the writer thread, synchronously, with short timeouts:
-//! a unix connect to a local daemon answers in microseconds or fails at once
-//! (no socket, nobody listening), and a daemon busy for `PEER_WAIT_MS` is
-//! the one case that stalls this one, for that long and no longer. An
-//! action at an edge stays a fork on the writer (CLAUDE.md); the tick never
-//! calls here.
+//! The writer authorizes the ask and keeps its reply; the socket wait runs
+//! on a worker. A busy peer must not block this board, and two crowns asking
+//! each other at once must remain able to receive each other's requests.
 //!
 //! What the board shows rides the snapshot: `links` (the partners, by name
 //! and path) and `board_touches` (what went where in the last ten seconds),
@@ -48,6 +45,16 @@ const PEER_CONNECT_MS: u64 = 1_000;
 const PEER_WAIT_MS: u64 = 5_000;
 
 pub(super) type MachineLinksCache = super::tiers::MachineFileCache<Links>;
+
+pub(super) struct Outgoing {
+    session: uuid::Uuid,
+    ticket: ulid::Ulid,
+    other: String,
+    name: String,
+    text: String,
+    incoming: Option<u64>,
+    pub reply: Option<Sender<ClientReply>>,
+}
 
 /// The words a peer ask carries, kept on the queue entry it became: the
 /// asking board's name, and the crown's words before the template wrapped
@@ -167,6 +174,7 @@ impl Daemon {
     /// and names the fix a person makes.
     pub(super) fn agent_ask_board(
         &mut self,
+        session: uuid::Uuid,
         ticket: ulid::Ulid,
         board: String,
         text: String,
@@ -210,13 +218,38 @@ impl Daemon {
             principal: Principal::Peer { board: me },
             command: Command::PeerAsk { crown_key, crown_title, text: text.clone() },
         };
-        let answer = match call_peer(&sock, &env) {
+        let id = ulid::Ulid::new();
+        self.peer_calls.insert(
+            id,
+            Outgoing {
+                session,
+                ticket,
+                incoming: self.asks_in.get(&other).copied(),
+                other,
+                name,
+                text,
+                reply: None,
+            },
+        );
+        self.peer_wait = Some(id);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let answer = call_peer(&sock, &env);
+            let _ = tx.send(Msg::PeerAnswered(id, answer));
+        });
+        Response::Ok // the writer parks the actual reply
+    }
+
+    pub(super) fn peer_answered(&mut self, id: ulid::Ulid, answer: Result<Response, String>) {
+        let Some(call) = self.peer_calls.remove(&id) else { return };
+        let Outgoing { session, ticket, other, name, text, incoming, reply: channel } = call;
+        let answer = match answer {
             Ok(Response::PeerAsked(asked)) => Ok(asked),
             Ok(Response::Err { message }) => Err(message),
             Ok(_) => Err("answered in words this build cannot read".to_string()),
             Err(why) => Err(why),
         };
-        match answer {
+        let response = match answer {
             Err(why) => {
                 self.board_touched(&other, TouchAction::Refused, Some(why.clone()));
                 self.feed.board_outcome("agent", "ask_board", Some(ticket), "refused");
@@ -226,7 +259,12 @@ impl Daemon {
             Ok(asked) => {
                 // Answering an ask that board made here is a reply; the
                 // next words from there answer this one.
-                let reply = self.asks_in.remove(&other).is_some();
+                // Whether these words answered an earlier ask was decided
+                // when sent. An ask arriving during the socket wait is newer.
+                let reply = incoming.is_some();
+                if incoming.is_some() && self.asks_in.get(&other).copied() == incoming {
+                    self.asks_in.remove(&other);
+                }
                 if !reply {
                     self.asks_out.insert(other.clone(), now_ms());
                 }
@@ -250,6 +288,9 @@ impl Daemon {
                 self.broadcast();
                 Response::AgentAskedBoard { board: name, asked: PeerAnswer { reply, ..asked } }
             }
+        };
+        if let Some(channel) = channel {
+            self.send_parked(channel, session, response);
         }
     }
 

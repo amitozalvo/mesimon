@@ -362,7 +362,7 @@ pub fn run(repo_root: &Path) -> Result<()> {
     drop(app.caffeine.take());
     // The live window's reader stops and gives the pane its size back
     // before any exec below, which would skip the drop (T-1143).
-    drop(app.live.take());
+    app.finish_live();
     if result.is_ok() && app.pending_reexec {
         // The board as the person last saw it, for the reload's dialog to
         // stand over, muted (T-1120).
@@ -521,13 +521,13 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
         }
 
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
-        while let Some(argv) = app.pending_attach.take() {
+        while app.pending_attach.is_some() && app.prepare_handover() {
+            let argv = app.pending_attach.take().expect("pending above");
             let cwd = app.pending_attach_cwd.take();
             // The pane goes back to its client's size before the client
             // attaches (T-1143): the window's reader stops here, and its
             // fit is undone on the way out. Its last picture is kept for
             // the way back.
-            app.park_live();
             // The board is about to stop being what the terminal shows, for
             // however long the user stays in that pane (T-291). Said before
             // the restore, so nothing writes an escape into the gap.

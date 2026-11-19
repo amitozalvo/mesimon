@@ -98,9 +98,23 @@ sequence reject obsolete answers. The archive keeps its displayed page while tha
 pending and replaces only rows it supplied. `GateStatus` and attachment preparation loan the
 board's own connection to a worker: the focus token belongs to that connection, so a disposable
 read connection cannot hold it. A grant arriving after navigation is released, not attached.
+Snooze/hand acknowledgements have one worker and coalesce repeated keys until their stamped
+mark changes. Text-only creation and prompt submissions also await replies off the input
+thread, with one submission in flight. Creation follows its card only if no later input moved
+the person on; a refused draft cannot replace a newer editor. Attachment uploads still use their
+existing synchronous lifetime: do not discard an upload before its consumer has answered.
+Pending focus is not a refusal: board Enter stays on the board until its answer. The live
+preview's retiring reader is polled, never joined by page navigation; no replacement reader or
+attachment overtakes its fit restoration. Obsolete read-only captures are cancelled, killing
+only their own client process group. A slow capture on the page still gets to finish. Process
+exit/re-exec finishes cleanup before leaving.
 The daemon's `server/responsive.rs` keeps reaping and terminal-opening reservations while tmux
 runs on workers; wake waits for an in-flight reap, teardown waits for an opening, and a lost
 client gets no late focus grant. The status-line write is also off the writer, one at a time.
+Cross-board crown calls also park their replies while a worker waits for the peer. Receiving
+an ask must remain possible while sending one: synchronous waits on two writers can form a
+cycle. Completion records the outcome on the writer and uses the existing parked-reply road
+for crown rules; an incoming ask newer than the outgoing call stays outstanding.
 
 **Paths (D33b).** Per repo, keyed by `proj16` = sha256(canonical repo path)[..16]: sockets under
 `/tmp/mesimon-<uid>/<proj16>/` (sun_path budget — a new socket must be added to the length test

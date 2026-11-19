@@ -22,6 +22,98 @@ use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 
+#[test]
+fn the_live_preview_renders_and_enter_attaches_from_page_and_board() {
+    use mesimon_tui::client::Client;
+    const STUB: &str = "#!/bin/sh\nfor arg do [ \"$arg\" = -p ] && exit 0; done\ndraw() { printf '\\033[2J\\033[999;1HLIVE_PREVIEW_READY'; }\ntrap draw WINCH\ndraw\nwhile :; do sleep 1; done\n";
+    let Some(h) = Harness::boot_bare("preview-enter", Some(STUB), &[]) else { return };
+    let mut c = h.client("preview-enter");
+    let ticket = c.create_ticket("preview and enter");
+    let session = c.spawn_claude(ticket);
+    c.await_state(session, "running pane", |s| s.has_pane());
+    // Board Enter takes a hot agent straight to its pane.
+    hook_send(&h.paths.hook_sock(), &session.to_string(), "UserPromptSubmit", "{}");
+    c.await_state(session, "running turn", |s| matches!(s, SessionState::Running));
+    assert!(matches!(c.request(Command::GatePassed), Response::Ok));
+    for from_board in [false, true] {
+        let client = Client::connect_observer(&h.repo).unwrap();
+        let argv = mesimon_tui::test_support::preview_then_enter(
+            Box::new(client),
+            h.repo.clone(),
+            h.paths.tmux_sock(),
+            ticket,
+            from_board,
+            "LIVE_PREVIEW_READY",
+        )
+        .unwrap();
+        assert!(argv.iter().any(|arg| arg == "attach-session" || arg == "attach"), "{argv:?}");
+        let size = tmux(&h.paths.tmux_sock())
+            .args([
+                "show-options",
+                "-w",
+                "-v",
+                "-t",
+                &session.simple().to_string()[..16],
+                "window-size",
+            ])
+            .output()
+            .unwrap();
+        assert!(size.status.success());
+        assert_ne!(
+            String::from_utf8_lossy(&size.stdout).trim(),
+            "manual",
+            "preview fit restored before attach"
+        );
+    }
+    let template = mesimon_core::board::Template::default();
+    assert!(matches!(
+        c.request(Command::ApplySetup {
+            template,
+            noun: "PR".into(),
+            merge_into: template.merge_into(),
+            workspace: mesimon_core::board::WorkspaceStrategy::SharedCheckout,
+            agent_tools: mesimon_core::board::AgentTools::Annotate,
+        }),
+        Response::Ok
+    ));
+    assert!(matches!(c.request(Command::GatePassed), Response::Ok));
+    let cli = h.command(&[]);
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: ticket, column: "TODO".into(), before: None }),
+        Response::Ok
+    ));
+    for n in 1..62 {
+        assert!(matches!(
+            c.request(Command::CreateTicket {
+                column: "DONE".into(),
+                title: format!("background ticket {n}"),
+                workspace: None,
+                tier: None,
+            }),
+            Response::Created { .. }
+        ));
+    }
+    let env = cli.get_envs().filter_map(|(key, value)| value.map(|value| (key, value)));
+    let result = std::process::Command::new("python3")
+        .args(["-B", "-c", include_str!("../common/preview_pty.py")])
+        .arg(cli.get_program())
+        .arg(&h.repo)
+        .arg(h.paths.tmux_sock())
+        .arg(mesimon_backend_tmux::tmux_bin())
+        .env_clear()
+        .envs(env)
+        .current_dir(&h.repo)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+}
+
 /// Hold the exact lifecycle command while another client keeps reading the
 /// board. The marker is a barrier, not an assumption about process startup.
 #[test]

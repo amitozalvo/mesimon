@@ -29,6 +29,10 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use mesimon_daemon::agents::claude::composer::is_rule;
@@ -993,6 +997,7 @@ pub(crate) struct Live {
     ask: Option<Sender<Ask>>,
     wished: Cell<Option<(u16, u16)>>,
     reader: Option<std::thread::JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Live {
@@ -1011,7 +1016,10 @@ impl Live {
     ) -> Self {
         let (tx, rx) = channel();
         let (ask_tx, ask_rx) = channel::<Ask>();
-        let reader = std::thread::spawn(move || read_loop(&sock, &sid16, &tx, &ask_rx, size));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&cancelled);
+        let reader =
+            std::thread::spawn(move || read_loop(&sock, &sid16, &tx, &ask_rx, size, &stop));
         Live {
             session,
             shot: seed,
@@ -1020,6 +1028,7 @@ impl Live {
             ask: Some(ask_tx),
             wished: Cell::new(size),
             reader: Some(reader),
+            cancelled,
         }
     }
 
@@ -1047,6 +1056,7 @@ impl Live {
             ask: None,
             wished: Cell::new(None),
             reader: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1055,7 +1065,28 @@ impl Live {
     #[cfg(test)]
     pub(crate) fn waiting(session: uuid::Uuid, started: Instant) -> Self {
         let (_tx, rx) = channel();
-        Live { session, shot: None, started, rx, ask: None, wished: Cell::new(None), reader: None }
+        Live {
+            session,
+            shot: None,
+            started,
+            rx,
+            ask: None,
+            wished: Cell::new(None),
+            reader: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// A capture blocked outside the UI, released by the test. The deadline
+    /// also lets a failing regression test unwind without leaving a thread.
+    #[cfg(test)]
+    pub(crate) fn held(session: uuid::Uuid) -> (Self, Sender<()>) {
+        let (release, wait) = channel();
+        let mut live = Self::waiting(session, Instant::now());
+        live.reader = Some(std::thread::spawn(move || {
+            let _ = wait.recv_timeout(Duration::from_secs(2));
+        }));
+        (live, release)
     }
 
     /// Take what the reader sent since; whether the screen changed.
@@ -1079,15 +1110,26 @@ impl Live {
             let _ = ask.send(Ask::Size(cols, rows));
         }
     }
+
+    /// Ask the reader to restore its fit. Navigation polls `stopped`;
+    /// it must never join a reader waiting on a tmux subprocess.
+    pub(crate) fn stop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        if let Some(ask) = self.ask.take() {
+            let _ = ask.send(Ask::Stop);
+        }
+    }
+
+    pub(crate) fn stopped(&self) -> bool {
+        self.reader.as_ref().is_none_or(|reader| reader.is_finished())
+    }
 }
 
 impl Drop for Live {
     /// The reader stops and undoes its fit before this returns, so an
     /// attach that follows finds the pane sized by its own client again.
     fn drop(&mut self) {
-        if let Some(ask) = self.ask.take() {
-            let _ = ask.send(Ask::Stop);
-        }
+        self.stop();
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -1178,6 +1220,7 @@ fn read_loop(
     tx: &Sender<Shot>,
     ask: &Receiver<Ask>,
     first: Option<(u16, u16)>,
+    cancelled: &AtomicBool,
 ) {
     let mut last = 0u64;
     let mut f = Fitting {
@@ -1206,7 +1249,7 @@ fn read_loop(
         }
         if f.settle.is_none_or(|t| Instant::now() >= t) {
             f.settle = None;
-            if let Some((hash, shot)) = capture(sock, sid16) {
+            if let Some((hash, shot)) = capture(sock, sid16, cancelled) {
                 if f.sends(&shot, hash, &mut last, |c, r| fit(sock, sid16, c, r)) {
                     last = hash;
                     if tx.send(shot).is_err() {
@@ -1237,10 +1280,65 @@ fn tmux(sock: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// A capture is read-only and becomes useless when its page is left.
+/// Cancel just this client's process group, then let the reader restore its
+/// fit before attachment. Never wait for an obsolete capture or its wrapper.
+fn capture_output(sock: &Path, args: &[&str], cancelled: &AtomicBool) -> Option<String> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(mesimon_backend_tmux::tmux_bin())
+        .arg("-S")
+        .arg(sock)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take().expect("piped capture");
+    let fd = stdout.as_raw_fd();
+    // SAFETY: stdout owns this live descriptor; only O_NONBLOCK is added.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    let nonblocking =
+        flags >= 0 && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0;
+    let mut bytes = Vec::new();
+    let mut eof = false;
+    while nonblocking && !cancelled.load(Ordering::Relaxed) {
+        let mut buf = [0; 8192];
+        match stdout.read(&mut buf) {
+            Ok(0) => eof = true,
+            Ok(n) => {
+                bytes.extend_from_slice(&buf[..n]);
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if eof => {
+                return status.success().then(|| String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(_) => break,
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // SAFETY: this child was spawned in its own process group. It contains
+    // the capture client (and a test wrapper), never the private tmux server.
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.wait();
+    None
+}
+
 /// The screen and the cursor in one command queue, and a hash of the raw
 /// answer so an unchanged screen is not sent again.
-fn capture(sock: &Path, sid16: &str) -> Option<(u64, Shot)> {
-    let out = tmux(
+fn capture(sock: &Path, sid16: &str, cancelled: &AtomicBool) -> Option<(u64, Shot)> {
+    let out = capture_output(
         sock,
         &[
             "capture-pane",
@@ -1255,6 +1353,7 @@ fn capture(sock: &Path, sid16: &str) -> Option<(u64, Shot)> {
             sid16,
             "#{pane_width}|#{pane_height}|#{cursor_flag}|#{cursor_x}|#{cursor_y}",
         ],
+        cancelled,
     )?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     out.hash(&mut hasher);

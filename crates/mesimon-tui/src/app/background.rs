@@ -22,13 +22,34 @@ impl ReadKey {
 #[derive(Default)]
 pub(super) struct Reads([Option<(ReadKey, Receiver<Result<Response>>)>; 4]);
 
+/// One worker, with duplicate acknowledgements coalesced until the board
+/// reflects them. Navigation never waits for these incidental writes.
+#[derive(Default)]
+pub(super) struct Acknowledgements {
+    queued: std::collections::VecDeque<(ulid::Ulid, bool)>,
+    sent: std::collections::HashMap<(ulid::Ulid, bool), String>,
+    active: Option<((ulid::Ulid, bool), Receiver<Result<Response>>)>,
+}
+
+pub(super) struct Submission {
+    rx: Receiver<Result<Response>>,
+    finish: Box<dyn FnOnce(&mut App, Response) -> Result<()>>,
+}
+
+pub(super) struct CreatedFollow {
+    pub id: ulid::Ulid,
+    pub start: Option<bool>,
+    pub generation: u64,
+    pub after: u64,
+}
+
 pub(super) struct FocusAsk {
     target: FocusTarget,
     screen: Screen,
     subject: Option<ulid::Ulid>,
     scope: Scope,
     phase: Phase,
-    rx: Receiver<Result<Response>>,
+    rx: Option<Receiver<Result<Response>>>,
 }
 enum Phase {
     Gate(Command),
@@ -37,6 +58,135 @@ enum Phase {
 }
 
 impl App {
+    pub(super) fn submit(
+        &mut self,
+        command: Command,
+        finish: impl FnOnce(&mut App, Response) -> Result<()> + 'static,
+    ) -> Result<()> {
+        debug_assert!(self.submission.is_none());
+        let rx = self.client.request_detached(command);
+        self.submission = Some(Submission { rx, finish: Box::new(finish) });
+        self.poll_submission()?;
+        Ok(())
+    }
+
+    pub(super) fn poll_submission(&mut self) -> Result<bool> {
+        let Some(submission) = self.submission.take() else { return Ok(false) };
+        let result = match submission.rx.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => {
+                self.submission = Some(submission);
+                return Ok(false);
+            }
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("submission reply lost")),
+        };
+        let response = match result {
+            Ok(response) => response,
+            Err(e) => {
+                self.note_daemon_down(crate::client::outage(&e));
+                Response::Err { message: self.status.clone() }
+            }
+        };
+        (submission.finish)(self, response)?;
+        Ok(true)
+    }
+
+    pub(super) fn recover_submission(&mut self, mode: Mode) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = mode;
+        } else {
+            // A reply must never overwrite words typed after submission.
+            self.write_recovery = Some(mode);
+        }
+    }
+
+    pub(super) fn poll_created(&mut self) -> Result<bool> {
+        let Some(follow) = self.created_follow.as_ref() else { return Ok(false) };
+        if self.board.ticket(follow.id).is_none() {
+            if self.landing >= follow.after {
+                self.created_follow = None;
+                self.status = "saved ticket is no longer on the board".into();
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        let follow = self.created_follow.take().unwrap();
+        if self.input_generation == follow.generation {
+            self.select_ticket(follow.id);
+            if follow.start.is_none() {
+                self.just_created = Some(follow.id);
+                self.status =
+                    format!("enter starts {} ∙ space opens the ticket", keymap::AGENT_WORD);
+            }
+        }
+        if let Some(plan) = follow.start {
+            self.start_composed(follow.id, plan);
+        }
+        Ok(true)
+    }
+
+    pub(super) fn acknowledge(&mut self, id: ulid::Ulid, hand: bool) -> Result<()> {
+        let stamp = self.board.ticket(id).and_then(|t| {
+            if hand {
+                t.raised.as_ref().map(|r| r.at.clone())
+            } else {
+                t.woke_at.clone()
+            }
+        });
+        let Some(stamp) = stamp else { return Ok(()) };
+        if self.acknowledgements.sent.get(&(id, hand)) != Some(&stamp) {
+            self.acknowledgements.sent.insert((id, hand), stamp);
+            if !self.acknowledgements.queued.contains(&(id, hand)) {
+                self.acknowledgements.queued.push_back((id, hand));
+            }
+        }
+        self.poll_acknowledgements()?;
+        Ok(())
+    }
+
+    pub(super) fn poll_acknowledgements(&mut self) -> Result<bool> {
+        let mut dirty = false;
+        loop {
+            if self.acknowledgements.active.is_none() {
+                let Some((id, hand)) = self.acknowledgements.queued.pop_front() else { break };
+                let command =
+                    if hand { Command::LowerHand { id } } else { Command::SeenTicket { id } };
+                self.acknowledgements.active =
+                    Some(((id, hand), self.client.request_detached(command)));
+            }
+            let (key, rx) = self.acknowledgements.active.as_ref().unwrap();
+            let key = *key;
+            let result = match rx.try_recv() {
+                Ok(result) => result,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("acknowledgement lost")),
+            };
+            self.acknowledgements.active = None;
+            match result {
+                Ok(Response::Err { message }) => {
+                    self.acknowledgements.sent.remove(&key);
+                    self.status = message;
+                }
+                Err(e) => {
+                    self.acknowledgements.sent.remove(&key);
+                    self.note_daemon_down(crate::client::outage(&e));
+                }
+                _ => {}
+            }
+            // No automatic replay. A later key may acknowledge the mark again.
+            self.refresh_soon()?;
+            dirty = true;
+        }
+        self.acknowledgements.sent.retain(|(id, hand), stamp| {
+            self.board.ticket(*id).is_some_and(|t| {
+                let current =
+                    if *hand { t.raised.as_ref().map(|r| &r.at) } else { t.woke_at.as_ref() };
+                current == Some(stamp)
+            })
+        });
+        Ok(dirty)
+    }
+
     /// One request per category, including obsolete requests still on the wire.
     /// A changed selection never creates an unbounded queue of worker threads.
     pub(super) fn background_read(&mut self, key: ReadKey, command: Command) -> Option<Response> {
@@ -117,13 +267,14 @@ impl App {
         if self.focus_ask.is_some() {
             return;
         }
+        self.park_live();
         self.focus_ask = Some(FocusAsk {
             target,
             screen: self.screen.clone(),
             subject: self.subject(),
             scope: self.scope(),
             phase: Phase::Gate(grant),
-            rx: self.client.request_async(Command::GateStatus),
+            rx: None,
         });
         self.poll_focus();
     }
@@ -133,8 +284,15 @@ impl App {
         // At most gate, attachment and cancellation. Immediate fakes retain
         // the old behavior; a real delayed reply returns to the event loop.
         for _ in 0..3 {
+            if self.focus_ask.as_ref().is_some_and(|ask| ask.rx.is_none()) {
+                if !self.live_stopped() {
+                    break;
+                }
+                let rx = self.client.request_async(Command::GateStatus);
+                self.focus_ask.as_mut().expect("pending above").rx = Some(rx);
+            }
             let Some(ask) = &self.focus_ask else { break };
-            let result = match ask.rx.try_recv() {
+            let result = match ask.rx.as_ref().expect("started above").try_recv() {
                 Ok(result) => result,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("attachment request lost")),
@@ -156,7 +314,7 @@ impl App {
             match (ask.phase, response) {
                 (Phase::Gate(grant), Response::Gate { passed: true, .. }) if current => {
                     ask.phase = Phase::Attach;
-                    ask.rx = self.client.request_async(grant);
+                    ask.rx = Some(self.client.request_async(grant));
                     self.focus_ask = Some(ask);
                 }
                 (Phase::Gate(_), Response::Gate { passed: false, attach_argv: Some(argv) })
@@ -175,10 +333,25 @@ impl App {
                         FocusTarget::Terminal => Command::TerminalEnd,
                     };
                     ask.phase = Phase::Release;
-                    ask.rx = self.client.request_async(release);
+                    ask.rx = Some(self.client.request_async(release));
                     self.focus_ask = Some(ask);
                 }
-                (_, Response::Err { message }) => self.status = message,
+                (_, Response::Err { message }) => {
+                    self.status = message;
+                    if current {
+                        if let FocusTarget::Session(sid, FocusOrigin::Board) = ask.target {
+                            if let Some(rec) = self.board.session(sid) {
+                                let ticket = rec.ticket;
+                                let rail_idx = self
+                                    .rail_sessions(ticket)
+                                    .iter()
+                                    .position(|s| s.id == sid)
+                                    .unwrap_or(0);
+                                self.screen = Screen::Ticket { ticket, rail_idx };
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
