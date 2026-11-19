@@ -282,6 +282,12 @@ pub enum Signal {
     BackgroundChanged {
         liveness: crate::background::Liveness,
     },
+    /// The person stopped the lead's last background task from Claude Code's
+    /// tasks panel (T-1313). The kill queues the task's notification for the
+    /// next prompt and starts no turn, so no `Stop` comes to say the park is
+    /// over: the turn the last `Stop` ended is the end, unless a teammate it
+    /// counted is still at work.
+    TasksKilled,
     /// A named in-process teammate is about to go idle. It stays alive (and
     /// listed as `running` in every later Stop payload), so this frame is the
     /// only thing that says its work is done.
@@ -543,6 +549,9 @@ pub struct Machine {
     /// as working after every turn; when the clock runs out it reads
     /// monitoring again, as every background shell did before.
     park_fallback: StopReason,
+    /// How many teammates the last top-level `Stop` listed: weighed against
+    /// `idle_teammates` when a kill empties the task registry (T-1313).
+    stop_teammates: usize,
     /// When the open compaction window began (T-894): `PreCompact` opens
     /// it, `PostCompact` closes it, and no frame of the window moves the
     /// state. Claude Code compacts an idle session before its prompt cache
@@ -605,6 +614,7 @@ impl Machine {
             idle_teammates: BTreeSet::new(),
             background_at: now,
             park_fallback: StopReason::EndTurn,
+            stop_teammates: 0,
             compacting_since: None,
             compact_closed_at: None,
             stale_wait: None,
@@ -732,9 +742,10 @@ impl Machine {
         if proves_background(sig) {
             self.background_at = now;
         }
-        if let Signal::Stop { has_agent_id: false, monitoring_tasks, .. } = sig {
+        if let Signal::Stop { has_agent_id: false, monitoring_tasks, teammates, .. } = sig {
             self.park_fallback =
                 if *monitoring_tasks { StopReason::Monitoring } else { StopReason::EndTurn };
+            self.stop_teammates = *teammates;
         }
         // Sleeping latches: the daemon's own SIGTERM produces SessionEnd and
         // pane-died, and neither those nor any straggler frame may flip a
@@ -1089,6 +1100,18 @@ impl Machine {
                 } else {
                     None
                 }
+            }
+            Signal::TasksKilled => {
+                let parked = |s: &S| {
+                    matches!(
+                        s,
+                        S::Idle { stop_reason: StopReason::Background | StopReason::Monitoring }
+                    )
+                };
+                let teammates_busy = self.stop_teammates > self.idle_teammates.len();
+                ((parked(&self.state) || self.pending.as_ref().is_some_and(|p| parked(&p.to)))
+                    && !teammates_busy)
+                    .then_some((S::Idle { stop_reason: StopReason::EndTurn }, Confidence::High))
             }
 
             // A subagent finishing proves the parent is still orchestrating.
@@ -2068,6 +2091,67 @@ mod tests {
         m.apply(&Signal::PermissionRequest, 102_000);
         m.apply(&Signal::BackgroundChanged { liveness: Liveness::Monitoring }, 103_000);
         assert_eq!(m.state(), &SessionState::RequiresAction { reason: Reason::Permission });
+    }
+
+    /// T-1313: the person stopped a parked seat's last background task from
+    /// Claude Code's tasks panel. No turn and no `Stop` follow, so the kill is
+    /// the end of the park: the turn the `Stop` ended is over, whichever park
+    /// it was in (T-1309's had gone from working to monitoring on the stale
+    /// clock). Nothing else moves on it.
+    #[test]
+    fn a_killed_last_task_ends_the_park() {
+        let stop = |blocking, monitoring| Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: blocking,
+            monitoring_tasks: monitoring,
+            teammates: 0,
+        };
+        for (blocking, monitoring, parked) in
+            [(true, true, StopReason::Background), (false, true, StopReason::Monitoring)]
+        {
+            let mut m = m(SessionState::Running);
+            m.apply(&stop(blocking, monitoring), 100);
+            m.tick(100 + SETTLE_MS);
+            assert_eq!(m.state(), &SessionState::Idle { stop_reason: parked });
+            m.apply(&Signal::TasksKilled, 60_000);
+            m.tick(60_000 + SETTLE_MS);
+            assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
+            assert_eq!(m.confidence(), Confidence::High);
+        }
+        // A kill inside the Stop's own settle lands the end, not the park.
+        let mut early = m(SessionState::Running);
+        early.apply(&stop(true, true), 100);
+        early.apply(&Signal::TasksKilled, 150);
+        early.tick(150 + SETTLE_MS);
+        assert_eq!(early.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
+        // A running turn, a finished one and a person's dialog are not parks.
+        for state in [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::RequiresAction { reason: Reason::Permission },
+        ] {
+            let mut m = m(state.clone());
+            assert!(m.apply(&Signal::TasksKilled, 1000).is_none());
+            assert!(m.tick(1000 + SETTLE_MS).is_none());
+            assert_eq!(m.state(), &state);
+        }
+    }
+
+    /// T-1313: a teammate the last `Stop` counted, with no idle notice, still
+    /// holds the park when the person kills the last shell beside it.
+    #[test]
+    fn a_kill_beside_a_busy_teammate_keeps_the_park() {
+        let mut m = m(SessionState::Running);
+        m.apply(&stop_with_teammates(2), 100);
+        m.tick(100 + SETTLE_MS);
+        m.apply(&idle("a"), 1000);
+        assert!(m.apply(&Signal::TasksKilled, 2000).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+        m.apply(&idle("b"), 3000);
+        m.apply(&Signal::TasksKilled, 4000);
+        m.tick(4000 + SETTLE_MS);
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
     /// The T-72 regression. An `Artifact` publish arms a comment monitor that

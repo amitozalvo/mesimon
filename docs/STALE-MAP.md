@@ -47207,3 +47207,55 @@ state.test.js assets.test.js`, `node ux.test.js` (chromium and webkit, every siz
 Rerun named: the first full run failed once at webkit tablet notesFlow on a page error, "ResizeObserver
 loop completed with undelivered notifications"; webkit's rerun at every size passed. No Rust
 changed: no cargo.
+
+## A task the person stops from Claude Code's tasks panel leaves the card (T-1313, 2026-11-19, the author: "claude code shells stopped by user (x) still being advertised by ticket", seen on T-1309)
+
+**Seen.** T-1309's seat parked at `Idle{Background}` on a command Claude Code had moved to the
+background at its 600 s timeout, then fell to `Idle{Monitoring}` on the ten-minute park clock.
+The person stopped the command with `x` in Claude Code's tasks panel at 11:36:42Z. The feed had
+no frame after that, and the record stayed `Idle{Monitoring}` with the task on the card. The
+transcript's last record was a `queue-operation enqueue` of the task's `<task-notification>` with
+`<status>killed</status>`, and no turn followed. T-389's block had accepted this gap ("a task a
+person kills from Claude's tasks panel may send no turn, and the hold stays until the next
+prompt"). It is closed now, for the card and for the keep-awake hold alike.
+
+**Measured** (2.1.328, Haiku, a private tmux, a probe mod logging `session.append`, `turn.*` and
+`prompt.submit`): `sleep 900` was started with `run_in_background`, the turn ended, and `x` was
+pressed in the panel. That raised one `session.append` with door `queue`, origin `engine`, and
+the notification's text, at the moment of the kill. No `turn.start` and no `prompt.submit`
+followed.
+
+**Shipped.**
+- The mod's `session.append` hook relays `ModTasksKilled { task_ids }`
+  (`road::MOD_TASKS_KILLED`) on both roads. Each id comes from a `<task-notification>` at door
+  `queue` whose status is `killed` (`rowKilled`). A task that ends by itself wakes the lead, and
+  that turn's `Stop` says so. A notification read later at another door belongs to that turn.
+- `hooks::signal_with_background` ends each lead row. When the last one goes from a registry
+  that held work, it returns `Signal::TasksKilled`. The frame repaints the card's count even when
+  no state moves (`idle ∙ 2 tasks` to `1 task`).
+- `attention::Machine` moves a park (`Background` or `Monitoring`, settled or pending) to
+  `Idle{EndTurn}` at High on `TasksKilled`. The last `Stop` ended the turn, and the kill takes
+  away what held it open. A teammate that `Stop` counted with no idle notice keeps the park
+  (`stop_teammates`, kept in memory only). Any other state does not move. With `EndTurn`, the
+  `on_done` automove, the train and the crown read the turn's end as they would have from a
+  task-free `Stop`.
+
+**Refuted.**
+- *`BackgroundChanged { None }`.* It lands on `Idle{Unknown}`, which the card and the train read
+  as a seat just woken (`is_ready`, `at_composer`), not as a finished turn.
+- *Reading the transcript tail.* The recovery's cursor is not polled for parked seats, and the mod
+  already gets the row at the kill.
+- *Process evidence* (the listed command missing from the pane's children). It would end a live
+  task whose argv it failed to match (T-1259, T-1292).
+
+**Not covered.** The hook-set road (a Claude Code too old for the mod) has no `session.append`,
+so it keeps the gap until the next prompt. A daemon restart forgets `stop_teammates`, so a kill
+beside busy teammates after a restart ends the park.
+
+Tests: `attention::a_killed_last_task_ends_the_park`, `attention::a_kill_beside_a_busy_teammate_keeps_the_park`,
+`hooks::a_killed_task_ends_its_row_and_the_last_ends_the_park`, the mod's `a task the person
+stopped is read off its queued notification…` (64/64 under `claude plugin test`), and
+`hook_settings`' relay list. E2e: `state_lab_e2e::a_task_the_person_kills_leaves_the_card_and_the_last_ends_the_park`
+(two commands, one kill to `Some(1)`, the last to `EndTurn`), on both roads. Run: `cargo ut`,
+`--test agents state_lab_e2e::` (7/7, mod road 2/2), `--test mods mod_plugin` (1/1). No reruns.
+No server, command, schema or harness file changed, so no suite is owed after the merge.

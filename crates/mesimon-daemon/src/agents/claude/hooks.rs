@@ -110,6 +110,17 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
             _ => {}
         }
     }
+    // The person stopped tasks from Claude Code's panel (T-1313): no turn
+    // follows, so the lead's own ids end here. The last one gone from a
+    // registry that held work is the park's end.
+    if frame.event == mesimon_core::road::MOD_TASKS_KILLED && owner.is_none() {
+        let ids = frame.payload.get("task_ids").and_then(Value::as_array);
+        for id in ids.into_iter().flatten().filter_map(Value::as_str).take(64) {
+            tasks.record(id, None, None, Transition::Completed, None);
+        }
+        return (before != Liveness::None && tasks.liveness() == Liveness::None)
+            .then_some(Signal::TasksKilled);
+    }
     let mut signal = signal_of(frame);
     if let Some(Signal::Stop { has_agent_id: false, blocking_tasks, monitoring_tasks, .. }) =
         &mut signal
@@ -466,6 +477,49 @@ mod tests {
         bytes.push(b'\n');
         bytes.extend_from_slice(payload.as_bytes());
         parse_frame(&bytes).unwrap()
+    }
+
+    /// T-1313, the incident's shape: the lead backgrounds a command, parks on
+    /// it, and the person stops it from Claude Code's tasks panel. The mod's
+    /// report ends the row and, the last one gone, the park; a second report
+    /// of the same id, or one naming no task the lead holds, says nothing.
+    #[test]
+    fn a_killed_task_ends_its_row_and_the_last_ends_the_park() {
+        let mut tasks = Registry::default();
+        for id in ["birttthoq", "b2"] {
+            signal_with_background(
+                &frame(
+                    "PostToolUse",
+                    None,
+                    &format!(
+                        r#"{{"tool_name":"Bash","tool_response":{{"backgroundTaskId":"{id}"}}}}"#
+                    ),
+                ),
+                &mut tasks,
+            );
+        }
+        let kill = |ids: &str| frame("ModTasksKilled", None, &format!(r#"{{"task_ids":{ids}}}"#));
+        assert_eq!(signal_with_background(&kill(r#"["b2"]"#), &mut tasks), None);
+        assert_eq!(tasks.count(), 1);
+        assert_eq!(
+            signal_with_background(&kill(r#"["birttthoq"]"#), &mut tasks),
+            Some(Signal::TasksKilled)
+        );
+        assert_eq!(tasks.count(), 0);
+        assert_eq!(signal_with_background(&kill(r#"["birttthoq"]"#), &mut tasks), None);
+        assert_eq!(signal_with_background(&kill(r#"["nope", 7]"#), &mut tasks), None);
+        // A subagent's report is not the lead's.
+        signal_with_background(
+            &frame(
+                "PostToolUse",
+                None,
+                r#"{"tool_name":"Bash","tool_response":{"backgroundTaskId":"b3"}}"#,
+            ),
+            &mut tasks,
+        );
+        let nested = frame("ModTasksKilled", None, r#"{"agent_id":"a1","task_ids":["b3"]}"#);
+        assert_eq!(signal_with_background(&nested, &mut tasks), None);
+        assert_eq!(tasks.count(), 1);
     }
 
     #[test]

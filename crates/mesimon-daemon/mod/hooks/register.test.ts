@@ -3,7 +3,7 @@
 // `process.spawn`). What the live Claude Code does is measured in STALE-MAP
 // (T-573, T-574); these hold the hooks' shapes.
 import { expect, mock, test } from 'claude-code/testing'
-import { joinFlush, rowNotified } from './register'
+import { joinFlush, rowKilled, rowNotified } from './register'
 
 const ENV = {
   MESIMON_MOD_BIN: '/bin/mesimon',
@@ -1192,6 +1192,28 @@ test('native: a notification folded into a running turn ends its tasks, every on
   expect(rowNotified(row('model', note('bsh1')))).toEqual([])
   expect(rowNotified(row('composer', 'build it'))).toEqual([])
   expect(rowNotified({ message: { type: 'user', content: [{ type: 'image' }] }, origin: { kind: 'engine' } })).toEqual([])
+})
+
+test('a task the person stopped is read off its queued notification, only there and only when killed (T-1313)', async () => {
+  const note = (id: string, status: string) =>
+    `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/${id}.output</output-file>\n<status>${status}</status>\n<summary>Task "sleep 900" was stopped by the user</summary>\n</task-notification>`
+  // The row 2.1.328 raised at the kill, as measured: door `queue`, origin `engine`.
+  const row = (door: string, ...text: string[]) => ({
+    message: { type: 'user', content: text.map(t => ({ type: 'text', text: t })) },
+    door,
+    origin: { kind: 'engine' },
+  })
+  expect(rowKilled(row('queue', note('b5rz9kn24', 'killed')))).toEqual(['b5rz9kn24'])
+  // Each notification of a delivery by its own status.
+  expect(rowKilled(row('queue', [note('a', 'completed'), note('b', 'killed')].join('\n'), note('c', 'killed')))).toEqual(['b', 'c'])
+  expect(rowKilled(row('queue', note('a', 'completed')))).toEqual([])
+  expect(rowKilled(row('queue', note('a', 'failed')))).toEqual([])
+  // The same words at any other door are the turn's that reads them.
+  expect(rowKilled(row('delivery', note('a', 'killed')))).toEqual([])
+  expect(rowKilled(row('prompt', note('a', 'killed')))).toEqual([])
+  expect(rowKilled(row('queue', 'build it'))).toEqual([])
+  expect(rowKilled({ door: 'queue', message: { type: 'user', content: [{ type: 'image' }] } })).toEqual([])
+  expect(rowKilled({ door: 'queue' })).toEqual([])
 })
 
 test('native: a teammate is a SubagentStart by its name, a teammate row on the Stop with the list\'s status, a TeammateIdle with its team from its idle notice, and a SubagentStop at its turn\'s end', async ($, on) => {

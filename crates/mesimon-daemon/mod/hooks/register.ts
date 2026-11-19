@@ -777,6 +777,28 @@ export function rowNotified(e: any): string[] {
   return blocks.flatMap((b: any) => taskNotified(b?.type === 'text' ? b.text : undefined))
 }
 
+/**
+ * The tasks the person stopped from Claude Code's tasks panel (T-1313): each
+ * `<task-notification>` in a message queue record (door `queue`) whose
+ * status is `killed`. The kill queues the notification for the next prompt
+ * and starts no turn (measured on 2.1.328), so this row is the only word of
+ * it until then. A task that ended on its own wakes the lead, whose turn
+ * says so; a notification read later at another door is that turn's.
+ */
+export function rowKilled(e: any): string[] {
+  const blocks = e?.message?.content
+  if (e?.door !== 'queue' || !Array.isArray(blocks)) return []
+  return blocks.flatMap((b: any) => (b?.type === 'text' && typeof b.text === 'string' ? taskKilled(b.text) : []))
+}
+
+function taskKilled(text: string): string[] {
+  return [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap(m => {
+    if (!/<status>\s*killed\s*<\/status>/.test(m[1])) return []
+    const id = /<task-id>([^<]+)<\/task-id>/.exec(m[1])
+    return id ? [id[1].trim()] : []
+  })
+}
+
 /** The team a teammate's row names, `<name>@<team>`, if a row does. */
 function teamOf(name: string): string | undefined {
   for (const row of ledger.values()) {
@@ -1108,8 +1130,12 @@ export const register: Register = on => {
   // idle seat. Every notification is a row the conversation keeps, whether
   // it opened a turn or joined one. Read, never rewritten (promise 3); off
   // the native road the ledger is empty and this removes nothing.
+  // A task the person stopped (T-1313) is told the daemon at once, on both
+  // roads: its notification waits in the queue and no turn comes.
   on('session.append', async ($, e, next) => {
     for (const id of rowNotified(e)) ledger.delete(id)
+    const killed = rowKilled(e)
+    if (killed.length > 0) void relay($, 'ModTasksKilled', undefined, { task_ids: killed }, false)
     return next(e)
   })
   on('session.receive', async ($, e, next) => {

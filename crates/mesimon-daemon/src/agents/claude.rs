@@ -208,7 +208,12 @@ impl AgentAdapter for Claude {
                 result.metadata_changed = true;
             }
         }
+        let tasks = record.background_tasks.count();
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
+        // A count the card says (`idle ∙ 2 tasks`) moved with no state of
+        // its own: a kill of one task of two (T-1313).
+        result.metadata_changed |= frame.event == mesimon_core::road::MOD_TASKS_KILLED
+            && record.background_tasks.count() != tasks;
         result.detail = hooks::detail_of(frame);
         result.plan = hooks::plan_of(frame);
         // A native failed turn names no class (T-659): the transcript's

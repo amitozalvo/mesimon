@@ -266,6 +266,19 @@ pub const MOD_USAGE: &str = "ModUsage";
 /// is not displayed, so it never rides here.
 pub const MOD_SAID: &str = "ModSaid";
 
+/// The event the mod reports background tasks the person stopped with
+/// (T-1313): `{ "task_ids": [...] }`, the tasks a queued `<task-notification>`
+/// says were `killed`. Claude Code's tasks panel (`x` on a shell, a watch or
+/// a background agent) queues that notification for the next prompt and
+/// fires no hook and starts no turn (measured on 2.1.328: one
+/// `session.append` at door `queue`, origin `engine`, at the kill), so a
+/// parked seat's last `Stop` went on listing the task: the card said `idle ∙
+/// 1 task` and the seat stayed parked for good. The daemon ends each row
+/// (`hooks::signal_with_background`), and a park whose last task that was
+/// ends its turn (`Signal::TasksKilled`). Relayed on both roads: the native
+/// one's ledger drops the row on the same event.
+pub const MOD_TASKS_KILLED: &str = "ModTasksKilled";
+
 /// The event a refused structured write is reported with, its rule's tag
 /// (`RuleId::tag`) as the reason and `{ "file_path" }` as the body: `mesimon
 /// gate`'s frame on the hook set, and the mod's own on the mod road (T-577),

@@ -331,3 +331,46 @@ fn a_background_command_parks_the_lead_through_a_nested_stop() {
         record().state == SessionState::Idle { stop_reason: StopReason::EndTurn }
     });
 }
+
+/// T-1313, seen on T-1309: the person stops a parked lead's background
+/// commands from Claude Code's tasks panel. No turn and no `Stop` come; the
+/// mod's `ModTasksKilled` is the only word. One of two killed, the card says
+/// one task and the park stands; the last killed, the turn is over.
+#[test]
+fn a_task_the_person_kills_leaves_the_card_and_the_last_ends_the_park() {
+    let Some(h) = Harness::boot_with_env("bg-killed", Some(STUB), &[]) else { return };
+    let mut client = h.client("bg-killed");
+    let sid = spawn(&mut client, "Two builds in the background");
+    let send = |event, body: &str| hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
+    let mut record = || client.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    send("SessionStart", r#"{"source":"startup"}"#);
+    send("UserPromptSubmit", "{}");
+    for id in ["birttthoq", "bo47y1ii2"] {
+        send(
+            "PostToolUse",
+            &format!(
+                r#"{{"tool_name":"Bash","tool_response":{{"stdout":"","backgroundTaskId":"{id}"}}}}"#
+            ),
+        );
+    }
+    send(
+        "Stop",
+        r#"{"background_tasks":[{"id":"birttthoq","type":"shell","status":"running","description":"watch"},{"id":"bo47y1ii2","type":"shell","status":"running","description":"suite"}]}"#,
+    );
+    wait_until(Duration::from_secs(5), "two commands park the lead", || {
+        let rec = record();
+        rec.state == SessionState::Idle { stop_reason: StopReason::Background }
+            && rec.tasks_running == Some(2)
+    });
+    send("ModTasksKilled", r#"{"task_ids":["bo47y1ii2"]}"#);
+    wait_until(Duration::from_secs(5), "the card counts the one left", || {
+        record().tasks_running == Some(1)
+    });
+    assert_eq!(record().state, SessionState::Idle { stop_reason: StopReason::Background });
+    send("ModTasksKilled", r#"{"task_ids":["birttthoq"]}"#);
+    wait_until(Duration::from_secs(5), "the last kill ends the park", || {
+        let rec = record();
+        rec.state == SessionState::Idle { stop_reason: StopReason::EndTurn }
+            && rec.tasks_running.is_none()
+    });
+}
