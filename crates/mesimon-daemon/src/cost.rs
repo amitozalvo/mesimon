@@ -32,6 +32,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use mesimon_core::command::Notice;
@@ -147,7 +148,7 @@ fn is_zero(n: &u64) -> bool {
 pub struct TicketLedger {
     /// Every transcript the ticket's agents held, by path.
     #[serde(default)]
-    pub conversations: BTreeMap<String, Cursor>,
+    pub conversations: BTreeMap<String, Arc<Cursor>>,
     /// Tokens by unix hour, then model key.
     #[serde(default)]
     pub hours: BTreeMap<u64, BTreeMap<String, Tokens>>,
@@ -204,7 +205,7 @@ pub struct Ledger {
     #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
-    pub tickets: BTreeMap<ulid::Ulid, TicketLedger>,
+    pub tickets: BTreeMap<ulid::Ulid, Arc<TicketLedger>>,
 }
 
 /// One transcript to read on the worker.
@@ -212,7 +213,7 @@ pub struct Ledger {
 pub struct Job {
     pub ticket: ulid::Ulid,
     pub path: String,
-    pub cursor: Cursor,
+    pub cursor: Arc<Cursor>,
 }
 
 /// What a read found: the cursor after it and the tokens it added, each
@@ -265,19 +266,20 @@ impl Cursor {
 }
 
 impl Ledger {
-    /// A transcript a ticket's session points at. True when it is new. A
+    /// A transcript a ticket's session points at. True when the ledger changes. A
     /// session that no longer reports through a mod (`by_mod` false: a wake
     /// on an older Claude Code) hands its conversation back to the tail.
     pub fn learn(&mut self, ticket: ulid::Ulid, path: &str, reader: Reader, by_mod: bool) -> bool {
-        let t = self.tickets.entry(ticket).or_default();
-        if let Some(c) = t.conversations.get_mut(path) {
-            if !by_mod {
-                c.by_mod_since = None;
-            }
+        let row = self.tickets.entry(ticket).or_default();
+        if row.conversations.get(path).is_some_and(|c| by_mod || c.by_mod_since.is_none()) {
             return false;
         }
-        // Read from its start, so every `pr create` in it is seen (T-810).
-        t.conversations.insert(path.to_string(), Cursor::fresh(reader));
+        let conversations = &mut Arc::make_mut(row).conversations;
+        if let Some(c) = conversations.get_mut(path) {
+            Arc::make_mut(c).by_mod_since = None;
+        } else {
+            conversations.insert(path.to_owned(), Arc::new(Cursor::fresh(reader)));
+        }
         true
     }
 
@@ -296,13 +298,13 @@ impl Ledger {
         model: &str,
         tokens: Tokens,
     ) -> bool {
-        let t = self.tickets.entry(ticket).or_default();
+        let t = Arc::make_mut(self.tickets.entry(ticket).or_default());
         if t.fence(path).is_none() {
             if subagent {
                 return false;
             }
             let c = t.conversations.entry(path.to_string()).or_default();
-            c.by_mod_since = Some(at_ms);
+            Arc::make_mut(c).by_mod_since = Some(at_ms);
             return true;
         }
         let mut tokens = tokens;
@@ -362,8 +364,9 @@ impl Ledger {
         let mut added = Vec::new();
         for b in found {
             let Some(t) = self.tickets.get_mut(&b.ticket) else { continue };
+            let t = Arc::make_mut(t);
             if let Some(c) = t.conversations.get_mut(&b.path) {
-                c.backfilled = true;
+                Arc::make_mut(c).backfilled = true;
             }
             for url in b.urls {
                 if t.pr_urls.len() >= PR_URLS_CAP
@@ -380,8 +383,15 @@ impl Ledger {
 
     /// Every known transcript, for the worker to read what grew.
     pub fn jobs(&self) -> Vec<Job> {
+        self.jobs_for(|_| true)
+    }
+
+    /// Only the selected tickets enter the filesystem pass. Each job shares
+    /// its immutable cursor with the ledger until the worker finds growth.
+    pub fn jobs_for(&self, include: impl Fn(&ulid::Ulid) -> bool) -> Vec<Job> {
         self.tickets
             .iter()
+            .filter(|(ticket, _)| include(ticket))
             .flat_map(|(ticket, t)| {
                 t.conversations.iter().map(|(path, cursor)| Job {
                     ticket: *ticket,
@@ -408,14 +418,15 @@ impl Ledger {
         let mut moved = false;
         let mut named: Vec<ulid::Ulid> = Vec::new();
         for d in done {
-            let t = self.tickets.entry(d.ticket).or_default();
+            let t = Arc::make_mut(self.tickets.entry(d.ticket).or_default());
             let mut cursor = d.cursor;
             cursor.by_mod_since = t.conversations.get(&d.path).and_then(|c| c.by_mod_since);
             // A backfill that landed while this pass was out stands (T-810).
             cursor.backfilled |= t.conversations.get(&d.path).is_some_and(|c| c.backfilled);
             let fence = t.fence(&d.path);
-            if t.conversations.get(&d.path) != Some(&cursor) {
-                t.conversations.insert(d.path, cursor.clone());
+            let reader = cursor.reader();
+            if t.conversations.get(&d.path).map(Arc::as_ref) != Some(&cursor) {
+                t.conversations.insert(d.path, Arc::new(cursor));
                 moved = true;
             }
             // Every one kept, so `|` and never `||`.
@@ -431,7 +442,7 @@ impl Ledger {
                 if tokens.is_empty() {
                     continue;
                 }
-                if cursor.reader() == Reader::Claude {
+                if reader == Reader::Claude {
                     if tokens.write_1h > 0 {
                         t.hint.writes_1h = Some(true);
                     } else if tokens.write_5m > 0 {
@@ -498,15 +509,15 @@ impl Ledger {
     /// A ticket's transcripts with how far the pass read each, `live` as
     /// `opened_unread` takes it: what a worker looks past for a `pr create`
     /// the ledger has not reached yet (T-761).
-    pub fn tails(&self, ticket: ulid::Ulid, live: &[String]) -> Vec<(String, Cursor)> {
-        let mut out: Vec<(String, Cursor)> = self
+    pub fn tails(&self, ticket: ulid::Ulid, live: &[String]) -> Vec<(String, Arc<Cursor>)> {
+        let mut out: Vec<(String, Arc<Cursor>)> = self
             .tickets
             .get(&ticket)
             .map(|t| t.conversations.iter().map(|(p, c)| (p.clone(), c.clone())).collect())
             .unwrap_or_default();
         for path in live {
             if !out.iter().any(|(p, _)| p == path) {
-                out.push((path.clone(), Cursor::default()));
+                out.push((path.clone(), Arc::default()));
             }
         }
         out
@@ -599,7 +610,7 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
             subagents(&j.path).into_iter().map(|path| Job {
                 ticket: j.ticket,
                 path,
-                cursor: Cursor::fresh(Reader::Claude),
+                cursor: Arc::new(Cursor::fresh(Reader::Claude)),
             })
         })
         .filter(|j| !known.contains(&j.path))
@@ -613,7 +624,7 @@ pub fn scan(jobs: Vec<Job>, now_ms: u64) -> Vec<Done> {
 /// again from the start.
 fn read(job: Job, now_ms: u64) -> Option<Done> {
     let len = std::fs::metadata(&job.path).ok()?.len();
-    let mut cursor = job.cursor;
+    let cursor = job.cursor;
     let new = cursor.offset == 0 && cursor.recent.is_empty() && cursor.totals.is_none();
     // A subagent's transcript is no reading of its session's context.
     let own = !job.path.contains("/subagents/");
@@ -621,14 +632,15 @@ fn read(job: Job, now_ms: u64) -> Option<Done> {
     // round 1) has them searched once, here, before what grew is read: an
     // idle session's transcript at its end gets its reading too.
     let searched = !cursor.fill_seen && len >= cursor.offset;
+    if len == cursor.offset && !new && !searched {
+        return None;
+    }
+    let mut cursor = Arc::unwrap_or_clone(cursor);
     if searched {
         cursor.fill_seen = true;
         if own && cursor.offset > 0 {
             cursor.fill = last_reading(&job.path, cursor.offset, &cursor);
         }
-    }
-    if len == cursor.offset && !new && !searched {
-        return None;
     }
     if len < cursor.offset {
         cursor = Cursor::fresh(cursor.reader());
@@ -851,19 +863,19 @@ pub fn backfill(jobs: Vec<(ulid::Ulid, String)>) -> Vec<Backfilled> {
 /// Whether a tail past the ledger's cursor holds a `pr create`'s result,
 /// its subagents' transcripts included (read whole where the ledger has
 /// none). `None` when a tail could not be read: unknown, never none.
-pub fn opened_in_tails(tails: &[(String, Cursor)]) -> Option<bool> {
+pub fn opened_in_tails(tails: &[(String, Arc<Cursor>)]) -> Option<bool> {
     urls_in_tails(tails).map(|urls| !urls.is_empty())
 }
 
 /// The PR URLs `pr create` results printed in the tails past the ledger's
 /// cursors (`opened_in_tails`), every tail read. `None` when one could not
 /// be read.
-fn urls_in_tails(tails: &[(String, Cursor)]) -> Option<Vec<String>> {
-    let mut all: Vec<(String, Cursor)> = tails.to_vec();
+fn urls_in_tails(tails: &[(String, Arc<Cursor>)]) -> Option<Vec<String>> {
+    let mut all: Vec<(String, Arc<Cursor>)> = tails.to_vec();
     for (path, _) in tails {
         for sub in subagents(path) {
             if !all.iter().any(|(p, _)| *p == sub) {
-                all.push((sub, Cursor::default()));
+                all.push((sub, Arc::default()));
             }
         }
     }
@@ -889,15 +901,15 @@ fn opened_in_tail(path: &str, cursor: &Cursor) -> std::result::Result<Vec<String
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err(()),
     };
+    if len == 0 || len == cursor.offset {
+        return Ok(Vec::new());
+    }
     // Shorter than the cursor: rewritten, so read from the start.
     let (offset, mut pending, mut pending_act) = if len < cursor.offset {
         (0, Vec::new(), Vec::new())
     } else {
         (cursor.offset, cursor.pending_create.clone(), cursor.pending_act.clone())
     };
-    if len == offset {
-        return Ok(Vec::new());
-    }
     if len - offset > READ_CAP {
         return Err(());
     }
@@ -944,13 +956,71 @@ pub fn read_only(paths: &Paths) -> Option<Ledger> {
         .ok()
 }
 
+/// One atomic cost write at a time. While disk is busy, the daemon's ledger
+/// holds the latest state and a bit remembers that it needs another write.
+/// A snapshot shares ticket rows and their cursors until they change.
+#[derive(Default)]
+pub(super) struct Saves {
+    writing: Option<std::thread::JoinHandle<Result<()>>>,
+    pending: bool,
+}
+
+impl Saves {
+    pub fn request(&mut self, paths: &Paths, ledger: &Ledger) {
+        self.pending = true;
+        self.start(paths, ledger);
+    }
+
+    fn start(&mut self, paths: &Paths, ledger: &Ledger) {
+        if self.writing.is_none() && self.pending {
+            let paths = paths.clone();
+            let ledger = ledger.clone();
+            self.writing = Some(std::thread::spawn(move || save(&paths, &ledger)));
+            self.pending = false;
+        }
+    }
+
+    fn join(&mut self) -> Result<()> {
+        if let Some(worker) = self.writing.take() {
+            let result =
+                worker.join().unwrap_or_else(|_| Err(anyhow::anyhow!("cost saver panicked")));
+            self.pending |= result.is_err();
+            result?;
+        }
+        Ok(())
+    }
+
+    /// Called on the wheel. A failed generation stays pending for retry.
+    pub fn poll(&mut self, paths: &Paths, ledger: &Ledger, retry_due: bool) -> Result<()> {
+        if self.writing.as_ref().is_some_and(|w| w.is_finished()) {
+            self.join()?;
+            self.start(paths, ledger);
+        } else if retry_due {
+            self.start(paths, ledger);
+        }
+        Ok(())
+    }
+
+    /// The request loop has stopped and still holds the daemon lock. Finish
+    /// any older generation before writing the latest, including on handover.
+    pub fn flush(&mut self, paths: &Paths, ledger: &Ledger) -> Result<()> {
+        let result = self.join();
+        if self.pending {
+            save(paths, ledger)?;
+            self.pending = false;
+            return Ok(());
+        }
+        result
+    }
+}
+
 /// `Ledger`'s shape with this build's schema, borrowed rather than cloned
 /// (T-839): the ledger is megabytes and only its version changes.
 pub fn save(paths: &Paths, ledger: &Ledger) -> Result<()> {
     #[derive(Serialize)]
     struct Borrowed<'a> {
         schema_version: u32,
-        tickets: &'a BTreeMap<ulid::Ulid, TicketLedger>,
+        tickets: &'a BTreeMap<ulid::Ulid, Arc<TicketLedger>>,
     }
     let body = Borrowed { schema_version: COSTS_SCHEMA, tickets: &ledger.tickets };
     crate::store::write_atomic(
@@ -1066,6 +1136,37 @@ mod tests {
     }
 
     #[test]
+    fn saves_coalesce_behind_a_blocked_write_and_retry_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Paths::for_repo(dir.path()).unwrap();
+        paths.state_dir = dir.path().to_owned();
+        let ticket = ulid::Ulid::new();
+        let mut ledger = Ledger::default();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut saves = Saves {
+            writing: Some(std::thread::spawn(move || {
+                blocked.recv_timeout(std::time::Duration::from_secs(5))?;
+                anyhow::bail!("simulated disk failure")
+            })),
+            pending: false,
+        };
+        for path in ["first", "second"] {
+            ledger.learn(ticket, path, Reader::Claude, false);
+            saves.request(&paths, &ledger);
+            saves.poll(&paths, &ledger, true).unwrap();
+        }
+        assert!(!paths.costs_file().exists());
+        release.send(()).unwrap();
+        while !saves.writing.as_ref().unwrap().is_finished() {
+            std::thread::yield_now();
+        }
+        assert!(saves.poll(&paths, &ledger, false).is_err());
+        saves.poll(&paths, &ledger, true).unwrap();
+        saves.flush(&paths, &ledger).unwrap();
+        assert_eq!(read_only(&paths).unwrap().tickets, ledger.tickets);
+    }
+
+    #[test]
     fn a_transcript_is_read_once_a_message_and_only_what_grew() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
@@ -1087,7 +1188,9 @@ mod tests {
         assert_eq!(c.tokens, 152, "m1 once, m2 once");
         assert!((c.usd - (2.0 * 4.0 + 150.0 * 20.0) / 1e6).abs() < 1e-12);
         // Nothing grew: nothing read.
-        assert!(scan(ledger.jobs(), NOW).is_empty());
+        let jobs = ledger.jobs();
+        assert!(Arc::ptr_eq(&jobs[0].cursor, &ledger.tickets[&t].conversations[&jobs[0].path]));
+        assert!(scan(jobs, NOW).is_empty());
         // The half line completes, and a third message lands.
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         use std::io::Write;
@@ -1237,9 +1340,9 @@ mod tests {
         let mut ledger = Ledger::default();
         // Passed by a cursor from before T-739: at the end, never looked.
         let passed = |codex: bool| Cursor { codex, offset: 1 << 20, ..Cursor::default() };
-        let mine = ledger.tickets.entry(t).or_default();
-        mine.conversations.insert(c.clone(), passed(false));
-        mine.conversations.insert(x.clone(), passed(true));
+        let mine = Arc::make_mut(ledger.tickets.entry(t).or_default());
+        mine.conversations.insert(c.clone(), passed(false).into());
+        mine.conversations.insert(x.clone(), passed(true).into());
         mine.pr_urls.push("https://github.com/o/r/pull/99".into());
         let other = ulid::Ulid::new();
         ledger.learn(
@@ -1561,7 +1664,8 @@ mod tests {
         ledger.learn(t, &rollout.display().to_string(), Reader::Codex, false);
         ledger.apply(scan(ledger.jobs(), NOW));
         // As a build before T-969 left them: read to the end, no reading.
-        for c in ledger.tickets.get_mut(&t).unwrap().conversations.values_mut() {
+        for c in Arc::make_mut(ledger.tickets.get_mut(&t).unwrap()).conversations.values_mut() {
+            let c = Arc::make_mut(c);
             c.fill = None;
             c.fill_seen = false;
         }

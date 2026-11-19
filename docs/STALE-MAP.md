@@ -47772,3 +47772,36 @@ the words at the actual prompt. The first unit run also reached the new
 golden before it had been generated. The focused render passed after
 generation and visual review. The unit and agy suites were rerun as the
 stop ordering and in-pane conversation-switch cases were added.
+
+## Cost saves and archived transcripts (T-1336, 2026-11-20)
+
+The daemon applies counts on the board writer and hands an immutable ledger generation
+to one background saver. Changes during a write coalesce. Each atomic replacement carries
+the totals, offsets, recent IDs and mod fences together. Failed writes remain due. Clean
+shutdown drains the latest generation before releasing the daemon lock. The person accepted
+the same crash window as for session saves in T-1335. A retained transcript can replay its
+uncommitted tail. Usage reported only by the mod can be lost in a crash.
+
+Scan jobs share their cursors. An unchanged transcript with a current cursor needs only a
+metadata read on the worker. Regular passes skip idle archived tickets. Startup and a
+five-minute reconciliation also check their known paths and discover new Claude subagents.
+An archived ticket with a live seat stays on the regular cadence. The restart regression
+loads both possible disk generations after a late main append and a new subagent, including
+a duplicate main message. Each restart gives the same 150 tokens.
+
+**Measured writer time.** Thirteen changed passes through the completion handler in a debug
+build, on the same frozen 3,780,825-byte ledger with 1,089 ticket rows. Each pass advanced
+one cursor, added one token and broadcast on a disposable board with no subscribers or
+focused pane. The new saver drained between samples, outside the timed handler.
+
+| Median, ms | Before | After |
+| --- | ---: | ---: |
+| Apply, including ticket retention | 0.500 | 0.489 |
+| Save on the writer, including worker dispatch after the change | 83.074 | 0.046 |
+| Broadcast | 0.007 | 0.006 |
+| Whole handler | 83.576 | 0.542 |
+
+The old journal's 42.61 s maximum covered the whole handler. It cannot identify the
+contribution of fsync to that particular stall. The old scanner did stat historical
+transcripts and attempt a directory read beside each Claude main transcript. Board
+snapshots still fold all historical hour/model buckets for the usage view.

@@ -792,7 +792,11 @@ pub fn pushed(legs: &[LegQuery], logs: &[Vec<Moved>]) -> Option<Vec<String>> {
 }
 
 /// The look's half (T-761), on a worker: the legs' pushes and the tails.
-pub fn look(legs: &[LegQuery], tails: &[(String, crate::cost::Cursor)], at_ms: u64) -> Local {
+pub fn look(
+    legs: &[LegQuery],
+    tails: &[(String, std::sync::Arc<crate::cost::Cursor>)],
+    at_ms: u64,
+) -> Local {
     let logs: Vec<Vec<Moved>> = legs.iter().map(|l| reflog(&l.dir)).collect();
     Local { at_ms, pushed: pushed(legs, &logs), tail_opened: crate::cost::opened_in_tails(tails) }
 }

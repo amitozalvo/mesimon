@@ -342,6 +342,7 @@ const RSS_TICKS: u64 = 40;
 /// How often the tickets' transcripts are read for their cost (T-327) when
 /// no turn's end asked sooner: 30 s, so a long turn's figure still moves.
 const COST_TICKS: u64 = 120;
+const ARCHIVED_COST_INTERVAL: Duration = Duration::from_secs(300);
 /// How often the archive offer is priced again when nothing on the board
 /// changed (T-713): 60 s. What it waits for is a ticket ageing past the
 /// hour, which a minute's lateness does not change; a board change prices
@@ -736,6 +737,8 @@ pub struct Daemon {
     costs: crate::cost::Ledger,
     /// A pass over the transcripts is on a worker.
     cost_scanning: bool,
+    archive_cost_scan: Option<Instant>,
+    cost_saves: crate::cost::Saves,
     /// A turn ended: read the transcripts on the next bucket, not the clock.
     cost_due: bool,
     /// Provider-owned passive observation cursors; never persisted.
@@ -1971,12 +1974,13 @@ pub fn run(paths: Paths) -> Result<()> {
     // The crown's ledger on the way down (T-602): whatever the shutdown's
     // own settles owed or held is there for the next daemon.
     d.persist_crown();
+    let cost_flush = d.cost_saves.flush(&d.paths, &d.costs);
     let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
     let took = d.stop_started.map_or(0, |t| t.elapsed().as_millis());
     d.journal.line(&format!("stopped ∙ shutdown took {took} ms"));
-    Ok(())
+    cost_flush
 }
 
 /// A tick stage, timed (T-856): the slowest is remembered under its name,
@@ -2135,6 +2139,8 @@ impl Daemon {
             started,
             costs,
             cost_scanning: false,
+            archive_cost_scan: None,
+            cost_saves: Default::default(),
             cost_due: true,
             recovery: HashMap::new(),
             cleanup_resume_offers: HashMap::new(),
@@ -4178,6 +4184,13 @@ impl Daemon {
             changed |= stage!(self, "drain_crown_wakes", self.drain_crown_wakes(None));
             stage!(self, "persist_crown", self.persist_crown());
             changed |= stage!(self, "drive_usage", self.drive_usage(now));
+            if let Err(e) = self.cost_saves.poll(
+                &self.paths,
+                &self.costs,
+                self.ticks.is_multiple_of(COST_TICKS),
+            ) {
+                self.journal.line(&format!("cost save failed: {e:#}"));
+            }
             if !self.cost_scanning && (self.cost_due || self.ticks.is_multiple_of(COST_TICKS)) {
                 stage!(self, "queue_cost_scan", self.queue_cost_scan());
             }
@@ -13500,11 +13513,11 @@ impl Daemon {
     }
 
     /// The single write path for `costs.json` (T-327).
-    pub(super) fn persist_costs(&self) {
+    pub(super) fn persist_costs(&mut self) {
         if self.costs_barred {
             return;
         }
-        let _ = crate::cost::save(&self.paths, &self.costs);
+        self.cost_saves.request(&self.paths, &self.costs);
     }
 
     /// Read what the tickets' transcripts grew since the last pass, on a
@@ -13512,19 +13525,34 @@ impl Daemon {
     /// first: the ledger keeps it after the record forgets it.
     fn queue_cost_scan(&mut self) {
         self.cost_due = false;
-        let learned: Vec<_> = self
-            .board
-            .sessions
-            .iter()
-            .filter_map(|r| {
-                crate::cost::transcript_of(r)
-                    .map(|(p, reader)| (r.ticket, p, reader, r.frames_by_mod()))
-            })
-            .collect();
-        for (ticket, path, reader, by_mod) in learned {
-            self.costs.learn(ticket, &path.display().to_string(), reader, by_mod);
+        let mut active: std::collections::HashSet<_> =
+            self.board.tickets.iter().filter(|t| t.archived.is_none()).map(|t| t.id).collect();
+        let mut learned = false;
+        for record in self.board.sessions.iter() {
+            if record.holds_agent_seat() {
+                active.insert(record.ticket);
+            }
+            if let Some((path, reader)) = crate::cost::transcript_of(record) {
+                learned |= self.costs.learn(
+                    record.ticket,
+                    &path.to_string_lossy(),
+                    reader,
+                    record.frames_by_mod(),
+                );
+            }
         }
-        let jobs = self.costs.jobs();
+        if learned {
+            self.persist_costs();
+        }
+        // Archived transcripts can receive a late append or a new subagent.
+        // Reconcile them at startup and on the slower clock, even on a board
+        // with no active sessions.
+        let include_archived =
+            self.archive_cost_scan.is_none_or(|last| last.elapsed() >= ARCHIVED_COST_INTERVAL);
+        if include_archived {
+            self.archive_cost_scan = Some(Instant::now());
+        }
+        let jobs = self.costs.jobs_for(|id| include_archived || active.contains(id));
         if jobs.is_empty() {
             return;
         }
@@ -23591,6 +23619,81 @@ mod queued_person_tests {
         assert_eq!(AskHold::Box(BoxRead::Draft).word(), Some("after your draft"));
         assert_eq!(AskHold::Box(BoxRead::Unknown).word(), Some("box unknown ∙ leave"));
         assert_eq!(AskHold::Box(BoxRead::Unread).word(), None);
+    }
+}
+
+#[cfg(test)]
+mod cost_scan_tests {
+    use super::queued_person_push_tests::{daemon, worker_ticket};
+    use super::*;
+    use std::sync::mpsc::Receiver;
+
+    fn scan(d: &mut Daemon, rx: &Receiver<Msg>) {
+        d.queue_cost_scan();
+        let Msg::CostScanned(done) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else {
+            panic!("expected cost scan");
+        };
+        d.on_cost_scanned(done);
+    }
+
+    fn append(path: &std::path::Path, id: &str, output: u64) {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant", "requestId": id,
+                "message": {"id": id, "model": "opus", "usage": {"output_tokens": output}}
+            })
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn archived_costs_reconcile_late_growth_once_from_either_restart_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, rx) = daemon(dir.path());
+        let ticket = d.board.sessions[0].ticket;
+        let path = dir.path().join("worker.jsonl");
+        d.board.sessions[0].transcript_path = Some(path.display().to_string());
+        let mut card = worker_ticket(ticket, "TODO", "a");
+        card.archived = Some(serde_json::from_value(serde_json::json!({"at": "@1"})).unwrap());
+        d.board.tickets.push(card.clone());
+        append(&path, "first", 10);
+        scan(&mut d, &rx);
+        // A still-live archived seat keeps its normal cadence.
+        append(&path, "second", 20);
+        scan(&mut d, &rx);
+        d.cost_saves.flush(&d.paths, &d.costs).unwrap();
+        let before = std::fs::read(d.paths.costs_file()).unwrap();
+        assert_eq!(d.costs.view(now_ms())[0].tokens, 30);
+
+        d.board.sessions.clear();
+        append(&path, "second", 20);
+        append(&path, "late", 40);
+        let subs = dir.path().join("worker/subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        append(&subs.join("agent-1.jsonl"), "child", 80);
+        d.queue_cost_scan();
+        assert!(!d.cost_scanning, "idle archive started a regular worker");
+        d.archive_cost_scan = Some(Instant::now() - ARCHIVED_COST_INTERVAL);
+        scan(&mut d, &rx);
+        assert_eq!(d.costs.view(now_ms())[0].tokens, 150);
+        d.cost_saves.flush(&d.paths, &d.costs).unwrap();
+        let after = std::fs::read(d.paths.costs_file()).unwrap();
+        drop(d);
+
+        // A crash may expose the previous complete generation or the new one.
+        for durable in [before, after] {
+            let (mut restarted, _, rx) = daemon(dir.path());
+            restarted.board.sessions.clear();
+            restarted.board.tickets.push(card.clone());
+            std::fs::write(restarted.paths.costs_file(), durable).unwrap();
+            restarted.costs = crate::cost::load_or_recover(&restarted.paths).0;
+            scan(&mut restarted, &rx);
+            assert_eq!(restarted.costs.view(now_ms())[0].tokens, 150);
+            restarted.cost_saves.flush(&restarted.paths, &restarted.costs).unwrap();
+        }
     }
 }
 
