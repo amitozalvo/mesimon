@@ -1129,7 +1129,7 @@ impl Daemon {
                 .and_then(|r| r.get(&command.id))
                 .cloned()
                 .unwrap_or(Reply::delivery("unknown"));
-            self.control.answer(peer, command.id, reply);
+            self.control_session_reply(peer, grant, command.id, reply, None, true);
             return;
         }
         if let Some(p) = self.control.peers.get_mut(peer) {
@@ -1138,6 +1138,18 @@ impl Daemon {
         let by = Principal::Paired { device: device.to_hex(), grant: grant.to_hex() };
         // The board answer comes measured (T-688); every other is measured
         // once on its way out.
+        let before = self.session_saves.requested;
+        let status = matches!(command.request, api::Request::Status { .. });
+        let read = matches!(
+            command.request,
+            api::Request::Snapshot
+                | api::Request::Preview { .. }
+                | api::Request::Transcript { .. }
+                | api::Request::Notes { .. }
+                | api::Request::Note { .. }
+                | api::Request::Foreground { .. }
+        );
+
         let mut measured: Option<Option<usize>> = None;
         let reply = match command.request {
             api::Request::Foreground { ticket } => {
@@ -1281,9 +1293,44 @@ impl Daemon {
                 self.control_pictured(grant, &ticket, text, &uploads, resume)
             }
         };
+        if !read {
+            self.persist_sessions();
+        }
         self.control.remember(grant, command.id, reply.clone());
-        let bytes = measured.unwrap_or_else(|| measure(&reply));
-        self.control.answer_measured(peer, command.id, reply, bytes);
+        self.control_session_reply(
+            peer,
+            grant,
+            command.id,
+            reply,
+            measured,
+            status || self.session_saves.requested != before,
+        );
+    }
+
+    fn control_session_reply(
+        &mut self,
+        peer: &str,
+        grant: BoardId,
+        id: u64,
+        reply: Reply,
+        measured: Option<Option<usize>>,
+        wait: bool,
+    ) {
+        let peer = peer.to_owned();
+        self.after_session_save(wait, move |daemon, result| {
+            let (reply, measured) = match result {
+                Ok(()) => (reply, measured),
+                Err(message) => {
+                    let rejected = Reply::Rejected { message };
+                    daemon.control.remember(grant, id, rejected.clone());
+                    (rejected, None)
+                }
+            };
+            if daemon.control.peers.get(&peer).is_some_and(|p| p.grant == grant) {
+                let bytes = measured.unwrap_or_else(|| measure(&reply));
+                daemon.control.answer_measured(&peer, id, reply, bytes);
+            }
+        });
     }
     pub(super) fn control_observe_dialog(&mut self, id: uuid::Uuid, frame: &HookFrame) {
         if frame.payload.get("agent_id").is_some() {

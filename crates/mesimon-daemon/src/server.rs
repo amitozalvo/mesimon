@@ -121,6 +121,7 @@ mod mesophon;
 mod notified;
 mod peer;
 mod responsive;
+mod session_saves;
 mod shelf;
 mod shells;
 mod teamglue;
@@ -487,6 +488,7 @@ enum Msg {
     Reaped(Vec<(String, Instant, bool)>, Duration),
     TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
     StatusWritten(String, bool),
+    SessionsSaved(Result<(), String>),
     Request(Envelope, u32, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     /// A reply carrying the crown's rules reached its connection (T-930).
     CrownTold(uuid::Uuid, u64),
@@ -711,10 +713,9 @@ pub struct Daemon {
     forge_barred: bool,
     /// `forge.json` as last written, so an unchanged one is not written again.
     forge_written: String,
-    /// `columns.toml`'s and `sessions.json`'s text as last written; a save
-    /// whose text is the same writes nothing.
+    /// Last durable columns text, for the unchanged check.
     columns_written: String,
-    sessions_written: String,
+    session_saves: session_saves::Saves,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -1470,9 +1471,13 @@ pub fn run(paths: Paths) -> Result<()> {
             }
         }
     }
+    // Reconciliation is a startup barrier, before the listeners. Hand the
+    // exact durable bytes to the worker so its first comparison is valid.
+    let mut sessions_written = String::new();
     if !sessions_write_barred {
-        store::save_sessions(&paths, &board)?;
+        store::save_sessions_if_changed(&paths, &board, &mut sessions_written)?;
     }
+    board.sessions.mark_clean();
 
     let (tx, rx) = channel::<Msg>();
 
@@ -1639,8 +1644,10 @@ pub fn run(paths: Paths) -> Result<()> {
     let now = now_ms();
     // A restart's machine starts with no compaction window (T-894), and
     // the record it is minted from says the same.
-    for s in &mut board.sessions {
-        s.compacting = false;
+    if board.sessions.iter().any(|s| s.compacting) {
+        for s in &mut board.sessions {
+            s.compacting = false;
+        }
     }
     let machines = board
         .sessions
@@ -1686,6 +1693,7 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetch_every,
         columns_barred: columns_write_barred,
         sessions_barred: sessions_write_barred,
+        sessions_written,
         terminals: terminals_in(&snap),
         tx: tx.clone(),
         self_exe: hook_bin.clone(),
@@ -1792,7 +1800,36 @@ pub fn run(paths: Paths) -> Result<()> {
     // that was.
     d.journal.line(&format!("serving after {} ms of startup", began.elapsed().as_millis()));
 
-    for msg in rx {
+    let mut shutdown_reply = None;
+    // Keep asynchronous inputs that arrive during the final save in order.
+    // If the disk refuses shutdown, their workers must still be heard.
+    let mut deferred = std::collections::VecDeque::new();
+    loop {
+        let msg = if d.shutting_down {
+            rx.recv().ok()
+        } else {
+            deferred.pop_front().or_else(|| rx.recv().ok())
+        };
+        let Some(msg) = msg else { break };
+        if d.shutting_down {
+            match msg {
+                Msg::SessionsSaved(_) => {}
+                Msg::Request(ref env, ..)
+                    if matches!(env.command, Command::Hello { .. } | Command::Snapshot) => {}
+                Msg::Request(_, _, reply, _) => {
+                    let _ = reply.send(ClientReply {
+                        response: Response::Err { message: "daemon is shutting down".into() },
+                        delivered: None,
+                        told: None,
+                    });
+                    continue;
+                }
+                msg => {
+                    deferred.push_back(msg);
+                    continue;
+                }
+            }
+        }
         // Every turn is timed and named BEFORE it runs (the message is
         // consumed by it): a turn past `journal::SLOW_TURN` earns a line
         // saying what it handled — the instrument a four-minute silence
@@ -1804,6 +1841,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Reaped(..) => "reaped".into(),
             Msg::TerminalOpened(..) => "terminal opened".into(),
             Msg::StatusWritten(..) => "status written".into(),
+            Msg::SessionsSaved(_) => "sessions saved".into(),
             Msg::Tick => "tick".into(),
             Msg::ModHook(f) => format!("mod frame {}", f.event).into(),
             Msg::RoadProbed(_) => "claude road probed".into(),
@@ -1844,6 +1882,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::PeerAnswered(id, answer) => d.peer_answered(id, *answer),
             Msg::Reaped(done, took) => d.reaped(done, took),
             Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
+            Msg::SessionsSaved(result) => d.sessions_saved(result),
             Msg::StatusWritten(line, ok) => {
                 d.responsive.status_writing = false;
                 if ok {
@@ -1859,9 +1898,8 @@ pub fn run(paths: Paths) -> Result<()> {
             // same road as `Shutdown`: the handler only raises a flag, and the
             // wheel — ≤250 ms away — is where it is honoured, on the writer
             // thread, with the machines in hand.
-            Msg::Tick if TERM_REQUESTED.load(Ordering::Relaxed) => {
+            Msg::Tick if TERM_REQUESTED.swap(false, Ordering::Relaxed) => {
                 d.begin_shutdown("SIGTERM");
-                break;
             }
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
@@ -1910,7 +1948,13 @@ pub fn run(paths: Paths) -> Result<()> {
                     (Principal::Agent { session }, _) => Some(*session),
                     _ => None,
                 };
+                let before = d.session_saves.requested;
+                let mutates = env.command.meta().action != Action::Read;
+                let shutdown = matches!(env.command, Command::Shutdown);
                 let resp = d.handle_compatible(env, protocol, &stream);
+                if mutates {
+                    d.persist_sessions();
+                }
                 // `answer_agent` (T-569) answers when its delivery settles:
                 // the reply waits with it, and the shim's call with the reply.
                 // `accept_plan` (T-582) the same way, when its press settles.
@@ -1946,27 +1990,35 @@ pub fn run(paths: Paths) -> Result<()> {
                     reply
                 };
                 if let Some(reply) = reply {
-                    let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
-                    let (delivered, receipt) = channel();
-                    let (resp, told) = match caller {
-                        Some(session) => d.with_crown_rules(session, resp),
-                        None => (resp, None),
-                    };
-                    let _ = reply.send(ClientReply {
-                        response: resp,
-                        delivered: shutdown.then_some(delivered),
-                        told,
-                    });
-                    if shutdown {
-                        // Sending to the connection thread is not delivery:
-                        // main may otherwise exit before that thread writes
-                        // the final newline. A stalled/disconnected client
-                        // cannot hold the daemon indefinitely.
-                        let _ = receipt.recv_timeout(Duration::from_secs(2));
-                        break;
+                    if shutdown && d.shutting_down && matches!(resp, Response::Ok) {
+                        shutdown_reply = Some(reply);
+                    } else {
+                        let (response, told) = match caller {
+                            Some(session) => d.with_crown_rules(session, resp),
+                            None => (resp, None),
+                        };
+                        d.session_reply(reply, response, told, d.session_saves.requested != before);
                     }
                 }
             }
+        }
+        if d.shutting_down && d.session_saves.active.is_none() {
+            let error = d.session_saves.error.clone();
+            if let Some(reply) = shutdown_reply.take() {
+                let (delivered, receipt) = channel();
+                let response = match &error {
+                    Some(message) => Response::Err { message: message.clone() },
+                    None => Response::Ok,
+                };
+                let _ =
+                    reply.send(ClientReply { response, told: None, delivered: Some(delivered) });
+                let _ = receipt.recv_timeout(Duration::from_secs(2));
+            }
+            if error.is_none() {
+                break;
+            }
+            d.journal.line("shutdown deferred after a failed session save");
+            d.shutting_down = false;
         }
         let slowest = d.tick_slowest;
         d.journal.slow_turn(started, &what, Some((slowest.0, slowest.1)));
@@ -2055,6 +2107,7 @@ struct Seed {
     git_fetch_every: Duration,
     columns_barred: bool,
     sessions_barred: bool,
+    sessions_written: String,
     terminals: std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>>,
     tx: Sender<Msg>,
     self_exe: std::path::PathBuf,
@@ -2088,11 +2141,14 @@ impl Daemon {
             git_fetch_every,
             columns_barred,
             sessions_barred,
+            sessions_written,
             terminals,
             tx,
             self_exe,
         } = seed;
         let crown_acts = crate::crownacts::Log::open(&paths.crown_acts_file());
+        let session_saves =
+            session_saves::Saves::start(paths.clone(), sessions_written, tx.clone());
         Daemon {
             paths,
             board,
@@ -2130,7 +2186,7 @@ impl Daemon {
             forge_barred,
             forge_written: String::new(),
             columns_written: String::new(),
-            sessions_written: String::new(),
+            session_saves,
             ticks: 0,
             feed,
             external: Vec::new(),
@@ -4148,6 +4204,7 @@ impl Daemon {
         // answers' deliveries do: the receipt follows its hook edge closely.
         changed |= stage!(self, "settle_crown_plans", self.settle_crown_plans());
         if self.ticks.is_multiple_of(4) {
+            self.retry_session_save();
             self.want_recovery(RecoveryChannel::Startup, now);
             self.want_recovery(RecoveryChannel::Activity, now);
             changed |= stage!(self, "wake_snoozed", self.wake_snoozed(now / 1000));
@@ -4299,10 +4356,11 @@ impl Daemon {
             changed |= self.apply_change(id, &change, None, Some("shutdown"));
         }
         changed |= self.hand_over_owed();
+        self.persist_sessions();
         if changed {
-            self.persist_sessions();
             self.broadcast();
         }
+        self.retry_session_save();
         self.shutting_down = true;
     }
 
@@ -4521,18 +4579,18 @@ impl Daemon {
             // transcript already: written here it drew twice for the whole
             // turn after a restart, and over a crown's answer line.
             if let Some(preview) = observation.preview {
-                if let Some(record) = self.board.sessions.iter_mut().find(|record| record.id == id)
-                {
-                    let owed = matches!(
-                        record.state,
-                        SessionState::RequiresAction { .. }
-                            | SessionState::Failed { .. }
-                            | SessionState::Throttled
-                    );
-                    if owed && record.detail.as_deref() != Some(preview.as_str()) {
-                        record.detail = Some(preview);
-                        changed = true;
-                    }
+                if let Some(index) = self.board.sessions.iter().position(|record| {
+                    record.id == id
+                        && matches!(
+                            record.state,
+                            SessionState::RequiresAction { .. }
+                                | SessionState::Failed { .. }
+                                | SessionState::Throttled
+                        )
+                        && record.detail.as_deref() != Some(preview.as_str())
+                }) {
+                    self.board.sessions[index].detail = Some(preview);
+                    changed = true;
                 }
             }
         }
@@ -5001,12 +5059,17 @@ impl Daemon {
                 self.journal.line(&format!("server restart: session {id} did not park: {why}"));
             }
         }
-        self.server_restart = Some(Instant::now() + REAP_GRACE + Duration::from_secs(2));
+        let deadline = Instant::now() + REAP_GRACE + Duration::from_secs(2);
         self.journal.line(&format!(
             "server restart asked: {} session(s) parked; the server goes once they are reaped",
             paned.len()
         ));
         self.persist_and_notify();
+        self.after_session_save(true, move |d, result| {
+            if result.is_ok() {
+                d.server_restart = Some(deadline);
+            }
+        });
         Response::Ok
     }
 
@@ -8238,7 +8301,9 @@ impl Daemon {
         // A foreground turn ends a stretch idle with background tasks
         // (T-599): the next one is new, and may wake the crown again.
         if change.to == SessionState::Running {
-            self.lingered.remove(&id);
+            if self.lingered.contains(&id) {
+                self.lingered.remove(&id);
+            }
             if snapshot.kind.is_agent() {
                 self.crown_turn_began(snapshot.ticket);
             }
@@ -8281,7 +8346,8 @@ impl Daemon {
             } else if mesimon_core::quiet::is_working(&snapshot) {
                 // Never for a seat with no pane (T-936): a Codex seat whose
                 // pane died keeps `codex_stopping`, which reads as working.
-                if change.to.has_pane() && !held_stop {
+                if change.to.has_pane() && !held_stop && !self.turns_open.contains(&snapshot.ticket)
+                {
                     self.turns_open.insert(snapshot.ticket);
                 }
             } else {
@@ -13498,17 +13564,18 @@ impl Daemon {
         if !self.board.sessions.is_dirty() {
             return;
         }
-        if crate::started::fold(&mut self.started, &self.board.sessions) {
-            self.persist_started();
+        self.board.sessions.mark_clean();
+        self.session_saves.requested += 1;
+        let save_keys =
+            crate::started::fold(&mut self.started, &self.board.sessions) && !self.started_barred;
+        if save_keys {
+            self.session_saves.started_revision = self.session_saves.requested;
         }
-        if self.sessions_barred {
-            self.board.sessions.mark_clean();
+        if self.sessions_barred && !save_keys {
             return;
         }
-        if store::save_sessions_if_changed(&self.paths, &self.board, &mut self.sessions_written)
-            .is_ok()
-        {
-            self.board.sessions.mark_clean();
+        if self.session_saves.active.is_none() {
+            self.start_session_save();
         }
     }
 
@@ -13656,14 +13723,6 @@ impl Daemon {
         self.forge_written =
             serde_json::to_string_pretty(&crate::forge::ForgeFile::of(&self.forge))
                 .unwrap_or_default();
-    }
-
-    /// The single write path for `started.json`.
-    fn persist_started(&self) {
-        if self.started_barred {
-            return;
-        }
-        let _ = crate::started::save(&self.paths, &self.started);
     }
 
     /// The single write path for `worktrees.json`. This one guards real work:
@@ -23796,6 +23855,7 @@ mod queued_person_push_tests {
             git_fetch_every: Duration::from_secs(60),
             columns_barred: false,
             sessions_barred: false,
+            sessions_written: String::new(),
             terminals: Default::default(),
             tx,
             self_exe: dir.join("mesimon"),

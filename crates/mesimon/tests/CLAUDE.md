@@ -10,6 +10,7 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 (relaxes two wall-clock budgets in `hook_e2e`), `MESIMON_NO_DAEMON_RESTART`, `MESIMON_FAKE_BUILD`
 (manufacture a stale or newer build in `Hello`), `MESIMON_DAEMON_BIN` (what `spawn_detached`
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
+`MESIMON_TEST_SESSION_SAVE_GATE` (a fixture socket that holds a changed session save until it sends one byte),
 `MESIMON_DAEMON_EXE` (the file the daemon stamps at start and re-reads for `list_board`'s
 `daemon`, T-941, so an e2e moves a stand-in and never the shared binary),
 `MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_AGY` (`1` lets a board start agy sessions, T-1225), `MESIMON_AGY_BIN` (the stand-in agy, `tests/common/fake_agy.py`: it paints agy's box and trust dialog, takes its keys, logs every prompt it runs, and runs the hooks and title command a launch registered, on cue files beside itself, T-1233; it answers `agy models` with two lines, T-1234; it writes a transcript in agy's shape under `agy-brain/` beside itself, named by every hook's `transcriptPath`, and its title feed carries a quota, a context window and an `email`, T-1237), `MESIMON_AGY_HOME` (agy's own data folder, read for its trusted folders and conversations), `MESIMON_COMPOSER_WAIT_MS`

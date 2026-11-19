@@ -185,8 +185,13 @@ impl Daemon {
         response: Response,
     ) {
         let _ = self.feed.flush();
+        let changes_session =
+            matches!(response, Response::AgentAnswered { .. } | Response::AgentPlanAccepted { .. });
+        if changes_session {
+            self.persist_sessions();
+        }
         let (response, told) = self.with_crown_rules(session, response);
-        let _ = reply.send(ClientReply { response, delivered: None, told });
+        self.session_reply(reply, response, told, changes_session);
     }
 
     /// Whether the crown's press may still go (T-582): what allowed it at

@@ -1421,6 +1421,7 @@ pub(in crate::server) mod ledger_tests {
             git_fetch_every: Duration::from_secs(60),
             columns_barred: false,
             sessions_barred: false,
+            sessions_written: String::new(),
             terminals: Default::default(),
             tx,
             self_exe: dir.join("mesimon"),

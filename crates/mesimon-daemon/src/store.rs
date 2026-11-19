@@ -372,6 +372,10 @@ pub fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
 }
 
 pub fn write_atomic_bytes(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    atomic_replace(path, content, mode, false)
+}
+
+fn atomic_replace(path: &Path, content: &[u8], mode: u32, require_dir_sync: bool) -> Result<()> {
     // 13 §13.9.1: temp + fsync + rename + directory fsync. Without the fsync
     // a crash between write and rename leaves a truncated file — precisely
     // the malformed input `load` now has to quarantine, so this is the
@@ -381,7 +385,7 @@ pub fn write_atomic_bytes(path: &Path, content: &[u8], mode: u32) -> Result<()> 
     // `sync_all` IS `fcntl(F_FULLFSYNC)` on macOS, and that is what this
     // costs here: ~3 ms per call against ~0.1 ms for a bare `fsync(2)`,
     // ~8 ms for the whole shape (measured 2026-09-05, T-216). A price paid
-    // on every `save_ticket` / `save_sessions`, on the writer thread; not
+    // on every changed ticket or session file. It was not
     // the hang T-216 was (that was 53 git forks), and left as it is —
     // the barrier is what makes the rename mean something on a power loss.
     //
@@ -405,9 +409,12 @@ pub fn write_atomic_bytes(path: &Path, content: &[u8], mode: u32) -> Result<()> 
     }
     std::fs::rename(&tmp, path)?;
     if let Some(dir) = path.parent() {
-        // Best-effort: the rename is already atomic for readers; this only
-        // hardens it against power loss, and some filesystems refuse it.
-        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+        // Session receipts require the rename to be durable. Other files
+        // retain best-effort directory sync on filesystems that refuse it.
+        let synced = std::fs::File::open(dir).and_then(|d| d.sync_all());
+        if require_dir_sync {
+            synced?;
+        }
     }
     Ok(())
 }
@@ -1262,12 +1269,27 @@ pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
 }
 
 pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
-    write_atomic(&paths.sessions_file(), &sessions_text(board)?, PRIVATE)
+    save_sessions_if_changed(paths, board, &mut String::new())
 }
 
 /// `save_columns_if_changed`'s rule for `sessions.json`.
 pub fn save_sessions_if_changed(paths: &Paths, board: &Board, written: &mut String) -> Result<()> {
-    write_if_changed(&paths.sessions_file(), sessions_text(board)?, PRIVATE, written)
+    write_sessions_if_changed(&paths.sessions_file(), sessions_text(&board.sessions)?, written)
+}
+
+pub(crate) fn write_sessions_if_changed(
+    path: &Path,
+    text: String,
+    written: &mut String,
+) -> Result<()> {
+    if text != *written {
+        // A directory sync can fail after the rename. Invalidate the old cache
+        // even on failure, since either generation could now be on disk.
+        written.clear();
+        atomic_replace(path, text.as_bytes(), PRIVATE, true)?;
+        *written = text;
+    }
+    Ok(())
 }
 
 /// `text` written atomically unless it is `written`, which then becomes it:
@@ -1282,20 +1304,20 @@ pub fn write_if_changed(path: &Path, text: String, mode: u32, written: &mut Stri
 
 /// `sessions.json` as `save_sessions` would write it: `SessionsFile`'s
 /// shape, borrowed rather than cloned.
-fn sessions_text(board: &Board) -> Result<String> {
+pub(crate) fn sessions_text(sessions: &[SessionRecord]) -> Result<String> {
     #[derive(Serialize)]
     struct Borrowed<'a> {
         schema_version: u32,
         sessions: &'a [SessionRecord],
     }
-    let names_agy = board.sessions.iter().any(|s| kind_is_agy(s.kind));
+    let names_agy = sessions.iter().any(|s| kind_is_agy(s.kind));
     let schema_version = if names_agy { SESSIONS_SCHEMA_AGY } else { SESSIONS_SCHEMA };
-    let sf = Borrowed { schema_version, sessions: &board.sessions };
+    let sf = Borrowed { schema_version, sessions };
     Ok(serde_json::to_string_pretty(&sf)?)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A scratch repo + its Paths. `for_repo` keys the state dir off the
@@ -3166,7 +3188,7 @@ by = "local"
 
     /// A board the size of the author's (T-839: 655 records, `sessions.json`
     /// 1.28 MB), for the timing below.
-    fn big_board(board: &mut Board, dir: &Path) {
+    pub(crate) fn big_board(board: &mut Board, dir: &Path) {
         use mesimon_core::board::{SessionKind, SessionState};
         for n in 0..655u32 {
             let id = uuid::Uuid::from_u128(u128::from(n) + 1);

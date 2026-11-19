@@ -139,3 +139,87 @@ fn sigterm_takes_the_shutdown_road() {
     assert_eq!(column_on_disk(&repo, &key), "REVIEW", "the flushed EndTurn automoved");
     assert_eq!(session_state_on_disk(&paths.state_dir), "\"idle\"/\"end_turn\"");
 }
+
+/// The worker is inside a changed save. A second client can already see the
+/// new seat, but the spawning client gets its receipt only after the sync.
+#[test]
+fn snapshot_during_a_held_save_and_acknowledged_sessions_survive_a_crash() {
+    use std::io::Write;
+    use std::os::unix::net::UnixListener;
+    if !require_tmux() {
+        return;
+    }
+    let fixture = TestFixture::new("held-save");
+    let repo = fixture.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let paths = fixture.paths(&repo);
+    let gate = paths.rt_dir.join("save-gate.sock");
+    fixture.set_env("MESIMON_TEST_SESSION_SAVE_GATE", &gate);
+    let daemon = fixture.daemon(&repo);
+    let mut reader = TestClient::connect(&paths.orch_sock());
+    let mut spawner = TestClient::connect(&paths.orch_sock());
+    let ticket = reader.create_ticket("held save");
+    let listener = UnixListener::bind(&gate).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let spawn = std::thread::spawn(move || {
+        spawner.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Bash,
+            submit_prompt: false,
+            plan: false,
+        })
+    });
+    let accept_save = |listener: &UnixListener| {
+        let mut held = None;
+        wait_until(Duration::from_secs(8), "worker to reach a changed save", || {
+            held = listener.accept().ok();
+            held.is_some()
+        });
+        held.unwrap().0
+    };
+    let mut held = accept_save(&listener);
+    let snapshot = reader.board();
+    let id = snapshot.sessions.iter().find(|s| s.ticket == ticket).unwrap().id;
+    assert!(!spawn.is_finished(), "the spawn was acknowledged before its save");
+    std::fs::remove_file(&gate).unwrap();
+    held.write_all(&[1]).unwrap();
+    assert!(matches!(spawn.join().unwrap(), Response::Spawned { id: got, .. } if got == id));
+
+    // No shutdown flush can rescue an early acknowledgment.
+    assert!(Proc::new("kill")
+        .args(["-KILL", &daemon.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    assert_ne!(daemon.wait().unwrap(), 0);
+    let next = fixture.daemon(&repo);
+    let mut reader = TestClient::connect(&paths.orch_sock());
+    assert!(reader.board().sessions.iter().any(|s| s.id == id && s.ticket == ticket));
+    // Hold a second change through a clean handover. Shutdown has begun
+    // when the journal says so, and another connection can still read.
+    let second = reader.create_ticket("held through shutdown");
+    let listener = UnixListener::bind(&gate).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut writer = TestClient::connect(&paths.orch_sock());
+    let spawn = std::thread::spawn(move || {
+        writer.request(Command::SpawnSession {
+            ticket: second,
+            kind: SessionKind::Bash,
+            submit_prompt: false,
+            plan: false,
+        })
+    });
+    let mut held = accept_save(&listener);
+    let mut stopper = TestClient::connect(&paths.orch_sock());
+    let stop = std::thread::spawn(move || stopper.request(Command::Shutdown));
+    wait_until(Duration::from_secs(5), "shutdown to start", || {
+        std::fs::read_to_string(paths.daemon_log()).unwrap().contains(" stopping: shutdown asked")
+    });
+    assert!(reader.board().sessions.iter().any(|s| s.ticket == second));
+    assert!(!stop.is_finished(), "shutdown replied before the held write finished");
+    std::fs::remove_file(&gate).unwrap();
+    held.write_all(&[1]).unwrap();
+    assert!(matches!(spawn.join().unwrap(), Response::Spawned { .. }));
+    assert!(matches!(stop.join().unwrap(), Response::Ok));
+    next.join().unwrap();
+}
