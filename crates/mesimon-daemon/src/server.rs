@@ -1115,6 +1115,9 @@ pub struct Daemon {
     /// that seat's state's moment. The wake stays owed and is tried again
     /// once that seat moves, never every tick.
     crown_wake_failed_on: Option<(uuid::Uuid, Option<u64>)>,
+    /// The holds the crown's owed wake has met in this wait (T-1320): each
+    /// writes one `crown_wake_held` row, and the wake's going one release.
+    crown_wake_held: crownwake::WakeHeld,
     /// The session `paste_at` last refused for a person at its pane, before
     /// any key (T-958): the dispatch's own answer that the words are still
     /// the sender's, which a queue road reads (`took_person_refusal`) to
@@ -2234,6 +2237,7 @@ impl Daemon {
             failing: HashMap::new(),
             crown_submit_refused: Default::default(),
             crown_wake_failed_on: None,
+            crown_wake_held: Default::default(),
             refused_for_person: None,
             refused_why: A_PERSON_ATTACHED,
             lingered: Default::default(),
@@ -10533,15 +10537,21 @@ impl Daemon {
     /// land in what they are typing and send it. The checkout-wide quiet test
     /// the queue applies is deliberately NOT here: a crown in the shared
     /// checkout would otherwise wait for every worker it started to fall
-    /// silent before hearing about the first.
-    fn crown_wake_blocked(&self, crown: ulid::Ulid) -> bool {
-        if self.queued.iter().any(|q| q.ticket == crown && q.by.is_none()) || self.owed_on(crown) {
-            return true;
+    /// silent before hearing about the first. The first hold found, which
+    /// its activity row names (T-1320).
+    fn crown_wake_blocked(&self, crown: ulid::Ulid) -> Option<crownwake::WakeHold> {
+        use crownwake::WakeHold;
+        if self.queued.iter().any(|q| q.ticket == crown && q.by.is_none()) {
+            return Some(WakeHold::PersonAsk);
+        }
+        if self.owed_on(crown) {
+            return Some(WakeHold::Ack);
         }
         match self.seat_of(crown) {
-            QueuedSeat::Pane(id) => !self.session_takes_words(id) || self.person_hold(id).is_some(),
-            QueuedSeat::Wake(_) => false,
-            QueuedSeat::Start(_) => true,
+            QueuedSeat::Pane(id) if !self.session_takes_words(id) => Some(WakeHold::Busy),
+            QueuedSeat::Pane(id) => self.person_hold(id).map(WakeHold::Person),
+            QueuedSeat::Wake(_) => None,
+            QueuedSeat::Start(_) => Some(WakeHold::NoSeat),
         }
     }
 
@@ -10798,9 +10808,11 @@ impl Daemon {
     fn deliver_crown_wakes(&mut self, landed: Option<u64>, lost: bool) -> bool {
         // A wake down the mod's `submit` is out until its frame is answered
         // (T-936): what is owed meanwhile waits, and folds.
-        if self.crown_wakes.is_empty()
-            || self.crown_wake_entering.as_ref().is_some_and(|e| e.frame.is_some())
-        {
+        if self.crown_wakes.is_empty() {
+            self.crown_wake_unheld();
+            return lost;
+        }
+        if self.crown_wake_entering.as_ref().is_some_and(|e| e.frame.is_some()) {
             return lost;
         }
         let Some(crown) = self.board.crown_holder().map(|t| t.id) else {
@@ -10835,7 +10847,8 @@ impl Daemon {
                 }
             }
         }
-        if self.crown_wake_blocked(crown) {
+        if let Some(hold) = self.crown_wake_blocked(crown) {
+            self.crown_wake_holds(crown, hold);
             return false;
         }
         let seat = self.seat_of(crown);
@@ -10939,6 +10952,7 @@ impl Daemon {
                 let words = mesimon_core::crownact::words_key(&text);
                 self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, words);
                 let wakes = std::mem::take(&mut *self.crown_wakes);
+                self.crown_wake_went(crown);
                 self.told(crown, telling, &wakes);
                 return true;
             }
@@ -10948,6 +10962,7 @@ impl Daemon {
         self.crown_heard_road(crown, mesimon_core::crownact::WOKE_CROWN, &news, words);
         let (frame, pane, expires_ms, parked) = waits;
         let wakes = std::mem::take(&mut *self.crown_wakes);
+        self.crown_wake_went(crown);
         *self.crown_wake_entering = Some(crownwake::Entering {
             crown,
             session: id,
@@ -13143,8 +13158,11 @@ impl Daemon {
             .map(|t| t.id)
             .filter(|_| !self.crown_wakes.is_empty() || entering.is_some())
         {
-            let waits_on =
-                if self.crown_wake_blocked(crown) { self.keys_of(&[crown]) } else { Vec::new() };
+            let waits_on = if self.crown_wake_blocked(crown).is_some() {
+                self.keys_of(&[crown])
+            } else {
+                Vec::new()
+            };
             let held = self
                 .crown_wake_person(crown)
                 .or(entering.is_some().then_some(WAKE_SENDING))

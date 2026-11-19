@@ -47471,3 +47471,37 @@ missing session. Clippy on all targets had six lints from the range (four `clone
 an `items_after_test_module`, an `unnecessary_get_then_check`), fixed before the gate.
 **Checks.** `slow_tmux_e2e::` on both roads, plus 3/3 more on mod; `cargo ut`; clippy on all
 targets; the release gate's both-roads suite on the release tip.
+
+## A held crown wake says why in the activity log (T-1320, 2026-11-19, the simbly crown: an owed wake sent 34 s after the crown went idle, with nothing in `activity.jsonl` or `daemon.log` saying why)
+
+**The change.** `crown_wake_blocked` now names the first hold it finds (`crownwake::WakeHold`),
+and the drain writes one `automation` board row on the crown's ticket the first time each hold
+is met in a wait, never once a tick:
+
+- `crown_wake_held:person` with outcome `client_recent` (a tmux client active inside the T-945
+  bound), `client_unknown` (a client whose activity reading is untrusted) or `draft` (words in
+  the crown's box, T-918);
+- `crown_wake_held:person_ask` (a person's ask queued for the crown goes first),
+  `crown_wake_held:ack` (a paste still owed its ack), `crown_wake_held:busy` (the crown's seat
+  takes no words: mid-turn, a failure being read, a bridge awaited).
+
+When the wake goes (taken by `deliver`, the two `mem::take` sites), a wait that met any hold
+writes one `crown_wake_released:<hold>` row naming the last (`person` carries its kind as the
+outcome). An empty seat (`QueuedSeat::Start`) holds as before and writes no row, as the ticket
+bounded it. Nothing owed (`crown_wakes` empty at the drain's top) forgets the wait silently.
+State: `Daemon::crown_wake_held` (`WakeHeld`: crown, holds seen, last), in memory only; a
+restart writes a hold's row again.
+
+**Refuted.** One row per change of hold, the first cut: a client's reading flips `Recent` ↔
+`Unknown` across samples while a person types (`client_hold`'s after-the-sample case), so it
+would write a row per flip. A set of holds seen per wait bounds a wait to six rows. No change to
+when a wake goes or what any agent or crown is told, so no rig case.
+
+**Tests.** `crownwake::tests::a_held_crown_wake_writes_one_row_per_hold_and_one_release` (a
+client hold across 50 ticks is one row, an unknown reading one more, recent again none, busy
+one, the release once, a later wait again, nothing owed writes no release).
+`crown_e2e::an_attached_client_holds_the_crown_wake_only_while_active` now also asserts one
+`client_recent` row and one release for the first wake, and one `draft` row and its release for
+the second. The full workspace suite is owed once after the merge (`server.rs`).
+**Checks.** `cargo ut` (72 + 17 + 779 + 925 + 24 + 1,480 passed, 0 failed; run twice, the second
+only to read the last crate's line a `head` had cut); the e2e above passed once, no reruns.

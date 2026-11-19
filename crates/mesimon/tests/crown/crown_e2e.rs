@@ -1887,6 +1887,17 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
             .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
     };
     let bound: u64 = IDLE_MS.parse().unwrap();
+    // The crown's wake rows (T-1320): `cmd` on the crown's ticket, and the
+    // outcome where one is given.
+    let crown_rows = |t: ulid::Ulid, cmd: &str, outcome: Option<&str>| {
+        let (cmd, id) = (format!("\"cmd\":\"{cmd}\""), t.to_string());
+        let outcome = outcome.map(|o| format!("\"outcome\":\"{o}\""));
+        h.feed()
+            .lines()
+            .filter(|l| l.contains(&cmd) && l.contains(&id))
+            .filter(|l| outcome.as_ref().is_none_or(|o| l.contains(o)))
+            .count()
+    };
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-945 worker");
@@ -1963,6 +1974,13 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         2,
         "both clients still attached"
     );
+    // One row at the hold's start for all the ticks it lasted, and one
+    // release with the wake (T-1320).
+    wait_until(std::time::Duration::from_secs(10), "the release row", || {
+        crown_rows(a, "crown_wake_released:person", None) == 1
+    });
+    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("client_recent")), 1, "{}", h.feed());
+    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("draft")), 0);
     // The crown's turn on it.
     h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "nothing owed", || !owed(&mut c, a));
@@ -1992,6 +2010,11 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
         lines_with(&delivered2) == 1
     });
     assert_eq!(lines_with("half a thought"), 1, "never joined: {}", read_got());
+    wait_until(std::time::Duration::from_secs(10), "the draft's release row", || {
+        crown_rows(a, "crown_wake_released:person", Some("draft")) == 1
+    });
+    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("draft")), 1, "{}", h.feed());
+    assert_eq!(crown_rows(a, "crown_wake_released:person", None), 2, "one per wake");
     one.kill().unwrap();
     let _ = one.wait();
     two.kill().unwrap();

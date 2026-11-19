@@ -634,6 +634,98 @@ impl PersonHold {
             PersonHold::Draft => "after your draft",
         }
     }
+
+    /// The hold's word in the activity log (T-1320).
+    fn kind(self) -> &'static str {
+        match self {
+            PersonHold::Client(ClientHold::Recent) => "client_recent",
+            PersonHold::Client(ClientHold::Unknown) => "client_unknown",
+            PersonHold::Draft => "draft",
+        }
+    }
+}
+
+/// What keeps an owed crown wake from going out (`crown_wake_blocked`), as
+/// its activity rows name it (T-1320): a person at the crown's pane, a
+/// person's ask queued for the crown, a paste still owed its ack, a seat
+/// that takes no words (mid-turn, a failure being read, a bridge awaited),
+/// or an empty seat, which writes no row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WakeHold {
+    Person(PersonHold),
+    PersonAsk,
+    Ack,
+    Busy,
+    NoSeat,
+}
+
+impl WakeHold {
+    /// `crown_wake_held:<cmd>` and `crown_wake_released:<cmd>`, and the
+    /// row's outcome where the hold has kinds; `None` for no row.
+    fn row(self) -> Option<(&'static str, Option<&'static str>)> {
+        match self {
+            WakeHold::Person(p) => Some(("person", Some(p.kind()))),
+            WakeHold::PersonAsk => Some(("person_ask", None)),
+            WakeHold::Ack => Some(("ack", None)),
+            WakeHold::Busy => Some(("busy", None)),
+            WakeHold::NoSeat => None,
+        }
+    }
+}
+
+/// The holds an owed crown wake has met since it was last delivered
+/// (T-1320): each writes its row the first time, never once a tick, and the
+/// last names the release row.
+#[derive(Debug, Default)]
+pub(super) struct WakeHeld {
+    crown: Option<ulid::Ulid>,
+    seen: Vec<WakeHold>,
+    last: Option<WakeHold>,
+}
+
+impl Daemon {
+    /// The drain found the crown's wake held (T-1320): a hold not met
+    /// before in this wait writes one board row, `crown_wake_held:<hold>`.
+    pub(super) fn crown_wake_holds(&mut self, crown: ulid::Ulid, hold: WakeHold) {
+        let Some((cmd, kind)) = hold.row() else { return };
+        let held = &mut self.crown_wake_held;
+        if held.crown != Some(crown) {
+            *held = WakeHeld { crown: Some(crown), ..WakeHeld::default() };
+        }
+        held.last = Some(hold);
+        if held.seen.contains(&hold) {
+            return;
+        }
+        held.seen.push(hold);
+        let cmd = format!("crown_wake_held:{cmd}");
+        match kind {
+            Some(kind) => self.feed.board_outcome("automation", &cmd, Some(crown), kind),
+            None => self.feed.board("automation", &cmd, Some(crown)),
+        }
+    }
+
+    /// The crown's owed wake went (T-1320): a wait that met a hold writes
+    /// one row, `crown_wake_released:<hold>`, naming the last.
+    pub(super) fn crown_wake_went(&mut self, crown: ulid::Ulid) {
+        let held = std::mem::take(&mut self.crown_wake_held);
+        let Some((cmd, kind)) =
+            held.last.filter(|_| held.crown == Some(crown)).and_then(WakeHold::row)
+        else {
+            return;
+        };
+        let cmd = format!("crown_wake_released:{cmd}");
+        match kind {
+            Some(kind) => self.feed.board_outcome("automation", &cmd, Some(crown), kind),
+            None => self.feed.board("automation", &cmd, Some(crown)),
+        }
+    }
+
+    /// Nothing is owed: a later wait starts with no hold met.
+    pub(super) fn crown_wake_unheld(&mut self) {
+        if self.crown_wake_held.crown.is_some() {
+            self.crown_wake_held = WakeHeld::default();
+        }
+    }
 }
 
 /// `leave or 10m idle`, the bound's own duration in it: the release a person
@@ -5767,6 +5859,80 @@ pub(in crate::server) mod tests {
 
     fn wake(worker: ulid::Ulid, cause: WakeCause) -> CrownWake {
         CrownWake::new(worker, cause, None, None, Owed::default())
+    }
+
+    /// T-1320: a crown wake held for a person at the crown's pane writes one
+    /// `crown_wake_held:person` row at the hold's start, however many ticks
+    /// it lasts, and one more only for a hold of another kind; a hold met
+    /// again writes nothing. A crown mid-turn is its own hold, once. The
+    /// wake's going writes one release naming the last hold, a second call
+    /// none, and a later wait starts over.
+    #[test]
+    fn a_held_crown_wake_writes_one_row_per_hold_and_one_release() {
+        let mut b = crate::server::crownask::ledger_tests::bed("wake-held-rows");
+        let crown_seat = uuid::Uuid::from_u128(1320);
+        let mut rec = SessionRecord::new(
+            crown_seat,
+            SessionKind::Claude,
+            b.crown,
+            vec!["claude".into()],
+            b.d.paths.repo_root.display().to_string(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        rec.pane_key = Some("100:%2".into());
+        let sid = rec.sid16();
+        b.d.board.sessions.push(rec);
+        b.d.active_clients.insert(sid.clone(), ClientHold::Recent);
+        b.d.crown_wakes.push(wake(b.worker, WakeCause::Finished));
+        let rows = |d: &mut crate::server::Daemon| {
+            d.feed.flush().unwrap();
+            let feed = std::fs::read_to_string(d.paths.activity_log()).unwrap_or_default();
+            feed.lines()
+                .filter(|l| l.contains("\"cmd\":\"crown_wake_"))
+                .map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                    let outcome = v["outcome"].as_str().unwrap_or("").to_string();
+                    format!("{} {outcome}", v["cmd"].as_str().unwrap()).trim().to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..50 {
+            b.d.drain_crown_wakes(None);
+        }
+        assert_eq!(rows(&mut b.d), ["crown_wake_held:person client_recent"]);
+        // An unknown reading is another kind: one row. Back to recent: none.
+        b.d.active_clients.insert(sid.clone(), ClientHold::Unknown);
+        for _ in 0..20 {
+            b.d.drain_crown_wakes(None);
+        }
+        b.d.active_clients.insert(sid.clone(), ClientHold::Recent);
+        for _ in 0..20 {
+            b.d.drain_crown_wakes(None);
+        }
+        let held =
+            ["crown_wake_held:person client_recent", "crown_wake_held:person client_unknown"];
+        assert_eq!(rows(&mut b.d), held);
+        // The crown takes a turn: it is the hold now, once.
+        b.d.board.sessions.last_mut().unwrap().state = SessionState::Running;
+        for _ in 0..20 {
+            b.d.drain_crown_wakes(None);
+        }
+        assert_eq!(rows(&mut b.d)[2..], ["crown_wake_held:busy"]);
+        assert!(owed_for(&b.d, b.worker).is_some(), "held, never delivered");
+        // The wake goes: one release, naming the last hold.
+        b.d.crown_wake_went(b.crown);
+        b.d.crown_wake_went(b.crown);
+        assert_eq!(rows(&mut b.d)[3..], ["crown_wake_released:busy"]);
+        // A later wait writes again.
+        for _ in 0..5 {
+            b.d.drain_crown_wakes(None);
+        }
+        assert_eq!(rows(&mut b.d)[4..], ["crown_wake_held:busy"]);
+        // Nothing owed: the drain forgets the wait, and writes no release.
+        b.d.crown_wakes.clear();
+        b.d.drain_crown_wakes(None);
+        b.d.crown_wake_went(b.crown);
+        assert_eq!(rows(&mut b.d).len(), 5);
     }
 
     /// A box the crown lost gives its wakes back inside the drain
