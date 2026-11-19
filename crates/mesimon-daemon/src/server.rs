@@ -1645,7 +1645,8 @@ pub fn run(paths: Paths) -> Result<()> {
                 s.confidence,
                 s.idle_teammates.iter().cloned(),
                 now,
-            );
+            )
+            .with_park_fallback(s.park_fallback);
             (s.id, m)
         })
         .collect();
@@ -8076,10 +8077,19 @@ impl Daemon {
         detail: Option<String>,
         hook: Option<&str>,
     ) -> bool {
+        // Where a park lands on the park clock is the last top-level Stop's
+        // word, which a restart must not lose (T-1322). Every road a Stop
+        // takes (a hook, a held async-hook release, the mod) commits its
+        // park here. Kept only while parked: no other state reads it.
+        let parked =
+            matches!(change.to, SessionState::Idle { stop_reason: StopReason::Background });
+        let park_fallback =
+            parked.then(|| self.machines.get(&id).map(Machine::park_fallback)).flatten();
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
         let now = now_ms();
+        rec.park_fallback = park_fallback;
         if rec.kind == SessionKind::Codex {
             if let Some(sequence) = rec.codex_pending_seq.take() {
                 rec.codex_observed_seq = sequence;

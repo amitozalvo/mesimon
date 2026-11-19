@@ -592,6 +592,20 @@ impl Machine {
         m
     }
 
+    /// Carry a persisted `park_fallback` (T-1322); `None`, from a record
+    /// written before it was kept, leaves `restore`'s default.
+    pub fn with_park_fallback(mut self, fallback: Option<StopReason>) -> Self {
+        if let Some(fallback) = fallback {
+            self.park_fallback = fallback;
+        }
+        self
+    }
+
+    /// Where the current park lands on the park clock — for persistence.
+    pub fn park_fallback(&self) -> StopReason {
+        self.park_fallback
+    }
+
     /// The teammates currently known idle, sorted — for persistence.
     pub fn idle_teammates(&self) -> impl Iterator<Item = &str> {
         self.idle_teammates.iter().map(String::as_str)
@@ -601,7 +615,20 @@ impl Machine {
     /// must not launder a tail-derived Low into High (dogfood 2026-08-30:
     /// that laundering blinded ToolCompleted's inferred-idle recovery, so a
     /// misread session stayed glyph-less across restarts).
+    ///
+    /// A machine minted at `Idle{Background}` has not seen the `Stop` that
+    /// parked it, so its fallback is `Monitoring` until it is told
+    /// (`with_park_fallback`): a park whose evidence a restart lost demotes
+    /// to idle and promptable with its card in place, never to a finished
+    /// turn on the clock (T-1322). Every other state's `EndTurn` is unused
+    /// until a `Stop` sets it.
     pub fn restore(state: SessionState, confidence: Confidence, now: u64) -> Self {
+        let park_fallback = if state == (SessionState::Idle { stop_reason: StopReason::Background })
+        {
+            StopReason::Monitoring
+        } else {
+            StopReason::EndTurn
+        };
         Self {
             state,
             confidence,
@@ -613,7 +640,7 @@ impl Machine {
             recent_left: None,
             idle_teammates: BTreeSet::new(),
             background_at: now,
-            park_fallback: StopReason::EndTurn,
+            park_fallback,
             stop_teammates: 0,
             compacting_since: None,
             compact_closed_at: None,
@@ -1778,6 +1805,58 @@ mod tests {
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
+    /// T-1322. A restart rebuilds the machine from the persisted park. The
+    /// park on a live shell demotes to monitoring as it did before the
+    /// restart, whether its fallback was persisted or lost; a park whose
+    /// Stop listed no live task still lands on the finished turn.
+    #[test]
+    fn a_park_rebuilt_by_a_restart_keeps_its_fallback() {
+        let park = |stop: &Signal| {
+            let mut m = m(SessionState::Running);
+            m.apply(stop, 1000);
+            let c = m.tick(1000 + SETTLE_MS).expect("parks");
+            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+            m
+        };
+        let restart = |m: &Machine, persisted: Option<StopReason>| {
+            Machine::restore_with_teammates(
+                m.state().clone(),
+                m.confidence(),
+                m.idle_teammates().map(str::to_string),
+                50_000,
+            )
+            .with_park_fallback(persisted)
+        };
+        let demoted = |mut m: Machine| {
+            assert!(
+                m.tick(50_000 + PARK_STALE_MS - 1).is_none(),
+                "the clock starts at the restart"
+            );
+            m.tick(50_000 + PARK_STALE_MS).expect("the park times out").to
+        };
+        let shell = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: true,
+            monitoring_tasks: true,
+            teammates: 0,
+        };
+        let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
+        let before = park(&shell);
+        assert_eq!(before.park_fallback(), StopReason::Monitoring);
+        // Persisted, and lost (a record written before the field was kept).
+        assert_eq!(demoted(restart(&before, Some(before.park_fallback()))), monitoring);
+        assert_eq!(demoted(restart(&before, None)), monitoring);
+
+        // A teammate park whose Stop listed no live task: the finished turn.
+        let team = park(&stop_with_teammates(1));
+        assert_eq!(team.park_fallback(), StopReason::EndTurn);
+        assert_eq!(
+            demoted(restart(&team, Some(team.park_fallback()))),
+            SessionState::Idle { stop_reason: StopReason::EndTurn }
+        );
+    }
+
     /// T-724. The session file's `busy` is proof for the clock and nothing
     /// else: it never parks, resumes or ends a turn on its own.
     #[test]
@@ -1912,7 +1991,8 @@ mod tests {
             }
             assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
             let c = m.tick(at + PARK_STALE_MS).expect("silence still times out");
-            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+            // Minted at the park, no Stop seen: monitoring (T-1322).
+            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Monitoring });
         }
     }
 

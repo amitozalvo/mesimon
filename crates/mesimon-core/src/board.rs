@@ -510,6 +510,15 @@ pub struct SessionRecord {
     /// next finished turn for good. Sorted, deduplicated.
     #[serde(default)]
     pub idle_teammates: Vec<String>,
+    /// Where a park on tasks lands when the park clock runs out, as the last
+    /// top-level `Stop` said (`attention::Machine::park_fallback`, T-483):
+    /// `Monitoring` beside a live shell or watch, `EndTurn` beside teammates
+    /// alone. Persisted because a restart that forgot it turned a park on a
+    /// running gate run into a finished turn ten minutes later (T-1322).
+    /// `None` on a record from before: the restored machine reads the park
+    /// as monitoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub park_fallback: Option<StopReason>,
     /// Ephemeral liveness evidence: restart deliberately starts empty.
     #[serde(skip)]
     pub background_tasks: crate::background::Registry,
@@ -773,6 +782,7 @@ impl SessionRecord {
             codex_plan_dismissed_turn: None,
             codex_plan_owed: false,
             idle_teammates: Vec::new(),
+            park_fallback: None,
             background_tasks: Default::default(),
             plan_note: None,
             dialog_call: None,

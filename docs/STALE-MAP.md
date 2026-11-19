@@ -47505,3 +47505,49 @@ one, the release once, a later wait again, nothing owed writes no release).
 the second. The full workspace suite is owed once after the merge (`server.rs`).
 **Checks.** `cargo ut` (72 + 17 + 779 + 925 + 24 + 1,480 passed, 0 failed; run twice, the second
 only to read the last crate's line a `head` had cut); the e2e above passed once, no reruns.
+
+## A restart no longer turns a park on a running background task into a finished turn (T-1322, 2026-11-19, the person, on the release seat: "it's still running the gate … it should be considered available for now prompts but not yet done")
+
+**Seen.** A seat parked at `Idle{Background}` on a backgrounded gate run (15:24:14Z). A `U` at
+15:27:46Z restarted the daemon. At 15:37:47Z, ten minutes after the restart and with no frame,
+the park fell to `Idle{EndTurn}`: `on_done` moved the card to REVIEW and the crown was woken
+"delivered" while the gate's nextest still ran. The same seat's earlier park (14:58:58Z) had
+demoted to `Idle{Monitoring}` with the card left in place.
+
+**Cause.** `reconcile::state_for` keeps a persisted `Idle{Background}` across a restart (an idle
+claim is sticky), and `Machine::restore` minted it with `park_fallback: EndTurn`. The fallback is
+what the last top-level `Stop` said (T-483), and it lived only in the machine. The rebuilt
+machine had not seen that `Stop`, so the park clock (`PARK_STALE_MS`, from the restart) landed it
+on a finished turn. `attention::a_park_rebuilt_by_a_restart_keeps_its_fallback` failed on the old
+default (`EndTurn` where `Monitoring` was due) before the fix.
+
+**Shipped.** Both halves:
+- *Persisted:* `SessionRecord::park_fallback` (`Option<StopReason>`, `#[serde(default)]`). The
+  daemon writes it when a park commits (`apply_change`, which every road a `Stop` takes reaches)
+  and drops it when the park ends; the startup machine reads it back
+  (`Machine::with_park_fallback`). A first cut wrote it beside `idle_teammates` in `hook_frame`
+  and the e2e caught the hole: a `Stop` held for its async hooks (T-1044) reaches the machine
+  from `async_hook_release`, not from `hook_frame`. A teammate park whose `Stop` listed no live
+  task still lands on `EndTurn` after a restart, as T-403 wants.
+- *Defaulted:* a machine minted at `Idle{Background}` with no fallback given reads `Monitoring`.
+  That covers a record written before the field existed, which the first `U` onto this build
+  is. A restart that lost the evidence leaves the seat idle and promptable with its card where it
+  was. It never makes a finished turn. The cost is that a teammate park from an old record waits
+  for the next prompt instead of reaching REVIEW.
+
+`background_at` is not persisted: the clock starting again at the restart only delays the demote
+to monitoring, and that demote decides nothing. `stop_teammates` (T-1313) is still memory alone.
+`Idle{Monitoring}` fires no `on_done` and no turn-end wake, so the crown hears nothing from the
+demote; T-944's lingering wake still reads it as a park on tasks.
+
+**Refuted.** *Re-deriving from the state alone:* `Idle{Background}` is both a shell park and a
+teammate park, and only the `Stop` tells them apart. Defaulting every restored park to monitoring
+would leave a finished team's ticket in IN PROGRESS after every restart.
+
+Tests: `attention::a_park_rebuilt_by_a_restart_keeps_its_fallback` (a shell park, persisted and
+lost, demotes to `Monitoring`; a teammate park persisted as `EndTurn` still ends);
+`attention::background_frames_keep_a_park_alive` now expects `Monitoring` from a machine minted
+at the park (the decision above). E2e:
+`restart_e2e::a_park_on_a_background_command_keeps_its_column_across_a_restart` (park clock 4 s:
+the record carries the fallback, the park survives the restart, it demotes on the clock to
+monitoring, and the card stays in IN PROGRESS with no REVIEW move in the feed).

@@ -411,6 +411,97 @@ fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
     let _ = c.request(Command::KillSession { id: sid });
 }
 
+/// T-1322: a session parked on a running background command keeps its
+/// card across a daemon restart. The restart rebuilds the machine from the
+/// persisted `Idle{Background}`; the park clock then demotes it to
+/// monitoring, as the same park did before the restart, and never to a
+/// finished turn that `on_done` moves to REVIEW.
+#[test]
+fn a_park_on_a_background_command_keeps_its_column_across_a_restart() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
+    const PARK_STALE: u64 = 4_000;
+    let Some(h) = Harness::boot_with_env(
+        "restart-park",
+        Some(STUB),
+        &[("MESIMON_PANE_QUIET_MS", "600000"), ("MESIMON_PARK_STALE_MS", "4000")],
+    ) else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let transcript = h.dir.join("transcript.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    let mut c = h.client("restart-park");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "restart-park".into(),
+        workspace: None,
+        tier: None,
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("create: {other:?}"),
+    };
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let send = |event: &str, body: &str| hook_send(&hook_sock, &sid.to_string(), event, body);
+    send(
+        "SessionStart",
+        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+    );
+    send("UserPromptSubmit", r#"{"session_id":"x"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    let column = |c: &mut TestClient| c.board().ticket(ticket).unwrap().column.clone();
+    wait_until(Duration::from_secs(5), "on_working to IN PROGRESS", || {
+        column(&mut c) == "IN PROGRESS"
+    });
+    send(
+        "PostToolUse",
+        r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"gate"}}"#,
+    );
+    send(
+        "Stop",
+        r#"{"stop_hook_active":false,"background_tasks":[{"id":"gate","type":"shell","status":"running"}]}"#,
+    );
+    let parked = SessionState::Idle { stop_reason: StopReason::Background };
+    c.await_state(sid, "parked on its command", |s| *s == parked);
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    assert_eq!(rec.park_fallback, Some(StopReason::Monitoring), "the Stop's word is on the record");
+    drop(c);
+
+    h.restart_after(|| {});
+    let restarted = mesimon_core::clock::now_ms();
+    let mut c = h.client("restart-park-2");
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    assert_eq!(rec.state, parked, "the park survives the restart");
+
+    let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
+    c.await_state(sid, "the park clock's demote", |s| *s == monitoring);
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    assert!(
+        rec.state_changed_at.is_some_and(|at| at >= restarted + PARK_STALE - 500),
+        "the demote came on the clock: {rec:?}"
+    );
+    // Past the clock again: nothing decided by time, the card stays.
+    std::thread::sleep(Duration::from_millis(PARK_STALE + 1_000));
+    assert_eq!(c.board().sessions.iter().find(|s| s.id == sid).unwrap().state, monitoring);
+    assert_eq!(column(&mut c), "IN PROGRESS", "no on_done from the demote");
+    let feed = std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
+    assert!(
+        !feed.lines().any(|l| l.contains("\"kind\":\"movement_decision\"")
+            && l.contains("\"destination\":\"REVIEW\"")
+            && l.contains("\"outcome\":\"moved\"")),
+        "no move to REVIEW:\n{feed}"
+    );
+    let _ = c.request(Command::KillSession { id: sid });
+}
+
 /// T-660: after a restart, a turn spent on board tools and thinking writes
 /// little to the transcript and, on the mod road, fires no tool hook at all
 /// (a registered tool's call has no `PreToolUse`/`PostToolUse`). T-650's
