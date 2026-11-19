@@ -20180,13 +20180,8 @@ impl Daemon {
         // minute's backoff, as it did; the other owed tickets go without it
         // (T-1317). A burst for it would leave that repository out, answer
         // nothing and be asked again on every floor until the backoff.
-        let only: std::collections::HashSet<ulid::Ulid> = self
-            .forge
-            .owed
-            .keys()
-            .copied()
-            .filter(|t| !self.forge_fails(*t))
-            .collect();
+        let only: std::collections::HashSet<ulid::Ulid> =
+            self.forge.owed.keys().copied().filter(|t| !self.forge_fails(*t)).collect();
         if only.is_empty() {
             return;
         }

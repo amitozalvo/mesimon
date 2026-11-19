@@ -19308,7 +19308,7 @@ mod tests {
         app.board_mut().tickets[0].notes[0].rev += 1;
         release(&hold);
         app.pump().unwrap();
-        assert!(app.notes.get(&meta.id).is_none(), "old revision must not land");
+        assert!(!app.notes.contains_key(&meta.id), "old revision must not land");
         assert_eq!(hold.borrow().asks, 2, "the new revision is asked once");
     }
 

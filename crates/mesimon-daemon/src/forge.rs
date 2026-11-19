@@ -1422,10 +1422,7 @@ struct OneReads {
 
 impl OneReads {
     fn mr(&mut self, r: &RepoQuery, iid: u64) -> Result<forge::MrRead, Missing> {
-        self.gitlab
-            .entry((r.remote.path.clone(), iid))
-            .or_insert_with(|| gitlab_mr(r, iid))
-            .clone()
+        self.gitlab.entry((r.remote.path.clone(), iid)).or_insert_with(|| gitlab_mr(r, iid)).clone()
     }
 
     /// An open MR's pipeline at `head`: the run its read named, by its
@@ -4623,8 +4620,7 @@ mod tests {
         };
         let out = sample(q, 10 * SUPERSEDED_READ_MS);
         let calls = std::fs::read_to_string(&log).unwrap_or_default();
-        let reads: Vec<&str> =
-            calls.lines().filter(|l| l.contains("merge_requests/")).collect();
+        let reads: Vec<&str> = calls.lines().filter(|l| l.contains("merge_requests/")).collect();
         assert_eq!(reads, ["api --hostname gitlab.com projects/g%2Fr/merge_requests/7"], "{calls}");
         assert_eq!(out.calls as usize, calls.lines().count(), "the pass counts its own calls");
         assert_eq!(out.calls, 3, "the list, the draft, its head's pipelines: {calls}");
@@ -4649,7 +4645,10 @@ mod tests {
         s.asked.insert(down.clone(), Instant::now());
         s.asked.insert(ok.clone(), Instant::now() - BUSY_EVERY);
         assert!(s.failed(&down) && !s.failed(&ok));
-        assert!(!s.burst_held(&[ok.clone(), down.clone()], BUSY_EVERY), "the failed one holds none");
+        assert!(
+            !s.burst_held(&[ok.clone(), down.clone()], BUSY_EVERY),
+            "the failed one holds none"
+        );
         assert!(!s.due_for(&down, BUSY_EVERY), "and is the minute's backoff's");
         s.asked.insert(ok.clone(), Instant::now());
         assert!(s.burst_held(&[ok.clone(), down.clone()], BUSY_EVERY), "inside the floor");

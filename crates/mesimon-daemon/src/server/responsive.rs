@@ -12,41 +12,6 @@ pub(super) struct Jobs {
     pub status_writing: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_pending_terminal_open_holds_teardown_until_completion() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
-        let ticket = ulid::Ulid(1);
-        let (peer, _client) = UnixStream::pair().unwrap();
-        let writer = Arc::new(Mutex::new(peer.try_clone().unwrap()));
-        d.responsive.opening =
-            Some(Opening { ticket: Some(ticket), by: Arc::downgrade(&writer), peer, reply: None });
-        d.pending_teardown.push(Teardown { ticket, why: TeardownWhy::Archived, sids: Vec::new() });
-        d.process_teardowns();
-        assert_eq!(d.pending_teardown.len(), 1, "opening still owns its cwd");
-        d.responsive.opening = None;
-        d.process_teardowns();
-        assert!(d.pending_teardown.is_empty(), "completion releases the queued teardown");
-    }
-
-    #[test]
-    fn a_reaper_result_cannot_release_a_newer_reservation() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
-        let old = Instant::now();
-        let newer = old + REAP_GRACE;
-        d.responsive.reaping.insert(sid.clone(), old);
-        d.reaping.insert(sid.clone(), newer);
-        d.reaped(vec![(sid.clone(), old, true)], Duration::ZERO);
-        assert_eq!(d.reaping.get(&sid), Some(&newer));
-        assert!(d.responsive.reaping.is_empty());
-    }
-}
-
 pub(super) struct Opening {
     ticket: Option<ulid::Ulid>,
     by: Weak<Mutex<UnixStream>>,
@@ -212,5 +177,40 @@ impl Daemon {
             let _ = reply.send(ClientReply { response, delivered: None, told: None });
         }
         self.broadcast();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pending_terminal_open_holds_teardown_until_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
+        let ticket = ulid::Ulid(1);
+        let (peer, _client) = UnixStream::pair().unwrap();
+        let writer = Arc::new(Mutex::new(peer.try_clone().unwrap()));
+        d.responsive.opening =
+            Some(Opening { ticket: Some(ticket), by: Arc::downgrade(&writer), peer, reply: None });
+        d.pending_teardown.push(Teardown { ticket, why: TeardownWhy::Archived, sids: Vec::new() });
+        d.process_teardowns();
+        assert_eq!(d.pending_teardown.len(), 1, "opening still owns its cwd");
+        d.responsive.opening = None;
+        d.process_teardowns();
+        assert!(d.pending_teardown.is_empty(), "completion releases the queued teardown");
+    }
+
+    #[test]
+    fn a_reaper_result_cannot_release_a_newer_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, sid, _rx) = queued_person_push_tests::daemon(dir.path());
+        let old = Instant::now();
+        let newer = old + REAP_GRACE;
+        d.responsive.reaping.insert(sid.clone(), old);
+        d.reaping.insert(sid.clone(), newer);
+        d.reaped(vec![(sid.clone(), old, true)], Duration::ZERO);
+        assert_eq!(d.reaping.get(&sid), Some(&newer));
+        assert!(d.responsive.reaping.is_empty());
     }
 }

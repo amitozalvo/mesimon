@@ -2394,10 +2394,25 @@ mod tests {
         let past = "b".repeat(40);
         let here = vec!["o/r".to_string()];
         let closed = pr("o/r", 4, PrState::Closed, &head, 10);
-        assert_eq!(closed_at(&[closed.clone()], &here, &head).map(|p| p.number), Some(4));
-        assert_eq!(closed_at(&[closed.clone()], &here, &past), None, "a commit past the head");
-        assert_eq!(closed_at(&[closed.clone()], &["o/x".into()], &head), None, "another repo");
-        assert_eq!(closed_at(&[closed.clone()], &here, ""), None, "no tip gives up nothing");
+        assert_eq!(
+            closed_at(std::slice::from_ref(&closed), &here, &head).map(|p| p.number),
+            Some(4)
+        );
+        assert_eq!(
+            closed_at(std::slice::from_ref(&closed), &here, &past),
+            None,
+            "a commit past the head"
+        );
+        assert_eq!(
+            closed_at(std::slice::from_ref(&closed), &["o/x".into()], &head),
+            None,
+            "another repo"
+        );
+        assert_eq!(
+            closed_at(std::slice::from_ref(&closed), &here, ""),
+            None,
+            "no tip gives up nothing"
+        );
         let reopened = pr("o/r", 4, PrState::Open, &head, 20);
         assert_eq!(closed_at(&[reopened], &here, &head), None, "reopened holds again");
         let mut reviewed = closed.clone();
