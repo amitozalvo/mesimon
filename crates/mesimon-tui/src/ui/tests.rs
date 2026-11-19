@@ -17109,6 +17109,47 @@ fn the_box_opens_over_its_rule_and_the_status_line_stays() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// agy draws a ruled list of active subagents immediately under its input.
+/// On the page the whole list belongs above the ask control in every state.
+#[test]
+fn agy_subagents_stay_outside_the_ask_field() {
+    let mut board = fixture(false);
+    let session = board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
+    session.kind = SessionKind::Agy;
+    let mut app = app_graphite(board);
+    app.rich_keys = true;
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let rule = "─".repeat(78);
+    let pane = format!(
+        "{rule}\n>\n{rule}\n  ● Agent(research: core) · Reading file\n  ● Agent(research: UI) · Running command\n{rule}\nauto · Gemini 4 Carbon · high · 2 subagent(s)"
+    );
+    app.live = Some(crate::live::Live::fixed(
+        uuid_n(31),
+        crate::live::Shot { rows: crate::live::parse(&pane), cols: 78, cursor: Some((2, 1)) },
+    ));
+    let check = |lines: Vec<String>, control: &str, words: Option<&str>| {
+        let last = lines.iter().position(|l| l.contains("Agent(research: UI)")).unwrap();
+        assert!(lines[last - 1].contains("Agent(research: core)"), "{lines:#?}");
+        assert!(lines[last + 1].contains(control), "{lines:#?}");
+        let footer = if let Some(words) = words {
+            let prompt = lines[last + 2].trim_start().strip_prefix('>').expect("agy prompt");
+            assert!(prompt.trim_start().starts_with(words), "{lines:#?}");
+            assert!(lines[last + 3].contains("queued"), "{lines:#?}");
+            last + 4
+        } else {
+            last + 2
+        };
+        assert!(lines[footer].contains("2 subagent(s)"), "{lines:#?}");
+    };
+    let closed = render(&app, 120, 30);
+    golden("ticket_live_agy_subagents_120x30", &closed);
+    check(closed, "shift+enter", None);
+    app.pending = vec![queued_words(3, &["T-3"], "review the findings")];
+    check(render(&app, 120, 30), "shift+enter", Some("review the findings"));
+    ask_field_on(&mut app, ulid_n(3), "review the findings", true, false);
+    check(render(&app, 120, 30), "────", Some("review the findings"));
+}
+
 /// Words in the agent's box that mesimon did not type hold Shift+Enter
 /// (T-1156): the page can neither read them back whole nor empty the box
 /// safely, so the key is shown out, with why, on the box's top rule, and

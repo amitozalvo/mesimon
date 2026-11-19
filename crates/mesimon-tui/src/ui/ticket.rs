@@ -1360,7 +1360,6 @@ fn draw_preview(
         // in it; the live rows are from there down, the zone's height at
         // most, keeping the bottom: a dialog taller than the zone loses its
         // top, never its options.
-        let view = shot.view();
         let anchor = trust_anchor.unwrap_or_else(|| shot.anchor());
         // The box, closed (T-1156), is its top rule alone: the rows under
         // it to its bottom rule are not drawn, and the zone has their room.
@@ -1370,7 +1369,7 @@ fn draw_preview(
         // takes.
         let closed = !asking_here(app, rec.ticket);
         let boxed = shot.page_box();
-        let at = view.partition_point(|&r| r < anchor);
+        let (view, at) = shot.page_view(anchor, boxed);
         // The rule at the rows' drawn width: a capture from before a
         // resize is wider or narrower than the zone until the next.
         let box_w = shot.cols.min(area.width) as usize;

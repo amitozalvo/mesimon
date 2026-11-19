@@ -309,6 +309,18 @@ pub struct ShellCloseRequest {
     pub expires_ms: u64,
 }
 
+/// The lead agy conversation's stop, kept between its hooks and title reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgyStop {
+    #[default]
+    None,
+    /// A partial stop, cancellation or failure. A following idle is no Esc.
+    Reported,
+    Completed,
+    /// The lead completed while the title still listed running work.
+    WaitingForIdle,
+}
+
 /// A session record the daemon persists. Mesimon's UUID names its tmux
 /// session and authorization principal. Provider conversation IDs are
 /// separate: Claude initially accepts this UUID; Codex assigns its own.
@@ -431,12 +443,11 @@ pub struct SessionRecord {
     /// record without one hosts no conversation to resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agy_conversation_id: Option<String>,
-    /// agy's running turn has had its `Stop` (T-1233): its title feed's
-    /// `idle` that follows is that turn's end, and one with no `Stop` before
-    /// it is an Esc, which fires none. Ephemeral: a restart reads the seat
-    /// afresh from its feed.
+    /// Ephemeral observations of agy's lead turn and the work its title lists.
     #[serde(skip)]
-    pub agy_turn_stopped: bool,
+    pub agy_stop: AgyStop,
+    #[serde(skip)]
+    pub agy_background_running: bool,
     /// Identity of the owned Codex runtime process. A launch chooses a fresh
     /// generation, so an old supervisor cannot overwrite its replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,7 +776,8 @@ impl SessionRecord {
             native: false,
             codex_thread_id: None,
             agy_conversation_id: None,
-            agy_turn_stopped: false,
+            agy_stop: AgyStop::None,
+            agy_background_running: false,
             codex_generation: None,
             codex_observed_seq: 0,
             codex_pending_seq: None,

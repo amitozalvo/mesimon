@@ -47735,3 +47735,40 @@ start with agy's own "not recognized" error.
 
 Also on this ticket: the board was restarted with `MESIMON_AGY=1`. The model cache's 6-hour TTL
 hid a new agy sign-in's models until the file was rewritten by hand; that lag is T-1327.
+
+## agy's subagents stay above the ask field and keep the ticket working (T-1332, 2026-11-19)
+
+Two live agy panes showed the same order: input between rules, four indented
+`● Agent(…)` rows, another rule, then the mode and model. Closing the ticket
+page's ask field put the list between its key and that last rule. The page
+now draws the list before the input, drops the list's trailing rule and keeps
+the model footer below. The pane indices still locate the cursor and the
+draft. The closed, queued and open states share this order.
+
+On T-1329 the journal recorded two `AgyStop` → `end_turn` → REVIEW sequences,
+then a return to IN PROGRESS. During one stop the lead transcript was still
+in a batch of file reads. Both active seats had a child transcript recorded
+against the lead conversation ID. A child's hooks carry the same seat UUID
+and their own conversation ID. Once the lead is known, its title feed alone
+can switch that ID. A child's invocation and stop no longer change the
+lead's turn, transcript or resume target.
+
+The lead's title can report `idle` while work continues. Its running
+subagents and background task count keep the seat working. A successful
+lead stop with work outstanding waits for the title to report idle with the
+work drained. A partial stop suppresses the idle-as-Esc inference until
+the next lead invocation. A quiet lead interrupted with Esc still reads
+interrupted. The [title feed](https://antigravity.google/docs/cli/title/)
+uses the [status-line payload](https://antigravity.google/docs/cli/statusline/).
+
+Coverage includes the agy page golden, interleaved lead and child hook tests
+and a disposable board that stays in IN PROGRESS past the settle and moves
+to REVIEW after the last child finishes.
+
+Verification included `cargo ut`, `slow_tmux_e2e::` (3) and `agy_e2e::`
+(5). The first rendering assertion assumed two spaces after the prompt;
+tmux captures the empty agy prompt as a bare `>`, so the check now reads
+the words at the actual prompt. The first unit run also reached the new
+golden before it had been generated. The focused render passed after
+generation and visual review. The unit and agy suites were rerun as the
+stop ordering and in-pane conversation-switch cases were added.

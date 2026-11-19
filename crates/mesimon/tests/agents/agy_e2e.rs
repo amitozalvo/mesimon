@@ -136,6 +136,38 @@ fn agy_board(c: &mut TestClient) {
     assert_eq!(c.board().agent_provider, AgentProvider::Agy);
 }
 
+/// A child's Stop reaches the parent's hook socket. The parent can also
+/// finish its own invocation while the title still lists a running child.
+#[test]
+fn agy_keeps_the_ticket_in_progress_until_the_whole_seat_finishes() {
+    let Some(bed) = Bed::boot("agy-subagents", true, true) else { return };
+    let mut c = bed.h.client("agy-subagents");
+    agy_board(&mut c);
+    let t = ticket(&mut c, "Inspect the project");
+    let Response::Spawned { id, .. } = start(&mut c, t, true) else { panic!("spawn agy") };
+    c.await_state(id, "lead working", |s| *s == SessionState::Running);
+    let report = |event, payload: serde_json::Value| {
+        hook_send(&bed.h.paths.hook_sock(), &id.to_string(), event, &payload.to_string());
+    };
+    let title = |status| {
+        serde_json::json!({
+            "conversation_id": MINTED, "agent_state": "idle", "subagents": [{"status": status}]
+        })
+    };
+    report("AgyTitle", title("running"));
+    report("AgyStop", serde_json::json!({"conversationId":"abc123", "fullyIdle": true}));
+    report("AgyStop", serde_json::json!({"conversationId": MINTED, "fullyIdle": true}));
+    // Give an erroneous leave its full settle and a daemon tick to move the card.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(c.record(id).state, SessionState::Running);
+    assert_eq!(c.board().ticket(t).unwrap().column, "IN PROGRESS");
+    report("AgyTitle", title("completed"));
+    wait_until(Duration::from_secs(10), "the finished ticket reaches REVIEW", || {
+        c.board().ticket(t).unwrap().column == "REVIEW"
+    });
+    assert_eq!(c.record(id).state, SessionState::Idle { stop_reason: StopReason::EndTurn });
+}
+
 /// A start that carries words, a turn with a confirmation in it, words into
 /// the live box at rest and mid-turn (queued, and handed over by alt+m), an
 /// Esc, a park and a wake with words: every prompt goes in by the box, the

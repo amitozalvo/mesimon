@@ -262,7 +262,11 @@ impl Shot {
         // and hints row, whose key hints come out wherever they stand
         // (`⏵⏵ auto mode on (shift+tab to cycle)`, Codex's `← for agents
         // · ? for shortcuts`); a row of hints alone goes.
-        for row in rows.iter_mut().skip(bottom + 1) {
+        // agy draws its subagents between the composer's bottom rule and
+        // another rule. On the page that would put them between the closed
+        // "ask agent" rule and a second edge, as if they were the input.
+        let roster_end = self.agy_roster_end(top, bottom);
+        for row in rows.iter_mut().skip(roster_end.unwrap_or(bottom) + 1) {
             *row = cut_hints(row, true);
         }
         // Codex's box is its prompt row alone: the page frames it with rules
@@ -282,6 +286,39 @@ impl Shot {
             }
         }
         Shot { rows, cols: self.cols, cursor: self.cursor }
+    }
+
+    /// The rule directly under agy's indented `● Agent(…)` status rows.
+    fn agy_roster_end(&self, top: usize, bottom: usize) -> Option<usize> {
+        if top == bottom || !self.rows[top + 1].text.starts_with('>') {
+            return None;
+        }
+        let under = &self.rows[bottom + 1..];
+        if !under.first()?.text.trim_start().starts_with("● Agent(") {
+            return None;
+        }
+        let count = under.iter().take_while(|r| r.text.starts_with("  ")).count();
+        is_rule(&under.get(count)?.text).then_some(bottom + 1 + count)
+    }
+
+    /// Display order and the first live row in it. Move agy's subagents
+    /// above the ask field and drop their trailing divider. The capture's
+    /// row indices still identify the prompt, its cursor and both rules.
+    pub(crate) fn page_view(
+        &self,
+        anchor: usize,
+        boxed: Option<(usize, usize, usize)>,
+    ) -> (Vec<usize>, usize) {
+        let mut view = self.view();
+        let at = view.partition_point(|&row| row < anchor);
+        let Some((top, _, bottom)) = boxed else { return (view, at) };
+        let Some(end) = self.agy_roster_end(top, bottom) else { return (view, at) };
+        let start = view.partition_point(|&row| row < top);
+        let roster = view.partition_point(|&row| row <= bottom);
+        let divider = view.partition_point(|&row| row < end);
+        view[start..divider].rotate_left(roster - start);
+        view.remove(divider);
+        (view, at)
     }
 
     /// The folder trust dialog as the ticket page draws it (T-1167), with

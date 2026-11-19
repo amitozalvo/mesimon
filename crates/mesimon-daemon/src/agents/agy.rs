@@ -43,7 +43,8 @@ use std::path::{Path, PathBuf};
 
 use mesimon_core::attention::{Signal, TurnOutcome};
 use mesimon_core::board::{
-    AgentProvider, AgentTools, FailReason, Reason, SessionRecord, SessionState, UnknownReason,
+    AgentProvider, AgentTools, AgyStop, FailReason, Reason, SessionRecord, SessionState,
+    UnknownReason,
 };
 use serde_json::{json, Value};
 
@@ -357,7 +358,8 @@ fn launch_with(
 /// What a `Stop` says. `fullyIdle: false` is a turn whose background tasks
 /// still run: the seat stays working, and the stop that follows them ends
 /// it.
-fn stop_signal(payload: &Value) -> Option<Signal> {
+fn stop_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
+    record.agy_stop = AgyStop::Reported;
     if payload.get("fullyIdle").and_then(Value::as_bool) == Some(false) {
         return None;
     }
@@ -366,7 +368,14 @@ fn stop_signal(payload: &Value) -> Option<Signal> {
         Some(
             "ERROR" | "MAX_INVOCATIONS" | "MAX_FORCED_INVOCATIONS" | "MAX_TOKEN_BUDGET_EXCEEDED",
         ) => TurnOutcome::Failed(FailReason::Unknown),
-        _ => TurnOutcome::Completed,
+        _ if record.agy_background_running => {
+            record.agy_stop = AgyStop::WaitingForIdle;
+            return None;
+        }
+        _ => {
+            record.agy_stop = AgyStop::Completed;
+            TurnOutcome::Completed
+        }
     };
     Some(Signal::TurnEnded { outcome })
 }
@@ -377,14 +386,22 @@ fn stop_signal(payload: &Value) -> Option<Signal> {
 /// `SessionStart` waits for the first prompt). A turn's end is `Stop`'s to
 /// say, but for one: **an Esc fires no `Stop`** (1.5.9, T-1233: the turn
 /// cut, "Interrupted" on screen, and the feed alone going `idle`), so an
-/// `idle` on a running or asking turn that had no `Stop` (`stopped`) is that
+/// `idle` on a running or asking turn with no background work or `Stop` is that
 /// interrupt. A completed turn's `Stop` comes ~300 ms ahead of its `idle`
 /// (measured), inside the leave's settle, so the record still reads the turn
 /// running then: the flag, not the state, says the end was stated.
-fn title_signal(payload: &Value, state: &SessionState, stopped: bool) -> Option<Signal> {
+fn title_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
+    let previous_background = record.agy_background_running;
+    record.agy_background_running = payload["subagents"].as_array().is_some_and(|agents| {
+        agents.iter().any(|agent| agent["status"].as_str() == Some("running"))
+    }) || payload["task_count"].as_u64().unwrap_or(0) > 0;
+    if record.agy_background_running && record.agy_stop == AgyStop::Completed {
+        record.agy_stop = AgyStop::WaitingForIdle;
+    }
     if payload.get("tool_confirmation_pending").and_then(Value::as_bool) == Some(true) {
         return Some(Signal::Attention { reason: Reason::Permission });
     }
+    let state = &record.state;
     let coming_up = matches!(
         state,
         SessionState::Spawning
@@ -394,12 +411,35 @@ fn title_signal(payload: &Value, state: &SessionState, stopped: bool) -> Option<
     );
     let asked = matches!(state, SessionState::RequiresAction { reason: Reason::Permission });
     let turning = *state == SessionState::Running || asked;
+    if record.agy_background_running {
+        // The lead can be idle while its children or background tasks work.
+        // The first such report also cancels a leave still settling.
+        return (coming_up
+            || asked
+            || matches!(state, SessionState::Idle { .. })
+            || (*state == SessionState::Running && !previous_background))
+            .then_some(Signal::TurnStarted);
+    }
     match payload.get("agent_state").and_then(Value::as_str)? {
-        "idle" | "reviewing" if coming_up => Some(Signal::Ready),
-        "idle" if turning && !stopped => {
+        "idle" | "reviewing" if coming_up => {
+            record.agy_stop = AgyStop::None;
+            Some(Signal::Ready)
+        }
+        "idle" if turning && record.agy_stop == AgyStop::WaitingForIdle => {
+            record.agy_stop = AgyStop::Completed;
+            Some(Signal::TurnEnded { outcome: TurnOutcome::Completed })
+        }
+        "idle" if turning && record.agy_stop == AgyStop::None => {
             Some(Signal::TurnEnded { outcome: TurnOutcome::Interrupted })
         }
-        "working" | "thinking" | "tool_use" if coming_up || asked => Some(Signal::TurnStarted),
+        "working" | "thinking" | "tool_use"
+            if coming_up
+                || asked
+                || (matches!(state, SessionState::Idle { .. })
+                    && record.agy_stop == AgyStop::None) =>
+        {
+            Some(Signal::TurnStarted)
+        }
         _ => None,
     }
 }
@@ -426,6 +466,16 @@ impl AgentAdapter for Agy {
             .and_then(conversation_id);
         if let Some(id) = named {
             if record.agy_conversation_id.as_deref() != Some(id) {
+                // Children inherit the seat's hooks. Only the terminal's title
+                // can switch an established lead conversation (/clear, /resume).
+                if record.agy_conversation_id.is_some() {
+                    if frame.event != TITLE {
+                        return result;
+                    }
+                    record.transcript_path = None;
+                    record.agy_stop = AgyStop::None;
+                    record.agy_background_running = false;
+                }
                 record.agy_conversation_id = Some(id.to_string());
                 result.metadata_changed = true;
             }
@@ -444,13 +494,12 @@ impl AgentAdapter for Agy {
             // one is the same turn going on.
             PRE_INVOCATION => {
                 let first = payload.get("invocationNum").and_then(Value::as_u64).unwrap_or(0) == 0;
-                record.agy_turn_stopped = false;
+                record.agy_stop = AgyStop::None;
                 result.signal =
                     Some(if first { Signal::UserPromptSubmit } else { Signal::TurnStarted });
             }
             STOP => {
-                result.signal = stop_signal(payload);
-                record.agy_turn_stopped = result.signal.is_some();
+                result.signal = stop_signal(payload, record);
                 if matches!(
                     result.signal,
                     Some(Signal::TurnEnded { outcome: TurnOutcome::Failed(_) })
@@ -467,7 +516,7 @@ impl AgentAdapter for Agy {
                         });
                 }
             }
-            TITLE => result.signal = title_signal(payload, &record.state, record.agy_turn_stopped),
+            TITLE => result.signal = title_signal(payload, record),
             _ => {}
         }
         result
@@ -666,11 +715,12 @@ mod tests {
         let stop = frame(STOP, json!({"terminationReason": "NO_TOOL_CALL", "fullyIdle": true}));
         assert!(Agy.parse_hook(&stop, &mut rec).signal.is_some());
         assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, None);
-        // A stop that ends nothing (background tasks) states no end.
+        // A partial stop and the lead's idle while background work runs
+        // neither end the seat nor report an Esc.
         let busy = frame(STOP, json!({"terminationReason": "NO_TOOL_CALL", "fullyIdle": false}));
         let _ = Agy.parse_hook(&invoked, &mut rec);
-        let _ = Agy.parse_hook(&busy, &mut rec);
-        assert!(!rec.agy_turn_stopped);
+        assert_eq!(Agy.parse_hook(&busy, &mut rec).signal, None);
+        assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, None);
         // The next turn's first call clears the stop: its Esc is read again.
         let _ = Agy.parse_hook(&stop, &mut rec);
         let _ = Agy.parse_hook(&invoked, &mut rec);
@@ -683,6 +733,61 @@ mod tests {
             rec.state = state;
             assert_eq!(Agy.parse_hook(&idle, &mut rec).signal, None);
         }
+    }
+
+    #[test]
+    fn only_the_leads_stop_and_a_quiet_roster_finish_the_seat() {
+        let parent = "/tmp/lead.jsonl";
+        let mut rec = record(SessionState::Running);
+        let main = frame(PRE_INVOCATION, json!({"conversationId": ID, "transcriptPath": parent}));
+        let _ = Agy.parse_hook(&main, &mut rec);
+        let title = |status| {
+            frame(
+                TITLE,
+                json!({
+                    "conversation_id": ID, "agent_state": "idle",
+                    "subagents": [{"status": "completed"}, {"status": status}]
+                }),
+            )
+        };
+        let busy = title("running");
+        assert_eq!(Agy.parse_hook(&busy, &mut rec).signal, Some(Signal::TurnStarted));
+        let child = json!({"conversationId": "abc123", "transcriptPath": "/tmp/child.jsonl",
+                           "fullyIdle": true, "terminationReason": "NO_TOOL_CALL"});
+        for event in [SESSION_START, PRE_INVOCATION, STOP] {
+            let child = Agy.parse_hook(&frame(event, child.clone()), &mut rec);
+            assert_eq!(child.signal, None);
+            assert!(!child.metadata_changed);
+        }
+        assert_eq!(rec.agy_conversation_id.as_deref(), Some(ID));
+        assert_eq!(rec.transcript_path.as_deref(), Some(parent));
+        assert_eq!(Agy.parse_hook(&busy, &mut rec).signal, None);
+        let stop = frame(STOP, json!({"conversationId": ID, "fullyIdle": true}));
+        assert_eq!(Agy.parse_hook(&stop, &mut rec).signal, None);
+        let quiet = title("completed");
+        assert_eq!(
+            Agy.parse_hook(&quiet, &mut rec).signal,
+            Some(Signal::TurnEnded { outcome: TurnOutcome::Completed })
+        );
+        assert_eq!(Agy.parse_hook(&quiet, &mut rec).signal, None);
+
+        // The title can expose a background task just after a successful
+        // stop. Its running signal cancels the settling leave. A new lead
+        // invocation then supersedes that stop before the task drains.
+        let task = frame(TITLE, json!({"agent_state": "idle", "task_count": 1}));
+        assert_eq!(Agy.parse_hook(&task, &mut rec).signal, Some(Signal::TurnStarted));
+        let _ = Agy.parse_hook(&main, &mut rec);
+        let working = frame(TITLE, json!({"agent_state": "working"}));
+        assert_eq!(Agy.parse_hook(&working, &mut rec).signal, None);
+        assert_eq!(rec.agy_stop, AgyStop::None);
+
+        // An in-pane conversation switch is confirmed by the title even
+        // when the new conversation's first invocation beat that report.
+        rec.state = SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        let switched = frame(TITLE, json!({"agent_state": "working", "conversation_id": "fed456"}));
+        assert_eq!(Agy.parse_hook(&switched, &mut rec).signal, Some(Signal::TurnStarted));
+        assert_eq!(rec.agy_conversation_id.as_deref(), Some("fed456"));
+        assert_eq!(rec.transcript_path, None);
     }
 
     #[test]

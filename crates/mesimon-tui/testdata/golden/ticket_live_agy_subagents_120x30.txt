@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+                                                                                          ⠋ ᐱ agy                  >1y
+                                                                                          ◦ $ bash                 >1y
+                                                                                           x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                             ▀█ ▄▀▀   █▀
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+   ● Agent(research: core) · Reading file                                                   ███▀▀████▀▀█ █▀████
+   ● Agent(research: UI) · Running command                                                  █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+ -- shift+enter  ask agent ----------------------------------------------------             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
+ auto · Gemini 4 Carbon · high · 2 subagent(s)
+ jk select session ∙ enter focus ∙ shift+enter ask agent ∙ r rename ∙ d delete ∙ n describe                      ? keys
