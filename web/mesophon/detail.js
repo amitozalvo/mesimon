@@ -247,7 +247,7 @@ function Composer({ store, ticket, entry, live }) {
   // A Codex agent still stopping (T-1218) takes no words yet (T-1219): the
   // field keeps them, and says why Send waits.
   const stopping = agent?.state === "stopping";
-  const mode = steerOff ? "queue" : entry?.mode || "queue";
+  const mode = steerOff ? "queue" : entry?.mode || "steer";
   const sending = !!entry?.sending;
   // A picture still being read is not in the words yet (T-1219): Send waits
   // for it, as the New ticket sheet and a note's Save do, or the words would

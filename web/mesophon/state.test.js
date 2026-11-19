@@ -104,7 +104,7 @@ test("empty, single, many projections preserve selected identity under filters a
 test("queued receipts survive reconnect and never clear newer drafts", () => {
   const sessions = new Sessions();
   const entry = sessions.get("board", ticket("one", "session"));
-  assert.equal(entry.mode, "queue");
+  assert.equal(entry.mode, "steer");
   entry.draft = "waiting words";
   sessions.sent(entry, 42, "incarnation");
   sessions.reply(entry, { result: "delivery", status: "queued" });

@@ -93,7 +93,7 @@ export class Sessions {
         draft: previous?.draft || "",
         review: !!previous?.draft,
         delivery: "",
-        mode: "queue",
+        mode: "steer",
         returned: undefined,
         // Pictures picked for the words (T-853), named `[Image #N]` in the
         // draft as a note's are; `reading` while one is decoded, `sending`

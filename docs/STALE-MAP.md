@@ -47371,3 +47371,20 @@ Tests: `a_queued_prompt_keeps_its_receipt_past_the_cap` (the prompt's and its se
 survive 393 later commands on the same grant; another grant's polls do not hold them; once
 delivered they age out). Run: `cargo ut`, `--test board m1_e2e::`: all passed. The change is in
 `server/mesophon.rs`, not `server.rs`.
+
+## Remote Control's composer defaults to Steer (T-1316, 2026-11-19)
+
+**What changed.** A ticket's composer on the phone now opens at Steer, where it opened at Queue
+since T-701: `Sessions.get`'s new entry carries `mode: "steer"` and `Composer`'s fallback is
+`"steer"`. Queue stays one pick away in `select#prompt-mode`. This matches the board's own
+follow-up default, which went to steering earlier ("Remote Control's Queue/Steer row keeps its own
+Queue default; unchanged" in that block is now superseded).
+
+**Kept.** Every forced queue still wins over the default: an agent that waits on you (T-568),
+a tier switch waiting for the turn's end (T-643), mail for an away terminal (T-881) and a start
+or wake over an empty, parked or stopped seat. The wire is unchanged: the page still sends
+`queued: true` for Queue and `queued: false` for Steer, and the daemon's admission rules apply.
+
+**Tests.** `state.test.js`'s session-entry assertion flipped to `"steer"`; `node --test
+state.test.js assets.test.js` and `node ux.test.js` run. No Rust changed, so no cargo run.
+**Run.** The first full `node ux.test.js` passed chromium (all sizes) and webkit desktop, then stopped at webkit tablet's notes flow on a `ResizeObserver loop completed` console line, outside the composer; a rerun of webkit tablet and phone passed all 30 cases (named rerun).

@@ -89,7 +89,7 @@ reply; the longest line stands in for an older host), the type is sized so that
 width fills the panel down to a floor, past which the screen pans sideways, and
 the browser never re-wraps a line the pane laid out. Scrolling up freezes that
 window locally; Jump to latest resumes following. Reconnect queries receipts but never replays input. The composer
-defaults to Queue, with an explicit Steer choice; queued prompts offer Send now
+defaults to Steer, with an explicit Queue choice; queued prompts offer Send now
 and Take back. Returned text stays bound to its original session and cannot
 overwrite a newer draft silently. Explicit authenticated revocation clears
 protected state, including the remembered board; the relay's generic error
