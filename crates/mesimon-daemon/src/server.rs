@@ -6173,9 +6173,20 @@ impl Daemon {
             }
             // Harvest done (status came in the frame) — remove the dead pane
             // remain-on-exit was holding (docs/19 §1 lifecycle).
+            // A pane whose kill the reaper holds is removed by the reaper's
+            // worker, now, never by a tmux call on the writer (T-857): a
+            // slow tmux would hold the board behind a kill the person made.
             if matches!(sig, Signal::PaneDied { .. }) {
                 if let Some(rec) = self.board.session(id) {
-                    let _ = self.backend.kill_session(&rec.sid16());
+                    let sid = rec.sid16();
+                    let reaped = (!rec.codex_stopping).then(|| self.reaping.get_mut(&sid));
+                    if let Some(Some(at)) = reaped {
+                        if !self.responsive.reaping.contains_key(&sid) {
+                            *at = Instant::now();
+                        }
+                    } else {
+                        let _ = self.backend.kill_session(&sid);
+                    }
                 }
             }
             if died_at_launch {

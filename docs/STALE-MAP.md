@@ -47454,3 +47454,20 @@ after `U`; simbly's board was not touched.
 **Checks.** `cargo ut` (72 + 17 + 779 + 924 + 24 + 1,480 passed, 0 failed); `forge_e2e::` (43
 passed, no reruns). The new e2e fails with the old `inflight` guard put back (0 lists inside the
 slow read). The full workspace suite is owed once after the merge (`server.rs`).
+
+## T-1319 — v0.1.0-beta.21.unstable.1: a killed pane's death leaves its removal to the reaper
+
+**Changed.** On the mod road a killed Claude pane dies at once, and its `PaneDied` handling ran
+`tmux kill-session` on the writer, so a slow tmux held the board behind the person's kill:
+`slow_tmux_e2e::terminal_open_and_reaping_leave_the_writer_free` (new in b19b7490) failed 5/5
+alone on the mod road and passed on hooks, where the stub survives SIGTERM and only the reaper's
+worker kills it. Now a pane death whose kill the reaper already holds (`reaping`, not a Codex
+`codex_stopping` seat, which the sweep skips) moves that reservation's deadline to now, so the
+next tick's sweep removes it on the worker; a reservation already in flight is left alone (its
+generation would no longer match). A death with no kill reserved removes its pane as before.
+**Refuted.** The gate's first red (`prompt_e2e::a_person_s_prompt_waits_for_a_box_not_yet_drawn`,
+hooks road, at load 17) passed 5/5 alone and is a load flake: `sleep_one` errors only on a
+missing session. Clippy on all targets had six lints from the range (four `cloned_ref_to_slice_refs`,
+an `items_after_test_module`, an `unnecessary_get_then_check`), fixed before the gate.
+**Checks.** `slow_tmux_e2e::` on both roads, plus 3/3 more on mod; `cargo ut`; clippy on all
+targets; the release gate's both-roads suite on the release tip.
