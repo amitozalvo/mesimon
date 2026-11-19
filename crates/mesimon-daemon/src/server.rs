@@ -20060,19 +20060,19 @@ impl Daemon {
                 let last =
                     self.wt_repos.get(&t).and_then(|legs| legs.iter().find(|l| l.name == leg.name));
                 let seen = last.and_then(|l| l.content.clone());
-                // A leg last read untouched and unmerged: if its tip moves
-                // onto a ref, the sampler asks the reflog whether it only
-                // moved (T-1311).
-                let was = last
-                    .filter(|l| !l.touched() && !l.merged && l.trouble.is_none())
-                    .map(|l| l.tip.clone())
+                // A leg last read unmerged, touched or not: if it reads
+                // merged now, the sampler asks the reflog whether it only
+                // moved since its cut (T-1311, T-1321).
+                let since = last
+                    .filter(|l| !l.merged && l.trouble.is_none())
+                    .map(|_| leg.base_oid.clone())
                     .unwrap_or_default();
                 let input = worktree::FlagInput {
                     ticket: t,
                     branch: branch.clone(),
                     base_oid: leg.base_oid.clone(),
                     seen,
-                    was,
+                    since,
                 };
                 if let Some(q) =
                     queries.iter_mut().find(|q| q.name == leg.name && q.base == leg.base)

@@ -47551,3 +47551,64 @@ at the park (the decision above). E2e:
 `restart_e2e::a_park_on_a_background_command_keeps_its_column_across_a_restart` (park clock 4 s:
 the record carries the fallback, the park survives the restart, it demotes on the clock to
 monitoring, and the card stays in IN PROGRESS with no REVIEW move in the feed).
+
+## A branch stacked on another ticket's unmerged commit is cut where it lands, not merged (T-1321, 2026-11-19, the simbly crown: T-557 woke it `delivered (merge_state merged)` ten minutes into its build, T-556 before it)
+
+**Seen.** T-557's frontend-v2 leg was cut at `0a536dcd`; its worker ran `git reset` onto T-556's
+commit `31980bb5`, unmerged then. The samples after read the leg touched (ahead 1, unmerged), so
+T-1311's `FlagInput::was` (the last tip where the leg read *untouched*) was empty and the reflog
+was never asked. T-556's MR merged into `gitlab/main`; T-557's tip, standing still, became an
+ancestor of the upstream and read merged by ancestry. The card read merged, DONE was admitted and
+`merge_verdict` woke the crown with a delivery. T-557's own work was two uncommitted files.
+
+**Decided: the reflog is walked back to the cut, not to the last untouched tip, and is asked of
+any leg that newly reads merged.** T-1311's "untouched at the last sample" was a stand-in for "no
+commit of its own yet", and the tip moving was a stand-in for "something changed": a stacked
+branch's tip need not move at all, the dependency's landing is what flips the reading. The
+reflog since `base_oid` answers the real question however many samples read the leg touched in
+between.
+
+**Built.**
+- `FlagInput::was` → `since`: `wt_queries` passes the leg's `base_oid` where the last sample read
+  it unmerged and readable (touched or not), else empty.
+- `compute_flags_on`: where `since` is set and the leg reads merged by ancestry (no `merged_oid`),
+  `only_moved` walks the branch's reflog back to the entry at the cut. The old `tip != was`
+  condition is gone (a leg at its cut never reads merged by ancestry).
+- `RepoFlags::came_to_base`: `landed` (old unmerged, merged now by ancestry) and then
+  `moved_only` with no condition on the old leg's touch or tip, **or** T-740's local rule, which
+  keeps its own `!old.touched()`, tip moved and base-still conditions. The fold, the re-cut on
+  disk and the crown's look are unchanged in shape and take the new answer as they took T-1311's.
+- Cost (T-857): still one reflog fork on the sampler, once per leg per unmerged→merged reading.
+  A real landing reads merged from then on, so the next sample passes no `since`.
+
+**Kept.** A branch with a commit of its own still reads merged by ancestry, the upstream road and
+a forge PR at its tip: its reflog holds the `commit:` step, whether the commit sits on top of the
+dependency or was made at the cut and rebased onto it (the walk now reaches it past the rebase).
+Such a branch is not merged until its own commit lands: the dependency's landing leaves it ahead.
+T-1311's cases pass unchanged; T-1276's `unturned` and the T-1300/T-1301 DONE gate are untouched
+code and see the re-cut leg untouched.
+
+**What a reflog cannot prove, and what the board then does.**
+- A commit made elsewhere (another branch, a detached HEAD, another clone) and reset onto reads as
+  a move: the leg is re-cut and its landing is not heard as this ticket's; it reads as a fresh
+  cut, unmerged with nothing ahead. This is the one wrong direction, and it needs the work
+  committed off the ticket's branch.
+- `core.logAllRefUpdates=false`, a reflog expired or more than 64 entries past the cut, or one that
+  cannot be read: the walk does not reach the cut, so the reading stays merged (as before T-1321),
+  and on the local base T-740's rule still catches an untouched branch.
+- A commit made on the branch and then reset away before the dependency landed: the `commit:` step
+  is still in the walk, so the leg reads merged, as before.
+- A dependency landed by squash or rebase-merge: the stacked tip is no ancestor, and the patch-id
+  road names a commit (`merged_oid`), which the reflog is never asked about. Open.
+- No previous sample (a daemon start): no `since`, so a dependency that landed while no daemon
+  ran reads merged, as T-740 and T-1311.
+
+**Tests.** `worktree::tests::a_branch_stacked_on_another_tickets_commit_is_cut_where_it_lands`
+(reset onto another branch's commit, two touched samples, the commit lands upstream with the tip
+still: merged into `origin/main`, `moved_only`, re-cut, the next sample unmerged; with the forge's
+counts and without); `a_commit_of_its_own_over_another_tickets_reads_merged_when_it_lands` (own
+commit on top of the dependency, and own commit rebased onto it: unmerged when the dependency
+lands, merged and no move when its own commit does); `crownwake::tests::
+a_branch_stacked_on_another_tickets_commit_wakes_no_delivery` (`wt_queries` asks a touched leg
+from its cut; the fold and `hear_merges`: no wake, aggregate unmerged, binding `base_oid` at the
+dependency; with a commit in the reflog, a merged wake). No rig case: no words changed.

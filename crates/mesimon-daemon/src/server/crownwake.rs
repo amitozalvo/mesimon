@@ -5143,6 +5143,86 @@ pub(in crate::server) mod tests {
         }
     }
 
+    /// T-1321, the simbly crown's second case: a worker reset its branch onto
+    /// another ticket's unmerged commit `dep`, so the last sample read the
+    /// leg touched and unmerged, and the sampler is still asked the reflog
+    /// from the cut. That commit lands upstream; the tip stands still and
+    /// reads merged. With the reflog saying it only moved, the fold cuts it
+    /// at `dep`, on the binding too, and the crown hears nothing; with a
+    /// commit in the reflog it is a landing, and wakes it.
+    #[test]
+    fn a_branch_stacked_on_another_tickets_commit_wakes_no_delivery() {
+        for moved_only in [true, false] {
+            let mut b = watched_bed(&format!("t1321-{moved_only}"), None);
+            let w = b.worker;
+            b.d.base_branch = Some("main".into());
+            b.d.worktrees.insert(
+                w,
+                Binding::new(
+                    b.d.paths.repo_root.join("wt"),
+                    "msmn/worker".into(),
+                    "cut".into(),
+                    "cut".into(),
+                    BindingStatus::Attached,
+                ),
+            );
+            let leg = crate::worktree::RepoFlags {
+                base: "main".into(),
+                base_tip: "up0".into(),
+                counted: "origin/main".into(),
+                base_oid: "cut".into(),
+                tip: "dep".into(),
+                ahead: 1,
+                ff: true,
+                ..Default::default()
+            };
+            assert!(leg.touched());
+            b.d.wt_repos.insert(w, vec![leg]);
+            b.d.wt_answered.insert(w, false);
+            let asked = b.d.wt_queries(false, Some(w));
+            let input = asked.iter().flat_map(|q| &q.inputs).find(|i| i.ticket == w);
+            assert_eq!(input.expect("the leg is asked").since, "cut", "touched, still asked");
+            // The other ticket's MR lands: `origin/main` is now `dep`.
+            let sample = crate::worktree::RepoSample {
+                name: String::new(),
+                base: "main".into(),
+                flags: crate::worktree::WtFlags {
+                    base: "main".into(),
+                    base_tip: "dep".into(),
+                    counted: "origin/main".into(),
+                    flags: vec![crate::worktree::Flags {
+                        ticket: w,
+                        merged: true,
+                        ahead: 0,
+                        needs_rebase: false,
+                        tip: "dep".into(),
+                        merged_in: "origin/main".into(),
+                        merged_oid: String::new(),
+                        seen: None,
+                        unchecked: false,
+                        trouble: None,
+                        ff: true,
+                        moved_only,
+                    }],
+                    conflicts: Vec::new(),
+                },
+            };
+            let seq = b.d.wt_seq.wrapping_add(1);
+            b.d.absorb_worktree_flags(vec![sample], seq, None);
+            let woke = b.d.hear_merges();
+            if moved_only {
+                assert!(!woke && owed_for(&b.d, w).is_none(), "a stack is no delivery");
+                assert!(!b.d.wt_agg[&w].merged, "and no merge: DONE is not admitted by it");
+                assert_eq!(b.d.worktrees[&w].base_oid, "dep", "cut there again, on disk too");
+            } else {
+                assert!(woke, "a commit of its own merged into the upstream is a landing");
+                let wake = owed_for(&b.d, w).expect("the merge is news");
+                assert_eq!(wake.to.as_ref().unwrap().merge, Some("merged"));
+                assert_eq!(b.d.worktrees[&w].base_oid, "cut");
+            }
+        }
+    }
+
     /// T-1278, case 3 with the read late: a turn's end held for the forge
     /// read its crown's `gh pr merge` owed, let go by the read that folded
     /// the merge into the flags, says the merge at that tip.
