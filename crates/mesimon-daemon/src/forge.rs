@@ -69,6 +69,17 @@ const GH_FIELDS: &str =
 /// How long a merge commit a newer one superseded is still read (T-771): a
 /// day is past any deploy run, and the PR keeps what was read by then.
 pub const SUPERSEDED_READ_MS: u64 = 24 * 3600 * 1000;
+/// A read that took longer than this says so in `daemon.log` (T-1317): a
+/// busy pipeline's 15 s read waits behind it, so a late card is answered by
+/// that line.
+pub const SLOW_READ: Duration = Duration::from_secs(20);
+
+std::thread_local! {
+    /// The CLI calls this thread has made (T-1317): a pass runs on a
+    /// worker of its own, so the count from its start to its end is the
+    /// pass's.
+    static CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 
 /// The CLI a host is read through.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -719,6 +730,9 @@ pub struct Sample {
     /// nothing for (T-859), per ticket: a `pr create`'s URL whose PR is
     /// gone, a number that names no PR. Owed no further read.
     pub unfound: HashMap<ulid::Ulid, Vec<String>>,
+    /// How long the pass took, and how many CLI calls it made (T-1317).
+    pub took: Duration,
+    pub calls: u32,
 }
 
 /// The local facts a ticket's set was read on (T-761): what its legs had
@@ -785,7 +799,9 @@ pub fn look(legs: &[LegQuery], tails: &[(String, crate::cost::Cursor)], at_ms: u
 
 /// The pass, on a worker thread.
 pub fn sample(mut q: Query, now_ms: u64) -> Sample {
+    let began = (Instant::now(), CALLS.with(std::cell::Cell::get));
     let mut out = Sample { at_ms: now_ms, reads_envs: !q.envs.is_empty(), ..Default::default() };
+    let mut one = OneReads::default();
     for p in &q.probes {
         out.probes.push((p.host.clone(), probe_host(&p.host, &p.candidates)));
     }
@@ -866,8 +882,15 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         let mut bound: Vec<Pr> = prs.iter().filter(|p| forge::binds(p, &facts)).cloned().collect();
         // A PR a full list cut off is read by itself, and keeps its last
         // reading where that read fails (T-800).
+        // One whose state is final is its last reading (T-1317): nothing of
+        // it a read by itself says can change, and its merge commit's
+        // pipeline and deployments are read by commit below.
         let cut: Vec<Pr> = unlisted(&t.held, &bound, &full).into_iter().cloned().collect();
         for old in cut {
+            if settled(&old) {
+                bound.push(old);
+                continue;
+            }
             // Whose it is stays what the last read said (T-859): a fresh
             // read says nothing of it, and a reviewed PR read as the
             // ticket's own would hold its merge.
@@ -875,7 +898,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 .repos
                 .iter()
                 .find(|r| r.remote.path == old.repo)
-                .and_then(|r| one_pr(r, old.number))
+                .and_then(|r| one.pr(r, old.number).ok())
                 .map(|mut p| {
                     p.reviewed = old.reviewed;
                     p
@@ -903,13 +926,18 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
             if theirs && !q.others {
                 continue;
             }
+            // Read once and settled (T-1317): its last reading stands.
+            if let Some(last) = t.held.iter().find(|h| named(h) && settled(h)) {
+                bound.push(last.clone());
+                continue;
+            }
             let (Some(remote), Some((_, number))) =
                 (forge::repo_of_url(url), forge::pr_number_of(url))
             else {
                 continue;
             };
             let Some(r) = q.repos.iter().find(|r| r.remote == remote) else { continue };
-            match read_one(r, number) {
+            match one.pr(r, number) {
                 Ok(mut pr) => {
                     pr.reviewed = theirs;
                     bound.push(pr);
@@ -935,10 +963,10 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         let mut read = false;
         for pr in set.iter_mut().filter(|p| p.forge == Forge::GitLab && p.state.is_open()) {
             let Some(r) = q.repos.iter().find(|r| r.remote.path == pr.repo) else { continue };
-            let head = gitlab_mr(r, pr.number).ok().and_then(|one| {
+            let head = one.mr(r, pr.number).ok().and_then(|mr| {
                 read = true;
-                pr.take_read(&one.pr);
-                one.pipeline
+                pr.take_read(&mr.pr);
+                mr.pipeline
             });
             if !pr.state.is_open() {
                 // Merged or closed after all: `merged_reads` reads the
@@ -946,10 +974,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 pr.pipeline = Pipeline::Unknown;
                 continue;
             }
-            (pr.pipeline, pr.pipeline_run) = match head {
-                Some((pipeline, id)) => (named_job(r, pipeline, id), id),
-                None => gitlab_pipeline(r, &pr.head_oid, ""),
-            };
+            (pr.pipeline, pr.pipeline_run) = one.head(r, pr.number, &pr.head_oid, head);
         }
         if read {
             // A read's state and time reorder the set, and a closed one
@@ -991,6 +1016,8 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
         out.sets.insert(t.ticket, set);
     }
     out.carried = carried;
+    out.took = began.0.elapsed();
+    out.calls = CALLS.with(std::cell::Cell::get).wrapping_sub(began.1);
     out
 }
 
@@ -1381,10 +1408,68 @@ fn list_gitlab(group: &[&RepoQuery]) -> Result<(Vec<Pr>, bool), String> {
     Ok((found, held >= LIST_LIMIT))
 }
 
-/// One PR read by itself, any state (T-800): what a full list left out.
-/// `None` when the call fails or says something else.
-fn one_pr(r: &RepoQuery, number: u64) -> Option<Pr> {
-    read_one(r, number).ok()
+/// One pass's reads of a PR by itself (T-800, T-859, T-784), by
+/// repository path and number (T-1317): two tickets holding one MR, or an
+/// MR a full list cut that is open and so read again for its head, cost
+/// one call a pass.
+#[derive(Default)]
+struct OneReads {
+    gitlab: HashMap<(String, u64), Result<forge::MrRead, Missing>>,
+    github: HashMap<(String, u64), Result<Pr, Missing>>,
+    /// An open MR's head pipeline, by path, number and head.
+    heads: HashMap<(String, u64, String), (Pipeline, u64)>,
+}
+
+impl OneReads {
+    fn mr(&mut self, r: &RepoQuery, iid: u64) -> Result<forge::MrRead, Missing> {
+        self.gitlab
+            .entry((r.remote.path.clone(), iid))
+            .or_insert_with(|| gitlab_mr(r, iid))
+            .clone()
+    }
+
+    /// An open MR's pipeline at `head`: the run its read named, by its
+    /// jobs, else the head's own pipelines.
+    fn head(
+        &mut self,
+        r: &RepoQuery,
+        iid: u64,
+        head: &str,
+        read: Option<(Pipeline, u64)>,
+    ) -> (Pipeline, u64) {
+        self.heads
+            .entry((r.remote.path.clone(), iid, head.to_string()))
+            .or_insert_with(|| match read {
+                Some((pipeline, id)) => (named_job(r, pipeline, id), id),
+                None => gitlab_pipeline(r, head, ""),
+            })
+            .clone()
+    }
+
+    fn pr(&mut self, r: &RepoQuery, number: u64) -> Result<Pr, Missing> {
+        match r.cli.forge {
+            Forge::GitLab => self.mr(r, number).map(|m| m.pr),
+            Forge::GitHub => self
+                .github
+                .entry((r.remote.path.clone(), number))
+                .or_insert_with(|| read_one(r, number))
+                .clone(),
+        }
+    }
+}
+
+/// Whether a held PR's own reading is final (T-1317), so a list that left
+/// it out owes no read of it by itself: merged, with its merge commit known
+/// (GitLab's list can lag the commit behind the state, T-787); or a GitLab
+/// MR closed, since the list is ordered by `updated_at` and a reopened MR
+/// comes back at its head. A GitHub PR closed is still read: `gh pr list`
+/// is newest-created first, so a reopened old one stays cut.
+pub fn settled(pr: &Pr) -> bool {
+    match pr.state {
+        PrState::Merged => !pr.merge_oid.is_empty(),
+        PrState::Closed => pr.forge == Forge::GitLab,
+        _ => false,
+    }
 }
 
 /// Why a PR read by itself answered nothing (T-859).
@@ -1728,6 +1813,7 @@ fn run_for(
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> Result<String, String> {
+    CALLS.with(|c| c.set(c.get().saturating_add(1)));
     let mut cmd = Command::new(bin);
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -1987,8 +2073,22 @@ impl State {
     /// `busy_every`): not read inside `floor`, and not one whose last call
     /// failed (the minute's backoff has it).
     pub fn due_for(&self, key: &str, floor: Duration) -> bool {
-        !self.errors.iter().any(|(k, _)| k == key)
-            && self.asked.get(key).is_none_or(|t| t.elapsed() >= floor)
+        !self.failed(key) && self.asked.get(key).is_none_or(|t| t.elapsed() >= floor)
+    }
+
+    /// Whether a repository's last call failed: the minute's backoff reads
+    /// it again, and a read off the minute leaves it out (T-1317).
+    pub fn failed(&self, key: &str) -> bool {
+        self.errors.iter().any(|(k, _)| k == key)
+    }
+
+    /// Whether a read off the minute over `keys` waits (T-761, T-781): one
+    /// of them was asked inside `floor`. A failed one is left out of the
+    /// read (`failed`) and holds none of the others (T-1317): on a
+    /// thirteen-repository workspace one failing repository held every
+    /// busy read of the board until the minute's backoff read it again.
+    pub fn burst_held(&self, keys: &[String], floor: Duration) -> bool {
+        keys.iter().any(|k| !self.failed(k) && !self.due_for(k, floor))
     }
 
     /// The tickets holding an open or merged PR whose pipeline runs or
@@ -2278,6 +2378,46 @@ impl State {
         }
         Some(format!("{key}: {why}"))
     }
+}
+
+/// The `daemon.log` line for a read that took `SLOW_READ` or longer
+/// (T-1317), `road` naming it (`minute`, `burst`): how long, how many CLI
+/// calls, over how many repositories and tickets. `None` for a quick one.
+pub fn slow_read(road: &str, s: &Sample) -> Option<String> {
+    (s.took >= SLOW_READ).then(|| {
+        format!(
+            "forge: the {road} read took {:.1} s, {} calls over {} repositories and {} tickets",
+            s.took.as_secs_f64(),
+            s.calls,
+            s.repos.len(),
+            s.sets.len()
+        )
+    })
+}
+
+/// The `daemon.log` lines for a read's repositories (T-1317) against the
+/// errors held before it: each call that failed, with when the minute
+/// reads that repository again, and each one that answers after failing.
+/// A repository left out of the read (backing off) says nothing.
+pub fn read_lines(before: &[(String, String)], reports: &[RepoReport]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for r in reports {
+        // A key can come from a URL a session printed (T-795).
+        let key = mesimon_core::text::scrub_text(&r.key);
+        let was = before.iter().any(|(k, _)| *k == r.key);
+        match &r.error {
+            Some(why) => {
+                let why = if rate_limited(why) { "rate limited by the forge" } else { why };
+                lines.push(format!(
+                    "forge: {key} failed: {why} ∙ read again in {} min",
+                    backoff_minutes()
+                ));
+            }
+            None if was => lines.push(format!("forge: {key} answers again")),
+            None => {}
+        }
+    }
+    lines
 }
 
 /// `forge.json`'s schema (T-752).
@@ -4375,6 +4515,174 @@ mod tests {
         let mut elsewhere = held.clone();
         elsewhere[0].repo = "o/s".into();
         assert!(unlisted(&elsewhere[..1], &listed, &full).is_empty(), "another repository's list");
+    }
+
+    /// T-1317: a held PR whose own reading is final is not read by itself
+    /// again: merged with its merge commit known, or a GitLab MR closed
+    /// (the list is by `updated_at`, so a reopen comes back listed). An
+    /// open or draft one is, a merged one whose commit the list lagged is,
+    /// and a GitHub PR closed is (its list is newest-created first).
+    #[test]
+    fn a_pr_whose_state_is_final_is_settled_and_an_open_one_is_not() {
+        let mut merged = pr(1, PrState::Merged, Pipeline::Passed);
+        assert!(!settled(&merged), "merged with no merge commit read yet");
+        merged.merge_oid = "m1".into();
+        assert!(settled(&merged));
+        let closed = pr(2, PrState::Closed, Pipeline::None);
+        assert!(!settled(&closed), "a GitHub PR closed may reopen outside the list");
+        let mut mr = closed.clone();
+        mr.forge = Forge::GitLab;
+        assert!(settled(&mr));
+        for state in [PrState::Open, PrState::Draft] {
+            let mut open = pr(3, state, Pipeline::Running(String::new()));
+            open.forge = Forge::GitLab;
+            assert!(!settled(&open), "{state:?}");
+        }
+    }
+
+    /// T-1317, measured on simbly's shape: an account's GitLab list full at
+    /// a hundred newer MRs, and two tickets holding the same 150 merged
+    /// MRs, a closed one and a draft. A pass read every held MR the list
+    /// cut by itself, per ticket (2 × 152 calls, about 0.5 s each, then the
+    /// draft twice more for its head): 70 to 120 s on the board. Now the
+    /// settled ones keep their reading, and the draft is read once for both
+    /// tickets and both reasons: three calls in all.
+    #[test]
+    fn a_settled_mr_a_full_list_cut_is_not_read_again_and_an_open_one_is_read_once() {
+        let dir = std::env::temp_dir().join(format!("msmn-forge-settled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mr = |iid: u64, state: &str| {
+            format!(
+                r#"{{"iid":{iid},"state":"{state}","draft":{draft},"title":"t","sha":"h{iid}","source_branch":"b{iid}","target_branch":"main","merge_commit_sha":"m{iid}","web_url":"https://gitlab.com/g/r/-/merge_requests/{iid}","updated_at":"2026-11-19T12:00:00Z"}}"#,
+                draft = state == "opened"
+            )
+        };
+        let list: Vec<String> = (1000..1100).map(|i| mr(i, "merged")).collect();
+        std::fs::write(dir.join("list.json"), format!("[{}]", list.join(","))).unwrap();
+        std::fs::write(dir.join("mr7.json"), mr(7, "opened")).unwrap();
+        let log = dir.join("glab.log");
+        let bin = dir.join("glab");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{log}'\ncase \"$*\" in\n  *'merge_requests?'*) cat \
+                 '{list}' ;;\n  *merge_requests/7) cat '{mr7}' ;;\n  *pipelines*) echo '[]' ;;\n  \
+                 *) echo '{{}}' ;;\nesac\n",
+                log = log.display(),
+                list = dir.join("list.json").display(),
+                mr7 = dir.join("mr7.json").display(),
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let remote = Remote { host: "gitlab.com".into(), path: "g/r".into() };
+        let gitlab = |mut p: Pr| {
+            p.forge = Forge::GitLab;
+            p.repo = "g/r".into();
+            p.url = format!("https://gitlab.com/g/r/-/merge_requests/{}", p.number);
+            p.merged_ms = 1;
+            p
+        };
+        let mut held: Vec<Pr> = (1..=150)
+            .map(|n| {
+                let mut p = gitlab(pr(100 + n, PrState::Merged, Pipeline::Passed));
+                p.merge_oid = format!("m{}", 100 + n);
+                p
+            })
+            .collect();
+        held.push(gitlab(pr(5, PrState::Closed, Pipeline::None)));
+        held.push(gitlab(pr(7, PrState::Draft, Pipeline::Running(String::new()))));
+        let commit_pipelines = held
+            .iter()
+            .filter(|p| p.state == PrState::Merged)
+            .map(|p| ((p.repo.clone(), p.merge_oid.clone()), (Pipeline::Passed, 0)))
+            .collect();
+        let ticket = |held: &[Pr]| TicketQuery {
+            ticket: ulid::Ulid::new(),
+            branch: String::new(),
+            legs: Vec::new(),
+            created: Vec::new(),
+            theirs: Vec::new(),
+            repos: vec![remote.clone()],
+            held: held.to_vec(),
+        };
+        let q = Query {
+            repos: vec![RepoQuery {
+                remote: remote.clone(),
+                cli: Cli { forge: Forge::GitLab, bin: bin.clone() },
+                viewer: Some("me".into()),
+                dir: dir.clone(),
+            }],
+            tickets: vec![ticket(&held), ticket(&held)],
+            commit_pipelines,
+            ..Default::default()
+        };
+        let out = sample(q, 10 * SUPERSEDED_READ_MS);
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let reads: Vec<&str> =
+            calls.lines().filter(|l| l.contains("merge_requests/")).collect();
+        assert_eq!(reads, ["api --hostname gitlab.com projects/g%2Fr/merge_requests/7"], "{calls}");
+        assert_eq!(out.calls as usize, calls.lines().count(), "the pass counts its own calls");
+        assert_eq!(out.calls, 3, "the list, the draft, its head's pipelines: {calls}");
+        for set in out.sets.values() {
+            assert_eq!(set.len(), 152, "every held MR stays the ticket's");
+            assert!(set.iter().any(|p| p.number == 5 && p.state == PrState::Closed));
+            assert!(set.iter().any(|p| p.number == 7 && p.state == PrState::Draft));
+        }
+        assert!(slow_read("minute", &out).is_none(), "a quick read says nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1317: a read off the minute leaves a failed repository out, and
+    /// that one holds none of the others; one asked inside the floor still
+    /// holds the read. A failure says itself with its retry, and an answer
+    /// after it says so; a slow read says how long and how many calls.
+    #[test]
+    fn a_failed_repository_holds_no_other_busy_read_and_says_when_it_is_read_again() {
+        let mut s = State::default();
+        let (ok, down) = ("gitlab.com/g/ok".to_string(), "gitlab.com/g/down".to_string());
+        s.errors.push((down.clone(), "glab: 429 Too Many Requests (HTTP 429)".into()));
+        s.asked.insert(down.clone(), Instant::now());
+        s.asked.insert(ok.clone(), Instant::now() - BUSY_EVERY);
+        assert!(s.failed(&down) && !s.failed(&ok));
+        assert!(!s.burst_held(&[ok.clone(), down.clone()], BUSY_EVERY), "the failed one holds none");
+        assert!(!s.due_for(&down, BUSY_EVERY), "and is the minute's backoff's");
+        s.asked.insert(ok.clone(), Instant::now());
+        assert!(s.burst_held(&[ok.clone(), down.clone()], BUSY_EVERY), "inside the floor");
+
+        let report = |key: &str, error: Option<&str>| RepoReport {
+            key: key.into(),
+            path: key.trim_start_matches("gitlab.com/").into(),
+            error: error.map(str::to_string),
+        };
+        let lines = read_lines(
+            &s.errors,
+            &[report(&ok, Some("glab did not finish within 20s")), report(&down, None)],
+        );
+        assert_eq!(
+            lines,
+            [
+                format!("forge: {ok} failed: glab did not finish within 20s ∙ read again in 5 min"),
+                format!("forge: {down} answers again"),
+            ]
+        );
+        let limited = read_lines(&[], &[report(&down, Some("glab: 429 Too Many Requests"))]);
+        assert_eq!(
+            limited,
+            [format!("forge: {down} failed: rate limited by the forge ∙ read again in 5 min")]
+        );
+        assert!(read_lines(&[], &[report(&ok, None)]).is_empty(), "an answer as before is quiet");
+
+        let mut slow = Sample { took: SLOW_READ, calls: 216, ..Default::default() };
+        slow.repos = vec![report(&ok, None), report(&down, None)];
+        assert_eq!(
+            slow_read("minute", &slow).as_deref(),
+            Some("forge: the minute read took 20.0 s, 216 calls over 2 repositories and 0 tickets")
+        );
     }
 
     /// T-800: a fork's checkout reads its `origin` and names its upstream

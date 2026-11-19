@@ -47388,3 +47388,69 @@ or wake over an empty, parked or stopped seat. The wire is unchanged: the page s
 **Tests.** `state.test.js`'s session-entry assertion flipped to `"steer"`; `node --test
 state.test.js assets.test.js` and `node ux.test.js` run. No Rust changed, so no cargo run.
 **Run.** The first full `node ux.test.js` passed chromium (all sizes) and webkit desktop, then stopped at webkit tablet's notes flow on a `ResizeObserver loop completed` console line, outside the composer; a rerun of webkit tablet and phone passed all 30 cases (named rerun).
+
+## A forge pass costs what changed, not the board's history, and the busy reads run beside it (T-1317, 2026-11-19, the simbly crown: "frontend-v2 MR !136 merged 12:57:18; the board read the merge at 13:01:38")
+
+**Cause, confirmed.** simbly's `forge.json`: 260 held rows (226 distinct), 254 merged, 3 closed,
+3 draft, over 10 GitLab repositories. T-1243 lists one account's MRs for the whole host at once,
+cut at `LIST_LIMIT` (100), so every repository read `full`, and T-800's `unlisted` sent every held
+MR outside the newest 100, per ticket, to `one_pr`: about 160 calls of 0.5 s each, every pass,
+growing with every merge (the crown counted ~216 calls in 3 min, passes of 70 to 120 s). And
+`queue_forge_busy` returned while `forge.inflight`, so a running pipeline's 15 s reads (T-781)
+waited for each pass to end: both reported reads landed about 4 min 15 s late. No errored
+repository was found on simbly (nothing logged one, and nothing could), so the second cause in
+the brief (one failed repository holding every busy read) is fixed from the code, not measured.
+
+**What changed.**
+- `forge::settled`: a held PR the full list left out is its last reading, no call, where its state
+  is final: merged with its merge commit known (GitLab's list can lag the commit, T-787), or a
+  GitLab MR closed (the list is `order_by=updated_at`, so a reopen comes back at its head). A
+  GitHub PR closed is still read (`gh pr list` is newest-created first), as is every open and
+  draft one (T-800's case). The merge commit's pipeline and deployments keep their reads by commit
+  (`merged_reads`, T-771/T-801). T-859's named-URL loop takes a held settled reading the same way;
+  a named URL never read is still read once and is `unfound` when gone. T-1301's closed-unmerged
+  reading is the held row, unchanged.
+- `forge::OneReads`: one pass reads an MR by itself once, and an open MR's head pipeline once per
+  head, whichever tickets or loops ask (two tickets holding `backend!17` were two calls, and an
+  open MR the list cut was read by `one_pr` and again by the open-MR loop).
+- **Busy reads run while the minute's pass is out.** `queue_forge_busy` no longer waits on
+  `forge.inflight`, only on `burst_inflight`. The "one read out at a time" rule (T-781) was the
+  burst road's: a turn's end's burst and the minute were already out together since T-761, and
+  `absorb_forge` keeps a ticket's set from the read begun last (`at_ms`), errors are replaced per
+  repository, and `carried` is a cache. The cost is at most one busy read per `BUSY_EVERY` per busy
+  repository on top of a pass, which the first change made seconds long. Refuted: making the busy
+  road share the minute's pass (it would still wait a whole pass), and shortening `EVERY` (T-895's
+  reason stands).
+- **A failed repository holds no other read.** `launch_forge_burst` leaves a repository whose
+  last call failed out of the burst (`State::failed`, `query.repos.retain`) and `State::burst_held`
+  checks the floor over the rest; before, `due_for` was false for any errored repository and one
+  of thirteen held every busy read of the board until the minute's backoff read it again. The
+  owed road (`queue_forge_burst`) leaves a ticket with a failed leg to the minute
+  (`forge_fails`), as before, and reads the other owed tickets: such a burst would answer
+  nothing (`read_whole`) and be asked again on every 10 s floor until the backoff. `split_repos`'
+  `burst` flag is unchanged and now moot.
+- **Visibility: `daemon.log` only.** `forge::read_lines` writes each repository's failed call with
+  its retry (`forge: gitlab.com/simbly/x failed: rate limited by the forge ∙ read again in 5 min`)
+  and its first answer after one (`… answers again`); `forge::slow_read` writes a read of
+  `SLOW_READ` (20 s) or more with its road, length, CLI calls (a thread-local count in `run_for`;
+  a pass runs on a worker of its own) and its repositories and tickets. Not done: a
+  `get_ticket` or doctor fact. A `get_ticket` field changes what an agent is told (a rig case and
+  a live run under AGENTS.md); doctor reads no daemon memory. The last *successful* read's time per
+  repository is not logged (one line per read every 15 s would bury the rest); the snapshot's
+  `sampled_at_ms` is the minute's.
+
+**Measured.** `forge::tests::a_settled_mr_a_full_list_cut_is_not_read_again_and_an_open_one_is_read_once`
+runs `sample()` against a stub `glab` on simbly's shape (a full list, two tickets holding 150
+merged MRs, a closed one and a draft): three calls (the list, the draft, its head's pipelines);
+with `settled` disabled, 152 single-MR reads. At simbly's 0.5 s a call, a pass goes from about
+80 s of single reads to under 2 s. `forge_e2e::a_running_pipeline_is_read_on_the_busy_cadence_while_the_minutes_pass_is_out`:
+the minute's pass reads another ticket's Summary address in 4 s, and the running merged PR is
+listed on the busy cadence inside that read (0 times before the change).
+
+**Tests.** New: the two above, `a_pr_whose_state_is_final_is_settled_and_an_open_one_is_not`,
+`a_failed_repository_holds_no_other_busy_read_and_says_when_it_is_read_again`. The `gh` stub's
+`pr view` sleeps where `MSMN_GH_SLOW_VIEW` names a file. A running daemon reads the new code only
+after `U`; simbly's board was not touched.
+**Checks.** `cargo ut` (72 + 17 + 779 + 924 + 24 + 1,480 passed, 0 failed); `forge_e2e::` (43
+passed, no reruns). The new e2e fails with the old `inflight` guard put back (0 lists inside the
+slow read). The full workspace suite is owed once after the merge (`server.rs`).

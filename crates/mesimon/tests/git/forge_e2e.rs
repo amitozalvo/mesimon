@@ -114,6 +114,10 @@ case "$1 $2" in
     cat "$MSMN_GH_PRS" 2>/dev/null || echo '[]' ;;
   "pr view")
     view="$(dirname "$MSMN_GH_PRS")/view.$3.json"
+    if [ -f "$MSMN_GH_SLOW_VIEW" ]; then
+      sleep "$(cat "$MSMN_GH_SLOW_VIEW")"
+      echo "pr view done" >> "$MSMN_GH_LOG"
+    fi
     if [ ! -f "$view" ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
     if [ "$(cat "$view")" = "gone" ]; then echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; fi
     cat "$view" ;;
@@ -2242,6 +2246,85 @@ fn a_running_pipeline_is_read_on_the_busy_cadence_and_a_settled_one_on_the_minut
     std::thread::sleep(Duration::from_millis(1500));
     let idle = lists(Duration::from_secs(4));
     assert!(idle <= 1, "a settled pipeline is listed {idle} times in 4 s");
+    let _ = c.request(Command::Shutdown);
+    let _ = std::fs::remove_dir_all(&stub_dir);
+}
+
+/// T-1317: the busy cadence is not held by a minute's pass that is out.
+/// On simbly a pass took 70 to 120 s and a running deploy job's 15 s reads
+/// waited for its end. Here the minute's pass reads another ticket's
+/// Summary address by itself, and that read takes 4 s; the merged PR whose
+/// merge commit's pipeline runs is listed on the busy cadence inside it.
+/// Before, nothing was listed between the slow read's start and its end.
+#[test]
+fn a_running_pipeline_is_read_on_the_busy_cadence_while_the_minutes_pass_is_out() {
+    let (stub_dir, path_var) = gh_stub("forge-busy-slow");
+    let prs_file = stub_dir.join("prs.json");
+    let checks_file = stub_dir.join("checks.json");
+    let log = stub_dir.join("gh.log");
+    let slow = stub_dir.join("slow-view");
+    write(&prs_file, "[]");
+    write(&checks_file, r#"{"check_runs":[{"name":"deploy","status":"in_progress"}]}"#);
+    let Some(h) = Harness::boot_with_env(
+        "forge_busy_slow",
+        Some(SILENT_STUB),
+        &[
+            ("MESIMON_NO_TAG_SEED", "1"),
+            ("MESIMON_WT_REFRESH_TICKS", "4"),
+            ("MESIMON_FORGE_EVERY_MS", "3000"),
+            ("MESIMON_FORGE_BURST_MS", "500"),
+            ("MESIMON_FORGE_BUSY_MS", "500"),
+            ("MESIMON_FORGE_WARM_MS", "1000"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("PATH", &path_var),
+            ("MSMN_GH_PRS", &prs_file.display().to_string()),
+            ("MSMN_GH_CHECKS", &checks_file.display().to_string()),
+            ("MSMN_GH_LOG", &log.display().to_string()),
+            ("MSMN_GH_SLOW_VIEW", &slow.display().to_string()),
+        ],
+    ) else {
+        return;
+    };
+    init_repo(&h.repo, "a.txt", "hello\n");
+    git(&h.repo, &["remote", "add", "origin", "https://github.com/example/forge.git"]);
+    let mut c = h.client("forge_busy_slow");
+    through_prs(&mut c);
+    let (id, _sid, branch, path) = ready(&mut c, "alpha");
+    let tip = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let merge_oid = "3333333333333333333333333333333333333333";
+    write(&prs_file, &pr_json(&branch, &tip, "MERGED", Some(merge_oid), None));
+    wait_until(Duration::from_secs(20), "the merged PR to read running", || {
+        prs_of(&mut c).iter().any(|p| p.ticket == id && p.pipeline == "running")
+    });
+    // Another ticket names a PR no list holds: every pass reads it by
+    // itself, and that read is slow.
+    let named = c.create_ticket("named");
+    match c.request(Command::WriteNote {
+        ticket: named,
+        note: None,
+        text: "# Reviewed\n\n## Summary\n- https://github.com/example/forge/pull/99\n".into(),
+        rev: None,
+    }) {
+        Response::NoteWritten { .. } => {}
+        other => panic!("note: {other:?}"),
+    }
+    write(&slow, "4");
+    // Past the Summary's own burst and its warm window: only the minute
+    // reads the named ticket now.
+    std::thread::sleep(Duration::from_millis(5000));
+    let _ = std::fs::remove_file(&log);
+    // A whole slow read inside the log: its start, then its end.
+    wait_until(Duration::from_secs(30), "a slow read by itself to start and end", || {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        text.find("pr view 99").is_some_and(|at| text[at..].contains("pr view done"))
+    });
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let at = text.find("pr view 99").unwrap();
+    let inside = &text[at..at + text[at..].find("pr view done").unwrap()];
+    let busy = inside.lines().filter(|l| l.starts_with("pr list")).count();
+    eprintln!("T-1317: {busy} busy lists inside a 4 s read of the minute's pass");
+    assert!(busy >= 2, "listed {busy} times while the minute's pass was out:\n{text}");
+    let _ = std::fs::remove_file(&slow);
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
 }

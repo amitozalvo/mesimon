@@ -20176,8 +20176,35 @@ impl Daemon {
         if self.forge.burst_inflight || self.forge.owed.is_empty() {
             return;
         }
-        let only: std::collections::HashSet<ulid::Ulid> = self.forge.owed.keys().copied().collect();
+        // A ticket with a repository whose call failed waits for the
+        // minute's backoff, as it did; the other owed tickets go without it
+        // (T-1317). A burst for it would leave that repository out, answer
+        // nothing and be asked again on every floor until the backoff.
+        let only: std::collections::HashSet<ulid::Ulid> = self
+            .forge
+            .owed
+            .keys()
+            .copied()
+            .filter(|t| !self.forge_fails(*t))
+            .collect();
+        if only.is_empty() {
+            return;
+        }
         self.launch_forge_burst(&only, Duration::from_millis(crate::forge::burst_ms()));
+    }
+
+    /// Whether a leg of `ticket` sits in a repository whose last forge call
+    /// failed (T-1317).
+    fn forge_fails(&self, ticket: ulid::Ulid) -> bool {
+        self.worktrees.get(&ticket).is_some_and(|b| {
+            self.binding_legs(b).iter().any(|leg| {
+                self.forge
+                    .remotes
+                    .get(&leg.repo)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|r| self.forge.failed(&r.key()))
+            })
+        })
     }
 
     /// A pipeline in flight's read (T-781), and a warm ticket's (T-895):
@@ -20186,10 +20213,14 @@ impl Daemon {
     /// `forge::busy_every` rather than on the minute, so a deploy job of
     /// seconds shows and a PR that just opened has its first pipeline run,
     /// its review and its merge read in seconds. It rides the turn's end's
-    /// road, one read out at a time, and a repository whose call failed is
-    /// the minute's backoff's.
+    /// road, one burst out at a time, and a repository whose call failed is
+    /// the minute's backoff's. A minute's pass out does not hold it
+    /// (T-1317): a pass over a long history took 70 to 120 s, and the 15 s
+    /// reads waited for its end; a turn's end's burst and the minute were
+    /// already out together (T-761), and a set is never replaced by a read
+    /// begun before the one on hand.
     fn queue_forge_busy(&mut self) {
-        if !self.through_prs() || self.forge.inflight || self.forge.burst_inflight {
+        if !self.through_prs() || self.forge.burst_inflight {
             return;
         }
         let busy = self.forge.busy(now_ms());
@@ -20271,7 +20302,9 @@ impl Daemon {
     }
 
     /// The turn's end's road (`Msg::ForgeBurst`) for `only`'s repositories,
-    /// where each was last asked at least `floor` ago.
+    /// where each was last asked at least `floor` ago. A repository whose
+    /// call failed is left out and holds none of the others (T-1317): the
+    /// minute's backoff reads it, and its tickets keep its PRs until then.
     fn launch_forge_burst(
         &mut self,
         only: &std::collections::HashSet<ulid::Ulid>,
@@ -20280,25 +20313,22 @@ impl Daemon {
         // The floor first, off the cached remotes (T-795): this is asked
         // every tick, and a query walks the tickets and copies the settled
         // commits. A leg's repository not due is one the query would hold.
-        let held = self
+        let keys: Vec<String> = self
             .worktrees
             .iter()
             .filter(|(t, _)| only.contains(t))
             .flat_map(|(_, b)| self.binding_legs(b))
-            .any(|leg| {
-                self.forge
-                    .remotes
-                    .get(&leg.repo)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|r| !self.forge.due_for(&r.key(), floor))
-            });
-        if held {
+            .filter_map(|leg| {
+                self.forge.remotes.get(&leg.repo).and_then(Option::as_ref).map(|r| r.key())
+            })
+            .collect();
+        if self.forge.burst_held(&keys, floor) {
             return;
         }
-        let Some(query) = self.forge_query(Some(only)) else { return };
-        if query.repos.is_empty()
-            || query.repos.iter().any(|r| !self.forge.due_for(&r.key(), floor))
-        {
+        let Some(mut query) = self.forge_query(Some(only)) else { return };
+        query.repos.retain(|r| !self.forge.failed(&r.key()));
+        let keys: Vec<String> = query.repos.iter().map(|r| r.key()).collect();
+        if keys.is_empty() || self.forge.burst_held(&keys, floor) {
             return;
         }
         self.forge.burst_inflight = true;
@@ -20521,7 +20551,7 @@ impl Daemon {
             return;
         }
         self.forge.last = Some(Instant::now());
-        self.forge_errors(&sample);
+        self.forge_errors("minute", &sample);
         // The whole board's answers: what a deploy no longer runs goes.
         self.forge.carried = std::mem::take(&mut sample.carried);
         self.absorb_forge(sample);
@@ -20529,7 +20559,15 @@ impl Daemon {
 
     /// A read's repositories' errors replace theirs; one the read left out
     /// (backing off, T-800, or not on a turn's end's read) keeps its own.
-    fn forge_errors(&mut self, sample: &crate::forge::Sample) {
+    /// `daemon.log` says each failure and its retry, each recovery, and a
+    /// read slow enough to hold the busy cadence back (T-1317).
+    fn forge_errors(&mut self, road: &str, sample: &crate::forge::Sample) {
+        for line in crate::forge::read_lines(&self.forge.errors, &sample.repos)
+            .into_iter()
+            .chain(crate::forge::slow_read(road, sample))
+        {
+            self.journal.line(&line);
+        }
         for r in &sample.repos {
             self.forge.errors.retain(|(k, _)| *k != r.key);
             if let Some(e) = &r.error {
@@ -20550,7 +20588,7 @@ impl Daemon {
         if !self.through_prs() {
             return;
         }
-        self.forge_errors(&sample);
+        self.forge_errors("burst", &sample);
         self.forge.carried.extend(std::mem::take(&mut sample.carried));
         self.absorb_forge(sample);
         // Owed while this one was out: asked now, or on the tick.
