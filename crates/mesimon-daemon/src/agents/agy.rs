@@ -132,11 +132,12 @@ pub fn models_due(file: &Path, now_ms: u64) -> bool {
 }
 
 /// The models file's text for what `agy models` printed: the lines
-/// [`mesimon_core::tier::agy_models`] reads, written back in its words, so
-/// the file holds nothing agy said beyond them. `None` when it listed no
-/// model, which leaves the last good file in place.
+/// [`mesimon_core::tier::agy_variants`] reads, one per variant, written back
+/// in its words, so the file holds nothing agy said beyond them; the page
+/// groups them as it reads. `None` when it listed no model, which leaves
+/// the last good file in place.
 pub fn models_text(printed: &str) -> Option<String> {
-    let list = mesimon_core::tier::agy_models(printed)?;
+    let list = mesimon_core::tier::agy_variants(printed)?;
     Some(list.iter().map(|m| format!("{}\t{}\n", m.model, m.name)).collect())
 }
 
@@ -335,12 +336,16 @@ fn launch_with(
     if let Some(mode) = mode {
         argv.extend(["--mode".into(), mode.into()]);
     }
+    // A model carries its level in agy's own variant id (T-1326); only a
+    // tier with no model names a level alone, for agy's own model.
     if context.tier.provider == AgentProvider::Agy {
-        if let Some(model) = context.tier.model_arg() {
-            argv.extend(["--model".into(), model.into()]);
-        }
-        if let Some(effort) = context.tier.effort_arg() {
-            argv.extend(["--effort".into(), effort.into()]);
+        match context.tier.agy_model_arg() {
+            Some(model) => argv.extend(["--model".into(), model]),
+            None => {
+                if let Some(effort) = context.tier.effort_arg() {
+                    argv.extend(["--effort".into(), effort.into()]);
+                }
+            }
         }
     }
     if let Some(id) = conversation.and_then(conversation_id) {
@@ -803,7 +808,7 @@ mod tests {
             id: "A".into(),
             name: "flash".into(),
             provider: AgentProvider::Agy,
-            model: "gemini-3.8-flash-high".into(),
+            model: "gemini-3.8-flash".into(),
             effort: Effort::High,
             description: String::new(),
         };
@@ -815,8 +820,9 @@ mod tests {
         assert_eq!(pair(&started, "--add-dir"), [dir.display().to_string()]);
         assert_eq!(pair(&started, "--settings"), [settings.display().to_string()]);
         assert_eq!(pair(&started, "--mode"), ["plan"]);
+        // T-1326: the level rides agy's variant id, never `--effort` beside it.
         assert_eq!(pair(&started, "--model"), ["gemini-3.8-flash-high"]);
-        assert_eq!(pair(&started, "--effort"), ["high"]);
+        assert!(pair(&started, "--effort").is_empty(), "{started:?}");
         assert!(pair(&started, "--conversation").is_empty(), "{started:?}");
         assert!(!started.iter().any(|a| a.contains("dangerously")), "{started:?}");
 
@@ -841,6 +847,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&settings).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+
+        // No model: the level goes alone, for agy's own model.
+        let own = Tier { effort: Effort::Low, ..Tier::builtin(AgentProvider::Agy) };
+        let started = launch_with(&context(&paths, &tree, own), None, &[]).unwrap();
+        assert!(pair(&started, "--model").is_empty(), "{started:?}");
+        assert_eq!(pair(&started, "--effort"), ["low"]);
 
         // Another provider's tier passes nothing, and a wake names the
         // conversation the record learned.

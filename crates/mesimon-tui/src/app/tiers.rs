@@ -418,9 +418,12 @@ impl App {
             Mode::TierEdit { idx, field: None, armed, .. } => {
                 let field = self.tier_fields().get(*idx).copied();
                 let model_steps = self.model_ring().len() > 1;
+                let effort_steps =
+                    self.edited_tier().is_some_and(|(t, _)| self.effort_ring(&t).len() > 1);
                 c.tier_on_step = match field {
-                    Some(TierField::Provider | TierField::Effort) => true,
+                    Some(TierField::Provider) => true,
                     Some(TierField::Model) => model_steps,
+                    Some(TierField::Effort) => effort_steps,
                     _ => false,
                 };
                 c.tier_on_model = field == Some(TierField::Model);
@@ -429,7 +432,8 @@ impl App {
                     Some(TierField::Provider) => "switch",
                     Some(TierField::Model) if model_steps => "next",
                     Some(TierField::Model) => "",
-                    Some(TierField::Effort) => "next",
+                    Some(TierField::Effort) if effort_steps => "next",
+                    Some(TierField::Effort) => "",
                     Some(TierField::Remove) if *armed => "confirm",
                     Some(TierField::Remove) => match self.edited_tier().map(|(_, s)| s) {
                         Some(Source::Override) => "revert",
@@ -571,6 +575,17 @@ impl App {
             t.model.as_str()
         };
         tier::model_ring(list, saved)
+    }
+
+    /// The provider's list entry for the tier's model, where it lists it.
+    fn listed_model(&self, t: &Tier) -> Option<tier::ModelChoice> {
+        self.tier_models.of(t.provider)?.iter().find(|m| m.model == t.model).cloned()
+    }
+
+    /// The Effort row's ring: `default`, then the levels the tier's model
+    /// takes (T-1326: an agy model's own, any other provider's all).
+    pub(crate) fn effort_ring(&self, t: &Tier) -> Vec<Effort> {
+        Effort::ring_for(t.provider, self.listed_model(t).as_ref())
     }
 
     /// `i` on the Model row (T-951): a name typed in place, for a model the
@@ -736,9 +751,17 @@ impl App {
                         "codex model_reasoning_effort ∙ h l steps ∙ default leaves Codex's own"
                             .into()
                     }
-                    AgentProvider::Agy => {
-                        "agy --effort ∙ h l steps ∙ default leaves agy's own".into()
-                    }
+                    AgentProvider::Agy => match self.listed_model(&t) {
+                        Some(m) if m.levels.is_empty() => {
+                            format!("{} takes no level ∙ agy picks its own", m.name)
+                        }
+                        Some(m) => format!(
+                            "{} takes {} ∙ h l steps ∙ default leaves agy's own",
+                            m.name,
+                            m.levels.iter().map(|l| l.word()).collect::<Vec<_>>().join(" ")
+                        ),
+                        None => "agy --effort ∙ h l steps ∙ default leaves agy's own".into(),
+                    },
                 },
             ),
             TierField::Description => (
@@ -883,8 +906,18 @@ impl App {
                     return Ok(());
                 }
                 t.model = tier::step_model(&ring, &t.model, forward);
+                // A level the new model lacks is not kept (T-1326).
+                if !self.effort_ring(&t).contains(&t.effort) {
+                    t.effort = Effort::Default;
+                }
             }
-            Some(TierField::Effort) => t.effort = t.effort.step(t.provider, forward),
+            Some(TierField::Effort) => {
+                let ring = self.effort_ring(&t);
+                if ring.len() < 2 {
+                    return Ok(());
+                }
+                t.effort = t.effort.step_in(&ring, forward);
+            }
             _ => return Ok(()),
         }
         self.save_edited(t)?;

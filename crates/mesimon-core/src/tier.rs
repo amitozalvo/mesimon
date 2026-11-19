@@ -99,12 +99,42 @@ impl Effort {
     /// The next (or previous) level on `provider`'s ring, wrapping. A level
     /// the ring lacks steps to the ring's first.
     pub fn step(self, provider: AgentProvider, forward: bool) -> Effort {
-        let ring = Self::ring(provider);
+        self.step_in(Self::ring(provider), forward)
+    }
+
+    /// [`Self::step`] over `ring`, one [`Self::ring_for`] gave.
+    pub fn step_in(self, ring: &[Effort], forward: bool) -> Effort {
         let Some(i) = ring.iter().position(|e| *e == self) else {
             return ring[0];
         };
         let n = ring.len();
         ring[if forward { (i + 1) % n } else { (i + n - 1) % n }]
+    }
+
+    /// The levels a tier on `provider` may name with `listed`, the provider's
+    /// list entry for its model, `Default` first. agy offers each model at
+    /// its own levels (T-1326: Gemini 4 Neon low…xhigh, Carbon low…high, an
+    /// orchestrator none), so a listed agy model takes only those; any other
+    /// model, and every Claude Code or Codex model, takes the whole ring.
+    pub fn ring_for(provider: AgentProvider, listed: Option<&ModelChoice>) -> Vec<Effort> {
+        match (provider, listed) {
+            (AgentProvider::Agy, Some(m)) => {
+                std::iter::once(Effort::Default).chain(m.levels.iter().copied()).collect()
+            }
+            _ => Self::ring(provider).to_vec(),
+        }
+    }
+
+    /// Every level, lowest first: `Default` and `Unknown` are none.
+    const LEVELS: [Effort; 7] = {
+        use Effort::*;
+        [Minimal, Low, Medium, High, Xhigh, Max, Ultra]
+    };
+
+    /// The level `word` names, any case (`XHigh`), as a CLI writes one
+    /// after a model's name.
+    fn level(word: &str) -> Option<Effort> {
+        Self::LEVELS.into_iter().find(|e| e.word().eq_ignore_ascii_case(word))
     }
 }
 
@@ -160,6 +190,24 @@ impl Tier {
         (!matches!(self.effort, Effort::Default | Effort::Unknown)
             && Effort::ring(self.provider).contains(&self.effort))
         .then(|| self.effort.word())
+    }
+
+    /// agy's `--model` for this tier (T-1326): the model at the tier's
+    /// level is agy's own variant id, `gemini-4-neon` at high
+    /// `gemini-4-neon-high`, so the level rides the id and no `--effort`
+    /// is passed beside a model (agy 1.5.12 takes `--model claude-opus-5-5
+    /// --effort low` and refuses the same at medium, while every listed
+    /// variant id resolves). A level already on the saved word (a tier
+    /// saved before T-1326) gives way to the tier's effort; at `Default`
+    /// the word goes as saved and agy picks the bare model's level.
+    pub fn agy_model_arg(&self) -> Option<String> {
+        let model = self.model_arg()?;
+        Some(match self.effort_arg() {
+            Some(level) => {
+                format!("{}-{level}", agy_variant(model).map_or(model, |(base, _)| base))
+            }
+            None => model.to_string(),
+        })
     }
 
     /// `Claude Code ∙ opus ∙ high` — the words a row or a status line
@@ -593,6 +641,10 @@ pub struct ModelChoice {
     pub model: String,
     pub name: String,
     pub about: String,
+    /// The levels the provider offers this model at, in [`Effort::ring`]'s
+    /// order: agy's alone ([`agy_models`]); empty where the list says none,
+    /// which [`Effort::ring_for`] reads per provider.
+    pub levels: Vec<Effort>,
 }
 
 /// The providers' lists as the tier page read them when it opened; `None`
@@ -680,6 +732,7 @@ pub fn claude_models(catalogs: &[&str]) -> Option<Vec<ModelChoice>> {
                 model,
                 name: model_words(&m.name),
                 about: model_words(&m.description),
+                levels: Vec::new(),
             })
         })
         .collect();
@@ -713,6 +766,7 @@ pub fn codex_models(cache: &str) -> Option<Vec<ModelChoice>> {
             name: model_words(&m.display_name),
             about: model_words(&m.description),
             model: m.slug,
+            levels: Vec::new(),
         })
         .collect();
     (!list.is_empty()).then_some(list)
@@ -722,8 +776,10 @@ pub fn codex_models(cache: &str) -> Option<Vec<ModelChoice>> {
 /// may pick, in agy's order, after a `Fetching available models...` line on
 /// the same output. A line without a tab is not a model; an id
 /// [`check_model`] refuses is left out, so the list can only hold words
-/// `--model` may carry. `None` when no line is a model.
-pub fn agy_models(text: &str) -> Option<Vec<ModelChoice>> {
+/// `--model` may carry. `None` when no line is a model. Each line is one
+/// variant, as agy lists it (`gemini-4-neon-high`); [`agy_models`] groups
+/// them.
+pub fn agy_variants(text: &str) -> Option<Vec<ModelChoice>> {
     let list: Vec<ModelChoice> = text
         .lines()
         .filter_map(|line| line.split_once('\t'))
@@ -733,9 +789,57 @@ pub fn agy_models(text: &str) -> Option<Vec<ModelChoice>> {
             model: id.to_string(),
             name: model_words(label),
             about: String::new(),
+            levels: Vec::new(),
         })
         .collect();
     (!list.is_empty()).then_some(list)
+}
+
+/// The model and level an agy variant id names (`gemini-4-neon-high` →
+/// `gemini-4-neon`, high): a level word after the last `-`. agy 1.5.12
+/// resolves `--model <base> --effort <level>` to this id.
+fn agy_variant(id: &str) -> Option<(&str, Effort)> {
+    let (base, word) = id.rsplit_once('-')?;
+    (!base.is_empty()).then_some(())?;
+    Effort::level(word).map(|level| (base, level))
+}
+
+/// The tier page's agy list (T-1326): one entry per model, at the first
+/// place agy lists any of its variants, carrying the levels those variants
+/// name, so the Model and Effort rows choose apart as for the other
+/// providers. The name loses its level (`Gemini 4 Neon (High)` → `Gemini 4
+/// Neon`). An id with no level word (`gemini-pro-orchestrator`) is a model
+/// with no levels: agy refuses `--effort` on it.
+pub fn agy_models(text: &str) -> Option<Vec<ModelChoice>> {
+    let mut list: Vec<ModelChoice> = Vec::new();
+    for v in agy_variants(text)? {
+        let (base, level) = match agy_variant(&v.model) {
+            Some((base, level)) => (base.to_string(), Some(level)),
+            None => (v.model.clone(), None),
+        };
+        let i = match list.iter().position(|m| m.model == base) {
+            Some(i) => i,
+            None => {
+                let name = match (level, v.name.rsplit_once(" (")) {
+                    (Some(l), Some((name, tail)))
+                        if tail.strip_suffix(')').and_then(Effort::level) == Some(l) =>
+                    {
+                        name.to_string()
+                    }
+                    _ => v.name.clone(),
+                };
+                list.push(ModelChoice { model: base, name, about: String::new(), levels: vec![] });
+                list.len() - 1
+            }
+        };
+        if let Some(level) = level.filter(|l| !list[i].levels.contains(l)) {
+            list[i].levels.push(level);
+        }
+    }
+    for m in &mut list {
+        m.levels.sort_by_key(|e| Effort::LEVELS.iter().position(|r| r == e));
+    }
+    Some(list)
 }
 
 /// What one stop of a tier's model ring is.
@@ -1205,7 +1309,7 @@ mod tests {
                     gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n\
                     --model\tA flag\n\
                     claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n";
-        let list = agy_models(text).unwrap();
+        let list = agy_variants(text).unwrap();
         assert_eq!(
             words(&list),
             ["gemini-3.8-flash-high", "gemini-3.8-flash-low", "claude-sonnet-4-6"],
@@ -1213,10 +1317,84 @@ mod tests {
         );
         assert_eq!(list[0].name, "Gemini 3.8 Flash (High)");
         assert_eq!(list[0].about, "");
-        assert_eq!(agy_models("Fetching available models...\n"), None);
+        assert_eq!(agy_variants("Fetching available models...\n"), None);
         assert_eq!(agy_models(""), None);
-        let lists = ModelLists { agy: Some(list), ..ModelLists::default() };
-        assert_eq!(lists.of(AgentProvider::Agy).map(<[_]>::len), Some(3));
+        let lists = ModelLists { agy: agy_models(text), ..ModelLists::default() };
+        assert_eq!(lists.of(AgentProvider::Agy).map(<[_]>::len), Some(2));
+    }
+
+    /// T-1326: agy lists a model once per level (`agy models`, 1.5.12, as
+    /// this machine's account printed it); the page lists the model once,
+    /// with the levels its variants name, lowest first, where agy first
+    /// lists it. An id with no level word is a model with none.
+    #[test]
+    fn agys_variants_group_into_models_with_their_levels() {
+        let text = "Fetching available models...\n\
+                    gemini-4-neon-high\tGemini 4 Neon (High)\n\
+                    gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\n\
+                    gemini-4-neon-medium\tGemini 4 Neon (Medium)\n\
+                    gemini-4-neon-low\tGemini 4 Neon (Low)\n\
+                    gemini-4-carbon-medium\tGemini 4 Carbon (Medium)\n\
+                    gemini-4-carbon-high\tGemini 4 Carbon (High)\n\
+                    gemini-4-carbon-low\tGemini 4 Carbon (Low)\n\
+                    gemini-pro-orchestrator\tOrchestrator (Carbon)\n\
+                    claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n\
+                    gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n";
+        let list = agy_models(text).unwrap();
+        assert_eq!(
+            words(&list),
+            [
+                "gemini-4-neon",
+                "gemini-4-carbon",
+                "gemini-pro-orchestrator",
+                "claude-opus-4-6-thinking",
+                "gpt-oss-120b"
+            ]
+        );
+        use Effort::*;
+        let levels: Vec<_> = list.iter().map(|m| (m.name.as_str(), m.levels.clone())).collect();
+        assert_eq!(
+            levels,
+            [
+                ("Gemini 4 Neon", vec![Low, Medium, High, Xhigh]),
+                ("Gemini 4 Carbon", vec![Low, Medium, High]),
+                ("Orchestrator (Carbon)", vec![]),
+                ("Claude Opus 4.6 (Thinking)", vec![]),
+                ("GPT-OSS 120B", vec![Medium]),
+            ]
+        );
+        let agy = AgentProvider::Agy;
+        assert_eq!(Effort::ring_for(agy, Some(&list[1])), [Default, Low, Medium, High]);
+        assert_eq!(Effort::ring_for(agy, Some(&list[2])), [Default], "no level to name");
+        assert_eq!(Effort::ring_for(agy, None), Effort::ring(agy), "a typed model: every level");
+        let claude = ModelChoice { levels: vec![], ..list[0].clone() };
+        assert_eq!(
+            Effort::ring_for(AgentProvider::ClaudeCode, Some(&claude)),
+            Effort::ring(AgentProvider::ClaudeCode)
+        );
+    }
+
+    /// T-1326: an agy tier's level rides its model's id, as agy names the
+    /// variant; at `Default` the word goes as saved, and a level on a word
+    /// saved before the split gives way to the tier's.
+    #[test]
+    fn an_agy_tiers_model_carries_its_level() {
+        let at = |model: &str, effort| tier("A", "x", AgentProvider::Agy, model, effort);
+        assert_eq!(
+            at("gemini-4-neon", Effort::High).agy_model_arg().unwrap(),
+            "gemini-4-neon-high"
+        );
+        assert_eq!(at("gemini-4-neon", Effort::Default).agy_model_arg().unwrap(), "gemini-4-neon");
+        assert_eq!(
+            at("gemini-3.8-flash-low", Effort::High).agy_model_arg().unwrap(),
+            "gemini-3.8-flash-high"
+        );
+        assert_eq!(
+            at("gemini-3.8-flash-low", Effort::Default).agy_model_arg().unwrap(),
+            "gemini-3.8-flash-low"
+        );
+        assert_eq!(at("", Effort::High).agy_model_arg(), None);
+        assert_eq!(at("--yolo", Effort::High).agy_model_arg(), None, "never a flag");
     }
 
     /// T-1234: agy's built-in is listed only where the caller says the

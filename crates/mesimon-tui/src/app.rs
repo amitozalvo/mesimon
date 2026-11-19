@@ -24584,6 +24584,7 @@ mod tests {
             model: model.into(),
             name: name.into(),
             about: String::new(),
+            levels: Vec::new(),
         };
         app.tier_models = mesimon_core::tier::ModelLists {
             claude: Some(vec![choice("opus", "Opus 5.5"), choice("sonnet", "Sonnet 5.5")]),
@@ -24662,6 +24663,74 @@ mod tests {
         assert_eq!(app.mode, Mode::Tiers { idx: 0, naming: None });
     }
 
+    /// T-1326 (person: "we need to separate them, just like other
+    /// providers"): an agy tier picks the model on its row and the level on
+    /// Effort's, which steps over `default` and that model's own levels; a
+    /// level the next model lacks goes back to `default`, and a model with
+    /// none leaves the row nothing to step.
+    #[test]
+    fn an_agy_tiers_effort_steps_over_its_models_levels() {
+        use mesimon_core::tier::Effort;
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.agy_switch = true;
+        app.settings_section = keymap::SettingsSection::Agents;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::Tiers) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "neon".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.tier_models = mesimon_core::tier::ModelLists {
+            agy: mesimon_core::tier::agy_models(
+                "gemini-4-neon-high\tGemini 4 Neon (High)\n\
+                 gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\n\
+                 gemini-4-neon-low\tGemini 4 Neon (Low)\n\
+                 gemini-4-carbon-high\tGemini 4 Carbon (High)\n\
+                 gemini-4-carbon-low\tGemini 4 Carbon (Low)\n\
+                 gemini-pro-orchestrator\tOrchestrator (Carbon)\n",
+            ),
+            ..Default::default()
+        };
+        let tier = |app: &App| app.edited_tier().unwrap().0;
+        press(&mut app, 'l');
+        press(&mut app, 'l');
+        assert_eq!(tier(&app).provider, mesimon_core::board::AgentProvider::Agy);
+        press(&mut app, 'j');
+        press(&mut app, 'l');
+        assert_eq!(tier(&app).model, "gemini-4-neon", "one stop per model, not per level");
+        assert_eq!(app.model_ring().len(), 4, "default, neon, carbon, the orchestrator");
+        press(&mut app, 'j');
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            press(&mut app, 'l');
+            seen.push(tier(&app).effort);
+        }
+        assert_eq!(seen, [Effort::Low, Effort::High, Effort::Xhigh, Effort::Default]);
+        assert_eq!(
+            app.tier_field_words(TierField::Effort, false).1,
+            "Gemini 4 Neon takes low high xhigh ∙ h l steps ∙ default leaves agy's own"
+        );
+        press(&mut app, 'h');
+        assert_eq!(tier(&app).effort, Effort::Xhigh);
+        press(&mut app, 'k');
+        press(&mut app, 'l');
+        assert_eq!(tier(&app).model, "gemini-4-carbon");
+        assert_eq!(tier(&app).effort, Effort::Default, "carbon has no xhigh");
+        press(&mut app, 'j');
+        press(&mut app, 'h');
+        assert_eq!(tier(&app).effort, Effort::High);
+        press(&mut app, 'k');
+        press(&mut app, 'l');
+        assert_eq!(tier(&app).model, "gemini-pro-orchestrator");
+        press(&mut app, 'j');
+        let ctx = app.ctx();
+        assert!(!ctx.tier_on_step && ctx.tier_edit_enter_word.is_empty());
+        press(&mut app, 'l');
+        assert_eq!(tier(&app).effort, Effort::Default);
+        assert!(app_tier(&sent).contains("gemini-pro-orchestrator"), "{}", app_tier(&sent));
+    }
+
     /// T-951: the tier page reads Claude Code's account catalogs (the
     /// `-cc` files alone) and Codex's cache; an absent home is no list.
     #[test]
@@ -24698,7 +24767,7 @@ mod tests {
         };
         assert_eq!(words(&lists.claude), Some(vec!["opus".to_string()]), "not the published one");
         assert_eq!(words(&lists.codex), Some(vec!["gpt-6-astra".to_string()]));
-        assert_eq!(words(&lists.agy), Some(vec!["gemini-3.8-flash-high".to_string()]));
+        assert_eq!(words(&lists.agy), Some(vec!["gemini-3.8-flash".to_string()]), "T-1326");
         let gone = ModelHomes {
             claude: root.join("none"),
             codex: root.join("none"),

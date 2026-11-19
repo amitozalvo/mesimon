@@ -47698,3 +47698,40 @@ large worker messages. The input worker's state types are named, and the test he
 a missing ticket column through its existing `Result`. No wire or authorization changed.
 The first preparation was stopped by clippy; all-target clippy passed after these corrections,
 before restarting the complete two-road gate on the new commit.
+
+## agy tiers pick a model and its effort apart, like the other providers (T-1326, 2026-11-19, the person: "we need to separate them, just like other providers"; Effort's ring: "default + it's levels")
+
+`agy models` lists one line per model per level (`gemini-4-neon-high	Gemini 4 Neon (High)`), so the
+tier page's Model row offered every variant and Effort's row a second, conflicting level.
+
+- `tier::agy_variants` is the old flat parse, still what the daemon writes to `agy-models.tsv`.
+  `tier::agy_models` groups it for the page: one `ModelChoice` per model, where agy first lists
+  any of its variants, its level dropped from the name, `levels` the ones its ids end in (lowest
+  first, `Effort::LEVELS`). An id with no level word (`gemini-pro-orchestrator`,
+  `claude-opus-4-6-thinking`) is a model with no levels.
+- `Effort::ring_for(provider, listed)`: a listed agy model's ring is `default` plus its levels;
+  a typed or saved agy model, and every Claude Code or Codex model, keeps the provider's ring.
+  The page steps over it (`step_in`), says the levels on the row's detail, and a model step that
+  leaves the level off the new model's ring puts Effort back to `default`. A ring of one makes
+  the row stepless.
+- `Tier::agy_model_arg`: a model at a level launches as agy's own variant id
+  (`--model gemini-4-neon-high`), with no `--effort` beside a model. A level already on a word
+  saved before this (`gemini-3.8-flash-low` at high) gives way to the tier's effort, so such a
+  tier launches `gemini-3.8-flash-high`; at `default` the word goes as saved. Only a tier with no
+  model passes `--effort` alone.
+
+**Measured on agy 1.5.12, this machine, with `agy -p "/model" …`** (resolves and prints, no turn):
+`--model gemini-4-neon` → `-high` (agy's default); `--effort low|xhigh` → that variant; `max` →
+"has no max effort (available: low, medium, high, xhigh)"; Carbon stops at high; a variant id with a
+different `--effort` → "conflicts with --effort=low"; `gpt-oss-120b` bare → `-medium`.
+`claude-opus-5-5` is uneven: bare is "not recognized", `--effort low` resolves, `--effort medium`
+is "--effort is not supported", while every listed `claude-opus-5-5-<level>` id resolves. That
+unevenness is why the level rides the id and not `--effort`.
+
+**Refuted:** passing `--model <base> --effort <level>` (the other providers' shape): Claude
+through agy refuses it at medium. Offering only the levels with no `default`: the person chose
+`default` too, expecting Google models on agy; a Claude-through-agy tier left at `default` fails at
+start with agy's own "not recognized" error.
+
+Also on this ticket: the board was restarted with `MESIMON_AGY=1`. The model cache's 6-hour TTL
+hid a new agy sign-in's models until the file was rewritten by hand; that lag is T-1327.

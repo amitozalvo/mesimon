@@ -13294,6 +13294,7 @@ fn tier_app() -> App {
         model: model.into(),
         name: name.into(),
         about: about.into(),
+        levels: Vec::new(),
     };
     app.tier_models = mesimon_core::tier::ModelLists {
         claude: Some(vec![
