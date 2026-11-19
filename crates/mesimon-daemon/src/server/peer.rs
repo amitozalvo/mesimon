@@ -235,7 +235,7 @@ impl Daemon {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let answer = call_peer(&sock, &env);
-            let _ = tx.send(Msg::PeerAnswered(id, answer));
+            let _ = tx.send(Msg::PeerAnswered(id, Box::new(answer)));
         });
         Response::Ok // the writer parks the actual reply
     }

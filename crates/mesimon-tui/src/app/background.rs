@@ -28,12 +28,19 @@ pub(super) struct Reads([Option<(ReadKey, Receiver<Result<Response>>)>; 4]);
 pub(super) struct Acknowledgements {
     queued: std::collections::VecDeque<(ulid::Ulid, bool)>,
     sent: std::collections::HashMap<(ulid::Ulid, bool), String>,
-    active: Option<((ulid::Ulid, bool), Receiver<Result<Response>>)>,
+    active: Option<PendingAcknowledgement>,
 }
+
+struct PendingAcknowledgement {
+    key: (ulid::Ulid, bool),
+    rx: Receiver<Result<Response>>,
+}
+
+type FinishSubmission = Box<dyn FnOnce(&mut App, Response) -> Result<()>>;
 
 pub(super) struct Submission {
     rx: Receiver<Result<Response>>,
-    finish: Box<dyn FnOnce(&mut App, Response) -> Result<()>>,
+    finish: FinishSubmission,
 }
 
 pub(super) struct CreatedFollow {
@@ -151,10 +158,12 @@ impl App {
                 let Some((id, hand)) = self.acknowledgements.queued.pop_front() else { break };
                 let command =
                     if hand { Command::LowerHand { id } } else { Command::SeenTicket { id } };
-                self.acknowledgements.active =
-                    Some(((id, hand), self.client.request_detached(command)));
+                self.acknowledgements.active = Some(PendingAcknowledgement {
+                    key: (id, hand),
+                    rx: self.client.request_detached(command),
+                });
             }
-            let (key, rx) =
+            let PendingAcknowledgement { key, rx } =
                 self.acknowledgements.active.as_ref().expect("an acknowledgement was started");
             let key = *key;
             let result = match rx.try_recv() {

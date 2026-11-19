@@ -482,7 +482,7 @@ struct ClientReply {
 }
 
 enum Msg {
-    PeerAnswered(ulid::Ulid, Result<Response, String>),
+    PeerAnswered(ulid::Ulid, Box<Result<Response, String>>),
     Reaped(Vec<(String, Instant, bool)>, Duration),
     TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
     StatusWritten(String, bool),
@@ -1838,7 +1838,7 @@ pub fn run(paths: Paths) -> Result<()> {
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
-            Msg::PeerAnswered(id, answer) => d.peer_answered(id, answer),
+            Msg::PeerAnswered(id, answer) => d.peer_answered(id, *answer),
             Msg::Reaped(done, took) => d.reaped(done, took),
             Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
             Msg::StatusWritten(line, ok) => {

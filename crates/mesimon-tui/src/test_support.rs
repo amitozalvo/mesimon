@@ -22,7 +22,12 @@ pub fn preview_then_enter(
     app.refresh()?;
     app.tmux_sock = Some(sock);
     let column = &app.board.ticket(ticket).context("ticket missing")?.column;
-    app.cursor_col = app.board.sorted_columns().iter().position(|c| &c.name == column).unwrap();
+    app.cursor_col = app
+        .board
+        .sorted_columns()
+        .iter()
+        .position(|c| &c.name == column)
+        .context("ticket column missing")?;
     app.cursor_row = Some(0);
     app.screen = Screen::Ticket { ticket, rail_idx: 0 };
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))?;

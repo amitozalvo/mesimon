@@ -47691,3 +47691,10 @@ The preceding single-road suite at the feature commit is not this release's stam
 bump must pass the release preparation gate on both roads with the bundled tmux. Removed
 redundant test conversions and made checked background-state invariants explicit for the
 release's all-target clippy gate; behavior is unchanged.
+
+The release clippy gate found that `PeerAnswered` stored a full `Response` inline, growing
+every daemon `Msg` to at least 2,112 bytes. Its worker result is now boxed, like the other
+large worker messages. The input worker's state types are named, and the test helper reports
+a missing ticket column through its existing `Result`. No wire or authorization changed.
+The first preparation was stopped by clippy; all-target clippy passed after these corrections,
+before restarting the complete two-road gate on the new commit.
