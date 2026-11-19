@@ -58,21 +58,21 @@ const PULSE_STEP_TICKS: usize = 10;
 /// tier — never the terminal's blink attribute, which is unreliable and
 /// which nothing else on the board uses.
 pub(crate) fn pulse_lit(frame: usize) -> bool {
-    (frame / PULSE_STEP_TICKS).is_multiple_of(2)
+    (crate::frame_clock::phase(frame, PULSE_STEP_TICKS)).is_multiple_of(2)
 }
 
 /// The animated working glyph for `frame` (any monotonically increasing
 /// counter; wraps internally).
 pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
-    frames[frame % frames.len()]
+    frames[crate::frame_clock::phase(frame, 1) % frames.len()]
 }
 
 /// The waiting glyph for `frame` (same redraw-clock counter the spinner
 /// rides; the divisor is what makes it slower).
 pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
-    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
 }
 
 /// The launching glyph: the WORKING arc at the slow cadence. Spawning is not
@@ -86,7 +86,8 @@ pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
 /// seconds and both mean the same thing to the reader — the agent is going,
 /// leave it alone.
 pub(crate) fn launching(tier: Tier, frame: usize) -> char {
-    spinner(tier, frame / SLOW_STEP_TICKS)
+    let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
+    frames[crate::frame_clock::phase(frame, SLOW_STEP_TICKS) % frames.len()]
 }
 
 /// Background-parked frames: a TWO-dot braille bar turning through the
@@ -111,7 +112,7 @@ const BG_ASCII: &[char] = &['o', 'O'];
 /// No third speed is added: the board keeps one fast register and one slow.
 pub(crate) fn background(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { BG_ASCII } else { BG_UNICODE };
-    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
 }
 
 /// Compaction frames (T-894): the cell pressed down and let go — all six
@@ -133,7 +134,7 @@ const COMPACT_ASCII: &[char] = &['#', '%', '_', '%'];
 /// board, one slow, and no third.
 pub(crate) fn compacting(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { COMPACT_ASCII } else { COMPACT_UNICODE };
-    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
 }
 
 /// The activity row's words while a seat compacts (T-894), on the card and
@@ -165,7 +166,7 @@ const QUEUED_ASCII: &[char] = &['(', ')'];
 /// The owed glyph for `frame` — see `QUEUED_UNICODE`.
 pub(crate) fn queued(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { QUEUED_ASCII } else { QUEUED_UNICODE };
-    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
 }
 
 /// Lay the owed mark over a card's session glyph. It replaces NOTHING that
@@ -179,11 +180,11 @@ pub(crate) fn queued_over(
     tier: Tier,
     frame: usize,
 ) -> Option<(char, Register)> {
-    let owed = Some((queued(tier, frame), Register::Grey));
+    let owed = || Some((queued(tier, frame), Register::Grey));
     match glyph {
-        None => owed,
+        None => owed(),
         Some((_, Register::Attn | Register::Err)) => glyph,
-        Some((g, _)) if is_still_mark(g, tier) => owed,
+        Some((g, _)) if is_still_mark(g, tier) => owed(),
         Some(_) => glyph,
     }
 }
@@ -348,7 +349,10 @@ pub(crate) fn pr_mark(
         (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
         (_, "running") => {
             let frames = if ascii { PIPE_ASCII } else { PIPE_UNICODE };
-            (frames[(frame / PIPE_STEP_TICKS) % frames.len()], Register::Grey)
+            (
+                frames[(crate::frame_clock::phase(frame, PIPE_STEP_TICKS)) % frames.len()],
+                Register::Grey,
+            )
         }
         ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
         ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),

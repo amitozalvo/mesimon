@@ -35,7 +35,7 @@ const PAD: &str = super::ticket::GUTTER;
 /// When a message was written: the clock today, how long ago before that.
 pub(super) fn when(ms: Option<u64>, now_ms: u64) -> String {
     match ms {
-        Some(ms) if now_ms.saturating_sub(ms) < 20 * 3_600_000 => {
+        Some(ms) if crate::frame_clock::before(now_ms, ms.saturating_add(20 * 3_600_000)) => {
             crate::localtime::clock_word(ms / 1000).unwrap_or_default()
         }
         Some(ms) => crate::text::age_slot(now_ms, ms, false),
@@ -72,8 +72,12 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
 
     // The words are measured before the edge is drawn, so the edge's `jk`
     // offers a scroll on the very frame that has one.
+    let scrolled = t.pager.view.get().max > 0;
     let words = t.message().filter(|_| fits).map(|m| words(app, t, m, body));
-    app.preview_measured();
+    if scrolled != (t.pager.view.get().max > 0) {
+        crate::frame_clock::after_ms(0); // settle the footer underneath the dialog
+    }
+    app.ctx_dirty();
 
     let mark = crate::glyphs::kind_mark(t.kind, theme.glyph_tier());
     let mut title = dialog::title(&theme.rest, format!("{mark} TRANSCRIPT"));

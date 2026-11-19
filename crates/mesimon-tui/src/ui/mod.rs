@@ -87,7 +87,19 @@ pub(crate) struct RichCache {
     pub rows: std::rc::Rc<Vec<Line<'static>>>,
 }
 
+pub(crate) struct Description {
+    pub id: ulid::Ulid,
+    rev: u64,
+    width: usize,
+    cap: usize,
+    flavor: crate::theme::Flavor,
+    profile: crate::theme::Profile,
+    newline: crate::rich::Newline,
+    rows: Vec<Line<'static>>,
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
+    app.peek_cache.begin_frame();
     app.hits.borrow_mut().clear(f.area());
     crate::mouse::forget_hints();
     // The live window is a fact of the frame that draws it (T-1143).
@@ -98,8 +110,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The mouse's half (T-716): the hints the frame left whole are what a
     // click presses, and the hover lights what the pointer is over.
     let mut hits = app.hits.borrow_mut();
-    // Only where a pointer can press one (T-838): the scrape rebuilds
-    // every row as text and finds every hint in it, per frame.
+    // Only where a pointer can press one (T-838).
     if app.prefs.mouse {
         crate::mouse::scrape_hints(f.buffer_mut(), &mut hits);
     }

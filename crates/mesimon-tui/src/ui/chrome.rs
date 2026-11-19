@@ -32,7 +32,11 @@ pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     let repo = app.board_name();
     // Sessions waiting plus tickets a snooze woke lit (T-74) — the daemon's
     // tmux status line counts the same way.
-    let needs_you = app.board.needs_you_count(mesimon_core::clock::now_ms());
+    let now = mesimon_core::clock::now_ms();
+    for ask in app.board.sessions.iter().filter_map(|s| s.close_asked(now)) {
+        crate::frame_clock::before(now, ask.expires_ms);
+    }
+    let needs_you = app.board.needs_you_count(now);
     let sep = format!(" {} ", crate::glyphs::crumb(theme.glyph_tier()));
     let mut spans = vec![
         Span::styled("mesimon".to_string(), Style::default().fg(ink.dim2)),

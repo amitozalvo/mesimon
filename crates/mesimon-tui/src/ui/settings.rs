@@ -719,7 +719,7 @@ fn draw_tab(f: &mut Frame, app: &App, at: Rect, needs_you: usize, working: usize
         let ring = if needs_you > 0 {
             Span::styled(format!("{} ", glyph(app, "◉", "!")), Style::default().fg(theme.err))
         } else if working > 0 {
-            let spin = ["◐", "◓", "◑", "◒"][app.spin_frame() % 4];
+            let spin = ["◐", "◓", "◑", "◒"][crate::frame_clock::phase(app.spin_frame(), 1) % 4];
             Span::styled(format!("{} ", glyph(app, spin, "*")), ink)
         } else {
             Span::styled(format!("{} ", glyph(app, "○", "-")), ink)

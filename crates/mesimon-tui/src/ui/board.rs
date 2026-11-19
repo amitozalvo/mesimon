@@ -78,6 +78,7 @@ fn ticket_sessions(app: &App, ticket: ulid::Ulid) -> Vec<&SessionRecord> {
 /// One card's rows, in display order, and what the column needs to know
 /// about them.
 struct Group {
+    next_frame: Option<std::time::Duration>,
     lines: Vec<Line<'static>>,
     /// The cursor card (any height): scroll keeps it visible.
     cursor: bool,
@@ -186,7 +187,7 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
     // drawn as itself, since `glide::draw` fades it along the move.
     // The card the pointer opened (T-716).
     let hovered = app.hover_peek();
-    let mut push_card = |t: &Ticket, selected: bool, held: bool, left: bool, glide: bool| {
+    let build_card = |t: &Ticket, selected: bool, held: bool, left: bool, glide: bool| {
         let sessions = ticket_sessions(app, t.id);
         let waiting = card::needs_you(t, &sessions);
         // The registry lives on the board, so colours resolve here rather
@@ -200,7 +201,8 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
             if let Some(end) = &hang {
                 end.foot(&mut line);
             }
-            groups.push(Group {
+            return Group {
+                next_frame: None,
                 lines: vec![line],
                 cursor: true,
                 waiting,
@@ -210,8 +212,7 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
                 trail: false,
                 prs_at: None,
                 hang,
-            });
-            return;
+            };
         }
         let trail = (left && !glide) || (!held && moving == Some(t.id));
         let mq = if selected { Some(marquee_ms(t)) } else { None };
@@ -235,7 +236,7 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
             ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
-                let pk = app.peek_cache.peek_of(s)?;
+                let pk = app.peek_cache.displayed(s)?;
                 // The activity row is a claim about NOW: a parked, finished
                 // or waiting session's last tool call is history.
                 Some(if s.state == SessionState::Running || pk.activity.is_none() {
@@ -407,7 +408,8 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
             }
             (end, _) => end,
         };
-        groups.push(Group {
+        Group {
+            next_frame: None,
             lines,
             cursor: selected || held,
             waiting,
@@ -417,7 +419,13 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
             trail: left,
             prs_at: if left { None } else { prs_at },
             hang,
-        });
+        }
+    };
+    let mut push_card = |t: &Ticket, selected, held, left, glide| {
+        let (mut group, delay) =
+            crate::frame_clock::collect(|| build_card(t, selected, held, left, glide));
+        group.next_frame = delay;
+        groups.push(group);
     };
     match ghost {
         Some((gid, gidx)) => {
@@ -511,6 +519,7 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
                 end.hang(&mut selector);
             }
             groups.push(Group {
+                next_frame: None,
                 lines: vec![line, selector],
                 cursor: true,
                 waiting: false,
@@ -551,7 +560,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                                                                  // Each card's first flat line, its ticket, on the holder the crown
                                                                  // mark's column, and whether it is a trail: the bolts' spots once the
                                                                  // window is known.
-    let mut card_starts: Vec<(usize, usize, ulid::Ulid, Option<u16>, bool)> = Vec::new();
+    let mut card_starts: Vec<(
+        usize,
+        usize,
+        ulid::Ulid,
+        Option<u16>,
+        bool,
+        Option<std::time::Duration>,
+    )> = Vec::new();
     let mut brief_spots: Vec<(usize, ulid::Ulid, (u16, u16))> = Vec::new();
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
@@ -589,7 +605,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else {
                 None
             };
-            card_starts.push((start, end, id, mark, g.trail));
+            card_starts.push((start, end, id, mark, g.trail, g.next_frame));
             if let Some((row, at)) = g.prs_at {
                 brief_spots.push((start + row, id, at));
             }
@@ -837,7 +853,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let mut hits = app.hits.borrow_mut();
         let row_of =
             |line: usize| area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16;
-        for &(start, end, id, mark, trail) in &card_starts {
+        for &(start, end, id, mark, trail, next_frame) in &card_starts {
             // The card's rows on screen are the mouse's to pick (T-716);
             // a trail is where the card was, not where it is.
             let (lo, hi) = (start.max(content_start), end.min(content_end));
@@ -854,6 +870,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                     width: area.width,
                     height: (end - start) as u16,
                 });
+            }
+            if let Some(delay) = next_frame.filter(|_| lo < hi) {
+                crate::frame_clock::after(delay);
             }
             if !trail && lo < hi {
                 let rect =
@@ -944,6 +963,7 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
     };
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     struct Placed {
+        next_frame: Option<std::time::Duration>,
         start: usize,
         end: usize,
         id: ulid::Ulid,
@@ -1019,6 +1039,7 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
                     None
                 };
                 placed.push(Placed {
+                    next_frame: g.next_frame,
                     start,
                     end,
                     id,
@@ -1081,6 +1102,9 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
                 width: area.width,
                 height: (p.end - p.start) as u16,
             });
+        }
+        if let Some(delay) = p.next_frame.filter(|_| lo < hi) {
+            crate::frame_clock::after(delay);
         }
         if !p.trail && lo < hi {
             let rect =
@@ -1333,7 +1357,9 @@ pub(super) fn recede(f: &mut Frame, app: &App, area: Rect) {
                 height: c.rows,
             })
         })
-        .filter(|_| (app.spin_frame() / LINK_FLASH_FRAMES).is_multiple_of(2));
+        .filter(|_| {
+            (crate::frame_clock::phase(app.spin_frame(), LINK_FLASH_FRAMES)).is_multiple_of(2)
+        });
     let theme = &app.theme;
     let buf = f.buffer_mut();
     for y in area.y.saturating_add(1)..area.bottom() {

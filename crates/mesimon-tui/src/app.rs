@@ -1367,6 +1367,23 @@ pub enum LinkTarget {
 /// what it resolved to on the live board.
 pub(crate) type TranscriptLinks = Vec<(mesimon_core::links::Found, TicketLink)>;
 
+struct ResolvedTranscript {
+    message: u64,
+    links: std::rc::Rc<TranscriptLinks>,
+    paths: Vec<(PathBuf, bool)>,
+    checked: Instant,
+}
+
+impl ResolvedTranscript {
+    fn paths_changed(&mut self) -> bool {
+        if self.paths.is_empty() || self.checked.elapsed() < Duration::from_millis(100) {
+            return false;
+        }
+        self.checked = Instant::now();
+        self.paths.iter().any(|(path, existed)| path.is_file() != *existed)
+    }
+}
+
 /// One link of the conversation the ticket page's zone shows (T-1143):
 /// the row it is on in the zone's document, where it is (`LinkAt`) and
 /// where it leads.
@@ -2311,6 +2328,7 @@ pub struct App {
     /// The ticket page's preview zone: where `{ }` asked it to be, what the
     /// last draw measured, and the page turn in motion (see `Pager`).
     pub preview: Pager,
+    pub(crate) description_cache: std::cell::RefCell<Option<crate::ui::Description>>,
     /// The PREVIEW zone's markdown, rendered once per document and width
     /// rather than once per frame (see `ui::ticket::rendered`).
     pub rich_cache: std::cell::RefCell<Option<crate::ui::RichCache>>,
@@ -2318,11 +2336,8 @@ pub struct App {
     /// not one reader's: the choice holds from note to note for the run.
     pub reader_unwrapped: bool,
     /// The open transcript's links resolved against the live board, once
-    /// per frame rather than per reader (`ctx()`, the hover test and the
-    /// dialog each ask; a path candidate costs a stat). Dropped with the
-    /// frame's `Ctx`, with `rich_cache`, and when a snapshot or the archive
-    /// lands.
-    transcript_links_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<TranscriptLinks>)>>,
+    /// per message. A snapshot, archive landing or changed path refreshes them.
+    transcript_links_cache: std::cell::RefCell<Option<ResolvedTranscript>>,
     /// Where the board last drew the cursor card — the composer's phantom
     /// card, or the ticket under the cursor — which is the rectangle Tab's
     /// dialog grows out of. Draw-side, like `preview.view`: the card's place
@@ -2829,6 +2844,7 @@ impl App {
             archived: snap.archived,
             burnt: Vec::new(),
             preview: Pager::default(),
+            description_cache: Default::default(),
             rich_cache: std::cell::RefCell::new(None),
             reader_unwrapped: false,
             transcript_links_cache: std::cell::RefCell::new(None),
@@ -3187,7 +3203,11 @@ impl App {
         if self.board.merge_into.pull_requests() {
             at = at.max(self.forge.acted_at_ms);
         }
-        at > 0 && (self.now)().saturating_sub(at) < crate::theme::WORKFLOW_LIT_MS
+        at > 0
+            && crate::frame_clock::before(
+                (self.now)(),
+                at.saturating_add(crate::theme::WORKFLOW_LIT_MS),
+            )
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
@@ -3262,13 +3282,24 @@ impl App {
         let Some(t) = self.open_transcript_view() else { return std::rc::Rc::new(Vec::new()) };
         // The memo is the message's: a turn of the page misses it.
         let key = t.message().map_or(0, crate::transcript::doc_key);
-        if let Some((at, links)) = self.transcript_links_cache.borrow().as_ref() {
-            if *at == key {
-                return std::rc::Rc::clone(links);
+        if let Some(cache) = self.transcript_links_cache.borrow().as_ref() {
+            if cache.message == key {
+                return std::rc::Rc::clone(&cache.links);
             }
         }
-        let links = std::rc::Rc::new(self.resolve_links(t.ticket, &t.links()));
-        *self.transcript_links_cache.borrow_mut() = Some((key, std::rc::Rc::clone(&links)));
+        let mut paths = Vec::new();
+        let links = self.resolve_links(t.ticket, &t.links(), |path| {
+            let exists = path.is_file();
+            paths.push((path.to_owned(), exists));
+            exists
+        });
+        let links = std::rc::Rc::new(links);
+        *self.transcript_links_cache.borrow_mut() = Some(ResolvedTranscript {
+            message: key,
+            links: std::rc::Rc::clone(&links),
+            paths,
+            checked: Instant::now(),
+        });
         links
     }
 
@@ -3516,6 +3547,13 @@ impl App {
             );
             changed |= t.set_acts(lines, true);
         }
+        // A path can appear or vanish without either a message or a board
+        // update. Check the open message on the wire poll's idle cadence.
+        changed |= self
+            .transcript_links_cache
+            .get_mut()
+            .as_mut()
+            .is_some_and(ResolvedTranscript::paths_changed);
         if changed {
             let same_message = before == t.message().map(crate::transcript::doc_key);
             self.rich_cache.borrow_mut().take();
@@ -3846,7 +3884,7 @@ impl App {
 
     /// Whether a click's blink has the shin's eyes shut (T-1177).
     pub(crate) fn shin_blinking(&self) -> bool {
-        self.shin_blink.is_some_and(|at| at.elapsed() < SHIN_BLINK)
+        self.shin_blink.is_some_and(|at| crate::frame_clock::during(at, SHIN_BLINK))
     }
 
     /// How long the shin has been acting out `key` (T-451). The clock
@@ -3878,10 +3916,8 @@ impl App {
         )
     }
 
-    /// The working-spinner frame for this draw. The event loop redraws at
-    /// least every 100 ms (`tick`'s poll timeout), which is what actually
-    /// paces the animation; this just makes the frame a function of time so
-    /// event bursts don't fast-forward it.
+    /// The phase of the shared spinner clock. Moving glyphs schedule their
+    /// next step when drawn. Input bursts do not advance the clock.
     pub fn spin_frame(&self) -> usize {
         let epoch = self.spin_epoch.get().unwrap_or_else(|| {
             let e = std::time::Instant::now();
@@ -4740,14 +4776,19 @@ impl App {
     /// after writing a cell that `ctx()` reads.
     pub(crate) fn ctx_dirty(&self) {
         *self.frame_ctx.borrow_mut() = None;
-        self.transcript_links_dirty();
     }
 
     /// The draw measured (or cleared) the preview zone, through
     /// `self.preview`. `Ctx::preview_scrolls` reads the measurement, so the
     /// frame's cached `Ctx` goes with the old value.
     pub(crate) fn preview_measured(&self) {
-        self.ctx_dirty();
+        if self.frame_ctx.borrow().as_ref().is_some_and(|ctx| {
+            ctx.preview_scrolls != (self.preview.view.get().max > 0)
+                || ctx.ticket_links != self.page_visible(|on| on.next().is_some()).unwrap_or(false)
+                || self.page_link.borrow().is_some()
+        }) {
+            self.ctx_dirty();
+        }
     }
 
     /// Draw-side write of whether the page's description has rows to fold
@@ -4761,8 +4802,9 @@ impl App {
 
     /// Draw-side write of the diff screen's breakpoint (`Ctx::two_pane`).
     pub(crate) fn set_diff_two_pane(&self, two: bool) {
-        self.diff_two_pane.set(two);
-        self.ctx_dirty();
+        if self.diff_two_pane.replace(two) != two {
+            self.ctx_dirty();
+        }
     }
 
     pub fn selected_ticket(&self) -> Option<&Ticket> {
@@ -4969,7 +5011,7 @@ impl App {
 
     /// Poll one terminal event (a queued pointer sweep counts as one);
     /// returns whether a redraw is needed.
-    pub fn tick(&mut self) -> Result<bool> {
+    pub(crate) fn tick_until(&mut self, deadline: Option<Instant>) -> Result<bool> {
         let mut dirty = self.pump()?;
         dirty |= self.settle_link_ack();
         // The tour's practice board, on its own clock (T-763).
@@ -4978,35 +5020,47 @@ impl App {
         }
         // Setup's practice board and its probe (T-816).
         dirty |= self.tick_setup()?;
+        let arcade = self.arcade.borrow().as_ref().map(|g| g.playing());
         self.drive_arcade(Instant::now());
+        dirty |= arcade != self.arcade.borrow().as_ref().map(|g| g.playing());
         let read = |wait: Duration| -> Result<Option<TermEvent>> {
             Ok(if event::poll(wait)? { Some(event::read()?) } else { None })
         };
-        match self.next_event(self.frame_wait(), read)? {
+        let moving = self.fast_frames();
+        let mut wait = self.frame_wait(moving);
+        if dirty {
+            wait = Duration::ZERO;
+        } else if let Some(at) = deadline {
+            wait = wait.min(at.saturating_duration_since(Instant::now()));
+        }
+        match self.next_event(wait, read)? {
             Some(ev) => {
                 let changed = self.on_event(ev)?;
                 // A step onto a note fetches it before its frame (T-975):
                 // left to the next pump, the zone read `fetching` for a
                 // whole frame wait on every row a wheel walked.
                 let fetched = changed && !self.merge_in_flight() && self.poll_notes();
-                Ok(changed || fetched || dirty)
+                Ok(changed || fetched || dirty || moving)
             }
-            None => Ok(dirty),
+            None => Ok(dirty || moving),
         }
     }
 
-    /// How long a tick waits for the terminal. The loop redraws once per
-    /// tick, so this is the frame rate: 100 ms paces the spinner, and a
+    pub(crate) fn fast_frames(&self) -> bool {
+        self.arcade.borrow().as_ref().is_some_and(|g| g.playing()) || self.animating()
+    }
+
+    /// How long a tick waits for the terminal. At rest it polls the wire
+    /// every 100 ms. A displayed clock may shorten that wait, and a
     /// panel in motion gets 16 ms for the few frames it takes to settle.
     /// A snapshot in flight gets `SNAPSHOT_FRAME` (T-911): nothing wakes
     /// the terminal's poll when the lane answers, so at 100 ms a key's
     /// board landed up to 100 ms after it was in, on a ~15 ms round trip.
     /// Past `SNAPSHOT_SOON` the daemon is slow, and the idle pace waits.
-    pub(crate) fn frame_wait(&self) -> Duration {
-        let playing = self.arcade.borrow().as_ref().is_some_and(|g| g.playing());
+    fn frame_wait(&self, moving: bool) -> Duration {
         if self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON {
             SNAPSHOT_FRAME
-        } else if playing || self.animating() {
+        } else if moving {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -5076,9 +5130,9 @@ impl App {
                 // nobody is pointing at.
                 self.hover.set(None);
                 self.peeked.set(None);
-                return Ok(self.pointer.take().is_some());
+                return Ok(self.pointer.take().is_some() || self.arcade.borrow().is_some());
             }
-            _ => return Ok(false),
+            TermEvent::Resize(..) => return Ok(true),
         };
         self.on_terminal_key(key)
     }
@@ -5121,7 +5175,7 @@ impl App {
             }
             dirty = true;
         }
-        self.follow_appearance();
+        dirty |= self.follow_appearance();
         // The merge in flight (T-431): its reply lands here, and until it
         // does nothing else on this loop touches the wire — the daemon's
         // writer is inside the merge (T-352), so a snapshot now would hold
@@ -5191,6 +5245,7 @@ impl App {
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
         // knows what an agent said, only its transcript does.
         dirty |= self.poll_spoke();
+        dirty |= self.peek_cache.display_changed();
         // The picker's notes, prepared on their thread (T-1293).
         dirty |= self.poll_corpus();
         // What the notification thread could not do (T-291), said once. The
@@ -5370,8 +5425,8 @@ impl App {
         let at = (ev.column, ev.row);
         match ev.kind {
             MouseEventKind::Drag(MouseButton::Left) => {
-                self.pointer.set(Some(at));
-                let Some(from) = self.press_at.get() else { return Ok(false) };
+                let moved = self.pointer.replace(Some(at)) != Some(at);
+                let Some(from) = self.press_at.get() else { return Ok(moved) };
                 // After a double-click the drag grows by whole words from
                 // the word it began on (T-1209), so it stays a selection
                 // even back on its first cell.
@@ -5396,7 +5451,7 @@ impl App {
             // A click acts on release, the way a button does, so the press
             // that starts a selection never presses anything.
             MouseEventKind::Down(MouseButton::Left) => {
-                self.pointer.set(Some(at));
+                let moved = self.pointer.replace(Some(at)) != Some(at);
                 self.press_at.set(Some(at));
                 let had = self.selection.take().is_some();
                 // The second press of a double-click on text selects the
@@ -5407,7 +5462,7 @@ impl App {
                 if word {
                     self.selection.set(Some((at, at)));
                 }
-                Ok(had || word)
+                Ok(moved || had || word)
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let from = self.press_at.take();
@@ -5659,7 +5714,7 @@ impl App {
             return None;
         }
         if let Some((target, since)) = self.hover.get() {
-            if since.elapsed() >= HOVER_PEEK {
+            if !crate::frame_clock::during(since, HOVER_PEEK) {
                 self.peeked.set(match target {
                     crate::mouse::Target::Card(id) => Some(id),
                     _ => None,
@@ -6301,7 +6356,7 @@ impl App {
             && self.pr_passed.iter().any(|((t, r, n), at)| {
                 (*t, *n) == (p.ticket, p.number)
                     && *r == p.repo
-                    && (self.now)().saturating_sub(*at) < PR_PASSED_MS
+                    && crate::frame_clock::before((self.now)(), at.saturating_add(PR_PASSED_MS))
             })
     }
 
@@ -6433,6 +6488,9 @@ impl App {
     }
 
     pub(crate) fn remember_note(&mut self, id: ulid::Ulid, rev: u64, text: Option<String>) {
+        if self.description_cache.get_mut().as_ref().is_some_and(|d| d.id == id) {
+            self.description_cache.get_mut().take();
+        }
         self.remember_summary(id, rev, text.as_deref());
         // Never the open page's description (T-975): fetched first, it was
         // the oldest one 63 notes down a long rail, and the rail it sits
@@ -6523,7 +6581,7 @@ impl App {
                         now
                     }
                 };
-                now.duration_since(since) < crate::live::GRACE
+                crate::frame_clock::during(since, crate::live::GRACE)
             }
             _ => false,
         }
@@ -6651,7 +6709,7 @@ impl App {
     /// A message's link candidates resolved against the live board, as
     /// the transcript dialog resolves its message's.
     pub(crate) fn page_links(&self, ticket: ulid::Ulid, text: &str) -> TranscriptLinks {
-        self.resolve_links(ticket, &mesimon_core::links::extract(text))
+        self.resolve_links(ticket, &mesimon_core::links::extract(text), Path::is_file)
     }
 
     /// Link candidates resolved against the live board: the ones that lead
@@ -6660,12 +6718,13 @@ impl App {
         &self,
         ticket: ulid::Ulid,
         links: &[mesimon_core::links::Link],
+        mut is_file: impl FnMut(&Path) -> bool,
     ) -> TranscriptLinks {
         let dir = self.link_dir(ticket);
         links
             .iter()
             .filter_map(|link| {
-                self.resolve_link(ticket, &dir, link)
+                self.resolve_link(ticket, &dir, link, &mut is_file)
                     .map(|resolved| (link.target.clone(), resolved))
             })
             .collect()
@@ -6841,14 +6900,14 @@ impl App {
 
     /// The OS flipped appearance (T-485): the watch thread said so on its
     /// channel, and the board rebuilds its theme in the other slot's
-    /// flavor. No refresh — the daemon owns none of this, and the next
-    /// frame is drawn unconditionally, so a swapped theme IS the repaint.
+    /// flavor. The watch reports the change for the next frame.
     /// Nothing here touches the terminal: no query, no read, nothing that
     /// could land on stdin as keys.
-    fn follow_appearance(&mut self) {
-        if let Some(ground) = self.appearance.as_ref().and_then(|w| w.take()) {
-            self.take_ground(ground);
-        }
+    fn follow_appearance(&mut self) -> bool {
+        let Some(ground) = self.appearance.as_ref().and_then(|w| w.take()) else { return false };
+        let changed = ground != self.ground;
+        self.take_ground(ground);
+        changed
     }
 
     /// The ground moved: the board rests on the new slot's pick. The
@@ -8530,7 +8589,7 @@ impl App {
         } else if let Some(t) =
             self.crown_touches.iter().filter(|t| t.ticket == id).max_by_key(|t| t.at_ms)
         {
-            if now.saturating_sub(t.at_ms) < crate::theme::CROWN_LIT_MS {
+            if crate::frame_clock::before(now, t.at_ms.saturating_add(crate::theme::CROWN_LIT_MS)) {
                 return CrownMark::Touched { action: &t.action, land: None };
             }
         }
@@ -8586,7 +8645,10 @@ impl App {
             return Some((&r.reason, true));
         }
         let l = self.lowered.get(&ticket.id)?;
-        let fresh = mesimon_core::clock::now_ms().saturating_sub(l.at_ms) < LOWERED_HAND_MS;
+        let fresh = crate::frame_clock::before(
+            mesimon_core::clock::now_ms(),
+            l.at_ms.saturating_add(LOWERED_HAND_MS),
+        );
         fresh.then_some((&l.reason, false))
     }
 
@@ -9129,7 +9191,7 @@ impl App {
             git_fetchable: self.git.upstream.is_some()
                 || self.git.nested.iter().any(|s| s.upstream.is_some() && !s.detached),
             git_fetching: self.git.fetching || self.git.nested.iter().any(|s| s.fetching),
-            git_fetch_note: self.git_fetch_note(),
+            git_fetch_note: crate::frame_clock::collect(|| self.git_fetch_note()).0,
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
             // A start parked behind its worktree (T-1156) has had its press:
@@ -9550,7 +9612,7 @@ impl App {
         if t != ticket || Self::merge_stage(self.wt_item(ticket)?) != Some(stage) {
             return None;
         }
-        if at.elapsed() >= MERGE_ASK_COOLDOWN && !self.ticket_busy(ticket) {
+        if !crate::frame_clock::during(at, MERGE_ASK_COOLDOWN) && !self.ticket_busy(ticket) {
             return None;
         }
         match stage {
@@ -13954,8 +14016,17 @@ impl App {
         self.refresh_soon()
     }
 
-    /// The INPUT scope: a barrier that owns every key. The keymap resolves the
-    /// editing verbs; anything it does not bind is a character to type.
+    fn text_verb(&self, scope: Scope, key: Option<Key>) -> Option<Verb> {
+        let key = key?;
+        // These text fields are scope barriers. Most letters bind nothing.
+        debug_assert!(scope.parent().is_none());
+        if !keymap::bindings(scope).iter().any(|b| b.keys.contains(&key)) {
+            return None;
+        }
+        keymap::resolve(scope, key, &self.ctx())
+    }
+
+    /// The input barrier resolves its editing verbs and types unbound characters.
     fn key_input(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         let Mode::Input { mut purpose, mut buffer } = self.mode.clone() else {
             return Ok(());
@@ -13975,8 +14046,7 @@ impl App {
             }
         }
         let key = crate::keys::to_key_text(code, mods);
-        let ctx = self.ctx();
-        let mut verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        let mut verb = self.text_verb(Scope::Input, key);
         // The board's ask field is one line (T-1212): its Shift+Enter is
         // Enter while the field is blank, and otherwise opens the composer
         // on the words with a new line under them, where the line break
@@ -14244,8 +14314,7 @@ impl App {
         let key = crate::keys::to_key_text(code, mods);
         // The ctx reads the picker off `self.mode`, so the lookup happens
         // with it still installed.
-        let ctx = self.ctx();
-        let verb = key.and_then(|k| keymap::resolve(Scope::Search, k, &ctx));
+        let verb = self.text_verb(Scope::Search, key);
         let Mode::Search(mut s) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return Ok(());
         };
@@ -14601,16 +14670,9 @@ impl App {
     /// The editor. A barrier like `key_input`; the mode is TAKEN rather than
     /// cloned, because a 32 KiB body copied per keystroke is silly.
     fn key_editor(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        let Mode::Editor(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
-            return Ok(());
-        };
         let word = crate::keys::word_wise(mods);
         let key = crate::keys::to_key_text(code, mods);
-        // The ctx reads the editor off `self.mode`; put it back for the
-        // duration of the lookup.
-        self.mode = Mode::Editor(ed);
-        let ctx = self.ctx();
-        let verb = key.and_then(|k| keymap::resolve(Scope::Editor, k, &ctx));
+        let verb = self.text_verb(Scope::Editor, key);
         let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return Ok(());
         };
@@ -15726,7 +15788,9 @@ impl App {
     /// behind it.
     pub(crate) fn peek_showing(&self, ticket: ulid::Ulid) -> bool {
         self.peek
-            || self.tag_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TAG_FLASH)
+            || self
+                .tag_flash
+                .is_some_and(|(id, at)| id == ticket && crate::frame_clock::during(at, TAG_FLASH))
             || self.tier_flashing(ticket)
     }
 
@@ -17524,7 +17588,7 @@ impl App {
     /// somewhere, skipping a target already listed.
     fn push_links(&self, ticket: ulid::Ulid, dir: &Path, body: &str, out: &mut Vec<TicketLink>) {
         for link in mesimon_core::links::extract(body) {
-            let Some(link) = self.resolve_link(ticket, dir, &link) else { continue };
+            let Some(link) = self.resolve_link(ticket, dir, &link, Path::is_file) else { continue };
             if !out.iter().any(|o| o.target == link.target) {
                 out.push(link);
             }
@@ -17536,6 +17600,7 @@ impl App {
         ticket: ulid::Ulid,
         dir: &Path,
         link: &mesimon_core::links::Link,
+        is_file: impl FnOnce(&Path) -> bool,
     ) -> Option<TicketLink> {
         use mesimon_core::links::Found;
         let target = match &link.target {
@@ -17549,7 +17614,7 @@ impl App {
             }
             Found::Path { path, line } => {
                 let full = resolve_link_path(dir, path);
-                if !full.is_file() {
+                if !is_file(&full) {
                     return None;
                 }
                 LinkTarget::File { path: full, line: *line }
@@ -19974,19 +20039,23 @@ mod tests {
     #[test]
     fn a_tick_looks_for_the_board_in_flight_soon() {
         let (mut app, _) = App::for_test_logged(board_three_columns(), theme(), false);
-        assert_eq!(app.frame_wait(), Duration::from_millis(100), "nothing out");
+        assert_eq!(app.frame_wait(app.fast_frames()), Duration::from_millis(100), "nothing out");
         let hold = slow(&mut app);
         app.refresh_soon().unwrap();
         assert!(app.snapshot_in_flight());
-        assert_eq!(app.frame_wait(), SNAPSHOT_FRAME);
+        assert_eq!(app.frame_wait(app.fast_frames()), SNAPSHOT_FRAME);
         assert!(SNAPSHOT_FRAME <= Duration::from_millis(10));
         // A daemon that does not answer is waited for at the idle pace.
         app.snapshot_asked_at = Instant::now() - SNAPSHOT_SOON - Duration::from_millis(1);
-        assert_eq!(app.frame_wait(), Duration::from_millis(100), "a slow daemon");
+        assert_eq!(app.frame_wait(app.fast_frames()), Duration::from_millis(100), "a slow daemon");
         release(&hold);
         app.pump().unwrap();
         assert!(!app.snapshot_in_flight());
-        assert_eq!(app.frame_wait(), Duration::from_millis(100), "landed: back to idle");
+        assert_eq!(
+            app.frame_wait(app.fast_frames()),
+            Duration::from_millis(100),
+            "landed: back to idle"
+        );
     }
 
     /// A board whose group 1 names three tags, the cursor on ticket 1.
@@ -22081,7 +22150,7 @@ mod tests {
         app.notes.remove(&second.id);
         app.queued_event =
             Some(TermEvent::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)));
-        assert!(app.tick().unwrap());
+        assert!(app.tick_until(None).unwrap());
         assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: rows - 2 });
         assert_eq!(app.note_text(&second), Some("second"), "{:?}", sent.borrow());
     }

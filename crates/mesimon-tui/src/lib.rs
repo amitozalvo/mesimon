@@ -23,6 +23,7 @@ pub mod client;
 mod detach_guide;
 mod detect;
 mod external;
+mod frame_clock;
 mod glide;
 mod glyphs;
 mod handover;
@@ -459,20 +460,27 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
     // every suspend gives the terminal its own state back.
     let mut tab = title::Tab::default();
     let mut mouse = Capture::default();
+    let mut dirty = true;
+    let mut deadline = None;
     loop {
-        {
+        if dirty || deadline.is_some_and(|at| std::time::Instant::now() >= at) {
             let _held = console.as_deref().map(crate::notify::Console::drawing);
-            // Every tick renders, and only a frame that changed writes — an
-            // idle board sends the tty nothing, so a background iTerm2 tab
-            // does not spin its activity indicator (T-496).
-            quiet::draw(terminal, |f| {
-                ui::draw(f, app);
-                if let Some(v) = veil.as_mut() {
-                    if !v.apply(f.buffer_mut()) {
-                        veil = None;
-                    }
+            let start = std::time::Instant::now();
+            let (result, delay) = frame_clock::collect(|| {
+                if app.fast_frames() {
+                    frame_clock::after_ms(16);
                 }
-            })?;
+                quiet::draw(terminal, |f| {
+                    ui::draw(f, app);
+                    if let Some(v) = veil.as_mut() {
+                        if !v.apply(f.buffer_mut()) {
+                            veil = None;
+                        }
+                    }
+                })
+            });
+            result?;
+            deadline = delay.and_then(|d| start.checked_add(d));
             let mut out = std::io::stdout();
             // The shin PNGs, on the first frame the icon row wants them:
             // a write under the state dir, so it happens here and not in
@@ -484,7 +492,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
             mouse.sync(&mut out, app.prefs.mouse)?;
         }
 
-        app.tick()?;
+        dirty = app.tick_until(deadline)?;
 
         // U on a ready update: fall out to `run`, which execs the new
         // binary once the terminal is restored.
@@ -497,6 +505,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
         // from nothing. This is the Terminal.app probe-garbage recovery, and
         // the answer to any stray write from a program that escaped its pane.
         if std::mem::take(&mut app.force_redraw) {
+            dirty = true;
             quiet::clear(terminal)?;
         }
 
@@ -514,6 +523,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
             unsafe {
                 libc::raise(libc::SIGTSTP);
             }
+            dirty = true;
             *terminal = init_terminal()?;
             mouse = Capture::default();
             app.saw_board(true);
@@ -541,6 +551,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
             let ho = handover::run(&argv, cwd.as_deref());
             // Alt screen back up FIRST — the drain's settle sleep must not
             // leave the primary screen (stale logs) on display.
+            dirty = true;
             *terminal = init_terminal()?;
             mouse = Capture::default();
             app.saw_board(true);
@@ -570,6 +581,7 @@ fn event_loop(terminal: &mut Term, app: &mut App, mut veil: Option<loader::Veil>
                 );
             }
             let out = external::edit_dir(&app.repo_root).and_then(|d| external::run(&req, &d));
+            dirty = true;
             *terminal = init_terminal()?;
             mouse = Capture::default();
             app.saw_board(true);

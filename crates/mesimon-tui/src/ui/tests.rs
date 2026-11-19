@@ -513,6 +513,26 @@ fn install_releases(app: &mut App) {
 // ---- goldens ---------------------------------------------------------------
 
 #[test]
+fn only_visible_card_clocks_wake_the_board() {
+    let mut b = fixture(false);
+    b.sessions.clear();
+    for i in 8..48 {
+        b.tickets.push(ticket(i, "T-extra", "Short", "todo", &format!("z{i:02}")));
+    }
+    b.sessions.push(session(100, ulid_n(47), SessionKind::Claude, SessionState::Running));
+    let mut app = app_graphite(b);
+    let next = |app: &App| crate::frame_clock::collect(|| render(app, 120, 30)).1;
+    for view in [crate::prefs::BoardView::Columns, crate::prefs::BoardView::Table] {
+        app.prefs.board_view = view;
+        assert_eq!(next(&app), None, "a spinner below the viewport stays asleep");
+        app.board_mut().sessions[0].ticket = ulid_n(1);
+        assert!(next(&app).is_some_and(|d| d <= std::time::Duration::from_millis(100)));
+        app.board_mut().sessions[0].ticket = ulid_n(47);
+    }
+    assert!(app.on_event(ratatui::crossterm::event::Event::Resize(100, 28)).unwrap());
+}
+
+#[test]
 fn golden_calm_board_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
@@ -7607,6 +7627,27 @@ fn transcript_links_mark_the_enter_target_despite_repeated_labels_and_prose() {
 }
 
 #[test]
+fn a_transcript_path_changes_without_a_key_or_snapshot() {
+    let path = std::env::temp_dir().join(format!("mesimon-link-{}.txt", uuid::Uuid::new_v4()));
+    let (mut app, dir) =
+        linked_transcript("path-wake", &[&format!("[note]({})", path.display())], false);
+    press(&mut app, '}');
+    let empty = app.transcript_links();
+    assert!(empty.is_empty());
+    let _ = render(&app, 120, 30);
+    assert!(std::rc::Rc::ptr_eq(&empty, &app.transcript_links()));
+    std::fs::write(&path, "note").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while app.transcript_links().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the file became a link");
+        app.poll_transcript();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn transcript_links_reveal_and_mark_wrapped_labels_and_bare_urls() {
     let label = "label".repeat(20);
     let url = format!("https://b.test/{}", "path".repeat(20));
@@ -8650,7 +8691,8 @@ fn golden_editor_reader_120() {
     app.mode = Mode::Editor(ed.clone());
     // The note is measured before the edge is drawn: the first frame
     // offers the scroll it has.
-    let lines = render(&app, 120, 30);
+    let (lines, next) = crate::frame_clock::collect(|| render(&app, 120, 30));
+    assert_eq!(next, Some(std::time::Duration::ZERO), "settle the board footer");
     assert!(app.ctx().reader_scrolls, "the note is longer than the window");
     assert!(!app.ctx().reader_sideways, "wrapped, nothing runs past it");
     assert!(lines.iter().any(|l| l.contains("jk scroll")), "{lines:?}");
@@ -8662,7 +8704,8 @@ fn golden_editor_reader_120() {
     assert!(lines.iter().any(|l| l.contains('┴')), "the notch points at the card: {lines:?}");
     // The footer was drawn before the note was measured; it says the
     // same keys from the next frame on.
-    let lines = render(&app, 120, 30);
+    let (lines, next) = crate::frame_clock::collect(|| render(&app, 120, 30));
+    assert_ne!(next, Some(std::time::Duration::ZERO), "the scroll hints have settled");
     assert!(lines.iter().any(|l| l.contains("DESCRIPTION ∙ 1 of 2")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("enter edit")), "the edge offers it: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("## What")), "markdown is drawn: {lines:?}");

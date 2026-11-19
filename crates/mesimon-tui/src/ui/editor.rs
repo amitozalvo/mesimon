@@ -727,8 +727,14 @@ fn draw_reader_dialog(f: &mut Frame, app: &App, ed: &Editor) {
     // offers a scroll on the very frame that has one.
     let words = Rect { y: body.y + 2, height: body.height.saturating_sub(2), ..body };
     // Elevated reads as the ground where the profile paints no card.
+    let scrolls = || ed.reader.as_ref().map(|r| (r.pager.view.get().max > 0, r.max_x.get() > 0));
+    let prior = scrolls();
     let lines = fits.then(|| reader_lines(app, ed, words, 0, crate::rich::Surface::Elevated));
-    app.preview_measured();
+    if prior != scrolls() {
+        // The board footer was painted before the dialog measured its keys.
+        crate::frame_clock::after_ms(0);
+    }
+    app.ctx_dirty();
     let tail = dialog::reading_keys(app, Scope::Reader, ink, inner.width.saturating_sub(4).into());
     let title = edge_heading(app, ed, ink);
     dialog::frame(f, app, area, surface, ink, dialog::Edges { title, tail });

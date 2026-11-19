@@ -477,7 +477,11 @@ impl Veil {
     /// Veil a board frame as it stands now; false once the veil is gone.
     pub(crate) fn apply(&mut self, buf: &mut Buffer) -> bool {
         let from = *self.from.get_or_insert_with(Instant::now);
-        let k = lift_at(from.elapsed().as_millis() as u64);
+        let ms = from.elapsed().as_millis() as u64;
+        let k = lift_at(ms);
+        if k > 0.0 {
+            crate::frame_clock::after_ms(LIFT_STEP_MS - ms % LIFT_STEP_MS);
+        }
         veil(buf, &self.inks, self.toward, k);
         k > 0.0
     }

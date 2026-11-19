@@ -50,16 +50,31 @@ pub(crate) fn one_line(s: &str) -> String {
 /// per-second count-up (watching an agent work). Everywhere else the
 /// sub-minute range holds a stable `now` — an idle board must not tick.
 pub(crate) fn age_slot(now_ms: u64, then_ms: u64, ticking: bool) -> String {
-    let secs = now_ms.saturating_sub(then_ms) / 1000;
+    let elapsed = now_ms.saturating_sub(then_ms);
+    let secs = elapsed / 1000;
+    let (word, _, next) = age_band(secs, ticking);
+    if let Some(next) = next {
+        crate::frame_clock::before(now_ms, then_ms.saturating_add(next * 1000));
+    }
+    word
+}
+
+/// The label and its interval in whole seconds. A count-up wakes at its
+/// upper bound, a snooze countdown just below its lower bound.
+fn age_band(secs: u64, ticking: bool) -> (String, u64, Option<u64>) {
+    let unit = |size: u64, suffix, lo, hi| {
+        let n = secs / size;
+        (format!("{n}{suffix}"), (n * size).max(lo), Some(((n + 1) * size).min(hi)))
+    };
     match secs {
-        0..=9 => "now".into(),
-        10..=99 if !ticking => "now".into(),
-        10..=99 => format!("{secs}s"),
-        100..=5_999 => format!("{}m", (secs / 60).max(1)),
-        6_000..=86_399 => format!("{}h", secs / 3600),
-        86_400..=604_799 => format!("{}d", secs / 86_400),
-        604_800..=31_535_999 => format!("{}w", secs / 604_800),
-        _ => ">1y".into(),
+        0..=99 if !ticking => ("now".into(), 0, Some(100)),
+        0..=9 => ("now".into(), 0, Some(10)),
+        10..=99 => unit(1, "s", 10, 100),
+        100..=5_999 => unit(60, "m", 100, 6_000),
+        6_000..=86_399 => unit(3600, "h", 6_000, 86_400),
+        86_400..=604_799 => unit(86_400, "d", 86_400, 604_800),
+        604_800..=31_535_999 => unit(604_800, "w", 604_800, 31_536_000),
+        _ => (">1y".into(), 31_536_000, None),
     }
 }
 
@@ -105,7 +120,10 @@ pub(crate) fn until_word(now_ms: u64, then_ms: u64) -> String {
         return "now".into();
     }
     // The slot never ticks seconds: "in 40s" is not a promise worth making.
-    match age_slot(then_ms, now_ms, false).as_str() {
+    let remaining = then_ms - now_ms;
+    let (word, lower, _) = age_band(remaining / 1000, false);
+    crate::frame_clock::after_ms((remaining - lower * 1000 + 1).min(remaining));
+    match word.as_str() {
         "now" => "in <2m".into(),
         age => format!("in {age}"),
     }
@@ -164,6 +182,9 @@ pub(crate) fn marquee_offset(elapsed_ms: u64, overflow: usize) -> usize {
     if step >= cycle {
         return 0;
     }
+    let next = (step + 1).max(HOLD_STEPS);
+    let next = if step >= HOLD_STEPS - 1 + overflow as u64 { cycle } else { next };
+    crate::frame_clock::after_ms(next * STEP_MS - elapsed_ms);
     // Steps 0..HOLD hold at 0; each step after walks one cell.
     (step.saturating_sub(HOLD_STEPS - 1) as usize).min(overflow)
 }
@@ -1079,6 +1100,19 @@ mod tests {
         let t = truncate(s, 10);
         assert!(t.width() <= 10);
         assert!(t.ends_with('~'));
+    }
+
+    #[test]
+    fn a_displayed_age_wakes_at_the_next_label_in_either_direction() {
+        use crate::frame_clock::collect;
+        use std::time::Duration;
+        let in_ms = |ms| Some(Duration::from_millis(ms));
+        assert_eq!(collect(|| age_slot(99_975, 0, false)), ("now".into(), in_ms(25)));
+        assert_eq!(collect(|| age_slot(99_975, 0, true)), ("99s".into(), in_ms(25)));
+        assert_eq!(collect(|| age_slot(100_000, 0, false)), ("1m".into(), in_ms(20_000)));
+        assert_eq!(collect(|| until_word(1, 100_005)), ("in 1m".into(), in_ms(5)));
+        assert_eq!(collect(|| age_slot(32_000_000_000, 0, false)), (">1y".into(), None));
+        assert_eq!(collect(|| marquee_offset(20_000, 2)), (0, None));
     }
 
     #[test]

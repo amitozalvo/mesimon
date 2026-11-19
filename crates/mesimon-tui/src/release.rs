@@ -559,6 +559,12 @@ fn channels_words(running: Channel, follows: Channel) -> String {
 /// `4m ago` / `2h ago` / `3d ago` — the menu's word for a moment behind us.
 pub(crate) fn ago(d: Duration) -> String {
     let m = d.as_secs() / 60;
+    let step = match m {
+        0..=59 => 60_000,
+        60..=1439 => 3_600_000,
+        _ => 86_400_000,
+    };
+    crate::frame_clock::after_ms(step - (d.as_millis() % u128::from(step)) as u64);
     match m {
         0 => "just now".into(),
         1..=59 => format!("{m}m ago"),

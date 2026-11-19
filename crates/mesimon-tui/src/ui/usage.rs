@@ -70,7 +70,10 @@ fn unread(provider: Provider) -> &'static str {
 /// A reading's windows that still exist: one whose reset passed since it
 /// was read is about a window that is gone, until the next read.
 fn live(r: &Reading, now: u64) -> Vec<&Window> {
-    r.windows.iter().filter(|w| w.resets_at_ms.is_none_or(|t| t > now)).collect()
+    r.windows
+        .iter()
+        .filter(|w| w.resets_at_ms.is_none_or(|t| crate::frame_clock::before(now, t)))
+        .collect()
 }
 
 /// The windows the settings let onto the line: the kinds they name, and a
@@ -109,6 +112,18 @@ pub(crate) fn reset_word(app: &App, at_ms: u64) -> String {
     let (Some(t), Some(n)) = ((app.clock)(at_ms / 1000), (app.clock)(now / 1000)) else {
         return String::new();
     };
+    // A future reset changes from a date to a weekday, then to a clock
+    // at local midnight (including a DST transition).
+    if let Some(midnight) = crate::localtime::to_epoch(&mesimon_core::snooze::LocalTime {
+        mday: t.mday,
+        hour: 0,
+        min: 0,
+        sec: 0,
+        ..t
+    }) {
+        crate::frame_clock::before(now, midnight.saturating_mul(1000));
+    }
+    crate::frame_clock::before(now, at_ms.saturating_sub(6 * 86_400_000).saturating_add(1));
     if (t.year, t.mon, t.mday) == (n.year, n.mon, n.mday) {
         format!("{:02}:{:02}", t.hour, t.min)
     } else if at_ms.saturating_sub(now) < 6 * 86_400_000 {
@@ -454,6 +469,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         }
         // The experimental row: where the headline week is heading.
         let week = hottest(&windows).filter(|h| h.length_mins.is_some_and(|m| m >= 1440));
+        // The projected percentage and time of exhaustion depend on the
+        // wall clock even between two readings.
+        if week.is_some() {
+            crate::frame_clock::after_ms(1000 - now % 1000);
+        }
         if let Some(p) = week.and_then(|h| pace(h, now)) {
             let (value, tail) = match p.full_at_ms {
                 Some(at) => ("full".to_string(), format!("   by {}", reset_word(app, at))),

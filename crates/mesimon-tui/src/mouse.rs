@@ -228,19 +228,29 @@ pub(crate) fn scrape_hints(buf: &Buffer, map: &mut Map) {
         return;
     }
     let area = buf.area;
-    for y in area.top()..area.bottom() {
-        // The row as text, and the cell each char starts at.
-        let mut text = String::new();
-        let mut cells: Vec<(usize, u16)> = Vec::new();
-        for x in area.left()..area.right() {
-            let sym = buf[(x, y)].symbol();
-            if sym.is_empty() {
-                continue;
-            }
-            cells.push((text.len(), x));
-            text.push_str(sym);
+    let bullet_keys = hints.iter().any(|(_, _, bold)| !bold);
+    let mut text = String::new();
+    let mut cells = Vec::new();
+    for (row, line) in buf.content.chunks(usize::from(area.width).max(1)).enumerate() {
+        // Every hint starts with either a bold key or the bullet in note_key.
+        if !line
+            .iter()
+            .any(|c| c.modifier.contains(Modifier::BOLD) || (bullet_keys && c.symbol() == "∙"))
+        {
+            continue;
         }
-        let cell_at = |byte: usize| cells.iter().find(|(b, _)| *b == byte).map(|(_, x)| *x);
+        let y = area.y + row as u16;
+        text.clear();
+        cells.clear();
+        for (col, cell) in line.iter().enumerate() {
+            let sym = cell.symbol();
+            if !sym.is_empty() {
+                cells.push((text.len(), area.x + col as u16));
+                text.push_str(sym);
+            }
+        }
+        let cell_at =
+            |byte: usize| cells.binary_search_by_key(&byte, |&(b, _)| b).ok().map(|i| cells[i].1);
         for (words, key, bold) in &hints {
             let mut from = 0;
             while let Some(i) = text[from..].find(words.as_str()) {

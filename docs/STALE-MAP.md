@@ -47819,3 +47819,30 @@ The identical-write diagnosis was partly refuted. Taking mutable access can mark
 `shutdown_flush_e2e` holds a changed save, reads the new seat from a second client, releases the save and sends SIGKILL after the spawn receipt. The next daemon must find the seat. A second held write exercises a clean shutdown. The worker unit test forces an atomic write to fail and checks that two later revisions share a successful save with separate receipts.
 
 `cargo ut` passed after fixing the worker lifetime race caught by `a_start_s_receipt_outlives_its_agent_s_own_task_notifications`, which also passed alone. The 55 affected e2e files ran 381 tests. Only `archive_e2e::archive_gates_suggests_and_restores` timed out waiting for a sleep offer and it passed alone. The three shutdown-flush cases passed again on the rebased branch. The initial sandboxed benchmark and socket fixtures required normal fixture access, and an earlier integration sweep was interrupted to test the final implementation. The full workspace run awaits merge.
+
+## An idle terminal board stops composing frames (T-1338, 2026-11-20)
+
+The event loop discarded the dirty bit returned by the input and daemon pump. T-496 suppressed terminal writes for identical frames, but the board still composed and compared an entire buffer about ten times a second. The loop now draws on a change or the next deadline registered by a displayed clock. It still checks background work every 100 ms at rest, polls a requested snapshot at its existing 8 ms cadence, and budgets 16 ms for fast animation. Resize and returning from an external terminal each request a frame. Both board layouts discard clock requests from cards outside their viewport.
+
+The comparison used a 120 × 30 private PTY, the debug TUI event loop, a fixed snapshot with four columns and 120 quiet cards, mouse enabled and idle snake disabled. It measured the TUI process’s user plus system CPU over five minutes. Frame times are medians of 101 draws on a persistent test terminal of the same size. The ticket fixture had a 63,000-byte Markdown description. These are local fixtures; the reported 6.3% came from the long-running simbly process.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Five idle minutes, CPU seconds | 8.6132 | 0.4639 |
+| Mean share of one core | 2.87% | 0.15% |
+| Frames composed, including the initial frame | 2,858 | 1 |
+| Board frame, median | 2.977 ms | 1.817 ms |
+| Long ticket frame, median | 9.257 ms | 1.635 ms |
+
+Separate counters on 101 warmed, forced frames or keystrokes gave the following results.
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| Context builds for 101 ordinary characters in the create field | 101 (2.34 ms total) | 0 |
+| Context builds on the long ticket | 202 (12.37 ms total) | 101 (3.22 ms total) |
+| Description Markdown renders on the long ticket | 101 (877.56 ms total) | 0 |
+| File-link resolutions in a transcript with a path | 202 (1.20 ms total) | 0 |
+| Mouse hint scrape on the board | 0.651 ms/frame | 0.063 ms/frame |
+| Card renders per board frame, 40 visible | 120 (0.533 ms/frame) | 120 (0.369 ms/frame) |
+
+Clearing the frame context used to discard resolved transcript links too. The open transcript now reuses them and checks candidate paths for appearance or removal on a 100 ms cadence. The description reuses its rows until its content or rendering inputs change. The hint scrape originally walked the cells once per row, then searched that row’s text for each hint. With the mouse disabled it ran zero times in both versions. With the mouse enabled it now skips rows without a possible key and reuses the row buffers. Expanded columns still measure off-screen cards for variable heights, scrolling and hidden attention counts. A quiet board pays none of those per-frame costs between visible changes.

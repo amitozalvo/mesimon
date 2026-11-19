@@ -287,7 +287,11 @@ impl App {
     /// The header's lit word, while it lasts.
     pub(crate) fn link_lit(&self) -> Option<&LinkLit> {
         let lit = self.link_lit.as_ref()?;
-        ((self.now)().saturating_sub(lit.seen) < crate::theme::LINK_LIT_MS).then_some(lit)
+        (crate::frame_clock::before(
+            (self.now)(),
+            lit.seen.saturating_add(crate::theme::LINK_LIT_MS),
+        ))
+        .then_some(lit)
     }
 
     /// Is a bolt between the crown and a board's name mid-flight?

@@ -48,14 +48,16 @@ pub(crate) struct Peek {
 /// claude's transcript a once-a-second read; see the module doc for what
 /// that costs.
 #[derive(Default)]
-pub(crate) struct PeekCache(
-    RefCell<HashMap<String, Entry>>,
-    RefCell<HashMap<String, Rc<Peek>>>,
+pub(crate) struct PeekCache {
+    entries: RefCell<HashMap<String, Entry>>,
+    staged: RefCell<HashMap<String, Rc<Peek>>>,
     /// The file's peek with the record's live words laid over it (T-1111),
     /// by path: worked out once per (file read, words) pair, since the
     /// overlay's `card_words` is a markdown parse and a card asks per frame.
-    RefCell<HashMap<String, Overlaid>>,
-);
+    overlays: RefCell<HashMap<String, Overlaid>>,
+    // File reads the current screen depends on, including absent files.
+    displayed: RefCell<HashMap<String, (SessionKind, Option<Rc<Peek>>)>>,
+}
 
 struct Overlaid {
     /// The file read the overlay was laid on, held so its identity is its
@@ -97,6 +99,27 @@ impl PeekCache {
         self.read(kind, path, true)
     }
 
+    pub(crate) fn begin_frame(&self) {
+        self.displayed.borrow_mut().clear();
+    }
+
+    pub(crate) fn displayed(&self, s: &SessionRecord) -> Option<Rc<Peek>> {
+        let path = preview_path(s)?;
+        let file = self.peek_for(s.kind, path);
+        self.displayed.borrow_mut().insert(path.to_owned(), (s.kind, file.clone()));
+        self.overlay(s, path, file?)
+    }
+
+    pub(crate) fn display_changed(&self) -> bool {
+        self.displayed.borrow().iter().any(|(path, (kind, was))| {
+            match (was, self.peek_for(*kind, path)) {
+                (Some(old), Some(new)) => !Rc::ptr_eq(old, &new) && **old != *new,
+                (None, None) => false,
+                _ => true,
+            }
+        })
+    }
+
     /// A session's peek as the board draws it: its transcript's words with
     /// the sentence its mod heard live laid over them (T-1111,
     /// `SessionRecord::said`), until the file's copy is as new
@@ -105,8 +128,12 @@ impl PeekCache {
     pub(crate) fn peek_of(&self, s: &SessionRecord) -> Option<Rc<Peek>> {
         let path = preview_path(s)?;
         let file = self.peek_for(s.kind, path)?;
+        self.overlay(s, path, file)
+    }
+
+    fn overlay(&self, s: &SessionRecord, path: &str, file: Rc<Peek>) -> Option<Rc<Peek>> {
         let Some(said) = s.said.as_ref() else { return Some(file) };
-        if let Some(o) = self.2.borrow().get(path) {
+        if let Some(o) = self.overlays.borrow().get(path) {
             if Rc::ptr_eq(&o.over, &file) && o.said_at_ms == said.at_ms {
                 return Some(Rc::clone(&o.peek));
             }
@@ -133,7 +160,7 @@ impl PeekCache {
                 said_ms: file.said_ms,
             })
         };
-        self.2.borrow_mut().insert(
+        self.overlays.borrow_mut().insert(
             path.to_string(),
             Overlaid { over: file, said_at_ms: said.at_ms, peek: Rc::clone(&peek) },
         );
@@ -154,18 +181,18 @@ impl PeekCache {
         let text = sanitize(text);
         let card = Some(card_words(&text));
         let peek = Peek { text: Some(text), activity: None, reply_key: None, card, said_ms: None };
-        self.1.borrow_mut().insert(path.to_string(), Rc::new(peek));
+        self.staged.borrow_mut().insert(path.to_string(), Rc::new(peek));
     }
 
     fn read(&self, kind: SessionKind, path: &str, windowed: bool) -> Option<Rc<Peek>> {
         if !kind.is_agent() {
             return None;
         }
-        if let Some(p) = self.1.borrow().get(path) {
+        if let Some(p) = self.staged.borrow().get(path) {
             return Some(Rc::clone(p));
         }
         let now = Instant::now();
-        let mut map = self.0.borrow_mut();
+        let mut map = self.entries.borrow_mut();
         if windowed {
             if let Some(e) = map.get(path) {
                 if e.kind == kind && now.duration_since(e.checked_at) < FRESH {
@@ -208,13 +235,13 @@ impl PeekCache {
     /// the set of transcripts the snapshot still names, so a session that
     /// left the board takes its 64 KiB of cached tail with it.
     pub(crate) fn retain(&self, keep: impl Fn(&str) -> bool) {
-        self.0.borrow_mut().retain(|p, _| keep(p));
-        self.2.borrow_mut().retain(|p, _| keep(p));
+        self.entries.borrow_mut().retain(|p, _| keep(p));
+        self.overlays.borrow_mut().retain(|p, _| keep(p));
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.0.borrow().len()
+        self.entries.borrow().len()
     }
 
     /// Age every stat past `FRESH`, so the next read goes to the disk — a
@@ -222,7 +249,7 @@ impl PeekCache {
     #[cfg(test)]
     pub(crate) fn expire(&self) {
         let old = Instant::now() - FRESH * 2;
-        for e in self.0.borrow_mut().values_mut() {
+        for e in self.entries.borrow_mut().values_mut() {
             e.checked_at = old;
         }
     }

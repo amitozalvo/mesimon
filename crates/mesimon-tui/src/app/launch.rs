@@ -183,7 +183,7 @@ impl App {
         let seen = self.launches.seen.borrow();
         let s = seen.get(&ticket).filter(|s| s.fresh)?;
         let ms = s.ended?.elapsed().as_millis() as u64;
-        (ms < crate::creature::ready_ms()).then_some(ms)
+        crate::frame_clock::before(ms, crate::creature::ready_ms()).then_some(ms)
     }
 }
 

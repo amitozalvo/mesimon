@@ -695,6 +695,7 @@ fn egg_beat(size: Size, anim: Anim, ms: u64) -> Option<EggBeat> {
     };
     for b in beats {
         if t < u64::from(b.0) {
+            crate::frame_clock::after_ms(u64::from(b.0) - t);
             return Some(b.1);
         }
         t -= u64::from(b.0);
@@ -943,6 +944,9 @@ pub(crate) fn frame_at(size: Size, anim: Anim, ms: u64) -> &'static Frame {
         if ms < intro_ms { (intro, ms) } else { (cycle, (ms - intro_ms) % total(cycle).max(1)) };
     for fr in frames {
         if t < u64::from(fr.ms) {
+            if ms < intro_ms || frames.len() > 1 {
+                crate::frame_clock::after_ms(u64::from(fr.ms) - t);
+            }
             return fr;
         }
         t -= u64::from(fr.ms);

@@ -671,7 +671,31 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                     crate::rich::Surface::Ground
                 };
                 let width = (area.width as usize).saturating_sub(4);
-                crate::rich::render_on(text, width, cap, theme, surface, Newline::of_note(meta))
+                let newline = Newline::of_note(meta);
+                let mut cache = app.description_cache.borrow_mut();
+                if let Some(d) = cache.as_ref().filter(|d| {
+                    d.id == meta.id
+                        && d.rev == meta.rev
+                        && d.width == width
+                        && d.cap == cap
+                        && d.flavor == theme.flavor
+                        && d.profile == theme.profile
+                        && d.newline == newline
+                }) {
+                    return d.rows.clone();
+                }
+                let rows = crate::rich::render_on(text, width, cap, theme, surface, newline);
+                *cache = Some(super::Description {
+                    id: meta.id,
+                    rev: meta.rev,
+                    width,
+                    cap,
+                    flavor: theme.flavor,
+                    profile: theme.profile,
+                    newline,
+                    rows: rows.clone(),
+                });
+                rows
             })
             .unwrap_or_default()
     };
@@ -683,7 +707,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let folds = can_fold && !reading_note;
     app.set_page_desc_folds(folds);
     if can_fold && !app.prefs.page_description {
-        desc = render_desc(1);
+        desc.truncate(1);
+        crate::rich::mark_cut(&mut desc, (area.width as usize).saturating_sub(4), theme);
         for row in &mut desc {
             for span in &mut row.spans {
                 span.style = span.style.fg(ink.dim2);
@@ -915,7 +940,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }),
             _ => None,
         };
-        let peek = sel.and_then(|s| app.peek_cache.peek_of(s));
+        let peek = sel.and_then(|s| app.peek_cache.displayed(s));
         // A mid-turn agent keeps composing past whatever the preview shows,
         // so the zone says so (bash panes work too, but have no transcript
         // for the line to qualify — Claude only).
@@ -999,7 +1024,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .filter(|s| s.kind.is_agent())
             .or_else(|| app.board.live_agent(ticket_id))
             .or_else(|| app.rail_sessions(ticket_id).into_iter().find(|s| s.kind.is_agent()));
-        let shin_peek = shin_rec.and_then(|s| app.peek_cache.peek_of(s));
+        let shin_peek = shin_rec.and_then(|s| app.peek_cache.displayed(s));
         // What it acts out (T-1156, T-1252): an egg on a ticket with no
         // agent, still until the press and rocking while the worktree is
         // made; hatching the shin as a fresh agent starts, and a hop once it

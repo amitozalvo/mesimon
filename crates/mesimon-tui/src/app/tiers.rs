@@ -263,7 +263,8 @@ impl App {
 
     /// Is `^r`'s reveal still up on this ticket's card?
     pub(crate) fn tier_flashing(&self, ticket: ulid::Ulid) -> bool {
-        self.tier_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TIER_FLASH)
+        self.tier_flash
+            .is_some_and(|(id, at)| id == ticket && crate::frame_clock::during(at, TIER_FLASH))
     }
 
     /// The card's "what mesimon does next" row while a switch is owed.
