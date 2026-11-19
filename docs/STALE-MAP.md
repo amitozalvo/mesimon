@@ -47344,3 +47344,30 @@ process-owning runner; both fixture audits were clean. Initial sandbox runs coul
 Unix sockets or inspect owned processes, so those checks were rerun outside that sandbox.
 The two old note-cache fixtures failed on the first unrestricted unit run and passed after
 the revision correction above. Full workspace e2es wait for the merged notice (T-1194).
+
+## A queued prompt's words stay sent on the phone (T-1315, 2026-11-19, the person: "the message was sent, then asked if to queue for a second then came back in input even though clearly it was sent already")
+
+**Seen.** A phone prompt to a working Codex crown went in as queued, then came back into the
+field under "Delivery unknown. Check the agent before sending again.", while the conversation
+showed the words delivered.
+
+**Cause.** The host keeps the last 128 receipts per paired phone (`Control::remember`), and
+every command counts: a page on the conversation asks a snapshot, a transcript, a foreground and
+a status every two-second tick, and again on the snapshot's answer, so 128 pass in well under a
+minute. Only a start on its way was kept past the cap (T-498). A queued prompt's receipt waited
+for the turn's end and was dropped; the phone's next `status` ask read `unknown`
+(`Request::Status`'s fallback) and `Sessions::reply` put the words back in the field. The host
+still held the prompt and sent it at the turn's end, but the phone had stopped asking.
+
+**Shipped.** `remember` keeps every receipt whose outcome is still owed: a start on its way, a
+prompt in `control.pending` (queued or waiting for the pane) and its send-now's receipt, and a
+phone's dialog answer in `dialog_deliveries`. Each ages out once settled. The phone is unchanged.
+
+Refuted: making the phone ignore an `unknown` status for a queued receipt (a host restart's
+`unknown` is real, and the incarnation check covers only part of it); not remembering read
+polls (a retried read's id answers from the receipt map, a wider change than the bug).
+
+Tests: `a_queued_prompt_keeps_its_receipt_past_the_cap` (the prompt's and its send-now's ids
+survive 393 later commands on the same grant; another grant's polls do not hold them; once
+delivered they age out). Run: `cargo ut`, `--test board m1_e2e::`: all passed. The change is in
+`server/mesophon.rs`, not `server.rs`.

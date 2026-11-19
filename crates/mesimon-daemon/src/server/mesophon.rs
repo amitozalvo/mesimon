@@ -510,10 +510,28 @@ impl Control {
         }
     }
     fn remember(&mut self, grant: BoardId, id: u64, reply: Reply) {
-        // A start on its way keeps its receipt (T-498): it is the oldest
-        // id, and a browser asking every two seconds passes 128 in a minute.
-        let held: Vec<u64> =
-            self.starts.values().filter(|w| w.grant == grant).map(|w| w.command).collect();
+        // A receipt whose outcome is still owed is kept (T-498, T-1315): a
+        // start on its way, a prompt queued for the turn's end or waiting
+        // for the pane, its send-now, a dialog's answer in flight. It is the
+        // oldest id, and a browser asking every two seconds passes 128 in
+        // well under a minute; a dropped one answers the phone's next
+        // status ask `unknown`, which puts sent words back in its field.
+        let starts = self.starts.values().map(|w| (w.grant, w.command));
+        let prompts = self.pending.values().flat_map(|p| {
+            [Some((p.grant, p.command)), p.send_now_receipt.map(|(g, _, c)| (g, c))]
+                .into_iter()
+                .flatten()
+        });
+        let answers = self.dialog_deliveries.values().filter_map(|d| match d.by {
+            Deliverer::Phone { grant, command, .. } => Some((grant, command)),
+            _ => None,
+        });
+        let held: Vec<u64> = starts
+            .chain(prompts)
+            .chain(answers)
+            .filter(|(g, _)| *g == grant)
+            .map(|(_, c)| c)
+            .collect();
         let receipts = self.receipts.entry(grant).or_default();
         receipts.insert(id, reply);
         while receipts.len() > 128 {
@@ -8962,6 +8980,44 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(control.receipts[&grant].len(), 128);
         assert!(control.receipts[&grant].contains_key(&5));
         control.starts.clear();
+        control.remember(grant, 400, Reply::Changed);
+        assert!(!control.receipts[&grant].contains_key(&5));
+    }
+
+    /// A prompt queued for the turn's end keeps its receipt, and its
+    /// send-now's, past the cap while the phone polls (T-1315): dropped,
+    /// the phone's status ask read `unknown` and put the sent words back in
+    /// its field. Another phone's polls do not keep it, and once delivered
+    /// it ages out like any other.
+    #[test]
+    fn a_queued_prompt_keeps_its_receipt_past_the_cap() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut control = Control::new(tx);
+        let (grant, other) = (BoardId::random(), BoardId::random());
+        let device = mesimon_team::crypto::DeviceKeys::generate().id();
+        control.pending.insert(
+            uuid::Uuid::from_u128(1),
+            Pending {
+                grant,
+                device,
+                command: 5,
+                ticket: ulid::Ulid(1),
+                pasted: false,
+                send_now_receipt: Some((grant, device, 6)),
+            },
+        );
+        control.remember(grant, 5, Reply::delivery("queued"));
+        control.remember(grant, 6, Reply::delivery("queued"));
+        control.remember(other, 5, Reply::Changed);
+        for id in 7..400 {
+            control.remember(grant, id, Reply::Changed);
+            control.remember(other, id, Reply::Changed);
+        }
+        assert_eq!(control.receipts[&grant].len(), 128);
+        assert!(control.receipts[&grant].contains_key(&5));
+        assert!(control.receipts[&grant].contains_key(&6));
+        assert!(!control.receipts[&other].contains_key(&5));
+        control.pending.clear();
         control.remember(grant, 400, Reply::Changed);
         assert!(!control.receipts[&grant].contains_key(&5));
     }
