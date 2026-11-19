@@ -483,6 +483,16 @@ struct ClientReply {
     told: Option<(uuid::Uuid, u64)>,
 }
 
+/// The board-wide worker returns the refs and remotes it resolved alongside
+/// the flags, so the writer can fold saved PRs into the very first sample.
+struct WorktreeSample {
+    gen: u64,
+    seq: u64,
+    base: Option<String>,
+    remotes: HashMap<std::path::PathBuf, Option<crate::forge::Remotes>>,
+    repos: Vec<worktree::RepoSample>,
+}
+
 enum Msg {
     PeerAnswered(ulid::Ulid, Box<Result<Response, String>>),
     Reaped(Vec<(String, Instant, bool)>, Duration),
@@ -540,12 +550,8 @@ enum Msg {
     /// A client's reader thread returned: its connection is closed. The
     /// merge train it may have armed disarms with it (2026-09-04).
     ClientGone(Arc<Mutex<UnixStream>>),
-    /// The worktree flags sampled on a worker (T-216) — one `for-each-ref`
-    /// and one `rev-list` per binding, per repository the legs live in
-    /// (T-368), off the writer thread. The `u64` is the `wt_gen` the sample
-    /// started under: a synchronous refresh in the meantime (a merge, a
-    /// teardown) makes it stale, and it is dropped.
-    WorktreeFlags(u64, Vec<worktree::RepoSample>),
+    /// Board-wide flags, stamped with the generation and the sample's start sequence.
+    WorktreeFlags(WorktreeSample),
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
     ForgeSampled(u64, crate::forge::Sample),
@@ -891,21 +897,21 @@ pub struct Daemon {
     /// Every branch checked out twice, across every repository the legs
     /// live in.
     wt_conflicts: Vec<String>,
-    /// Bumped by every synchronous flag refresh; a worker's sample carries
-    /// the value it started under and lands only if nothing bumped it since.
+    /// A merge, target change or fetch supersedes samples of the previous refs.
     wt_gen: u64,
     /// Only a merge-target change invalidates a crown turn's captured
     /// observation; a later merge/flag refresh must not erase its delivery.
     merge_target_gen: u64,
     /// A worker is out sampling the flags: the tick asks for no second one.
     wt_inflight: bool,
+    /// The train waits for sibling branches to be judged against the new base.
+    wt_refresh_pending: bool,
     /// Every flag sample is numbered as it starts (T-678): `wt_seq` the
-    /// last one started, `wt_inflight_seq` the board's sample out now, and
-    /// `wt_fresh` the newest absorbed per ticket — so a sample older than
+    /// last one started, and `wt_fresh` the newest absorbed per ticket.
+    /// A sample older than
     /// one already taken for a ticket leaves that ticket alone, and a
     /// finished turn can wait for a look that began after it (`trainhold`).
     wt_seq: u64,
-    wt_inflight_seq: u64,
     wt_fresh: HashMap<ulid::Ulid, u64>,
     /// A ticket's own look out now (T-678), and whether another is wanted
     /// when it lands: one in flight per ticket.
@@ -1777,10 +1783,8 @@ pub fn run(paths: Paths) -> Result<()> {
             d.kill_session(id);
         }
     }
+    // Archived trees are judged when the first sample lands.
     d.refresh_worktree_flags();
-    // On fresh flags: the landed trees of archived tickets the last daemon
-    // left standing (T-481). The first tick tears them down.
-    d.reclaim_archived();
     // The trees a freeing column still holds (T-1147): the last daemon's
     // arrivals died with it.
     d.seed_column_evictions();
@@ -1923,7 +1927,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::CostScanned(done) => d.on_cost_scanned(done),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
-            Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::WorktreeFlags(sample) => d.on_worktree_flags(sample),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
             Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
@@ -2249,8 +2253,8 @@ impl Daemon {
             wt_gen: 0,
             merge_target_gen: 0,
             wt_inflight: false,
+            wt_refresh_pending: false,
             wt_seq: 0,
-            wt_inflight_seq: 0,
             wt_fresh: HashMap::new(),
             ticket_looks: HashMap::new(),
             awaiting_looks: HashMap::new(),
@@ -9696,9 +9700,11 @@ impl Daemon {
                 }
                 // Fed as the merge road's own refusal is (T-782): T-778 moved
                 // the forge's refusal here, and the feed lost the attempt.
-                // A branch the last sample read behind its base is read
-                // again before that is the answer (T-1183).
-                if self.merge_state_word(target).as_deref() == Some("needs_rebase") {
+                // Before refusing, read this branch if the board is still
+                // refreshing or the last sample had it behind (T-1183).
+                if self.wt_refresh_pending
+                    || self.merge_state_word(target).as_deref() == Some("needs_rebase")
+                {
                     self.refresh_ticket_flags(target);
                 }
                 if let Some(message) = self.crown_merge_refusal(target, &key) {
@@ -13471,14 +13477,18 @@ impl Daemon {
             changed = true;
         }
         let now = now_ms();
+        // A sample from before the fetch must not repopulate either ref cache.
+        if fetched.root.as_ref().is_some_and(Result::is_ok)
+            || fetched.nested.iter().any(|(_, result)| result.is_ok())
+        {
+            self.wt_gen = self.wt_gen.wrapping_add(1);
+            self.upstreams.clear();
+        }
         for (name, verdict) in fetched.nested {
             let seen = self.git_nested_fetch.entry(name).or_default();
             match verdict {
                 Ok(()) => {
                     (seen.ok_at_ms, seen.error) = (now, None);
-                    // A leg's remote-tracking ref lives in its own repo
-                    // (T-267, keyed by leg name), and this fetch can move it.
-                    self.upstreams.clear();
                 }
                 Err(e) => seen.error = Some((now, e)),
             }
@@ -13496,7 +13506,6 @@ impl Daemon {
                     // the same fetch is what moves `origin/main`, so its ref
                     // is re-asked with it (T-267).
                     self.base_branch = None;
-                    self.upstreams.clear();
                 }
                 Err(e) => self.git_fetch_error = Some(e),
             }
@@ -15240,6 +15249,7 @@ impl Daemon {
                 notified: false,
             },
             worktree::LegMerge::Merged(landed) => {
+                self.refresh_ticket_flags(id);
                 self.refresh_worktree_flags();
                 // The merge just moved the checkout's branch: the header's
                 // `↑` should say so before the next 10 s bucket.
@@ -15259,6 +15269,7 @@ impl Daemon {
             worktree::LegMerge::Refused { landed, leg, base: leg_base, error } => {
                 if !landed.is_empty() {
                     // Some legs did land: the card must say so now.
+                    self.refresh_ticket_flags(id);
                     self.refresh_worktree_flags();
                     self.queue_git_sample();
                     self.persist_and_notify();
@@ -15999,6 +16010,7 @@ impl Daemon {
     /// train; the next rebase should include the commits they will add.
     fn train_pass(&mut self) -> bool {
         if !self.train.is_armed()
+            || self.wt_refresh_pending
             || self.worktrees_barred
             || self.worktrees.is_empty()
             || (self.worktree_base_cached().is_none() && self.needs_root_base())
@@ -18673,7 +18685,6 @@ impl Daemon {
                 (self.forge.gen, self.forge.epoch) = (gen, epoch);
                 self.forge_written.clear();
             }
-            self.wt_gen = self.wt_gen.wrapping_add(1);
             self.merge_target_gen = self.merge_target_gen.wrapping_add(1);
             self.forget_worktree_flags();
             self.upstreams.clear();
@@ -20125,9 +20136,8 @@ impl Daemon {
 
     /// The bindings as `compute_repo_flags` wants them: one query per
     /// repository a leg lives in, holding every ticket's leg there (T-368).
-    /// A single-repo board is one query on the root — the same `2 + n`
-    /// forks it always was. Empty when there is nothing to judge, which is
-    /// also when the flags are cleared rather than sampled. The upstream of
+    /// A single-repo board is one query on the root. Empty when there
+    /// is nothing to judge. The upstream of
     /// a leg is asked here where the cache has no answer, on the writer,
     /// which is what the tick's road avoids by passing `None` and asking on
     /// the worker. A single-repo leg rides with an empty base when the
@@ -20212,45 +20222,24 @@ impl Daemon {
         queries
     }
 
-    /// merged/ahead/needs-rebase/conflict flags, NOW, on the writer thread —
-    /// for the roads that must read them fresh in the same turn: startup,
-    /// a merge just made, a binding torn down. A binding just attached is
-    /// not one of them (T-430): fresh is what an absent entry reads as. The tick
-    /// never takes this road (T-216): with thirteen bindings it was 53 git
-    /// forks, ~0.5 s, every 10 s, and every keypress in that window waited
-    /// on it — it asks `queue_worktree_flags` instead. `2 + n` forks per
-    /// repository since the same change (`worktree::compute_flags`).
+    /// Invalidate reads started before the base moved. If a worker is
+    /// already out, its completion queues one pass for the newest generation.
     fn refresh_worktree_flags(&mut self) {
         self.wt_gen = self.wt_gen.wrapping_add(1);
-        if self.worktrees.is_empty() {
-            self.forget_worktree_flags();
-            return;
-        }
-        // A workspace leg carries its own base, so a folder root with no
-        // branch of its own samples its legs all the same (T-754); only a
-        // single-repo binding waits on the root's, and the journal says so.
-        if self.worktree_base().is_none() && self.needs_root_base() {
-            self.journal.line(&format!(
-                "worktree flags: no default branch at {}; single-repo bindings unsampled",
-                self.paths.repo_root.display()
-            ));
-            return;
-        }
-        let queries = self.wt_queries(true, None);
-        let samples = worktree::compute_repo_flags(&queries);
-        self.wt_seq = self.wt_seq.wrapping_add(1);
-        // The callers of this road broadcast on their own terms.
-        let _ = self.absorb_worktree_flags(samples, self.wt_seq, None);
+        self.wt_refresh_pending = !self.worktrees.is_empty();
+        self.queue_worktree_flags();
     }
 
-    /// One ticket's flags, NOW, on the writer thread (T-1183), for a road
-    /// about to refuse on them: the tick's sample is up to a bucket old, and
+    /// One ticket's flags, NOW, on the writer thread (T-1183), for a merge
+    /// reply or a road about to refuse: the tick's sample is up to a bucket old, and
     /// a crown that had just rebased a worker's branch was told it was
     /// behind its base by a read from before the rebase, where a person's
     /// `m` reads git at the press. Absorbed for that ticket alone, as its
     /// own look is, under a number no older sample outranks.
     fn refresh_ticket_flags(&mut self, ticket: ulid::Ulid) {
-        if self.tearing_down.contains(&ticket) || !self.base_known_for(ticket) {
+        if self.tearing_down.contains(&ticket)
+            || (!self.base_known_for(ticket) && self.worktree_base().is_none())
+        {
             return;
         }
         let queries = self.wt_queries(true, Some(ticket));
@@ -20262,11 +20251,6 @@ impl Daemon {
         let _ = self.absorb_worktree_flags(samples, self.wt_seq, Some(ticket));
     }
 
-    /// The tick's road: the same sample on a worker, landing as
-    /// `Msg::WorktreeFlags`. One at a time — a sample still out when the
-    /// next bucket comes round is simply the one that will land. The base
-    /// branch is resolved on the worker too when the cache is empty (a fetch
-    /// empties it), so its own forks leave the writer as well.
     /// Where a leg's repository is: the root, or the nested one by name.
     fn leg_dir(&self, name: &str) -> std::path::PathBuf {
         if name.is_empty() {
@@ -20285,7 +20269,9 @@ impl Daemon {
         // A board with no worktree still reads the forge for the PRs its
         // checkout tickets name (T-859); `forge_query` says when there is
         // nothing to ask.
-        if !self.through_prs() || !self.forge.due() {
+        // On startup the worktree worker is resolving these same remotes,
+        // including which remote the default branch tracks.
+        if self.wt_refresh_pending || !self.through_prs() || !self.forge.due() {
             return;
         }
         let Some(query) = self.forge_query(None) else { return };
@@ -21352,23 +21338,21 @@ impl Daemon {
         }
     }
 
+    /// At most one board-wide sample at a time. Resolve uncached refs on
+    /// its worker too, including the default branch for single-repo legs.
     fn queue_worktree_flags(&mut self) {
         if self.wt_inflight || self.worktrees.is_empty() {
             return;
         }
         self.wt_inflight = true;
         self.wt_seq = self.wt_seq.wrapping_add(1);
-        self.wt_inflight_seq = self.wt_seq;
+        let seq = self.wt_seq;
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
         let base = self.worktree_base_cached();
         let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         let parsed: Vec<std::path::PathBuf> = self.forge.remotes.keys().cloned().collect();
         let prs = self.through_prs();
-        // Single-repo legs need the base to make a query at all; with the
-        // cache empty the worker resolves it and the queries are built here
-        // against that answer once it lands. A workspace leg carries its
-        // own base and is queried either way.
         let mut queries = self.wt_queries(false, None);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -21386,10 +21370,7 @@ impl Daemon {
                 }
             }
             queries.retain(|q| !q.base.is_empty());
-            if queries.is_empty() {
-                let _ = tx.send(Msg::WorktreeFlags(gen, Vec::new()));
-                return;
-            }
+            let mut remotes = HashMap::new();
             for q in &mut queries {
                 // The upstream ref leaves the writer thread with the base,
                 // and on the same terms: asked here when the cache has no
@@ -21399,42 +21380,48 @@ impl Daemon {
                 }
                 // So is whether a forge reads its remote (T-786).
                 if prs && !parsed.contains(&q.repo) {
-                    q.forge = crate::forge::remote_of(&q.repo, &q.base).is_some();
+                    let found = remotes
+                        .entry(q.repo.clone())
+                        .or_insert_with(|| crate::forge::remotes_of(&q.repo, &q.base));
+                    q.forge = found.is_some();
                 }
             }
-            let samples = worktree::compute_repo_flags(&queries);
-            let _ = tx.send(Msg::WorktreeFlags(gen, samples));
+            let repos = worktree::compute_repo_flags(&queries);
+            let _ = tx.send(Msg::WorktreeFlags(WorktreeSample { gen, seq, base, remotes, repos }));
         });
     }
 
-    /// A worker's sample landed. Stale (a synchronous refresh ran since it
-    /// started) means dropped: the flags on hand are newer than it. Fresh
-    /// means absorbed, then the train's pass on it — exactly what the tick
-    /// did in one turn before the sample left the writer thread.
-    fn on_worktree_flags(&mut self, gen: u64, samples: Vec<worktree::RepoSample>) {
+    /// A superseded pass starts its replacement immediately. Its refs,
+    /// flags and train decisions all belong to the old generation.
+    fn on_worktree_flags(&mut self, sample: WorktreeSample) {
         self.wt_inflight = false;
-        if gen != self.wt_gen || samples.is_empty() {
+        if sample.gen != self.wt_gen {
+            self.queue_worktree_flags();
             return;
         }
+        let requested = std::mem::take(&mut self.wt_refresh_pending);
         if self.worktree_base_cached().is_none() {
-            if let Some(root) = samples.iter().find(|s| s.name.is_empty()) {
-                self.base_branch = Some(root.base.clone());
-            }
+            self.base_branch = sample.base;
         }
-        for s in &samples {
-            self.upstreams.entry(s.name.clone()).or_insert_with(|| {
-                // What the worker resolved is what the cache learns; the
-                // upstream it used is not on the sample, so it is asked once
-                // more here — one fork per leg name, once per fetch.
-                let repo = if s.name.is_empty() {
-                    self.paths.repo_root.clone()
-                } else {
-                    self.paths.repo_root.join(&s.name)
-                };
-                worktree::upstream_base(&repo, &s.base)
-            });
+        if requested && self.worktree_base_cached().is_none() && self.needs_root_base() {
+            self.journal.line(&format!(
+                "worktree flags: no default branch at {}; single-repo bindings unsampled",
+                self.paths.repo_root.display()
+            ));
         }
-        let changed = self.absorb_worktree_flags(samples, self.wt_inflight_seq, None);
+        for (repo, found) in sample.remotes {
+            self.forge.remember_remote(repo, found);
+        }
+        for s in &sample.repos {
+            self.upstreams.entry(s.name.clone()).or_insert_with(|| s.upstream.clone());
+        }
+        if requested {
+            self.queue_forge_sample();
+        }
+        if sample.repos.is_empty() {
+            return;
+        }
+        let changed = self.absorb_worktree_flags(sample.repos, sample.seq, None);
         // A merge that lands after the archive (a PR squashed later, a
         // `git merge` by hand) is one only the sample can see (T-481).
         self.reclaim_archived();
@@ -21589,7 +21576,8 @@ impl Daemon {
         if rebased {
             self.persist_worktrees();
         }
-        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        let tickets: Vec<_> =
+            self.worktrees.keys().copied().filter(|t| only.is_none_or(|o| o == *t)).collect();
         for tid in tickets {
             let (locked, attached) = {
                 let b = &self.worktrees[&tid];
@@ -24554,6 +24542,95 @@ mod shell_archive_regressions {
         assert!(shell_children_idle(shells::parse_children(Some(1), b"")).is_ok());
     }
 
+    fn board_sample(rx: &std::sync::mpsc::Receiver<Msg>) -> WorktreeSample {
+        loop {
+            if let Msg::WorktreeFlags(sample) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                return sample;
+            }
+        }
+    }
+
+    #[test]
+    fn startup_learns_the_upstream_and_forge_aliases_from_the_same_worker_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, rx) = queued_person_push_tests::daemon(dir.path());
+        let repo = d.paths.repo_root.clone();
+        crate::testrepo::init(&repo, "base.txt", "base");
+        let git = |args: &[&str]| crate::testrepo::run(&repo, args);
+        git(&["remote", "add", "origin", "https://github.com/fork/repo.git"]);
+        git(&["remote", "add", "upstream", "https://github.com/parent/repo.git"]);
+        git(&["update-ref", "refs/remotes/upstream/main", "main"]);
+        git(&["branch", "--set-upstream-to=upstream/main", "main"]);
+        git(&["branch", "topic"]);
+        let tip = worktree::branch_tip(&repo, "topic");
+        d.board.merge_into = MergeInto::PullRequests;
+        d.worktrees.insert(
+            d.board.sessions[0].ticket,
+            worktree::Binding::new(
+                dir.path().join("topic"),
+                "topic".into(),
+                tip.clone(),
+                tip,
+                BindingStatus::Attached,
+            ),
+        );
+        d.refresh_worktree_flags();
+        let sample = board_sample(&rx);
+
+        // A writer-side second read would now cache a missing upstream or remote.
+        git(&["remote", "remove", "upstream"]);
+        git(&["remote", "remove", "origin"]);
+        d.queue_forge_sample();
+        assert!(d.forge.remotes.is_empty(), "the first forge pass waits for the worker");
+        d.forge.last = Some(Instant::now()); // Exercise cache absorption without a host probe.
+        d.on_worktree_flags(sample);
+        assert_eq!(d.upstreams[""].as_deref(), Some("upstream/main"));
+        assert_eq!(d.forge.repo_paths(&repo), ["parent/repo", "fork/repo"]);
+    }
+
+    #[test]
+    fn a_merge_while_the_board_sample_is_out_stays_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, rx) = queued_person_push_tests::daemon(dir.path());
+        let repo = d.paths.repo_root.clone();
+        crate::testrepo::init(&repo, "base.txt", "base");
+        let cut = worktree::branch_tip(&repo, "main");
+        crate::testrepo::read(&repo, &["checkout", "-qb", "topic"]);
+        crate::testrepo::commit(&repo, "work.txt", "work", "work");
+        let tip = worktree::branch_tip(&repo, "topic");
+        crate::testrepo::read(&repo, &["checkout", "-q", "main"]);
+
+        let ticket = d.board.sessions[0].ticket;
+        d.board.tickets.push(queued_person_push_tests::worker_ticket(ticket, "REVIEW", "V"));
+        d.worktrees.insert(
+            ticket,
+            worktree::Binding::new(
+                repo.join(".wt/topic"),
+                "topic".into(),
+                cut,
+                tip,
+                BindingStatus::Attached,
+            ),
+        );
+
+        // Hold the startup result until after the fast-forward.
+        d.refresh_worktree_flags();
+        let old = board_sample(&rx);
+        assert_eq!(old.repos[0].flags.flags[0].ahead, 1);
+        assert!(matches!(
+            d.merge_ticket(ticket, &Principal::Local),
+            Response::Merge { outcome: MergeOutcome::Merged, .. }
+        ));
+        assert!(d.wt_agg[&ticket].merged, "the merge reply already sees its own result");
+        d.on_worktree_flags(old);
+        assert!(d.wt_agg[&ticket].merged, "the pre-merge read cannot undo it");
+        let new = board_sample(&rx);
+        let seq = new.seq;
+        d.on_worktree_flags(new);
+        assert_eq!(d.wt_fresh[&ticket], seq, "the requested replacement landed");
+        assert!(d.wt_agg[&ticket].merged);
+    }
+
     #[test]
     fn a_flags_sample_from_the_previous_target_cannot_restore_the_train_merge_lane() {
         let dir = tempfile::tempdir().unwrap();
@@ -24602,9 +24679,8 @@ mod shell_archive_regressions {
             assert_eq!(d.board.merge_into, MergeInto::Main);
         }
         assert!(matches!(d.set_merge_into(MergeInto::Branch("target-a".into())), Response::Ok));
-        let queued_gen = d.wt_gen;
-        let mut old_samples = worktree::compute_repo_flags(&d.wt_queries(false, Some(ticket)));
-        assert!(old_samples.iter().any(|s| {
+        let mut old = board_sample(&rx);
+        assert!(old.repos.iter().any(|s| {
             s.base == "target-a"
                 && s.flags
                     .flags
@@ -24613,16 +24689,15 @@ mod shell_archive_regressions {
         }));
 
         assert!(matches!(d.set_merge_into(MergeInto::Branch("target-b".into())), Response::Ok));
-        let current = d.wt_agg.get(&ticket).expect("the new target was sampled synchronously");
-        assert!(current.needs_rebase && !current.merged, "target B's lane: {current:?}");
-        let plan = d.train_plan();
-        assert!(!plan.merge.contains(&ticket));
-        assert!(plan.rebase.contains(&ticket));
+        assert!(!d.wt_agg.contains_key(&ticket), "obsolete flags cleared at the switch");
 
         // Even conflict data (stored separately from the aggregate) must
         // not return from either asynchronous sampling road.
-        old_samples[0].flags.conflicts.push("topic".into());
-        d.on_worktree_flags(queued_gen, old_samples.clone());
+        old.repos[0].flags.conflicts.push("topic".into());
+        let (queued_gen, old_samples) = (old.gen, old.repos.clone());
+        d.on_worktree_flags(old);
+        assert!(!d.wt_agg.contains_key(&ticket), "the rejected board sample restored no flags");
+        d.on_worktree_flags(board_sample(&rx));
         d.on_ticket_flags(ticket, queued_gen, 0, old_samples, None);
         assert!(!d.wt_conflicts.contains(&"topic".to_string()));
         let after = d.wt_agg.get(&ticket).expect("stale delivery must not clear current flags");

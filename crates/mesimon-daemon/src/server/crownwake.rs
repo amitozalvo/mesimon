@@ -5105,6 +5105,7 @@ pub(in crate::server) mod tests {
             let sample = crate::worktree::RepoSample {
                 name: String::new(),
                 base: "main".into(),
+                upstream: Some("origin/main".into()),
                 flags: crate::worktree::WtFlags {
                     base: "main".into(),
                     base_tip: "up1".into(),
@@ -5186,6 +5187,7 @@ pub(in crate::server) mod tests {
             let sample = crate::worktree::RepoSample {
                 name: String::new(),
                 base: "main".into(),
+                upstream: Some("origin/main".into()),
                 flags: crate::worktree::WtFlags {
                     base: "main".into(),
                     base_tip: "dep".into(),

@@ -2212,13 +2212,19 @@ impl State {
     /// (`remotes_of`) and kept, with its remotes' paths.
     pub fn remote(&mut self, repo: &Path, base: &str) -> Option<&Remote> {
         if !self.remotes.contains_key(repo) {
-            let found = remotes_of(repo, base);
-            if let Some(r) = &found {
-                self.paths.insert(repo.to_path_buf(), r.paths.clone());
-            }
-            self.remotes.insert(repo.to_path_buf(), found.map(|r| r.remote));
+            self.remember_remote(repo.to_path_buf(), remotes_of(repo, base));
         }
         self.remotes.get(repo).and_then(Option::as_ref)
+    }
+
+    /// Install the first completed read, including aliases used to match a PR.
+    pub fn remember_remote(&mut self, repo: PathBuf, found: Option<Remotes>) {
+        self.remotes.entry(repo.clone()).or_insert_with(|| {
+            found.map(|r| {
+                self.paths.insert(repo, r.paths);
+                r.remote
+            })
+        });
     }
 
     /// Every path a PR of the repository at `dir` may name (T-800): its

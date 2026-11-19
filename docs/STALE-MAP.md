@@ -47846,3 +47846,46 @@ Separate counters on 101 warmed, forced frames or keystrokes gave the following 
 | Card renders per board frame, 40 visible | 120 (0.533 ms/frame) | 120 (0.369 ms/frame) |
 
 Clearing the frame context used to discard resolved transcript links too. The open transcript now reuses them and checks candidate paths for appearance or removal on a 100 ms cadence. The description reuses its rows until its content or rendering inputs change. The hint scrape originally walked the cells once per row, then searched that row’s text for each hint. With the mouse disabled it ran zero times in both versions. With the mouse enabled it now skips rows without a possible key and reuses the row buffers. Expanded columns still measure off-screen cards for variable heights, scrolling and hidden attention counts. A quiet board pays none of those per-frame costs between visible changes.
+
+## Board-wide worktree reads at startup and after a merge (T-1346, 2026-11-20)
+
+Startup, a complete or partial fast-forward, and a merge-target change now request the
+tick's worktree worker. Only one board-wide read runs at a time. Its reply carries its
+generation and start sequence. A merge or target change during a read drops that result
+and starts one replacement for the latest generation. A successful fetch also invalidates
+reads of the previous refs. The writer uses the worker's resolved base, upstream (including
+a missing upstream) and newly parsed forge remotes and aliases. Archive reclaim runs when
+the sample lands. The train waits for the new board-wide verdict after a base change.
+
+T-352's immediate post-merge frame needs fresh flags for the ticket that just merged.
+Reading that ticket's legs before replying preserves the frame and any partial landing.
+The other tickets can be sampled after the reply. The crown's merge preflight can also
+read one ticket while the board refresh is pending. The reported unarchive call was
+absent in this revision. The redundant upstream lookup on the writer and the divergence
+count on identical captured OIDs were both present. Equal OIDs now give zero commits on
+either side directly. A leg still at its cut can need a count if its base has moved.
+
+The live board journal recorded 4,364 and 5,147 ms to serving before the change.
+For a paired measurement, two debug daemons used disposable copies of the same board
+tickets, settings, Git refs and 36 bindings, with private worktree paths and no live
+sessions. Each merged one additional commit on the same ticket branch after startup
+sampling settled. The merge measurement used the journal's writer-turn timer with its
+reporting threshold lifted for that request in both benchmark builds.
+
+| Journal measurement | Before | After |
+| --- | ---: | ---: |
+| Startup to serving | 3,818 ms | 199 ms |
+| Writer turn for a successful merge | 671 ms | 232 ms |
+
+The regression test holds a real pre-merge sample across a fast-forward, delivers it
+after the merge reply and checks the replacement sample as well. The branch reads merged
+at all three points. The target-switch test delivers both obsolete board and ticket reads.
+A separate startup case removes both Git remotes before the sample lands and verifies the
+writer still learns the worker's upstream and both PR repository paths.
+
+Verification passed on the hooks road. The affected integration files ran 198 tests. After
+ordering the first forge pass behind the worktree refresh, all 3,320 unit tests and the 60
+worktree, workspace, merge-train, PR and forge integration tests passed (13 unit tests
+marked ignored). An earlier integration run was stopped for the remote-cache change, and
+its interrupted fixtures left no directories or sockets. The full workspace run is due on
+the merged commit.

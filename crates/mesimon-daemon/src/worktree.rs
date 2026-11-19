@@ -1821,7 +1821,7 @@ fn content_verdict(
 }
 
 /// The merged / ahead / needs-rebase flags for every binding, judged
-/// against `base`, in `2 + n` git forks — read-only, `--no-optional-locks`,
+/// against `base` — read-only, `--no-optional-locks`,
 /// safe on any thread (T-216: the four-forks-per-binding form ran on the
 /// writer thread, and thirteen bindings held every keypress ~0.5 s once
 /// every 10 s).
@@ -1840,14 +1840,13 @@ fn content_verdict(
 /// behind, and the card would read "main moved" forever. `content_verdict`
 /// asks the second question — patch equality — against ONE target ref for
 /// the pass, and remembers the answer on `FlagInput::seen`, so the sample
-/// stays `2 + n` forks until a tip moves. `ahead` and `needs_rebase` are
+/// skips the scan until a tip moves. `ahead` and `needs_rebase` are
 /// about the LOCAL base, which is what a fast-forward here would move —
 /// except on a repository whose remote a forge reads (`forge`, T-786),
 /// where the forge merges and only the upstream moves: there, when the
 /// upstream has moved past the local base, they are counted against the
 /// upstream, the ref a fresh branch is cut from (T-779), and `counted`
-/// names it. That is one more fork per binding, and only while the local
-/// base is behind.
+/// names it. Identical captured tips need no count in either comparison.
 pub fn compute_flags(
     repo: &Path,
     base: &str,
@@ -1908,18 +1907,12 @@ fn compute_flags_on(
                 (_, "") => {
                     Err(anyhow::anyhow!("git rev-list: {}: not read in this sample", i.branch))
                 }
-                (from, to) => git_read(
-                    repo,
-                    &["rev-list", "--left-right", "--count", &format!("{from}...{to}")],
-                ),
+                (from, to) => left_right(repo, from, to),
             };
             // A read that failed is the leg's word (T-754), never a clean
             // leg: the tips' failure first, else this count's.
             let trouble = read_trouble.clone().or_else(|| read.as_ref().err().map(git_trouble));
-            let counts = read.ok().and_then(|s| {
-                let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
-                Some((it.next()??, it.next()??))
-            });
+            let counts = read.ok();
             let (ancestor, mut ahead, mut ff) = match counts {
                 Some((behind, ahead)) => {
                     (!tip.oid.is_empty() && tip.oid != i.base_oid && ahead == 0, ahead, behind == 0)
@@ -2071,6 +2064,9 @@ fn count_against(
 
 /// `rev-list --left-right --count from...branch`: (behind, ahead).
 fn left_right(repo: &Path, from: &str, branch: &str) -> Result<(u32, u32)> {
+    if from == branch && !from.is_empty() {
+        return Ok((0, 0));
+    }
     let out =
         git_read(repo, &["rev-list", "--left-right", "--count", &format!("{from}...{branch}")])?;
     let mut it = out.split_whitespace().map(|n| n.parse::<u32>().ok());
@@ -2333,17 +2329,18 @@ pub struct RepoQuery {
 pub struct RepoSample {
     pub name: String,
     pub base: String,
+    pub upstream: Option<String>,
     pub flags: WtFlags,
 }
 
-/// `compute_flags` once per repository, on any thread. A single-repo board
-/// is one query, and the same `2 + n` forks it always was.
+/// Sample each repository against the refs in its query.
 pub fn compute_repo_flags(queries: &[RepoQuery]) -> Vec<RepoSample> {
     queries
         .iter()
         .map(|q| RepoSample {
             name: q.name.clone(),
             base: q.base.clone(),
+            upstream: q.upstream.clone(),
             flags: compute_flags(&q.repo, &q.base, q.upstream.as_deref(), q.forge, &q.inputs),
         })
         .collect()
@@ -4390,6 +4387,14 @@ mod tests {
         assert!(content_merged(&r.dir, "empty", "main", 0).is_none(), "no work, no patch");
         assert!(content_merged(&r.dir, "work-that-is-not-there", "main", 0).is_none());
         assert!(content_merged(&r.dir, "main", "refs/remotes/origin/nope", 0).is_none());
+    }
+
+    #[test]
+    fn equal_captured_tips_need_no_git_count() {
+        let dir = tempfile::tempdir().unwrap();
+        // No repository here: asking git to count would fail.
+        let oid = "a".repeat(40);
+        assert_eq!(left_right(dir.path(), &oid, &oid).unwrap(), (0, 0));
     }
 
     /// `compute_flags` says what the four single-question helpers said, per
