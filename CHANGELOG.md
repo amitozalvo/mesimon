@@ -10,6 +10,40 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.21.unstable.1 — 2026-11-19
+
+An unstable build. Nothing changes a state file's format.
+
+### Added
+
+- **`Tab` folds the ticket page's description to its first row**, and the
+  choice holds for every ticket.
+- **Remote Control's conversation shows a raised hand** as the ticket page
+  does, in the needs-you colour while the hand is up.
+
+### Changed
+
+- **Remote Control's composer opens at Steer**, with Queue one pick away.
+- A reply from a linked board reaches a crown in the middle of its turn
+  instead of waiting for the turn to end.
+- Remote Control's Notes tab opens a ticket's only note directly, and a
+  picture being uploaded wears a ring instead of a line under the field.
+- Pull request and merge request checks make far fewer calls to the forge.
+
+### Fixed
+
+- **The board no longer stalls while a terminal opens or a session is
+  cleaned up.**
+- A prompt queued from the phone stays sent instead of coming back to the
+  field.
+- Words from a crown or a linked board no longer show on the phone as yours.
+- A task stopped from Claude Code's tasks panel leaves the card.
+- A worker that moved its untouched branch onto the upstream no longer reads
+  as merged.
+- A ticket with no commits, or whose pull request was closed without merging,
+  can move to DONE.
+- Dismissing the picture picker leaves the New ticket sheet open.
+
 ## v0.1.0-beta.21 — 2026-11-17
 
 Search answers on the first letter, words typed during a compaction go in, and
