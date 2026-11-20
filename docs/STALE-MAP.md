@@ -48320,3 +48320,18 @@ drew the working line above the final reply.
 Refuted: Codex's judge rollout (same second, same cwd) being taken as the
 session's continuation. `current_rollout` matches on the thread id, and the
 record was bound to the right file.
+
+## The crown batches the post-merge suite (T-1374, 2026-11-20)
+
+The last-merged worker runs one suite when the crown's planned tickets have landed or after
+five qualifying merges, whichever comes first. Every qualifying commit is covered. A fault
+can stay on main for one batch, up from about 15 minutes. Boards without a crown keep
+T-1194's per-ticket run. The release gate still runs everything.
+
+**Measured.** T-1356 through T-1360 found 33–36 post-merge suites in six days, costing
+8.6–9.0 machine-hours for 0–1 real catches. About half the runs went red on load flakes.
+Overlap with new builds caused flakes even at a release gate.
+
+**Refuted.** T-1194 kept per-ticket runs because a red on main had no owner. A crown can
+assign the fix by rerunning each red test alone at the batch's merge commits in order.
+The first ticket where it fails alone owns it. A nightly run still has no scheduled start.

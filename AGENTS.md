@@ -90,14 +90,20 @@ Choose checks from the behaviour and dependencies changed, and say what each pro
   agents hook_e2e::`). The merge waits for nothing more. A docs-only change runs
   no cargo, rebase included: link and diff review. Python or web changes need their own
   checks, not a Rust workspace run.
-- **The full workspace suite runs once, after the merge** (T-1194), when the diff changes
+- **The full workspace suite runs after merge** (T-1194, T-1374) when the diff changes
   `core/src/command.rs`, `core/src/mcp.rs`, `core/src/authorize.rs`, a state file's schema,
-  `daemon/src/server.rs` outside its tests, the tmux backend or the e2e harness: on the merged
-  notice, in the ticket's own worktree at the merged commit. A test that fails again alone is
-  this ticket's: fix it forward on the same branch, deliver again and name the test. One that
-  passes alone is named as a rerun and left. No merged notice means no run; the release gate
-  is behind it. A TUI-, docs- or `ci/`-only diff never needs it. Release verification is the
-  complete suite on both Claude transport roads.
+  `daemon/src/server.rs` outside its tests, the tmux backend or the e2e harness.
+  - **With a crown**, merged workers run it only on the crown's ask. When the planned tickets
+    have all landed or five qualifying merges have landed, whichever comes first, the crown
+    asks the last-merged worker to run it once in its own worktree at its merged commit.
+    Rerun each red test alone at each batch ticket's merge commit, in merge order. The first
+    ticket where it fails alone owns it. The crown starts or wakes its worker to fix forward
+    on its own branch and deliver again. Name a test that passes alone throughout as a rerun
+    and leave it.
+  - **Without a crown**, each qualifying ticket runs it once on its merged notice, in its own
+    worktree at its merged commit. Rerun each red test alone. If it fails again, name it, fix
+    forward on the same branch and deliver again. If it passes, name the rerun and leave it.
+  - The release gate runs the complete suite on both Claude transport roads.
 - A full suite run carries `--no-fail-fast`, so one red does not cost a second run. Clippy on
   all targets is the release gate's; a ticket does not owe it. A command expected to take over
   2 minutes starts in the background.
