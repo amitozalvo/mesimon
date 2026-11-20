@@ -167,14 +167,7 @@ suite_done=0
 if [ "${MESIMON_RELEASE_RETEST:-0}" != "1" ] && [ -r "$stamp" ]; then
   want_sha=$(git rev-parse HEAD)
   want_tmux="$(cd vendor/tmux && pwd -P)/tmux"
-  want_hash=$(shasum -a 256 "$want_tmux" | cut -d' ' -f1)
-  if python3 -c '
-import json, sys
-s = json.load(open(sys.argv[1]))
-# Both roads (T-574): a stamp from before the mod road pass is not the gate.
-same = (s.get("sha"), s.get("tmux"), s.get("tmux_sha256")) == tuple(sys.argv[2:5])
-sys.exit(0 if same and s.get("coverage") == "full-workspace-v2" and s.get("roads") == ["hooks", "mod"] else 1)
-' "$stamp" "$want_sha" "$want_tmux" "$want_hash"; then
+  if python3 -B ci/release-handoff.py check-stamp "$stamp" "$want_sha" "$want_tmux"; then
     suite_done=1
   fi
 fi
@@ -236,16 +229,19 @@ fi
 
 # --- build ------------------------------------------------------------------
 
-step "build --release --target $TARGET"
-# MESIMON_RELEASE is what stamps this build as a RELEASE, and it is set in
-# ci/release-lib.sh's build steps and nowhere else. The stamp is what arms the
-# update checker (it asks the dist repo for a newer tag, and can replace the
-# binary at its own path), so every other build — a `cargo run`, a plain
-# `cargo build --release`, every test binary — comes out `dev` and never
-# checks. That gate cannot be a heuristic: a wrong answer would point a
-# download at somebody's build tree.
-release_build_macos "$TARGET"
-bin="target/$TARGET/release/mesimon"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+sha=$(git rev-parse HEAD)
+bundle="target/release-prepared/$sha.zip"
+build_dir=target
+if [ -f "$bundle" ]; then
+  build_dir="$tmp/prepared"
+  python3 -B ci/release-handoff.py unpack "$bundle" "$sha" vendor/tmux/tmux "$build_dir"
+else
+  step "build --release --target $TARGET"
+  release_build_macos "$TARGET"
+fi
+bin="$build_dir/$TARGET/release/mesimon"
 
 # NOT stripped: the linker gives every arm64 binary an ad-hoc signature, strip
 # invalidates it, and the symptom on someone else's Mac is SIGKILL with no
@@ -257,12 +253,10 @@ step "smoke test"
 "$bin" --version
 "$bin" --help >/dev/null
 
-step "build for Linux ($LINUX_TARGETS)"
-# Cross-linked here with the toolchain's own rust-lld: static musl, so one
-# binary per architecture runs on every distro and under WSL2. The release
-# stamp is PASSED THROUGH, not set a second time — the note above still
-# holds; this is the same build step reaching two more targets.
-release_build_linux $LINUX_TARGETS
+if [ "$build_dir" = target ]; then
+  step "build for Linux ($LINUX_TARGETS)"
+  release_build_linux $LINUX_TARGETS
+fi
 
 # --- package ----------------------------------------------------------------
 
@@ -291,7 +285,7 @@ assets+=("dist/$name.tar.gz" "dist/$name.tar.gz.sha256")
 for t in $LINUX_TARGETS; do
   lname="mesimon-$tag-$t"
   mkdir -p "dist/$lname"
-  cp "target/$t/release/mesimon" "dist/$lname/"
+  cp "$build_dir/$t/release/mesimon" "dist/$lname/"
   cp "vendor/tmux-$t/tmux" "dist/$lname/mesimon-tmux"
   cp README.md LICENSE NOTICE TRADEMARK.md "dist/$lname/"
   cp -R "vendor/tmux-$t/licenses" "dist/$lname/licenses-bundled"
@@ -309,8 +303,6 @@ done
 # Prove the tarball is the thing install.sh will unpack, from the archive
 # rather than from the build directory.
 step "verify the packaged artifact"
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
 tar -xzf "dist/$name.tar.gz" -C "$tmp"
 "$tmp/$name/mesimon" --version >/dev/null || die "the packaged binary would not run"
 echo "unpacked and ran: $("$tmp/$name/mesimon" --version)"
@@ -326,8 +318,7 @@ esac
 # And that the release stamp survived into the artifact. An unstamped build
 # is a silent failure of exactly the wrong shape: it installs, runs, and then
 # never tells anyone a newer version exists. Checked here rather than on
-# `$bin`, because `$bin` is inside target/ and the checker refuses a build
-# tree whatever its stamp says — the unpacked artifact is the real answer.
+# the build output, because the checker refuses a binary under target/.
 checks=$("$tmp/$name/mesimon" doctor install --verbose | grep 'update checks' || true)
 case "$checks" in
   *"off ∙"*) die "the packaged mesimon will not check for updates:
@@ -510,6 +501,8 @@ if [ "$first" != "$tag" ]; then
   echo "  check: gh api 'repos/$DIST_REPO/releases?per_page=3' --jq '.[].tag_name'" >&2
   exit 1
 fi
+# A failed or dry ship can retry the handoff. A published release has its assets.
+if [ "$build_dir" != target ]; then rm -f "$bundle"; fi
 echo
 if [ "$channel" = unstable ]; then
   echo "on the unstable channel: Settings › About › Release channel, or"

@@ -326,7 +326,7 @@ HERE = Path(__file__).resolve().parent
 class ReleasePrepareTests(unittest.TestCase):
     def test_an_early_red_finishes_both_roads_and_reruns_only_the_two_named_tests(self):
         # Exercise the release shell, nextest reports and supervisor together.
-        # Only the unrelated release builds are stubbed. The fixture package
+        # The preflights and release builds are stubbed. The fixture package
         # has the name the mod pass selects.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -337,7 +337,7 @@ class ReleasePrepareTests(unittest.TestCase):
                          "test_guard.py", "prune-deps.py"):
                 shutil.copy(HERE / name, ci)
             with (ci / "release-lib.sh").open("a") as lib:
-                for name in ("clippy", "dup_deps", "site", "build_macos", "build_linux"):
+                for name in ("clippy", "relay_compile", "dup_deps", "site", "build_macos", "build_linux"):
                     lib.write(f"\nrelease_{name}() {{ :; }}\n")
             (pkg / "Cargo.toml").write_text('[package]\nname = "mesimon"\nversion = "0.1.0"\nedition = "2021"\n')
             (pkg / "CHANGELOG.md").write_text("## v0.1.0 — 2026-11-20\n")

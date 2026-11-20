@@ -14,6 +14,22 @@ release_version() { grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2; }
 require_clean_tree() { [ -z "$(git status --porcelain)" ] || die "the working tree is dirty — $1" "$2"; }
 
 release_clippy() { cargo clippy --workspace --all-targets -- -D warnings; }
+# The relay manifest and its tests reference a sibling named mesimon. Stage
+# its committed sources beside the candidate; Cargo may update the staged lock
+# for a version bump without changing the relay checkout.
+release_relay_compile() (
+  local relay=$1 stage
+  [ -f "$relay/Cargo.toml" ] || die "no relay at $relay" "set MESIMON_RELAY_DIR to its checkout"
+  [ -z "$(git -C "$relay" status --porcelain)" ] || die "relay checkout is dirty: $relay"
+  export MESIMON_CORE_DIR="$PWD"
+  stage=$(mktemp -d)
+  trap 'rm -rf "$stage"' EXIT
+  mkdir "$stage/mesimon-relay"
+  git -C "$relay" archive HEAD | tar -xf - -C "$stage/mesimon-relay"
+  ln -s "$MESIMON_CORE_DIR" "$stage/mesimon"
+  cd "$stage/mesimon-relay"
+  cargo test -p mesimon-relay --no-run
+)
 release_dup_deps() { ./ci/check-dup-deps.sh; }
 release_site() { ci/site.sh; }
 # The target names stay in ci/release.sh (release.rs's unit test pins them

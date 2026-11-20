@@ -48556,3 +48556,31 @@ The preview step found in the tenth simplify pass now waits for Chat, clicks
 The tab remembers the choice directly. The Settings switch from T-701 is gone.
 The Chromium phone `chat` and `terminal` flows passed against the UX fixture.
 The real-relay browser pass was not run because no local relay fixture was available.
+## Catch release compile failures before the gate and hand off worktree builds (T-1368, 2026-11-20)
+
+Prep runs all-target clippy before the bump with `--lint` and again on the
+committed candidate. It compiles the relay tests from a clean relay snapshot
+beside that candidate. Cargo's sibling paths and the tests' source includes
+both resolve to the worktree. A disposable relay integration test still used
+an API available on main. Prep reported the missing function on the candidate
+before either gate road started or a stamp appeared.
+
+The worktree warms the macOS and both Linux builds. Green prep writes those
+three binaries and the original two-road stamp to a commit-keyed archive in
+the main checkout's target. After the core fast-forward, `--handoff` verifies
+the archive, HEAD and bundled tmux, then atomically installs the stamp. The
+packager uses the archived binaries. The T-654 stamp copy mentioned by the
+old script was a manual step. No board or CI code performed it.
+
+A warm two-test fixture stopped on the same clippy lint in 2.889 s with the old
+prep and 0.196 s before the bump with the new prep (load 28.97/17.89/18.36).
+The prior gate started both roads. An initial one-test timing fixture missed
+the old shell's plural nextest start marker and was discarded.
+
+Using the three existing beta.22 binaries and stamp at `f0ff7699`, creating
+the archive took 1.683 s, activating it took 0.126 s, and unpacking it for the
+packager took 1.039 s (load 42.13/22.36/19.96). All 100,996,712 bytes matched.
+The relay's real `deploy/ship.sh all --dry-run` pointed at the ticket worktree
+stopped at the core main-branch check in 0.07 s (load 11.74/16.07/19.10).
+It requires a merged, unreleased candidate. Its successful path ends before
+release packaging, so these measurements establish handoff cost only.

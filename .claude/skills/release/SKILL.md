@@ -8,17 +8,23 @@ description: Cutting a mesimon release — the order (bump, CHANGELOG, test run,
 See `AGENTS.md` for the shared development contract. When the person asks for a release,
 the release agent runs it through production.
 
-**Release order**: bump + CHANGELOG (`cargo update --workspace --offline` for the lock) → commit →
-`ci/release-prepare.sh` → merge any relay changes → commit the relay lock update →
-dry run → ship. Never verify before the bump — the bump relinks every crate and the run is
-thrown away. `ci/release-prepare.sh` (T-1101) is the one command after the commit: it refuses a
-dirty tree or a CHANGELOG whose top heading is not the version's, runs the stamped gate
-(`ci/test-run.py --both-roads --exclusive`, with hooks and mod running side by side), and once the tests are running
-warms beside them, niced, what `release.sh` and the ship will run again on the same commit: the
-gate's clippy (a red one stops the gate: the commit will change), the drift check, the site, and
-in the main checkout the macOS and two Linux release builds with `MESIMON_RELEASE=1`, so the
-ship script finds them built. In a worktree the release builds are skipped (cargo keys
-artifacts by source path) and the stamp is the deliverable.
+**Release order.** Run `ci/release-prepare.sh --lint` on the warm tree before the
+version bump. Fix any lint there. Bump the version, update CHANGELOG and the lock
+(`cargo update --workspace --offline`), then commit. Run `ci/release-prepare.sh` on
+the candidate. It checks clippy and compiles the relay tests against this exact core
+before starting the exclusive two-road gate. For paired relay changes, set
+`MESIMON_RELAY_DIR` to the clean relay worktree that will merge.
+
+Once the gate's tests start, prep runs the dependency drift check, site build and
+the macOS and two Linux release builds beside them. In a worktree it saves the
+three finished binaries and the runner's stamp under the main checkout's
+`target/release-prepared/<commit>.zip`. After the core fast-forward, run
+`ci/release-prepare.sh --handoff` from either checkout at that commit. This
+verifies the binaries and installs the stamp on main for the relay's dry run.
+The relay's ship script uses its sibling core main checkout by default. If
+`MESIMON_CORE_DIR` is set, point it at that main checkout. The packaging step
+reads the prepared binaries.
+Merge any relay changes and commit the relay lock update before the dry run.
 
 The gate waits for other bounded runs and holds the exclusive lock through both roads and any
 reruns. Both nextest passes use `--no-fail-fast`. After both finish, the runner reruns each

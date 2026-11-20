@@ -1,41 +1,11 @@
 #!/usr/bin/env bash
-# Everything a release needs before its tag, at once (T-1101).
+# Before the bump: ci/release-prepare.sh --lint
+# On the committed candidate: ci/release-prepare.sh [--jobs N]
+# After fast-forwarding main to a worktree candidate: ci/release-prepare.sh --handoff
 #
-# From "release" to the release on mesimon.dev took ~45 minutes at
-# beta.14.unstable.2 with nothing wasted: the suite's two roads ran one after
-# the other (~16 min each under load), and the author's ship then built three
-# release binaries cold (~7 min). This is the one command after the release
-# commit. It starts the stamped gate (ci/test-run.py, both roads side by side),
-# waits for the test build, and then warms, beside the tests, what ci/release.sh
-# and the relay's ship.sh will run again on this same commit: the gate's clippy,
-# the dependency drift check, the site build, the macOS release build and the
-# two Linux ones (ci/build-linux.sh, with their clippy), with MESIMON_RELEASE
-# set exactly as release.sh sets it. Each of those steps then finds its work
-# done and takes seconds. The e2es wait on their own timers and barely use the
-# CPU (T-1023), so the builds ride beside them, niced, and the test build —
-# the critical path — runs alone first.
-#
-# A red clippy ends the gate at once: the commit will change, and the run would
-# prove nothing. The gate's own result is the stamp (target/suite-passed.json),
-# which release.sh and the relay's dry run honour.
-#
-# Usage:  ci/release-prepare.sh [--jobs N]
-#   --jobs N          each road's test threads and cargo's build jobs
-#                     (ci/test-run.py --jobs). Default 6: twelve e2es at
-#                     once ran clean beside the release builds and another
-#                     agent's e2es at load 25-35; nextest's own 11 a road
-#                     (22 at once) timed out the slowest crown_e2e test at
-#                     load 60 beside two other bounded runs (T-1101).
-#   MESIMON_TMUX_BIN  the tmux that drives the suite; default the bundled
-#                     vendor/tmux/tmux, in a worktree the main checkout's
-#   MESIMON_RELEASE_PREPARE_BUILDS=1
-#                     the release builds in a worktree too (to measure them)
-#
-# Run it where ci/release.sh will run — the main checkout — for the warm builds
-# to count: cargo keys its artifacts by source path, so a worktree's builds
-# never serve the checkout the release is cut from. In a worktree the release
-# builds are skipped and the stamp is the deliverable (copied to the main
-# checkout's target/ after the fast-forward, T-654).
+# Both roads get six test threads by default (T-1101). Once their test build
+# finishes, the release builds run beside the tests. Worktrees hand off only
+# the three finished binaries and the original two-road stamp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -45,12 +15,29 @@ cd "$(dirname "$0")/.."
 t0=$(date +%s)
 mark() { printf '%6ss  %s\n' "$(( $(date +%s) - t0 ))" "$1"; }
 
+if [ "$#" = 1 ] && [ "$1" = --lint ]; then
+  release_clippy
+  exit
+fi
+
+main=$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)
+candidate=$(git rev-parse HEAD)
+bundle="$main/target/release-prepared/$candidate.zip"
+if [ "$#" = 1 ] && [ "$1" = --handoff ]; then
+  cd "$main"
+  [ "$(git symbolic-ref --short -q HEAD)" = main ] && [ "$(git rev-parse HEAD)" = "$candidate" ] ||
+    die "fast-forward main to the prepared candidate before activating its handoff"
+  require_clean_tree "the release needs the tested commit" "git status"
+  python3 -B ci/release-handoff.py activate "$bundle" "$candidate" "$main/vendor/tmux/tmux"
+  exit
+fi
+
 jobs=6
 while [ $# -gt 0 ]; do
   case "$1" in
     --jobs) jobs=${2:?--jobs needs a number}; shift 2 ;;
     --jobs=*) jobs=${1#--jobs=}; shift ;;
-    *) die "unknown argument: $1" "ci/release-prepare.sh [--jobs N]" ;;
+    *) die "unknown argument: $1" "ci/release-prepare.sh [--lint | --jobs N | --handoff]" ;;
   esac
 done
 
@@ -58,25 +45,30 @@ done
 
 require_clean_tree "the gate would not stamp (the commit is not what ran)" "commit first: git status"
 
+step "clippy on the candidate"
+release_clippy
+
 version=$(release_version)
 heading=$(grep -m1 '^## ' CHANGELOG.md || true)
 printf '%s\n' "$heading" | grep -qE "^## v$version( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" || \
   die "CHANGELOG.md's top heading is '$heading', not v$version's" \
       "add '## v$version — $(date +%F)' above its notes, at the top of the file"
 
-main=$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)
 worktree=0
 [ "$main" = "$(pwd -P)" ] || worktree=1
 if [ -z "${MESIMON_TMUX_BIN:-}" ]; then
-  if [ -x vendor/tmux/tmux ]; then
-    MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux"
-  elif [ -x "$main/vendor/tmux/tmux" ]; then
+  if [ -x "$main/vendor/tmux/tmux" ]; then
     MESIMON_TMUX_BIN="$main/vendor/tmux/tmux"
   else
     die "no bundled tmux to drive the suite" "ci/build-tmux.sh, or MESIMON_TMUX_BIN=<path>"
   fi
 fi
 export MESIMON_TMUX_BIN
+# The gate stamp and the release build paths below belong to this checkout.
+export CARGO_TARGET_DIR="$PWD/target"
+
+step "compile relay tests against the candidate"
+release_relay_compile "${MESIMON_RELAY_DIR:-$(dirname "$main")/mesimon-relay}"
 
 logs=target/release-prepare
 rm -rf "$logs"
@@ -122,15 +114,10 @@ warm() {
   fi
   mark "$name ok"
 }
-warm clippy release_clippy
 warm dup-deps release_dup_deps
 warm site release_site
-if [ "$worktree" = 0 ] || [ "${MESIMON_RELEASE_PREPARE_BUILDS:-0}" = 1 ]; then
-  warm build-macos release_build_macos aarch64-apple-darwin
-  warm build-linux release_build_linux
-else
-  mark "release builds skipped: a worktree's artifacts never serve $main, where ci/release.sh builds"
-fi
+warm build-macos release_build_macos aarch64-apple-darwin
+warm build-linux release_build_linux
 
 # --- the gate's verdict ------------------------------------------------------
 
@@ -155,9 +142,12 @@ if [ "$code" != 0 ]; then
   die "the gate failed" "$logs/gate.log"
 fi
 
-step "ready: v$version at $(git rev-parse --short HEAD) is stamped and warm"
-echo "next, in the relay checkout:"
-echo "  cargo update --workspace --offline && git commit -m 'chore: lock the core crates at v$version' Cargo.lock"
-echo "  deploy/ship.sh all --dry-run"
-echo "then hand the author the one command:"
-echo "  deploy/ship.sh all"
+require_clean_tree "the candidate changed during prep" "prepare the committed candidate again"
+[ "$(git rev-parse HEAD)" = "$candidate" ] || die "HEAD changed during prep"
+
+if [ "$worktree" = 1 ]; then
+  python3 -B ci/release-handoff.py save "$bundle" "$candidate" "$main/vendor/tmux/tmux"
+  echo "After the fast-forward, run ci/release-prepare.sh --handoff in $main."
+fi
+step "ready: v$version at $(git rev-parse --short HEAD)"
+echo "Follow the release skill for the relay lock update, dry run and ship."
