@@ -44,22 +44,9 @@
 //! ticket go" a question about weights, and the answer has to be "keep
 //! scrolling", which a tier says once.
 //!
-//! Everything here runs over the snapshot the board already holds, on the
-//! keystroke. There is no index to warm, no wire to wait for and no debounce:
-//! a board is tens to hundreds of cards of a few dozen characters each, and
-//! `how_long_a_big_board_takes` measures a DEBUG build ranking 500 of them at
-//! 0.8 ms for an empty query, 1.0 ms for one word and 3.1 ms for three — a
-//! release build being several times under that again. The notes are the
-//! bigger haystack (the author's board: 703 notes, 18,500 lines, 1.7 MB):
-//! `how_long_the_notes_take` puts a debug build at 10 ms for a word on no
-//! line, 25 ms for one on every line and 54 ms for three on every line —
-//! paid only once the row pass missed, and on a keystroke, never a frame.
-//!
-//! That budget is what buys the two behaviours above it: the list re-ranks on
-//! every keystroke rather than filtering the last result (a filter cannot
-//! recover a hit the previous keystroke dropped), and it re-ranks again on
-//! every snapshot, so a card an agent moved or archived under an open picker
-//! cannot leave a row that sends Enter somewhere that is no longer there.
+//! The picker keeps the ordered searchable rows between snapshots. Sessions,
+//! usage and other board activity do not change those rows. Large searches
+//! rank an immutable copy of the rows and corpus off the input thread.
 
 use std::collections::HashMap;
 
@@ -168,6 +155,10 @@ impl Body {
 /// (`App::bodies`); `()` for a caller with none, which searches rows alone.
 pub trait Bodies {
     fn body(&self, note: ulid::Ulid) -> Option<&Body>;
+    /// A live cache can receive bodies ahead of or behind its snapshot.
+    fn body_at(&self, note: ulid::Ulid, _rev: u64) -> Option<&Body> {
+        self.body(note)
+    }
 }
 
 impl Bodies for () {
@@ -214,6 +205,46 @@ pub struct Hit {
 pub struct PullRequest {
     pub ticket: ulid::Ulid,
     pub text: String,
+}
+
+/// Exactly the snapshot data a ranking can observe, in tie-break order.
+/// Note revisions make an edit visible before its replacement body arrives.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Rows(Vec<Row>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct Row {
+    id: ulid::Ulid,
+    short_key: String,
+    title: String,
+    trail: String,
+    archived: bool,
+    notes: Vec<(ulid::Ulid, u64)>,
+    prs: Vec<String>,
+}
+
+impl Rows {
+    pub fn new(board: &Board, archived: bool, prs: impl IntoIterator<Item = PullRequest>) -> Self {
+        let mut by_ticket: HashMap<_, Vec<_>> = HashMap::new();
+        for pr in prs {
+            by_ticket.entry(pr.ticket).or_default().push(pr.text);
+        }
+        let live = board.sorted_columns().into_iter().flat_map(|c| board.column_tickets(&c.name));
+        let rest = if archived { board.archived_tickets() } else { Vec::new() };
+        Self(
+            live.chain(rest)
+                .map(|t| Row {
+                    id: t.id,
+                    short_key: t.short_key.clone(),
+                    title: crate::text::scrub_cells(&t.title, false),
+                    trail: trail_of(t),
+                    archived: t.is_archived(),
+                    notes: t.notes.iter().map(|n| (n.id, n.rev)).collect(),
+                    prs: by_ticket.remove(&t.id).unwrap_or_default(),
+                })
+                .collect(),
+        )
+    }
 }
 
 /// A reusable matcher. `Matcher::new` eagerly allocates ~135 KB of scoring
@@ -302,6 +333,10 @@ impl Searcher {
         bodies: &dyn Bodies,
         prs: &[PullRequest],
     ) -> Vec<Hit> {
+        self.rank_rows(&Rows::new(board, archived, prs.iter().cloned()), query, bodies)
+    }
+
+    pub fn rank_rows(&mut self, rows: &Rows, query: &str, bodies: &dyn Bodies) -> Vec<Hit> {
         self.pattern.atoms = atoms(query);
         self.needles = self
             .pattern
@@ -316,16 +351,10 @@ impl Searcher {
         let notes = self.pattern.atoms.iter().any(|a| !a.negative);
         let mut out: Vec<(bool, u8, u32, usize, Hit)> = Vec::new();
 
-        // Board order is the tie-break, so it is also the enumeration order:
-        // live cards column by column, then the archived list as the archived
-        // dialog would show it.
-        let columns: Vec<String> = board.sorted_columns().iter().map(|c| c.name.clone()).collect();
-        let live: Vec<&Ticket> = columns.iter().flat_map(|c| board.column_tickets(c)).collect();
-        let rest: Vec<&Ticket> = if archived { board.archived_tickets() } else { Vec::new() };
-        for (rank, t) in live.into_iter().chain(rest).enumerate() {
+        for (rank, t) in rows.0.iter().enumerate() {
             let hit = self
                 .score(t, trimmed)
-                .or_else(|| notes.then(|| self.pr_excerpt(t, prs)).flatten())
+                .or_else(|| notes.then(|| self.pr_excerpt(t)).flatten())
                 .or_else(|| notes.then(|| self.excerpt(t, bodies)).flatten());
             if let Some(hit) = hit {
                 let tier = if hit.pr.is_some() {
@@ -348,11 +377,11 @@ impl Searcher {
         out.into_iter().map(|(_, _, _, _, hit)| hit).collect()
     }
 
-    fn pr_excerpt(&mut self, ticket: &Ticket, prs: &[PullRequest]) -> Option<Hit> {
-        let mut best: Option<(u32, &PullRequest)> = None;
-        for pr in prs.iter().filter(|p| p.ticket == ticket.id) {
+    fn pr_excerpt(&mut self, ticket: &Row) -> Option<Hit> {
+        let mut best: Option<(u32, &String)> = None;
+        for pr in &ticket.prs {
             let Some(score) =
-                self.pattern.score(Utf32Str::new(&pr.text, &mut self.buf), &mut self.matcher)
+                self.pattern.score(Utf32Str::new(pr, &mut self.buf), &mut self.matcher)
             else {
                 continue;
             };
@@ -361,7 +390,7 @@ impl Searcher {
             }
         }
         let (score, pr) = best?;
-        let text = pr.text.clone();
+        let text = pr.clone();
         let mut matched = self.matched(&text);
         // Pattern indices are sparse for substring atoms in nucleo. Record
         // each positive contiguous needle's visible span explicitly.
@@ -393,12 +422,10 @@ impl Searcher {
         std::mem::take(&mut self.indices)
     }
 
-    fn score(&mut self, ticket: &Ticket, query: &str) -> Option<Hit> {
-        let key = ticket.short_key.clone();
-        // The title is drawn in cells, so it crosses `scrub_cells` on the
-        // way in — the one boundary function, never a second sanitizer.
-        let title = crate::text::scrub_cells(&ticket.title, false);
-        let trail = trail_of(ticket);
+    fn score(&mut self, ticket: &Row, query: &str) -> Option<Hit> {
+        let key = &ticket.short_key;
+        let title = &ticket.title;
+        let trail = &ticket.trail;
         // One haystack, joined by the single space the picker draws between
         // the fields, so a query may cross a field boundary the way the eye
         // does: `t-3 redirect` is one atom per word and both land.
@@ -428,12 +455,15 @@ impl Searcher {
         };
         let hit = Hit {
             id: ticket.id,
-            key: Field { matched: cut(0, key_len), text: key },
-            title: Field { matched: cut(title_at, title_at + title_len), text: title },
-            trail: Field { matched: cut(trail_at, trail_at + trail.chars().count()), text: trail },
+            key: Field { matched: cut(0, key_len), text: key.clone() },
+            title: Field { matched: cut(title_at, title_at + title_len), text: title.clone() },
+            trail: Field {
+                matched: cut(trail_at, trail_at + trail.chars().count()),
+                text: trail.clone(),
+            },
             excerpt: None,
             pr: None,
-            archived: ticket.is_archived(),
+            archived: ticket.archived,
             score: score + exact_key_bonus(ticket, query),
         };
         Some(hit)
@@ -443,10 +473,10 @@ impl Searcher {
     /// each line judged whole against the pattern. The row's fields are
     /// unlit — nothing in them matched, and a highlight that is not a match
     /// would be a lie the eye catches.
-    fn excerpt(&mut self, ticket: &Ticket, bodies: &dyn Bodies) -> Option<Hit> {
+    fn excerpt(&mut self, ticket: &Row, bodies: &dyn Bodies) -> Option<Hit> {
         let mut best: Option<(u32, ulid::Ulid, &str)> = None;
-        for meta in &ticket.notes {
-            let Some(body) = bodies.body(meta.id) else { continue };
+        for &(note, rev) in &ticket.notes {
+            let Some(body) = bodies.body_at(note, rev) else { continue };
             for line in &body.lines {
                 if !self.needles.iter().all(|n| line.folded.contains(n.as_str())) {
                     continue;
@@ -457,7 +487,7 @@ impl Searcher {
                     continue;
                 };
                 if best.is_none_or(|(s, _, _)| score > s) {
-                    best = Some((score, meta.id, line.text.as_str()));
+                    best = Some((score, note, line.text.as_str()));
                 }
             }
         }
@@ -473,15 +503,15 @@ impl Searcher {
 /// The ticket's row with nothing lit: a note or PR hit shows its match in
 /// the excerpt, and a highlight in a field that did not match would be a
 /// lie the eye catches.
-fn bare_hit(ticket: &Ticket, score: u32) -> Hit {
+fn bare_hit(ticket: &Row, score: u32) -> Hit {
     Hit {
         id: ticket.id,
         key: Field { text: ticket.short_key.clone(), matched: Vec::new() },
-        title: Field { text: crate::text::scrub_cells(&ticket.title, false), matched: Vec::new() },
-        trail: Field { text: trail_of(ticket), matched: Vec::new() },
+        title: Field { text: ticket.title.clone(), matched: Vec::new() },
+        trail: Field { text: ticket.trail.clone(), matched: Vec::new() },
         excerpt: None,
         pr: None,
-        archived: ticket.is_archived(),
+        archived: ticket.archived,
         score,
     }
 }
@@ -501,7 +531,7 @@ fn trail_of(ticket: &Ticket) -> String {
     parts.join(" ")
 }
 
-fn exact_key_bonus(ticket: &Ticket, query: &str) -> u32 {
+fn exact_key_bonus(ticket: &Row, query: &str) -> u32 {
     if !query.is_empty() && query.eq_ignore_ascii_case(&ticket.short_key) {
         EXACT_KEY
     } else {

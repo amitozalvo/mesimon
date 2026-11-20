@@ -3566,6 +3566,30 @@ fn conn_key(stream: &Arc<Mutex<UnixStream>>) -> usize {
     Arc::as_ptr(stream) as usize
 }
 
+// File reads and their revision lookups share a writer turn. The connection
+// collects the reply and asks for the next batch at the back of the queue.
+const NOTE_READ_BATCH: usize = 32;
+
+fn read_note_batches(
+    refs: &[mesimon_core::command::NoteRef],
+    principal: &Principal,
+    forward: impl Fn(Envelope) -> Option<std::sync::mpsc::Receiver<ClientReply>>,
+) -> Response {
+    let mut all = Vec::with_capacity(refs.len());
+    for chunk in refs.chunks(NOTE_READ_BATCH) {
+        let batch = Envelope {
+            principal: principal.clone(),
+            command: Command::ReadNotes { notes: chunk.to_vec() },
+        };
+        match forward(batch).and_then(|rx| rx.recv().ok()).map(|reply| reply.response) {
+            Some(Response::Notes { notes }) => all.extend(notes),
+            Some(other) => return other,
+            None => return Response::Err { message: "daemon gone".into() },
+        }
+    }
+    Response::Notes { notes: all }
+}
+
 fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     let writer = Arc::new(Mutex::new(match stream.try_clone() {
         Ok(s) => s,
@@ -3600,20 +3624,25 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
                 }
                 legacy_agent = matches!(env.principal, Principal::Agent { .. })
                     && request.mcp_protocol != mesimon_core::command::MCP_PROTOCOL;
+                let forward = |env| {
+                    let (rtx, rrx) = channel();
+                    tx.send(Msg::Request(env, request.mcp_protocol, rtx, writer.clone())).ok()?;
+                    Some(rrx)
+                };
                 match env.command {
                     // Read-only diff service: answered here, never forwarded —
                     // a slow git must not stall the single writer (M4b).
                     Command::DiffList { .. } | Command::DiffFile { .. } => {
                         serve_diff(&diff_ctx, &env)
                     }
+                    Command::ReadNotes { notes }
+                        if matches!(env.principal, Principal::Local)
+                            && notes.len() > NOTE_READ_BATCH =>
+                    {
+                        read_note_batches(&notes, &env.principal, forward)
+                    }
                     _ => {
-                        let (rtx, rrx) = channel();
-                        if tx
-                            .send(Msg::Request(env, request.mcp_protocol, rtx, writer.clone()))
-                            .is_err()
-                        {
-                            break;
-                        }
+                        let Some(rrx) = forward(env) else { break };
                         match rrx.recv() {
                             Ok(reply) => {
                                 delivered = reply.delivered;
@@ -24284,6 +24313,65 @@ mod queued_person_push_tests {
             took: Duration::ZERO,
             forks: 0,
         }
+    }
+
+    #[test]
+    fn a_bulk_note_request_rejoins_the_writer_queue_between_batches() {
+        use mesimon_core::command::NoteRef;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _) = daemon(dir.path());
+        let ticket = ulid::Ulid::new();
+        d.board.tickets.push(worker_ticket(ticket, "TODO", "a"));
+        let Response::NoteWritten { note: Some(note) } =
+            d.write_note(ticket, None, "first".into(), None, &Principal::Local)
+        else {
+            panic!("create the note")
+        };
+        let ctx = Arc::new(DiffCtx {
+            paths: d.paths.clone(),
+            permits: Default::default(),
+            worktrees_barred: Default::default(),
+        });
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let (tx, rx) = channel();
+        let worker = std::thread::spawn(move || client_loop(server, tx, ctx));
+        let request = Envelope {
+            principal: Principal::Local,
+            command: Command::ReadNotes {
+                notes: vec![NoteRef { ticket, note }; NOTE_READ_BATCH + 1],
+            },
+        };
+        writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+        for count in [NOTE_READ_BATCH, 1] {
+            let Msg::Request(env, _, reply, stream) =
+                rx.recv_timeout(Duration::from_secs(3)).unwrap()
+            else {
+                panic!("expected a note batch")
+            };
+            assert!(matches!(&env.command, Command::ReadNotes { notes } if notes.len() == count));
+            let response = d.handle(env, &stream);
+            if count == NOTE_READ_BATCH {
+                // Another queued writer turn edits the file before the next batch.
+                assert!(matches!(
+                    d.write_note(ticket, Some(note), "second".into(), Some(1), &Principal::Local),
+                    Response::NoteWritten { .. }
+                ));
+            }
+            reply.send(ClientReply { response, delivered: None, told: None }).unwrap();
+        }
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut line = String::new();
+        BufReader::new(client).read_line(&mut line).unwrap();
+        let Response::Notes { notes } = serde_json::from_str(&line).unwrap() else {
+            panic!("expected one combined reply")
+        };
+        assert_eq!(notes.len(), NOTE_READ_BATCH + 1);
+        assert!(notes[..NOTE_READ_BATCH].iter().all(|n| n.text == "first" && n.rev == 1));
+        assert_eq!(
+            (notes[NOTE_READ_BATCH].text.as_str(), notes[NOTE_READ_BATCH].rev),
+            ("second", 2)
+        );
+        worker.join().unwrap();
     }
 
     #[test]

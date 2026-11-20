@@ -80,15 +80,15 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     // Several at once (T-882), the picker's road: the bodies it could read,
     // each at its rev; a ref naming no note is left out, never an error.
     use mesimon_core::command::NoteRef;
-    match c.request(Command::ReadNotes {
-        notes: vec![
-            NoteRef { ticket, note: desc },
-            NoteRef { ticket, note: ulid::Ulid::nil() },
-            NoteRef { ticket: ulid::Ulid::nil(), note: desc },
-        ],
-    }) {
+    // Span several writer turns, with a real body on either side of the gap.
+    let mut refs = vec![NoteRef { ticket, note: desc }];
+    refs.extend([NoteRef { ticket, note: ulid::Ulid::nil() }; 80]);
+    refs.push(NoteRef { ticket: ulid::Ulid::nil(), note: desc });
+    refs.push(NoteRef { ticket, note: desc });
+    match c.request(Command::ReadNotes { notes: refs }) {
         Response::Notes { notes } => {
-            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert_eq!(notes.len(), 2);
+            assert_eq!(notes[0], notes[1]);
             assert_eq!(notes[0].note, desc);
             assert_eq!(notes[0].rev, 1);
             assert_eq!(notes[0].text, body);

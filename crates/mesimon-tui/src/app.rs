@@ -8,6 +8,7 @@ pub(crate) mod boards;
 mod images;
 use background::ReadKey;
 pub(crate) mod launch;
+mod search;
 mod summary;
 mod tiers;
 
@@ -572,12 +573,8 @@ pub enum Mode {
 /// The search picker's state (T-349): the query, the ranked rows it means,
 /// and the cursor over them.
 ///
-/// The hits are recomputed rather than filtered in place — on every keystroke
-/// and on every snapshot — because the board underneath is live: a card can
-/// move, be archived or be deleted while the picker is open, and a list that
-/// went stale is a list that sends `Enter` somewhere the reader did not look.
-/// Ranking a board costs microseconds (`mesimon_core::search`), so there is
-/// nothing to save by being clever.
+/// A query edit selects the best match. When the board changes underneath
+/// the picker, selection follows the ticket across the next ranking.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Search {
     pub query: EditBuffer,
@@ -598,6 +595,10 @@ pub struct Search {
     /// exactly when nothing is typed and at least one of them is a row.
     /// Written by `App::research`, read by the draw for its subtitle.
     pub recent: bool,
+    rows: Option<Arc<mesimon_core::search::Rows>>,
+    pub(crate) pending: Option<u64>,
+    held: Option<ulid::Ulid>,
+    accept: bool,
 }
 
 impl Search {
@@ -609,6 +610,10 @@ impl Search {
             archived: true,
             top: Cell::new(0),
             recent: false,
+            rows: None,
+            pending: None,
+            held: None,
+            accept: false,
         }
     }
 
@@ -1476,12 +1481,15 @@ impl TicketLink {
 /// looks in when a row did not match. A note the daemon could not read is
 /// held empty at the rev asked, so it is not asked for again until it
 /// changes.
-#[derive(Default)]
-pub struct Corpus(std::collections::HashMap<ulid::Ulid, (u64, mesimon_core::search::Body)>);
+#[derive(Clone, Default)]
+pub struct Corpus(std::collections::HashMap<ulid::Ulid, (u64, Arc<mesimon_core::search::Body>)>);
 
 impl mesimon_core::search::Bodies for Corpus {
     fn body(&self, note: ulid::Ulid) -> Option<&mesimon_core::search::Body> {
-        self.0.get(&note).map(|(_, body)| body)
+        self.0.get(&note).map(|(_, body)| body.as_ref())
+    }
+    fn body_at(&self, note: ulid::Ulid, rev: u64) -> Option<&mesimon_core::search::Body> {
+        self.0.get(&note).filter(|(r, _)| *r == rev).map(|(_, body)| body.as_ref())
     }
 }
 
@@ -2148,14 +2156,9 @@ pub struct App {
     /// card, and only Settings' `off` rung clears both.
     pub peek_all: bool,
     pub peek_cache: crate::peek::PeekCache,
-    /// The search picker's matcher (T-349). Minted on the first `/` and kept
-    /// for the life of the board: `nucleo_matcher::Matcher` eagerly allocates
-    /// ~135 KB of scoring matrix, which is cheap once and silly per keystroke
-    /// — and sillier still on every `App` a test builds, which is why it is
-    /// lazy rather than a constructor field.
-    searcher: std::cell::RefCell<Option<mesimon_core::search::Searcher>>,
-    /// The picker's note corpus (T-882), filled by `poll_bodies`.
-    corpus: Corpus,
+    ranking: search::Ranking,
+    /// Immutable while a worker is reading it. An edit shares all unchanged bodies.
+    corpus: Arc<Corpus>,
     /// When a daemon last refused `ReadNotes`; asked again after
     /// `CORPUS_BACKOFF`, never on every keystroke.
     corpus_refused: Option<Instant>,
@@ -2773,8 +2776,8 @@ impl App {
             peek: PeekLevel::default() != PeekLevel::Off,
             peek_all: PeekLevel::default() == PeekLevel::All,
             peek_cache: crate::peek::PeekCache::default(),
-            searcher: std::cell::RefCell::new(None),
-            corpus: Corpus::default(),
+            ranking: Default::default(),
+            corpus: Default::default(),
             corpus_refused: None,
             corpus_asked: None,
             tag_flash: None,
@@ -4510,7 +4513,7 @@ impl App {
         // card archived, moved or deleted by an agent while `/` is up must
         // not leave a row that sends Enter somewhere that is no longer there.
         // The cursor holds its TICKET across the pass, never its index.
-        self.research(true);
+        self.search_board_changed();
         self.hand_board();
         self.open_setup();
     }
@@ -5068,7 +5071,9 @@ impl App {
     fn frame_wait(&self, moving: bool) -> Duration {
         if self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON {
             SNAPSHOT_FRAME
-        } else if moving {
+        } else if moving || matches!(&self.mode, Mode::Search(s) if s.pending.is_some()) {
+            // A rank can finish while the terminal is idle. Poll within one
+            // frame so a ready result (or a waiting Enter) lands promptly.
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -5256,6 +5261,7 @@ impl App {
         dirty |= self.peek_cache.display_changed();
         // The picker's notes, prepared on their thread (T-1293).
         dirty |= self.poll_corpus();
+        dirty |= self.poll_ranking();
         // What the notification thread could not do (T-291), said once. The
         // thread has no status line; this is the only thing it asks of the
         // board's own loop.
@@ -8705,7 +8711,7 @@ impl App {
         let laid = self.ask_archive_now();
         if laid {
             // An open picker ranks what it has: the archived rows join it now.
-            self.research(true);
+            self.search_board_changed();
         }
         laid
     }
@@ -9116,7 +9122,7 @@ impl App {
             },
             can_nudge: self.can_nudge(),
             searching: search.is_some(),
-            search_hits: search.map_or(0, |s| s.hits.len()),
+            search_hits: search.map_or(0, |s| s.hits.len().max(usize::from(s.pending.is_some()))),
             search_archived: search.is_some_and(|s| s.archived),
             col_header: self.on_column_header(),
             col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
@@ -11704,7 +11710,7 @@ impl App {
                 self.ask_archive_now();
                 // And the notes start coming now (T-1293), on their thread,
                 // so the first letter typed rarely finds them still out.
-                self.poll_bodies(true);
+                self.refresh_search_rows();
                 // Open on the whole board: an empty query matches everything
                 // at score 0, so the first frame is the list the reader is
                 // about to narrow rather than an empty box.
@@ -14357,18 +14363,11 @@ impl App {
         match verb {
             Some(Verb::Back) => return Ok(()),
             Some(Verb::Act) => {
-                let pick = s.selected().map(|h| (h.id, h.archived));
-                let Some((id, archived)) = pick else { return Ok(()) };
-                if archived {
-                    // An archived ticket has no card to put a cursor on. Its
-                    // page is where it is read — the archived dialog's Enter,
-                    // reached from the picker instead.
-                    self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                if s.pending.is_some() {
+                    s.accept = true;
+                    self.mode = Mode::Search(s);
                 } else {
-                    self.select_ticket(id);
-                    // Land on the CARD, never on the column header above it:
-                    // the picker was asked for a ticket.
-                    self.header_focus = false;
+                    self.accept_search(&s);
                 }
                 return Ok(());
             }
@@ -14424,7 +14423,9 @@ impl App {
         self.mode = Mode::Search(s);
         if requery {
             // The archived half, toggled in, is asked for now (T-842).
-            self.ask_archive_now();
+            if self.ask_archive_now() || verb == Some(Verb::SearchArchived) {
+                self.refresh_search_rows();
+            }
             // A narrower query means a different best match, so the cursor
             // goes back to the top — telescope's rule, and the one that makes
             // typing read as narrowing rather than as scrolling.
@@ -14437,8 +14438,8 @@ impl App {
     /// every ticket the picker ranks (`archived` widens it to the archive)
     /// that the corpus lacks or holds at an older `rev` is asked for in one
     /// `ReadNotes`, and a note whose ticket left the board is dropped. The
-    /// steady state sends nothing: a keystroke walks the metadata and finds
-    /// it all held. A daemon that knows no such command (older than this
+    /// steady state sends nothing: a snapshot with the same searchable rows
+    /// keeps the corpus. A daemon that knows no such command (older than this
     /// build) is asked again after `CORPUS_BACKOFF`; until then the picker
     /// searches rows alone, as it always did.
     ///
@@ -14447,24 +14448,28 @@ impl App {
     /// and `land_bodies` lays them in. An answer already there when asked
     /// (a fake's, the tour's toy) is laid in at once, so the rank that
     /// follows has it.
-    fn poll_bodies(&mut self, archived: bool) {
+    fn poll_bodies(&mut self, archived: bool) -> bool {
         let mut wanted: Vec<(NoteRef, u64)> = Vec::new();
         let mut on_board: std::collections::HashSet<ulid::Ulid> = Default::default();
         for t in self.board.tickets.iter() {
             for n in &t.notes {
                 on_board.insert(n.id);
-                let held = self.corpus.0.get(&n.id).is_some_and(|(rev, _)| *rev == n.rev);
+                // A batch can observe an edit before the next snapshot. Keep
+                // that newer body for its revision; asking again only gets it again.
+                let held = self.corpus.0.get(&n.id).is_some_and(|(rev, _)| *rev >= n.rev);
                 if !held && (archived || !t.is_archived()) {
                     wanted.push((NoteRef { ticket: t.id, note: n.id }, n.rev));
                 }
             }
         }
-        self.corpus.0.retain(|id, _| on_board.contains(id));
+        if self.corpus.0.keys().any(|id| !on_board.contains(id)) {
+            Arc::make_mut(&mut self.corpus).0.retain(|id, _| on_board.contains(id));
+        }
         if wanted.is_empty()
             || self.corpus_asked.is_some()
             || self.corpus_refused.is_some_and(|t| t.elapsed() < CORPUS_BACKOFF)
         {
-            return;
+            return false;
         }
         let refs = wanted.iter().map(|(r, _)| *r).collect();
         let reply = self.client.request_detached(Command::ReadNotes { notes: refs });
@@ -14484,11 +14489,11 @@ impl App {
             }
         }
         self.corpus_asked = Some(CorpusAsk { wanted, bodies });
-        self.land_bodies();
+        self.land_bodies()
     }
 
     /// The corpus's ask, laid in once its bodies are prepared (T-1293):
-    /// true when it landed, refused or not.
+    /// true when bodies or missing-file entries landed.
     fn land_bodies(&mut self) -> bool {
         let Some(ask) = self.corpus_asked.as_ref() else { return false };
         let got = match ask.bodies.try_recv() {
@@ -14501,15 +14506,20 @@ impl App {
             Some(bodies) => {
                 // Every note asked for gets an entry at the rev asked: one
                 // the daemon left out is not asked again until it changes.
+                let corpus = Arc::make_mut(&mut self.corpus);
+                let missing = Arc::default();
                 for (r, rev) in ask.wanted {
-                    self.corpus.0.insert(r.note, (rev, Default::default()));
+                    corpus.0.insert(r.note, (rev, Arc::clone(&missing)));
                 }
                 for (id, rev, body) in bodies {
-                    self.corpus.0.insert(id, (rev, body));
+                    corpus.0.insert(id, (rev, Arc::new(body)));
                 }
                 self.corpus_refused = None;
             }
-            None => self.corpus_refused = Some(Instant::now()),
+            None => {
+                self.corpus_refused = Some(Instant::now());
+                return false;
+            }
         }
         true
     }
@@ -14521,6 +14531,13 @@ impl App {
         if !self.land_bodies() {
             return false;
         }
+        let Mode::Search(s) = &self.mode else { return false };
+        let archived = s.archived;
+        let searching_notes = !s.query.as_str().trim().is_empty();
+        self.poll_bodies(archived);
+        if !searching_notes {
+            return false;
+        }
         self.research(true);
         matches!(self.mode, Mode::Search(_))
     }
@@ -14529,62 +14546,9 @@ impl App {
     /// had landed it (the fetch lays its own in, `land_bodies`).
     #[cfg(test)]
     pub(crate) fn remember_body(&mut self, id: ulid::Ulid, rev: u64, text: &str) {
-        self.corpus.0.insert(id, (rev, mesimon_core::search::Body::new(text)));
-    }
-
-    /// Re-rank the picker against the board as it stands.
-    ///
-    /// `keep` holds the cursor on the SAME TICKET across the pass, which is
-    /// what a snapshot arriving under an open picker wants (07 §11.1: the
-    /// cursor is a ULID, never an index). A query edit passes false and lands
-    /// on the best match.
-    pub(crate) fn research(&mut self, keep: bool) {
-        // Guarded BEFORE the take: `absorb` calls this on every snapshot, and
-        // a take that put nothing back closed whatever dialog was open (a
-        // column settings dialog, mid-sort, is how this was found).
-        if !matches!(self.mode, Mode::Search(_)) {
-            return;
-        }
-        let Mode::Search(mut s) = std::mem::replace(&mut self.mode, Mode::Normal) else {
-            return;
-        };
-        let held = keep.then(|| s.selected().map(|h| h.id)).flatten();
-        // The notes are looked in once something is typed (T-882): fetched
-        // whole the first time, then only the ones a snapshot shows edited.
-        if !s.query.as_str().trim().is_empty() {
-            self.poll_bodies(s.archived);
-        }
-        s.hits = {
-            let mut cell = self.searcher.borrow_mut();
-            let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
-            let prs: Vec<_> = self
-                .all_prs()
-                .map(|p| mesimon_core::search::PullRequest {
-                    ticket: p.ticket,
-                    text: format!("{} {} {} {} {}", p.label(), p.title, p.repo, p.state, p.url),
-                })
-                .collect();
-            searcher.rank_with_prs(&self.board, s.query.as_str(), s.archived, &self.corpus, &prs)
-        };
-        // Nothing typed: the pages opened this run, newest first, instead of
-        // the whole board (T-355). The rank pass still decides what is IN —
-        // a ticket deleted since, or archived while `tab` hides the archive,
-        // is not a row — and the first keystroke is the board again.
-        s.recent = s.query.as_str().trim().is_empty()
-            && self.recent_tickets.iter().any(|id| s.hits.iter().any(|h| h.id == *id));
-        if s.recent {
-            let mut hits = std::mem::take(&mut s.hits);
-            s.hits = self
-                .recent_tickets
-                .iter()
-                .filter_map(|id| hits.iter().position(|h| h.id == *id).map(|i| hits.swap_remove(i)))
-                .collect();
-        }
-        s.idx = held
-            .and_then(|id| s.hits.iter().position(|h| h.id == id))
-            .unwrap_or(0)
-            .min(s.hits.len().saturating_sub(1));
-        self.mode = Mode::Search(s);
+        Arc::make_mut(&mut self.corpus)
+            .0
+            .insert(id, (rev, Arc::new(mesimon_core::search::Body::new(text))));
     }
 
     /// The note reader (T-1139). Not a barrier: it resolves its own scope
@@ -22823,6 +22787,60 @@ mod tests {
         typed(&mut app, " c");
         assert!(held.borrow().is_empty(), "the corpus is held: nothing is asked again");
         assert_eq!(search(&app).hits.len(), 1);
+    }
+
+    #[test]
+    fn search_ignores_unsearchable_changes_and_enter_waits_for_the_latest_query() {
+        let mut board = board_three_columns();
+        board.tickets.extend((10..80).map(|i| ticket(i, "todo", "aa")));
+        let target = board.tickets[1].id;
+        let pr = mesimon_core::command::PrItem {
+            ticket: target,
+            title: "first title".into(),
+            ..Default::default()
+        };
+        let mut app = App::for_test(board.clone(), theme());
+        app.prs = vec![pr.clone()];
+        press(&mut app, '/');
+        typed(&mut app, "latest");
+        let pending = search(&app).pending.expect("large board ranks on a worker");
+        assert!(app.frame_wait(false) <= Duration::from_millis(16));
+
+        board.tickets[1].manual_merge = true;
+        let mut pr = pr;
+        pr.pipeline = "passed".into();
+        app.absorb(Snapshot { board: board.clone(), prs: vec![pr.clone()], ..Default::default() });
+        assert_eq!(search(&app).pending, Some(pending), "activity leaves the pass in flight");
+
+        pr.title = "latest title".into();
+        app.absorb(Snapshot { board, prs: vec![pr], ..Default::default() });
+        assert_ne!(search(&app).pending, Some(pending), "the new PR title is searchable");
+        assert!(search(&app).hits.is_empty());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(search(&app).accept, "Enter waits for the query the person typed");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(app.mode, Mode::Search(_)) {
+            app.poll_ranking();
+            assert!(Instant::now() < deadline, "the current result never landed");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.subject(), Some(target));
+    }
+
+    #[test]
+    fn search_uses_a_body_only_at_the_revision_the_snapshot_names() {
+        let mut b = board_three_columns();
+        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        let mut app = App::for_test(b.clone(), theme());
+        // A writer batch saw an edit while the picker still has the older snapshot.
+        app.remember_body(ulid::Ulid(90), 2, "zebra");
+        press(&mut app, '/');
+        typed(&mut app, "zebra");
+        assert!(search(&app).hits.is_empty());
+        b.tickets[0].notes[0].rev = 2;
+        app.absorb(Snapshot { board: b, ..Default::default() });
+        assert_eq!(search(&app).hits.len(), 1);
+        assert_eq!(search(&app).hits[0].excerpt.as_ref().unwrap().note, ulid::Ulid(90));
     }
 
     #[test]

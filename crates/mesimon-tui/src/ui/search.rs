@@ -157,7 +157,9 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
         // A sentence, never an empty pane: the picker says what it looked
         // in, because "nothing" and "nothing HERE" are different answers and
         // the second one has a key that fixes it.
-        let word = if s.archived {
+        let word = if s.pending.is_some() {
+            " searching…"
+        } else if s.archived {
             " no matches on this board"
         } else {
             " no matches among the live tickets ∙ tab looks in the archive too"

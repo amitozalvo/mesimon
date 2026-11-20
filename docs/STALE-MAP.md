@@ -48072,3 +48072,29 @@ an explicitly owed read, and restoration. After preserving the original
 worktree-first query ordering, both checks passed again. `cargo ut` passed
 3,335 tests with 13 ignored. All 43 `forge_e2e` tests passed and the fixture
 audit was clean. The workspace suite is due after merge for `server.rs`.
+
+## Bulk note reads yield the writer and large searches rank off the input thread (T-1342, 2026-11-20)
+
+T-1293 moved the fetch and folding off the picker. A single wire reply still let
+the daemon read the entire corpus in one writer turn, and a snapshot still ranked
+every matching line even when only a session or a PR pipeline had changed.
+
+The connection now requests at most 32 note refs per writer turn and collects
+one reply in request order. Each batch goes through the usual request handler.
+The writer reads a body's revision and file together, skips missing notes, and
+can serve a queued edit or another client before the next batch.
+
+The picker compares the ordered searchable rows on snapshot and archive arrival.
+They carry the key, scrubbed title, trail, archive tier, note IDs and revisions,
+and the PR text the matcher reads. A busy ranker finishes one pass and takes the
+latest pending query. The input thread handles small boards directly (at most
+64 tickets and 8 cached notes). A returned note participates only at its matching
+revision. Enter during a rank follows the current query once its results land.
+
+Warm debug measurements on a fixed copy of 1,184 tickets and 2,585 notes
+(6,778,094 bytes), medians of 11 passes. For a full `ReadNotes`, timing the
+daemon request handler gave 57.1 ms as one writer turn before. Afterward the
+81 turns totalled 57.4 ms, and the median longest turn per request was 2.5 ms.
+For the final key of `the` with bodies cached and PR rows excluded, the input
+handler went from 120.2 ms to 0.11 ms. The worker result was ready and polled
+at 115.0 ms, with the same 858 hits. These timings exclude terminal drawing.
