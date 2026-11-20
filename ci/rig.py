@@ -2797,6 +2797,20 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the board never typed the shell line")
                 return False
             return True
+        if what == "file_ask":
+            import base64
+            data = base64.b64encode(b"juniper").decode("ascii")
+            try:
+                upload = self.wire.request({"cmd": "upload_attachment", "upload": None,
+                    "file": {"ticket": test["ticket"], "name": "sample.bin"},
+                    "offset": 0, "data": data, "complete": True})["upload"]
+                link = f"[sample.bin](mesimon-attachment:{upload})"
+                self.wire.prompt(test["ticket"], step["text"].replace("{link}", link),
+                                 queued=False, uploads=[upload])
+            except WireError as e:
+                record["failures"].append(f"file prompt: {e}")
+                return False
+            return True
         if what == "picture_ask":
             # The person's words with a picture (T-853): a solid PNG of
             # `color` staged as the desk's `^v` stages one, then the words,

@@ -4089,7 +4089,7 @@ impl Daemon {
                 }
             }
             Command::ReadAttachment { ticket, attachment } => {
-                self.read_attachment(ticket, attachment)
+                self.read_attachment(ticket, attachment, None, None)
             }
             Command::SaveNoteWithAttachments { ticket, note, text, uploads } => {
                 let owner = crate::attachments::Owner::stream(stream);
@@ -9155,7 +9155,7 @@ impl Daemon {
             // The note tools: the ticket is the binding's — or the key's, for
             // the crown (T-411) — and a note id off it reads as "no such
             // note" inside the handlers.
-            Command::AgentReadAttachment { attachment, key } => {
+            Command::AgentReadAttachment { attachment, key, offset, limit } => {
                 let target = match key {
                     None => ticket,
                     Some(k) => match self.read_target(&k) {
@@ -9170,7 +9170,7 @@ impl Daemon {
                 ) {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
-                self.read_attachment(target, attachment)
+                self.read_attachment(target, attachment, offset, limit)
             }
             Command::AgentReadShell { shell, key } => {
                 let response = self.agent_read_shell(session, ticket, shell, key);

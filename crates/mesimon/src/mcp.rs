@@ -185,8 +185,8 @@ fn tool_result(params: &Value, sock: &std::path::Path, session: uuid::Uuid) -> V
                 seen,
             }
         }
-        ToolCall::ReadAttachment { attachment, key } => {
-            Command::AgentReadAttachment { attachment, key }
+        ToolCall::ReadAttachment { attachment, key, offset, limit } => {
+            Command::AgentReadAttachment { attachment, key, offset, limit }
         }
         ToolCall::ReadNote { note, key } => Command::AgentReadNote { note, key },
         ToolCall::WriteNote { note, text, key } => Command::AgentWriteNote { note, text, key },
@@ -517,6 +517,10 @@ fn render(resp: Response) -> Value {
         // a worse read, and the metadata already travels in `get_ticket`.
         Response::Note { text: body, .. } => {
             json!({ "content": [{ "type": "text", "text": body }], "isError": false })
+        }
+        Response::FileAttachment { name, bytes, path, part } => {
+            let result = json!({ "name": name, "bytes": bytes, "path": path, "part": part });
+            json!({ "content": [{ "type": "text", "text": result.to_string() }], "isError": false })
         }
         Response::Attachment { data, .. } => json!({
             "content": [{ "type": "image", "mimeType": "image/png", "data": data }],

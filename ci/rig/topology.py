@@ -15,7 +15,7 @@ AGENTLESS_CHECKS = set("""
 # Steps that operate on the test ticket's worker. The forge setup/teardown
 # steps (forge_lab and forge_off) can run before a worker exists.
 WORKER_STEPS = set("""
-    prompt prompt_at_start press_enter shell picture_ask resend still_waiting ping
+    prompt prompt_at_start press_enter shell picture_ask file_ask resend still_waiting ping
     pane_keys draft_at_launch queue_in_compaction await_compaction crash limit fail
     person_idles person_leaves train_wait forge_pr forge_merged_elsewhere forge_merged_running forge_closed
     forge_empty forge_bound_passed forge_fail forge_pass forge_merged_pass

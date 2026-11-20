@@ -1132,6 +1132,10 @@ pub enum Command {
     /// One picture on the caller's own ticket. An id no note of that ticket
     /// links reads as "no picture with that id on this ticket".
     AgentReadAttachment {
+        #[serde(default)]
+        offset: Option<usize>,
+        #[serde(default)]
+        limit: Option<usize>,
         attachment: ulid::Ulid,
         /// A picture on another ticket, by key (T-609): the crown's road.
         #[serde(default)]
@@ -2348,6 +2352,13 @@ pub enum Response {
         notes: Vec<NoteBody>,
     },
     /// Receipt for one accepted upload chunk, including the first minted ID.
+    FileAttachment {
+        name: String,
+        bytes: usize,
+        path: std::path::PathBuf,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        part: Option<crate::attachment::FilePart>,
+    },
     AttachmentUploaded {
         upload: ulid::Ulid,
     },

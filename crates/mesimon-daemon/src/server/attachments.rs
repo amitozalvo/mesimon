@@ -1,21 +1,31 @@
 //! Attachment commands run on the board's single writer, after authorization.
 use super::*;
 use crate::attachments;
-use base64::{engine::general_purpose::STANDARD, Engine};
 
 impl Daemon {
     /// One picture, whole. A failed read is told apart by the ticket's own
     /// notes (T-609): an id one of them links is a picture whose bytes are
     /// on another machine (a team board joined without them), and any other
     /// id is simply not this ticket's.
-    pub(super) fn read_attachment(&self, ticket: ulid::Ulid, attachment: ulid::Ulid) -> Response {
+    pub(super) fn read_attachment(
+        &self,
+        ticket: ulid::Ulid,
+        attachment: ulid::Ulid,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Response {
         let Some(t) = self.board.ticket(ticket) else { return no_such_ticket() };
-        match attachments::read(&self.paths, &t.short_key, attachment) {
-            Ok((meta, bytes)) => Response::Attachment { meta, data: STANDARD.encode(bytes) },
-            Err(_) if !self.links_attachment(t, attachment) => {
+        match attachments::read_for_agent(&self.paths, &t.short_key, attachment, offset, limit) {
+            Ok(response) => response,
+            Err(_)
+                if !attachments::directory(&self.paths, &t.short_key)
+                    .join(format!("{attachment}.json"))
+                    .exists()
+                    && !self.links_attachment(t, attachment) =>
+            {
                 Response::Err { message: "no picture with that id on this ticket".into() }
             }
-            Err(e) => Response::Err { message: format!("could not read picture: {e:#}") },
+            Err(e) => Response::Err { message: format!("could not read attachment: {e:#}") },
         }
     }
 

@@ -2,6 +2,17 @@
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+/// The maximum raw file bytes one tool result can carry.
+pub const READ_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePart {
+    pub offset: usize,
+    pub next_offset: usize,
+    pub encoding: String,
+    pub data: String,
+}
+
 pub const MAX_BYTES: usize = 10 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 25_000_000;
 pub const DRAFT_MAX_BYTES: usize = 50 * 1024 * 1024;

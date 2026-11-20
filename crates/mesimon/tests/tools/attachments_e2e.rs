@@ -327,3 +327,89 @@ fn a_prompt_with_a_picture_keeps_it_with_the_ticket_and_links_it_in_the_words() 
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(result["content"][0]["data"], PNG);
 }
+
+#[test]
+fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
+    use mesimon_core::{attachment::FileUpload, board::WorkspaceStrategy};
+    let Some(h) = Harness::boot_staged("file-prompt", Some(RECORDING_STUB), &[], |_, repo| {
+        init_repo(repo, "readme", "hello");
+    }) else {
+        return;
+    };
+    let mut c = h.client("files");
+    let ticket = c.create_ticket("data");
+    c.request(Command::SetWorkspace { id: ticket, workspace: Some(WorkspaceStrategy::Worktree) });
+    c.request(Command::SpawnSession {
+        ticket,
+        kind: mesimon_core::board::SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    });
+    let wt = std::path::PathBuf::from(wait_attached(&mut c, ticket).path.unwrap());
+    wait_until(Duration::from_secs(15), "worker", || c.board().live_agent(ticket).is_some());
+    let sid = c.board().live_agent(ticket).unwrap().id;
+    h.prompt_turn(&mut c, sid);
+    let mut upload = |data: &str| match c.request(Command::UploadAttachment {
+        file: Some(FileUpload { ticket, name: "sample.dat".into() }),
+        upload: None,
+        offset: 0,
+        data: data.into(),
+        complete: true,
+    }) {
+        Response::AttachmentUploaded { upload } => upload,
+        r => panic!("{r:?}"),
+    };
+    let first = upload("YWJj/w==");
+    let empty = upload("");
+    let ask = Command::PromptSession { ticket, text: format!("Compare [sample.dat](mesimon-attachment:{first}) [sample.dat #2](mesimon-attachment:{empty})"), queued: true, immediately: false, accept_plan: false, plan: false, tier: None, resend: false, uploads: vec![first,empty] };
+    let key = c.board().ticket(ticket).unwrap().short_key.clone();
+    let dir = mesimon_daemon::attachments::directory(&h.paths, &key);
+    std::fs::create_dir_all(dir.join(format!("{empty}.json"))).unwrap();
+    err_containing(c.request(ask.clone()), "could not keep");
+    assert!(!dir.join(format!("{first}.bin")).exists());
+    assert!(!dir.join(format!("{empty}.bin")).exists());
+    std::fs::remove_dir(dir.join(format!("{empty}.json"))).unwrap();
+    let r = c.request(ask);
+    assert!(matches!(r, Response::Queued { .. }), "{r:?}");
+    drop(c);
+    h.restart();
+    let mut c = h.client("after restart");
+    let mut shim = Shim::start(&h.paths.orch_sock(), sid);
+    let read = |shim: &mut Shim, args| {
+        let result = shim.call("read_attachment", args);
+        assert_eq!(result["isError"], false, "{result}");
+        serde_json::from_str::<serde_json::Value>(result["content"][0]["text"].as_str().unwrap())
+            .unwrap()
+    };
+    let meta = read(&mut shim, json!({"attachment":first}));
+    assert_eq!(meta["name"], "sample.dat");
+    assert_eq!(meta["bytes"], 4);
+    assert_eq!(std::fs::read(meta["path"].as_str().unwrap()).unwrap(), b"abc\xff");
+    let part = read(&mut shim, json!({"attachment":first,"offset":0,"limit":3}));
+    assert_eq!(part["part"]["data"], "abc");
+    let part = read(&mut shim, json!({"attachment":first,"offset":3}));
+    assert_eq!(
+        (part["part"]["data"].as_str(), part["part"]["encoding"].as_str()),
+        (Some("/w=="), Some("base64"))
+    );
+    assert_eq!(read(&mut shim, json!({"attachment":empty,"offset":0}))["part"]["next_offset"], 0);
+    shim.call_err("read_attachment", json!({"attachment":first,"limit":16385}));
+    assert!(git(&wt, &["status", "--porcelain"]).trim().is_empty());
+    let copy = match c.request(Command::DuplicateTicket { id: ticket }) {
+        Response::Created { id, .. } => id,
+        r => panic!("{r:?}"),
+    };
+    for cmd in [
+        Command::ArchiveTicket { id: copy },
+        Command::UnarchiveTicket { id: copy },
+        Command::DeleteTicket { id: copy, discard_worktree: false },
+        Command::RestoreTicket { id: copy },
+    ] {
+        assert!(matches!(c.request(cmd), Response::Ok));
+    }
+    let copy_key = c.board().ticket(copy).unwrap().short_key.clone();
+    assert_eq!(
+        mesimon_daemon::attachments::read(&h.paths, &copy_key, first).unwrap().1,
+        b"abc\xff"
+    );
+}

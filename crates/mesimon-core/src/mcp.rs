@@ -698,14 +698,13 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "read_attachment",
-            "description": "Returns one PNG picture on this session's ticket, or with key \
-                            another ticket's (crown only), as image content. Attachment ids \
-                            appear in mesimon-attachment links in the description, in notes \
-                            and in a prompt the person sends with a picture.",
+            "description": "Reads a mesimon-attachment link from a prompt or note on this ticket, or with key another ticket's (crown only). Pictures return image content. Files return their local path, name and byte count. An offset or limit also returns a byte range as UTF-8 or base64.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "attachment": { "type": "string", "description": "An attachment id from an image link in a note or a prompt." },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Starting byte in the file, default zero." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": crate::attachment::READ_BYTES, "description": "Bytes to return, default 16 KiB." },
+                    "attachment": { "type": "string", "description": "The id from the attachment link." },
                     "key": { "type": "string", "description": "Optional. Another ticket's key; crown only." },
                 },
                 "required": ["attachment"],
@@ -1289,6 +1288,8 @@ pub enum ToolCall {
         seen: Option<String>,
     },
     ReadAttachment {
+        offset: Option<usize>,
+        limit: Option<usize>,
         attachment: ulid::Ulid,
         key: Option<String>,
     },
@@ -1503,6 +1504,16 @@ fn text(args: &Value, tool: &str) -> Result<String, String> {
 /// on one of its `answers` (T-571, where `at` names it): a whole number, and
 /// words untrimmed, since they are typed into the dialog as given and the
 /// daemon refuses a newline rather than mending one.
+fn optional_size(args: &Value, key: &str) -> Result<Option<usize>, String> {
+    args.get(key)
+        .map(|v| {
+            v.as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| format!("{key} must be a nonnegative integer"))
+        })
+        .transpose()
+}
+
 fn one_answer(args: &Value, at: &str) -> Result<(Option<usize>, Option<String>), String> {
     let index = match args.get("index") {
         None | Some(Value::Null) => None,
@@ -1681,6 +1692,8 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             change: opt_text(args, "change", "")?,
         }),
         "read_attachment" => Ok(ToolCall::ReadAttachment {
+            offset: optional_size(args, "offset")?,
+            limit: optional_size(args, "limit")?,
             attachment: args
                 .get("attachment")
                 .and_then(Value::as_str)
@@ -2378,7 +2391,12 @@ mod tests {
             (Command::AgentListBoard, "list_board"),
             (Command::AgentReadNote { note: ulid::Ulid::nil(), key: None }, "read_note"),
             (
-                Command::AgentReadAttachment { attachment: ulid::Ulid::nil(), key: None },
+                Command::AgentReadAttachment {
+                    attachment: ulid::Ulid::nil(),
+                    key: None,
+                    offset: None,
+                    limit: None,
+                },
                 "read_attachment",
             ),
             (Command::AgentWriteNote { note: None, text: "x".into(), key: None }, "write_note"),
@@ -2733,14 +2751,19 @@ mod tests {
         let id = ulid::Ulid::nil();
         assert_eq!(
             parse_tool_call("read_attachment", &json!({ "attachment": id.to_string() })),
-            Ok(ToolCall::ReadAttachment { attachment: id, key: None })
+            Ok(ToolCall::ReadAttachment { attachment: id, offset: None, limit: None, key: None })
         );
         assert_eq!(
             parse_tool_call(
                 "read_attachment",
                 &json!({ "attachment": id.to_string(), "key": " T-4 " })
             ),
-            Ok(ToolCall::ReadAttachment { attachment: id, key: Some("T-4".into()) })
+            Ok(ToolCall::ReadAttachment {
+                attachment: id,
+                offset: None,
+                limit: None,
+                key: Some("T-4".into())
+            })
         );
         assert!(parse_tool_call(
             "read_attachment",
@@ -4117,7 +4140,12 @@ mod tests {
                 seen: None,
             },
             Command::AgentReadNote { note: ulid::Ulid::nil(), key: None },
-            Command::AgentReadAttachment { attachment: ulid::Ulid::nil(), key: None },
+            Command::AgentReadAttachment {
+                attachment: ulid::Ulid::nil(),
+                key: None,
+                offset: None,
+                limit: None,
+            },
             Command::AgentWriteNote { note: None, text: "x".into(), key: None },
             Command::AgentCreateTicket {
                 title: "x".into(),

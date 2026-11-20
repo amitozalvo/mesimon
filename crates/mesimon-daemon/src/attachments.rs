@@ -1,6 +1,6 @@
 //! Bounded, connection-owned uploads and ticket-local immutable PNG files.
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -308,7 +308,7 @@ pub(crate) fn discard_files(paths: &Paths, key: &str, ids: &[Ulid]) -> Result<()
     Ok(())
 }
 
-pub fn read(paths: &Paths, key: &str, id: Ulid) -> Result<(Attachment, Vec<u8>)> {
+fn metadata(paths: &Paths, key: &str, id: Ulid) -> Result<(Attachment, PathBuf)> {
     let dir = directory(paths, key);
     check_dir(&dir).context("image unavailable on this machine")?;
     let meta: Attachment = serde_json::from_slice(
@@ -316,9 +316,69 @@ pub fn read(paths: &Paths, key: &str, id: Ulid) -> Result<(Attachment, Vec<u8>)>
             .context("image unavailable on this machine")?,
     )?;
     anyhow::ensure!(meta.id == id, "attachment metadata mismatch");
-    let bytes = bounded(&payload_path(&dir, &meta), MAX_BYTES)?;
+    let path = payload_path(&dir, &meta);
+    Ok((meta, path))
+}
+
+pub fn read(paths: &Paths, key: &str, id: Ulid) -> Result<(Attachment, Vec<u8>)> {
+    let (meta, path) = metadata(paths, key, id)?;
+    let bytes = bounded(&path, MAX_BYTES)?;
     anyhow::ensure!(meta.bytes == bytes.len(), "attachment size mismatch");
     Ok((meta, bytes))
+}
+
+pub(crate) fn read_for_agent(
+    paths: &Paths,
+    key: &str,
+    id: Ulid,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<mesimon_core::command::Response> {
+    use mesimon_core::{
+        attachment::{FilePart, READ_BYTES},
+        command::Response,
+    };
+    use std::os::unix::fs::OpenOptionsExt;
+    let (meta, path) = metadata(paths, key, id)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    let stat = file.metadata()?;
+    anyhow::ensure!(
+        stat.is_file() && meta.bytes <= MAX_BYTES && stat.len() == meta.bytes as u64,
+        "invalid attachment payload"
+    );
+    let Kind::File { name } = meta.kind.clone() else {
+        anyhow::ensure!(offset.is_none() && limit.is_none(), "ranges apply to file attachments");
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() == meta.bytes, "attachment size mismatch");
+        return Ok(Response::Attachment { meta, data: STANDARD.encode(bytes) });
+    };
+    anyhow::ensure!(mesimon_core::attachment::valid_basename(&name), "invalid attachment name");
+    let part = if offset.is_some() || limit.is_some() {
+        let start = offset.unwrap_or(0);
+        let limit = limit.unwrap_or(READ_BYTES);
+        anyhow::ensure!((1..=READ_BYTES).contains(&limit), "limit must be 1 to {READ_BYTES} bytes");
+        anyhow::ensure!(start <= meta.bytes, "offset exceeds file size");
+        file.seek(SeekFrom::Start(start as u64))?;
+        let mut bytes = vec![0; limit.min(meta.bytes - start)];
+        file.read_exact(&mut bytes)?;
+        let (encoding, data) = match std::str::from_utf8(&bytes) {
+            Ok(s) if mesimon_core::text::scrub_lines(s) == s => ("utf8", s.to_owned()),
+            _ => ("base64", STANDARD.encode(&bytes)),
+        };
+        Some(FilePart {
+            offset: start,
+            next_offset: start + bytes.len(),
+            encoding: encoding.into(),
+            data,
+        })
+    } else {
+        None
+    };
+    Ok(Response::FileAttachment { name, bytes: meta.bytes, path, part })
 }
 
 pub fn collect(paths: &Paths, key: &str) -> Result<Vec<(Attachment, Vec<u8>)>> {
