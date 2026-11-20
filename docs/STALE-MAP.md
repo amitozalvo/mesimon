@@ -48298,3 +48298,25 @@ In two local runs with a capture deliberately held, the board released the
 terminal at 262 ms with idle polling and 33 ms with the shorter poll. The
 pane was visible by 273 ms and 45 ms respectively. The work computer's
 reported second still has no measurement on that machine.
+
+## Remote Control keeps a folded step run in its place (T-1354, 2026-11-20)
+
+On a Codex ticket the phone drew the finished turn's "10 exec" fold and final
+answer above the person's prompt and the agent's first sentence. The rollout
+was in order on disk, and `mergePage` and the host's pages kept that order.
+The fault was in drawing. The conversation's fold was the one list item with
+no key of its own: a bare `[button, rows]` array whose key sat on the button
+inside. Preact's keyed diff then placed new nodes above rows they came after
+when one render both formed a fold and dropped or moved rows: a tail page that
+starts over, a news line placed, the working line coming or going.
+
+The fold is now a keyed `Fragment` (exported from `html.js`). A fuzz of the
+real `Chat`, comparing each incremental render with a fresh render of the
+same data, found a misorder in the first batch on every run before the change
+and none in 9,000 sequences after it. The chat flow's regression is a
+start-over page that opens on a fold while a step runs. Before the change it
+drew the working line above the final reply.
+
+Refuted: Codex's judge rollout (same second, same cwd) being taken as the
+session's continuation. `current_rollout` matches on the thread id, and the
+record was bound to the right file.

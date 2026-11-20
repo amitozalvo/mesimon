@@ -2960,6 +2960,21 @@ async function chatFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#chat").textContent.includes("fold-canary"));
     await run.click();
     await until(page, () => document.querySelector("#chat").textContent.includes("fold-canary"));
+    // More written than a page holds, while a step runs: the conversation
+    // starts over at a tail page that opens on a fold, and every row stays
+    // in its place, the step under the last (T-1354: Preact drew a fold
+    // with no key of its own above the rows it came after).
+    await page.evaluate(() => fixture.transcript.push(
+      ...[460, 470, 480].map((at) => ({ at, kind: "reply", text: `Before the page ${at}` })),
+      ...[490, 500, 510, 520, 530, 540, 550, 560].map((at) => ({ at, kind: "tool", text: `Bash cargo test ${at}` })),
+      { at: 570, kind: "reply", text: "order-canary" },
+    ));
+    await until(page, () => document.querySelector("#chat").textContent.includes("order-canary"));
+    assert.deepEqual(
+      await chat.evaluate((n) => [...n.querySelectorAll(":scope > .chat-row")].slice(-3).map((c) => c.className.replace("chat-row chat-", "") + ":" + c.textContent.slice(0, 12))),
+      ["run:Ran 8 comman", "reply:order-canary", "doing:Run the whol"],
+      "the fold, the reply after it, then the step",
+    );
     // A new conversation (`/clear`) starts over at its tail.
     await page.evaluate(() => {
       fixture.conversation = "conversation-b";

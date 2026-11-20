@@ -2,7 +2,7 @@
 // (T-626). The file is only appended to, so a row's `at` (its record's byte
 // offset) is its place for good: a page wholly before the tail never
 // changes, and only what was written since the last ask is asked again.
-import { html, useLayoutEffect, useRef, useState } from "./html.js";
+import { Fragment, html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { ghostOf, receiptTick } from "./sessions.js";
 import { Linked, Markdown, tapCopy } from "./markdown.js";
@@ -372,9 +372,11 @@ export function Chat({ store, entry, agent, tail }) {
       if (item.row?.kind === "hand") return html`<${Hand} key=${key} row=${item.row} provider=${provider} />`;
       if (!item.run) return html`<${Row} key=${key} row=${item.row} />`;
       const shown = open.has(key);
-      return html`<button key=${`run:${key}`} type="button" class="chat-row chat-run" aria-expanded=${String(shown)}
+      // The fold and its rows are one keyed item: an unkeyed one among
+      // keyed siblings was placed above rows it came after (T-1354).
+      return html`<${Fragment} key=${`run:${key}`}><button type="button" class="chat-row chat-run" aria-expanded=${String(shown)}
         onClick=${() => toggle(key)}><${Icon} name=${shown ? "chevronDown" : "chevronRight"} size=${12} width=${2.4} /><span>${foldWords(item.run)}</span></button>
-        ${shown && item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n, chat?.conversation)} row=${row} />`)}`;
+        ${shown && item.run.map((row, n) => html`<${Row} key=${rowKey(rows, item.i + n, chat?.conversation)} row=${row} />`)}</${Fragment}>`;
     })}
     ${ghost && html`<div class="chat-row chat-prompt chat-ghost" aria-label="Sent, not yet in the conversation">
       <p dir="auto">${ghost.text}</p><${Tick} state=${receiptTick(ghost.status) || "clock"} /></div>`}
